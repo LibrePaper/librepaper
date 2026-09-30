@@ -168,7 +168,9 @@ impl PostgresCatalog {
         .fetch_one(&mut **tx)
         .await?;
         if has_outcome {
-            return Err(Error::Conflict("proposal id has already been resolved".into()));
+            return Err(Error::Conflict(
+                "proposal id has already been resolved".into(),
+            ));
         }
         sqlx::query(
             "INSERT INTO document_proposals(id,document_id,author,owner_key,base_frontiers,
@@ -185,17 +187,21 @@ impl PostgresCatalog {
         .bind(&branch_bytes)
         .execute(&mut **tx)
         .await?;
-        let stored = sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1 AND document_id=$2"))
-            .bind(id)
-            .bind(document_id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or(Error::NotFound)?;
+        let stored = sqlx::query_as::<_, StoredProposal>(&format!(
+            "{SELECT} WHERE id=$1 AND document_id=$2"
+        ))
+        .bind(id)
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)?;
         // The UUID is the create key. A retry after the row was rebased still
         // names the same proposal; only its owner determines whether the key
         // can be replayed. The submitted base is used for a newly inserted row.
         if stored.owner_key.as_deref() != Some(new_owner_key.as_str()) {
-            return Err(Error::Conflict("proposal id belongs to another author".into()));
+            return Err(Error::Conflict(
+                "proposal id belongs to another author".into(),
+            ));
         }
         Ok(stored)
     }
@@ -213,9 +219,9 @@ impl PostgresCatalog {
         base_frontiers: Option<Vec<u8>>,
         branch_bytes: Vec<u8>,
     ) -> Result<(StoredProposal, bool)> {
-        let current = sqlx::query_as::<_, StoredProposal>(
-            &format!("{SELECT} WHERE id=$1 AND document_id=$2 FOR UPDATE"),
-        )
+        let current = sqlx::query_as::<_, StoredProposal>(&format!(
+            "{SELECT} WHERE id=$1 AND document_id=$2 FOR UPDATE"
+        ))
         .bind(id)
         .bind(document_id)
         .fetch_optional(&mut **tx)
@@ -251,12 +257,14 @@ impl PostgresCatalog {
         if !applied {
             return Err(Error::Conflict("proposal changed since it was read".into()));
         }
-        let row = sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1 AND document_id=$2"))
-            .bind(id)
-            .bind(document_id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or(Error::NotFound)?;
+        let row = sqlx::query_as::<_, StoredProposal>(&format!(
+            "{SELECT} WHERE id=$1 AND document_id=$2"
+        ))
+        .bind(id)
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)?;
         Ok((row, applied))
     }
 
@@ -295,17 +303,7 @@ impl PostgresCatalog {
         // no-op. The ID alone conveys no capability and the filter never
         // deletes a row from a different document.
         let _ = deleted;
-        Self::record_proposal_outcome(
-            tx,
-            document_id,
-            id,
-            &base,
-            &tip,
-            &[],
-            true,
-            None,
-        )
-        .await?;
+        Self::record_proposal_outcome(tx, document_id, id, &base, &tip, &[], true, None).await?;
         Ok(Some((base, tip, comments)))
     }
 
@@ -434,7 +432,9 @@ impl PostgresCatalog {
             .bind(decided_against)
             .execute(&mut **tx)
             .await?;
-            (0..total_hunks).map(|index| (index, true)).collect::<Vec<_>>()
+            (0..total_hunks)
+                .map(|index| (index, true))
+                .collect::<Vec<_>>()
         } else {
             // Rejection is a whole-proposal discard. No hunk enumeration is
             // needed, especially when the branch has become stale.

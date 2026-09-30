@@ -141,11 +141,15 @@ pub fn from_suggestion(
         .set_peer_id(peer)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
     let Some(file_id) = session::text_ids_of(&branch).get(path).cloned() else {
-        return Err(ProposalError::Failed("that suggestion names a file that is not here".into()));
+        return Err(ProposalError::Failed(
+            "that suggestion names a file that is not here".into(),
+        ));
     };
     let files = branch.get_map(session::FILES);
     let Some(ValueOrContainer::Container(Container::Text(text))) = files.get(&file_id) else {
-        return Err(ProposalError::Failed("that suggestion names a file that is not here".into()));
+        return Err(ProposalError::Failed(
+            "that suggestion names a file that is not here".into(),
+        ));
     };
     text.delete_utf16(at, exact_len)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
@@ -235,8 +239,7 @@ fn validate_proposed_changes(
             }
             loro::event::Diff::Map(delta) if *container == path_map_id => {
                 for (id, value) in &delta.updated {
-                    if paths.get(id.as_ref()).is_some()
-                    {
+                    if paths.get(id.as_ref()).is_some() {
                         return Err(ProposalError::Failed(
                             "a proposal may only add a new text file".into(),
                         ));
@@ -287,7 +290,9 @@ fn validate_proposed_changes(
             ));
         }
         if existing_paths.contains(path) {
-            return Err(ProposalError::Failed("a new text file reuses an existing path".into()));
+            return Err(ProposalError::Failed(
+                "a new text file reuses an existing path".into(),
+            ));
         }
     }
     Ok(())
@@ -430,7 +435,10 @@ fn validate_accepted_hunks_on_branch(
                 .find(|(_, candidate)| candidate.as_str() == id)
                 .map(|(path, _)| path)
                 .ok_or(ProposalError::Stale)?;
-            if session::paths_of(doc).values().any(|current| current == path) {
+            if session::paths_of(doc)
+                .values()
+                .any(|current| current == path)
+            {
                 return Err(ProposalError::Stale);
             }
             continue;
@@ -445,11 +453,14 @@ fn validate_accepted_hunks_on_branch(
         {
             return Err(ProposalError::Stale);
         }
-        let start_utf16 = chars[..start_cp].iter().collect::<String>().encode_utf16().count() as u32;
-        let start = crate::document::session::cursor_at_file_id(
-            &at_base, id, start_utf16, Side::Right,
-        )
-        .ok_or(ProposalError::Stale)?;
+        let start_utf16 = chars[..start_cp]
+            .iter()
+            .collect::<String>()
+            .encode_utf16()
+            .count() as u32;
+        let start =
+            crate::document::session::cursor_at_file_id(&at_base, id, start_utf16, Side::Right)
+                .ok_or(ProposalError::Stale)?;
         let end = if hunk.deleted == 0 {
             start.clone()
         } else {
@@ -722,9 +733,8 @@ pub fn resolve(
         .values()
         .filter(|id| !base_ids.values().any(|base_id| base_id == *id))
     {
-        let Some(ValueOrContainer::Container(Container::Text(text))) = at_tip
-            .get_map(session::FILES)
-            .get(id)
+        let Some(ValueOrContainer::Container(Container::Text(text))) =
+            at_tip.get_map(session::FILES).get(id)
         else {
             continue;
         };
@@ -945,7 +955,9 @@ impl Command for UpdateProposal {
             if self.stored.as_ref().and_then(|p| p.owner_key.as_deref())
                 != Some(self.owner_key.as_str())
             {
-                return Err(CommandError::Conflict("only the proposal author can update it".into()));
+                return Err(CommandError::Conflict(
+                    "only the proposal author can update it".into(),
+                ));
             }
             self.decided = self
                 .catalog
@@ -1072,10 +1084,7 @@ impl Command for DiscardProposal {
         "proposal-discard"
     }
 
-    fn evaluate(
-        &mut self,
-        _head: &Head<'_>,
-    ) -> Result<Option<PreparedSource>, CommandError> {
+    fn evaluate(&mut self, _head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
         Ok(None)
     }
 
@@ -1085,7 +1094,8 @@ impl Command for DiscardProposal {
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
-            let discarded = self.catalog
+            let discarded = self
+                .catalog
                 .discard_proposal(tx, self.document_id, self.id)
                 .await
                 .map_err(CommandError::from)?;
@@ -1354,15 +1364,9 @@ impl Command for DecideProposalHunk {
         let branch_bytes = self.stored.branch_bytes.clone();
         let client_seq = client_seq_of(self.request_id);
         head.prepare(client_seq, |draft| {
-            resolve(
-                draft,
-                &proposal,
-                &branch_bytes,
-                &declined,
-                &proposal.tip,
-            )
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+            resolve(draft, &proposal, &branch_bytes, &declined, &proposal.tip)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
         })
         .map_err(CommandError::Conflict)
     }
@@ -1392,17 +1396,17 @@ impl Command for DecideProposalHunk {
                 let complete = self
                     .catalog
                     .decide_proposal_hunk(
-                    &mut *tx,
-                    self.document_id,
-                    self.proposal_id,
-                    self.hunk_index,
-                    self.accepted,
-                    &self.decided_by,
-                    &self.against,
-                    self.note.as_deref(),
-                    self.total_hunks,
-                )
-                .await?;
+                        &mut *tx,
+                        self.document_id,
+                        self.proposal_id,
+                        self.hunk_index,
+                        self.accepted,
+                        &self.decided_by,
+                        &self.against,
+                        self.note.as_deref(),
+                        self.total_hunks,
+                    )
+                    .await?;
                 let removed = if complete {
                     // A decided proposal is deleted, not kept: its hunks and
                     // linked suggestion comments go with it.
@@ -1809,14 +1813,7 @@ mod tests {
     #[test]
     fn accepting_everything_is_the_merge_alone() {
         let (room, proposal, bytes) = room_and_proposal();
-        resolve(
-            &room,
-            &proposal,
-            &bytes,
-            &HashSet::new(),
-            &proposal.tip,
-        )
-        .unwrap();
+        resolve(&room, &proposal, &bytes, &HashSet::new(), &proposal.tip).unwrap();
         assert_eq!(text_at(&room, "main.md"), "The tabby sat.");
         assert_eq!(text_at(&room, "notes.md"), "The dog sprinted.");
     }
@@ -1833,13 +1830,7 @@ mod tests {
             branch.commit();
             branch.state_frontiers()
         };
-        let refused = resolve(
-            &room,
-            &proposal,
-            &bytes,
-            &HashSet::new(),
-            &reviewed,
-        );
+        let refused = resolve(&room, &proposal, &bytes, &HashSet::new(), &reviewed);
         assert!(
             matches!(refused, Err(ProposalError::Stale)),
             "got {refused:?}"
@@ -1854,14 +1845,7 @@ mod tests {
         session::put_text(&room, "extra.md", "Meanwhile.");
         room.commit();
 
-        resolve(
-            &room,
-            &proposal,
-            &bytes,
-            &HashSet::from([1]),
-            &proposal.tip,
-        )
-        .unwrap();
+        resolve(&room, &proposal, &bytes, &HashSet::from([1]), &proposal.tip).unwrap();
         assert_eq!(text_at(&room, "main.md"), "The tabby sat.");
         assert_eq!(text_at(&room, "notes.md"), "The dog ran.");
         assert_eq!(
@@ -1885,8 +1869,7 @@ mod tests {
         // Reject the first hunk after a length-changing concurrent edit before
         // it. Its inverse belongs on the proposal branch, where offsets still
         // name the reviewed text.
-        resolve(&room, &proposal, &bytes, &HashSet::from([0]), &proposal.tip)
-            .unwrap();
+        resolve(&room, &proposal, &bytes, &HashSet::from([0]), &proposal.tip).unwrap();
         assert_eq!(text_at(&room, "main.md"), "Note. The cat sat.");
         assert_eq!(text_at(&room, "notes.md"), "The dog sprinted.");
     }
@@ -1897,14 +1880,7 @@ mod tests {
         let found = hunks(&room, &proposal, &bytes).unwrap();
         assert_eq!(found.len(), 2);
 
-        resolve(
-            &room,
-            &proposal,
-            &bytes,
-            &HashSet::from([1]),
-            &proposal.tip,
-        )
-        .unwrap();
+        resolve(&room, &proposal, &bytes, &HashSet::from([1]), &proposal.tip).unwrap();
         assert_eq!(
             text_at(&room, "main.md"),
             "The tabby sat. The dog ran.",
@@ -1928,14 +1904,7 @@ mod tests {
         let concurrent = session::encode_diff(&coauthor, &session::encode_vector(&room)).unwrap();
         session::apply_update(&room, &concurrent).unwrap();
 
-        resolve(
-            &room,
-            &proposal,
-            &bytes,
-            &HashSet::from([1]),
-            &proposal.tip,
-        )
-        .unwrap();
+        resolve(&room, &proposal, &bytes, &HashSet::from([1]), &proposal.tip).unwrap();
         assert_eq!(
             text_at(&room, "main.md"),
             "The tabby sat. Meanwhile, The dog ran.",
@@ -1953,13 +1922,7 @@ mod tests {
         let concurrent = session::encode_diff(&coauthor, &session::encode_vector(&room)).unwrap();
         session::apply_update(&room, &concurrent).unwrap();
 
-        let refused = resolve(
-            &room,
-            &proposal,
-            &bytes,
-            &HashSet::from([1]),
-            &proposal.tip,
-        );
+        let refused = resolve(&room, &proposal, &bytes, &HashSet::from([1]), &proposal.tip);
         assert!(
             matches!(refused, Err(ProposalError::Stale)),
             "reverting a declined hunk over a rival replacement would resurrect the old word: {refused:?}"
@@ -2106,7 +2069,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(text_at(&room, "main.md"), "The tabby sat.");
-        assert!(!session::paths_of(&room).values().any(|path| path == "extra.md"));
+        assert!(!session::paths_of(&room)
+            .values()
+            .any(|path| path == "extra.md"));
         assert!(!session::texts_of(&room).contains_key("extra.md"));
     }
 
@@ -2287,11 +2252,17 @@ mod suggestion_tests {
             "beta center sigma",
         )
         .unwrap();
-        assert_eq!(session::texts_of(&made.0)["main.md"], "é 😀 beta center sigma");
+        assert_eq!(
+            session::texts_of(&made.0)["main.md"],
+            "é 😀 beta center sigma"
+        );
         let bytes = session::encode_diff(&made.0, &session::encode_vector(&room)).unwrap();
         let found = hunks(
             &room,
-            &Proposal { base: made.1, tip: made.2 },
+            &Proposal {
+                base: made.1,
+                tip: made.2,
+            },
             &bytes,
         )
         .unwrap();

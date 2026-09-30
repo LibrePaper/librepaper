@@ -373,7 +373,11 @@ impl KnownMessage {
     );
     string_field!(vector, vector, DocOpen);
     string_field!(protocol, protocol, DocOpen);
-    string_field!(proposal_id, proposal_id, ProposalUpdate | ProposalDecide | ProposalDiscard);
+    string_field!(
+        proposal_id,
+        proposal_id,
+        ProposalUpdate | ProposalDecide | ProposalDiscard
+    );
     string_field!(base, base, ProposalOpen | ProposalUpdate);
     value_field!(resume, resume, bool, ProposalOpen);
     value_field!(expected_version, expected_version, i64, ProposalUpdate);
@@ -579,33 +583,27 @@ mod tests {
 
     #[test]
     fn proposal_updates_carry_the_acknowledged_version() {
-        let message: Message = serde_json::from_str(
-            r#"{"type":"proposal-update","expected_version":7}"#,
-        )
-        .unwrap();
+        let message: Message =
+            serde_json::from_str(r#"{"type":"proposal-update","expected_version":7}"#).unwrap();
         assert_eq!(message.expected_version(), 7);
     }
 
     #[test]
     fn proposal_open_distinguishes_initial_retry_from_resume() {
-        let initial: Message = serde_json::from_str(
-            r#"{"type":"proposal-open","request_id":"a"}"#,
-        )
-        .unwrap();
-        let resumed: Message = serde_json::from_str(
-            r#"{"type":"proposal-open","request_id":"a","resume":true}"#,
-        )
-        .unwrap();
+        let initial: Message =
+            serde_json::from_str(r#"{"type":"proposal-open","request_id":"a"}"#).unwrap();
+        let resumed: Message =
+            serde_json::from_str(r#"{"type":"proposal-open","request_id":"a","resume":true}"#)
+                .unwrap();
         assert!(!initial.resume());
         assert!(resumed.resume());
     }
 
     #[test]
     fn proposal_decide_can_name_one_whole_suggestion() {
-        let message: Message = serde_json::from_str(
-            r#"{"type":"proposal-decide","all":true,"accepted":false}"#,
-        )
-        .unwrap();
+        let message: Message =
+            serde_json::from_str(r#"{"type":"proposal-decide","all":true,"accepted":false}"#)
+                .unwrap();
         assert!(message.all());
         assert!(!message.accepted());
     }

@@ -218,7 +218,10 @@ async fn decide(
 ) -> Result<ProposalDecided, crate::log::CommandError> {
     let stored = room.catalog().proposal(proposal_id).await.unwrap().unwrap();
     let decided = room.catalog().decisions(proposal_id).await.unwrap();
-    decide_with(room, authority, stored, decided, hunk_index, accepted, against).await
+    decide_with(
+        room, authority, stored, decided, hunk_index, accepted, against,
+    )
+    .await
 }
 
 /// [`decide`], but with the pre-read snapshot handed in rather than taken here.
@@ -346,11 +349,20 @@ async fn proposal_updates_require_the_owner_and_acknowledged_version_but_allow_e
     let base = frontier(&room).await;
     let (first_branch, first_tip) = room
         .log()
-        .with_fork_at(&base, |at| author_forks(at, 4242, "paper.md", "The tabby sat.\n"))
+        .with_fork_at(&base, |at| {
+            author_forks(at, 4242, "paper.md", "The tabby sat.\n")
+        })
         .await
         .unwrap();
     let opened = open(&room, &deployment.authority, "Ada", &base).await;
-    let acknowledged = update(&room, &deployment.authority, &opened, &first_tip, &first_branch).await;
+    let acknowledged = update(
+        &room,
+        &deployment.authority,
+        &opened,
+        &first_tip,
+        &first_branch,
+    )
+    .await;
     let original_bytes = acknowledged.branch_bytes.clone();
 
     // A resent whole snapshot is safe even if its acknowledgement was lost.
@@ -376,7 +388,9 @@ async fn proposal_updates_require_the_owner_and_acknowledged_version_but_allow_e
 
     let (different_branch, different_tip) = room
         .log()
-        .with_fork_at(&base, |at| author_forks(at, 4343, "paper.md", "The tabby purred.\n"))
+        .with_fork_at(&base, |at| {
+            author_forks(at, 4343, "paper.md", "The tabby purred.\n")
+        })
         .await
         .unwrap();
     let mut wrong_owner = UpdateProposal {
@@ -396,8 +410,20 @@ async fn proposal_updates_require_the_owner_and_acknowledged_version_but_allow_e
         .command(&deployment.authority, &mut wrong_owner)
         .await
         .expect_err("another author cannot update the branch");
-    assert!(matches!(refused_owner, crate::log::CommandError::Conflict(_)));
-    assert_eq!(deployment.catalog.proposal(opened.id).await.unwrap().unwrap().branch_bytes, original_bytes);
+    assert!(matches!(
+        refused_owner,
+        crate::log::CommandError::Conflict(_)
+    ));
+    assert_eq!(
+        deployment
+            .catalog
+            .proposal(opened.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .branch_bytes,
+        original_bytes
+    );
 
     let mut stale_version = UpdateProposal {
         document_id: room.document_id,
@@ -420,7 +446,12 @@ async fn proposal_updates_require_the_owner_and_acknowledged_version_but_allow_e
         refused_stale,
         crate::log::CommandError::Storage(crate::storage::postgres::Error::Conflict(_))
     ));
-    let still_original = deployment.catalog.proposal(opened.id).await.unwrap().unwrap();
+    let still_original = deployment
+        .catalog
+        .proposal(opened.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(still_original.version, acknowledged.version);
     assert_eq!(still_original.branch_bytes, original_bytes);
 }
@@ -475,49 +506,70 @@ async fn whole_suggestion_resolution_replaces_legacy_mixed_hunk_answers() {
     // the socket's all:true mode both call resolve_suggestion, which must
     // replace that set with one accepted answer for every actual hunk.
     let mut tx = deployment.catalog.pool().begin().await.unwrap();
-    deployment.catalog.decide_proposal_hunk(
-        &mut tx,
-        room.document_id,
-        proposal.id,
-        0,
-        false,
-        "legacy-reviewer",
-        &proposal.tip_frontiers,
-        None,
-        2,
-    ).await.unwrap();
-    deployment.catalog.decide_proposal_hunk(
-        &mut tx,
-        room.document_id,
-        proposal.id,
-        1,
-        true,
-        "legacy-reviewer",
-        &proposal.tip_frontiers,
-        None,
-        2,
-    ).await.unwrap();
+    deployment
+        .catalog
+        .decide_proposal_hunk(
+            &mut tx,
+            room.document_id,
+            proposal.id,
+            0,
+            false,
+            "legacy-reviewer",
+            &proposal.tip_frontiers,
+            None,
+            2,
+        )
+        .await
+        .unwrap();
+    deployment
+        .catalog
+        .decide_proposal_hunk(
+            &mut tx,
+            room.document_id,
+            proposal.id,
+            1,
+            true,
+            "legacy-reviewer",
+            &proposal.tip_frontiers,
+            None,
+            2,
+        )
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     let request_id = Uuid::new_v4();
     let mut tx = deployment.catalog.pool().begin().await.unwrap();
-    deployment.catalog.resolve_suggestion(
-        &mut tx,
-        room.document_id,
-        proposal.id,
-        &proposal.tip_frontiers,
-        true,
-        Some(2),
-        "Ada",
-        Some(request_id),
-    ).await.unwrap();
+    deployment
+        .catalog
+        .resolve_suggestion(
+            &mut tx,
+            room.document_id,
+            proposal.id,
+            &proposal.tip_frontiers,
+            true,
+            Some(2),
+            "Ada",
+            Some(request_id),
+        )
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
-    let receipt = deployment.catalog.proposal_outcome(room.document_id, proposal.id)
-        .await.unwrap().expect("whole decision records its final result");
+    let receipt = deployment
+        .catalog
+        .proposal_outcome(room.document_id, proposal.id)
+        .await
+        .unwrap()
+        .expect("whole decision records its final result");
     assert_eq!(receipt.decisions.0, vec![(0, true), (1, true)]);
     assert!(!receipt.discarded);
-    assert!(deployment.catalog.proposal(proposal.id).await.unwrap().is_none());
+    assert!(deployment
+        .catalog
+        .proposal(proposal.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// Declining, with somebody else writing at the same time.
@@ -706,7 +758,12 @@ async fn a_proposal_goes_open_update_decide_resolve() {
         matches!(closed_retry, Err(crate::log::CommandError::Conflict(_))),
         "a resumed id with a retained outcome is replayed by the socket, never reopened: {closed_retry:?}"
     );
-    assert!(deployment.catalog.proposal(stored.id).await.unwrap().is_none());
+    assert!(deployment
+        .catalog
+        .proposal(stored.id)
+        .await
+        .unwrap()
+        .is_none());
     let mut delayed_initial_retry = OpenProposal {
         document_id: room.document_id,
         catalog: room.catalog().clone(),
@@ -724,7 +781,12 @@ async fn a_proposal_goes_open_update_decide_resolve() {
         matches!(delayed_retry, Err(crate::log::CommandError::Storage(_))),
         "a delayed initial-open retry cannot recreate an id with a receipt: {delayed_retry:?}"
     );
-    assert!(deployment.catalog.proposal(stored.id).await.unwrap().is_none());
+    assert!(deployment
+        .catalog
+        .proposal(stored.id)
+        .await
+        .unwrap()
+        .is_none());
 
     // A second decision is refused and changes nothing: the proposal is
     // gone. The socket can answer a retry from the retained proposal outcome.
@@ -900,13 +962,23 @@ async fn a_decision_follows_its_hunk_when_the_base_moves() {
     let room = deployment.rooms.get(&deployment.slug).await.unwrap();
     let path = "paper.md";
     let middle = " It was a long and quiet afternoon in the old town.";
-    other_writer_types(&room, path, &format!("The cat sat on the mat.{middle} Far away, a dog ran.\n")).await;
+    other_writer_types(
+        &room,
+        path,
+        &format!("The cat sat on the mat.{middle} Far away, a dog ran.\n"),
+    )
+    .await;
 
     let base = frontier(&room).await;
     let (branch_bytes, tip) = room
         .log()
         .with_fork_at(&base, |at| {
-            author_forks(at, 4242, path, &format!("The tabby sat on the mat.{middle} Far away, a dog sprinted.\n"))
+            author_forks(
+                at,
+                4242,
+                path,
+                &format!("The tabby sat on the mat.{middle} Far away, a dog sprinted.\n"),
+            )
         })
         .await
         .unwrap();
@@ -944,11 +1016,16 @@ async fn a_decision_follows_its_hunk_when_the_base_moves() {
         decided: Vec::new(),
         carried: Vec::new(),
     };
-    room.command(&deployment.authority, &mut command).await.unwrap();
+    room.command(&deployment.authority, &mut command)
+        .await
+        .unwrap();
 
     let decided = room.catalog().decisions(stored.id).await.unwrap();
     assert_eq!(
-        decided.iter().map(|d| (d.hunk_index, d.accepted)).collect::<Vec<_>>(),
+        decided
+            .iter()
+            .map(|d| (d.hunk_index, d.accepted))
+            .collect::<Vec<_>>(),
         vec![(0, true)],
         "the accepted hunk keeps its answer under the new numbering"
     );
@@ -958,7 +1035,16 @@ async fn a_decision_follows_its_hunk_when_the_base_moves() {
         .unwrap();
     assert!(last.resolved, "the second answer completes the review");
     let body = text(&room, path).await;
-    assert!(body.contains("tabby"), "the accepted change landed, got {body:?}");
-    assert!(body.contains("sleepy"), "the coauthor's word is kept, got {body:?}");
-    assert!(body.contains("dog ran."), "the declined change did not land, got {body:?}");
+    assert!(
+        body.contains("tabby"),
+        "the accepted change landed, got {body:?}"
+    );
+    assert!(
+        body.contains("sleepy"),
+        "the coauthor's word is kept, got {body:?}"
+    );
+    assert!(
+        body.contains("dog ran."),
+        "the declined change did not land, got {body:?}"
+    );
 }

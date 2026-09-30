@@ -552,18 +552,10 @@ pub(crate) fn proposed_from_branch(
     if replace_utf16_span(&base_text, target.start_utf16 as usize, &target.exact, "").is_none() {
         return None;
     }
-    let start = session::cursor_at_file_id(
-        &at_base,
-        &target.file_id.0,
-        target.start_utf16,
-        Side::Left,
-    )?;
-    let end = session::cursor_at_file_id(
-        &at_base,
-        &target.file_id.0,
-        target.end_utf16,
-        Side::Right,
-    )?;
+    let start =
+        session::cursor_at_file_id(&at_base, &target.file_id.0, target.start_utf16, Side::Left)?;
+    let end =
+        session::cursor_at_file_id(&at_base, &target.file_id.0, target.end_utf16, Side::Right)?;
     let range =
         session::offsets_of_cursors_in_file(&at_tip, &target.file_id.0, &start, &end).ok()?;
     if range.start_utf16 > range.end_utf16 {

@@ -93,11 +93,7 @@ pub(super) async fn announce_proposal(room: &Room, id: &str) {
 /// MCP command. Without the final outcome frame, their in-memory review queue
 /// keeps displaying a row that no longer exists in the durable proposal list.
 pub(super) async fn announce_proposal_outcome(room: &Room, id: uuid::Uuid, request_id: uuid::Uuid) {
-    let Ok(Some(outcome)) = room
-        .catalog()
-        .proposal_outcome(room.document_id, id)
-        .await
-    else {
+    let Ok(Some(outcome)) = room.catalog().proposal_outcome(room.document_id, id).await else {
         return;
     };
     let payload = proposal_outcome_json(&outcome, &request_id.to_string());
