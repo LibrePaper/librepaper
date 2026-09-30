@@ -775,6 +775,15 @@ async fn refinement_round_trip(edit_source: bool, check_text: bool) {
     room.command(&deployment.authority(), &mut accept)
         .await
         .expect("the refined branch can be accepted after source edits");
+    let receipt = deployment
+        .catalog
+        .proposal_outcome(room.document_id, proposal_id)
+        .await
+        .unwrap()
+        .expect("MCP acceptance uses the same durable whole-suggestion result");
+    assert!(!receipt.discarded);
+    assert!(!receipt.decisions.0.is_empty());
+    assert!(receipt.decisions.0.iter().all(|(_, accepted)| *accepted));
     assert_eq!(
         room.projection().await.unwrap().texts["paper.md"],
         final_source.replace(
@@ -919,6 +928,13 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
     room.command(&deployment.authority(), &mut cmd)
         .await
         .expect("an editor rejects it");
+    let receipt = deployment
+        .catalog
+        .proposal_outcome(room.document_id, open.id)
+        .await
+        .unwrap()
+        .expect("MCP rejection records a whole-proposal result");
+    assert!(receipt.discarded);
     assert!(
         room.comment_by_id(&created.id, true)
             .await
