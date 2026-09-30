@@ -698,7 +698,7 @@ async fn refinement_round_trip(edit_source: bool, check_text: bool) {
         async move { catalog.proposal(id).await.unwrap().unwrap().version }
     };
 
-    let edited_source = format!("An unrelated opening.\n\n{PAPER}\nAn unrelated ending.\n");
+    let edited_source = format!("é 😀 An unrelated opening.\n\n{PAPER}\nAn unrelated ending.\n");
     if edit_source {
         edit_refinement_source(&room, &edited_source, 1).await;
     }
@@ -753,6 +753,17 @@ async fn refinement_round_trip(edit_source: bool, check_text: bool) {
     room.command(&deployment.authority(), &mut cmd)
         .await
         .expect("a refinement of what is actually there");
+
+    let served = room
+        .comment_by_id(&comment.id, true)
+        .await
+        .unwrap()
+        .expect("the refined suggestion remains readable");
+    assert_eq!(
+        served.proposed.as_deref(),
+        Some("*interval* covers the mean, at last"),
+        "hydration shows the replacement after refinement and Unicode source edits",
+    );
 
     let proposal = deployment
         .catalog
@@ -864,7 +875,8 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
     assert!(
         served.proposed.as_deref() == Some("*interval* contains the mean")
             && served.outcome.is_empty(),
-        "the served shape derives proposed text from the branch",
+        "the served shape derives proposed text from the branch: {:?}",
+        served.proposed,
     );
     assert!(!served.proposal.is_empty(), "it does carry a proposal id");
 
