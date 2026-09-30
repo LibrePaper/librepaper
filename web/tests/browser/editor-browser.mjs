@@ -305,6 +305,7 @@ window.collabCacheCheck = async () => {
 // into the document, and nothing flushed until tracking was switched off.
 window.trackingCheck = async () => {
   const sent = [];
+  const statuses = [];
   const value = joinSession({ send: () => {}, mayEdit: true });
   const id = value.addText("tracked.md", "alpha");
   value.setMain(id);
@@ -316,22 +317,25 @@ window.trackingCheck = async () => {
     props: {
       session: value, format: "markdown", file: id, editable: true,
       send: (message) => { sent.push(message); return true; },
+      onproposalstatus: (status) => { if (status) statuses.push(status); },
     },
   });
   await tick();
   tracked.startTracking();
   await tick();
   const on = tracked.trackingOn();
-  const opened = sent.some((message) => message.type === "proposal-open");
-  // The server is what names a branch, and an update has nothing to address
-  // itself to until it has.
-  tracked.receiveProposal({ type: "proposal-opened", proposal_id: "p1" });
+  const openedBeforeTyping = sent.some((message) => message.type === "proposal-open");
+  const draftId = tracked.proposalStatus()?.id || "";
   const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
   view.dispatch({ changes: { from: 0, insert: "TRACKED " } });
   // Longer than the flush pause: the point of the check is that typing sends,
   // without anything else having to happen.
   await new Promise((resolve) => setTimeout(resolve, 700));
+  const open = sent.find((message) => message.type === "proposal-open");
+  if (open) tracked.receiveProposal({ type: "proposal-opened", proposal_id: open.request_id, request_id: open.request_id, tip: "", applied_version: "" });
+  await new Promise((resolve) => setTimeout(resolve, 100));
   const update = sent.find((message) => message.type === "proposal-update");
+  if (update) tracked.receiveProposal({ type: "proposal-updated", proposal_id: update.proposal_id, request_id: update.request_id, tip: update.tip, applied_version: "" });
   const shown = view.state.doc.toString();
   const paper = value.textOf(id).toString();
   tracked.stopTracking();
@@ -346,8 +350,9 @@ window.trackingCheck = async () => {
   host.remove();
   value.leave();
   return {
-    on, off, opened, shown, paper, afterStop, direct,
-    flushed: Boolean(update && update.proposal_id === "p1" && update.update),
+    on, off, opened: Boolean(open), openedBeforeTyping, draftId, shown, paper, afterStop, direct,
+    pendingSeen: statuses.some((status) => Number(status.pending) > 0), acknowledged: Number(statuses.at(-1)?.pending || 0) === 0,
+    flushed: Boolean(update && update.proposal_id === draftId && update.update),
   };
 };
 // Track changes with a stop before proposal-opened arrives: the unsent work
@@ -373,22 +378,24 @@ window.trackingStopBeforeOpenedCheck = async () => {
   await tick();
   const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
   view.dispatch({ changes: { from: 0, insert: "TRACKED " } });
-  // Wait for flush to send the unsent flag (proposal-open has sent, but no
-  // proposal-opened response yet).
+  // Wait for the lazy open request, but do not acknowledge it yet.
   await new Promise((resolve) => setTimeout(resolve, 700));
+  const open = sent.find((message) => message.type === "proposal-open");
   // Stop tracking before proposal-opened arrives.
   tracked.stopTracking();
   await tick();
   const noUpdateYet = sent.filter((message) => message.type === "proposal-update").length;
   // Now deliver proposal-opened -- the unsent work should be sent.
-  tracked.receiveProposal({ type: "proposal-opened", proposal_id: "p2" });
-  const delayedUpdate = sent.find((message) => message.type === "proposal-update" && message.proposal_id === "p2");
+  if (open) tracked.receiveProposal({ type: "proposal-opened", proposal_id: open.request_id, request_id: open.request_id, tip: "", applied_version: "" });
+  const delayedUpdate = sent.find((message) => message.type === "proposal-update" && message.proposal_id === open?.request_id);
+  if (delayedUpdate) tracked.receiveProposal({ type: "proposal-updated", proposal_id: delayedUpdate.proposal_id, request_id: delayedUpdate.request_id, tip: delayedUpdate.tip, applied_version: "" });
   const shown = value.textOf(id).toString();
   tracked.$destroy();
   host.remove();
   value.leave();
   return {
     noUpdateYet,
+    openId: open?.request_id || "",
     delayedSent: Boolean(delayedUpdate && delayedUpdate.update),
     delayedUpdateId: delayedUpdate?.proposal_id || "",
     shown,
@@ -694,10 +701,14 @@ try {
 
   const tracked = await evaluate("trackingCheck()");
   assert.equal(tracked.on, true, "track changes reported off after being switched on");
-  assert.equal(tracked.opened, true, "switching track changes on did not open a proposal");
+  assert.equal(tracked.openedBeforeTyping, false, "starting tracking created an empty server proposal");
+  assert.match(tracked.draftId, /^[0-9a-f-]{36}$/i, "the draft was not named locally with a UUID");
+  assert.equal(tracked.opened, true, "the first real tracked edit did not open a proposal");
   assert.equal(tracked.shown, "TRACKED alpha", "the author cannot see what they typed");
   assert.equal(tracked.paper, "alpha", "a tracked keystroke reached the document instead of the branch");
+  assert.equal(tracked.pendingSeen, true, "unacknowledged tracked work was not exposed to the save status");
   assert.equal(tracked.flushed, true, "the branch was never sent, so nobody could review it");
+  assert.equal(tracked.acknowledged, true, "an explicit server acknowledgement did not clear tracked pending status");
   assert.equal(tracked.off, false, "track changes reported on after being switched off");
   assert.equal(tracked.afterStop, "alpha", "stopping applied the proposal instead of leaving it for review");
   assert.equal(tracked.direct, "DIRECT alpha", "editing after stopping did not reach the document");
@@ -705,7 +716,8 @@ try {
   const trackingStopBefore = await evaluate("trackingStopBeforeOpenedCheck()");
   assert.equal(trackingStopBefore.noUpdateYet, 0, "proposal-update was sent before stopping");
   assert.equal(trackingStopBefore.delayedSent, true, "unsent work was not sent after proposal-opened");
-  assert.equal(trackingStopBefore.delayedUpdateId, "p2", "the delayed update was sent to the wrong proposal id");
+  assert.match(trackingStopBefore.openId, /^[0-9a-f-]{36}$/i, "the pending open did not retain its client-chosen id");
+  assert.equal(trackingStopBefore.delayedUpdateId, trackingStopBefore.openId, "the delayed update was sent to the wrong proposal id");
   assert.equal(trackingStopBefore.shown, "alpha", "stopping tracking changed the paper text");
   console.log("editor-browser: stopping before proposal-opened sends unsent edits once named");
 } finally {

@@ -46,7 +46,7 @@ window.setupInsert = async (format, source = null) => {
   const extension = {latex:'tex',typst:'typ',markdown:'md',quarto:'qmd'}[format];
   file = session.addText('paper-' + Date.now() + '.' + extension, source);
   session.setMain(file);
-  component = createClassComponent({component:Editor,target:document.getElementById('editor'),props:{session,format,file,analyze:async()=>({entries,diagnostics:[]})}});
+  component = createClassComponent({component:Editor,target:document.getElementById('editor'),props:{session,format,file,send:()=>true,analyze:async()=>({entries,diagnostics:[]})}});
   await tick();
   menu = createClassComponent({component:InsertMenu,target:document.getElementById('menu'),props:{
     getContext:()=>({...component.getInsertContext(),bibliography:entries,files:[{path:'refs.bib',text:'@article{smith2020,title={Rivers},author={Smith, Jane},year={2020}}'},{path:'images/river.png',url:'data:image/png;base64,preview'}]}),
@@ -86,6 +86,27 @@ window.atomicSetupCheck=async()=>{
   fromAPeer(session.doc, (peer)=>peer.getMap("files").get(chapter).insert(3,'PEER')); await tick();
   const conflict=component.applyInsertResult({text:'BAD'},selectionContext);
   return {applied,undone,conflict,text:session.textOf(chapter).toString()};
+};
+window.trackedMultiFileInsertCheck=async()=>{
+  await setupInsert('latex','\\\\documentclass{article}\\n\\\\begin{document}\\nMain source\\n\\\\end{document}');
+  const main=file;
+  const chapter=session.addText('chapter.tex','Before AFTER');
+  session.setMain(main);
+  component.$set({file:chapter,format:'latex'});await tick();await tick();
+  component.startTracking();await tick();
+  view().dispatch({selection:{anchor:7}});
+  const context=component.getInsertContext();
+  const mainBefore=session.textOf(main).toString();
+  const at=mainBefore.indexOf('\\\\begin{document}');
+  const ok=component.applyInsertResult({text:'TRACKED ',additionalEdits:[{path:'paper-'+Date.now()+'.tex',from:0,to:0,insert:'SETUP '}]},context);
+  // The requested main edit uses a path that is not in the tree and must be
+  // refused atomically; retry with the actual captured main path.
+  const path=context.mainPath;
+  const retry=component.applyInsertResult({text:'TRACKED ',additionalEdits:[{path,from:at,to:at,insert:'% tracked\\n'}]},context);
+  const liveUnchanged=session.textOf(main).toString()===mainBefore&&session.textOf(chapter).toString()==='Before AFTER';
+  const shown=view().state.doc.toString();
+  component.stopTracking();await tick();
+  return {ok,retry,liveUnchanged,shown};
 };
 window.insertReady=true;
 `);
@@ -166,6 +187,11 @@ try {
   assert.deepEqual(await evaluate("targetChecks()"),{switched:false,readonly:false});
   await evaluate("setupInsert('markdown','Before')");await evaluate("selectInsert(6)");await choose("footnote");await until("footnote inserted",()=>evaluate("insertState().text.includes('[^note-1]')"),5000);assert.match((await evaluate("insertState()")).text,/^Before\[\^note-1\]\n\n\[\^note-1\]: Note\./);
   assert.deepEqual(await evaluate("atomicSetupCheck()"),{applied:true,undone:true,conflict:false,text:"BEFPEERORE AFTER"});
+  const trackedInsert=await evaluate("trackedMultiFileInsertCheck()");
+  assert.equal(trackedInsert.ok,false,"a missing cross-file target is rejected before either edit is applied");
+  assert.equal(trackedInsert.retry,true,"the active tracked branch accepts a valid multi-file insertion");
+  assert.equal(trackedInsert.liveUnchanged,true,"the tracked Insert and cross-file setup never write into the live document");
+  assert.match(trackedInsert.shown,/Before TRACKED AFTER/);
   await evaluate("setupInsert('quarto')");await evaluate("selectInsert(7)");await choose("toc");await until("Quarto TOC",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);await confirm();assert.match((await evaluate("insertState()")).text,/toc: true/);
   console.log("insert-browser: Skeleton table dialogs in all four formats, selection wrapping, remote anchors, undo, file switch and readonly guards passed");
 } catch(error) {console.error(await page?.evaluate("({errors:window.testErrors,dialogs:[...document.querySelectorAll('[role=dialog]')].map(x=>({title:x.textContent,state:x.dataset.state})),documentText:document.querySelector('.cm-content')?.textContent})"));throw error;} finally {await page?.close();server?.close();rmSync(temporary,{recursive:true,force:true});}

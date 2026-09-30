@@ -81,6 +81,7 @@
   let diffRuns = $state([]);
   let diffRequest = 0;
   $effect(() => {
+    const request = ++diffRequest;
     if (!isSuggestion) {
       diffRuns = [];
       return;
@@ -88,8 +89,13 @@
     // The passage a suggestion replaces, as the source has it: that is what
     // the proposal is a replacement for, and what the diff is against.
     const oldText = comment.original_anchor?.target?.exact ?? shown.exact;
-    const proposedText = comment.proposed ?? "";
-    const request = ++diffRequest;
+    // `null` means the replacement is not available in this annotation
+    // payload. An empty string is a real deletion.
+    if (comment.proposed == null) {
+      diffRuns = [];
+      return;
+    }
+    const proposedText = comment.proposed;
     history.wordDiff(oldText, proposedText).then((edits) => {
       if (request !== diffRequest) return; // superseded by a newer comment or proposal
       diffRuns = runsFor(oldText, edits);
@@ -249,13 +255,13 @@
         <!-- The word-level diff of the quotation against the proposal:
              deletion struck through, insertion underlined. Deletion in full
              when the proposal is empty falls out of the diff itself. -->
-        <p class="suggestion-diff border-[var(--color-brand)] border-l-2 pl-3 text-sm">
+        {#if comment.proposed == null}<p class="panel-muted">Suggested replacement unavailable.</p>{:else}<p class="suggestion-diff border-[var(--color-brand)] border-l-2 pl-3 text-sm">
           {#each diffRuns as run, i (i)}
             {#if run.kind === "del"}<del>{run.text}</del>
             {:else if run.kind === "ins"}<ins>{run.text}</ins>
             {:else}{run.text}{/if}
           {/each}
-        </p>
+        </p>{/if}
         {#if comment.outcome === "accepted"}
           <p class="panel-muted">Accepted in {history.shortSha(comment.resolved_in)}.</p>
         {:else if comment.outcome === "rejected"}
@@ -265,7 +271,8 @@
             <button
               type="button"
               class="btn btn-sm lp-control-brand"
-              disabled={Boolean(comment.deciding)}
+              disabled={Boolean(comment.deciding) || comment.proposed == null}
+              title={comment.proposed == null ? "The suggested replacement is unavailable" : "Accept this suggestion"}
               onclick={(e) => {
                 e.stopPropagation();
                 onaccept?.(comment);
