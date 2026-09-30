@@ -171,6 +171,7 @@ async fn open(
         catalog: room.catalog().clone(),
         id: Uuid::new_v4(),
         author: author.to_string(),
+        owner_key: authority.principal_key.clone(),
         base: base.clone(),
     };
     room.command(authority, &mut command).await.unwrap()
@@ -187,6 +188,7 @@ async fn update(
         document_id: room.document_id,
         catalog: room.catalog().clone(),
         id: stored.id,
+        owner_key: authority.principal_key.clone(),
         expected_version: stored.version,
         tip: tip.clone(),
         base: None,
@@ -247,6 +249,7 @@ async fn decide_with(
         reviewer,
         request_id: Uuid::now_v7(),
         total_hunks: 0,
+        final_decisions: Vec::new(),
     };
     room.command(authority, &mut command).await
 }
@@ -315,6 +318,7 @@ async fn a_base_the_room_has_never_seen_is_refused() {
         catalog: room.catalog().clone(),
         id: Uuid::new_v4(),
         author: "Ada".to_string(),
+        owner_key: deployment.authority.principal_key.clone(),
         base: elsewhere,
     };
     let refused = room.command(&deployment.authority, &mut command).await;
@@ -659,6 +663,7 @@ async fn a_decision_follows_its_hunk_when_the_base_moves() {
         document_id: room.document_id,
         catalog: room.catalog().clone(),
         id: stored.id,
+        owner_key: deployment.authority.principal_key.clone(),
         expected_version: stored.version,
         tip: new_tip.clone(),
         base: Some(new_base),

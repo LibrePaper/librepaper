@@ -11,8 +11,8 @@
 //!
 //! Retries are handled by the two mechanisms of §7.2, not by a receipt
 //! table: a create carries a client-generated UUID as primary key and is
-//! inserted with `ON CONFLICT DO NOTHING`, and a transition is conditional on
-//! the row's `version` and returns the current row on a mismatch.
+//! inserted with `ON CONFLICT DO NOTHING`; a transition checks `version` and
+//! treats an exact repeat of its current payload as an idempotent success.
 
 use sqlx::{FromRow, Row};
 use uuid::Uuid;
@@ -26,7 +26,8 @@ pub struct NewProposal {
     pub document_id: Uuid,
     pub id: Uuid,
     pub author: String,
-    pub author_peer: i64,
+    /// Stable authenticated identity, separate from the display name.
+    pub owner_key: String,
     pub base_frontiers: Vec<u8>,
     pub tip_frontiers: Vec<u8>,
     pub branch_bytes: Vec<u8>,
@@ -37,11 +38,10 @@ pub struct NewProposal {
 pub struct StoredProposal {
     pub id: Uuid,
     pub author: String,
-    /// The peer that wrote the branch. Loro's PeerID is u64; Postgres has no
-    /// unsigned so the bit pattern is stored as bigint and interpreted where
-    /// needed without conversion. This is what lets the sequencer tell a
-    /// proposal's operations from everyone else's without decoding the blob.
-    pub author_peer: i64,
+    /// Stable identity of the author when known. Null only for rows created
+    /// before ownership was recorded; those rows may be discarded but not
+    /// updated through the typed proposal API.
+    pub owner_key: Option<String>,
     pub base_frontiers: Vec<u8>,
     pub tip_frontiers: Vec<u8>,
     pub branch_bytes: Vec<u8>,
@@ -59,7 +59,7 @@ pub struct StoredDecision {
     pub note: Option<String>,
 }
 
-const SELECT: &str = "SELECT id,author,author_peer,base_frontiers,tip_frontiers,branch_bytes,\
+const SELECT: &str = "SELECT id,author,owner_key,base_frontiers,tip_frontiers,branch_bytes,\
      version FROM document_proposals";
 
 impl PostgresCatalog {
@@ -75,13 +75,14 @@ impl PostgresCatalog {
             document_id,
             id,
             author,
-            author_peer,
+            owner_key,
             base_frontiers,
             tip_frontiers,
             branch_bytes,
         } = new;
+        let new_owner_key = owner_key.clone();
         sqlx::query(
-            "INSERT INTO document_proposals(id,document_id,author,author_peer,base_frontiers,
+            "INSERT INTO document_proposals(id,document_id,author,owner_key,base_frontiers,
                                             tip_frontiers,branch_bytes)
              VALUES($1,$2,$3,$4,$5,$6,$7)
              ON CONFLICT(id) DO NOTHING",
@@ -89,22 +90,29 @@ impl PostgresCatalog {
         .bind(id)
         .bind(document_id)
         .bind(author)
-        .bind(author_peer)
-        .bind(base_frontiers)
-        .bind(tip_frontiers)
-        .bind(branch_bytes)
+        .bind(&owner_key)
+        .bind(&base_frontiers)
+        .bind(&tip_frontiers)
+        .bind(&branch_bytes)
         .execute(&mut **tx)
         .await?;
-        sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1 AND document_id=$2"))
+        let stored = sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1 AND document_id=$2"))
             .bind(id)
             .bind(document_id)
             .fetch_optional(&mut **tx)
             .await?
-            .ok_or(Error::NotFound)
+            .ok_or(Error::NotFound)?;
+        if stored.owner_key.as_deref() != Some(new_owner_key.as_str())
+            || stored.base_frontiers != base_frontiers
+        {
+            return Err(Error::Conflict("proposal id belongs to another author".into()));
+        }
+        Ok(stored)
     }
 
     /// Moves a proposal's branch to a new tip, conditional on the version the
-    /// caller read. The author typing again is what calls this.
+    /// caller read. An exact already-stored payload is a no-op success for a
+    /// resend after a lost acknowledgement.
     pub async fn update_proposal_branch(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -114,8 +122,28 @@ impl PostgresCatalog {
         tip_frontiers: Vec<u8>,
         base_frontiers: Option<Vec<u8>>,
         branch_bytes: Vec<u8>,
-    ) -> Result<StoredProposal> {
-        sqlx::query(
+    ) -> Result<(StoredProposal, bool)> {
+        let current = sqlx::query_as::<_, StoredProposal>(
+            &format!("{SELECT} WHERE id=$1 AND document_id=$2 FOR UPDATE"),
+        )
+        .bind(id)
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        let requested_base_matches = base_frontiers
+            .as_ref()
+            .map_or(true, |base| base == &current.base_frontiers);
+        if current.tip_frontiers == tip_frontiers
+            && current.branch_bytes == branch_bytes
+            && requested_base_matches
+        {
+            return Ok((current, false));
+        }
+        if current.version != expected_version {
+            return Err(Error::Conflict("proposal changed since it was read".into()));
+        }
+        let update = sqlx::query(
             "UPDATE document_proposals
              SET tip_frontiers=$3,branch_bytes=$4,version=version+1,updated_at=now(),
                  base_frontiers=COALESCE($6, base_frontiers)
@@ -123,20 +151,61 @@ impl PostgresCatalog {
         )
         .bind(id)
         .bind(document_id)
-        .bind(tip_frontiers)
-        .bind(branch_bytes)
+        .bind(&tip_frontiers)
+        .bind(&branch_bytes)
         .bind(expected_version)
-        .bind(base_frontiers)
+        .bind(&base_frontiers)
         .execute(&mut **tx)
         .await?;
-        // Whether or not the update applied, the caller is handed the row as
-        // it now stands and compares it with what it asked for (§7.2).
-        sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1 AND document_id=$2"))
+        let applied = update.rows_affected() != 0;
+        if !applied {
+            return Err(Error::Conflict("proposal changed since it was read".into()));
+        }
+        let row = sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1 AND document_id=$2"))
             .bind(id)
             .bind(document_id)
             .fetch_optional(&mut **tx)
             .await?
-            .ok_or(Error::NotFound)
+            .ok_or(Error::NotFound)?;
+        Ok((row, applied))
+    }
+
+    /// Discards an open proposal without importing its branch into the source.
+    /// Any editor may use this to remove an empty or stale proposal.
+    pub async fn discard_proposal(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<(Vec<u8>, Vec<u8>, Vec<Uuid>)>> {
+        let Some((base, tip)) = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+            "SELECT base_frontiers,tip_frontiers FROM document_proposals
+             WHERE id=$1 AND document_id=$2 FOR UPDATE",
+        )
+        .bind(id)
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let comments: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM annotations WHERE proposal_id=$1 AND document_id=$2",
+        )
+        .bind(id)
+        .bind(document_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        let deleted = sqlx::query("DELETE FROM document_proposals WHERE id=$1 AND document_id=$2")
+            .bind(id)
+            .bind(document_id)
+            .execute(&mut **tx)
+            .await?;
+        // A repeated discard, or an id from another document, is a harmless
+        // no-op. The ID alone conveys no capability and the filter never
+        // deletes a row from a different document.
+        let _ = deleted;
+        Ok(Some((base, tip, comments)))
     }
 
     /// Records one hunk decision and says whether it was the last.
@@ -235,6 +304,25 @@ impl PostgresCatalog {
             "{SELECT} WHERE document_id=$1 ORDER BY created_at"
         ))
         .bind(document_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    /// Fetches just the proposals attached to a page of comments in one query.
+    pub async fn proposals_by_ids(
+        &self,
+        document_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<StoredProposal>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as::<_, StoredProposal>(&format!(
+            "{SELECT} WHERE document_id=$1 AND id=ANY($2) ORDER BY created_at"
+        ))
+        .bind(document_id)
+        .bind(ids)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
