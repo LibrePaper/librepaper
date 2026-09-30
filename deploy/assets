@@ -66,7 +66,29 @@ cmd_smoke() {
   make --no-print-directory dist/librepaper
   node tools/latex/tools/check-mirror.test.mjs
   node tools/latex/tools/check-mirror.mjs "$MIRROR"
-  node web/tools/latex-e2e.mjs dist/librepaper browser docs/examples/tutorial-latex/librepaper.tex 120 "$MIRROR"
+
+  # The smoke runs a real deployment, so it needs PostgreSQL, psql and openssl.
+  # Without LIBREPAPER_TEST_POSTGRES_URL it starts a throwaway container and
+  # stops it on exit; missing clients come from nixpkgs.
+  if [ -z "${LIBREPAPER_TEST_POSTGRES_URL:-}" ]; then
+    local container="librepaper-assets-smoke-$$" port i
+    docker run -d --rm --name "$container" -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=librepaper \
+      -p 127.0.0.1::5432 postgres:16-alpine >/dev/null
+    trap "docker stop $container >/dev/null 2>&1 || true" EXIT
+    port=$(docker port "$container" 5432/tcp | head -1 | sed 's/.*://')
+    for i in $(seq 60); do
+      docker exec "$container" pg_isready -q -U postgres -h 127.0.0.1 && break
+      [ "$i" = 60 ] && { printf '%s\n' "smoke: PostgreSQL did not start" >&2; exit 1; }
+      sleep 1
+    done
+    export LIBREPAPER_TEST_POSTGRES_URL="postgres://postgres:smoke@127.0.0.1:$port/librepaper"
+  fi
+  local e2e=(node web/tools/latex-e2e.mjs dist/librepaper browser docs/examples/tutorial-latex/librepaper.tex 120 "$MIRROR")
+  if command -v psql >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
+    "${e2e[@]}"
+  else
+    nix shell nixpkgs#postgresql nixpkgs#openssl -c "${e2e[@]}"
+  fi
 }
 
 # Upload the wasm modules and the prepared LaTeX mirror. Needs AWS_* in the

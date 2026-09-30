@@ -7,15 +7,16 @@
 // reader opens the published read link, so its only document authority is the
 // fragment key. Publishing itself uses a locally minted, signed GitHub test
 // session; no OAuth service is contacted.
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browser, until } from "./browser-driver.mjs";
 import { ephemeralMirror } from "./ephemeral-mirror.mjs";
 import { postgresTestDatabase } from "./postgres-test.mjs";
+import { sessionCookie } from "../tests/helpers/deployment.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BINARY = resolve(process.argv[2] || "target/debug/librepaper");
@@ -36,20 +37,7 @@ let postgres = null;
 const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 const shellHeaders = { "x-librepaper-client": "shell" };
 
-// This is the same session envelope as the OAuth callback writes. The account
-// row is seeded below so the configured provider and session generation are
-// checked by the real binary before it accepts the bundle.
-function signedGithubSession() {
-  const key = Buffer.from(readFileSync(join(data, "secrets", "session.key"), "utf8").trim(), "hex");
-  const generation = "1";
-  const expires = Math.floor(Date.now() / 1000) + 3600;
-  const raw = `github|browser-test|github:browser-test|${generation}||Browser Test|${expires}`;
-  const payload = Buffer.from(raw).toString("base64url");
-  const signature = createHmac("sha256", key).update(`session-v2\0${payload}`).digest("base64url");
-  return { cookie: `librepaper_session=v2.${payload}.${signature}`, generation };
-}
-
-function fixtureTree(directory) {
+function fixtureTree(directory, main) {
   const files = (dir, prefix = "") => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     if (entry.name.startsWith(".") || entry.name === "logs") return [];
     const relative = prefix + entry.name;
@@ -58,7 +46,7 @@ function fixtureTree(directory) {
   });
   const form = new FormData();
   form.set("title", "LaTeX browser smoke");
-  form.set("main", "main.tex");
+  form.set("main", main);
   for (const path of files(directory).sort()) {
     form.append("file", new Blob([readFileSync(join(directory, path))]), path);
   }
@@ -66,11 +54,13 @@ function fixtureTree(directory) {
 }
 
 async function publish(cookie, fixture) {
+  // A directory is published with main.tex as its main file; a .tex file is
+  // published with everything beside it (its \input files, figures and
+  // bibliography), as an author uploading that project would.
   const body = statSync(fixture).isDirectory()
-    ? fixtureTree(fixture)
-    : JSON.stringify({ title: "LaTeX browser smoke", source_format: "latex", source: readFileSync(fixture, "utf8") });
+    ? fixtureTree(fixture, "main.tex")
+    : fixtureTree(dirname(fixture), basename(fixture));
   const headers = { ...shellHeaders, cookie };
-  if (typeof body === "string") headers["content-type"] = "application/json";
   const response = await fetch(`${BASE}/api/documents`, { method: "POST", headers, body });
   const value = await response.json();
   if (!response.ok || typeof value.share_url !== "string") throw new Error(`publish failed (${response.status}): ${JSON.stringify(value)}`);
@@ -108,9 +98,11 @@ async function main() {
     return (await fetch(`${BASE}/api/config`)).ok;
   }, 30000);
   console.log("origin baseline " + JSON.stringify(await (await fetch(`${BASE}/api/status`)).json()));
-  const session = signedGithubSession();
-  postgres.seedRegisteredAccount({ provider: "github", subject: "browser-test", handle: "browser-test", displayName: "Browser Test" });
-  const published = await publish(session.cookie, fixture);
+  // A real sign-in: the account row is seeded first, and the cookie names it by
+  // id, so the binary checks provider, account and session generation.
+  const accountId = postgres.seedRegisteredAccount({ provider: "github", subject: "github:browser-test", handle: "browser-test", displayName: "Browser Test" });
+  const cookie = sessionCookie({ dataDirectory: data, accountId, handle: "browser-test", name: "Browser Test" });
+  const published = await publish(cookie, fixture);
   console.log(`published ${published.slug}; reader key only; mirror ${mirrorUrl}`);
 
   const targetUrl = published.url;
@@ -169,54 +161,36 @@ async function main() {
       await tab.navigate(BASE);
       await tab.evaluate(`localStorage.setItem("librepaper-local-pairings", JSON.stringify({ [location.origin + "|" + ${JSON.stringify(published.slug)}]: ${JSON.stringify(localPairing)} }))`);
     }
+    // A wait that, when it runs out, says what the reader was showing and
+    // which mirror files it fetched, rather than only that time ran out.
+    let seen = "";
+    const explained = (label, check) => until(label, check, WAIT * 1000).catch(async (error) => {
+      const page = await tab.evaluate("document.body.innerText").catch(() => "");
+      const fetched = await tab.evaluate(`performance.getEntriesByType("resource")
+        .filter((entry) => /latex|wasm/.test(entry.name))
+        .map((entry) => entry.responseStatus + " " + entry.name.replace(/^https?:\\/\\/[^/]+/, ""))
+        .join("\\n")`).catch(() => "");
+      const squash = (value) => String(value).replace(/\s+/g, " ").slice(0, 600);
+      throw new Error(`${error.message}; document: ${squash(seen)}; reader page: ${squash(page)}\nmirror requests:\n${fetched}`);
+    });
+
+    // LaTeX opens as the LaTeXML HTML preview.
     await tab.navigate(targetUrl);
     const started = Date.now();
-    await until("reader source compile", async () => {
-      const text = await tab.text().catch(() => "");
+    await explained("reader HTML preview", async () => {
+      const text = seen = await tab.text().catch(() => "");
       return /Knuth|LaTeX|browser|paragraph/i.test(text) && !/not yet rendered|rendering from source/i.test(text);
-    }, WAIT * 1000);
-    const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-    const frame = await until("PDF frame", async () => {
-      const url = await tab.evaluate("document.querySelector('iframe[title=Document]')?.src || ''");
-      return /\/pdf\//.test(url);
-    }, 30000).then(() => tab.evaluate("document.querySelector('iframe[title=Document]').src"));
-    const drawn = await until("PDF pages and text layer", async () => {
-      const value = await tab.frameEvaluate("({pages:document.querySelectorAll('.page canvas').length, text:document.querySelector('.textLayer')?.textContent || ''})").catch(() => null);
-      return value?.pages > 0 && value.text.trim().length > 0;
-    }, 30000).then(() => tab.frameEvaluate("({pages:document.querySelectorAll('.page canvas').length, text:document.querySelector('.textLayer')?.textContent || ''})"));
-    if (fixture.endsWith("/biber") || fixture.endsWith("\\biber")) {
-      if (!/Knuth/i.test(drawn.text)) throw new Error("Biber fixture rendered without its resolved Knuth citation");
-    }
-    console.log(`reader PDF drawn in ${elapsed}s: frame=${frame}, pages=${drawn.pages}`);
+    });
+    console.log(`reader HTML preview drawn in ${((Date.now() - started) / 1000).toFixed(1)}s`);
 
-    // Capture the download Blob created by the File -> Download PDF command.
-    // This proves the active tab still owns the transient bytes and exports
-    // them locally; it never asks the origin for a generated object.
-    await tab.evaluate(`(() => {
-      const original = URL.createObjectURL;
-      window.__librepaperExport = null;
-      URL.createObjectURL = (blob) => {
-        if (blob?.type === 'application/pdf') blob.arrayBuffer().then(buffer => {
-          const bytes = new Uint8Array(buffer);
-          window.__librepaperExport = { type: blob.type, size: bytes.length, header: String.fromCharCode(...bytes.slice(0, 5)) };
-        });
-        return original(blob);
-      };
-    })()`);
-    await tab.evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'File')?.click()");
-    await until("PDF export menu", () => tab.evaluate("Array.from(document.querySelectorAll('[role=menuitem]')).some(e => e.textContent.trim() === 'Download PDF')"), 10000);
-    await tab.evaluate(`(() => {
-      const item = Array.from(document.querySelectorAll('[role=menuitem]')).find(e => e.textContent.trim() === 'Download PDF' && e.getClientRects().length);
-      if (!item || item.getAttribute('aria-disabled') === 'true') throw new Error('PDF download is unavailable after rendering');
-      item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse', button: 0 }));
-      item.click();
-    })()`);
-    const exported = await until("transient PDF export", async () => tab.evaluate("window.__librepaperExport"), 10000).then(() => tab.evaluate("window.__librepaperExport"));
-    if (exported?.header !== "%PDF-" || !exported.size) throw new Error(`PDF export was not a real transient PDF: ${JSON.stringify(exported)}`);
-    console.log(`transient PDF export ${exported.size} bytes verified`);
+    // A reader is shown LaTeX as HTML; choosing pages is an editor's View menu.
+    if ((fixture.endsWith("/biber") || fixture.endsWith("\\biber")) && !/Knuth/i.test(seen)) {
+      throw new Error("Biber fixture rendered without its resolved Knuth citation");
+    }
 
     const resources = await tab.evaluate("performance.getEntriesByType('resource').map(e => e.name)");
-    if (resources.some((url) => new URL(url).pathname.startsWith("/latex/"))) throw new Error("reader fetched compiler bytes through the origin /latex route");
+    const origin = new URL(BASE).origin;
+    if (resources.some((url) => new URL(url).origin === origin && new URL(url).pathname.startsWith("/latex/"))) throw new Error("reader fetched compiler bytes through the origin /latex route");
     if (!resources.some((url) => url.startsWith(mirrorUrl))) throw new Error(`reader did not fetch compiler assets directly from ${mirrorUrl}`);
     console.log("cold reader used direct HTTPS mirror and no origin /latex route");
 
