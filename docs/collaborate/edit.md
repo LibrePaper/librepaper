@@ -2,7 +2,7 @@
 title: "Edit in the browser"
 ---
 
-Edit markdown, typst, HTML, and LaTeX documents with source, rendering, and comments visible side-by-side. Either pane folds away.
+Edit Markdown, Quarto, Typst, HTML and LaTeX documents with source, rendering, and comments visible side-by-side. Either pane folds away.
 
 ## Files
 
@@ -15,6 +15,11 @@ The **Files** sidebar shows a folder tree.
 - Drag files to move them; drop on empty space to move to the top level.
 - Upload name collisions offer Keep both or Skip.
 - Empty folders survive browser reloads and appear in ZIP downloads.
+- Right-click or use **⋯** to rename, move, download, delete, or duplicate items.
+- Use Ctrl/Cmd-click or Shift-click to select multiple items.
+- Press F2 to rename; Delete asks for confirmation before deleting.
+- Moves preserve collaborative text editing; references in source files are not rewritten.
+- A folder containing the main file cannot be deleted until another file becomes main.
 
 ## Outline
 
@@ -23,11 +28,6 @@ The **Outline** sidebar lists headings in the open file, indented by level.
 - Click a heading to jump to that section in the editor.
 - The outline updates as you and your collaborators edit.
 - Supports Markdown, Quarto, Typst, HTML, and LaTeX.
-- Right-click or use **⋯** to rename, move, download, delete, or duplicate items.
-- Use Ctrl/Cmd-click or Shift-click to select multiple items.
-- Press F2 to rename and Delete to confirm deletion.
-- Moves preserve collaborative text editing; references in source files are not rewritten.
-- A folder containing the main file cannot be deleted until another file becomes main.
 
 ## Saving and co-editing
 
