@@ -66,7 +66,7 @@ assert.deepEqual(
     },
   });
   vm.runInContext(liveTreeNow, roContext);
-  const result = vm.runInContext("liveTreeNow()", roContext);
+  const result = JSON.parse(JSON.stringify(vm.runInContext("liveTreeNow()", roContext)));
   assert.deepEqual(
     result,
     {
