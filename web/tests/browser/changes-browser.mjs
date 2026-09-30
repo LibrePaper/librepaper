@@ -321,8 +321,9 @@ try {
   await page.evaluate('window.key("j")');await page.evaluate('window.key("j")');
   await until("at the last card", async () => (await page.evaluate("window.rows()")).some((row) => row.id === "run#1" && row.active), 4000);
   await page.evaluate('window.key("r")');
-  await until("rejected by key", async () => (await page.evaluate("window.decided")).length > 0, 4000);
-  assert.deepEqual(await page.evaluate("window.decided"), [["run", 1, "reject"]]);
+  await until("rejected by key", async () => (await page.evaluate("window.decided")).length === 2, 4000);
+  assert.deepEqual(await page.evaluate("window.decided"), [["moved", 0, "reject"], ["run", 1, "reject"]],
+    "the stale hunk can be rejected and the next hunk is then independently rejected");
 
   // A suggestion is a proposal with a remark on it (§1.2), and is decided
   // through the same queue rather than a mechanism of its own.
