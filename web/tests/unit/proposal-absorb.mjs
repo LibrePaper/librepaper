@@ -541,11 +541,6 @@ import { createProposals } from "../../src/lib/proposals.js";
   const update = sent.at(-1);
   proposals.apply({ type: "proposal-updated", proposal_id: id,
     request_id: update.request_id, tip: update.tip, applied_version: 2 });
-  // Delete and retype the final character so the visible text is unchanged,
-  // but the local CRDT operation is still beyond the published tip.
-  bib.delete(10, 1);
-  bib.insert(10, "}");
-
   const decode = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
   const { decodeFrontiers } = await import("loro-crdt");
   const hunks = proposals.hunksOf({
@@ -569,6 +564,11 @@ import { createProposals } from "../../src/lib/proposals.js";
   resolved.destroy();
   await new Promise((resolve) => setTimeout(resolve, 0));
 
+  // The file is already absent from FILES. The editor still holds the text
+  // container, and its same-text delete/retype must be noticed by identity.
+  bib.delete(10, 1);
+  bib.insert(10, "}");
+
   proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
     decisions: [
       { hunk: mainHunk.index, accepted: true },
@@ -578,12 +578,13 @@ import { createProposals } from "../../src/lib/proposals.js";
     resolved_base: open.base,
   });
   assert.equal(proposals.status().recoveryRequired, true, "the mixed file deletion requires manual recovery");
+  bib.insert(11, "Y");
   proposals.stop();
   proposals.start();
   const recovery = proposals.recoveryTexts().find((draft) => draft.id === id);
   assert.ok(recovery, "the unresolved draft remains exportable after Editor restart");
-  assert.ok(recovery.files.some((file) => file.path === "references.bib" && file.text === "@article{a}"),
-    "the recovery export preserves identity-only edits even when visible text is unchanged");
+  assert.ok(recovery.files.some((file) => file.path === "references.bib" && file.text === "@article{a}Y"),
+    "the recovery export preserves identity-only edits and later typing through the held container");
 }
 // A final rejection received before hydration must remain pending. Once the
 // coauthor's overlapping replacement arrives, re-evaluate against that source
