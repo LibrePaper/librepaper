@@ -23,14 +23,24 @@ tools/pins update wasm wasm-markdown vX.Y.Z  # move a module pin
 
 ## Updating the LaTeX engines
 
+In `../wasm-latex`:
+
 ```sh
-cd ../wasm-latex                   # README: make rebuild, make release, make mirror
-cd ../librepaper
-deploy/assets check                # validate ../wasm-latex/mirror
-deploy/assets smoke                # compile the tutorial in Chromium against it
+make rebuild                               # build engines and data (~2 h)
+git add receipts/ && git commit -m "Record receipts"
+make release TAG=engines-YYYY.MM.DD        # new tag every time
+make mirror                                # prints the release hash
+```
+
+Then here:
+
+```sh
+# edit assets.lock: latex row -> engines-YYYY.MM.DD <hash>
+deploy/assets check                        # validate ../wasm-latex/mirror
+deploy/assets smoke                        # compile the tutorial in Chromium
 deploy/assets publish --test
-deploy/assets publish
-# then: assets.lock latex row -> new tag and hash
+deploy/assets publish                      # upload before committing the pin
+git commit assets.lock -m "Pin engines-YYYY.MM.DD"
 ```
 
 ## Publishing
