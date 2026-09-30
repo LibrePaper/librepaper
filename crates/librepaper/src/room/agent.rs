@@ -430,7 +430,12 @@ fn apply_patch_edits(
         by_path.entry(&patch.path).or_default().push(patch);
     }
     for (path, mut patches) in by_path {
-        patches.sort_by_key(|patch| std::cmp::Reverse(patch.start));
+        // `apply_edits_at` validates ascending, non-overlapping edits before
+        // applying them in reverse. At a shared boundary, sorting by end
+        // places an insertion before the replacement that starts there; the
+        // reverse application then leaves the inserted text before the
+        // replacement's output.
+        patches.sort_by_key(|patch| (patch.start, patch.end));
         let original = tree
             .files
             .get(path)
@@ -447,7 +452,9 @@ fn apply_patch_edits(
         // per-file diff against the document's vector before and after, and
         // this caller throws it away. `Head::prepare` exports the command's
         // whole diff once, which is the batch that actually gets written.
-        session::apply_edits_at(doc, path, &edits);
+        if !session::apply_edits_at(doc, path, &edits) {
+            return Err(format!("patch edits could not be applied to file: {path}"));
+        }
     }
     Ok(())
 }
@@ -758,6 +765,44 @@ mod tests {
         }
     }
 
+    fn tree_with_files<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> SourceTree<'a> {
+        SourceTree {
+            main: "paper.md".into(),
+            files: files
+                .into_iter()
+                .map(|(path, text)| {
+                    (
+                        path.to_string(),
+                        SourceFile {
+                            file_id: "file-1",
+                            text,
+                        },
+                    )
+                })
+                .collect(),
+            revision: "fixed-test-revision".into(),
+        }
+    }
+
+    fn doc_with_files(tree: &SourceTree<'_>) -> LoroDoc {
+        let doc = session::new_doc();
+        for (path, file) in &tree.files {
+            session::put_text(&doc, path, file.text);
+        }
+        doc
+    }
+
+    fn patch(path: &str, text: &str, start: usize, end: usize, replacement: &str) -> Patch {
+        Patch {
+            path: path.into(),
+            file_id: "file-1".into(),
+            start,
+            end,
+            exact: text[start..end].into(),
+            replacement: replacement.into(),
+        }
+    }
+
     #[test]
     fn rejects_stale_exact_text_and_overlapping_ranges() {
         let base = tree("abcdef");
@@ -801,6 +846,77 @@ mod tests {
             validate_patches(&base, &overlapping),
             Err(AgentError::Conflict(_))
         ));
+    }
+
+    #[test]
+    fn applies_ascending_multi_patches_across_multiple_files() {
+        let tree = tree_with_files([("paper.md", "one two three"), ("notes.md", "red blue")]);
+        let request = request(
+            &tree,
+            vec![
+                patch("paper.md", "one two three", 0, 3, "ONE"),
+                patch("paper.md", "one two three", 4, 7, "TWO"),
+                patch("notes.md", "red blue", 4, 8, "green"),
+            ],
+        );
+        let doc = doc_with_files(&tree);
+
+        apply_patch_edits(&doc, &tree, &request).expect("all patches fit their files");
+
+        assert_eq!(session::texts_of(&doc)["paper.md"], "ONE TWO three");
+        assert_eq!(session::texts_of(&doc)["notes.md"], "red green");
+    }
+
+    #[test]
+    fn insertion_at_replacement_start_is_applied_before_replacement_output() {
+        let tree = tree("abcdef");
+        let request = request(
+            &tree,
+            vec![
+                patch("paper.md", "abcdef", 1, 3, "X"),
+                patch("paper.md", "abcdef", 1, 1, "!"),
+            ],
+        );
+        assert!(validate_patches(&tree, &request).is_ok());
+        let doc = doc_with_files(&tree);
+
+        apply_patch_edits(&doc, &tree, &request).expect("boundary insertion and replacement fit");
+
+        assert_eq!(session::texts_of(&doc)["paper.md"], "a!Xdef");
+    }
+
+    #[test]
+    fn byte_ranges_after_astral_text_convert_to_utf16_edits() {
+        let source = "😀 cat λ dog";
+        let start = source.find("cat").expect("test source contains cat");
+        let end = start + "cat".len();
+        let tree = tree(source);
+        let request = request(&tree, vec![patch("paper.md", source, start, end, "fox")]);
+        let doc = doc_with_files(&tree);
+
+        apply_patch_edits(&doc, &tree, &request).expect("UTF-8 byte range converts to UTF-16");
+
+        assert_eq!(session::texts_of(&doc)["paper.md"], "😀 fox λ dog");
+    }
+
+    #[test]
+    fn failed_file_application_is_returned_to_the_isolated_preparation_fork() {
+        let tree = tree_with_files([("a.md", "before"), ("z.md", "also before")]);
+        let request = request(
+            &tree,
+            vec![
+                patch("a.md", "before", 0, 6, "after"),
+                patch("z.md", "also before", 0, 11, "skipped"),
+            ],
+        );
+        let doc = session::new_doc();
+        session::put_text(&doc, "a.md", "before");
+        let staged = doc.fork();
+
+        let error = apply_patch_edits(&staged, &tree, &request).unwrap_err();
+
+        assert!(error.contains("z.md"));
+        assert_eq!(session::texts_of(&doc)["a.md"], "before");
     }
 
     #[test]

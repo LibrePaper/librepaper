@@ -4,6 +4,21 @@ use super::*;
 use crate::room::{self, OriginalAnchor};
 use serde::Deserialize;
 
+fn assistant_capabilities(role: Role) -> Value {
+    let can_comment = role.at_least(Role::Commenter);
+    let can_edit = role.at_least(Role::Editor);
+    json!({
+        "can_read": true,
+        "can_comment": can_comment,
+        "can_edit": can_edit,
+        "can_delete": can_comment,
+        "can_resolve": can_comment,
+        "can_label": can_edit,
+        "can_suggest": can_comment,
+        "can_reply": can_comment,
+    })
+}
+
 #[derive(Deserialize)]
 pub(super) struct BatchRequest {
     /// The `tree_digest` the caller read the document at -- the projection
@@ -255,21 +270,27 @@ impl Server {
         if let Err(response) = self.check_readable(&entry, &who) {
             return response;
         }
-        let can_read = true;
-        let can_comment = who.at_least(Role::Commenter);
-        let can_edit = who.at_least(Role::Editor);
-        write_json(
-            200,
-            &json!({
-                "can_read": can_read,
-                "can_comment": can_comment,
-                "can_edit": can_edit,
-                "can_delete": can_comment,
-                "can_resolve": can_comment,
-                "can_label": can_edit,
-                "can_suggest": can_edit,
-                "can_reply": can_comment,
-            }),
-        )
+        write_json(200, &assistant_capabilities(who.role))
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[test]
+    fn suggest_matches_commenter_permission_while_apply_level_actions_stay_editor_only() {
+        for (role, can_suggest, can_edit) in [
+            (Role::Reader, false, false),
+            (Role::Commenter, true, false),
+            (Role::Editor, true, true),
+            (Role::Owner, true, true),
+        ] {
+            let capabilities = assistant_capabilities(role);
+            assert_eq!(capabilities["can_suggest"], can_suggest, "{role:?}");
+            assert_eq!(capabilities["can_edit"], can_edit, "{role:?}");
+            assert_eq!(capabilities["can_label"], can_edit, "{role:?}");
+            assert_eq!(capabilities["can_comment"], can_suggest, "{role:?}");
+        }
     }
 }
