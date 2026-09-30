@@ -31,8 +31,6 @@ To let people sign in, set up a [GitHub app](#oauth) for this server's address.
 
 If a separate marketing site stands in front of the deployment, name it with `--site-origin https://paper.example` (or `LIBREPAPER_SITE_ORIGIN`). Signing out goes there, because somebody who has just signed out is a stranger again and the site is what a stranger is shown. It must be an origin on its own: a scheme and a host, no path, and HTTPS unless it is loopback. Without the flag, signing out goes to the deployment's own front page, which is what a deployment that is its own front page wants.
 
-Run the server behind a reverse proxy that terminates HTTPS, and have the proxy send the `X-Forwarded-Proto: https` header. That header is how the server knows its own address is an HTTPS one: without it the session cookie is not marked `Secure`, and uploads and comments are refused because the browser's idea of where the page came from does not match the server's. Plain HTTP is fine on `localhost` and nowhere else.
-
 ### Production deployment
 
 Production requires different reader and document hostnames; different ports are insufficient. DNS and HTTPS certificates must cover both. The default document host is `docs.` plus the reader host; use `--docs-origin` for another host. Unrecognized `Host` values receive 421. Without `--origin`, the server serves loopback only.
@@ -90,7 +88,7 @@ secrets that keep sessions and share links valid. Back it up if the instance
 holds real work; `librepaper admin backup` writes a verified recovery point of
 all of it, and `librepaper admin restore` restores one into a fresh
 directory.
-See the [operator cost policy](./dev/cost-policy.md) for the complete defaults,
+See the [operator cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md) for the complete defaults,
 advanced YAML schema, the loopback `/api/status` endpoint, capacity accounting, and backup
 reservations.
 
@@ -189,7 +187,7 @@ rewritten, so a binary keeps working against the assets it pinned.
 
 To serve them yourself, host the tree for your binary's pins and pass
 `--asset-mirror https://host/`. It must serve those exact paths over HTTPS with
-CORS for GET and HEAD. See [asset mirrors](./dev/asset-mirrors.md).
+CORS for GET and HEAD. See [asset mirrors](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md).
 
 ## Rights
 
@@ -339,11 +337,11 @@ LIBREPAPER_DATABASE_URL=postgresql:///librepaper_restore \
   /var/lib/librepaper-restored
 ```
 
-Restore to an empty database and a path that does not exist. See [cost and storage policy](./dev/cost-policy.md) for physical storage and backup sizing.
+Restore to an empty database and a path that does not exist. See [cost and storage policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md) for physical storage and backup sizing.
 
 ## Resource limits
 
-See the [cost policy](./dev/cost-policy.md#defaults) for defaults and settings. Pass advanced configuration with `--config`; inspect operating usage at `/api/status` over loopback. Quota refusals leave edits unsaved for retry. Memory reservation failure returns `busy`; decode failure or a completed build exceeding 10 seconds marks the document unreadable. The time check does not interrupt work. Recovery requires fixing the cause and resetting or re-admitting the document, for example after restarting the process. Trimming history may itself fail when a document is unreadable.
+See the [cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md#defaults) for defaults and settings. Pass advanced configuration with `--config`; inspect operating usage at `/api/status` over loopback. Quota refusals leave edits unsaved for retry. Memory reservation failure returns `busy`; decode failure or a completed build exceeding 10 seconds marks the document unreadable. The time check does not interrupt work. Recovery requires fixing the cause and resetting or re-admitting the document, for example after restarting the process. Trimming history may itself fail when a document is unreadable.
 
 ## Containers
 
