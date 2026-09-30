@@ -110,6 +110,7 @@ async function suggest(socket, slug, exact, proposed) {
   const comment = made.comment;
   assert.ok(comment.id, "the suggestion has an id");
   assert.ok(comment.proposal, "the suggestion is backed by a proposal");
+  assert.equal(comment.proposed, proposed, "the created suggestion returns its replacement text");
   assert.equal(count("annotations", "id", comment.id), 1);
   assert.equal(count("document_proposals", "id", comment.proposal), 1);
   return comment;
@@ -192,7 +193,7 @@ async function installLegacyTwoHunkBranch(socket, proposal, prior) {
   const branch = atBase.fork();
   branch.setPeerId(BigInt(Date.now()) + 1_000_000n);
   const paths = branch.getMap("paths");
-  const fileId = [...paths.entries()].find(([, path]) => path === "paper.md")?.[0];
+  const fileId = [...paths.entries()].find(([, path]) => path === "main.md")?.[0];
   assert.ok(fileId, "the document state includes its main text file");
   const text = branch.getMap("files").get(fileId);
   const original = text.toString();

@@ -33,7 +33,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
-use loro::cursor::Side;
 use loro::{Frontiers, LoroDoc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -531,9 +530,10 @@ fn annotation_row_to_comment(
 }
 
 /// Recovers the replacement passage of a saved suggestion from its branch.
-/// The comment anchor is immutable; cursors made at that anchor's UTF-16
-/// range follow the range through the branch's delete/insert operations and
-/// let the page read the replacement without persisting a second copy of it.
+/// The proposal keeps the source snapshot it was made against. Use the
+/// immutable UTF-16 range in that snapshot, then read the single splice
+/// between its unchanged surroundings. This also works when the replacement
+/// is empty.
 pub(crate) fn proposed_from_branch(
     doc: &LoroDoc,
     comment: &Comment,
@@ -549,25 +549,37 @@ pub(crate) fn proposed_from_branch(
     let base_path = path_for_file_id(&at_base, &target.file_id)?;
     let mut base_texts = session::texts_of(&at_base);
     let base_text = base_texts.remove(&base_path)?;
-    if replace_utf16_span(&base_text, target.start_utf16 as usize, &target.exact, "").is_none() {
-        return None;
-    }
-    let start =
-        session::cursor_at_file_id(&at_base, &target.file_id.0, target.start_utf16, Side::Left)?;
-    let end =
-        session::cursor_at_file_id(&at_base, &target.file_id.0, target.end_utf16, Side::Right)?;
-    let range =
-        session::offsets_of_cursors_in_file(&at_tip, &target.file_id.0, &start, &end).ok()?;
-    if range.start_utf16 > range.end_utf16 {
-        return None;
-    }
     let tip_path = path_for_file_id(&at_tip, &target.file_id)?;
     let mut tip_texts = session::texts_of(&at_tip);
     let tip_text = tip_texts.remove(&tip_path)?;
-    let units: Vec<u16> = tip_text.encode_utf16().collect();
-    let start = range.start_utf16 as usize;
-    let end = range.end_utf16 as usize;
-    (end <= units.len()).then(|| String::from_utf16_lossy(&units[start..end]))
+    replacement_at_source_span(
+        &base_text,
+        &tip_text,
+        target.start_utf16 as usize,
+        &target.exact,
+    )
+}
+
+/// Reads the inserted part of a suggestion's one source splice. The immutable
+/// offset is valid in this branch's original base; both surrounding slices
+/// must still match, so an unrelated or malformed branch is not displayed as
+/// the replacement.
+fn replacement_at_source_span(base: &str, tip: &str, start: usize, exact: &str) -> Option<String> {
+    let base: Vec<u16> = base.encode_utf16().collect();
+    let tip: Vec<u16> = tip.encode_utf16().collect();
+    let exact: Vec<u16> = exact.encode_utf16().collect();
+    let end = start.checked_add(exact.len())?;
+    if base.get(start..end)? != exact.as_slice() {
+        return None;
+    }
+    let before = base.get(..start)?;
+    let after = base.get(end..)?;
+    if !tip.starts_with(before) || !tip.ends_with(after) || tip.len() < before.len() + after.len() {
+        return None;
+    }
+    Some(String::from_utf16_lossy(
+        &tip[before.len()..tip.len() - after.len()],
+    ))
 }
 
 fn reply_row_to_reply(row: ReplyRecord) -> Reply {
