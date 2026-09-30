@@ -51,21 +51,24 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
     let catalog = PostgresCatalog::connect(PostgresOptions::new(&options.database_url))
         .await
         .map_err(|e| e.to_string())?;
-    let mut connection = catalog.pool().acquire().await.map_err(|e| e.to_string())?;
+    // This is session-scoped and acquired before the exported snapshot. Every
+    // destructive blob path takes the matching shared lock, so object bytes
+    // named by this snapshot remain available through the final copy.
+    let mut lifecycle_lock = super::maintenance::BlobLifecycleLock::backup(&catalog).await?;
     // Transaction control cannot be prepared, so this one stays a runtime
     // statement: the checked macros would fail to PREPARE it.
     sqlx::query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *connection)
+        .execute(lifecycle_lock.connection_mut())
         .await
         .map_err(|e| e.to_string())?;
     let snapshot = sqlx::query_scalar!(r#"SELECT pg_export_snapshot() AS "snapshot!""#)
-        .fetch_one(&mut *connection)
+        .fetch_one(lifecycle_lock.connection_mut())
         .await
         .map_err(|e| e.to_string())?;
     let migration_version = sqlx::query_scalar!(
         r#"SELECT COALESCE(max(version),0) AS "version!" FROM _sqlx_migrations WHERE success"#
     )
-    .fetch_one(&mut *connection)
+    .fetch_one(lifecycle_lock.connection_mut())
     .await
     .map_err(|e| e.to_string())?;
     // §8.5: the backup set is PostgreSQL plus the blobs these tables name --
@@ -91,7 +94,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
            UNION ALL SELECT archive_key,COALESCE(archive_bytes,0),'' FROM document_labels
              WHERE archive_key IS NOT NULL"#
     )
-    .fetch_all(&mut *connection)
+    .fetch_all(lifecycle_lock.connection_mut())
     .await
     .map_err(|e| e.to_string())?;
     let mut by_key: std::collections::BTreeMap<String, Reference> =
@@ -127,7 +130,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
     }
     // As with BEGIN above, COMMIT cannot be prepared.
     sqlx::query("COMMIT")
-        .execute(&mut *connection)
+        .execute(lifecycle_lock.connection_mut())
         .await
         .map_err(|e| e.to_string())?;
     let blobs = super::open_storage(options).await?;
@@ -149,6 +152,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         }
         write_private_file(&target, &body)?;
     }
+    lifecycle_lock.release_backup().await?;
     let dump_bytes = std::fs::read(&dump).map_err(|e| e.to_string())?;
     let manifest = Manifest {
         format: "librepaper-postgres-backup-v1".into(),

@@ -3,9 +3,139 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 use time::Duration;
+use sqlx::pool::PoolConnection;
+use sqlx::{Connection, PgConnection, Postgres};
 
 use super::blob::BlobStore;
 use super::postgres::PostgresCatalog;
+
+/// Session advisory lock shared by backup readers and destructive blob cleanup.
+/// Backups hold it exclusively; cleanup holds it shared from its reference
+/// scan through the blob deletion and the corresponding catalogue update.
+const BLOB_LIFECYCLE_LOCK: i64 = 0x4c_50_42_4c_4f_42_31; // "LPBLOB1"
+
+/// A session lock must never escape back into the pool. In particular, a
+/// cancelled advisory-lock query may have acquired the server-side lock even
+/// though its result never reached this process. We therefore mark the
+/// connection unsafe before awaiting either acquisition or release and only
+/// return it to the pool after a confirmed unlock (or a confirmed failed
+/// try-lock).
+pub(crate) struct BlobLifecycleLock {
+    connection: Option<PoolConnection<Postgres>>,
+    reusable: bool,
+}
+
+impl BlobLifecycleLock {
+    /// Acquire the backup's exclusive lock on a checked-out pooled session.
+    /// The session, rather than its transaction, owns this lock so it remains
+    /// held after the snapshot transaction commits and while blob bytes copy.
+    pub(crate) async fn backup(catalog: &PostgresCatalog) -> Result<Self, String> {
+        let connection = catalog
+            .pool()
+            .acquire()
+            .await
+            .map_err(|error| format!("could not acquire backup lock connection: {error}"))?;
+        let mut guard = Self {
+            connection: Some(connection),
+            reusable: false,
+        };
+        // Do not make `guard` reusable until the query has returned. If this
+        // future is cancelled after PostgreSQL grants the lock but before the
+        // response arrives, Drop closes the session and PostgreSQL releases it.
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(BLOB_LIFECYCLE_LOCK)
+            .execute(guard.connection_mut())
+            .await
+            .map_err(|error| format!("could not acquire backup lock: {error}"))?;
+        Ok(guard)
+    }
+
+    /// Try to enter a destructive object operation. `None` means a backup is
+    /// active; callers must defer and retry rather than delete without the
+    /// barrier.
+    pub(crate) async fn try_delete(
+        catalog: &PostgresCatalog,
+    ) -> Result<Option<Self>, String> {
+        let connection = catalog
+            .pool()
+            .acquire()
+            .await
+            .map_err(|error| format!("could not acquire cleanup lock connection: {error}"))?;
+        let mut guard = Self {
+            connection: Some(connection),
+            reusable: false,
+        };
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock_shared($1)")
+            .bind(BLOB_LIFECYCLE_LOCK)
+            .fetch_one(guard.connection_mut())
+            .await
+            .map_err(|error| format!("could not acquire cleanup lock: {error}"))?;
+        if acquired {
+            Ok(Some(guard))
+        } else {
+            // PostgreSQL confirmed this session did not get a lock.
+            guard.reusable = true;
+            Ok(None)
+        }
+    }
+
+    /// Access the guarded session for backup snapshot SQL.
+    pub(crate) fn connection_mut(&mut self) -> &mut PgConnection {
+        &mut **self
+            .connection
+            .as_mut()
+            .expect("blob lifecycle lock owns its connection")
+    }
+
+    /// Release after all external object and catalogue work has completed.
+    /// If the query errors or this future is cancelled, Drop closes the
+    /// session instead of returning a possibly locked connection to the pool.
+    pub(crate) async fn release(mut self) -> Result<(), String> {
+        let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock_shared($1)")
+            .bind(BLOB_LIFECYCLE_LOCK)
+            .fetch_one(self.connection_mut())
+            .await
+            .map_err(|error| format!("could not release cleanup lock: {error}"))?;
+        if !released {
+            return Err("cleanup lock was not held by its PostgreSQL session".into());
+        }
+        self.reusable = true;
+        Ok(())
+    }
+
+    /// Release the exclusive variant held by a backup.
+    pub(crate) async fn release_backup(mut self) -> Result<(), String> {
+        let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+            .bind(BLOB_LIFECYCLE_LOCK)
+            .fetch_one(self.connection_mut())
+            .await
+            .map_err(|error| format!("could not release backup lock: {error}"))?;
+        if !released {
+            return Err("backup lock was not held by its PostgreSQL session".into());
+        }
+        self.reusable = true;
+        Ok(())
+    }
+}
+
+impl Drop for BlobLifecycleLock {
+    fn drop(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            if self.reusable {
+                drop(connection);
+            } else {
+                // Dropping a detached connection closes its PostgreSQL
+                // session, which releases any session advisory lock even if
+                // the task was cancelled or explicit unlock failed.
+                drop(connection.detach());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "blob_lifecycle_tests.rs"]
+mod blob_lifecycle_tests;
 
 /// How long a deleted document stays in the trash before it is purged.
 /// Derived state, not a queue row: `documents.deleted_at` plus this is when
@@ -26,6 +156,9 @@ impl Maintenance {
         if !(1..=500).contains(&batch) {
             return Err("base cleanup batch must be 1..=500".into());
         }
+        let Some(lock) = BlobLifecycleLock::try_delete(self.catalog.as_ref()).await? else {
+            return Err("backup is copying referenced objects; retry superseded-base cleanup".into());
+        };
         let keys = sqlx::query_scalar!(
             "SELECT snapshot_key FROM document_snapshots WHERE delete_after<=now()
              ORDER BY delete_after LIMIT $1",
@@ -55,6 +188,7 @@ impl Maintenance {
             }
         }
         if failures.is_empty() {
+            lock.release().await?;
             Ok(removed)
         } else {
             Err(format!(
@@ -69,6 +203,9 @@ impl Maintenance {
         if !(1..=1000).contains(&batch) || grace < Duration::days(7) {
             return Err("orphan cleanup bounds are invalid".into());
         }
+        let Some(lock) = BlobLifecycleLock::try_delete(self.catalog.as_ref()).await? else {
+            return Err("backup is copying referenced objects; retry orphan cleanup".into());
+        };
         // Recovery receipts have the operation epoch's lifetime. Sweep a
         // bounded page even when the document never receives another write.
         sqlx::query("DELETE FROM operation_outcomes WHERE (document_id,actor,request_id) IN (SELECT document_id,actor,request_id FROM operation_outcomes WHERE expires_at <= extract(epoch FROM now())::bigint ORDER BY expires_at LIMIT $1)")
@@ -141,6 +278,7 @@ impl Maintenance {
                 .await
                 .map_err(|error| error.to_string())?;
         }
+        lock.release().await?;
         Ok(removed)
     }
 }
