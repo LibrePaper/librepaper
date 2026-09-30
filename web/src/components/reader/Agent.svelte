@@ -21,6 +21,7 @@
     slug, link, canShare = false, path = "", selection = null, revision = "", request = null,
     diagnostics = [], oncommenttask, ondiagnostictask,
     comments = [], suggestion: initialSuggestion = null, onreview, onpreview, onsettings,
+    userName = "You",
   } = $props();
   let client = $state.raw(null);
   const EMPTY_CONNECTION = { id: "", token: "", messages: [], tasks: {}, connected: false,
@@ -621,7 +622,8 @@
   {/each}
   <ChatTranscript messages={connection.messages}
                   empty={connection.runnerConnected ? "No messages yet." : "Send a message to start the agent."}
-                  authors={false} quiet onresult={chooseResult} after={transcriptEnd} />
+                  authors={false} quiet onresult={chooseResult} after={transcriptEnd}
+                  roleLabel={(message) => message.role === "user" ? userName : (message.creator || message.role)} />
 
   <!-- The draft carries its own context, so the chat pane states it in one
        line and sends the user back to the task view to change it. -->

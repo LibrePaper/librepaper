@@ -3685,7 +3685,7 @@
       revision={pending?.revision || ""} request={assistantRequest}
       {comments} {diagnostics} oncommenttask={askCommentAssistant}
       ondiagnostictask={askDiagnostic} onreview={reviewAssistantResults} onpreview={previewAssistant}
-      onsettings={() => openSettings("local")} />
+      onsettings={() => openSettings("local")} userName={identity || doc.commenting_as || "You"} />
   {/snippet}
 
   {#snippet collaborationPanel()}
