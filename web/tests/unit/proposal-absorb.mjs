@@ -541,7 +541,10 @@ import { createProposals } from "../../src/lib/proposals.js";
   const update = sent.at(-1);
   proposals.apply({ type: "proposal-updated", proposal_id: id,
     request_id: update.request_id, tip: update.tip, applied_version: 2 });
-  bib.insert(11, "X");
+  // Delete and retype the final character so the visible text is unchanged,
+  // but the local CRDT operation is still beyond the published tip.
+  bib.delete(10, 1);
+  bib.insert(10, "}");
 
   const decode = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
   const { decodeFrontiers } = await import("loro-crdt");
@@ -579,7 +582,62 @@ import { createProposals } from "../../src/lib/proposals.js";
   proposals.start();
   const recovery = proposals.recoveryTexts().find((draft) => draft.id === id);
   assert.ok(recovery, "the unresolved draft remains exportable after Editor restart");
-  assert.ok(recovery.files.some((file) => file.path === "references.bib" && file.text.includes("X")),
-    "the recovery export preserves unpublished text from the declined file");
+  assert.ok(recovery.files.some((file) => file.path === "references.bib" && file.text === "@article{a}"),
+    "the recovery export preserves identity-only edits even when visible text is unchanged");
+}
+// A final rejection received before hydration must remain pending. Once the
+// coauthor's overlapping replacement arrives, re-evaluate against that source
+// identity and preserve the unsent tail for recovery without undoing their text.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "The cat sat.");
+  room.commit();
+  const session = { doc: room, joined: true };
+  const sent = [];
+  const proposals = createProposals({ session, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.delete(4, 3);
+  branchText.insert(4, "tabby");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  branchText.insert(6, "X");
+  const beforeResolution = branchText.toString();
+
+  session.joined = false;
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip,
+    resolved_base: open.base });
+  assert.equal(proposals.text("f1").toString(), beforeResolution,
+    "a final frame during hydration does not apply an inverse to a partial room");
+
+  const coauthor = room.fork();
+  coauthor.setPeerId(3n);
+  coauthor.getMap("files").get("f1").delete(4, 3);
+  coauthor.getMap("files").get("f1").insert(4, "fox");
+  coauthor.commit();
+  room.import(coauthor.export({ mode: "update", from: room.oplogVersion() }));
+  coauthor.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  session.joined = true;
+  proposals.reconnect();
+  assert.equal(room.getMap("files").get("f1").toString(), "The fox sat.",
+    "delayed resolution keeps the overlapping coauthor replacement intact");
+  assert.equal(proposals.status().recoveryRequired, true,
+    "the stale proposal remainder is blocked for manual recovery");
+  const recovery = proposals.recoveryTexts().find((draft) => draft.id === id);
+  assert.ok(recovery?.files.some((file) => file.text.includes("X")),
+    "the local typing remains available in the manual recovery export");
 }
 console.log("proposal-absorb: ok");
