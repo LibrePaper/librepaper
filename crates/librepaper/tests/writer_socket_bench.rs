@@ -336,6 +336,7 @@ async fn scenario(
             .create_document(NewDocument {
                 slug: slug.clone(),
                 owner_id: owner.id,
+                owner_session_generation: Some(owner.session_generation),
                 ownership_mode: "owned".into(),
                 title: format!("Writer socket benchmark ({documents})"),
                 source_format: "markdown".into(),

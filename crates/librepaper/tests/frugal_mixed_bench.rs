@@ -340,6 +340,7 @@ async fn frugal_mixed_workload_benchmark() {
             db.create_document(NewDocument {
                 slug: slug.clone(),
                 owner_id: owner.id,
+                owner_session_generation: Some(owner.session_generation),
                 ownership_mode: "owned".into(),
                 title: "Mixed benchmark".into(),
                 source_format: "markdown".into(),

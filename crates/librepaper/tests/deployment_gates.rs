@@ -139,6 +139,8 @@ async fn seed_document(catalog: &PostgresCatalog, owner_id: Uuid, slug: &str) {
         .create_document(NewDocument {
             slug: slug.to_string(),
             owner_id,
+            // Every caller seeds a fresh account, whose initial generation is 1.
+            owner_session_generation: Some(1),
             ownership_mode: "owned".into(),
             title: "A Paper".into(),
             source_format: "markdown".into(),
