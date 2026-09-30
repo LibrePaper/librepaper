@@ -23,7 +23,7 @@ use crate::document::paths::{check, Kind};
 use crate::log::{Command, CommandError, Evidence, Head, PreparedSource, Registry};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{
-    Authority, Error as CatalogError, NewLabel, PostgresCatalog as Catalog,
+    Authority, Error as CatalogError, NewAsset, NewLabel, PostgresCatalog as Catalog,
 };
 use crate::util::parse_timestamp;
 
@@ -518,6 +518,7 @@ struct ReplaceProject {
     catalog: Arc<Catalog>,
     texts: Vec<(String, String)>,
     assets: Vec<(String, String)>,
+    staged_assets: Vec<NewAsset>,
     main: String,
     author_account_id: Option<Uuid>,
     author_label: String,
@@ -605,6 +606,11 @@ impl Command for ReplaceProject {
             let tree_digest = hex::decode(digest_hex)
                 .ok()
                 .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
+            if !self.staged_assets.is_empty() {
+                self.catalog
+                    .complete_assets_in_transaction(tx, &self.staged_assets)
+                    .await?;
+            }
             self.catalog
                 .insert_label(
                     tx,
@@ -1028,7 +1034,8 @@ impl Store {
         // The main file is always text -- it is what a renderer runs on, and
         // a renderer runs on source, not on an asset's bytes. Every other
         // file is sorted and written by `sort_and_write_assets`.
-        let (mut texts, assets) = self.sort_and_write_assets(document.id, files).await?;
+        let (mut texts, assets, staged_assets) =
+            self.sort_and_stage_assets(document.id, files).await?;
         texts.insert(0, (value.main.clone(), value.source));
 
         // The name, not the id. `actor.account_id` is the catalogue uuid,
@@ -1057,6 +1064,7 @@ impl Store {
             catalog: catalog.clone(),
             texts,
             assets,
+            staged_assets,
             main: value.main.clone(),
             author_account_id: Some(account_id),
             author_label,
@@ -1073,20 +1081,21 @@ impl Store {
     }
 
     /// Sorts a directory's non-entrypoint files by the deployment's path
-    /// rules and writes whatever is a figure to the blob store under its
-    /// digest, returning the texts as strings and the assets as path-digest
-    /// pairs ready for `put_text`/`put_asset`. Shared by a plain publish and
-    /// by `seed::activity`, which both start from the same kind of directory
-    /// and differ only in how many log rows the result becomes. A path the
+    /// rules and stages figure bytes under immutable blob keys without
+    /// cataloguing them. Returns the texts, path-digest pairs ready for
+    /// `put_text`/`put_asset`, and asset rows to commit with the authorized
+    /// semantic command. Shared by a plain publish and `seed::activity`,
+    /// which both start from the same kind of directory and differ only in
+    /// how many log rows the result becomes. A path the
     /// rules refuse was already refused before the upload reached here
     /// (`server::documents::preflight_directory`), so it is dropped rather
     /// than failing the whole directory, the same way a figure whose bytes
     /// never resolved is dropped when a project is read back.
-    pub(crate) async fn sort_and_write_assets(
+    pub(crate) async fn sort_and_stage_assets(
         &self,
         document_id: uuid::Uuid,
         files: Vec<(String, Vec<u8>)>,
-    ) -> Result<(Vec<(String, String)>, Vec<(String, String)>), PutError> {
+    ) -> Result<(Vec<(String, String)>, Vec<(String, String)>, Vec<NewAsset>), PutError> {
         let rules = self.config.paths();
         let mut texts = Vec::new();
         let mut asset_files = Vec::new();
@@ -1101,27 +1110,26 @@ impl Store {
                 Err(_) => {}
             }
         }
-        let assets = if asset_files.is_empty() {
-            Vec::new()
+        let (assets, staged_assets) = if asset_files.is_empty() {
+            (Vec::new(), Vec::new())
         } else {
-            let written = crate::storage::source::SourceStorage::new(
+            let (_, staged_assets) = crate::storage::source::SourceStorage::new(
                 self.catalog.clone(),
                 self.blobs.clone(),
             )
-            .write_assets(document_id, asset_files.iter())
+            .stage_assets(document_id, asset_files.iter())
             .await
             .map_err(|error| PutError::Storage(error.to_string()))?;
-            asset_files
+            let assets = asset_files
                 .iter()
-                .filter_map(|file| {
+                .map(|file| {
                     let digest: [u8; 32] = Sha256::digest(&file.bytes).into();
-                    written
-                        .get(&(digest, file.bytes.len() as i64))
-                        .map(|record| (file.path.clone(), hex::encode(&record.digest)))
+                    (file.path.clone(), hex::encode(digest))
                 })
-                .collect()
+                .collect();
+            (assets, staged_assets)
         };
-        Ok((texts, assets))
+        Ok((texts, assets, staged_assets))
     }
 
     pub async fn remove(&self, slug: &str) -> Result<usize, String> {
@@ -1274,6 +1282,10 @@ impl Store {
             .ok_or(ModifyError::NotFound)
     }
 }
+
+#[cfg(test)]
+#[path = "store_import_tests.rs"]
+mod import_tests;
 
 async fn entry_from_document(
     catalog: &Catalog,
