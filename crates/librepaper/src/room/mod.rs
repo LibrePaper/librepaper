@@ -458,6 +458,9 @@ impl Room {
     ) -> Result<(Vec<CommentView>, comments::CommentPage), WriteError> {
         let mut page =
             comments::page(&self.catalog, self.document_id, after, limit, suggestions).await?;
+        if suggestions {
+            self.enrich_proposed(&mut page.comments).await?;
+        }
         self.attach(&mut page.comments).await;
         let views = page
             .comments
@@ -512,8 +515,47 @@ impl Room {
             return Ok(None);
         };
         let mut one = [comment];
+        if suggestions {
+            self.enrich_proposed(&mut one).await?;
+        }
         self.attach(&mut one).await;
         Ok(Some(one.into_iter().next().expect("one comment")))
+    }
+
+    /// Fills the replacement shown on a suggestion from its open proposal
+    /// branch. It is derived on each read, so reconnects and cold rooms show
+    /// the saved branch without storing a second proposed-text field.
+    async fn enrich_proposed(&self, comments: &mut [Comment]) -> Result<(), WriteError> {
+        let ids: Vec<Uuid> = comments
+            .iter()
+            .filter(|comment| comment.motivation == "editing" && !comment.proposal.is_empty())
+            .filter_map(|comment| Uuid::parse_str(&comment.proposal).ok())
+            .collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let proposals = self
+            .catalog
+            .proposals_by_ids(self.document_id, &ids)
+            .await?;
+        if proposals.is_empty() {
+            return Ok(());
+        }
+        let doc = self.log.with_head(|head| head.fork()).await?;
+        let by_id: HashMap<Uuid, _> = proposals.into_iter().map(|p| (p.id, p)).collect();
+        for comment in comments.iter_mut() {
+            let Ok(id) = Uuid::parse_str(&comment.proposal) else {
+                continue;
+            };
+            if let Some(proposal) = by_id.get(&id) {
+                // A corrupt or no longer reconstructible branch must not
+                // hide its annotation or turn an unknown replacement into an
+                // empty deletion. `None` means unavailable; `Some("")` is a
+                // genuine deletion proposal.
+                comment.proposed = comments::proposed_from_branch(&doc, comment, proposal);
+            }
+        }
+        Ok(())
     }
 
     #[cfg(test)]

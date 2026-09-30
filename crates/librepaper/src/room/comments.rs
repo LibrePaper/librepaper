@@ -33,6 +33,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
+use loro::cursor::Side;
 use loro::{Frontiers, LoroDoc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -466,6 +467,9 @@ fn build_suggestion_branch(
         .source()
         .cloned()
         .ok_or_else(|| "a suggestion has to be about a passage".to_string())?;
+    if source.exact == proposed {
+        return Err("a suggestion must change the selected passage".into());
+    }
     let path = path_for_file_id(doc, &source.file_id)
         .ok_or_else(|| "that source file is not part of this document".to_string())?;
     let (branch_doc, base, tip, peer) = crate::room::proposals::from_suggestion(
@@ -524,6 +528,54 @@ fn annotation_row_to_comment(
         thread_changed_micros: 0,
         author: row.author_key.clone(),
     })
+}
+
+/// Recovers the replacement passage of a saved suggestion from its branch.
+/// The comment anchor is immutable; cursors made at that anchor's UTF-16
+/// range follow the range through the branch's delete/insert operations and
+/// let the page read the replacement without persisting a second copy of it.
+pub(crate) fn proposed_from_branch(
+    doc: &LoroDoc,
+    comment: &Comment,
+    proposal: &postgres::StoredProposal,
+) -> Option<String> {
+    let target = comment.source()?;
+    let base = Frontiers::decode(&proposal.base_frontiers).ok()?;
+    let tip = Frontiers::decode(&proposal.tip_frontiers).ok()?;
+    let branch = crate::room::proposals::Proposal { base, tip };
+    let (at_base, at_tip) =
+        crate::room::proposals::sides(doc, &branch, &proposal.branch_bytes).ok()?;
+
+    let base_path = path_for_file_id(&at_base, &target.file_id)?;
+    let mut base_texts = session::texts_of(&at_base);
+    let base_text = base_texts.remove(&base_path)?;
+    if replace_utf16_span(&base_text, target.start_utf16 as usize, &target.exact, "").is_none() {
+        return None;
+    }
+    let start = session::cursor_at_file_id(
+        &at_base,
+        &target.file_id.0,
+        target.start_utf16,
+        Side::Left,
+    )?;
+    let end = session::cursor_at_file_id(
+        &at_base,
+        &target.file_id.0,
+        target.end_utf16,
+        Side::Right,
+    )?;
+    let range =
+        session::offsets_of_cursors_in_file(&at_tip, &target.file_id.0, &start, &end).ok()?;
+    if range.start_utf16 > range.end_utf16 {
+        return None;
+    }
+    let tip_path = path_for_file_id(&at_tip, &target.file_id)?;
+    let mut tip_texts = session::texts_of(&at_tip);
+    let tip_text = tip_texts.remove(&tip_path)?;
+    let units: Vec<u16> = tip_text.encode_utf16().collect();
+    let start = range.start_utf16 as usize;
+    let end = range.end_utf16 as usize;
+    (end <= units.len()).then(|| String::from_utf16_lossy(&units[start..end]))
 }
 
 fn reply_row_to_reply(row: ReplyRecord) -> Reply {
@@ -1141,7 +1193,6 @@ struct SuggestionBranch {
     base: Vec<u8>,
     tip: Vec<u8>,
     bytes: Vec<u8>,
-    peer: u64,
 }
 
 /// What a new comment, highlight or suggestion needs before it reaches the
@@ -1293,7 +1344,7 @@ impl SequencerCommand for AddComment {
                 CommandError::Conflict("that source file is not part of this document".into())
             })?;
             let proposed = self.proposed.as_deref().unwrap_or_default();
-            let (branch_doc, base, tip, peer) = crate::room::proposals::from_suggestion(
+            let (branch_doc, base, tip, _peer) = crate::room::proposals::from_suggestion(
                 head.doc(),
                 &path,
                 source.start_utf16 as usize,
@@ -1308,7 +1359,6 @@ impl SequencerCommand for AddComment {
                 base: base.encode(),
                 tip: tip.encode(),
                 bytes: branch_bytes,
-                peer,
             });
         }
         self.resolved_target = Some(target);
@@ -1340,7 +1390,6 @@ impl SequencerCommand for AddComment {
                 base: base_frontiers,
                 tip: tip_frontiers,
                 bytes: branch_bytes,
-                peer,
             }) = self.branch.take()
             {
                 let proposal_id = Uuid::new_v4();
@@ -1368,7 +1417,7 @@ impl SequencerCommand for AddComment {
                             document_id: self.document_id,
                             id: proposal_id,
                             author: self.creator.clone(),
-                            author_peer: peer as i64,
+                            owner_key: self.author_key.clone(),
                             base_frontiers,
                             tip_frontiers,
                             branch_bytes,
@@ -1402,8 +1451,15 @@ impl SequencerCommand for AddComment {
                     )
                     .await?
             };
-            annotation_row_to_comment(&row, Vec::new())
-                .map_err(|error| CommandError::Storage(postgres::Error::Invalid(error.to_string())))
+            let mut comment = annotation_row_to_comment(&row, Vec::new()).map_err(|error| {
+                CommandError::Storage(postgres::Error::Invalid(error.to_string()))
+            })?;
+            // This command just wrote the branch from this same value; return
+            // it in the immediate event so connected editors do not briefly
+            // render a suggestion as a deletion while the next page read is
+            // still pending.
+            comment.proposed = self.proposed.clone();
+            Ok(comment)
         })
     }
 }
@@ -1817,21 +1873,33 @@ impl RefineSuggestion {
             .get(&path)
             .cloned()
             .ok_or_else(stale)?;
-        // The same offsets `from_suggestion` was given: a byte offset into
+        // The same offsets `from_suggestion` was given: a UTF-16 offset into
         // the file as it read at the base, and the passage found there.
         let at = annotation.start_utf16.unwrap_or_default().max(0) as usize;
         let exact = annotation.exact.clone().unwrap_or_default();
-        let end = at.saturating_add(exact.len());
-        if base_text.get(at..end) != Some(exact.as_str()) {
-            return Err(stale());
-        }
-        let mut wanted = base_text;
-        wanted.replace_range(at..end, &expected);
-        if wanted != tip_text {
+        if replace_utf16_span(&base_text, at, &exact, &expected).as_deref()
+            != Some(tip_text.as_str())
+        {
             return Err(stale());
         }
         Ok(())
     }
+}
+
+/// Replaces one checked UTF-16 range. Proposal anchors and browser selections
+/// use UTF-16 code units, while Rust string slicing uses UTF-8 bytes; keeping
+/// this conversion here prevents an accented or astral character before the
+/// anchor from turning a valid refinement into a stale one.
+fn replace_utf16_span(text: &str, at: usize, exact: &str, replacement: &str) -> Option<String> {
+    let mut units: Vec<u16> = text.encode_utf16().collect();
+    let expected: Vec<u16> = exact.encode_utf16().collect();
+    let end = at.checked_add(expected.len())?;
+    if end > units.len() || units.get(at..end)? != expected.as_slice() {
+        return None;
+    }
+    let replacement: Vec<u16> = replacement.encode_utf16().collect();
+    units.splice(at..end, replacement);
+    Some(String::from_utf16_lossy(&units))
 }
 
 impl SequencerCommand for RefineSuggestion {
@@ -1910,7 +1978,7 @@ impl SequencerCommand for RefineSuggestion {
                 tip: tip_frontiers,
                 bytes: branch_bytes,
             } = self.prepared.take().expect("evaluate ran before transact");
-            let stored = self
+            let (stored, applied) = self
                 .catalog
                 .update_proposal_branch(
                     tx,
@@ -1922,15 +1990,19 @@ impl SequencerCommand for RefineSuggestion {
                     branch_bytes,
                 )
                 .await?;
-            // `update_proposal_branch` never errors on a version mismatch --
-            // per §7.2 it just hands back the row as it stands, for the
-            // caller to compare with what it asked for. A version this call
-            // did not itself produce means somebody else moved the proposal
-            // first.
-            if stored.version != self.expected_version + 1 {
+            if !applied && stored.version != self.expected_version + 1 {
                 return Err(CommandError::Conflict(
                     "suggestion changed; read it again before refining".into(),
                 ));
+            }
+            // Hunk decisions name a particular branch diff. A refinement
+            // changes that diff, so decisions recorded against the previous
+            // tip cannot carry over. A retried identical update is already
+            // represented by the row and must not clear a later decision.
+            if applied {
+                self.catalog
+                    .replace_decisions(tx, self.proposal_id, &stored.tip_frontiers, &[])
+                    .await?;
             }
             let mut input = replay_of(&existing)?;
             input.body = self.body.clone();
@@ -1938,8 +2010,11 @@ impl SequencerCommand for RefineSuggestion {
                 .replace_annotation_authorized(tx, self.comment_id, input, false, &self.actor)
                 .await?;
             let row = find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
-            annotation_row_to_comment(&row, Vec::new())
-                .map_err(|error| CommandError::Storage(postgres::Error::Invalid(error.to_string())))
+            let mut comment = annotation_row_to_comment(&row, Vec::new()).map_err(|error| {
+                CommandError::Storage(postgres::Error::Invalid(error.to_string()))
+            })?;
+            comment.proposed = Some(self.proposed.clone());
+            Ok(comment)
         })
     }
 }
@@ -2042,6 +2117,21 @@ impl SequencerCommand for AcceptSuggestion {
             base,
             tip: tip.clone(),
         };
+        let hunks = crate::room::proposals::hunks(head.doc(), &proposal, &self.branch_bytes)
+            .map_err(|error| CommandError::Conflict(error.to_string()))?;
+        if hunks.is_empty() {
+            return Err(CommandError::Conflict(
+                "this suggestion no longer changes the source".into(),
+            ));
+        }
+        let accepted: HashSet<usize> = hunks.iter().map(|hunk| hunk.index).collect();
+        crate::room::proposals::validate_accepted_hunks(
+            head.doc(),
+            &proposal,
+            &self.branch_bytes,
+            &accepted,
+        )
+        .map_err(|error| CommandError::Conflict(error.to_string()))?;
         let reviewer = fresh_peer();
         head.prepare(self.request_id.as_u128() as i64, |draft| {
             crate::room::proposals::resolve(
@@ -2311,7 +2401,7 @@ impl SequencerCommand for AgentSuggestionBatch {
                     base,
                     tip,
                     bytes: branch_bytes,
-                    peer,
+                    peer: _peer,
                 }) = slot
                 else {
                     results.push(BatchItemResult::Refused(
@@ -2350,7 +2440,7 @@ impl SequencerCommand for AgentSuggestionBatch {
                             document_id: self.document_id,
                             id: item.id,
                             author: self.creator.clone(),
-                            author_peer: peer as i64,
+                            owner_key: self.author_key.clone(),
                             base_frontiers: base,
                             tip_frontiers: tip,
                             branch_bytes,
@@ -2360,7 +2450,10 @@ impl SequencerCommand for AgentSuggestionBatch {
                     .await;
                 match row {
                     Ok(row) => match annotation_row_to_comment(&row, Vec::new()) {
-                        Ok(comment) => results.push(BatchItemResult::Created(Box::new(comment))),
+                        Ok(mut comment) => {
+                            comment.proposed = Some(item.proposed.clone());
+                            results.push(BatchItemResult::Created(Box::new(comment)));
+                        }
                         Err(error) => results.push(BatchItemResult::Refused(error.to_string())),
                     },
                     Err(error) => results.push(BatchItemResult::Refused(error.to_string())),
@@ -2563,4 +2656,106 @@ pub fn comment_revision(state: &AnnotationState) -> String {
         hash.update(value.to_le_bytes());
     }
     hex::encode(&hash.finalize()[..8])
+}
+
+#[cfg(test)]
+mod utf16_suggestion_tests {
+    use super::{proposed_from_branch, replace_utf16_span, Comment};
+    use crate::document::session;
+    use crate::room::annotation::{
+        AnchorSide, CommentTarget, FileId, OriginalAnchor, SourceTextTarget,
+    };
+    use crate::storage::postgres::StoredProposal;
+    use loro::LoroDoc;
+    use uuid::Uuid;
+
+    fn saved_suggestion(
+        body: &str,
+        exact: &str,
+        proposed: &str,
+    ) -> (LoroDoc, Comment, StoredProposal) {
+        let doc = session::new_doc();
+        session::put_text(&doc, "main.md", body);
+        let byte_at = body.find(exact).expect("selected text is in body");
+        let at = body[..byte_at].encode_utf16().count();
+        let file_id = session::paths_of(&doc)
+            .into_iter()
+            .find_map(|(id, path)| (path == "main.md").then_some(id))
+            .expect("main file has an id");
+        let (branch, base, tip, _) =
+            crate::room::proposals::from_suggestion(&doc, "main.md", at, exact, proposed)
+                .expect("suggestion branch builds");
+        let branch_bytes = session::encode_diff(&branch, &session::encode_vector(&doc))
+            .expect("branch delta encodes");
+        let target = SourceTextTarget {
+            file_id: FileId(file_id),
+            start_utf16: at as u32,
+            end_utf16: (at + exact.encode_utf16().count()) as u32,
+            start_side: AnchorSide::Left,
+            end_side: AnchorSide::Right,
+            exact: exact.to_string(),
+            prefix: String::new(),
+            suffix: String::new(),
+        };
+        let comment = Comment {
+            original_anchor: Some(OriginalAnchor {
+                target: CommentTarget::SourceText(target),
+                ..OriginalAnchor::default()
+            }),
+            ..Comment::default()
+        };
+        let proposal = StoredProposal {
+            id: Uuid::new_v4(),
+            author: "writer".into(),
+            owner_key: Some("account:writer".into()),
+            base_frontiers: base.encode(),
+            tip_frontiers: tip.encode(),
+            branch_bytes,
+            version: 1,
+        };
+        (doc, comment, proposal)
+    }
+
+    #[test]
+    fn refinement_span_uses_utf16_units_after_accented_text() {
+        assert_eq!(
+            replace_utf16_span("é cat", 2, "cat", "fox").as_deref(),
+            Some("é fox")
+        );
+    }
+
+    #[test]
+    fn refinement_span_uses_both_units_of_an_astral_character() {
+        assert_eq!(
+            replace_utf16_span("😀 é cat", 5, "cat", "feline").as_deref(),
+            Some("😀 é feline")
+        );
+    }
+
+    #[test]
+    fn refinement_span_rejects_a_mismatched_or_out_of_bounds_quote() {
+        assert_eq!(replace_utf16_span("é cat", 1, "cat", "fox"), None);
+        assert_eq!(replace_utf16_span("é cat", 4, "cat", "fox"), None);
+    }
+
+    #[test]
+    fn saved_suggestion_recovers_the_whole_replacement_after_unicode_prefix() {
+        let exact = "The cat sat quietly beside the window while the dog ran.";
+        let proposed = "The tabby sat quietly beside the window while the dog sprinted.";
+        let (doc, comment, proposal) =
+            saved_suggestion(&format!("é 😀 {exact} Afterwards."), exact, proposed);
+        assert_eq!(
+            proposed_from_branch(&doc, &comment, &proposal).as_deref(),
+            Some(proposed)
+        );
+    }
+
+    #[test]
+    fn saved_deletion_is_an_empty_replacement_not_an_unavailable_proposal() {
+        let (doc, comment, proposal) = saved_suggestion("The cat sat.", "cat", "");
+        assert_eq!(
+            proposed_from_branch(&doc, &comment, &proposal).as_deref(),
+            Some("")
+        );
+    }
 }
