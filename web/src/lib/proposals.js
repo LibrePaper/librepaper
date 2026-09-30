@@ -161,6 +161,8 @@ export function hunksOfProposal(doc, proposalData) {
     atBase = doc.forkAt(base);
     branch = doc.forkAt(base);
     branch.import(bytes);
+    if (encodeBase64(encodeFrontiers(branch.frontiers())) !==
+        encodeBase64(encodeFrontiers(tip))) throw new Error("proposal bytes extend past the advertised tip");
 
     // false = Diff rather than JsonDiff, which is what carries TextDelta.
     const diff = branch.diff(base, tip, false);
@@ -441,7 +443,7 @@ export function createProposals({ session, send, mayEdit }) {
   };
 
   const sendUpdate = (draft) => {
-    if (!draft.opened || draft.inflight || draft.discarding) return;
+    if (!draft.opened || draft.openPending || draft.inflight || draft.discarding) return;
     draft.branch.commit();
     const tip = draft.branch.frontiers();
     const tipBytes = encodeBase64(encodeFrontiers(tip));
@@ -680,15 +682,22 @@ export function createProposals({ session, send, mayEdit }) {
         clearTimeout(draft.retryTimer);
         draft.retryTimer = null;
         draft.retryable = false;
-        if (draft.discarding && draft.opened) {
-          const requestId = draft.discardRequestId || crypto.randomUUID();
-          const result = sendMessage({ type: "proposal-discard", proposal_id: draft.id, request_id: requestId });
-          if (result?.ok !== false) draft.discardRequestId = requestId;
+        draft.openPending = false;
+        draft.inflight = null;
+        if (draft.opened) {
+          // Query the row on reconnect even when our local branch looks clean:
+          // we may have missed its final decision while disconnected. The
+          // server treats this stable create key as an idempotent status query.
+          const result = sendMessage({
+            type: "proposal-open",
+            request_id: draft.id,
+            base: encodeBase64(encodeFrontiers(draft.openBase ?? draft.base)),
+          });
+          if (result?.ok !== false) draft.openPending = true;
+          else draft.error = result.error?.message || "offline";
           continue;
         }
         // A create key is stable; an update is a complete branch snapshot.
-        draft.openPending = false;
-        draft.inflight = null;
         flushDraft(draft);
       }
       changed();
@@ -907,15 +916,14 @@ function decodeBase64(encoded) {
 /// -- they are two answers, and the useful presentation is side by side with
 /// one choice to make (SPEC-loro.md §5.3). This finds them.
 ///
-/// The test is: same file, different proposals, overlapping extents. A row's
+/// The test is: same file, different proposals, conflicting extents. A row's
 /// extent is `[position, position + before.length)`, which is the same basis
 /// `proposal-marks.js` draws in, so two rows contend here exactly when they
 /// would be drawn over each other there.
 ///
-/// Touching ends do not overlap. One proposal replacing "cat" and another
-/// inserting after it are adjacent edits, not competing ones, and grouping
-/// them would ask the reviewer to choose between two things that can both
-/// happen.
+/// Touching ends do not overlap. An insertion strictly inside a replacement
+/// conflicts with it, but an insertion at either boundary is adjacent. Two
+/// insertions at the same point compete for the same gap.
 ///
 /// A stale row is left out. Its extent is a claim about text that is no longer
 /// there, so it cannot be said to overlap anything, and a reviewer cannot
@@ -946,9 +954,16 @@ export function markContention(rows) {
       if (a.file_id !== b.file_id) continue;
       const aEnd = a.position + a.before.length;
       const bEnd = b.position + b.before.length;
-      // Strict overlap. Two zero-width rows at one point are two insertions
-      // in the same gap, which is not a choice between them either.
-      if (a.position >= bEnd || b.position >= aEnd) continue;
+      const aLength = a.before.length;
+      const bLength = b.before.length;
+      const overlaps = aLength === 0 && bLength === 0
+        ? a.position === b.position
+        : aLength === 0
+          ? b.position < a.position && a.position < bEnd
+          : bLength === 0
+            ? a.position < b.position && b.position < aEnd
+            : a.position < bEnd && b.position < aEnd;
+      if (!overlaps) continue;
       const aGroup = group.has(a.id) ? find(group.get(a.id)) : null;
       const bGroup = group.has(b.id) ? find(group.get(b.id)) : null;
       if (aGroup && bGroup) {

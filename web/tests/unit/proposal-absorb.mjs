@@ -151,6 +151,42 @@ import { createProposals } from "../../src/lib/proposals.js";
   proposals.apply({ type: "proposal-updated", proposal_id: id, request_id: update.request_id, tip: update.tip, applied_version: 2 });
   assert.equal(proposals.status().pending, 0, "the retained branch is released only after update acknowledgement");
 }
+// A reconnect queries a saved row even with no pending update, so a final
+// decision missed by this client can still rebase its unsent typing.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "The cat sat.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.delete(4, 3);
+  branchText.insert(4, "tabby");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  branchText.insert(6, "X");
+
+  proposals.reconnect();
+  const query = sent.at(-1);
+  assert.equal(query.type, "proposal-open", "reconnect checks the durable proposal outcome");
+  assert.equal(query.request_id, id, "the query reuses the proposal id");
+  proposals.apply({ type: "proposal-decided", proposal_id: id,
+    decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip,
+    resolved_base: open.base });
+  assert.ok(proposals.text("f1").toString().includes("X"), "missed resolution preserves unsent typing");
+  assert.ok(!proposals.text("f1").toString().includes("tabby"), "missed rejection removes the published replacement");
+}
 // A branch that returns to its base after it was opened is discarded instead
 // of leaving a proposal with no hunks for reviewers to resolve.
 {
