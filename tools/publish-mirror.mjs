@@ -5,13 +5,13 @@
 // command arguments or this tool's reports.
 import { execFile } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { Transform, Writable } from "node:stream";
-import { createGunzip, createGzip } from "node:zlib";
+import { Transform } from "node:stream";
+import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 
 const runFile = promisify(execFile);
@@ -26,7 +26,7 @@ const MIME = new Map([
   [".wasm", "application/wasm"], [".woff", "font/woff"], [".woff2", "font/woff2"], [".xml", "application/xml"],
 ]);
 const SHA256 = /^[a-f0-9]{64}$/;
-const AWS_OPERATIONS = new Set(["put-object", "get-object", "put-bucket-cors"]);
+const AWS_OPERATIONS = new Set(["head-object", "put-bucket-cors", "s3 sync"]);
 const AWS_HINTS = new Map([
   ["AccessDenied", "Check that the mirror credentials have permission for this bucket and prefix."],
   ["InvalidAccessKeyId", "Check that the configured AWS access key is valid for this mirror."],
@@ -37,7 +37,8 @@ const AWS_HINTS = new Map([
 ]);
 
 export function awsFailureMessage(error, args) {
-  const operation = AWS_OPERATIONS.has(args?.[1]) ? args[1] : null;
+  const name = args?.[0] === "s3" ? `s3 ${args[1]}` : args?.[1];
+  const operation = AWS_OPERATIONS.has(name) ? name : null;
   const exitCode = Number.isInteger(error?.status) && error.status >= 0
     ? String(error.status)
     : (Number.isInteger(error?.code) && error.code >= 0 ? String(error.code)
@@ -314,52 +315,60 @@ async function stageSource(source, destination, expected, compress) {
   }
 }
 
-async function verifyDownloaded(path, response, metadata, expected, key) {
-  if (!response || response.ContentType !== metadata.contentType ||
-      (response.ContentEncoding || undefined) !== metadata.contentEncoding ||
-      response.CacheControl !== metadata.cacheControl) {
-    throw new Error(`uploaded object metadata mismatch: ${key}`);
-  }
-  const hash = createHash("sha256");
-  let size = 0;
-  const sink = new Writable({
-    write(chunk, encoding, callback) {
-      size += chunk.length;
-      hash.update(chunk);
-      callback();
-    },
-  });
-  const streams = [createReadStream(path)];
-  if (metadata.contentEncoding === "gzip") streams.push(createGunzip());
-  streams.push(sink);
-  await pipeline(...streams);
-  if (size !== expected.size || hash.digest("hex") !== expected.sha256) {
-    throw new Error(`uploaded object bytes mismatch: ${key}`);
-  }
-}
-
 const size = (bytes) => bytes >= 2 ** 30 ? `${(bytes / 2 ** 30).toFixed(1)} GB` : `${(bytes / 2 ** 20).toFixed(1)} MB`;
 const duration = (seconds) => seconds >= 3600 ? `${Math.floor(seconds / 3600)}h${Math.floor(seconds % 3600 / 60)}m`
   : seconds >= 60 ? `${Math.floor(seconds / 60)}m${Math.floor(seconds % 60)}s` : `${Math.floor(seconds)}s`;
 
-/// Upload progress on stderr, so the `output` a caller captures stays clean: a
-/// redrawn bar on a terminal, a line every ten seconds otherwise.
-function progress(prefix, totalFiles, totalBytes) {
-  const started = Date.now();
-  let last = 0;
-  return (files, bytes, final = false) => {
-    const now = Date.now();
-    const tty = process.stderr.isTTY;
-    if (!final && now - last < (tty ? 100 : 10_000)) return;
-    last = now;
-    const elapsed = (now - started) / 1000;
-    const fraction = totalBytes ? bytes / totalBytes : 1;
-    const eta = bytes ? duration(elapsed * (totalBytes - bytes) / bytes) : "?";
-    const bar = "#".repeat(Math.round(fraction * 20)).padEnd(20, "-");
-    const line = `${prefix} [${bar}] ${String(Math.floor(fraction * 100)).padStart(3)}%  ${files}/${totalFiles} files  ` +
-      `${size(bytes)}/${size(totalBytes)}  ${final ? `done in ${duration(elapsed)}` : `ETA ${eta}`}`;
-    process.stderr.write(tty ? `\r${line}\x1b[K${final ? "\n" : ""}` : `${line}\n`);
-  };
+const SYNC_CONCURRENCY = 32;
+const STAGE_CONCURRENCY = 8;
+const SPOT_CHECKS = 5;
+
+/// Files sharing one set of object metadata upload together in one `aws s3 sync`.
+/// release.json files form their own last groups: a release becomes visible
+/// only once its release.json exists.
+function groupFiles(prefix, files) {
+  const groups = new Map();
+  for (const file of files) {
+    const metadata = metadataFor(`${prefix}/${file.relative}`);
+    const last = file.relative.endsWith("/release.json");
+    const id = JSON.stringify([last, metadata.contentType, metadata.contentEncoding || null, metadata.cacheControl]);
+    if (!groups.has(id)) groups.set(id, { id, last, metadata, files: [] });
+    groups.get(id).files.push(file);
+  }
+  return [...groups.values()].sort((a, b) => Number(a.last) - Number(b.last) || a.id.localeCompare(b.id));
+}
+
+async function runPool(items, limit, work) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) await work(items[next++]);
+  }));
+}
+
+/// Read back a few objects' headers, cheaply: the CLI already checksummed each
+/// upload, so this only catches a sync that silently stored the wrong thing.
+async function spotCheck(prefix, groups, target, env) {
+  const picks = new Map();
+  const staged = groups.flatMap((group) => group.files.map((file) => ({ file, group })));
+  const largest = staged.reduce((best, item) => (item.file.stagedSize > (best?.file.stagedSize ?? -1) ? item : best), null);
+  const release = staged.find((item) => item.file.relative.endsWith("/release.json"));
+  const stride = Math.ceil(staged.length / SPOT_CHECKS);
+  for (const item of [largest, release, ...staged.filter((_, index) => index % stride === 0)]) {
+    if (item && picks.size < SPOT_CHECKS) picks.set(item.file.relative, item);
+  }
+  for (const { file, group } of picks.values()) {
+    const key = `${prefix}/${file.relative}`;
+    const stdout = await aws(["s3api", "head-object", "--endpoint-url", target.endpoint, "--region", target.region,
+      "--bucket", target.bucket, "--key", key, "--output", "json", "--no-cli-pager"], env);
+    let head;
+    try { head = JSON.parse(stdout); } catch { throw new Error(`AWS returned invalid object metadata for ${key}`); }
+    const { metadata } = group;
+    if (head.ContentLength !== file.stagedSize) throw new Error(`uploaded object size mismatch: ${key}`);
+    if (head.ContentType !== metadata.contentType || (head.ContentEncoding || undefined) !== metadata.contentEncoding ||
+        head.CacheControl !== metadata.cacheControl) {
+      throw new Error(`uploaded object metadata mismatch: ${key}`);
+    }
+  }
 }
 
 export async function publish({ dir, prefix, dryRun = false, configureCors = false, env = process.env, output = console.log }) {
@@ -378,52 +387,54 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
   if (configureCors && dryRun) output("CORS: would allow GET and HEAD from any origin (explicit --configure-cors)");
   if (dryRun) output("Integrity preflight skipped in dry run.");
   let staging;
-  let uploaded = 0;
-  let uploadedBytes = 0;
-  const report = dryRun ? null : progress(prefix, files.length, preflight.bytes);
   try {
-    for (const [index, file] of files.entries()) {
-      const key = `${prefix}/${file.relative}`;
-      const metadata = metadataFor(key);
-      if (dryRun) {
+    if (dryRun) {
+      for (const file of files) {
+        const key = `${prefix}/${file.relative}`;
+        const metadata = metadataFor(key);
         output(`${key}\t${metadata.contentType}\t${metadata.contentEncoding || "identity"}\t${metadata.cacheControl}`);
-      } else {
-        staging ||= await mkdtemp(join(tmpdir(), "librepaper-mirror-"));
-        const body = join(staging, "upload", ...file.relative.split("/"));
-        await stageSource(file.absolute, body, preflight.expected.get(file.relative), metadata.contentEncoding === "gzip");
-        const args = ["s3api", "put-object", "--endpoint-url", target.endpoint, "--region", target.region,
-          "--bucket", target.bucket, "--key", key, "--body", body,
-          "--content-type", metadata.contentType, "--cache-control", metadata.cacheControl,
-          "--acl", "public-read"];
-        if (metadata.contentEncoding) args.push("--content-encoding", metadata.contentEncoding);
-        await aws(args, env);
-        await rm(body, { force: true });
-        const downloadPath = join(staging, "readback", `${index}.object`);
-        await mkdir(dirname(downloadPath), { recursive: true });
-        try {
-          const stdout = await aws(["s3api", "get-object", "--endpoint-url", target.endpoint, "--region", target.region,
-            "--bucket", target.bucket, "--key", key, downloadPath, "--output", "json", "--no-cli-pager"], env);
-          let response;
-          try { response = JSON.parse(stdout); } catch { throw new Error(`AWS returned invalid object metadata for ${key}`); }
-          await verifyDownloaded(downloadPath, response, metadata, preflight.expected.get(file.relative), key);
-        } finally {
-          await rm(downloadPath, { force: true });
-        }
-        uploaded += 1;
-        uploadedBytes += preflight.expected.get(file.relative).size;
-        report(uploaded, uploadedBytes, uploaded === files.length);
       }
+    } else {
+      const started = Date.now();
+      staging = await mkdtemp(join(tmpdir(), "librepaper-mirror-"));
+      const groups = groupFiles(prefix, files);
+      // Each group is staged in its own subtree, gzipped where its metadata says so,
+      // so one sync of that subtree uploads exactly the group with one set of headers.
+      await runPool(groups.flatMap((group, index) => group.files.map((file) => ({ group, index, file }))), STAGE_CONCURRENCY,
+        async ({ group, index, file }) => {
+          const body = join(staging, "groups", String(index), ...file.relative.split("/"));
+          await stageSource(file.absolute, body, preflight.expected.get(file.relative), group.metadata.contentEncoding === "gzip");
+          file.stagedSize = (await stat(body)).size;
+        });
+      const config = join(staging, "aws-config");
+      await writeFile(config, `[default]\ns3 =\n  max_concurrent_requests = ${SYNC_CONCURRENCY}\n  max_queue_size = 10000\n`);
+      const syncEnv = { ...env, AWS_CONFIG_FILE: config };
+      for (const [index, group] of groups.entries()) {
+        const { metadata } = group;
+        const bytes = group.files.reduce((total, file) => total + file.stagedSize, 0);
+        process.stderr.write(`${prefix}: group ${index + 1}/${groups.length} ${metadata.contentType} ${metadata.contentEncoding || "identity"}, ` +
+          `${group.files.length} files, ${size(bytes)}${group.last ? " (release.json, last)" : ""} ...\n`);
+        // Append-only, so never --delete. --size-only because staged mtimes are always new; every
+        // key is content-addressed, so an existing key of the same size is the same object.
+        const args = ["s3", "sync", join(staging, "groups", String(index)), `s3://${target.bucket}/${prefix}/`,
+          "--endpoint-url", target.endpoint, "--region", target.region, "--size-only",
+          "--content-type", metadata.contentType, "--cache-control", metadata.cacheControl, "--acl", "public-read",
+          "--no-progress", "--only-show-errors"];
+        if (metadata.contentEncoding) args.push("--content-encoding", metadata.contentEncoding);
+        await aws(args, syncEnv);
+      }
+      await spotCheck(prefix, groups, target, env);
+      process.stderr.write(`${prefix}: ${files.length} files in ${groups.length} groups, ${size(preflight.bytes)} raw, done in ${duration((Date.now() - started) / 1000)}\n`);
     }
     if (configureCors && !dryRun) {
       const cors = JSON.stringify({ CORSRules: [{ AllowedOrigins: ["*"], AllowedMethods: ["GET", "HEAD"], AllowedHeaders: ["*"], MaxAgeSeconds: 3600 }] });
       await aws(["s3api", "put-bucket-cors", "--endpoint-url", target.endpoint, "--region", target.region,
         "--bucket", target.bucket, "--cors-configuration", cors], env);
     }
+    const uploaded = dryRun ? 0 : files.length;
     output(dryRun ? `Dry run: ${files.length} files; no objects changed.` : `Published ${uploaded} objects to s3://${target.bucket}/${prefix}/.`);
     return { count: files.length, uploaded, dryRun };
   } finally {
-    // A failure mid-upload must not print its error onto the end of the bar.
-    if (report && uploaded && uploaded < files.length && process.stderr.isTTY) process.stderr.write("\n");
     if (staging) await rm(staging, { recursive: true, force: true });
   }
 }

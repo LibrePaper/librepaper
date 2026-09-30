@@ -46,11 +46,17 @@ make mirrors-push
 ```
 
 SOPS decrypts the key file into memory for the publishing process. The staged
-wasm modules and the local LaTeX mirror are integrity-checked before either upload begins. The publisher reads
-each uploaded object back and verifies its bytes and response metadata before
-publishing each release's `release.json`, which goes last so a release is
-never visible half uploaded. Each upload uses a public-read ACL (listing stays
-private). `deploy/deploy-mirror.sh` creates the bucket as the publisher user,
+wasm modules and the local LaTeX mirror are integrity-checked before either upload begins.
+The publisher stages the mirror in a temporary directory (gzipping what the
+metadata says to gzip), groups files by content type, encoding and cache
+control, and uploads each group with one `aws s3 sync` at 32 concurrent
+requests. Sync skips keys that already exist with the same size, which is safe
+because every key is content-addressed, and it never passes `--delete`. There is
+no per-object readback: integrity rests on the CLI's upload checksums, plus a
+`head-object` spot check of a few keys (the largest file and a `release.json`)
+for size and headers. Each release's `release.json` is synced last, in a final
+pass, so a release is never visible half uploaded. Each upload uses a public-read
+ACL (listing stays private). Progress goes to stderr, one line per group. `deploy/deploy-mirror.sh` creates the bucket as the publisher user,
 sets CORS once, pushes both mirrors, and verifies public reads; `--test`
 uploads two small files (`test/markdown.wasm` and `test/_headers`) instead of the mirrors. The application's default mirror URL remains manual.
 

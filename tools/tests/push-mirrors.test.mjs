@@ -138,13 +138,21 @@ test("SOPS key mappings reach the shared publisher for both prefixes", async () 
   const aws = join(bin, "aws");
   await writeFile(sops, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ OVH_S3_ENDPOINT:'https://ovh.example.invalid', OVH_S3_REGION:'bhs', OVH_S3_USER:'mapped-id', OVH_S3_SECRET:'mapped-secret', OVH_S3_ARN:'arn:aws:s3:::mapped-bucket', unrelated:{ignored:true} }));\n`);
   await writeFile(aws, `#!${process.execPath}
-const fs=require('node:fs'); const a=process.argv.slice(2); const at=k=>a.indexOf(k); const val=k=>a[at(k)+1];
+const fs=require('node:fs'); const path=require('node:path'); const a=process.argv.slice(2); const at=k=>a.indexOf(k); const val=k=>a[at(k)+1];
 const storePath=process.env.AWS_STORE; let store={}; try{store=JSON.parse(fs.readFileSync(storePath,'utf8'))}catch{}
-const cmd=a.slice(0,2).join(' '); const key=val('--key');
-if(cmd==='s3api put-object') store[key]={body:fs.readFileSync(val('--body')).toString('base64'), ContentType:val('--content-type'),ContentEncoding:val('--content-encoding')||undefined,CacheControl:val('--cache-control')};
-if(cmd==='s3api get-object'){const obj=store[key]; fs.writeFileSync(a[at('--key')+2],Buffer.from(obj.body,'base64')); process.stdout.write(JSON.stringify({ContentType:obj.ContentType,ContentEncoding:obj.ContentEncoding,CacheControl:obj.CacheControl}));}
+const cmd=a.slice(0,2).join(' ');
+const walk=(d,b='')=>fs.readdirSync(d,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(path.join(d,e.name),b+e.name+'/'):[b+e.name]);
+const log=(key)=>fs.appendFileSync(process.env.AWS_LOG,JSON.stringify({cmd,key,endpoint:val('--endpoint-url'),region:val('--region'),bucket:val('--bucket')||a[3].split('/')[2],id:process.env.AWS_ACCESS_KEY_ID,secret:process.env.AWS_SECRET_ACCESS_KEY,deleting:a.includes('--delete')})+'\\n');
+if(cmd==='s3 sync'){
+  const destination=a[3].replace(/^s3:\\/\\/[^/]+\\//,'');
+  for(const rel of walk(a[2]).sort()){
+    const body=fs.readFileSync(path.join(a[2],rel));
+    store[destination+rel]={length:body.length,ContentType:val('--content-type'),ContentEncoding:val('--content-encoding')||undefined,CacheControl:val('--cache-control')};
+    log(destination+rel);
+  }
+}
+if(cmd==='s3api head-object'){const obj=store[val('--key')]; process.stdout.write(JSON.stringify({ContentLength:obj.length,ContentType:obj.ContentType,ContentEncoding:obj.ContentEncoding,CacheControl:obj.CacheControl})); log(val('--key'));}
 fs.writeFileSync(storePath,JSON.stringify(store));
-fs.appendFileSync(process.env.AWS_LOG,JSON.stringify({cmd,key,endpoint:val('--endpoint-url'),region:val('--region'),bucket:val('--bucket'),id:process.env.AWS_ACCESS_KEY_ID,secret:process.env.AWS_SECRET_ACCESS_KEY})+'\\n');
 `);
   await chmod(sops, 0o755);
   await chmod(aws, 0o755);
@@ -153,7 +161,8 @@ fs.appendFileSync(process.env.AWS_LOG,JSON.stringify({cmd,key,endpoint:val('--en
       PATH: `${bin}:${process.env.PATH}`, WASM_DIR: paths.wasm, WASM_LOCK: paths.lock, MIRROR: paths.latex, AWS_LOG: log, AWS_STORE: store,
       S3_BUCKET: "explicit-bucket", AWS_ACCESS_KEY_ID: "override-id", AWS_SECRET_ACCESS_KEY: "override-secret" } });
     const calls = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
-    const puts = calls.filter((call) => call.cmd === "s3api put-object");
+    const puts = calls.filter((call) => call.cmd === "s3 sync");
+    assert.ok(calls.every((call) => !call.deleting));
     assert.ok(puts.some((call) => call.key === `wasm/${paths.moduleHash}/markdown.wasm`));
     assert.ok(puts.some((call) => call.key.startsWith("latex/")));
     assert.ok(calls.every((call) => call.endpoint === "https://ovh.example.invalid" && call.region === "bhs" &&

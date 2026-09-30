@@ -39,8 +39,8 @@ test("AWS failure diagnostics expose safe service codes and actionable hints onl
   const serviceMessage = awsFailureMessage({
     status: 254,
     stderr: "An error occurred (AccessDenied) when calling the PutObject operation: secret=do-not-print-this-secret https://private.example/request",
-  }, ["s3api", "put-object"]);
-  assert.match(serviceMessage, /put-object/);
+  }, ["s3", "sync", "/staging", "s3://bucket/latex/"]);
+  assert.match(serviceMessage, /s3 sync/);
   assert.match(serviceMessage, /exit code 254/);
   assert.match(serviceMessage, /AccessDenied/);
   assert.match(serviceMessage, /permission/);
@@ -49,54 +49,67 @@ test("AWS failure diagnostics expose safe service codes and actionable hints onl
   const unknownMessage = awsFailureMessage({
     code: "private-code-do-not-print",
     stderr: "arbitrary secret=do-not-print-this-secret endpoint https://private.example",
-  }, ["s3api", "get-object"]);
-  assert.equal(unknownMessage, "AWS CLI operation failed get-object");
+  }, ["s3api", "head-object"]);
+  assert.equal(unknownMessage, "AWS CLI operation failed head-object");
   assert.doesNotMatch(unknownMessage, /private-code|secret|private\.example/);
   const signatureMessage = awsFailureMessage({ code: 254,
-    stderr: "An error occurred (SignatureDoesNotMatch) when calling the GetObject operation: private detail",
-  }, ["s3api", "get-object"]);
+    stderr: "An error occurred (SignatureDoesNotMatch) when calling the HeadObject operation: private detail",
+  }, ["s3api", "head-object"]);
   assert.match(signatureMessage, /exit code 254/);
   assert.match(signatureMessage, /SignatureDoesNotMatch/);
   assert.match(signatureMessage, /S3 access key ID and secret match/);
   assert.doesNotMatch(signatureMessage, /private detail/);
 });
+
+// A fake `aws`: `s3 sync` copies the staged subtree into a JSON store the way the
+// real CLI would (keys under the destination prefix, given metadata, skip when a
+// key of the same size exists with --size-only) and logs one record per file it
+// stores; `s3api head-object` answers from the store.
 const fakeAwsProgram = `#!${process.execPath}
 const fs = require('node:fs');
-const { gunzipSync, gzipSync } = require('node:zlib');
+const path = require('node:path');
+const { gunzipSync } = require('node:zlib');
 const args = process.argv.slice(2);
 const value = (key) => { const index = args.indexOf(key); return index < 0 ? undefined : args[index + 1]; };
 const command = args.slice(0, 2).join(' ');
-const key = value('--key');
 const storePath = process.env.AWS_STORE;
 let store = {}; try { store = JSON.parse(fs.readFileSync(storePath, 'utf8')); } catch {}
-const entry = { command, key: key || null };
-if (command === 's3api put-object') {
-  const bodyPath = value('--body');
-  const encoded = fs.readFileSync(bodyPath);
-  const decoded = value('--content-encoding') === 'gzip' ? gunzipSync(encoded) : encoded;
-  store[key] = { encoded: encoded.toString('base64'), decoded: decoded.toString('base64'),
-    contentType: value('--content-type'), contentEncoding: value('--content-encoding') || undefined,
-    cacheControl: value('--cache-control'), acl: value('--acl') };
-  if (bodyPath.includes('/librepaper-mirror-')) entry.bodyPath = bodyPath;
-  entry.body = decoded.toString('base64');
-  Object.assign(entry, { contentType: store[key].contentType,
-    contentEncoding: store[key].contentEncoding || null, cacheControl: store[key].cacheControl, acl: store[key].acl });
-}
-if (command === 's3api get-object') {
+const log = (entry) => fs.appendFileSync(process.env.AWS_LOG, JSON.stringify(entry) + '\\n');
+const walk = (directory, base = '') => fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) =>
+  entry.isDirectory() ? walk(path.join(directory, entry.name), base + entry.name + '/') : [base + entry.name]);
+if (command === 's3 sync') {
+  const source = args[2];
+  const destination = args[3].replace(/^s3:\\/\\/[^/]+\\//, '');
+  const config = fs.readFileSync(process.env.AWS_CONFIG_FILE, 'utf8');
+  for (const relative of walk(source).sort()) {
+    const key = destination + relative;
+    const encoded = fs.readFileSync(path.join(source, relative));
+    if (args.includes('--size-only') && store[key] && Buffer.from(store[key].encoded, 'base64').length === encoded.length) continue;
+    const decoded = value('--content-encoding') === 'gzip' ? gunzipSync(encoded) : encoded;
+    store[key] = { encoded: encoded.toString('base64'), decoded: decoded.toString('base64'),
+      contentType: value('--content-type'), contentEncoding: value('--content-encoding') || undefined,
+      cacheControl: value('--cache-control'), acl: value('--acl') };
+    log({ command, key, body: decoded.toString('base64'), bodyPath: path.join(source, relative),
+      contentType: store[key].contentType, contentEncoding: store[key].contentEncoding || null,
+      cacheControl: store[key].cacheControl, acl: store[key].acl, deleting: args.includes('--delete'),
+      concurrency: /max_concurrent_requests = (\\d+)/.exec(config)?.[1] });
+  }
+  fs.writeFileSync(storePath, JSON.stringify(store));
+  log({ command: 's3 sync done', destination, deleting: args.includes('--delete') });
+} else if (command === 's3api head-object') {
+  const key = value('--key');
   const object = store[key];
   if (!object) process.exit(4);
-  let bytes = Buffer.from(object.decoded, 'base64');
-  const tamper = key === process.env.AWS_TAMPER_KEY ? process.env.AWS_TAMPER_MODE || 'bytes' : '';
-  if (tamper === 'bytes') bytes = Buffer.concat([bytes, Buffer.from('tampered')]);
-  const encoded = object.contentEncoding === 'gzip' ? gzipSync(bytes) : bytes;
-  fs.writeFileSync(args[args.indexOf('--key') + 2], tamper === 'gzip' ? Buffer.from('invalid gzip') : encoded);
-  const response = { ContentType: object.contentType, CacheControl: object.cacheControl };
+  const response = { ContentLength: Buffer.from(object.encoded, 'base64').length, ContentType: object.contentType, CacheControl: object.cacheControl };
   if (object.contentEncoding) response.ContentEncoding = object.contentEncoding;
+  const tamper = key === process.env.AWS_TAMPER_KEY ? process.env.AWS_TAMPER_MODE : '';
+  if (tamper === 'size') response.ContentLength += 1;
   if (tamper === 'metadata') response.ContentType = 'application/octet-stream';
   process.stdout.write(JSON.stringify(response));
+  log({ command, key });
+} else {
+  log({ command, key: value('--key') || null });
 }
-fs.writeFileSync(storePath, JSON.stringify(store));
-fs.appendFileSync(process.env.AWS_LOG, JSON.stringify(entry) + '\\n');
 `;
 
 test("publisher validates prefixes and selects explicit browser metadata", () => {
@@ -284,8 +297,11 @@ test("successful S3 publishing gzips payloads, skips transport files, and upload
     assert.equal(result.count, 10);
     assert.equal(result.uploaded, 10);
     const entries = await records();
-    assert.ok(entries.every((entry) => ["s3api put-object", "s3api get-object"].includes(entry.command)));
-    const puts = entries.filter((entry) => entry.command === "s3api put-object");
+    assert.ok(entries.every((entry) => ["s3 sync", "s3 sync done", "s3api head-object"].includes(entry.command)));
+    const puts = entries.filter((entry) => entry.command === "s3 sync");
+    assert.ok(puts.every((entry) => !entry.deleting), "the mirror is append-only: never --delete");
+    assert.ok(entries.filter((entry) => entry.command === "s3 sync done").every((entry) => entry.destination === "latex/"));
+    assert.ok(puts.every((entry) => entry.concurrency === "32"));
     const keys = puts.map((entry) => entry.key);
     assert.equal(keys.at(-1), `latex/${id}/release.json`);
     for (const skipped of ["latex/_headers", "latex/.assetsignore", `latex/${id}/nested/old.js.br`, `latex/${id}/nested/x.metadata`, `latex/${id}/nested/x.cfmeta`, `latex/${id}/.cloudflare/meta.json`]) {
@@ -308,10 +324,16 @@ test("successful S3 publishing gzips payloads, skips transport files, and upload
     assert.ok(puts.every((entry) => entry.cacheControl === "public, max-age=31536000, immutable"));
     assert.equal(Buffer.from(at("engine.wasm").body, "base64").toString(), "compiled wasm");
     assert.ok(puts.every((entry) => entry.acl === "public-read"));
-    const releasePutIndex = entries.findIndex((entry) => entry.command === "s3api put-object" && entry.key === `latex/${id}/release.json`);
-    assert.ok(releasePutIndex > 0);
-    assert.equal(entries.slice(0, releasePutIndex).filter((entry) => entry.command === "s3api put-object").length,
-      entries.slice(0, releasePutIndex).filter((entry) => entry.command === "s3api get-object").length);
+    // A single sync per metadata group, with release.json in a final sync of its own.
+    const releaseIndex = entries.findIndex((entry) => entry.key === `latex/${id}/release.json`);
+    assert.ok(releaseIndex > 0);
+    assert.ok(entries.slice(releaseIndex + 1).every((entry) => entry.command !== "s3 sync"));
+    assert.ok(entries.slice(0, releaseIndex).filter((entry) => entry.command === "s3 sync").length === puts.length - 1);
+    // Spot checks read headers only after every sync, including release.json's.
+    const heads = entries.filter((entry) => entry.command === "s3api head-object");
+    assert.ok(heads.length > 0 && heads.length <= 5);
+    assert.ok(heads.some((entry) => entry.key === `latex/${id}/release.json`));
+    assert.ok(entries.findIndex((entry) => entry.command === "s3api head-object") > releaseIndex);
     assert.equal((await readFile(join(dir, "icudt.dat.gz"))).toString("hex"), "1f8b080001");
     for (const entry of entries.filter((row) => row.bodyPath)) {
       await assert.rejects(stat(entry.bodyPath), { code: "ENOENT" });
@@ -320,14 +342,16 @@ test("successful S3 publishing gzips payloads, skips transport files, and upload
     await rm(log);
     await publish({ dir: source, prefix: "latex", configureCors: true, env, output: () => {} });
     const corsEntries = await records();
+    // Every key already exists with the same size, so the second sync stores nothing and deletes nothing.
+    assert.ok(!corsEntries.some((entry) => entry.command === "s3 sync"));
     assert.equal(corsEntries.at(-1).command, "s3api put-bucket-cors");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("tampered readback aborts before publishing release.json", async () => {
-  const root = await mkdtemp(join(tmpdir(), "publish-mirror-tampered-readback-"));
+test("a spot check that finds the wrong size or metadata fails the publish", async () => {
+  const root = await mkdtemp(join(tmpdir(), "publish-mirror-spot-check-"));
   const source = join(root, "mirror");
   const bin = join(root, "bin");
   const log = join(root, "aws.jsonl");
@@ -335,7 +359,7 @@ test("tampered readback aborts before publishing release.json", async () => {
   await mkdir(source);
   await mkdir(bin);
   const { id } = await writeLatexRelease(source, { "engine.wasm": Buffer.from("verified wasm release") });
-  const tamperedKey = `latex/${id}/engine.wasm`;
+  const tamperedKey = `latex/${id}/release.json`;
   const fakeAws = join(bin, "aws");
   await writeFile(fakeAws, fakeAwsProgram);
   await chmod(fakeAws, 0o755);
@@ -343,12 +367,11 @@ test("tampered readback aborts before publishing release.json", async () => {
     AWS_TAMPER_KEY: tamperedKey, S3_ENDPOINT: "https://s3.example.invalid", S3_REGION: "region-1",
     S3_BUCKET: "dedicated-assets", AWS_ACCESS_KEY_ID: "access", AWS_SECRET_ACCESS_KEY: secret };
   try {
-    for (const [mode, error] of [["bytes", /uploaded object bytes mismatch/], ["metadata", /metadata mismatch/], ["gzip", /header|gzip|compression/i]]) {
+    for (const [mode, error] of [["size", /uploaded object size mismatch/], ["metadata", /metadata mismatch/]]) {
       await assert.rejects(publish({ dir: source, prefix: "latex", env: { ...env, AWS_TAMPER_MODE: mode }, output: () => {} }), error);
     }
     const entries = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
-    assert.ok(entries.some((entry) => entry.command === "s3api get-object" && entry.key === tamperedKey));
-    assert.ok(!entries.some((entry) => entry.command === "s3api put-object" && entry.key === `latex/${id}/release.json`));
+    assert.ok(entries.some((entry) => entry.command === "s3api head-object" && entry.key === tamperedKey));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
