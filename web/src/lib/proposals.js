@@ -225,10 +225,10 @@ export function locateProposalHunk(doc, proposalData, hunk) {
     const from = original.convertPos(hunk.start, "utf16", "unicode");
     const to = original.convertPos(hunk.start + hunk.deleted, "utf16", "unicode");
     if (from === undefined || to === undefined) return { file_id: fileId, position: 0, stale: true };
-    // Side 1 sticks to the right of concurrent inserts at the start, while
-    // side 0 sticks to the left at the end. Boundary insertions stay adjacent.
+    // SideRight sticks past boundary inserts at the start; SideLeft stays
+    // before inserts at the end. SideMiddle (0) would make the end unstable.
     const fromCursor = original.getCursor(from, 1);
-    const toCursor = original.getCursor(to, 0);
+    const toCursor = original.getCursor(to, -1);
     const fromResult = doc.getCursorPos(fromCursor);
     const toResult = doc.getCursorPos(toCursor);
     if (!fromResult || !toResult) return { file_id: fileId, position: 0, stale: true };
@@ -605,6 +605,26 @@ export function createProposals({ session, send, mayEdit }) {
     if (missing.byteLength) {
       try { draft.branch.import(missing); } catch { return; }
     }
+    if (allRejected) {
+      const atBase = session.doc.forkAt(resolvedBase);
+      try {
+        const originalFiles = new Set([...atBase.getMap("files").keys()].map(String));
+        const roomFiles = session.doc.getMap("files");
+        const files = draft.branch.getMap("files");
+        const paths = draft.branch.getMap("paths");
+        for (const id of [...files.keys()]) {
+          const text = files.get(id);
+          if (originalFiles.has(String(id)) || roomFiles.get(id) || text?.kind?.() !== "Text" || text.toString()) continue;
+          // A rejected file with no surviving local text should not leak an
+          // empty FILES/PATHS entry into a residual proposal. Keep files that
+          // still contain locally typed text.
+          files.delete(id);
+          paths.delete(id);
+        }
+      } finally {
+        atBase.destroy?.();
+      }
+    }
     draft.branch.commit();
     draft.base = session.doc.frontiers();
     draft.baseVersion = session.doc.oplogVersion();
@@ -731,6 +751,7 @@ export function createProposals({ session, send, mayEdit }) {
         clearTimeout(draft.retryTimer);
         draft.retryTimer = null;
         draft.retryable = false;
+        const wasOpenPending = draft.openPending;
         draft.openPending = false;
         draft.inflight = null;
         if (draft.opened) {
@@ -742,6 +763,20 @@ export function createProposals({ session, send, mayEdit }) {
             request_id: draft.id,
             base: encodeBase64(encodeFrontiers(draft.openBase ?? draft.base)),
             resume: true,
+          });
+          if (result?.ok !== false) draft.openPending = true;
+          else draft.error = result.error?.message || "offline";
+          continue;
+        }
+        if (wasOpenPending) {
+          // This is a retry of an unacknowledged create, not a status query.
+          // It must also run when a local undo has made the branch empty and
+          // marked it for discard while the first open was in flight.
+          const result = sendMessage({
+            type: "proposal-open",
+            request_id: draft.id,
+            base: encodeBase64(encodeFrontiers(draft.openBase ?? draft.base)),
+            resume: false,
           });
           if (result?.ok !== false) draft.openPending = true;
           else draft.error = result.error?.message || "offline";
@@ -917,6 +952,16 @@ export function createProposals({ session, send, mayEdit }) {
           item.id === requestId || item.inflight?.requestId === requestId ||
           item.discardRequestId === requestId);
         if (!draft) return;
+        if (message.status_unknown === true) {
+          draft.error = "the saved proposal outcome has expired; local draft preserved for manual recovery";
+          draft.resolutionBlocked = true;
+          draft.retryable = false;
+          draft.openPending = false;
+          draft.inflight = null;
+          draft.resolutionPending = null;
+          changed();
+          return;
+        }
         const versionConflict = message.version_conflict === true;
         if (versionConflict && Number.isSafeInteger(Number(message.applied_version))) {
           // The row advanced while this client was disconnected. Refresh only

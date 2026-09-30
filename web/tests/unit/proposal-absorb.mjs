@@ -83,6 +83,66 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.ok(first.base, "the first open carried its immutable base");
   assert.equal(retry.base, first.base, "the retry uses the original open base");
 }
+// If an initial open was sent but not acknowledged, reconnect retries that
+// create even when a local undo marked the now-empty draft for discard.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "A paper.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  proposals.text("f1").insert(0, "New. ");
+  proposals.flush();
+  const firstOpen = sent.at(-1);
+  proposals.text("f1").delete(0, 5);
+  proposals.flush();
+  proposals.reconnect();
+  const retry = sent.at(-1);
+  assert.equal(retry.type, "proposal-open", "the pending initial open is replayed despite local undo");
+  assert.equal(retry.request_id, id);
+  assert.equal(retry.resume, false, "an unacknowledged create is not a status-only query");
+  assert.equal(retry.base, firstOpen.base);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: firstOpen.base, applied_version: 1 });
+  assert.equal(sent.at(-1).type, "proposal-discard", "the empty opened row is discarded after its ack");
+}
+// A status query past the outcome retention period blocks reuse of the old id
+// and keeps the full local branch available through recovery export.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "A paper.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  proposals.text("f1").insert(0, "New. ");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  proposals.reconnect();
+  assert.equal(sent.at(-1).resume, true);
+  proposals.apply({ type: "error", request_id: id, status_unknown: true });
+  assert.equal(proposals.status().recoveryRequired, true);
+  assert.ok(proposals.recoveryTexts().find((draft) => draft.id === id)?.files[0].text.includes("New."));
+  proposals.flush();
+  assert.equal(sent.at(-1).type, "proposal-open", "an expired id is never updated or reopened");
+  assert.equal(sent.at(-1).resume, true);
+}
 // A version conflict refreshes the compare-and-swap version without treating
 // the locally submitted operations as acknowledged.
 {
@@ -382,5 +442,36 @@ import { createProposals } from "../../src/lib/proposals.js";
     decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip, resolved_base: open.base });
   assert.ok(proposals.text("f2").toString().includes("X"), "the unacknowledged new-file tail survives rejection");
   assert.equal(proposals.doc().getMap("paths").get("f2"), "references.bib", "the residual file keeps its path");
+}
+// A rejected new file with no surviving local text is removed when the
+// author has a separate residual edit in another file.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const source = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  source.insert(0, "A paper.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const bib = proposals.doc().getMap("files").setContainer("f2", new LoroText());
+  proposals.doc().getMap("paths").set("f2", "references.bib");
+  bib.insert(0, "@article{a}");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  proposals.text("f1").insert(0, "X");
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip, resolved_base: open.base });
+  assert.equal(proposals.doc().getMap("files").get("f2"), undefined, "the emptied rejected file is removed");
+  assert.equal(proposals.doc().getMap("paths").get("f2"), undefined, "its path entry is removed too");
+  assert.ok(proposals.text("f1").toString().includes("X"), "the other-file tail becomes a residual proposal");
 }
 console.log("proposal-absorb: ok");
