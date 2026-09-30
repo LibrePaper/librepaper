@@ -276,7 +276,7 @@ hourly pass, and once at startup.
 ## Privacy and the LaTeX mirror
 
 Browsers download the LaTeX compiler distribution directly from the default
-project mirror, `https://latex.librepaper.workers.dev/`. The mirror receives
+project asset mirror, `https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/`. The mirror receives
 the browser's IP address and the digest-named files it requests. Those
 requests can reveal package choices and suggest a document's field or
 template. Compiler downloads do not send document source or private input

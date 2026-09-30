@@ -35,7 +35,6 @@ import { maybeBytes as toBytes } from "./bytes.js";
 import { named } from "./latex/errors.js";
 
 export const DEBOUNCE = 1500;
-export const DEFAULT_BASE = "https://latex.librepaper.workers.dev/";
 
 /// The whole job's time budget and the bounded pass count SPEC "Browser
 /// compilation controller" asks for. Both are exceeded as a reported
@@ -43,7 +42,7 @@ export const DEFAULT_BASE = "https://latex.librepaper.workers.dev/";
 export const DEADLINE_MS = 240_000;
 export const MAX_PASSES = 8;
 
-let base = DEFAULT_BASE;
+let base = "";
 
 // Swappable seams. Production leaves every one of these at its default; only
 // `_testing.inject` (used by `latex-controller.mjs`) ever changes them, which
@@ -151,7 +150,7 @@ async function loadRelease() {
       if (!response.ok) throw new Error(`no LaTeX release at ${base} (${response.status})`);
       const data = await response.json();
       if (data.format !== 2) {
-        throw new Error(`this LaTeX release is format ${data.format ?? "unknown"}, but this build only speaks format 2`);
+        throw new Error(`this LaTeX release is format ${data.format ?? "unknown"}, but this build only speaks format 2; rebuild the mirror with make mirror in wasm-latex`);
       }
       release = data;
       return release;

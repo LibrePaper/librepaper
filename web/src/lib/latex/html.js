@@ -4,7 +4,6 @@ import { createEngine } from "./driver.js";
 import { fetchVerified } from "./resources.js";
 
 const DEADLINE_MS = 240_000;
-const DEFAULT_BASE = "https://latex.librepaper.workers.dev/";
 
 function superseded() {
   return Object.assign(new Error("Preview superseded"), { name: "Superseded" });
@@ -51,7 +50,7 @@ export function createHtmlCompiler({
   }
 
   async function configuration(base, settings = {}) {
-    base = new URL(base || DEFAULT_BASE, globalThis.location?.href || "http://localhost/").href;
+    base = new URL(base, globalThis.location?.href || "http://localhost/").href;
     if (!base.endsWith("/")) base += "/";
     if (pinnedBase !== base || !pinned) {
       if (!pinnedRequest || pinnedRequest.base !== base) {
@@ -135,7 +134,7 @@ export function createHtmlCompiler({
     // A queued historical render carries the release identity resolved by
     // the caller. Its base is authoritative; consulting the live chooser
     // here could fetch a different release than the cache key names.
-    const base = new URL(options.configuration?.base || options.base || DEFAULT_BASE, globalThis.location?.href || "http://localhost/").href;
+    const base = new URL(options.configuration?.base || options.base, globalThis.location?.href || "http://localhost/").href;
     const target = await prepare(base.endsWith("/") ? base : `${base}/`, options.settings, current, options.configuration);
     if (current !== epoch) throw superseded();
     projectPath(tree.main);

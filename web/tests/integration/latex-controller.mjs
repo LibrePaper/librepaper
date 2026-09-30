@@ -441,7 +441,7 @@ function nextProject() {
   assert.notEqual(worker(), w0, "a fresh worker was created lazily rather than reusing the dead one");
 }
 
-// A legacy mirror is an operator error, not a request for release "undefined".
+// A mirror that is not a format 2 release is an operator error, reported as such.
 {
   latex.at("/legacy-mirror/");
   latex._testing.inject({ worker: FakeWorker, fetch: async () => new Response(JSON.stringify({ version: 1, distributions: {} })) });
@@ -449,7 +449,7 @@ function nextProject() {
   const result = await latex.compile(tree("main.tex", "source"));
   assert.equal(result.ok, false);
   assert.equal(result.failure.kind, "resources");
-  assert.match(result.failure.message, /no default engine release/);
+  assert.match(result.failure.message, /only speaks format 2/);
   assert.match(result.failure.message, /make mirror/);
   assert.doesNotMatch(result.failure.message, /undefined/);
 }
