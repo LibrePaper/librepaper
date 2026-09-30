@@ -4,7 +4,7 @@
 // SwiftLaTeX/BusyTeX/TeXlyre distribution comparisons this file used to
 // fetch, and the SwiftLaTeX package-fetching endpoint -- moved to the
 // wasm-latex repository (`make mirror`, `make push` there; layout in
-// wasm-latex/docs/mirror.md). Nothing here fetches anything anymore; this
+// wasm-latex/docs/release.md). Nothing here fetches anything anymore; this
 // file only finds and reads the immutable release directories
 // (`<sha256>/release.json`) `tools/latex/tools/serve.mjs` expects.
 

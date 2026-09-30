@@ -2,7 +2,7 @@
 //
 // The mirror itself -- engines and TeX Live packages -- is built and pushed
 // from the wasm-latex repository (`make mirror`, `make push`; layout in
-// wasm-latex/docs/mirror.md). A release is an immutable directory
+// wasm-latex/docs/release.md). A release is an immutable directory
 // `latex/<id>/` where id is the SHA-256 of `<id>/MANIFEST.json`, described by
 // `<id>/release.json` (format 2, every path relative to the release
 // directory, bundled releases only, no per-file TeX Live snapshot). This

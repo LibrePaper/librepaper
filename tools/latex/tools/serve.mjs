@@ -1,7 +1,7 @@
 // A server for a LaTeX mirror on disk or at a URL and the harness page that drives
 // it, for the browser checks. The mirror is
 // built and deployed by the wasm-latex repository (`make mirror`, `make push`
-// there; layout in wasm-latex/docs/mirror.md), and this serves it the way the
+// there; layout in wasm-latex/docs/release.md), and this serves it the way the
 // asset mirror does -- everything under /mirror/ is immutable and cached for a
 // year -- so what a check sees here is what a browser sees there. The mirror
 // directory holds one or more release directories, `<sha256>/`; a page

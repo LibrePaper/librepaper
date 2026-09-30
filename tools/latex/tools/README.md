@@ -3,7 +3,7 @@
 LibrePaper consumes a deployed LaTeX engine mirror -- engines and the TeX Live
 package bundles -- built and pushed from the **wasm-latex** repository
 (`make mirror`, `make push` there; layout documented in
-`wasm-latex/docs/mirror.md`). Nothing in this repository builds that mirror any
+`wasm-latex/docs/release.md`). Nothing in this repository builds that mirror any
 more. A release is an immutable directory `latex/<id>/`, where `<id>` is the
 SHA-256 of `<id>/MANIFEST.json`, described by `<id>/release.json` (format 2,
 every path relative to the release directory, bundled releases only). The
