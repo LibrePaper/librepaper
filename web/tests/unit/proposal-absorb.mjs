@@ -513,4 +513,73 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.equal(proposals.doc().getMap("paths").get("f2"), undefined, "its path entry is removed too");
   assert.ok(proposals.text("f1").toString().includes("X"), "the other-file tail becomes a residual proposal");
 }
+// A mixed resolution can remove a declined new file from the room graph while
+// the author has later typing in its text container. Preserve a full export
+// for manual recovery instead of silently dropping that unpublished text.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const source = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  source.insert(0, "The cat sat.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const main = proposals.text("f1");
+  main.delete(4, 3);
+  main.insert(4, "tabby");
+  const bib = proposals.doc().getMap("files").setContainer("f2", new LoroText());
+  proposals.doc().getMap("paths").set("f2", "references.bib");
+  bib.insert(0, "@article{a}");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  bib.insert(11, "X");
+
+  const decode = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+  const { decodeFrontiers } = await import("loro-crdt");
+  const hunks = proposals.hunksOf({
+    base: decodeFrontiers(decode(open.base)),
+    tip: decodeFrontiers(decode(update.tip)),
+    bytes: decode(update.update),
+  });
+  const mainHunk = hunks.find((hunk) => hunk.file === "f1");
+  const bibHunk = hunks.find((hunk) => hunk.file === "f2");
+  assert.ok(mainHunk && bibHunk, "the proposal contains one hunk in each file");
+
+  // Model the server's mixed result: publish the accepted main-file edit and
+  // remove the declined created file's map entries.
+  const resolved = room.fork();
+  resolved.setPeerId(4n);
+  resolved.import(decode(update.update));
+  resolved.getMap("files").delete("f2");
+  resolved.getMap("paths").delete("f2");
+  resolved.commit();
+  room.import(resolved.export({ mode: "update", from: room.oplogVersion() }));
+  resolved.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [
+      { hunk: mainHunk.index, accepted: true },
+      { hunk: bibHunk.index, accepted: false },
+    ],
+    resolved_tip: update.tip,
+    resolved_base: open.base,
+  });
+  assert.equal(proposals.status().recoveryRequired, true, "the mixed file deletion requires manual recovery");
+  proposals.stop();
+  proposals.start();
+  const recovery = proposals.recoveryTexts().find((draft) => draft.id === id);
+  assert.ok(recovery, "the unresolved draft remains exportable after Editor restart");
+  assert.ok(recovery.files.some((file) => file.path === "references.bib" && file.text.includes("X")),
+    "the recovery export preserves unpublished text from the declined file");
+}
 console.log("proposal-absorb: ok");
