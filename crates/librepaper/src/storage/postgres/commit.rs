@@ -24,6 +24,14 @@ pub struct Authority {
     pub principal_key: String,
     pub account_id: Option<Uuid>,
     pub link_hash: Option<Vec<u8>>,
+    /// The account session this request was authenticated under.
+    pub session_generation: Option<i64>,
+    /// Deployment ceilings resolved from the authenticated identity.
+    pub policy_edit: bool,
+    pub policy_comment: bool,
+    /// In automation mode the account remains useful for attribution and
+    /// session validity, while only the presented live link grants access.
+    pub automation: bool,
 }
 
 impl Authority {
@@ -36,6 +44,27 @@ impl Authority {
             principal_key: peer_key.into(),
             account_id: None,
             link_hash: None,
+            session_generation: None,
+            policy_edit: false,
+            policy_comment: false,
+            automation: false,
+        }
+    }
+
+    pub(crate) fn mutation_authorization(
+        &self,
+    ) -> super::annotations::MutationAuthorization {
+        super::annotations::MutationAuthorization {
+            principal_key: self.principal_key.clone(),
+            account_id: self.account_id,
+            session_generation: self.session_generation,
+            token_hash: self
+                .link_hash
+                .as_deref()
+                .and_then(|hash| hash.try_into().ok()),
+            policy_edit: self.policy_edit,
+            policy_comment: self.policy_comment,
+            automation: self.automation,
         }
     }
 }

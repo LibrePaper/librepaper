@@ -66,7 +66,7 @@ impl Server {
                 &json!({"error":"source changed or edits have not synchronized"}),
             );
         }
-        let authority = who.document_authority();
+        let authority = who.document_authority(self.ceiling_for(&who.id));
         let row = match room
             .take_label(
                 "render",

@@ -341,6 +341,473 @@ mod tests {
             .unwrap()
     }
 
+    async fn authorize_for_test(
+        catalog: &PostgresCatalog,
+        document_id: uuid::Uuid,
+        actor: &MutationAuthorization,
+        require_editor: bool,
+        annotation_path: bool,
+    ) -> Result<()> {
+        if annotation_path {
+            catalog
+                .authorize_document_mutation(document_id, actor, require_editor)
+                .await
+        } else {
+            let authority = Authority {
+                principal_key: actor.principal_key.clone(),
+                account_id: actor.account_id,
+                link_hash: actor.token_hash.map(|hash| hash.to_vec()),
+                session_generation: actor.session_generation,
+                policy_edit: actor.policy_edit,
+                policy_comment: actor.policy_comment,
+                automation: actor.automation,
+            };
+            let rung = if require_editor {
+                crate::log::sequencer::Rung::Editor
+            } else {
+                crate::log::sequencer::Rung::Commenter
+            };
+            match catalog
+                .begin_document_command(document_id, &authority, rung)
+                .await
+            {
+                Ok(tx) => tx.rollback().await,
+                Err(error) => Err(error),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn mutation_authorization_uses_live_grants_sessions_ceilings_and_link_identity() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        truncate(&catalog).await;
+
+        let owner = seed_account(&catalog, "auth-owner").await;
+        let named = seed_account(&catalog, "auth-named").await;
+        let stranger = seed_account(&catalog, "auth-stranger").await;
+        let document = seed_document(&catalog, owner.id, "auth-document").await;
+        let make_actor = |account_id: Option<Uuid>, generation, token_hash, policy_edit, policy_comment, automation| {
+            MutationAuthorization {
+                principal_key: account_id.map_or_else(|| "visitor:test".into(), |id| id.to_string()),
+                account_id,
+                session_generation: generation,
+                token_hash,
+                policy_edit,
+                policy_comment,
+                automation,
+            }
+        };
+
+        let unrelated = make_actor(
+            Some(stranger.id),
+            Some(stranger.session_generation),
+            None,
+            true,
+            true,
+            false,
+        );
+        assert!(authorize_for_test(&catalog, document.id, &unrelated, true, false)
+            .await
+            .is_err(), "a publisher ceiling cannot grant an unrelated account editor access");
+
+        // An account that already has a direct editor grant must keep it when
+        // it also visits through a weaker link.
+        let direct_link_hash = [0x31; 32];
+        let direct_link = catalog
+            .create_share_link(
+                document.id,
+                access::AccessRole::Commenter,
+                direct_link_hash,
+                "reviewer".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        catalog
+            .set_grant(document.id, named.id, access::AccessRole::Editor)
+            .await
+            .unwrap();
+        catalog
+            .pin_link_guest(
+                document.id,
+                named.id,
+                access::AccessRole::Commenter,
+                direct_link_hash,
+            )
+            .await
+            .unwrap();
+        let direct = catalog
+            .grants(document.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|grant| grant.account_id == named.id)
+            .unwrap();
+        assert_eq!(direct.role.as_deref(), Some("editor"));
+        assert!(direct.source_link_hash.is_none());
+        catalog
+            .revoke_share_link(document.id, direct_link.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog
+                .access_role(
+                    document.id,
+                    Some(named.id),
+                    None,
+                    OffsetDateTime::now_utc(),
+                )
+                .await
+                .unwrap(),
+            Some(access::AccessRole::Editor),
+            "revoking the weaker link does not remove or downgrade the direct grant"
+        );
+
+        // Once the direct grant is removed, the pinned grant carries no role
+        // of its own. Its rights follow the exact source link as that link is
+        // changed, and disappear when it expires or is revoked.
+        catalog.remove_grant(document.id, named.id).await.unwrap();
+        let link_hash = [0x32; 32];
+        let source_link = catalog
+            .create_share_link(
+                document.id,
+                access::AccessRole::Commenter,
+                link_hash,
+                "reviewer".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        catalog
+            .pin_link_guest(document.id, named.id, access::AccessRole::Reader, link_hash)
+            .await
+            .unwrap();
+        let sourced = catalog
+            .grants(document.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|grant| grant.account_id == named.id)
+            .unwrap();
+        assert!(sourced.role.is_none());
+        assert_eq!(sourced.source_link_hash.as_deref(), Some(link_hash.as_slice()));
+        let named_actor = make_actor(
+            Some(named.id),
+            Some(named.session_generation),
+            None,
+            true,
+            true,
+            false,
+        );
+        assert!(authorize_for_test(&catalog, document.id, &named_actor, false, true)
+            .await
+            .is_ok());
+        assert!(authorize_for_test(&catalog, document.id, &named_actor, true, false)
+            .await
+            .is_err());
+        let now = OffsetDateTime::now_utc();
+        catalog
+            .replace_share_links(
+                document.id,
+                &[(
+                    "reader".into(),
+                    link_hash,
+                    Vec::new(),
+                    "reviewer".into(),
+                    None,
+                    None,
+                )],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog
+                .access_role(document.id, Some(named.id), None, now)
+                .await
+                .unwrap(),
+            Some(access::AccessRole::Reader),
+            "a pinned account tracks the current role of its source link"
+        );
+        catalog
+            .revoke_share_link(document.id, source_link.id)
+            .await
+            .unwrap();
+        assert!(authorize_for_test(&catalog, document.id, &named_actor, false, false)
+            .await
+            .is_err(), "revoking a source link also revokes its pinned grant");
+
+        let expiring_hash = [0x33; 32];
+        catalog
+            .create_share_link(
+                document.id,
+                access::AccessRole::Commenter,
+                expiring_hash,
+                "temporary reviewer".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        catalog
+            .pin_link_guest(
+                document.id,
+                named.id,
+                access::AccessRole::Reader,
+                expiring_hash,
+            )
+            .await
+            .unwrap();
+        let expired_at = now - Duration::seconds(1);
+        catalog
+            .replace_share_links(
+                document.id,
+                &[(
+                    "commenter".into(),
+                    expiring_hash,
+                    Vec::new(),
+                    "reviewer".into(),
+                    Some(expired_at),
+                    None,
+                )],
+            )
+            .await
+            .unwrap();
+        assert!(authorize_for_test(&catalog, document.id, &named_actor, false, false)
+            .await
+            .is_err(), "an expired source link cannot authorize its pinned grant");
+
+        // Direct grants and ownership remain subject to the same policy caps
+        // as links. Edit permission implies comment permission, while a
+        // comment-only ceiling lowers an editor grant to the commenter rung.
+        catalog
+            .set_grant(document.id, named.id, access::AccessRole::Editor)
+            .await
+            .unwrap();
+        let comment_only = make_actor(
+            Some(named.id),
+            Some(named.session_generation),
+            None,
+            false,
+            true,
+            false,
+        );
+        assert!(authorize_for_test(&catalog, document.id, &comment_only, false, false)
+            .await
+            .is_ok());
+        assert!(authorize_for_test(&catalog, document.id, &comment_only, true, false)
+            .await
+            .is_err());
+        let stale = make_actor(
+            Some(named.id),
+            Some(named.session_generation + 1),
+            None,
+            true,
+            true,
+            false,
+        );
+        assert!(authorize_for_test(&catalog, document.id, &stale, false, true)
+            .await
+            .is_err(), "annotation writes reject a stale account session");
+        assert!(authorize_for_test(&catalog, document.id, &stale, true, false)
+            .await
+            .is_err(), "semantic commands reject the same stale account session");
+
+        let owner_no_edit = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            None,
+            false,
+            true,
+            false,
+        );
+        assert!(authorize_for_test(&catalog, document.id, &owner_no_edit, true, false)
+            .await
+            .is_err());
+        assert!(authorize_for_test(&catalog, document.id, &owner_no_edit, false, false)
+            .await
+            .is_err());
+        let owner_comment_hash = [0x44; 32];
+        catalog
+            .create_share_link(
+                document.id,
+                access::AccessRole::Commenter,
+                owner_comment_hash,
+                "owner fallback".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let owner_comment_link = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            Some(owner_comment_hash),
+            false,
+            true,
+            false,
+        );
+        assert!(authorize_for_test(&catalog, document.id, &owner_comment_link, false, false)
+            .await
+            .is_ok());
+        let owner_no_comment = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            None,
+            false,
+            false,
+            false,
+        );
+        assert!(authorize_for_test(&catalog, document.id, &owner_no_comment, false, true)
+            .await
+            .is_err());
+
+        // Cached owner identity is attribution only in automation mode. The
+        // same account gets no authority until an editor link is supplied.
+        catalog
+            .set_grant(document.id, owner.id, access::AccessRole::Editor)
+            .await
+            .unwrap();
+        let automation = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            None,
+            true,
+            true,
+            true,
+        );
+        assert!(authorize_for_test(&catalog, document.id, &automation, true, false)
+            .await
+            .is_err());
+        let editor_hash = [0x42; 32];
+        catalog
+            .create_share_link(
+                document.id,
+                access::AccessRole::Editor,
+                editor_hash,
+                "agent".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let editor_link_comment_only = make_actor(
+            Some(stranger.id),
+            Some(stranger.session_generation),
+            Some(editor_hash),
+            false,
+            true,
+            false,
+        );
+        assert!(authorize_for_test(
+            &catalog,
+            document.id,
+            &editor_link_comment_only,
+            true,
+            false,
+        )
+        .await
+        .is_err());
+        assert!(authorize_for_test(
+            &catalog,
+            document.id,
+            &editor_link_comment_only,
+            false,
+            false,
+        )
+        .await
+        .is_ok());
+        let automation_link = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            Some(editor_hash),
+            true,
+            true,
+            true,
+        );
+        assert!(authorize_for_test(&catalog, document.id, &automation_link, true, false)
+            .await
+            .is_ok());
+
+        sqlx::query!("UPDATE documents SET ownership_mode='open' WHERE id=$1", document.id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        let open_visitor = make_actor(None, None, None, true, true, false);
+        assert!(authorize_for_test(&catalog, document.id, &open_visitor, false, false)
+            .await
+            .is_ok());
+        assert!(authorize_for_test(&catalog, document.id, &open_visitor, true, false)
+            .await
+            .is_err());
+        let open_no_comment = make_actor(None, None, None, true, false, false);
+        assert!(authorize_for_test(&catalog, document.id, &open_no_comment, false, false)
+            .await
+            .is_err());
+        assert!(authorize_for_test(&catalog, document.id, &automation, false, false)
+            .await
+            .is_err(), "automation cannot use open-mode commenting without its link");
+
+        // Session revocation must wait until a command using that session has
+        // committed, closing the check/use gap at the transaction boundary.
+        let owner_actor = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            None,
+            true,
+            true,
+            false,
+        );
+        let owner_authority = Authority {
+            principal_key: owner_actor.principal_key.clone(),
+            account_id: owner_actor.account_id,
+            link_hash: None,
+            session_generation: owner_actor.session_generation,
+            policy_edit: owner_actor.policy_edit,
+            policy_comment: owner_actor.policy_comment,
+            automation: owner_actor.automation,
+        };
+        let command_tx = catalog
+            .begin_document_command(
+                document.id,
+                &owner_authority,
+                crate::log::sequencer::Rung::Editor,
+            )
+            .await
+            .unwrap();
+        let mut revocation_tx = catalog.pool().begin().await.unwrap();
+        sqlx::query("SET LOCAL lock_timeout = '25ms'")
+            .execute(&mut *revocation_tx)
+            .await
+            .unwrap();
+        assert!(sqlx::query(
+            "UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1",
+        )
+        .bind(owner.id)
+        .execute(&mut *revocation_tx)
+        .await
+        .is_err());
+        revocation_tx.rollback().await.unwrap();
+        command_tx.commit().await.unwrap();
+        let changed = sqlx::query(
+            "UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1",
+        )
+        .bind(owner.id)
+        .execute(catalog.pool())
+        .await
+        .unwrap()
+        .rows_affected();
+        assert_eq!(changed, 1);
+    }
+
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn operation_outcomes_commit_atomically_and_remain_actor_scoped() {
@@ -757,7 +1224,9 @@ mod tests {
             account_id: Some(collaborator.id),
             session_generation: Some(collaborator.session_generation),
             token_hash: None,
-            policy_editor: false,
+            policy_edit: false,
+            policy_comment: true,
+            automation: false,
         };
         {
             let mut tx = catalog.pool().begin().await.unwrap();
@@ -825,7 +1294,9 @@ mod tests {
             account_id: Some(account.id),
             session_generation: Some(account.session_generation),
             token_hash: None,
-            policy_editor: false,
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
         };
         let reply = {
             let mut tx = catalog.pool().begin().await.unwrap();
@@ -2209,6 +2680,10 @@ mod tests {
             principal_key: account.id.to_string(),
             account_id: Some(account.id),
             link_hash: None,
+            session_generation: Some(account.session_generation),
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
         };
         let request_id = uuid::Uuid::new_v4();
         let mut command = SetBodyLabel {

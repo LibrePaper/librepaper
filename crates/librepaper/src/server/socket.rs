@@ -962,7 +962,7 @@ impl Server {
                                         &why,
                                         None,
                                         who.authorship(&author),
-                                        &who.document_authority(),
+                                        &who.document_authority(self.ceiling_for(&who.id)),
                                         request_id,
                                     )
                                     .await;
@@ -1101,7 +1101,7 @@ impl Server {
                                     author: by.clone(),
                                     base,
                                 };
-                                match room.command(&who.document_authority(), &mut command).await {
+                                match room.command(&who.document_authority(self.ceiling_for(&who.id)), &mut command).await {
                                     Ok(stored) => {
                                         announce_proposal(&room, &stored.id.to_string()).await;
                                         json!({
@@ -1165,7 +1165,7 @@ impl Server {
                                     decided: Vec::new(),
                                     carried: Vec::new(),
                                 };
-                                match room.command(&who.document_authority(), &mut command).await {
+                                match room.command(&who.document_authority(self.ceiling_for(&who.id)), &mut command).await {
                                     Ok(_) => {
                                         announce_proposal(&room, incoming.proposal_id()).await;
                                         json!({
@@ -1251,7 +1251,7 @@ impl Server {
                                     request_id,
                                     total_hunks: 0,
                                 };
-                                match room.command(&who.document_authority(), &mut command).await {
+                                match room.command(&who.document_authority(self.ceiling_for(&who.id)), &mut command).await {
                                     // The merge (and any reverts a partial
                                     // accept needed) was already relayed by
                                     // the sequencer itself, as the source this

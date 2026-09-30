@@ -2869,6 +2869,10 @@ async fn a_command_with_no_scratch_is_refused_before_it_opens_a_transaction() {
         principal_key: "account:a".into(),
         account_id: None,
         link_hash: None,
+        session_generation: None,
+        policy_edit: false,
+        policy_comment: false,
+        automation: false,
     };
     let error = sequencer
         .command(&authority, &mut NoopCommand)

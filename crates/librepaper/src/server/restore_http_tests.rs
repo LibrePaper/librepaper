@@ -98,6 +98,8 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         session_generation: owner.session_generation.to_string(),
         link_hash: String::new(),
         policy_editor: true,
+        policy_comment: true,
+        automation: false,
         unowned_publisher: false,
     };
     store
@@ -184,6 +186,10 @@ async fn a_restore_keeps_what_it_replaced() {
         principal_key: deployment.owner_id.to_string(),
         account_id: Some(deployment.owner_id),
         link_hash: None,
+        session_generation: Some(1),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
     };
 
     // Step 1: name the initial source. `take_label` is the simplest path to

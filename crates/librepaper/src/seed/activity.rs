@@ -463,6 +463,12 @@ pub async fn simulate(
     if head.update_sequence != 0 {
         return Err(format!("{slug} already has a history of its own"));
     }
+    let author = catalog
+        .account(author_account_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .filter(|account| account.status == "active")
+        .ok_or_else(|| format!("the seed author account for {slug} is not active"))?;
 
     let mut dice = Dice::new(slug);
     let now = OffsetDateTime::now_utc();
@@ -488,6 +494,10 @@ pub async fn simulate(
         principal_key: peer_key.clone(),
         account_id: Some(author_account_id),
         link_hash: None,
+        session_generation: Some(author.session_generation),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
     };
     // No operation has reached storage yet. The first row must include the
     // file containers, paths, main entrypoint and assets created above; a
