@@ -72,14 +72,28 @@ function groupsOf(rows) {
   assert.deepEqual(groupsOf(marked), []);
 }
 
-// Two insertions in the same gap are two additions, not rival ones: each has
-// nothing to remove, so neither is an answer to the other.
+// Two insertions in the same gap compete for the same insertion point.
 {
   const marked = markContention([
     row("a#0", "a", "paper", 7, ""),
     row("b#0", "b", "paper", 7, ""),
   ]);
-  assert.deepEqual(groupsOf(marked), []);
+  assert.deepEqual(groupsOf(marked), [["a#0", "b#0"]]);
+}
+
+// An insertion inside a replaced span competes; an insertion at its endpoint
+// remains adjacent and can be kept with either decision.
+{
+  const inside = markContention([
+    row("a#0", "a", "paper", 4, "cat"),
+    row("b#0", "b", "paper", 5, ""),
+  ]);
+  assert.deepEqual(groupsOf(inside), [["a#0", "b#0"]]);
+  const boundary = markContention([
+    row("a#0", "a", "paper", 4, "cat"),
+    row("b#0", "b", "paper", 7, ""),
+  ]);
+  assert.deepEqual(groupsOf(boundary), []);
 }
 
 // Three proposals over one sentence are one group, including the pair that do
@@ -120,7 +134,7 @@ function groupsOf(rows) {
   assert.equal(input[0].contested, undefined, "the input rows are not mutated");
 }
 
-console.log("proposal-contention: rival edits group, adjacent and stale ones do not");
+console.log("proposal-contention: conflicting edits group; adjacent and stale ones do not");
 
 // --- reading a subset -------------------------------------------------------
 

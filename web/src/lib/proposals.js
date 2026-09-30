@@ -8,11 +8,9 @@
 // stores its bytes and its review state in Postgres and decides which of its
 // hunks reach the document.
 //
-// The diff is computed on both sides and travels on neither: the server counts
-// text in code points where a browser counts UTF-16, so the two disagree about
-// every offset and §5.2 keeps offsets off the wire. A hunk is named by its
-// index within the diff of a named tip against a named base, which is the one
-// name that means the same thing to both.
+// Diffs stay local to each side; offsets are UTF-16 in the browser and code
+// points on the server. Only proposal id, base and tip cross the wire, so a
+// hunk is named by its index within a particular diff.
 
 import { encodeFrontiers, decodeFrontiers } from "loro-crdt";
 
@@ -24,7 +22,25 @@ const SAME_DECISION_WITHIN = 8;
 // Groups a run of deltas into hunks: maximal runs of non-retain deltas, with
 // short gaps (≤ SAME_DECISION_WITHIN) bridging deltas together into one hunk.
 // This mirrors hunks.rs:runs() exactly.
-function hunkRanges(deltas) {
+function codePointLength(text) {
+  return [...text].length;
+}
+
+function hunkRanges(deltas, oldText = "") {
+  // JavaScript string and diff offsets are UTF-16, while the server groups
+  // retains by Unicode code point. Measure the actual retained slices so an
+  // emoji does not make the two sides number decisions differently.
+  const retainedCodePoints = new Map();
+  let oldAt = 0;
+  for (let i = 0; i < deltas.length; i++) {
+    const delta = deltas[i];
+    if (delta.retain !== undefined) {
+      retainedCodePoints.set(i, codePointLength(oldText.slice(oldAt, oldAt + delta.retain)));
+      oldAt += delta.retain;
+    } else if (delta.delete !== undefined) {
+      oldAt += delta.delete;
+    }
+  }
   const ranges = [];
   const changesAfter = new Array(deltas.length).fill(false);
   let laterChange = false;
@@ -47,7 +63,7 @@ function hunkRanges(deltas) {
         // A retain at the very end of the deltas is trailing context and does
         // not bridge, so check whether anything after it is non-retain.
         const hasMoreChanges = changesAfter[i];
-        const bridges = delta.retain <= SAME_DECISION_WITHIN && hasMoreChanges;
+        const bridges = retainedCodePoints.get(i) <= SAME_DECISION_WITHIN && hasMoreChanges;
         if (!bridges) {
           break;
         }
@@ -80,7 +96,7 @@ function hunkify(deltas, oldText = "") {
   const hunks = [];
   let cursor = 0; // position in the old side of the diff
   let at = 0; // position in the delta array
-  for (const range of hunkRanges(deltas)) {
+  for (const range of hunkRanges(deltas, oldText)) {
     // Everything before this hunk moves the cursor forward.
     cursor += oldSideLength(deltas.slice(at, range.start));
     let deleted = 0;
@@ -135,14 +151,18 @@ export function hunksOfProposal(doc, proposalData) {
   const { base, tip, bytes } = proposalData;
   if (!base || !tip || !bytes) return [];
 
+  let atBase = null;
+  let branch = null;
   try {
     // Rebuild the branch: fork the room where the proposal forked, then
     // replay the operations the author made on it. A second fork stays at the
     // base, because that is the text the deltas are against and `hunkify`
     // needs it to fill in what a retain bridged over.
-    const atBase = doc.forkAt(base);
-    const branch = doc.forkAt(base);
+    atBase = doc.forkAt(base);
+    branch = doc.forkAt(base);
     branch.import(bytes);
+    if (encodeBase64(encodeFrontiers(branch.frontiers())) !==
+        encodeBase64(encodeFrontiers(tip))) throw new Error("proposal bytes extend past the advertised tip");
 
     // false = Diff rather than JsonDiff, which is what carries TextDelta.
     const diff = branch.diff(base, tip, false);
@@ -150,7 +170,8 @@ export function hunksOfProposal(doc, proposalData) {
     // Which file each hunk is in. A hunk without one cannot be drawn: its
     // offsets are into one text, and an editor shows one text.
     const fileOf = new Map();
-    const files = doc.getMap("files");
+    const pathOf = branch.getMap("paths");
+    const files = branch.getMap("files");
     for (const id of files.keys()) {
       const text = files.get(id);
       if (text?.kind?.() === "Text") fileOf.set(String(text.id), id);
@@ -163,15 +184,90 @@ export function hunksOfProposal(doc, proposalData) {
       for (const hunk of hunkify(diffValue.diff, atBase.getContainerById(cid)?.toString?.() ?? "")) {
         hunk.index = index++;
         hunk.file = fileOf.get(String(cid)) ?? null;
+        hunk.path = hunk.file ? pathOf.get(hunk.file) ?? null : null;
         hunks.push(hunk);
       }
     }
 
-    atBase.destroy?.();
-    branch.destroy?.();
     return hunks;
   } catch {
     return [];
+  } finally {
+    atBase?.destroy?.();
+    branch?.destroy?.();
+  }
+}
+
+/// Map a base-relative hunk into the current room and report whether its
+/// original text identities still exist. Cursors handle unrelated edits
+/// before the hunk; the CRDT diff catches delete-and-retype of identical text.
+export function locateProposalHunk(doc, proposalData, hunk) {
+  if (!doc || !proposalData?.base || !hunk) return { file_id: hunk?.file ?? null, position: 0, stale: true };
+  let base = null;
+  try {
+    base = doc.forkAt(proposalData.base);
+    const fileId = hunk.file_id ?? hunk.file;
+    const original = base.getMap("files").get(fileId);
+    const current = doc.getMap("files").get(fileId);
+    if (original?.kind?.() !== "Text") {
+      // A proposal can create a new text file. Until another branch claims the
+      // same file id, its initial insertion is a live, zero-width hunk.
+      const paths = doc.getMap("paths");
+      const pathAlreadyExists = hunk.path && [...paths.keys()]
+        .some((id) => String(id) !== String(fileId) && paths.get(id) === hunk.path);
+      if (!current && !pathAlreadyExists && !(hunk.before ?? "")) {
+        return { file_id: fileId ?? null, position: 0, stale: false, path: hunk.path ?? null };
+      }
+      return { file_id: fileId ?? null, position: 0, stale: true };
+    }
+    if (current?.kind?.() !== "Text") return { file_id: fileId ?? null, position: 0, stale: true };
+    const from = original.convertPos(hunk.start, "utf16", "unicode");
+    const to = original.convertPos(hunk.start + hunk.deleted, "utf16", "unicode");
+    if (from === undefined || to === undefined) return { file_id: fileId, position: 0, stale: true };
+    // Side 1 sticks to the right of concurrent inserts at the start, while
+    // side 0 sticks to the left at the end. Boundary insertions stay adjacent.
+    const fromCursor = original.getCursor(from, 1);
+    const toCursor = original.getCursor(to, 0);
+    const fromResult = doc.getCursorPos(fromCursor);
+    const toResult = doc.getCursorPos(toCursor);
+    if (!fromResult || !toResult) return { file_id: fileId, position: 0, stale: true };
+    const position = current.convertPos(fromResult.offset, "unicode", "utf16");
+    const end = current.convertPos(toResult.offset, "unicode", "utf16");
+    if (position === undefined || end === undefined) return { file_id: fileId, position: 0, stale: true };
+
+    let identityConflict = false;
+    const currentFrontiers = doc.frontiers();
+    const delta = doc.diff(proposalData.base, currentFrontiers, false)
+      .find(([cid]) => String(cid) === String(original.id))?.[1];
+    if (delta?.type === "text") {
+      const hunkStart = hunk.start;
+      const hunkEnd = hunk.start + hunk.deleted;
+      let oldAt = 0;
+      for (const part of delta.diff) {
+        if (part.retain !== undefined) oldAt += part.retain;
+        else if (part.delete !== undefined) {
+          const a = oldAt, b = oldAt + part.delete;
+          if (a < hunkEnd && hunkStart < b) identityConflict = true;
+          oldAt = b;
+        } else if (part.insert !== undefined) {
+          // Inserts at either edge are adjacent; inserts inside a replacement
+          // or at the same point as another insertion compete.
+          if (hunk.deleted === 0 ? oldAt === hunkStart : hunkStart < oldAt && oldAt < hunkEnd) {
+            identityConflict = true;
+          }
+        }
+      }
+    }
+    const liveText = current.toString().slice(position, end);
+    return {
+      file_id: fileId,
+      position,
+      stale: identityConflict || end < position || liveText !== (hunk.before ?? ""),
+    };
+  } catch {
+    return { file_id: hunk.file_id ?? hunk.file ?? null, position: 0, stale: true };
+  } finally {
+    base?.destroy?.();
   }
 }
 
@@ -223,7 +319,7 @@ export function draftMarksOf(doc, base, branch) {
       // and the container is the same one either side of a fork.
       const oldText = old.getContainerById(cid)?.toString?.() ?? "";
       const hunkAt = new Map();
-      for (const range of hunkRanges(value.diff)) {
+      for (const range of hunkRanges(value.diff, oldText)) {
         for (let i = range.start; i < range.end; i++) hunkAt.set(i, index);
         index += 1;
       }
@@ -283,268 +379,521 @@ export function decodeProposal(raw) {
 /// Reader's -- see `decideProposal` there. What the two share is
 /// `hunksOfProposal` above, so the hunks a reviewer reads and the hunks an
 /// author is accumulating are numbered by the same code.
-export function createProposals({ session, send, mayEdit }) {
-  let proposal = null;
-  // A branch switched off before the server named it, still holding work
-  // that has not gone up. Letting it go at `stop` would lose what was typed
-  // while `proposal-open` was in flight, so it waits here for its name.
-  let closing = null;
+const proposalManagers = new WeakMap();
 
-  // Everything since the fork, addressed by name: see `flush`.
-  const sendUpdate = (draft, update = draft.branch.export({ mode: "update", from: draft.baseVersion })) => {
+export function createProposals({ session, send, mayEdit }) {
+  const existing = proposalManagers.get(session);
+  if (existing) {
+    existing.attach(send, mayEdit);
+    return existing;
+  }
+  let sendMessage = send;
+  let canEdit = mayEdit;
+  const changeListeners = new Set();
+  const changed = () => {
+    for (const listener of changeListeners) {
+      try { listener(); } catch { /* One view must not block other subscribers. */ }
+    }
+  };
+  let proposal = null;
+  const retained = new Map();
+
+  const ownOps = (draft, version = draft.branch.oplogVersion()) =>
+    version.get(draft.branch.peerIdStr) ?? 0;
+  const allDrafts = () => [...retained.values(), ...(proposal ? [proposal] : [])];
+  const dirty = (draft) => ownOps(draft) !== draft.ackOwn;
+
+  const hasTextChanges = (base, branch) => {
+    try {
+      const diff = branch.diff(base, branch.frontiers(), false);
+      for (const [, value] of diff) {
+        if (value.type === "text" && value.diff.some((delta) =>
+          delta.insert !== undefined || delta.delete !== undefined)) return true;
+      }
+    } catch { return null; /* Preserve the branch when a base cannot be read. */ }
+    return false;
+  };
+
+  const destroy = (draft) => {
+    clearTimeout(draft.retryTimer);
+    draft.retryTimer = null;
+    draft.unsubscribe?.();
+    draft.branch.destroy?.();
+    retained.delete(draft.id);
+    if (proposal === draft) proposal = null;
+    changed();
+  };
+
+  const sendOpen = (draft) => {
+    if (draft.opened || draft.openPending || !hasTextChanges(draft.base, draft.branch)) return;
+    draft.openBase ??= draft.base;
+    const result = sendMessage({
+      type: "proposal-open",
+      request_id: draft.id,
+      base: encodeBase64(encodeFrontiers(draft.openBase)),
+    });
+    if (result?.ok === false) {
+      draft.error = result.error?.message || "offline";
+      changed();
+      return;
+    }
+    draft.openPending = true;
+    draft.error = "";
+    changed();
+  };
+
+  const sendUpdate = (draft) => {
+    if (!draft.opened || draft.openPending || draft.inflight || draft.discarding) return;
+    draft.branch.commit();
+    const tip = draft.branch.frontiers();
+    const tipBytes = encodeBase64(encodeFrontiers(tip));
     const own = ownOps(draft);
-    const msg = {
+    // Room-only operations are absorbed into the branch but are already in
+    // the room. They must not cause full-branch proposal rewrites.
+    if (own === draft.ackOwn) return;
+    const update = draft.branch.export({ mode: "update", from: draft.baseVersion });
+    if (!update.byteLength) return;
+    const requestId = crypto.randomUUID();
+    const message = {
       type: "proposal-update",
       proposal_id: draft.id,
-      tip: encodeBase64(encodeFrontiers(draft.tip)),
+      request_id: requestId,
+      tip: tipBytes,
       update: encodeBase64(update),
     };
-    // If the base was moved by absorb, send it along so the server knows
-    // what imports have been merged in.
-    if (draft.baseMoved) {
-      msg.base = encodeBase64(encodeFrontiers(draft.base));
+    if (Number.isSafeInteger(draft.appliedVersion)) message.expected_version = draft.appliedVersion;
+    if (draft.baseMoved) message.base = encodeBase64(encodeFrontiers(draft.base));
+    const result = sendMessage(message);
+    if (result?.ok === false) {
+      draft.error = result.error?.message || "offline";
+      changed();
+      return;
     }
-    // The edits and a moved base are owed to the server until a send goes
-    // out; a socket that is down reports it, and the next flush resends both.
-    if (send(msg)?.ok === false) return;
-    draft.sentOwn = own;
-    draft.baseMoved = false;
+    draft.inflight = {
+      requestId,
+      own,
+      tipBytes,
+      base: draft.base,
+    };
+    draft.error = "";
+    changed();
   };
 
-  // How many operations the author has written into the branch: the fork
-  // has a peer of its own, so its counter is exactly the author's typing.
-  const ownOps = (draft) => draft.branch.oplogVersion().get(draft.branch.peerIdStr) ?? 0;
+  const flushDraft = (draft) => {
+    if (draft.discarding) return;
+    draft.branch.commit();
+    const textChanged = hasTextChanges(draft.base, draft.branch);
+    if (textChanged === null) {
+      draft.error = "the draft base is no longer available";
+      changed();
+      return;
+    }
+    if (!textChanged) {
+      if ((draft.opened || draft.openPending) && !draft.discarding) {
+        const requestId = crypto.randomUUID();
+        const result = draft.opened
+          ? sendMessage({ type: "proposal-discard", proposal_id: draft.id, request_id: requestId })
+          : { ok: true };
+        if (result?.ok !== false) {
+          draft.discarding = true;
+          draft.discardCause = "empty";
+          draft.discardRequestId = requestId;
+          changed();
+        }
+      }
+      return;
+    }
+    if (!draft.opened) sendOpen(draft);
+    else sendUpdate(draft);
+  };
 
-  // Subscribe to room updates and absorb edits by others into the branch.
-  // The branch is the author's draft, base to tip. When remote edits arrive
-  // via import, the base must move to include them or they would read as the
-  // author's own new words.
-  const absorb = () => {
-    if (!proposal) return;
-    // Commit the branch first so frontiers() below names text the author sees.
-    proposal.branch.commit();
-    // Export what the room gained since the branch was last synced with it.
-    const update = session.doc.export({
-      mode: "update",
-      from: proposal.branch.oplogVersion(),
-    });
+  const finishResolution = (draft) => {
+    const resolution = draft.resolutionPending;
+    if (!resolution) return;
+    const decisions = resolution.decisions || [...draft.decisions].map(([hunk, accepted]) => ({ hunk, accepted }));
+    const allRejected = resolution.discarded === true ||
+      decisions.length > 0 && decisions.every((decision) => !decision.accepted);
+    let resolvedTip;
+    let resolvedBase;
+    try {
+      resolvedTip = decodeFrontiers(decodeBase64(resolution.resolved_tip));
+      resolvedBase = decodeFrontiers(decodeBase64(resolution.resolved_base));
+    } catch {
+      draft.error = "the resolved proposal version could not be read";
+      changed();
+      return;
+    }
+
+    // Accepted text arrives in the room as an update. Wait until that graph is
+    // present before rebuilding the local remainder. A wholly rejected row is
+    // discarded server-side, so replay its inverse privately instead.
+    if (!allRejected) {
+      let sourceAtResolution = null;
+      try { sourceAtResolution = session.doc.forkAt(resolvedTip); } catch { return; }
+      sourceAtResolution?.destroy?.();
+    } else if (!draft.inverseApplied) {
+      let resolvedBranch = null;
+      try {
+        resolvedBranch = draft.branch.forkAt(resolvedTip);
+        const before = resolvedBranch.oplogVersion();
+        const inverse = resolvedBranch.diff(resolvedTip, resolvedBase, false)
+          .filter(([, diff]) => diff.type === "text");
+        const peer = BigInt(`0x${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`) || 1n;
+        resolvedBranch.setPeerId(peer);
+        resolvedBranch.applyDiff(inverse);
+        resolvedBranch.commit();
+        const reverts = resolvedBranch.export({ mode: "update", from: before });
+        if (reverts.byteLength) draft.branch.import(reverts);
+        draft.inverseApplied = true;
+      } catch {
+        draft.error = "the rejected proposal could not be removed from its local branch";
+        changed();
+        return;
+      } finally {
+        resolvedBranch?.destroy?.();
+      }
+    }
+
+    // Import the room's current state after applying the private inverse. This
+    // also brings in edits that happened after the resolution frontier.
+    const missing = session.doc.export({ mode: "update", from: draft.branch.oplogVersion() });
+    if (missing.byteLength) {
+      try { draft.branch.import(missing); } catch { return; }
+    }
+    draft.branch.commit();
+    draft.base = session.doc.frontiers();
+    draft.baseVersion = session.doc.oplogVersion();
+    draft.baseMoved = false;
+    draft.opened = false;
+    draft.openPending = false;
+    draft.openBase = null;
+    draft.inflight = null;
+    draft.ackOwn = ownOps(draft, draft.baseVersion);
+    draft.ackTipBytes = encodeBase64(encodeFrontiers(draft.base));
+    draft.resolutionPending = null;
+    draft.inverseApplied = false;
+    draft.decisions.clear();
+    draft.error = "";
+
+    // Resolution imports the proposal graph and inverse operations. Keeping
+    // this branch preserves a local keystroke inside text that was rejected.
+    const remainingChanges = hasTextChanges(draft.base, draft.branch);
+    if (remainingChanges === null) {
+      draft.error = "the resolved draft base is no longer available";
+      changed();
+      return;
+    }
+    if (!remainingChanges) {
+      destroy(draft);
+      return;
+    }
+    retained.delete(draft.id);
+    draft.id = crypto.randomUUID();
+    draft.openBase = null;
+    if (proposal === draft) subscribe(draft);
+    else retained.set(draft.id, draft);
+    flushDraft(draft);
+  };
+
+  const absorb = (draft) => {
+    draft.branch.commit();
+    const update = session.doc.export({ mode: "update", from: draft.branch.oplogVersion() });
     if (update.byteLength) {
       try {
-        proposal.branch.import(update);
+        draft.branch.import(update);
+        draft.base = session.doc.frontiers();
+        // The replacement update is based at this moved frontier. Operations
+        // absent from the room, including this author's proposal, remain in
+        // the branch export because their peer counters exceed this version.
+        draft.baseVersion = session.doc.oplogVersion();
+        draft.baseMoved = true;
       } catch {
-        // If import fails, leave the branch as is; do not log.
+        draft.error = "could not merge a room update into this draft";
       }
-      // The proposal is base to tip. Absorbed edits are now in the branch,
-      // so move the base forward to include them, or they would look like the
-      // author typed them.
-      proposal.base = session.doc.frontiers();
-      proposal.baseMoved = true;
     }
-    // Only the author's own unsent words justify a send; the moved base
-    // rides along with the next one. Sending on every remote edit would
-    // resend the whole branch, and after this author's proposal resolves it
-    // would address a proposal the server has already deleted.
-    if (ownOps(proposal) !== proposal.sentOwn) api.flush();
+    if (draft.resolutionPending) finishResolution(draft);
+    else if (draft.retryable) retryDraft(draft);
+    changed();
   };
 
+  const retryDraft = (draft) => {
+    if (!draft.retryable || draft.retryTimer) return;
+    draft.retryTimer = setTimeout(() => {
+      draft.retryTimer = null;
+      if (!allDrafts().includes(draft) || !draft.retryable) return;
+      draft.retryable = false;
+      flushDraft(draft);
+    }, 1500);
+  };
+
+  function subscribe(draft) {
+    draft.unsubscribe?.();
+    draft.unsubscribe = session.doc.subscribe((event) => {
+      if (event.by === "import") absorb(draft);
+    });
+  }
+
   const api = {
-    // Fork the session document at its current frontier and remember the base.
-    // Returns the existing proposal if one is already open.
     start() {
       if (proposal) return proposal;
-      if (!mayEdit) return null;
-
+      if (!canEdit) return null;
       const doc = session.doc;
-      // Commit before reading the frontier, so the base names only operations
-      // that have already been handed to `subscribeLocalUpdates` -- and so
-      // sent, on this same socket, ahead of the `proposal-open` below. The
-      // server forks at this base and refuses a base it cannot reach; an
-      // uncommitted keystroke here would be exactly such a base, and the
-      // refusal would arrive as "tracking would not turn on", intermittently.
       doc.commit();
       const base = doc.frontiers();
       const branch = doc.fork();
-
       proposal = {
-        id: null, // named by the server, on `proposal-opened`
+        id: crypto.randomUUID(),
+        openBase: null,
         base,
-        // The branch's own operations are everything after this. Each flush
-        // exports from here rather than from the last flush: see `flush`.
         baseVersion: branch.oplogVersion(),
-        tip: base,
         branch,
-        // A flush that happened before the server named this proposal. There
-        // is nothing to address an update to until then, so it is repeated
-        // when the name arrives rather than dropped.
-        unsent: false,
+        opened: false,
+        openPending: false,
         baseMoved: false,
-        sentOwn: 0,
+        ackOwn: ownOps({ branch }),
+        ackTipBytes: encodeBase64(encodeFrontiers(base)),
+        decisions: new Map(),
+        inflight: null,
+        error: "",
+        resolutionPending: null,
+        appliedVersion: null,
+        retryTimer: null,
       };
-
-      // Subscribe to imports from other authors and absorb them into the branch.
-      proposal.unsubscribe = doc.subscribe((event) => {
-        if (event.by === "import") {
-          absorb();
-        }
-      });
-
-      // Tell the server we've opened a proposal at this frontier.
-      send({
-        type: "proposal-open",
-        // The server keys the proposal row on this, so a retried open finds
-        // the row it already made rather than opening a second one.
-        request_id: crypto.randomUUID(),
-        base: encodeBase64(encodeFrontiers(base)),
-      });
-
+      subscribe(proposal);
+      changed();
       return proposal;
     },
-
-    /// Whether this browser is drafting one.
-    drafting() {
-      return Boolean(proposal);
-    },
-
-    /// The name the server gave this browser's branch, or `""` before the
-    /// reply to `proposal-open` has arrived. What it is for: the author is
-    /// typing into the branch, so the diff between base and tip is already on
-    /// their screen as ordinary text, and drawing it over itself would show
-    /// every insertion twice. The editor asks for this to leave its own
-    /// draft out of what it paints.
-    id() {
-      return proposal?.id || "";
-    },
-
-    /// What this browser's own draft has changed, ready to draw over the
-    /// branch text the author is looking at.
-    ///
-    /// The branch is committed first for the reason `flush` commits it: the
-    /// binding writes into the branch's text and commits the room document, so
-    /// without this the frontier would name text the author cannot see yet and
-    /// the last few keystrokes would go undrawn.
+    drafting() { return Boolean(proposal); },
+    id() { return proposal?.id || ""; },
     draftMarks() {
       if (!proposal) return [];
       proposal.branch.commit();
       return draftMarksOf(session.doc, proposal.base, proposal.branch);
     },
-
-    /// The branch itself, or `null` when nothing is being drafted.
-    ///
-    /// The editor's binding needs it, not just the text inside it: a binding
-    /// commits the document it was given and applies what arrives in it, and
-    /// while somebody is drafting, that document is the fork.
-    doc() {
-      return proposal?.branch || null;
-    },
-
-    // Get the text at a file id from the branch. The caller types into it.
+    doc() { return proposal?.branch || null; },
     text(fileId) {
       if (!proposal) return null;
-      const files = proposal.branch.getMap("files");
-      const text = files.get(fileId);
+      const text = proposal.branch.getMap("files").get(fileId);
       return text?.kind?.() === "Text" ? text : null;
     },
-
-    // Send the branch to the server, and say where its tip now is.
-    flush() {
-      if (!proposal) return;
-
-      // The binding writes into the branch's text but commits the room
-      // document -- it was handed one doc and a getter for the other -- so the
-      // branch is carrying uncommitted operations by the time we get here.
-      // Committing them is what makes `frontiers()` below name the text the
-      // author can see.
-      proposal.branch.commit();
-
-      // Absorbing a remote edit changes the branch without the author typing,
-      // and the editor reports that change here. Only the author's own new
-      // words justify a send; a first send still waits for its name.
-      if (proposal.id && ownOps(proposal) === proposal.sentOwn && !proposal.unsent) return;
-
-      // Everything since the fork, not everything since the last flush.
-      //
-      // `update_proposal` replaces the stored branch rather than appending to
-      // it -- deliberately, so that the stored blob and the stored tip can
-      // never disagree -- so an incremental update leaves the server holding
-      // only the tail. The proposal then reads as though the author had
-      // written their last few keystrokes and nothing before them.
-      const update = proposal.branch.export({ mode: "update", from: proposal.baseVersion });
-      if (!update.byteLength) return;
-
-      proposal.tip = proposal.branch.frontiers();
-
-      // An update has to say which proposal it belongs to, and there is no
-      // name for it until the server sends one back.
-      if (!proposal.id) {
-        proposal.unsent = true;
-        return;
+    flush() { if (proposal) flushDraft(proposal); },
+    reconnect() {
+      for (const draft of allDrafts()) {
+        clearTimeout(draft.retryTimer);
+        draft.retryTimer = null;
+        draft.retryable = false;
+        draft.openPending = false;
+        draft.inflight = null;
+        if (draft.opened) {
+          // Query the row on reconnect even when our local branch looks clean:
+          // we may have missed its final decision while disconnected. The
+          // server treats this stable create key as an idempotent status query.
+          const result = sendMessage({
+            type: "proposal-open",
+            request_id: draft.id,
+            base: encodeBase64(encodeFrontiers(draft.openBase ?? draft.base)),
+          });
+          if (result?.ok !== false) draft.openPending = true;
+          else draft.error = result.error?.message || "offline";
+          continue;
+        }
+        // A create key is stable; an update is a complete branch snapshot.
+        flushDraft(draft);
       }
-
-      sendUpdate(proposal, update);
+      changed();
     },
-
-    // Stop listening to the room without closing the branch: the editor going
-    // away must not leave a subscription absorbing into a draft nobody types in.
     detach() {
-      proposal?.unsubscribe?.();
-      if (proposal) proposal.unsubscribe = null;
+      // The manager belongs to the shared session and survives Editor
+      // recreation, so detaching a view must not detach its pending branch.
     },
-
-    // Close the local branch. The server owns the decision from here on.
+    attach(nextSend, nextMayEdit) {
+      sendMessage = nextSend;
+      canEdit = nextMayEdit;
+      for (const draft of allDrafts()) if (!draft.unsubscribe) subscribe(draft);
+    },
     stop() {
       if (!proposal) return;
-      proposal.unsubscribe?.();
-      // Work with no name to send it under is kept until the name arrives.
-      if (!proposal.id && proposal.unsent) closing = proposal;
-      else proposal.branch.destroy?.();
+      const draft = proposal;
+      draft.unsubscribe?.();
+      draft.unsubscribe = null;
+      flushDraft(draft);
       proposal = null;
-    },
-
-    // Handle incoming messages from the server.
-    apply(message) {
-      if (message.type === "proposal-opened") {
-        // The name for the branch this browser forked. Everything sent about
-        // a proposal is addressed by it, so anything typed while the reply
-        // was in flight goes up now.
-        if (proposal && !proposal.id && message.proposal_id) {
-          proposal.id = String(message.proposal_id);
-          if (proposal.unsent) {
-            proposal.unsent = false;
-            this.flush();
-          }
+      const changedText = hasTextChanges(draft.base, draft.branch);
+      if (changedText === false && (draft.opened || draft.openPending)) {
+        draft.discarding = true;
+        draft.discardCause = "empty";
+      }
+      if (draft.opened && draft.discarding && !draft.discardRequestId) {
+        const requestId = crypto.randomUUID();
+        const result = sendMessage({ type: "proposal-discard", proposal_id: draft.id, request_id: requestId });
+        if (result?.ok !== false) {
+          draft.discarding = true;
+          draft.discardRequestId = requestId;
         }
-        // Or for the branch switched off while the reply was in flight.
-        if (closing && !closing.id && message.proposal_id) {
-          closing.id = String(message.proposal_id);
-          sendUpdate(closing);
-          closing.unsubscribe?.();
-          closing.branch.destroy?.();
-          closing = null;
+      }
+      const needsSync = changedText === null || changedText && dirty(draft);
+      if (draft.openPending || !draft.opened && (needsSync || draft.error) || draft.opened && (needsSync || draft.inflight || draft.error || draft.discarding)) {
+        retained.set(draft.id, draft);
+        subscribe(draft);
+      } else destroy(draft);
+      changed();
+    },
+    discard() {
+      const draft = proposal;
+      if (!draft) return { ok: false, error: new Error("no active draft") };
+      if (!draft.opened) {
+        if (draft.openPending) {
+          draft.discarding = true;
+          draft.discardCause = "explicit";
+          return { ok: true, pending: true };
+        }
+        destroy(draft);
+        return { ok: true };
+      }
+      const requestId = crypto.randomUUID();
+      const result = sendMessage({ type: "proposal-discard", proposal_id: draft.id, request_id: requestId });
+      if (result?.ok === false) return result;
+      draft.discarding = true;
+      draft.discardCause = "explicit";
+      draft.discardRequestId = requestId;
+      changed();
+      return { ok: true, pending: true };
+    },
+    status() {
+      const draft = proposal || [...retained.values()].at(-1);
+      const pending = allDrafts().filter((item) => item.openPending || item.inflight || item.error ||
+        hasTextChanges(item.base, item.branch) === null || hasTextChanges(item.base, item.branch) && dirty(item)).length;
+      if (!draft) return { state: "idle", error: "", pending };
+      return {
+        state: draft.error ? "error" : draft.inflight || draft.openPending ? "pending" : draft.opened ? "saved" : "drafting",
+        error: draft.error,
+        id: draft.id,
+        pending,
+      };
+    },
+    onchange(callback) {
+      if (typeof callback !== "function") return () => {};
+      changeListeners.add(callback);
+      return () => { changeListeners.delete(callback); };
+    },
+    apply(message) {
+      if (!message) return;
+      if (message.type === "proposal-opened") {
+        const id = String(message.proposal_id || message.request_id || "");
+        const draft = allDrafts().find((item) => item.id === id);
+        if (!draft) return;
+        draft.opened = true;
+        draft.openPending = false;
+        draft.error = "";
+        clearTimeout(draft.retryTimer);
+        draft.retryTimer = null;
+        draft.retryable = false;
+        if (Number.isSafeInteger(Number(message.applied_version))) {
+          draft.appliedVersion = Number(message.applied_version);
+        }
+        draft.ackTipBytes = message.tip || encodeBase64(encodeFrontiers(draft.base));
+        // An idempotent open may report a row whose update ack was lost.
+        // Only treat our current branch as stored when its exact tip matches.
+        const currentTip = encodeBase64(encodeFrontiers(draft.branch.frontiers()));
+        if (draft.ackTipBytes === currentTip) draft.ackOwn = ownOps(draft);
+        changed();
+        if (draft.discarding) {
+          const requestId = draft.discardRequestId || crypto.randomUUID();
+          const result = sendMessage({ type: "proposal-discard", proposal_id: draft.id, request_id: requestId });
+          if (result?.ok !== false) draft.discardRequestId = requestId;
+        } else flushDraft(draft);
+        return;
+      }
+      if (message.type === "proposal-updated") {
+        const draft = retained.get(String(message.proposal_id)) ||
+          (proposal?.id === String(message.proposal_id) ? proposal : null);
+        if (!draft || !draft.inflight ||
+            (message.request_id && message.request_id !== draft.inflight.requestId)) return;
+        draft.ackOwn = draft.inflight.own;
+        draft.ackTipBytes = draft.inflight.tipBytes;
+        if (Number.isSafeInteger(Number(message.applied_version))) {
+          draft.appliedVersion = Number(message.applied_version);
+        }
+        clearTimeout(draft.retryTimer);
+        draft.retryTimer = null;
+        draft.retryable = false;
+        if (encodeBase64(encodeFrontiers(draft.base)) === encodeBase64(encodeFrontiers(draft.inflight.base))) {
+          draft.baseMoved = false;
+        }
+        draft.inflight = null;
+        draft.error = "";
+        if (draft.resolutionPending) finishResolution(draft);
+        else if (draft === proposal && ownOps(draft) !== draft.ackOwn) flushDraft(draft);
+        else if (retained.has(draft.id)) {
+          if (hasTextChanges(draft.base, draft.branch) && dirty(draft)) flushDraft(draft);
+          else destroy(draft);
+        }
+        changed();
+        return;
+      }
+      if (message.type === "proposal-discarded" || message.type === "proposal-deleted") {
+        const draft = retained.get(String(message.proposal_id)) ||
+          (proposal?.id === String(message.proposal_id) ? proposal : null);
+        if (draft?.discarding && draft.discardCause === "explicit") destroy(draft);
+        else if (draft) {
+          draft.resolutionPending = { ...message, discarded: true };
+          finishResolution(draft);
         }
         return;
       }
-      if (message.type === "proposal-decided") {
-        // A proposal is finished with when it resolves, not when one of its
-        // hunks is answered: until every hunk has an answer the document has
-        // not moved and the rest are still to be decided (§5.1a).
-        if (!message.resolved) return;
-        // And only close the local branch when the proposal that resolved is
-        // the one this browser is drafting -- closing on anyone's decision
-        // would throw away unsent work the moment a coauthor answered a
-        // different proposal.
-        if (proposal && message.proposal_id === proposal.id) this.stop();
+      if (message.type === "error") {
+        const requestId = String(message.request_id || "");
+        const draft = allDrafts().find((item) =>
+          item.id === requestId || item.inflight?.requestId === requestId ||
+          item.discardRequestId === requestId);
+        if (!draft) return;
+        const versionConflict = message.version_conflict === true;
+        if (versionConflict && Number.isSafeInteger(Number(message.applied_version))) {
+          // The row advanced while this client was disconnected. Refresh only
+          // the guard; keep our ackOwn watermark so the full local snapshot is
+          // retried instead of being mistaken for already stored work.
+          draft.appliedVersion = Number(message.applied_version);
+        }
+        draft.error = versionConflict ? "proposal changed elsewhere; retrying" :
+          message.message || "proposal update was refused";
+        draft.retryable = versionConflict || Boolean(message.retry);
+        if (draft.openPending) draft.openPending = false;
+        if (draft.inflight?.requestId === requestId) draft.inflight = null;
+        if (draft.retryable) retryDraft(draft);
+        changed();
+        return;
+      }
+      if (message.type === "proposal-decided" && !message.resolved && message.proposal_id) {
+        const draft = retained.get(String(message.proposal_id)) ||
+          (proposal?.id === String(message.proposal_id) ? proposal : null);
+        if (draft) {
+          if (Array.isArray(message.decisions)) {
+            draft.decisions = new Map(message.decisions.map((d) => [Number(d.hunk), Boolean(d.accepted)]));
+          } else draft.decisions.set(Number(message.hunk), Boolean(message.accepted));
+        }
+        changed();
+        return;
+      }
+      if (message.type === "proposal-decided" &&
+          (message.resolved || message.resolved_tip && message.resolved_base)) {
+        const draft = retained.get(String(message.proposal_id)) ||
+          (proposal?.id === String(message.proposal_id) ? proposal : null);
+        if (!draft) return;
+        if (Array.isArray(message.decisions)) {
+          draft.decisions = new Map(message.decisions.map((d) => [Number(d.hunk), Boolean(d.accepted)]));
+        } else if (Number.isInteger(message.hunk)) {
+          draft.decisions.set(Number(message.hunk), Boolean(message.accepted));
+        }
+        draft.resolutionPending = message;
+        finishResolution(draft);
       }
     },
-
-    /// The hunks of a proposal the server has told us about, or of any
-    /// {base, tip, bytes} triple. Numbered across every file it touches, in
-    /// the order `proposal-decide` names them.
-    hunksOf(proposalData) {
-      return hunksOfProposal(session.doc, proposalData);
-    },
+    hunksOf(proposalData) { return hunksOfProposal(session.doc, proposalData); },
   };
+  proposalManagers.set(session, api);
   return api;
 }
+
 
 // Encode a Uint8Array to base64. Used to wrap Loro's encodeFrontiers result
 // and to encode update bytes for transport.
@@ -567,15 +916,14 @@ function decodeBase64(encoded) {
 /// -- they are two answers, and the useful presentation is side by side with
 /// one choice to make (SPEC-loro.md §5.3). This finds them.
 ///
-/// The test is: same file, different proposals, overlapping extents. A row's
+/// The test is: same file, different proposals, conflicting extents. A row's
 /// extent is `[position, position + before.length)`, which is the same basis
 /// `proposal-marks.js` draws in, so two rows contend here exactly when they
 /// would be drawn over each other there.
 ///
-/// Touching ends do not overlap. One proposal replacing "cat" and another
-/// inserting after it are adjacent edits, not competing ones, and grouping
-/// them would ask the reviewer to choose between two things that can both
-/// happen.
+/// Touching ends do not overlap. An insertion strictly inside a replacement
+/// conflicts with it, but an insertion at either boundary is adjacent. Two
+/// insertions at the same point compete for the same gap.
 ///
 /// A stale row is left out. Its extent is a claim about text that is no longer
 /// there, so it cannot be said to overlap anything, and a reviewer cannot
@@ -606,9 +954,16 @@ export function markContention(rows) {
       if (a.file_id !== b.file_id) continue;
       const aEnd = a.position + a.before.length;
       const bEnd = b.position + b.before.length;
-      // Strict overlap. Two zero-width rows at one point are two insertions
-      // in the same gap, which is not a choice between them either.
-      if (a.position >= bEnd || b.position >= aEnd) continue;
+      const aLength = a.before.length;
+      const bLength = b.before.length;
+      const overlaps = aLength === 0 && bLength === 0
+        ? a.position === b.position
+        : aLength === 0
+          ? b.position < a.position && a.position < bEnd
+          : bLength === 0
+            ? a.position < b.position && b.position < aEnd
+            : a.position < bEnd && b.position < aEnd;
+      if (!overlaps) continue;
       const aGroup = group.has(a.id) ? find(group.get(a.id)) : null;
       const bGroup = group.has(b.id) ? find(group.get(b.id)) : null;
       if (aGroup && bGroup) {
