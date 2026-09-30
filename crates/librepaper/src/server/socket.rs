@@ -1461,13 +1461,6 @@ impl Server {
                             }
                             "proposal-discard" => match uuid::Uuid::parse_str(incoming.proposal_id()) {
                                 Ok(proposal_id) => {
-                                    if let Ok(Some(outcome)) = room
-                                        .catalog()
-                                        .proposal_outcome(room.document_id, proposal_id)
-                                        .await
-                                    {
-                                        proposal_outcome_json(&outcome, incoming.request_id())
-                                    } else {
                                     let mut command = DiscardProposal {
                                         document_id: room.document_id,
                                         catalog: room.catalog().clone(),
@@ -1482,30 +1475,39 @@ impl Server {
                                                 })).await;
                                                 room.broadcast_prepared(None, &event).await;
                                             }
-                                            let event = json!({
-                                                "type": "proposal-discarded",
-                                                "proposal_id": incoming.proposal_id(),
-                                                "discarded": true,
-                                                "resolved_base": discarded.resolved_base.as_ref().map(|base| encode_update(base)),
-                                                "resolved_tip": discarded.resolved_tip.as_ref().map(|tip| encode_update(tip)),
-                                                "request_id": incoming.request_id(),
-                                                "version": 1,
-                                                "protocol": PROTOCOL,
-                                            });
-                                            room.broadcast_editors_except(Some(socket_id), &event).await;
-                                            json!({
-                                                "type":"proposal-discarded",
-                                                "proposal_id":incoming.proposal_id(),
-                                                "discarded":true,
-                                                "resolved_base":discarded.resolved_base.map(|base| encode_update(&base)),
-                                                "resolved_tip":discarded.resolved_tip.map(|tip| encode_update(&tip)),
-                                                "request_id":incoming.request_id(),
-                                                "version":1,
-                                                "protocol":PROTOCOL
-                                            })
+                                            match room
+                                                .catalog()
+                                                .proposal_outcome(room.document_id, proposal_id)
+                                                .await
+                                            {
+                                                Ok(Some(outcome)) => {
+                                                    let discarded_here = discarded.resolved_base.is_some();
+                                                    let mut response = proposal_outcome_json(
+                                                        &outcome,
+                                                        incoming.request_id(),
+                                                    );
+                                                    if discarded_here {
+                                                        response["replay"] = json!(false);
+                                                        room.broadcast_editors_except(
+                                                            Some(socket_id),
+                                                            &response,
+                                                        )
+                                                        .await;
+                                                    }
+                                                    response
+                                                }
+                                                _ => json!({
+                                                    "type":"error",
+                                                    "message":"proposal status is unknown; reload before retrying",
+                                                    "proposal_id":incoming.proposal_id(),
+                                                    "request_id":incoming.request_id(),
+                                                    "status_unknown":true,
+                                                    "version":1,
+                                                    "protocol":PROTOCOL
+                                                }),
+                                            }
                                         }
                                         Err(error) => refuse(error),
-                                    }
                                     }
                                 }
                                 Err(_) => json!({"type":"error","message":"that proposal id could not be read","proposal_id":incoming.proposal_id(),"request_id":incoming.request_id(),"version":1,"protocol":PROTOCOL}),
