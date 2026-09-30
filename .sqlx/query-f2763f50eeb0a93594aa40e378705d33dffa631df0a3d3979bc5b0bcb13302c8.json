@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.owner_id,\n                (SELECT CASE WHEN g.source_link_hash IS NULL THEN g.role ELSE gl.role END\n                   FROM grants g LEFT JOIN share_links gl\n                     ON gl.document_id=g.document_id AND gl.token_hash=g.source_link_hash\n                    AND gl.revoked_at IS NULL AND (gl.expires_at IS NULL OR gl.expires_at>$4)\n                   WHERE g.document_id=d.id AND g.account_id=$2\n                     AND (g.source_link_hash IS NULL OR gl.token_hash IS NOT NULL)) AS \"grant_role?\",\n                (SELECT role FROM share_links l WHERE l.document_id=d.id AND l.token_hash=$3\n                    AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>$4)) AS \"link_role?\"\n             FROM documents d WHERE d.id=$1 AND d.status='active'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "owner_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "grant_role?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "link_role?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "f2763f50eeb0a93594aa40e378705d33dffa631df0a3d3979bc5b0bcb13302c8"
+}

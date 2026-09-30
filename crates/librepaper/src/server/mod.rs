@@ -1872,7 +1872,10 @@ mod automation_authority_tests {
         );
         assert_eq!(
             link_only
-                .mutation_authorization(Ceiling { comment: true, edit: false })
+                .mutation_authorization(Ceiling {
+                    comment: true,
+                    edit: false
+                })
                 .token_hash,
             Some([0xabu8; 32])
         );
@@ -1883,7 +1886,10 @@ mod automation_authority_tests {
         assert_eq!(
             visitor.document_authority(ceiling()).principal_key,
             visitor
-                .mutation_authorization(Ceiling { comment: true, edit: false })
+                .mutation_authorization(Ceiling {
+                    comment: true,
+                    edit: false
+                })
                 .principal_key
         );
         assert!(visitor.document_authority(ceiling()).account_id.is_none());
@@ -1897,9 +1903,13 @@ mod automation_authority_tests {
         assert_eq!(authorization.session_generation, Some(3));
         assert_eq!(authorization.account_id, Some(account));
         assert!(authorization.policy_edit);
-        assert!(!who
-            .mutation_authorization(Ceiling { comment: true, edit: false })
-            .policy_edit);
+        assert!(
+            !who.mutation_authorization(Ceiling {
+                comment: true,
+                edit: false
+            })
+            .policy_edit
+        );
     }
 
     #[test]

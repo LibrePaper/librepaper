@@ -673,8 +673,7 @@ impl PostgresCatalog {
         }
         let mut tx = self.begin_writer_transaction().await?;
         if let Some(actor) = actor {
-            super::annotations::authorize_mutation(&mut tx, document_id, actor, true)
-                .await?;
+            super::annotations::authorize_mutation(&mut tx, document_id, actor, true).await?;
         }
         // The owner is read under the same lock that guards the document's
         // status, so the quota below is measured against the owner this

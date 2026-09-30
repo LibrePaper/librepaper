@@ -1264,9 +1264,7 @@ impl Store {
             .save_document_sharing(document.id, &authorization, &links, &live_hashes)
             .await
             .map_err(|error| match error {
-                CatalogError::Conflict(_) => {
-                    ModifyError::Refused("ownership changed".into())
-                }
+                CatalogError::Conflict(_) => ModifyError::Refused("ownership changed".into()),
                 CatalogError::NotFound => ModifyError::NotFound,
                 other => ModifyError::Storage(other.to_string()),
             })?;

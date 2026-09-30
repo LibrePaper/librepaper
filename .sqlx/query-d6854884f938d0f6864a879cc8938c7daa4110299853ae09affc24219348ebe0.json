@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grants(document_id,account_id,role,source_link_hash)\n             SELECT $1,$2,NULL,$3 FROM share_links l\n             WHERE l.document_id=$1 AND l.token_hash=$3 AND l.revoked_at IS NULL\n               AND (l.expires_at IS NULL OR l.expires_at>now())\n             ON CONFLICT(document_id,account_id) DO UPDATE SET\n               role=NULL,source_link_hash=excluded.source_link_hash\n             WHERE grants.source_link_hash IS NOT NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d6854884f938d0f6864a879cc8938c7daa4110299853ae09affc24219348ebe0"
+}

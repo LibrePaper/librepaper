@@ -539,7 +539,9 @@ pub(super) fn bundled_documentation(path: &str) -> Option<&'static str> {
         "/skills/librepaper-document/references/editing.md" => Some(include_str!(
             "../../../../skills/librepaper-document/references/editing.md"
         )),
-        "/docs/protocol/room-v2.md" => Some(include_str!("../../../../docs/dev/protocol/room-v2.md")),
+        "/docs/protocol/room-v2.md" => {
+            Some(include_str!("../../../../docs/dev/protocol/room-v2.md"))
+        }
         "/docs/protocol/chat.md" => Some(include_str!("../../../../docs/dev/protocol/chat.md")),
         _ => None,
     }

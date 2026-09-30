@@ -1,8 +1,8 @@
 //! Bounded lifecycle work over simple document prefixes.
 
+use sqlx::{Connection, PgConnection};
 use std::collections::HashSet;
 use std::sync::Arc;
-use sqlx::{Connection, PgConnection};
 use time::Duration;
 
 use super::blob::BlobStore;
@@ -142,7 +142,9 @@ impl Maintenance {
             return Err("base cleanup batch must be 1..=500".into());
         }
         let Some(lock) = BlobLifecycleLock::try_delete(self.catalog.as_ref()).await? else {
-            return Err("backup is copying referenced objects; retry superseded-base cleanup".into());
+            return Err(
+                "backup is copying referenced objects; retry superseded-base cleanup".into(),
+            );
         };
         let keys = sqlx::query_scalar!(
             "SELECT snapshot_key FROM document_snapshots WHERE delete_after<=now()

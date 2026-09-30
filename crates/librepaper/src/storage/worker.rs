@@ -1267,10 +1267,7 @@ mod tests {
         enqueue_overflow_scan(&handle, &mut local, &mut deadlines, None, now);
         assert_eq!(
             local,
-            VecDeque::from([
-                Task::SweepOrphans,
-                Task::Scan(PendingWorkCursor::default())
-            ])
+            VecDeque::from([Task::SweepOrphans, Task::Scan(PendingWorkCursor::default())])
         );
         assert!(!handle.rescan.load(Ordering::Acquire));
     }
@@ -1336,10 +1333,7 @@ mod tests {
         enqueue_due_rescan(&handle, &mut local, &mut deadlines, None, now, true);
         assert_eq!(
             local,
-            VecDeque::from([
-                Task::SweepOrphans,
-                Task::Scan(PendingWorkCursor::default())
-            ])
+            VecDeque::from([Task::SweepOrphans, Task::Scan(PendingWorkCursor::default())])
         );
         assert!(!handle.rescan.load(Ordering::Acquire));
 

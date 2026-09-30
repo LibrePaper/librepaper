@@ -393,9 +393,15 @@ mod tests {
         let named = seed_account(&catalog, "auth-named").await;
         let stranger = seed_account(&catalog, "auth-stranger").await;
         let document = seed_document(&catalog, owner.id, "auth-document").await;
-        let make_actor = |account_id: Option<uuid::Uuid>, generation, token_hash, policy_edit, policy_comment, automation| {
+        let make_actor = |account_id: Option<uuid::Uuid>,
+                          generation,
+                          token_hash,
+                          policy_edit,
+                          policy_comment,
+                          automation| {
             MutationAuthorization {
-                principal_key: account_id.map_or_else(|| "visitor:test".into(), |id| id.to_string()),
+                principal_key: account_id
+                    .map_or_else(|| "visitor:test".into(), |id| id.to_string()),
                 account_id,
                 session_generation: generation,
                 token_hash,
@@ -413,9 +419,12 @@ mod tests {
             true,
             false,
         );
-        assert!(authorize_for_test(&catalog, document.id, &unrelated, true, false)
-            .await
-            .is_err(), "a publisher ceiling cannot grant an unrelated account editor access");
+        assert!(
+            authorize_for_test(&catalog, document.id, &unrelated, true, false)
+                .await
+                .is_err(),
+            "a publisher ceiling cannot grant an unrelated account editor access"
+        );
 
         // An account that already has a direct editor grant must keep it when
         // it also visits through a weaker link.
@@ -459,12 +468,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             catalog
-                .access_role(
-                    document.id,
-                    Some(named.id),
-                    None,
-                    OffsetDateTime::now_utc(),
-                )
+                .access_role(document.id, Some(named.id), None, OffsetDateTime::now_utc(),)
                 .await
                 .unwrap(),
             Some(access::AccessRole::Editor),
@@ -499,7 +503,10 @@ mod tests {
             .find(|grant| grant.account_id == named.id)
             .unwrap();
         assert!(sourced.role.is_none());
-        assert_eq!(sourced.source_link_hash.as_deref(), Some(link_hash.as_slice()));
+        assert_eq!(
+            sourced.source_link_hash.as_deref(),
+            Some(link_hash.as_slice())
+        );
         let named_actor = make_actor(
             Some(named.id),
             Some(named.session_generation),
@@ -508,12 +515,16 @@ mod tests {
             true,
             false,
         );
-        assert!(authorize_for_test(&catalog, document.id, &named_actor, false, true)
-            .await
-            .is_ok());
-        assert!(authorize_for_test(&catalog, document.id, &named_actor, true, false)
-            .await
-            .is_err());
+        assert!(
+            authorize_for_test(&catalog, document.id, &named_actor, false, true)
+                .await
+                .is_ok()
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &named_actor, true, false)
+                .await
+                .is_err()
+        );
         let now = OffsetDateTime::now_utc();
         catalog
             .replace_share_links(
@@ -541,9 +552,12 @@ mod tests {
             .revoke_share_link(document.id, source_link.id)
             .await
             .unwrap();
-        assert!(authorize_for_test(&catalog, document.id, &named_actor, false, false)
-            .await
-            .is_err(), "revoking a source link also revokes its pinned grant");
+        assert!(
+            authorize_for_test(&catalog, document.id, &named_actor, false, false)
+                .await
+                .is_err(),
+            "revoking a source link also revokes its pinned grant"
+        );
 
         let expiring_hash = [0x33; 32];
         let expiring_link = catalog
@@ -587,9 +601,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(authorize_for_test(&catalog, document.id, &named_actor, false, false)
-            .await
-            .is_err(), "an expired source link cannot authorize its pinned grant");
+        assert!(
+            authorize_for_test(&catalog, document.id, &named_actor, false, false)
+                .await
+                .is_err(),
+            "an expired source link cannot authorize its pinned grant"
+        );
 
         // Direct grants and ownership remain subject to the same policy caps
         // as links. Edit permission implies comment permission, while a
@@ -606,12 +623,16 @@ mod tests {
             true,
             false,
         );
-        assert!(authorize_for_test(&catalog, document.id, &comment_only, false, false)
-            .await
-            .is_ok());
-        assert!(authorize_for_test(&catalog, document.id, &comment_only, true, false)
-            .await
-            .is_err());
+        assert!(
+            authorize_for_test(&catalog, document.id, &comment_only, false, false)
+                .await
+                .is_ok()
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &comment_only, true, false)
+                .await
+                .is_err()
+        );
         let stale = make_actor(
             Some(named.id),
             Some(named.session_generation + 1),
@@ -620,12 +641,18 @@ mod tests {
             true,
             false,
         );
-        assert!(authorize_for_test(&catalog, document.id, &stale, false, true)
-            .await
-            .is_err(), "annotation writes reject a stale account session");
-        assert!(authorize_for_test(&catalog, document.id, &stale, true, false)
-            .await
-            .is_err(), "semantic commands reject the same stale account session");
+        assert!(
+            authorize_for_test(&catalog, document.id, &stale, false, true)
+                .await
+                .is_err(),
+            "annotation writes reject a stale account session"
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &stale, true, false)
+                .await
+                .is_err(),
+            "semantic commands reject the same stale account session"
+        );
 
         let owner_no_edit = make_actor(
             Some(owner.id),
@@ -635,12 +662,16 @@ mod tests {
             true,
             false,
         );
-        assert!(authorize_for_test(&catalog, document.id, &owner_no_edit, true, false)
-            .await
-            .is_err());
-        assert!(authorize_for_test(&catalog, document.id, &owner_no_edit, false, false)
-            .await
-            .is_err());
+        assert!(
+            authorize_for_test(&catalog, document.id, &owner_no_edit, true, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &owner_no_edit, false, false)
+                .await
+                .is_err()
+        );
         let owner_comment_hash = [0x44; 32];
         catalog
             .create_share_link(
@@ -661,9 +692,11 @@ mod tests {
             true,
             false,
         );
-        assert!(authorize_for_test(&catalog, document.id, &owner_comment_link, false, false)
-            .await
-            .is_ok());
+        assert!(
+            authorize_for_test(&catalog, document.id, &owner_comment_link, false, false)
+                .await
+                .is_ok()
+        );
         let owner_no_comment = make_actor(
             Some(owner.id),
             Some(owner.session_generation),
@@ -672,9 +705,11 @@ mod tests {
             false,
             false,
         );
-        assert!(authorize_for_test(&catalog, document.id, &owner_no_comment, false, true)
-            .await
-            .is_err());
+        assert!(
+            authorize_for_test(&catalog, document.id, &owner_no_comment, false, true)
+                .await
+                .is_err()
+        );
 
         // Cached owner identity is attribution only in automation mode. The
         // same account gets no authority until an editor link is supplied.
@@ -690,9 +725,11 @@ mod tests {
             true,
             true,
         );
-        assert!(authorize_for_test(&catalog, document.id, &automation, true, false)
-            .await
-            .is_err());
+        assert!(
+            authorize_for_test(&catalog, document.id, &automation, true, false)
+                .await
+                .is_err()
+        );
         let editor_hash = [0x42; 32];
         catalog
             .create_share_link(
@@ -739,28 +776,42 @@ mod tests {
             true,
             true,
         );
-        assert!(authorize_for_test(&catalog, document.id, &automation_link, true, false)
-            .await
-            .is_ok());
+        assert!(
+            authorize_for_test(&catalog, document.id, &automation_link, true, false)
+                .await
+                .is_ok()
+        );
 
-        sqlx::query!("UPDATE documents SET ownership_mode='open' WHERE id=$1", document.id)
-            .execute(catalog.pool())
-            .await
-            .unwrap();
+        sqlx::query!(
+            "UPDATE documents SET ownership_mode='open' WHERE id=$1",
+            document.id
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
         let open_visitor = make_actor(None, None, None, true, true, false);
-        assert!(authorize_for_test(&catalog, document.id, &open_visitor, false, false)
-            .await
-            .is_ok());
-        assert!(authorize_for_test(&catalog, document.id, &open_visitor, true, false)
-            .await
-            .is_err());
+        assert!(
+            authorize_for_test(&catalog, document.id, &open_visitor, false, false)
+                .await
+                .is_ok()
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &open_visitor, true, false)
+                .await
+                .is_err()
+        );
         let open_no_comment = make_actor(None, None, None, true, false, false);
-        assert!(authorize_for_test(&catalog, document.id, &open_no_comment, false, false)
-            .await
-            .is_err());
-        assert!(authorize_for_test(&catalog, document.id, &automation, false, false)
-            .await
-            .is_err(), "automation cannot use open-mode commenting without its link");
+        assert!(
+            authorize_for_test(&catalog, document.id, &open_no_comment, false, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &automation, false, false)
+                .await
+                .is_err(),
+            "automation cannot use open-mode commenting without its link"
+        );
 
         // Session revocation must wait until a command using that session has
         // committed, closing the check/use gap at the transaction boundary.
@@ -803,14 +854,13 @@ mod tests {
         .is_err());
         revocation_tx.rollback().await.unwrap();
         command_tx.commit().await.unwrap();
-        let changed = sqlx::query(
-            "UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1",
-        )
-        .bind(owner.id)
-        .execute(catalog.pool())
-        .await
-        .unwrap()
-        .rows_affected();
+        let changed =
+            sqlx::query("UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1")
+                .bind(owner.id)
+                .execute(catalog.pool())
+                .await
+                .unwrap()
+                .rows_affected();
         assert_eq!(changed, 1);
     }
 
