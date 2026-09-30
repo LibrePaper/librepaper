@@ -138,7 +138,7 @@ test("SOPS key mappings reach the shared publisher for both prefixes", async () 
   const aws = join(bin, "aws");
   await writeFile(sops, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ OVH_S3_ENDPOINT:'https://ovh.example.invalid', OVH_S3_REGION:'bhs', OVH_S3_USER:'mapped-id', OVH_S3_SECRET:'mapped-secret', OVH_S3_ARN:'arn:aws:s3:::mapped-bucket', unrelated:{ignored:true} }));\n`);
   await writeFile(aws, `#!${process.execPath}
-const fs=require('node:fs'); const path=require('node:path'); const a=process.argv.slice(2); const at=k=>a.indexOf(k); const val=k=>a[at(k)+1];
+const fs=require('node:fs'); const path=require('node:path'); const a=process.argv.slice(2); const at=k=>a.indexOf(k); const val=k=>at(k)<0?undefined:a[at(k)+1];
 const storePath=process.env.AWS_STORE; let store={}; try{store=JSON.parse(fs.readFileSync(storePath,'utf8'))}catch{}
 const cmd=a.slice(0,2).join(' ');
 const walk=(d,b='')=>fs.readdirSync(d,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(path.join(d,e.name),b+e.name+'/'):[b+e.name]);
