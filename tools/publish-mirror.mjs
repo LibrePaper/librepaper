@@ -308,7 +308,7 @@ async function stageSource(source, destination, expected, compress) {
     },
   });
   await mkdir(dirname(destination), { recursive: true });
-  await pipeline(createReadStream(source), measure, ...(compress ? [createGzip({ level: 9 })] : []), createWriteStream(destination));
+  await pipeline(createReadStream(source), measure, ...(compress ? [createGzip({ level: 6 })] : []), createWriteStream(destination));
   if (size !== expected.size || hash.digest("hex") !== expected.sha256) {
     await rm(destination, { force: true });
     throw new Error(`mirror file changed after preflight: ${source}`);
@@ -400,12 +400,33 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
       const groups = groupFiles(prefix, files);
       // Each group is staged in its own subtree, gzipped where its metadata says so,
       // so one sync of that subtree uploads exactly the group with one set of headers.
+      // Compressing gigabytes takes minutes, so say how far along it is: a
+      // redrawn line on a terminal, a line every ten seconds otherwise.
+      const tty = process.stderr.isTTY;
+      let staged = 0;
+      let stagedBytes = 0;
+      let shown = 0;
+      const showStaging = (final) => {
+        const now = Date.now();
+        if (!final && now - shown < (tty ? 200 : 10_000)) return;
+        shown = now;
+        const elapsed = (now - started) / 1000;
+        const eta = stagedBytes ? duration(elapsed * (preflight.bytes - stagedBytes) / stagedBytes) : "?";
+        const line = `${prefix}: preparing ${staged}/${files.length} files, ${size(stagedBytes)}/${size(preflight.bytes)}, ` +
+          (final ? `done in ${duration(elapsed)}` : `ETA ${eta}`);
+        process.stderr.write(tty ? `\r${line}\x1b[K${final ? "\n" : ""}` : `${line}\n`);
+      };
       await runPool(groups.flatMap((group, index) => group.files.map((file) => ({ group, index, file }))), STAGE_CONCURRENCY,
         async ({ group, index, file }) => {
           const body = join(staging, "groups", String(index), ...file.relative.split("/"));
-          await stageSource(file.absolute, body, preflight.expected.get(file.relative), group.metadata.contentEncoding === "gzip");
+          const expected = preflight.expected.get(file.relative);
+          await stageSource(file.absolute, body, expected, group.metadata.contentEncoding === "gzip");
           file.stagedSize = (await stat(body)).size;
+          staged += 1;
+          stagedBytes += expected.size;
+          showStaging(false);
         });
+      showStaging(true);
       const config = join(staging, "aws-config");
       await writeFile(config, `[default]\ns3 =\n  max_concurrent_requests = ${SYNC_CONCURRENCY}\n  max_queue_size = 10000\n`);
       const syncEnv = { ...env, AWS_CONFIG_FILE: config };
