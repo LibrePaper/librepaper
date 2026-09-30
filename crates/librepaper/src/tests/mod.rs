@@ -36,6 +36,10 @@ pub(crate) async fn reset(catalog: &PostgresCatalog) {
         .execute(catalog.pool())
         .await
         .expect("reset the test catalogue");
+    sqlx::query("UPDATE storage_usage SET bytes=0 WHERE singleton")
+        .execute(catalog.pool())
+        .await
+        .expect("reset deployment storage accounting");
 }
 
 /// A migrated, empty catalogue, or `None` when no database was configured --
