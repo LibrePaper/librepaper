@@ -17,7 +17,7 @@ use uuid::Uuid;
 #[path = "snapshot_regression_tests.rs"]
 mod snapshot_regression_tests;
 
-use super::{new_id, Error, PostgresCatalog, Result};
+use super::{Error, PostgresCatalog, Result};
 
 /// One row of the log.
 #[derive(Clone, Debug)]
@@ -43,7 +43,6 @@ pub struct RowCoverage {
 #[derive(Clone, Debug)]
 pub struct LogBase {
     pub document_id: Uuid,
-    pub base_id: Uuid,
     pub through_update_sequence: i64,
     pub vector: Vec<u8>,
     pub snapshot_key: String,
@@ -208,7 +207,7 @@ impl PostgresCatalog {
     pub async fn log_base(&self, document_id: Uuid) -> Result<Option<LogBase>> {
         sqlx::query_as!(
             LogBase,
-            r#"SELECT document_id,base_id AS "base_id!",
+            r#"SELECT document_id,
                       through_update_sequence AS "through_update_sequence!",vector AS "vector!",
                       snapshot_key,snapshot_digest AS "snapshot_digest!",
                       snapshot_bytes AS "snapshot_bytes!",updated_at AS "updated_at!"
@@ -472,19 +471,17 @@ impl PostgresCatalog {
         )
         .execute(&mut *tx)
         .await?;
-        let base_id = new_id();
         let base = sqlx::query_as!(
             LogBase,
             r#"INSERT INTO document_snapshots
-               (document_id,base_id,through_update_sequence,vector,snapshot_key,
+               (document_id,through_update_sequence,vector,snapshot_key,
                 snapshot_digest,snapshot_bytes)
-               VALUES($1,$2,$3,$4,$5,$6,$7)
-               RETURNING document_id,base_id AS "base_id!",
+               VALUES($1,$2,$3,$4,$5,$6)
+               RETURNING document_id,
                          through_update_sequence AS "through_update_sequence!",vector AS "vector!",
                          snapshot_key,snapshot_digest AS "snapshot_digest!",
                          snapshot_bytes AS "snapshot_bytes!",updated_at AS "updated_at!""#,
             document_id,
-            base_id,
             through_update_sequence,
             vector,
             snapshot_key,
@@ -559,12 +556,10 @@ impl PostgresCatalog {
         } else {
             sqlx::query_scalar::<_, Uuid>(
                 "SELECT id FROM documents WHERE status='active'
-               AND (uncompacted_update_count >= $1 OR uncompacted_update_bytes >= $2)
-               AND id > $3
-             ORDER BY id LIMIT $4",
+               AND (uncompacted_update_count >= 100 OR uncompacted_update_bytes >= 16777216)
+               AND id > $1
+             ORDER BY id LIMIT $2",
             )
-            .bind(super::COMPACTION_UPDATE_THRESHOLD)
-            .bind(super::COMPACTION_BYTE_THRESHOLD)
             .bind(after.compaction)
             .bind(limit)
             .fetch_all(&self.pool)

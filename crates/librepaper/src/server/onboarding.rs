@@ -237,7 +237,6 @@ impl Server {
                 title: starter.title.into(),
                 source_format: starter.format.into(),
                 main_path: starter.main.into(),
-                settings: serde_json::json!({"version":1}),
             })
             .await
             .map_err(|e| e.to_string())?;

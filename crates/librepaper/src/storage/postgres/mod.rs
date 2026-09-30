@@ -26,6 +26,10 @@ pub(crate) use persistence::PersistenceConnection;
 mod proposals;
 mod repository;
 
+#[cfg(test)]
+#[path = "schema_regression_tests.rs"]
+mod schema_regression_tests;
+
 pub use commit::Authority;
 pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCoverage};
 pub use labels::{LabelRecord, NewLabel};
@@ -162,8 +166,7 @@ impl PostgresCatalog {
             .snapshot(self.pool.size(), self.pool.num_idle(), self.max_connections)
     }
 
-    /// §8.4's compaction triggers -- rows, then bytes -- as this deployment
-    /// has them configured.
+    /// §8.4's compaction triggers -- rows, then bytes -- used by this deployment.
     ///
     /// `pending_background_work` finds documents already over these lines at
     /// startup; a sequencer reads them so the flush that crosses one asks for
@@ -918,7 +921,6 @@ mod tests {
                 title: "A Paper".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: json!({"version":1}),
             })
             .await
             .unwrap()
@@ -976,7 +978,6 @@ mod tests {
                 title: "Same title".into(),
                 source_format: "quarto".into(),
                 main_path: "paper.qmd".into(),
-                settings: json!({"version":1}),
             })
             .await
             .unwrap();
@@ -1416,7 +1417,6 @@ mod tests {
                 title: "Erase document".into(),
                 source_format: "markdown".into(),
                 main_path: "document.md".into(),
-                settings: json!({"version":1}),
             })
             .await
             .unwrap();
@@ -1753,6 +1753,13 @@ mod tests {
             .replace_share_links(document.id, &[link("reader", reader)])
             .await
             .expect("the first save writes the reader's link");
+        let original = catalog
+            .share_links(document.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.token_hash == reader.to_vec())
+            .expect("the first reader link");
 
         catalog
             .replace_share_links(
@@ -1785,7 +1792,8 @@ mod tests {
             .iter()
             .find(|row| row.token_hash == reader.to_vec())
             .expect("the reader's link");
-        assert_eq!(kept.generation, 1, "an untouched link has not been rotated");
+        assert_eq!(kept.id, original.id, "an untouched link keeps its row");
+        assert_eq!(kept.created_at, original.created_at, "an untouched link keeps its age");
 
         catalog
             .replace_share_links(document.id, &[link("commenter", commenter)])

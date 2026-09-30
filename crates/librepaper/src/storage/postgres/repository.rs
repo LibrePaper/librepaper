@@ -1,4 +1,3 @@
-use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -29,7 +28,6 @@ pub struct AccountRecord {
     pub email: Option<String>,
     pub status: String,
     pub session_generation: i64,
-    pub preferences: Value,
     pub created_at: OffsetDateTime,
     pub last_seen_at: OffsetDateTime,
 }
@@ -46,7 +44,6 @@ pub struct NewDocument {
     pub title: String,
     pub source_format: String,
     pub main_path: String,
-    pub settings: Value,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -60,7 +57,6 @@ pub struct DocumentRecord {
     pub source_format: String,
     pub main_path: String,
     pub update_sequence: i64,
-    pub settings: Value,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
     pub deleted_at: Option<OffsetDateTime>,
@@ -365,7 +361,7 @@ impl PostgresCatalog {
              (id,kind,provider,provider_subject,handle,display_name,email,status)
              VALUES($1,$2,$3,$4,$5,$6,$7,'active')
              RETURNING id,kind,provider,provider_subject,handle,display_name,email,status,
-                       session_generation,preferences,created_at,last_seen_at",
+                       session_generation,created_at,last_seen_at",
             id,
             input.kind,
             input.provider,
@@ -395,7 +391,7 @@ impl PostgresCatalog {
              WHERE accounts.status='active'
              RETURNING accounts.id,accounts.kind,accounts.provider,accounts.provider_subject,
                        accounts.handle,accounts.display_name,accounts.email,accounts.status,
-                       accounts.session_generation,accounts.preferences,accounts.created_at,
+                       accounts.session_generation,accounts.created_at,
                        accounts.last_seen_at",
             new_id(),
             input.provider,
@@ -420,7 +416,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             AccountRecord,
             "SELECT id,kind,provider,provider_subject,handle,display_name,email,status,
-                    session_generation,preferences,created_at,last_seen_at
+                    session_generation,created_at,last_seen_at
              FROM accounts WHERE id=ANY($1)",
             ids,
         )
@@ -433,7 +429,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             AccountRecord,
             "SELECT id,kind,provider,provider_subject,handle,display_name,email,status,
-                    session_generation,preferences,created_at,last_seen_at
+                    session_generation,created_at,last_seen_at
              FROM accounts WHERE id=$1",
             id,
         )
@@ -469,14 +465,14 @@ impl PostgresCatalog {
         let id = new_id();
         sqlx::query_as::<_, DocumentRecord>(
             "INSERT INTO documents
-             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path,settings)
-             SELECT $1,$2,a.id,$4,$5,'active',$6,$7,$8
+             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
+             SELECT $1,$2,a.id,$4,$5,'active',$6,$7
              FROM accounts a
              WHERE a.id=$3 AND a.status='active'
-               AND ($9::bigint IS NULL OR a.session_generation=$9)
+               AND ($8::bigint IS NULL OR a.session_generation=$8)
              FOR SHARE
              RETURNING id,slug,owner_id,ownership_mode,title,status,source_format,
-                       main_path,update_sequence,settings,created_at,updated_at,deleted_at",
+                       main_path,update_sequence,created_at,updated_at,deleted_at",
         )
         .bind(id)
         .bind(input.slug)
@@ -485,7 +481,6 @@ impl PostgresCatalog {
         .bind(input.title)
         .bind(input.source_format)
         .bind(input.main_path)
-        .bind(input.settings)
         .bind(input.owner_session_generation)
         .fetch_optional(&self.pool)
         .await
@@ -498,7 +493,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,
-                       settings,created_at,updated_at,deleted_at
+                       created_at,updated_at,deleted_at
              FROM documents WHERE slug=$1",
             slug,
         )
@@ -512,7 +507,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,
-                       settings,created_at,updated_at,deleted_at
+                       created_at,updated_at,deleted_at
              FROM documents WHERE id=$1",
             id,
         )
@@ -533,7 +528,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,
-                       settings,created_at,updated_at,deleted_at
+                       created_at,updated_at,deleted_at
              FROM documents
              WHERE status='active'
                AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),
@@ -591,7 +586,7 @@ impl PostgresCatalog {
              )
              SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
                     d.source_format,d.main_path,d.update_sequence,
-                    d.settings,d.created_at,
+                    d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d
              JOIN candidates c ON c.id=d.id
@@ -925,7 +920,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
                     d.source_format,d.main_path,d.update_sequence,
-                    d.settings,d.created_at,
+                    d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d
              WHERE d.owner_id=$1 AND d.status='deleting'

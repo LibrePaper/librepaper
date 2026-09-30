@@ -40,7 +40,6 @@ async fn document(catalog: &PostgresCatalog, owner_id: Uuid, mode: &str) -> Uuid
             title: "Schema test".into(),
             source_format: "markdown".into(),
             main_path: "main.md".into(),
-            settings: json!({"version": 1}),
         })
         .await
         .unwrap()

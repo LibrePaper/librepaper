@@ -133,7 +133,6 @@ async fn bare_with_config(slug: &str, config: Configuration) -> Option<Bare> {
             title: "Spike".into(),
             source_format: "markdown".into(),
             main_path: "paper.md".into(),
-            settings: serde_json::json!({}),
         })
         .await
         .expect("create the document row");
@@ -1261,7 +1260,6 @@ async fn opening_more_documents_than_the_budget_holds_evicts_a_subscribed_entry_
                 title: "Spike".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: serde_json::json!({}),
             })
             .await
             .unwrap();
@@ -1710,7 +1708,6 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
                 title: "Sweep".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: serde_json::json!({}),
             })
             .await
             .expect("document row");
