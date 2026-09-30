@@ -186,10 +186,11 @@ relevant to readers as well as editors.
 
 ## 6. Supply chain: distinguish integrity, provenance and recovery
 
-**Current.** `deploy/install.sh` and `deploy/install-companion.sh` check release
-archives against `checksums.txt` from the same release. The release workflow
-uses ad-hoc macOS signing. The repository's SOPS secrets file has one PGP
-recipient. Wasm modules are pinned by digest in `assets.lock`.
+**Current.** The generated installers (`librepaper-installer.sh` and
+`librepaper-installer.ps1`) provided by Cargo Dist verify release archives
+against checksums. The release workflow uses ad-hoc macOS signing. The
+repository's SOPS secrets file has one PGP recipient. Wasm modules are pinned
+by digest in `assets.lock`.
 
 **Recommendation.** Authenticate releases with a verification identity that
 installers trust independently of the downloaded checksum file. Specify key

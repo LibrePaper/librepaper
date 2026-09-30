@@ -11,20 +11,20 @@ set -euo pipefail
 # 1. Public Cloud > Object Storage > Users: create an S3 user and generate its S3 credentials.
 # 2. Do NOT create the bucket in the console; `publish` creates it with that user, because
 #    OVH lets only the bucket owner set CORS.
-# 3. sops deploy/keys.yaml: add OVH_S3_ENDPOINT, OVH_S3_REGION, OVH_S3_USER (access key),
+# 3. sops tools/deploy-keys.yaml: add OVH_S3_ENDPOINT, OVH_S3_REGION, OVH_S3_USER (access key),
 #    OVH_S3_SECRET and OVH_S3_ARN (arn:aws:s3:::<bucket>).
 #
 # Each publish:
-# 1. tools/pins fetch && deploy/assets build: fetch the pinned wasm modules into web/wasm and
+# 1. tools/pins fetch && tools/deploy-assets build: fetch the pinned wasm modules into web/wasm and
 #    build the LaTeX mirror (in ../wasm-latex, or MIRROR=).
 # 2. tools/pins update latex: pin the one release in ../wasm-latex/mirror.
-# 3. deploy/assets publish: checks, smokes in Chromium, probes the bucket with two small test
+# 3. tools/deploy-assets publish: checks, smokes in Chromium, probes the bucket with two small test
 #    files, then uploads everything and verifies public read with CORS. Stop at first failure.
 # Upload before shipping a binary that carries a new pin.
 
 usage() {
   cat <<'USAGE'
-Usage: deploy/assets <command> [args]
+Usage: tools/deploy-assets <command> [args]
 
 Commands:
   build                     Build the LaTeX mirror (make -C <dir of MIRROR> mirror)
@@ -39,7 +39,7 @@ Commands:
 
 Environment:
   MIRROR=DIR      LaTeX mirror directory (default ../wasm-latex/mirror)
-  KEYS=FILE       sops-encrypted keys (default deploy/keys.yaml)
+  KEYS=FILE       sops-encrypted keys (default tools/deploy-keys.yaml)
   S3_BUCKET=NAME  bucket name (default: derived from OVH_S3_ARN)
 USAGE
 }
@@ -149,7 +149,7 @@ cmd_publish() {
   done < <(grep -v '^#' assets.lock | grep .)
   LATEX_ID=$(awk '$1 == "latex" { print $4 }' assets.lock)
   LATEX_RELEASE="$MIRROR/$LATEX_ID/release.json"
-  [ -f "$LATEX_RELEASE" ] || { printf '%s\n' "Error: $LATEX_RELEASE missing; run deploy/assets build" >&2; exit 1; }
+  [ -f "$LATEX_RELEASE" ] || { printf '%s\n' "Error: $LATEX_RELEASE missing; run tools/deploy-assets build" >&2; exit 1; }
   public "$(node -p 'require(process.argv[1]).source.corresponding_source.url' "$(realpath "$LATEX_RELEASE")")" "wasm-latex source for $LATEX_ID"
 
   # Stage 3/6: compile the LaTeX tutorial in Chromium against this mirror.
@@ -162,7 +162,7 @@ cmd_publish() {
   fi
 
   # Decrypt and read keys.
-  KEYS="${KEYS:-deploy/keys.yaml}"
+  KEYS="${KEYS:-tools/deploy-keys.yaml}"
   key() { sops --decrypt --extract "[\"$1\"]" "$KEYS"; }
   OVH_S3_ENDPOINT=$(key OVH_S3_ENDPOINT)
   OVH_S3_REGION=$(key OVH_S3_REGION)

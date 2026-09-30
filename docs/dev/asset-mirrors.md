@@ -40,21 +40,21 @@ Then here:
 
 ```sh
 tools/pins update latex                    # pin the one release in ../wasm-latex/mirror
-deploy/assets publish                      # check, smoke, probe, upload before committing
+tools/deploy-assets publish                # check, smoke, probe, upload before committing
 git commit assets.lock -m "Pin engines-YYYY.MM.DD"
 ```
 
 ## Publishing
 
 ```sh
-tools/pins fetch && deploy/assets build
+tools/pins fetch && tools/deploy-assets build
 tools/pins update latex
-deploy/assets publish --dry-run    # stages 1-3 only; no credentials, no bucket
-deploy/assets publish              # check, smoke, probe, upload
+tools/deploy-assets publish --dry-run    # stages 1-3 only; no credentials, no bucket
+tools/deploy-assets publish              # check, smoke, probe, upload
 ```
 
 - Needs Node.js, SOPS, AWS CLI v2 (falls back to `nix shell nixpkgs#awscli2`)
-- Keys: `deploy/keys.yaml` (SOPS)
+- Keys: `tools/deploy-keys.yaml` (SOPS)
   - `OVH_S3_ENDPOINT`, `OVH_S3_REGION`, `OVH_S3_USER`, `OVH_S3_SECRET`
   - `OVH_S3_ARN` (`arn:aws:s3:::BUCKET`) names the bucket
   - overridden by `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
@@ -77,5 +77,5 @@ deploy/assets publish              # check, smoke, probe, upload
 
 ```sh
 librepaper admin serve --asset-mirror https://host/   # serve the pinned paths over HTTPS, CORS for GET and HEAD
-deploy/assets check https://host/latex/<sha256>/      # validate a LaTeX release
+tools/deploy-assets check https://host/latex/<sha256>/      # validate a LaTeX release
 ```

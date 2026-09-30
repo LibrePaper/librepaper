@@ -11,8 +11,7 @@ If the binary is missing, or present but without `mcp`,
 install a release with the project's installer (Linux and macOS):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/LibrePaper/librepaper/main/deploy/install.sh -o /tmp/librepaper-install.sh
-sh /tmp/librepaper-install.sh
+curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
 ```
 
 The installer verifies the release archive's checksum and installs into

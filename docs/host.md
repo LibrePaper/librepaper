@@ -163,15 +163,15 @@ Set lifetime for public deployments: `--document-expire-after 24h`. Use `--docum
 
 ## Containers
 
-`deploy/docker` provides Compose for PostgreSQL, LibrePaper, and HTTPS proxy. Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 certificates.
+`tools/deploy-docker` provides Compose for PostgreSQL, LibrePaper, and HTTPS proxy. Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 certificates.
 
 ```sh
-cd deploy/docker
+cd tools/deploy-docker
 cp .env.example .env
 docker compose up -d
 ```
 
-Container uses `--no-local`. See `deploy/docker/README.md` for backup and upgrade.
+Container uses `--no-local`. See `tools/deploy-docker/README.md` for backup and upgrade.
 
 ## Privacy
 

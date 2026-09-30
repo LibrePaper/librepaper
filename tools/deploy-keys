@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Deployment keys dispatcher. KEYS= overrides the file.
 
-KEYS="${KEYS:-deploy/keys.yaml}"
+KEYS="${KEYS:-tools/deploy-keys.yaml}"
 
 # Convert to absolute path so script works from any cwd
 if [[ "$KEYS" != /* ]]; then
@@ -12,7 +12,7 @@ fi
 
 usage() {
     cat <<EOF
-usage: deploy/keys [COMMAND]
+usage: tools/deploy-keys [COMMAND]
 
 Manage sops-encrypted deployment keys from $KEYS.
 
@@ -24,13 +24,13 @@ Commands:
   -h          Show this message
 
 Environment:
-  KEYS=<path>  Override the keys file (default: deploy/keys.yaml)
+  KEYS=<path>  Override the keys file (default: tools/deploy-keys.yaml)
 
 Examples:
-  deploy/keys shell                 # Start a subshell with keys
-  deploy/keys edit                  # Edit keys with sops
-  deploy/keys names                 # List all key names
-  KEYS=/tmp/keys.yaml deploy/keys shell
+  tools/deploy-keys shell                 # Start a subshell with keys
+  tools/deploy-keys edit                  # Edit keys with sops
+  tools/deploy-keys names                 # List all key names
+  KEYS=/tmp/keys.yaml tools/deploy-keys shell
 EOF
 }
 
@@ -44,7 +44,7 @@ case "${1:-help}" in
     shell)
         # Interactive subshell with sops-decrypted environment
         if [ ! -t 0 ]; then
-            echo "deploy/keys shell opens an interactive subshell and needs a terminal" >&2
+            echo "tools/deploy-keys shell opens an interactive subshell and needs a terminal" >&2
             echo "use: sops exec-env $KEYS '<command>'" >&2
             exit 2
         fi

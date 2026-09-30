@@ -169,7 +169,7 @@
       <div class="setting-title">Windows</div>
       <div class="command-line"><code>powershell -ExecutionPolicy Bypass -c "irm {windowsInstaller} | iex"</code><button type="button" class="btn btn-sm lp-control-outline" onclick={() => void copy(`powershell -ExecutionPolicy Bypass -c "irm ${windowsInstaller} | iex"`, "Windows")}>{copying === "Windows" ? "Copied" : "Copy"}</button></div>
     </div>
-    <p class="setting-description">After installation, open LibrePaper Companion and return here to connect. <a href="https://github.com/LibrePaper/librepaper/blob/main/deploy/README.md" target="_blank" rel="noreferrer">Installation help</a></p>
+    <p class="setting-description">After installation, open LibrePaper Companion and return here to connect. <a href="https://librepaper.org/start.html" target="_blank" rel="noreferrer">Installation help</a></p>
   </section>
 {/if}
 

@@ -46,8 +46,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepa
 ```
 
 To pin a version, replace `releases/latest/download/` in either URL with
-`releases/download/<tag>/`. Older saved commands using `deploy/install.sh` still forward to the
-generated installer.
+`releases/download/<tag>/`.
 
 The installer puts the executable on your PATH. It does not
 add a desktop shortcut or register the `librepaper://` link handler.

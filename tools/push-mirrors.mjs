@@ -15,7 +15,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { preflightMirror, publish, publisherConfiguration } from "./publish-mirror.mjs";
 
 const runFile = promisify(execFile);
-const keys = process.env.KEYS || "deploy/keys.yaml";
+const keys = process.env.KEYS || "tools/deploy-keys.yaml";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const wasmDirectory = process.env.WASM_DIR || join(root, "web/wasm");
 const wasmLock = process.env.WASM_LOCK || join(root, "assets.lock");
@@ -137,7 +137,7 @@ async function publishMirrors(mirrors, env, dryRun) {
     try {
       statSync(mirror.dir);
     } catch {
-      throw new Error(`${mirror.prefix} mirror not found at ${mirror.dir}; run deploy/assets build first`);
+      throw new Error(`${mirror.prefix} mirror not found at ${mirror.dir}; run tools/deploy-assets build first`);
     }
     console.log(`Checking ${mirror.prefix} mirror...`);
     const result = await preflightMirror(mirror);

@@ -7,7 +7,7 @@ and nothing else; the parts worth supervising are the database and the
 certificates, and those are what the other two are for.
 
 ```sh
-cd deploy/docker
+cd tools/deploy-docker
 cp .env.example .env     # and fill it in
 docker compose up -d
 ```

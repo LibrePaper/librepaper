@@ -4,7 +4,7 @@
 # renderer libraries directly. The web app in web/ is Svelte,
 # bundled by vite and installed by bun. The binary embeds the web build (from
 # web/dist) and serves it. The WASM renderers are not embedded: they are
-# published to the asset mirror (deploy/assets publish) and browsers load them there.
+# published to the asset mirror (tools/deploy-assets publish) and browsers load them there.
 
 # Local settings, kept out of the repository: the GitHub OAuth app and who may
 # publish. Copy .env.example to .env and fill it in. Values are read as Make
@@ -17,7 +17,7 @@ PREFIX  ?= $(HOME)/.local
 BINDIR  ?= $(PREFIX)/bin
 DESTDIR ?=
 # The browser renderers, fetched into web/wasm (not embedded in the binary):
-# tests read them, and deploy/assets publish sends them to the asset mirror.
+# tests read them, and tools/deploy-assets publish sends them to the asset mirror.
 WASM    := web/wasm/markdown.wasm
 BIB     := web/wasm/bibliography.wasm
 CITES   := web/wasm/citations.wasm
@@ -205,7 +205,7 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # next `make demo` fail on --strictPort.
 demo: SIMULATE_ACTIVITY ?= 21
 demo: $(BIN)  ## Serve the site, the app, a local companion and simulated activity (SIMULATE_ACTIVITY=21)
-	@deploy/assets check
+	@tools/deploy-assets check
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
 	@set -e; \
 	(cd web && bun run serve:site -- --port $(SITE_PORT) --strictPort >/dev/null 2>&1) & \
