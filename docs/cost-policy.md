@@ -39,12 +39,14 @@ Browser rendering and local or bring-your-own AI integrations do not require hos
 
 ## Static delivery and host comparison (2026-09-28)
 
-The existing LaTeX browser mirror remains on Cloudflare. The four browser wasm
-modules are no longer embedded in the server: they are published to the asset
-mirror under `wasm/<sha256>/<module>`, pinned by `assets.lock`, and
-browsers load them from there; the deployed app changes only after redeployment.
-Cloudflare Static Assets has a 25 MiB per-file limit and free static
-requests under the documented configuration ([billing and limits](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/), [platform limits](https://developers.cloudflare.com/workers/platform/limits/)). The embedded-font Typst WASM is 33.8 MB raw / 14.4 MB gzip, so the prepared OVH publisher targets a dedicated public S3 bucket with gzip transfer encoding and explicit MIME and cache headers. The local LaTeX mirror totals about 10.85 GB raw, including legacy `.br` sidecars; publishing skips those sidecars and stores gzip-compressed eligible files, so measure the uploaded bucket for billable size. The OVH endpoint and pin remain pending live checks; keep the existing mirror live through cutover. See [asset mirror publishing and cutover](asset-mirrors.md).
+All browser assets (the four wasm modules and the LaTeX engines and bundles)
+live on one dedicated public OVH S3 bucket, not in the server binary. They are
+addressed by digest, pinned by `assets.lock`, and cached immutable, and the
+bucket is append-only, so its size only grows and pruning is not implemented.
+The embedded-font Typst WASM is 33.8 MB raw / 14.4 MB gzip; the publisher
+stores gzip-compressed eligible files with explicit MIME and cache headers, so
+measure the uploaded bucket for billable size. See
+[asset mirror publishing](asset-mirrors.md).
 
 R2 offers free egress and monthly allowances of 10 GB-month, one million Class A and ten million Class B operations; storage and operations above these cost extra ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
 
@@ -55,8 +57,7 @@ For about 1,000 users, the proposed setup is:
 - **VPS:** application and PostgreSQL.
 - **OVH Standard Multi-Zone:** private uploads and document snapshots; restricted credentials, with LibrePaper enforcing access permissions.
 - **Backblaze B2:** independent encrypted Restic backups of consistent `admin backup` output. Deduplication shares unchanged data across recovery points ([Restic](https://restic.readthedocs.io/en/stable/040_backup.html)).
-- **OVH S3-compatible Object Storage:** planned dedicated public bucket for the Typst and LaTeX browser mirrors; endpoint and credentials are pending.
-- **Cloudflare Static Assets:** current LaTeX mirror until the OVH cutover passes checks.
+- **OVH S3-compatible Object Storage:** the dedicated public bucket (region `bhs`) that serves the wasm modules and the LaTeX release to browsers.
 
 Prices checked 2026-09-28: OVH Multi-Zone costs about **CA$2.13 per 100 GiB/month**, versus CA$0.96 for One Zone, before tax. The extra CA$1.16 buys redundancy across three independent zones; requests, retrieval, and egress are free under Canadian terms ([pricing](https://www.ovhcloud.com/en-ca/public-cloud/prices/), [redundancy](https://docs.ovhcloud.com/en/guides/storage-and-backup/object-storage/s3-regions-comparison)). B2 costs **US$6.95/TB-month**, first 10 GB free, with free API calls and egress up to 3× average stored data; further egress normally costs US$0.01/GB ([pricing](https://www.backblaze.com/cloud-storage/pricing)).
 

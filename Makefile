@@ -200,9 +200,10 @@ PORT       ?= 8081
 # button on it points at.
 SITE_PORT  ?= 8082
 DATA       ?= librepaper-data
-# Browsers fetch LaTeX directly from an HTTPS static mirror. With no override,
-# the binary uses the project mirror. `ASSET_MIRROR=` selects an operator-hosted
-# copy for local runs.
+# Browsers fetch the wasm renderers and LaTeX directly from an HTTPS static
+# asset mirror. With no override the binary uses the project mirror, which
+# serves the releases assets.lock pins. `ASSET_MIRROR=` selects an
+# operator-hosted copy for local runs.
 ASSET_MIRROR      ?=
 ASSET_MIRROR_FLAG ?= $(if $(ASSET_MIRROR),--asset-mirror $(ASSET_MIRROR))
 
@@ -238,7 +239,7 @@ kill:  ## Stop a server started with make serve
 # output, a directory of release directories (`<sha256>/`).
 MIRROR ?= ../wasm-latex/mirror
 
-latex-check:
+latex-check:  ## Validate the LaTeX mirror build at MIRROR= (no network for a directory)
 	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
 
 latex-smoke: $(BIN)  ## Compile and display the LaTeX tutorial in Chromium against MIRROR=
@@ -331,7 +332,7 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # and takes it down: a preview server left holding SITE_PORT would make the
 # next `make deploy` fail on --strictPort.
 deploy: SIMULATE_ACTIVITY ?= 21
-deploy: latex-check $(BIN)  ## Serve the site, the application and a local companion and open the site in Firefox
+deploy: latex-check $(BIN)  ## Check the local LaTeX mirror, then serve the site, the app, a local companion and simulated activity (SIMULATE_ACTIVITY=21)
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
 	@set -e; \
 	(cd web && bun run serve:site -- --port $(SITE_PORT) --strictPort >/dev/null 2>&1) & \
@@ -361,9 +362,6 @@ secrets:  ## Open an interactive shell with the sops-encrypted deployment keys i
 	@test -t 0 || { echo "make secrets opens an interactive subshell and needs a terminal" >&2; echo "use: sops exec-env $(KEYS) '<command>'" >&2; exit 2; }
 	@echo "$(KEYS) is loaded in this shell; exit to drop it"
 	@sops exec-env $(KEYS) "$${SHELL:-/bin/sh}"
-
-# Build the LaTeX mirror in its sibling repository, then publish it with the wasm
-# modules using `make mirrors-push`. Nothing builds them here.
 
 # --- the web app -----------------------------------------------------------
 #

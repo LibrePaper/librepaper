@@ -100,7 +100,7 @@ the installation script:
 | `LIBREPAPER_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
 | `LIBREPAPER_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
 | `LIBREPAPER_BUDGET_DOCUMENT_ASSETS` | combined input assets per document, in MiB |
-| `LIBREPAPER_LATEX_MIRROR` | HTTPS static mirror URL fetched directly by browsers |
+| `LIBREPAPER_ASSET_MIRROR` | HTTPS URL of the asset mirror browsers fetch wasm and LaTeX from (default: the project mirror) |
 | `LIBREPAPER_EXPIRE_AFTER` | delete documents after this duration, for example `24h` or `30d` (default: never) |
 | `LIBREPAPER_EXPIRE_FROM` | whether that duration runs from `updated` (default) or `created` |
 | `LIBREPAPER_TYPST_FONTS` | optional local directory of additional Typst fonts |
@@ -132,14 +132,16 @@ a deployment offers, and under what licence, is the operator's decision.
 
 ## Browser compiler assets
 
-The Typst browser renderer and its default fonts are served from the
-application by default. Moving that download to a static mirror is an optional
-release pin; it must point to an HTTPS content-addressed URL for an
-embedded-font module whose SHA-256 the build verifies. The OVH Typst and LaTeX
-mirror migration is pending live endpoint and browser checks. The existing
-LaTeX Cloudflare mirror remains in use; Typst uses the application origin
-until its mirror is verified. See the
-[mirror cutover notes](../docs/asset-mirrors.md).
+The Markdown, bibliography, citation and Typst renderers, and the LaTeX
+engines, are not served by the application. Browsers fetch them from an asset
+mirror: `wasm/<sha256>/<name>.wasm` for the renderers and `latex/<sha256>/` for
+the LaTeX release. `assets.lock` pins every one, the binary carries the pins,
+and the server tells browsers which URLs to use. Nothing on the mirror is ever
+rewritten, so a binary keeps working against the assets it pinned.
+
+To serve them yourself, host the tree for your binary's pins and pass
+`--asset-mirror https://host/`. It must serve those exact paths over HTTPS with
+CORS for GET and HEAD. See [asset mirrors](../docs/asset-mirrors.md).
 
 ## Rights
 
@@ -275,8 +277,8 @@ hourly pass, and once at startup.
 
 ## Privacy and the LaTeX mirror
 
-Browsers download the LaTeX compiler distribution directly from the default
-project asset mirror, `https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/`. The mirror receives
+Browsers download the wasm renderers and the LaTeX compiler distribution
+directly from the default project asset mirror, `https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/`. The mirror receives
 the browser's IP address and the digest-named files it requests. Those
 requests can reveal package choices and suggest a document's field or
 template. Compiler downloads do not send document source or private input
@@ -284,7 +286,8 @@ assets to the mirror.
 
 An operator can host a copy and keep compiler requests on their own
 infrastructure by passing `--asset-mirror URL` to `librepaper admin serve`. The URL
-must be an HTTPS static mirror with the documented mirror layout and headers.
+must be an HTTPS static mirror that serves the paths your binary's `assets.lock`
+pins, with CORS for GET and HEAD.
 The LaTeX files live in one release directory, `latex/<sha256>/`, whose id is
 the SHA-256 of its `MANIFEST.json` and which the build pins in `assets.lock`.
 Everything on the mirror is immutable and the mirror only grows, so an older

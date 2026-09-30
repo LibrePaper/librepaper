@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Deploy browser asset mirrors to OVH S3.
+# Publish the browser assets to the OVH S3 bucket that DEFAULT_ASSET_MIRROR names.
+#
+# The bucket holds wasm/<sha256>/<module>.wasm and latex/<sha256>/ (the release
+# assets.lock pins). Nothing is ever deleted, so older binaries keep working.
 #
 # One-time setup:
-# 1. Public Cloud > Object Storage > Users: create a user, download S3 credentials.
-# 2. Do NOT create the bucket in the console; this script creates it so the user owns it.
-# 3. sops deploy/keys.yaml: add OVH_S3_ENDPOINT, OVH_S3_REGION, OVH_S3_USER, OVH_S3_SECRET, OVH_S3_ARN.
-# 4. make wasm && make mirrors: fetch the pinned browser wasm modules into web/wasm and build
-#    the LaTeX mirror (in wasm-latex).
-# 5. Publish every GitHub release assets.lock pins (a draft fails the preflight check).
-# 6. deploy/deploy-mirror.sh --test: verify bucket, CORS, and connectivity (uploads two small test files).
-# 7. deploy/deploy-mirror.sh: publish all mirrors.
-# 8. Afterwards (manual): point DEFAULT_ASSET_MIRROR (crates/librepaper/src/config.rs) at https://<bucket>.s3.<region>.io.cloud.ovh.net/,
-#    and pin the published LaTeX release (latex/<sha256>/) and wasm modules in assets.lock.
+# 1. Public Cloud > Object Storage > Users: create an S3 user and generate its S3 credentials.
+# 2. Do NOT create the bucket in the console; this script creates it with that user, because
+#    OVH lets only the bucket owner set CORS.
+# 3. sops deploy/keys.yaml: add OVH_S3_ENDPOINT, OVH_S3_REGION, OVH_S3_USER (access key),
+#    OVH_S3_SECRET and OVH_S3_ARN (arn:aws:s3:::<bucket>).
+#
+# Each publish:
+# 1. Publish every GitHub release assets.lock pins (a draft fails the check below).
+# 2. make wasm && make mirrors: fetch the pinned wasm modules into web/wasm and build the
+#    LaTeX mirror (in ../wasm-latex, or MIRROR=).
+# 3. deploy/deploy-mirror.sh --test: verify bucket, CORS and connectivity (uploads two small files).
+# 4. deploy/deploy-mirror.sh: create the bucket if needed, set CORS, run make mirrors-push, then
+#    check that a pinned object is publicly readable with CORS and that listing is private.
+# Upload before shipping a binary that carries a new pin.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -99,8 +106,8 @@ if [ "$TEST_MODE" = 1 ]; then
     --content-type "text/plain" --acl public-read
   VERIFY_KEY="test/markdown.wasm"
 else
-  # Normal mode: run make mirrors-push.
-  printf '%s\n' "Publishing mirrors..."
+  # Normal mode: publish everything with make mirrors-push.
+  printf '%s\n' "Publishing assets..."
   make mirrors-push
   # The LaTeX release the build pins: the `latex` row of assets.lock names its
   # directory, latex/<sha256>/. Everything on the mirror is immutable.
@@ -130,4 +137,4 @@ if [ "$LIST_RESPONSE" = "200" ]; then
   exit 1
 fi
 
-printf '%s\n' "Success: mirrors deployed to s3://$S3_BUCKET/ with CORS enabled."
+printf '%s\n' "Success: assets published to s3://$S3_BUCKET/ with CORS enabled."

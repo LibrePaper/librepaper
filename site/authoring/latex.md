@@ -11,7 +11,7 @@ on the way: LibrePaper carries no TeX, and no build embeds one.
 LaTeX is compiled in the browser, by LibrePaper's own pinned release of the
 browser engines: pdfTeX, XeTeX and BibTeX built for WebAssembly, with
 the formats generated for those exact binaries and a pinned TeX Live package
-set. An editor's browser fetches the current release from the configured HTTPS
+set. An editor's browser fetches the release its server pins in `assets.lock` from the configured HTTPS
 mirror and compiles automatically; readers render the source on demand.
 Packages arrive as verified, content-addressed bundles from that mirror and
 stay in browser storage so the next document costs nothing to fetch. The TeX engines carry
@@ -29,8 +29,8 @@ unsuccessful edit may leave the current preview visible while reporting
 conversion diagnostics; it does not create a stored rendering.
 
 The project engine (Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX) is a project
-setting in the Settings dialog. Every compile uses the mirror's current
-default release; documents do not pin a browser release. Automatic honours
+setting in the Settings dialog. Every compile uses the release the server pins in `assets.lock`;
+documents do not pin a browser release. Automatic honours
 a `% !TEX program = xelatex` line in the main file, then looks for packages
 that only a Unicode engine can load, and otherwise uses pdfLaTeX. LuaLaTeX
 remains in the selector for release compatibility, but selecting it with the
@@ -74,8 +74,8 @@ A self-hoster can serve the browser distribution from their own mirror rather
 than the project one; see
 [Privacy and the LaTeX mirror](../host.html#privacy-and-the-latex-mirror).
 
-`make deploy` checks that the selected mirror's release directories
-(`latex/<sha256>/`, each described by `release.json`) hold a complete engine
+`make deploy` checks that the local LaTeX mirror build (`MIRROR=`, default `../wasm-latex/mirror`) holds release directories
+(`<sha256>/`, each described by `release.json`) with a complete engine
 release with its TeX Live bundles (`tools/latex/tools/check-mirror.mjs`; see
 `make latex-check` and `make latex-smoke`, MIRROR=). Older per-file mirrors
 and SwiftLaTeX/BusyTeX releases are rejected as legacy. `make latex-smoke` compiles `docs/examples/tutorial-latex/librepaper.tex`

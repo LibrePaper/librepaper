@@ -785,18 +785,23 @@ explicitly, for example `make wasm-update REPO=wasm-markdown TAG=v0.2.0`, then
 review the resulting Cargo and lockfile diff.
 
 The four browser modules (markdown, bibliography, citations and typst) are not
-embedded in the binary. `make wasm` fetches them into the ignored `web/wasm/`,
-and `make mirrors-push` publishes them to the asset mirror under
-`wasm/<sha256>/<module>`, where the SHA-256 is the one `assets.lock`
-pins. The same lock pins the LaTeX release directory, `latex/<sha256>/`, in a
-`latex` row. Browsers load them from the mirror named by `--asset-mirror`. See
-[`docs/asset-mirrors.md`](../docs/asset-mirrors.md) for the pending OVH mirror
-cutover steps.
+embedded in the binary. `make wasm` fetches them from public GitHub releases into the ignored
+`web/wasm/`, which tests, tools and publishing read, and `make mirrors-push`
+publishes them to the asset mirror under `wasm/<sha256>/<module>`, where the
+SHA-256 is the one `assets.lock` pins. The same lock pins the LaTeX release
+directory, `latex/<sha256>/`, in a `latex` row. The server hands browsers those
+URLs, on the mirror named by `--asset-mirror`. See
+[`docs/asset-mirrors.md`](../docs/asset-mirrors.md) for publishing.
 
 ### Running it locally
 
-`make deploy` runs the application locally. Configure an OAuth app in `.env`
-(see `.env.example`), then sign in: every new account receives five private,
+`make deploy` runs the site, the application, a local companion and simulated
+activity together. It first runs `make latex-check` on the LaTeX mirror at
+`MIRROR=` (default `../wasm-latex/mirror`), then `make serve`, which uses the
+Docker PostgreSQL that `make postgres-dev` keeps unless
+`LIBREPAPER_DATABASE_URL` is set. Configure an OAuth app in `.env` (see
+`.env.example`; `make secrets` opens a shell with the deployment keys loaded),
+then sign in: every new account receives five private,
 editable examples, one each in HTML, Markdown, Typst, LaTeX and Quarto. Use
 `PUBLISHERS=any COMMENTERS=anyone` for local development.
 
