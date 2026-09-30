@@ -430,7 +430,8 @@ window.trackingResolutionRestartsCheck = async () => {
   const firstUpdate = sent.find((message) => message.type === "proposal-update");
   if (firstUpdate) tracked.receiveProposal({ type: "proposal-updated", proposal_id: firstUpdate.proposal_id, request_id: firstUpdate.request_id, tip: firstUpdate.tip, applied_version: 2 });
   if (firstUpdate) {
-    value.textOf(id).insert(0, "FIRST ");
+    const bytes = Uint8Array.from(atob(firstUpdate.update), (character) => character.charCodeAt(0));
+    value.doc.import(bytes);
     value.doc.commit();
   }
   if (firstOpen) tracked.receiveProposal({
