@@ -7,21 +7,17 @@
 // this does -- headless Chromium over the DevTools protocol, against a real
 // `librepaper admin serve` on a temporary directory.
 //
-// Usage: browser-smoke.mjs <path-to-librepaper-binary>
-// Nothing here touches a deployment or any storage but its own temporary one.
+// Usage: LIBREPAPER_TEST_POSTGRES_URL=<administrative postgres url> \
+//        browser-smoke.mjs <path-to-librepaper-binary>
+// The server and its throwaway database come from `tests/helpers/deployment.mjs`,
+// which signs one account in; every document here is that account's. Nothing
+// here touches a deployment or any storage but its own temporary one.
 
-import { spawn, execSync, execFileSync } from "node:child_process";
-import {
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-  existsSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { spawn, execFileSync } from "node:child_process";
+import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import http from "node:http";
+import { startDeployment } from "../tests/helpers/deployment.mjs";
 
 const binary = process.argv[2] || "dist/librepaper";
 if (!existsSync(binary)) {
@@ -29,38 +25,24 @@ if (!existsSync(binary)) {
   process.exit(1);
 }
 
-const data = mkdtempSync(join(tmpdir(), "librepaper-smoke-"));
-const PORT = 8200 + Math.floor(Math.random() * 300);
+const deployment = await startDeployment({ label: "smoke", binary: resolve(binary) });
+if (deployment.unavailable) {
+  console.error(`browser: ${deployment.unavailable}`);
+  process.exit(1);
+}
+const data = deployment.data;
+const PORT = new URL(deployment.base).port;
 const BASE = `http://localhost:${PORT}`;
+// The signed-in account's session as a tab's cookie: what the browser holds
+// after signing in.
+const SESSION = {
+  name: "librepaper_session",
+  value: deployment.cookie.slice(deployment.cookie.indexOf("=") + 1),
+  domain: "localhost",
+  path: "/",
+};
 let failures = 0;
 const results = [];
-
-// Set up throwaway database if LIBREPAPER_TEST_POSTGRES_URL is not set
-let pgContainer = null;
-let pgUrl = process.env.LIBREPAPER_TEST_POSTGRES_URL;
-if (!pgUrl) {
-  try {
-    const containerName = `librepaper-smoke-${process.pid}`;
-    execSync(`docker run -d --rm --name "${containerName}" -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=librepaper -p 127.0.0.1::5432 postgres:17-alpine`, { stdio: "ignore" });
-    pgContainer = containerName;
-    let port = null;
-    for (let i = 0; i < 60; i++) {
-      try {
-        const portOutput = execSync(`docker port "${containerName}" 5432/tcp`, { encoding: "utf-8" });
-        port = portOutput.split(":")[1].trim();
-        execSync(`docker exec "${containerName}" pg_isready -q -U postgres -h 127.0.0.1`, { stdio: "ignore" });
-        break;
-      } catch {
-        if (i === 59) throw new Error("PostgreSQL did not start");
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-    }
-    pgUrl = `postgres://postgres:smoke@127.0.0.1:${port}/librepaper`;
-  } catch (error) {
-    console.error("Failed to start database:", error.message);
-    process.exit(1);
-  }
-}
 
 function check(what, condition, detail = "") {
   results.push({ what, ok: Boolean(condition), detail });
@@ -83,18 +65,6 @@ async function until(what, predicate, timeout = 15000) {
   }
   return null;
 }
-
-/* ------------------------------------------------------------- the server */
-
-const serverEnv = { ...process.env, LIBREPAPER_DATABASE_URL: pgUrl };
-const server = spawn(
-  binary,
-  ["admin", "serve", "--port", String(PORT), "--data-directory", data, "--publishers", "any", "--commenters", "anyone"],
-  { stdio: ["ignore", "pipe", "pipe"], env: serverEnv },
-);
-const serverLog = [];
-server.stdout.on("data", (chunk) => serverLog.push(String(chunk)));
-server.stderr.on("data", (chunk) => serverLog.push(String(chunk)));
 
 /* ------------------------------------------------------------- the browser */
 
@@ -236,38 +206,6 @@ async function openTab(url, cookies = [], { ownProfile = false } = {}) {
 
 let root = null;
 
-/* ------------------------------------------------------------- the session */
-
-/// This deployment's real anonymous-owner identity: a throwaway, isolated
-/// visit is enough for the shell to mint the browser's own visitor cookie
-/// (`issue_visitor` in `signin.rs`), extracted via CDP so node-side requests
-/// and other tabs can present the very same cookie a real browser would --
-/// ownership of an anonymous upload is keyed on it (`owner()` in
-/// `server/mod.rs`). A forged session cookie no longer verifies: sessions
-/// are `v1.<payload>.<sig>` with a purpose-separated MAC, and the account
-/// must exist in the catalogue, which only the Rust test harness can
-/// arrange.
-async function mintVisitor() {
-  const tab = await openTab(`${BASE}/`, [], { ownProfile: true });
-  return until("a visitor cookie", async () => {
-    const { cookies } = await tab.send("Network.getCookies", { urls: [BASE] });
-    return cookies.find((c) => c.name === "librepaper_visitor")?.value || null;
-  });
-}
-
-async function publish(body, cookie = "") {
-  const headers = { "content-type": "application/json", "x-librepaper-client": "1" };
-  if (cookie) headers.cookie = `librepaper_visitor=${cookie}`;
-  const response = await fetch(`${BASE}/api/documents`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
-  const payload = await response.json();
-  if (response.status !== 201) throw new Error(`publish failed: ${response.status} ${JSON.stringify(payload)}`);
-  return payload;
-}
-
 /// Types the way a person does: focus the editor, put the caret where it
 /// belongs, and send real key and text events. Reaching into CodeMirror's
 /// internals would test this script's knowledge of CodeMirror rather than the
@@ -375,18 +313,16 @@ async function run() {
 
   /* --- 1. editing: the frame is painted from the source, in the browser --- */
 
-  // Isolated so its own cookie survives later identities (owner, alice)
-  // overwriting the default context's jar -- this tab is reused well past
-  // where those are minted, in the persistence and offline checks below.
-  const editorVisitor = await mintVisitor();
-  const doc = await publish({
+  // Its own browser context, signed in as the deployment's account; this tab
+  // is reused well past here, in the persistence and offline checks below.
+  const doc = await deployment.publish({
     title: "A Paper",
     source: MARKDOWN,
     source_format: "markdown",
-  }, editorVisitor);
+  });
   const slug = doc.slug;
   const editor = await openTab(`${BASE}/docs/${slug}`, [
-    { name: "librepaper_visitor", value: editorVisitor, domain: "localhost", path: "/" },
+    SESSION,
   ], { ownProfile: true });
   const painted = await until("the frame is painted", async () =>
     (await editor.evalInFrame("return document.body.innerText", slug)) ?.includes("The first paragraph."),
@@ -421,14 +357,12 @@ async function run() {
   // A document owned by somebody, so a second browser is a reader rather than
   // an editor. Reading takes a link, and publishing mints the read one, which
   // is what a reader is handed.
-  const owner = await mintVisitor();
-  const owned = await publish(
+  const owned = await deployment.publish(
     { title: "Owned", source: "# Owned\n\nOriginal wording.\n", source_format: "markdown" },
-    owner,
   );
   check("publishing hands back a read link", /#k=/.test(owned.share_url || ""), JSON.stringify(owned).slice(0, 120));
   const ownerTab = await openTab(`${BASE}/docs/${owned.slug}`, [
-    { name: "librepaper_visitor", value: owner, domain: "localhost", path: "/" },
+    SESSION,
   ]);
   const readerTab = await openTab(`${BASE}${owned.share_url}`, [], { ownProfile: true });
   const readerSees = await until("the reader renders", async () =>
@@ -458,12 +392,10 @@ async function run() {
     <p id="prose">The original figure.</p>
     <script>document.body.dataset.ran = "yes";<\/script>
     </body></html>`;
-  // Owned by the same identity already resident in the default context
-  // (`owner`, from the read-link check above) so the tabs below -- opened
-  // bare, inheriting that context's cookie jar -- can edit it.
-  const notebook = await publish({ title: "Notebook", source: page, source_format: "html" }, owner);
+  // Owned by the signed-in account, so the tabs below can edit it.
+  const notebook = await deployment.publish({ title: "Notebook", source: page, source_format: "html" });
   const notebookTab = await openTab(`${BASE}/docs/${notebook.slug}`, [
-    { name: "librepaper_visitor", value: owner, domain: "localhost", path: "/" },
+    SESSION,
   ]);
   const ran = await until("the notebook's script runs", async () =>
     (await notebookTab.evalInFrame("return document.body.dataset.ran", notebook.slug)) === "yes",
@@ -472,7 +404,7 @@ async function run() {
 
   // And an edit to it reaches a reader, which is what the reload is for.
   const secondNotebook = await openTab(`${BASE}/docs/${notebook.slug}`, [
-    { name: "librepaper_visitor", value: owner, domain: "localhost", path: "/" },
+    SESSION,
   ]);
   await until("the second tab", async () =>
     (await secondNotebook.evalInFrame("return document.body.innerText", notebook.slug))?.includes("original figure"),
@@ -549,7 +481,7 @@ async function run() {
   });
   const recovered = await until(
     "the offline edit reaches the server",
-    // From inside the editor's own page, so the visitor cookie that owns
+    // From inside the editor's own page, so the session cookie that owns
     // this document rides along -- a bare node-side fetch carries none.
     async () => editor.eval(`
       const response = await fetch("/api/documents/${slug}/source");
@@ -588,13 +520,13 @@ async function run() {
   // Owned, like the notebook above: only an editor's browser compiles a
   // document locally (`renderers.warm`), and a reader only ever shows a
   // stored PDF -- of which a freshly published document has none.
-  const broken = await publish({
+  const broken = await deployment.publish({
     title: "Broken",
     source: "= A Paper\n\n$ x\n",
     source_format: "typst",
-  }, owner);
+  });
   const brokenTab = await openTab(`${BASE}/docs/${broken.slug}`, [
-    { name: "librepaper_visitor", value: owner, domain: "localhost", path: "/" },
+    SESSION,
   ]);
   const told = await until(
     "the failure is shown",
@@ -623,17 +555,15 @@ async function run() {
   // Sharing behavior that only a browser can check: a key
   // arriving in the fragment, being kept, being cleaned out of the address
   // bar, and being presented on every later request for that document.
-  const alice = await mintVisitor();
-  const shared = await publish(
+  const shared = await deployment.publish(
     { title: "Under Review", source: "# Under Review\n\nThe draft.\n", source_format: "markdown" },
-    alice,
   );
   const minted = await fetch(`${BASE}/api/documents/${shared.slug}/share`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-librepaper-client": "1",
-      cookie: `librepaper_visitor=${alice}`,
+      cookie: deployment.cookie,
     },
     body: JSON.stringify({ link: { role: "commenter", until: "180d" } }),
   }).then((r) => r.json());
@@ -702,9 +632,8 @@ async function run() {
     // title from the page's own, so a title the script changed would be
     // put back before anything here could read it.
     '<script>document.body.dataset.ran = "yes"<\/script></body></html>';
-  const secret = await publish(
+  const secret = await deployment.publish(
     { title: "Private Draft", source: secretPage, source_format: "html" },
-    alice,
   );
 
   // fetch() refuses to send a caller-set Host header (it is on the Fetch
@@ -731,7 +660,7 @@ async function run() {
   check("the empty shell still carries the frame script", bare.includes("frame.js"), bare.slice(0, 80));
 
   const ownerOfSecret = await openTab(`${BASE}/docs/${secret.slug}`, [
-    { name: "librepaper_visitor", value: alice, domain: "localhost", path: "/" },
+    SESSION,
   ]);
   const shown = await until("the document is served into the owner's frame", async () =>
     (await ownerOfSecret.evalInFrame("return document.body.innerText", secret.slug))?.includes(
@@ -762,16 +691,15 @@ async function run() {
   // empty, so a typst document with an `#import` compiled on its author's
   // laptop and nowhere else -- and since readers render for themselves, the
   // reader got the error too.
-  const paper = await publish(
+  const paper = await deployment.publish(
     {
       title: "A Modular Paper",
       source: "= A Modular Paper\n\nThe opening paragraph.\n",
       source_format: "typst",
     },
-    alice,
   );
   const author = await openTab(`${BASE}/docs/${paper.slug}`, [
-    { name: "librepaper_visitor", value: alice, domain: "localhost", path: "/" },
+    SESSION,
   ]);
   await until("the paper is open", async () =>
     (await author.eval(`return document.body.innerText`)).includes("A Modular Paper"),
@@ -887,7 +815,7 @@ async function run() {
   // And the server holds the same directory, which is what a reader will be
   // given and what a checkpoint will record.
   const heldPaper = await fetch(`${BASE}/api/documents/${paper.slug}`, {
-    headers: { cookie: `librepaper_visitor=${alice}` },
+    headers: { cookie: deployment.cookie },
   }).then((r) => r.json());
   check(
     "the server records which file is the document",
@@ -914,16 +842,15 @@ async function run() {
     ),
   );
 
-  const illustrated = await publish(
+  const illustrated = await deployment.publish(
     {
       title: "A Paper With A Figure",
       source: "# A Paper With A Figure\n\n![the plot](one.png)\n",
       source_format: "markdown",
     },
-    alice,
   );
   const illustrator = await openTab(`${BASE}/docs/${illustrated.slug}`, [
-    { name: "librepaper_visitor", value: alice, domain: "localhost", path: "/" },
+    SESSION,
   ]);
   await until("the illustrated paper opens", async () =>
     (await illustrator.eval(`return document.body.innerText`)).includes("A Paper With A Figure"),
@@ -978,7 +905,7 @@ async function run() {
     illustrator.requests.find((url) => url.includes(figureRoute)),
   );
   const stored = await fetch(asked, {
-    headers: { "x-librepaper-client": "1", cookie: `librepaper_visitor=${alice}` },
+    headers: { "x-librepaper-client": "1", cookie: deployment.cookie },
   });
   const back = Buffer.from(await stored.arrayBuffer());
   check(
@@ -1040,9 +967,9 @@ async function run() {
 
   // The setting is this browser's own, in localStorage rather than clicked,
   // because that is how a real visit finds it: already set from last time.
-  const vimDoc = await publish({ title: "Vim Keys", source: "start\n", source_format: "markdown" }, alice);
+  const vimDoc = await deployment.publish({ title: "Vim Keys", source: "start\n", source_format: "markdown" });
   const vimTab = await openTab(`${BASE}/docs/${vimDoc.slug}`, [
-    { name: "librepaper_visitor", value: alice, domain: "localhost", path: "/" },
+    SESSION,
   ]);
   await until("the vim document's editor is mounted", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
@@ -1121,27 +1048,21 @@ try {
   await run();
 } catch (error) {
   check("the smoke test ran", false, String(error).slice(0, 300));
-  console.error(serverLog.slice(-5).join(""));
+  console.error(deployment.log.slice(-2000));
 } finally {
   try {
     socket?.close();
   } catch {}
   chrome?.kill();
-  server.kill();
-  if (pgContainer) {
-    try {
-      execSync(`docker stop "${pgContainer}"`, { stdio: "ignore" });
-    } catch {}
-  }
   await wait(300);
   // Chromium can still be releasing file handles in its profile directory a
   // moment after the process is asked to exit; one retry after a further
   // pause covers that without masking a real cleanup failure.
   try {
-    rmSync(data, { recursive: true, force: true });
+    await deployment.stop();
   } catch {
     await wait(1000);
-    rmSync(data, { recursive: true, force: true });
+    await deployment.stop();
   }
 }
 

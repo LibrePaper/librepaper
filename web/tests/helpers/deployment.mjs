@@ -49,15 +49,15 @@ async function until(what, predicate, timeout = 30000) {
   throw new Error(`timed out waiting for ${what}${last ? `: ${last}` : ""}`);
 }
 
-/// Starts the deployment and signs one account in.
+/// Starts the deployment and signs one account in. `binary` defaults to the
+/// debug build; the browser smoke test passes the one it was handed.
 ///
 /// `advanced` is the hidden advanced configuration file (`--config`), which
 /// is how a test lowers a guardrail it means to reach -- for example
 /// `session_peer_queue`, so a stalled subscriber overflows its outbound queue
 /// after a few frames; the queue budget is small enough to reach that point
 /// without needing the default multi-megabyte backlog.
-export async function startDeployment({ label, advanced = null, handle = "tester", name = "Tester" }) {
-  const binary = deploymentBinary();
+export async function startDeployment({ label, binary = deploymentBinary(), advanced = null, handle = "tester", name = "Tester" }) {
   if (!existsSync(binary)) return null;
   let postgres;
   try {

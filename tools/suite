@@ -50,7 +50,8 @@ suite_browser() {
 }
 
 # The rendered reader. Needs the built binary and a chromium, and starts a
-# server of its own on a temporary directory.
+# server of its own on a temporary directory and a throwaway database, so it
+# also needs LIBREPAPER_TEST_POSTGRES_URL.
 suite_smoke() {
 	make --no-print-directory "$BIN"
 	if ! have_chromium; then
