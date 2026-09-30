@@ -371,7 +371,7 @@ mod tests {
                 .begin_document_command(document_id, &authority, rung)
                 .await
             {
-                Ok(tx) => tx.rollback().await,
+                Ok(tx) => tx.rollback().await.map_err(Error::from),
                 Err(error) => Err(error),
             }
         }
@@ -393,7 +393,7 @@ mod tests {
         let named = seed_account(&catalog, "auth-named").await;
         let stranger = seed_account(&catalog, "auth-stranger").await;
         let document = seed_document(&catalog, owner.id, "auth-document").await;
-        let make_actor = |account_id: Option<Uuid>, generation, token_hash, policy_edit, policy_comment, automation| {
+        let make_actor = |account_id: Option<uuid::Uuid>, generation, token_hash, policy_edit, policy_comment, automation| {
             MutationAuthorization {
                 principal_key: account_id.map_or_else(|| "visitor:test".into(), |id| id.to_string()),
                 account_id,
@@ -546,7 +546,7 @@ mod tests {
             .is_err(), "revoking a source link also revokes its pinned grant");
 
         let expiring_hash = [0x33; 32];
-        catalog
+        let expiring_link = catalog
             .create_share_link(
                 document.id,
                 access::AccessRole::Commenter,
@@ -567,6 +567,12 @@ mod tests {
             .await
             .unwrap();
         let expired_at = now - Duration::seconds(1);
+        sqlx::query("UPDATE share_links SET created_at=$2 WHERE id=$1")
+            .bind(expiring_link.id)
+            .bind(now - Duration::seconds(60))
+            .execute(catalog.pool())
+            .await
+            .unwrap();
         catalog
             .replace_share_links(
                 document.id,
@@ -986,7 +992,7 @@ mod tests {
                 .await
                 .unwrap()
                 .role,
-            "editor"
+            Some("editor".to_owned())
         );
         assert_eq!(
             catalog

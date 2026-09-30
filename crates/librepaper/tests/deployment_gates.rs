@@ -1632,9 +1632,11 @@ mod comment_traversal {
         let actor = MutationAuthorization {
             principal_key: owner_id.to_string(),
             account_id: Some(owner_id),
-            session_generation: None,
+            session_generation: Some(owner.session_generation),
             token_hash: None,
-            policy_editor: true,
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
         };
         let mut written: Vec<Uuid> = Vec::new();
         {
