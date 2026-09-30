@@ -7097,8 +7097,8 @@ source = "git+https://github.com/LibrePaper/wasm-helpers?tag=v0.1.1#29aeedcca6f8
 
 [[package]]
 name = "wasm-markdown"
-version = "0.1.1"
-source = "git+https://github.com/LibrePaper/wasm-markdown?tag=v0.1.1#152435c858435bd14165e6c7e7f4267490e47bd1"
+version = "0.2.0"
+source = "git+https://github.com/LibrePaper/wasm-markdown?tag=v0.1.1#ecca5296f135eea4051b2a25c6f0277b6cc1f1a6"
 dependencies = [
  "comrak",
  "wasm-helpers",
