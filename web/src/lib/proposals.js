@@ -560,11 +560,13 @@ export function createProposals({ session, send, mayEdit }) {
         return;
       }
       let resolvedBranch = null;
+      let originalFileIds = new Set();
       try {
         resolvedBranch = draft.branch.forkAt(resolvedTip);
         const atBase = session.doc.forkAt(resolvedBase);
         let staleHunks = [];
         try {
+          originalFileIds = new Set([...atBase.getMap("files").keys()].map(String));
           const bytes = resolvedBranch.export({ mode: "update", from: atBase.oplogVersion() });
           const proposalHunks = hunksOfProposal(session.doc, { base: resolvedBase, tip: resolvedTip, bytes });
           const rejected = decisions.length
@@ -593,6 +595,12 @@ export function createProposals({ session, send, mayEdit }) {
         const peer = BigInt(`0x${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`) || 1n;
         resolvedBranch.setPeerId(peer);
         resolvedBranch.applyDiff(inverse);
+        const publishedFiles = resolvedBranch.getMap("files");
+        for (const id of publishedFiles.keys()) {
+          if (originalFileIds.has(String(id))) continue;
+          const text = publishedFiles.get(id);
+          if (text?.kind?.() === "Text" && text.toString()) text.delete(0, text.toString().length);
+        }
         resolvedBranch.commit();
         const reverts = resolvedBranch.export({ mode: "update", from: before });
         if (reverts.byteLength) draft.branch.import(reverts);
