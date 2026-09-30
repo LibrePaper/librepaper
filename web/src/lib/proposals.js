@@ -443,7 +443,7 @@ export function createProposals({ session, send, mayEdit }) {
   };
 
   const sendUpdate = (draft) => {
-    if (!draft.opened || draft.openPending || draft.inflight || draft.discarding) return;
+    if (!draft.opened || draft.openPending || draft.inflight || draft.discarding || draft.resolutionBlocked) return;
     draft.branch.commit();
     const tip = draft.branch.frontiers();
     const tipBytes = encodeBase64(encodeFrontiers(tip));
@@ -480,7 +480,7 @@ export function createProposals({ session, send, mayEdit }) {
   };
 
   const flushDraft = (draft) => {
-    if (draft.discarding) return;
+    if (draft.discarding || draft.resolutionBlocked) return;
     draft.branch.commit();
     const textChanged = hasTextChanges(draft.base, draft.branch);
     if (textChanged === null) {
@@ -509,7 +509,7 @@ export function createProposals({ session, send, mayEdit }) {
 
   const finishResolution = (draft) => {
     const resolution = draft.resolutionPending;
-    if (!resolution) return;
+    if (!resolution || draft.resolutionBlocked) return;
     const decisions = resolution.decisions || [...draft.decisions].map(([hunk, accepted]) => ({ hunk, accepted }));
     const allRejected = resolution.discarded === true ||
       decisions.length > 0 && decisions.every((decision) => !decision.accepted);
@@ -535,6 +535,31 @@ export function createProposals({ session, send, mayEdit }) {
       let resolvedBranch = null;
       try {
         resolvedBranch = draft.branch.forkAt(resolvedTip);
+        const atBase = session.doc.forkAt(resolvedBase);
+        let staleHunks = [];
+        try {
+          const bytes = resolvedBranch.export({ mode: "update", from: atBase.oplogVersion() });
+          const proposalHunks = hunksOfProposal(session.doc, { base: resolvedBase, tip: resolvedTip, bytes });
+          const rejected = decisions.length
+            ? decisions.filter((decision) => !decision.accepted).map((decision) => Number(decision.hunk))
+            : proposalHunks.map((hunk) => hunk.index);
+          staleHunks = rejected.filter((index) => {
+            const hunk = proposalHunks.find((item) => item.index === index);
+            return !hunk || locateProposalHunk(session.doc, { base: resolvedBase }, hunk).stale;
+          });
+        } finally {
+          atBase.destroy?.();
+        }
+        if (staleHunks.length) {
+          // Replaying an inverse over a coauthor's replacement could restore
+          // rejected base text beside their edit. Keep the complete local
+          // branch and its unsent tail for explicit manual recovery instead.
+          draft.error = "a declined passage changed in the room; local draft preserved for manual recovery";
+          draft.resolutionBlocked = true;
+          draft.resolutionPending = null;
+          changed();
+          return;
+        }
         const before = resolvedBranch.oplogVersion();
         const inverse = resolvedBranch.diff(resolvedTip, resolvedBase, false)
           .filter(([, diff]) => diff.type === "text");
@@ -679,6 +704,7 @@ export function createProposals({ session, send, mayEdit }) {
     flush() { if (proposal) flushDraft(proposal); },
     reconnect() {
       for (const draft of allDrafts()) {
+        if (draft.resolutionBlocked) continue;
         clearTimeout(draft.retryTimer);
         draft.retryTimer = null;
         draft.retryable = false;
@@ -739,8 +765,12 @@ export function createProposals({ session, send, mayEdit }) {
       changed();
     },
     discard() {
-      const draft = proposal;
+      const draft = proposal || [...retained.values()].find((item) => item.resolutionBlocked);
       if (!draft) return { ok: false, error: new Error("no active draft") };
+      if (draft.resolutionBlocked) {
+        destroy(draft);
+        return { ok: true };
+      }
       if (!draft.opened) {
         if (draft.openPending) {
           draft.discarding = true;
@@ -769,6 +799,7 @@ export function createProposals({ session, send, mayEdit }) {
         error: draft.error,
         id: draft.id,
         pending,
+        recoveryRequired: Boolean(draft.resolutionBlocked),
       };
     },
     onchange(callback) {
@@ -863,7 +894,9 @@ export function createProposals({ session, send, mayEdit }) {
         changed();
         return;
       }
-      if (message.type === "proposal-decided" && !message.resolved && message.proposal_id) {
+      const hasResolutionFrontiers = Boolean(message.resolved_tip && message.resolved_base);
+      if (message.type === "proposal-decided" && !message.resolved &&
+          !hasResolutionFrontiers && message.proposal_id) {
         const draft = retained.get(String(message.proposal_id)) ||
           (proposal?.id === String(message.proposal_id) ? proposal : null);
         if (draft) {
@@ -875,7 +908,7 @@ export function createProposals({ session, send, mayEdit }) {
         return;
       }
       if (message.type === "proposal-decided" &&
-          (message.resolved || message.resolved_tip && message.resolved_base)) {
+          (message.resolved || hasResolutionFrontiers)) {
         const draft = retained.get(String(message.proposal_id)) ||
           (proposal?.id === String(message.proposal_id) ? proposal : null);
         if (!draft) return;
