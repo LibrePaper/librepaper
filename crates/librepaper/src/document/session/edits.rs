@@ -9,6 +9,15 @@ use loro::{LoroDoc, LoroMap, LoroText};
 
 use super::shape::{mint_id, ASSETS, FILES, MAIN, META, PATHS};
 
+/// A text edit: delete `delete` UTF-16 code units at position `at`,
+/// then insert `insert` at that position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edit {
+    pub at: usize,
+    pub delete: usize,
+    pub insert: String,
+}
+
 /// Get or create the four root maps: files, paths, assets, meta.
 fn maps(doc: &LoroDoc) -> (LoroMap, LoroMap, LoroMap, LoroMap) {
     (
@@ -78,14 +87,14 @@ pub fn replace_text(doc: &LoroDoc, wanted: &str, path: &str) {
 }
 
 /// Applies word-level edits to a LoroText, or none of them at all.
-/// `wasm-helpers` measures `edit.at`/`edit.delete` against a copy of this
-/// text it holds somewhere else -- the room's last-known body, a merge's base
-/// -- and by the time they arrive here that copy can be stale: a concurrent
-/// edit already changed the length, or the message is simply wrong.
-/// `delete_utf16` and `insert_utf16` trust their offsets and panic past the end of
-/// the text, so every offset is checked against the text's current length, in
-/// the UTF-16 code units Loro and these edits both count in, before any of them
-/// touches the text. The edits are also required to be sorted by `at` and
+/// The edits measure `edit.at`/`edit.delete` against a copy of this text
+/// held somewhere else -- the room's last-known body, a merge's base -- and by
+/// the time they arrive here that copy can be stale: a concurrent edit already
+/// changed the length, or the message is simply wrong. `delete_utf16` and
+/// `insert_utf16` trust their offsets and panic past the end of the text, so
+/// every offset is checked against the text's current length, in the UTF-16
+/// code units Loro and these edits both count in, before any of them touches
+/// the text. The edits are also required to be sorted by `at` and
 /// non-overlapping, which is what `diff` always produces and what applying
 /// them back to front (below) assumes: an edit whose `at` starts before the
 /// previous one's `at + delete` ends would have its offset invalidated by that
@@ -95,7 +104,7 @@ pub fn replace_text(doc: &LoroDoc, wanted: &str, path: &str) {
 /// exactly as it was: nothing is applied until every edit has passed the
 /// check, because applying half a message and dropping the rest would leave
 /// the text in a shape nothing asked for.
-fn apply_text_edits(text: &LoroText, edits: &[wasm_helpers::text::Edit]) -> bool {
+fn apply_text_edits(text: &LoroText, edits: &[Edit]) -> bool {
     let len = text.len_utf16();
     let mut end_of_previous = 0;
     for edit in edits {
@@ -121,7 +130,7 @@ fn apply_text_edits(text: &LoroText, edits: &[wasm_helpers::text::Edit]) -> bool
 /// the caller's cue that the file no longer exists, and also
 /// when the edits do not fit the text at that path any more -- see
 /// `apply_text_edits`.
-pub fn apply_edits_at(doc: &LoroDoc, path: &str, edits: &[wasm_helpers::text::Edit]) -> bool {
+pub fn apply_edits_at(doc: &LoroDoc, path: &str, edits: &[Edit]) -> bool {
     let (files, path_map, _, _) = maps(doc);
     let Some(id) = id_of_path(&path_map, path) else {
         return false;

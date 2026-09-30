@@ -38,7 +38,7 @@ use loro::{Container, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer};
 // crate that owns the schema. They were declared here as well, with the same
 // four strings, which is a schema defined in two places that nothing would
 // have made disagree except somebody changing one of them.
-pub use librepaper_document_core::{ASSETS, FILES, MAIN, META, PATHS};
+pub use crate::document::projection::{ASSETS, FILES, MAIN, META, PATHS};
 
 /// A document the browser can talk to.
 pub fn new_doc() -> LoroDoc {

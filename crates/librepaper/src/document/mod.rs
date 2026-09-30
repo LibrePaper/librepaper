@@ -7,7 +7,7 @@
 //! ## Two things used to live here and no longer do
 //!
 //! **What a document says** was `history::Tree`, with its own digest and its
-//! own canonical form. It is now `librepaper_document_core::Projection`,
+//! own canonical form. It is now `crate::document::projection::Projection`,
 //! computed by `project(&doc, &config.paths())`: the one projection
 //! algorithm of SPEC-server-is-a-log §4.4, implemented in Rust and in
 //! JavaScript and held equal by the fixtures in
@@ -40,6 +40,7 @@ pub mod html;
 pub mod hunks;
 
 pub mod paths;
+pub mod projection;
 
 pub mod render;
 pub mod retention;

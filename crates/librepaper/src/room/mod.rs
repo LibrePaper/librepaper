@@ -258,7 +258,7 @@ impl Room {
     /// caller turns that into a 503.
     pub async fn projection(
         &self,
-    ) -> Result<Arc<librepaper_document_core::Projected>, SequencerError> {
+    ) -> Result<Arc<crate::document::projection::Projected>, SequencerError> {
         self.log.projection().await
     }
 

@@ -122,7 +122,7 @@ impl Sources {
     ///
     /// Taking the projection the caller already has is also the cheap way
     /// round: every caller computed one beside this for the tree digest.
-    pub(crate) fn of(projected: &librepaper_document_core::Projected) -> Sources {
+    pub(crate) fn of(projected: &crate::document::projection::Projected) -> Sources {
         let mut units = std::collections::HashMap::new();
         for (path, entry) in &projected.projection.files {
             // An asset has no id and no text: it is at a path, not in one.
@@ -142,7 +142,7 @@ impl Sources {
     #[cfg(test)]
     pub(crate) fn of_doc(doc: &loro::LoroDoc) -> Sources {
         let config = crate::config::Configuration::default();
-        Sources::of(&librepaper_document_core::project(doc, &config.paths()))
+        Sources::of(&crate::document::projection::project(doc, &config.paths()))
     }
 
     fn units_of(&self, file_id: &str) -> Option<&[u16]> {
@@ -680,7 +680,7 @@ pub(super) mod tests {
         );
 
         let config = crate::config::Configuration::default();
-        let projected = librepaper_document_core::project(&doc, &config.paths());
+        let projected = crate::document::projection::project(&doc, &config.paths());
         assert_eq!(
             projected.projection.files.len(),
             2,

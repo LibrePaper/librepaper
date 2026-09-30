@@ -32,7 +32,7 @@
 //!   that project to the same tree have the same digest.
 //!
 //! Also still asserted, from before: a replacement lands exactly whatever
-//! the characters in it, the word-level edits `sync` applies land exactly,
+//! the characters in it, the edits `sync` applies land exactly,
 //! and encoding the document and decoding it elsewhere gives the same
 //! document.
 #![no_main]
@@ -40,9 +40,8 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use librepaper::session;
-use librepaper_fuzz::{configuration, rules};
+use librepaper_fuzz::{configuration, diff, rules};
 use loro::{LoroText, ValueOrContainer};
-use wasm_helpers::text::diff;
 
 #[derive(Arbitrary, Debug)]
 enum Op {
@@ -130,12 +129,12 @@ fuzz_target!(|ops: Vec<Op>| {
 
     // Totality. Reaching the next line at all is most of what this target
     // is for.
-    let first = librepaper_document_core::project(&doc, &rules);
+    let first = librepaper::document::projection::project(&doc, &rules);
 
     // Determinism, which the two implementations of §4.4 are held to by
     // fixtures and which this holds one implementation to across every
     // document libFuzzer can build.
-    let second = librepaper_document_core::project(&doc, &rules);
+    let second = librepaper::document::projection::project(&doc, &rules);
     assert_eq!(
         first.projection, second.projection,
         "projecting one document twice gave two trees"
@@ -220,7 +219,7 @@ fuzz_target!(|ops: Vec<Op>| {
         }
     }
     rebuilt.commit();
-    let again = librepaper_document_core::project(&rebuilt, &rules);
+    let again = librepaper::document::projection::project(&rebuilt, &rules);
     if minted > 0 || !first.projection.files.is_empty() {
         assert_eq!(
             first.projection.digest(),
@@ -235,7 +234,7 @@ fuzz_target!(|ops: Vec<Op>| {
     // join and every cache build depends on.
     let peer = session::new_doc();
     if session::apply_update(&peer, &session::encode_state(&doc)).is_ok() {
-        let there = librepaper_document_core::project(&peer, &rules);
+        let there = librepaper::document::projection::project(&peer, &rules);
         assert_eq!(
             first.projection, there.projection,
             "a document encoded here projected differently there"
