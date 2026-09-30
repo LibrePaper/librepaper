@@ -38,7 +38,7 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Open { url } => open(&url).await,
         LocalCommand::Status { tool_path } => status(tool_path).await,
         LocalCommand::Approve { code } => approve(&code).await,
-        LocalCommand::Disconnect { origin, project } => disconnect(origin, project).await,
+        LocalCommand::Disconnect { origin } => disconnect(origin),
         LocalCommand::Agent { command } => local_agent(command),
     }
 }
@@ -311,8 +311,8 @@ fn print_pairings(pairing: &PairingStore) {
         return;
     }
     println!("paired origins:");
-    for (origin, project) in pairings {
-        println!("  {origin}  {project}");
+    for origin in pairings {
+        println!("  {origin}");
     }
 }
 
@@ -374,27 +374,12 @@ async fn approve(code: &str) {
     }
 }
 
-async fn disconnect(origin: String, project: Option<String>) {
-    let home = state_home();
-    let pairing = PairingStore::new(&home, None);
-
-    if let Some(project) = project {
-        pairing.revoke_one(&origin, &project);
-        println!("Document disconnected: {} {}", origin, project);
+fn disconnect(origin: String) {
+    let pairing = PairingStore::new(&state_home(), None);
+    if pairing.revoke(&origin) {
+        println!("Disconnected {origin}");
     } else {
-        let active = pairing.active_pairings();
-        let mut count = 0;
-        for (active_origin, active_project) in active {
-            if active_origin == origin {
-                pairing.revoke_one(&active_origin, &active_project);
-                count += 1;
-            }
-        }
-        if count > 0 {
-            println!("Disconnected {} documents from {}", count, origin);
-        } else {
-            println!("No documents from {} were connected", origin);
-        }
+        println!("{origin} was not connected");
     }
 }
 

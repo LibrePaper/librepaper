@@ -542,7 +542,20 @@ impl Previews {
         }
     }
 
-    pub async fn reap(&mut self, active_scopes: &[(String, String)], bindings: &BindingStore) {
+    /// Stops every preview an origin owns, whatever its project.
+    pub async fn stop_origin(&mut self, origin: &str) {
+        let ids: Vec<_> = self
+            .0
+            .iter()
+            .filter(|(_, session)| session.origin == origin)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            self.stop(&id).await;
+        }
+    }
+
+    pub async fn reap(&mut self, paired_origins: &[String], bindings: &BindingStore) {
         // Deliberately does not reap a session merely because its process
         // has exited: a render failure now ends that process quickly (there
         // is no server left to keep it alive), and the reader still needs
@@ -553,9 +566,7 @@ impl Previews {
             .0
             .iter()
             .filter_map(|(id, p)| {
-                let pairing_expired = !active_scopes
-                    .iter()
-                    .any(|(origin, project)| origin == &p.origin && project == &p.project);
+                let pairing_expired = !paired_origins.contains(&p.origin);
                 (pairing_expired
                     || bindings
                         .get_scoped(&p.binding, &p.origin, &p.project)

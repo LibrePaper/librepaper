@@ -2,7 +2,7 @@
 //!
 //! The standalone `librepaper local start` exists so a browser on the author's
 //! machine can hand work to tools installed there, and it asks for a pairing
-//! code and a per-project grant because that browser might be talking to a
+//! code and a per-site grant because that browser might be talking to a
 //! deployment anywhere. When the deployment itself runs on this machine, both
 //! ceremonies are answering a question that has no other answer: the server
 //! owns the service, so it can mint a pairing for its own editors, and it owns

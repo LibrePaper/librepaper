@@ -441,13 +441,10 @@ pub enum LocalCommand {
         /// Approval code from the dialog
         code: String,
     },
-    /// Revoke a document pairing
+    /// Revoke a site pairing
     Disconnect {
         /// Origin (e.g. https://papers.example)
         origin: String,
-        /// Specific document to disconnect (all if omitted)
-        #[arg(long)]
-        project: Option<String>,
     },
     /// Teach this computer an ACP agent the sidebar can drive
     Agent {

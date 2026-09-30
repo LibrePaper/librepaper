@@ -50,7 +50,7 @@ pub struct Health {
     pub instance: String,
 }
 
-/// `POST connect/claim` answer: a bearer token scoped to (origin, project).
+/// `POST connect/claim` answer: a bearer token scoped to the origin.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ConnectResponse {
     pub token: String,
@@ -61,7 +61,7 @@ pub struct ConnectResponse {
     pub instance: String,
 }
 
-/// Request a native folder chooser for a previously paired project. The
+/// Request a native folder chooser for a document of a paired site. The
 /// chooser is deliberately initiated by an explicit POST from the UI; paths
 /// never cross this protocol.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -90,7 +90,6 @@ pub struct BindingSummary {
 pub struct PairClaimRequest {
     pub request: String,
     pub origin: String,
-    pub project: String,
     pub verifier: String,
 }
 

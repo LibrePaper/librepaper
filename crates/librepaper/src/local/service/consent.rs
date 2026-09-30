@@ -31,7 +31,6 @@ pub(super) async fn handle_pair_request(
     #[derive(serde::Deserialize)]
     struct PairRequestBody {
         origin: String,
-        project: String,
         request: String,
         challenge: String,
         #[serde(rename = "return")]
@@ -54,13 +53,6 @@ pub(super) async fn handle_pair_request(
         Some(o) => o,
         None => {
             return write_json(400, &json!({"error": "pair request needs a valid origin"}));
-        }
-    };
-
-    let project = match super::super::pairing::valid_project(&body.project) {
-        Some(p) => p,
-        None => {
-            return write_json(400, &json!({"error": "pair request needs a valid project"}));
         }
     };
 
@@ -102,7 +94,6 @@ pub(super) async fn handle_pair_request(
 
     if let Some(existing) = pending.get(&request_id) {
         if existing.origin != origin
-            || existing.project != project
             || existing.challenge != challenge
             || existing.return_to != return_to
         {
@@ -119,7 +110,6 @@ pub(super) async fn handle_pair_request(
             request_id.clone(),
             PendingPair {
                 origin: origin.clone(),
-                project: project.clone(),
                 challenge: challenge.clone(),
                 return_to: return_to.clone(),
                 expires: Instant::now() + PAIR_REQUEST_TTL,
@@ -137,17 +127,16 @@ pub(super) async fn handle_pair_request(
     let request_id_clone = request_id.clone();
     let inner_clone = inner.clone();
     let origin_clone = origin.clone();
-    let project_clone = project.clone();
 
     drop(pending);
 
     tokio::spawn(async move {
         let message = format!(
-            "{} wants to render the document {} with the Quarto and TeX tools installed on this computer.\n\n\
+            "Allow {} to render its documents with the Quarto and TeX tools installed on this computer?\n\n\
             Warning: Quarto documents can execute arbitrary code on this computer, with your user account's access to files, \
-            installed packages, and the network. Pair only with a site and document you trust. Pairing alone does not run the \
+            installed packages, and the network. Pair only with a site you trust. Pairing alone does not run any \
             document; LibrePaper will ask you to start Quarto separately.",
-            origin_clone, project_clone
+            origin_clone
         );
 
         let approval = super::super::approval::Approval {
@@ -161,11 +150,7 @@ pub(super) async fn handle_pair_request(
                 let mut pending = inner_clone.pending_pairs.lock().await;
                 if let Some(item) = pending.get_mut(&request_id_clone) {
                     if item.expires > Instant::now() {
-                        let (token, expires) = match inner_clone.pairing.issue(
-                            &origin_clone,
-                            &project_clone,
-                            "native dialog",
-                        ) {
+                        let (token, expires) = match inner_clone.pairing.issue(&origin_clone, "native dialog") {
                             Ok(issued) => issued,
                             Err(_) => {
                                 item.refused = true;
@@ -232,7 +217,6 @@ pub(super) async fn handle_pair_claim(inner: &Inner, request: Request<Body>) -> 
     if item.expires <= Instant::now()
         || super::super::pairing::normalize_origin(&item.origin)
             != super::super::pairing::normalize_origin(&body.origin)
-        || item.project != body.project
         || body.verifier.len() < 32
         || body.verifier.len() > 128
         || !crate::util::constant_time_eq(
@@ -285,12 +269,11 @@ pub(super) async fn handle_disconnect(
     headers: &HeaderMap,
     origin: Option<&str>,
 ) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(project) => project,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
     let origin = super::super::pairing::normalize_origin(origin.unwrap_or_default());
-    inner.pairing.revoke_one(&origin, &project);
+    inner.pairing.revoke(&origin);
     // Disconnecting the site also drops the document links it handed this
     // computer. Otherwise revoking a pairing would leave agents configured
     // against credentials the user believes they have taken back.
@@ -300,7 +283,7 @@ pub(super) async fn handle_disconnect(
         .previews
         .lock()
         .await
-        .stop_scope(&origin, &project)
+        .stop_origin(&origin)
         .await;
     write_json(
         200,

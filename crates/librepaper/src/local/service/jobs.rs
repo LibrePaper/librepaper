@@ -14,8 +14,8 @@ use super::*;
 
 /* ------------------------------------------------------------ workspace */
 
-/// `PUT workspace`: sync the hosted workspace for this (origin, project)
-/// scope from a fresh multipart upload, the same shape as `jobs`'s own
+/// `PUT workspace?project=`: sync the hosted workspace for this (origin,
+/// project) scope from a fresh multipart upload, the same shape as `jobs`'s own
 /// `manifest`/`file` parts but named `manifest` here since there is no job
 /// to describe. Only ever touches the hosted workspace `get_scoped` returns
 /// for `HOSTED_BINDING`; a granted (non-hosted) root is never written here.
@@ -25,9 +25,11 @@ pub(super) async fn handle_workspace_put(
     origin: Option<&str>,
     request: Request<Body>,
 ) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(project) => project,
-        Err(response) => return response,
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let Some(project) = project_query(request.uri()) else {
+        return write_json(400, &json!({"error": "workspace sync needs a valid project"}));
     };
     let origin = origin.unwrap_or_default().to_string();
 
@@ -86,10 +88,9 @@ pub(super) async fn handle_jobs_post(
     origin: Option<&str>,
     request: Request<Body>,
 ) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(project) => project,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
     let origin = origin.unwrap_or_default().to_string();
 
     let upload = match read_multipart_upload(
@@ -236,9 +237,10 @@ pub(super) async fn handle_jobs_post(
         }
     };
     // Bound local reads must follow authentication and inventory limits.
-    if job.project != project
-        || pairing::normalize_origin(&job.origin) != pairing::normalize_origin(&origin)
-    {
+    let Some(project) = pairing::valid_project(&job.project) else {
+        return write_json(400, &json!({"error": "job needs a valid project"}));
+    };
+    if pairing::normalize_origin(&job.origin) != pairing::normalize_origin(&origin) {
         return write_json(
             403,
             &json!({"error": "job scope does not match the connected token"}),
@@ -339,12 +341,6 @@ pub(super) async fn handle_jobs_post(
             }
         }
         debug_assert_eq!(job.kind == "quarto", builder == "quarto");
-    }
-    if job.project != project {
-        return write_json(
-            403,
-            &json!({"error": "project does not match the connected token"}),
-        );
     }
     if pairing::normalize_origin(&job.origin) != pairing::normalize_origin(&origin) {
         return write_json(
@@ -591,16 +587,15 @@ pub(super) async fn handle_job_status(
     origin: Option<&str>,
     id: &str,
 ) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(project) => project,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
     let jobs = inner.jobs.lock().await;
     let Some(entry) = jobs.get(id) else {
         return write_json(404, &json!({"error": "not found"}));
     };
-    if entry.project != project {
-        // Answered identically to "not found": a token for another project
+    if !owned_by(entry, origin) {
+        // Answered identically to "not found": a token for another origin
         // learns nothing about whether this id even exists.
         return write_json(404, &json!({"error": "not found"}));
     }
@@ -620,15 +615,14 @@ pub(super) async fn handle_job_file(
     id: &str,
     name: &str,
 ) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(project) => project,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
     let jobs = inner.jobs.lock().await;
     let Some(entry) = jobs.get(id) else {
         return plain(404, "not found");
     };
-    if entry.project != project {
+    if !owned_by(entry, origin) {
         return plain(404, "not found");
     }
     if entry.superseded {
@@ -657,15 +651,14 @@ pub(super) async fn handle_cancel(
     origin: Option<&str>,
     id: &str,
 ) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(project) => project,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
     let mut jobs = inner.jobs.lock().await;
     let Some(entry) = jobs.get_mut(id) else {
         return write_json(404, &json!({"error": "not found"}));
     };
-    if entry.project != project {
+    if !owned_by(entry, origin) {
         return write_json(404, &json!({"error": "not found"}));
     }
     if entry.superseded {
@@ -692,15 +685,14 @@ pub(super) async fn handle_job_delete(
     origin: Option<&str>,
     id: &str,
 ) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(project) => project,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
     let mut jobs = inner.jobs.lock().await;
     let Some(entry) = jobs.get(id) else {
         return write_json(404, &json!({"error": "not found"}));
     };
-    if entry.project != project {
+    if !owned_by(entry, origin) {
         return write_json(404, &json!({"error": "not found"}));
     }
     let _ = entry.cancel_tx.send(true);

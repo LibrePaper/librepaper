@@ -193,13 +193,13 @@ impl BindingStore {
         Ok(binding)
     }
 
-    pub fn revoke_scoped(&self, id: &str, origin: &str, project: &str) -> bool {
+    /// Revokes the binding `id` if `origin` owns it, whatever its project.
+    pub fn revoke_origin_binding(&self, id: &str, origin: &str) -> bool {
         let origin = super::pairing::normalize_origin(origin);
         let mut file = self.load();
         let old = file.bindings.len();
-        file.bindings.retain(|binding| {
-            !(binding.id == id && binding.origin == origin && binding.project == project)
-        });
+        file.bindings
+            .retain(|binding| !(binding.id == id && binding.origin == origin));
         old != file.bindings.len() && self.save(&file).is_ok()
     }
 
@@ -307,7 +307,7 @@ mod validation_tests {
         assert!(validate("https://other.test", "paper", "paper.qmd").is_err());
         assert!(validate("https://example.test", "other", "paper.qmd").is_err());
         assert!(validate("https://example.test", "paper", "other.qmd").is_err());
-        assert!(store.revoke_scoped(&binding.id, "https://example.test", "paper"));
+        assert!(store.revoke_origin_binding(&binding.id, "https://example.test"));
         assert!(validate("https://example.test", "paper", "paper.qmd").is_err());
         let replacement = store
             .grant("https://example.test", "paper", root.path(), "paper.qmd")
