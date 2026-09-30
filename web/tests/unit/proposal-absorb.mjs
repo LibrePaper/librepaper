@@ -143,6 +143,45 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.equal(sent.at(-1).type, "proposal-open", "an expired id is never updated or reopened");
   assert.equal(sent.at(-1).resume, true);
 }
+// A failed resend after undo keeps the original-create marker for a later
+// reconnect, which can still obtain the ack needed to discard the empty row.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "A paper.");
+  room.commit();
+  let online = true;
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) {
+      sent.push(message);
+      return online ? { ok: true } : { ok: false, error: new Error("offline") };
+    } });
+  proposals.start();
+  const id = proposals.id();
+  proposals.text("f1").insert(0, "New. ");
+  proposals.flush();
+  const firstOpen = sent.at(-1);
+  proposals.text("f1").delete(0, 5);
+  proposals.flush();
+
+  online = false;
+  proposals.reconnect();
+  assert.equal(sent.at(-1).type, "proposal-open");
+  assert.equal(sent.at(-1).resume, false);
+  online = true;
+  proposals.reconnect();
+  const secondRetry = sent.at(-1);
+  assert.equal(secondRetry.type, "proposal-open", "a failed resend remains retryable");
+  assert.equal(secondRetry.request_id, id);
+  assert.equal(secondRetry.resume, false);
+  assert.equal(secondRetry.base, firstOpen.base);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: firstOpen.base, applied_version: 1 });
+  assert.equal(sent.at(-1).type, "proposal-discard", "the eventual open ack releases the queued discard");
+}
 // A version conflict refreshes the compare-and-swap version without treating
 // the locally submitted operations as acknowledged.
 {

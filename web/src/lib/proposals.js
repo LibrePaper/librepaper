@@ -783,10 +783,10 @@ export function createProposals({ session, send, mayEdit }) {
           else draft.error = result.error?.message || "offline";
           continue;
         }
-        if (wasOpenPending) {
+        if (wasOpenPending || draft.openBase !== null) {
           // This is a retry of an unacknowledged create, not a status query.
-          // It must also run when a local undo has made the branch empty and
-          // marked it for discard while the first open was in flight.
+          // The immutable openBase remembers an attempted create even when a
+          // synchronous socket handoff failed during a previous reconnect.
           const result = sendMessage({
             type: "proposal-open",
             request_id: draft.id,
