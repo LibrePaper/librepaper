@@ -14,7 +14,7 @@
 //! which is why the paging contract has to hold for an arbitrary count.
 //!
 //! What is here now is a bounded keyset traversal
-//! (`docs/protocol/comments-v1.md`), and these tests are about its
+//! (`docs/dev/protocol/comments-v1.md`), and these tests are about its
 //! boundaries: page edges, tied timestamps, the byte budget, cursors
 //! presented where they do not belong, and concurrent writes. They seed in
 //! bulk through the catalogue rather than one sequencer command per comment

@@ -203,7 +203,7 @@ fn manifest(
     Ok(json!({
         "candidate_id": candidate_id,
         // "base_revision" and "revision" are the render-preview protocol's
-        // wire keys (docs/protocol/chat.md), not this cutover's vocabulary;
+        // wire keys (docs/dev/protocol/chat.md), not this cutover's vocabulary;
         // they stay as they are. There is no separate "tree_digest" key any
         // more: it was always the same value as "revision".
         "base_revision": candidate.base_tree_digest,
