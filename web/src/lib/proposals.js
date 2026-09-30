@@ -450,6 +450,28 @@ export function createProposals({ session, send, mayEdit }) {
     changed();
   };
 
+  const unpublishedLostFiles = (draft, resolvedTip) => {
+    if (!draft.preResolutionFiles?.size) return [];
+    const roomFiles = session.doc.getMap("files");
+    let published = null;
+    try { published = draft.branch.forkAt(resolvedTip); } catch { return []; }
+    try {
+      const publishedFiles = published.getMap("files");
+      const lost = [];
+      for (const [id, file] of draft.preResolutionFiles) {
+        if (roomFiles.get(id)) continue;
+        const publishedText = publishedFiles.get(id);
+        if (publishedText?.kind?.() !== "Text") continue;
+        let localText = file.text;
+        try { localText = file.container?.toString?.() ?? file.text; } catch { /* Keep the captured text. */ }
+        if (localText !== publishedText.toString()) lost.push({ id, path: file.path, text: localText });
+      }
+      return lost;
+    } finally {
+      published.destroy?.();
+    }
+  };
+
   const sendUpdate = (draft) => {
     if (!draft.opened || draft.openPending || draft.inflight || draft.discarding || draft.resolutionBlocked) return;
     draft.branch.commit();
@@ -518,6 +540,10 @@ export function createProposals({ session, send, mayEdit }) {
   const finishResolution = (draft) => {
     const resolution = draft.resolutionPending;
     if (!resolution || draft.resolutionBlocked) return;
+    // Socket hydration can deliver a partial source graph before the client
+    // has joined the room. The browser calls reconnect after hydration, which
+    // re-enters this pending resolution.
+    if (session.joined === false) return;
     const decisions = resolution.decisions || [...draft.decisions].map(([hunk, accepted]) => ({ hunk, accepted }));
     const allRejected = resolution.discarded === true ||
       decisions.length > 0 && decisions.every((decision) => !decision.accepted);
@@ -539,7 +565,23 @@ export function createProposals({ session, send, mayEdit }) {
       let sourceAtResolution = null;
       try { sourceAtResolution = session.doc.forkAt(resolvedTip); } catch { return; }
       sourceAtResolution?.destroy?.();
-    } else if (!draft.inverseApplied) {
+    }
+    // Full rejection is handled by the private identity-based inverse below;
+    // this snapshot fallback is only needed when a mixed/accepted source
+    // update has already removed a declined new file from the room graph.
+    const lostFiles = allRejected ? [] : unpublishedLostFiles(draft, resolvedTip);
+    if (lostFiles.length) {
+      // The server removed a rejected created file from FILES/PATHS while
+      // this author still had unpublished edits in its text container. Keep
+      // a downloadable copy and stop automatic rebasing for manual recovery.
+      draft.recoveryExtraFiles = lostFiles;
+      draft.error = "a mixed decision removed a file with later local typing; the full file is preserved for manual recovery";
+      draft.resolutionBlocked = true;
+      draft.resolutionPending = null;
+      changed();
+      return;
+    }
+    if (allRejected && !draft.inverseApplied) {
       let publishedOwn = 0;
       let published = null;
       try {
@@ -655,6 +697,8 @@ export function createProposals({ session, send, mayEdit }) {
     draft.ackTipBytes = encodeBase64(encodeFrontiers(draft.base));
     draft.resolutionPending = null;
     draft.inverseApplied = false;
+    draft.preResolutionFiles?.clear();
+    draft.recoveryExtraFiles = null;
     draft.decisions.clear();
     draft.error = "";
 
@@ -683,6 +727,25 @@ export function createProposals({ session, send, mayEdit }) {
     const update = session.doc.export({ mode: "update", from: draft.branch.oplogVersion() });
     if (update.byteLength) {
       try {
+        // Keep a pre-import text snapshot for branch-only files. A mixed
+        // decision can remove a declined created file from the source graph
+        // before this manager learns its resolved frontier.
+        draft.preResolutionFiles ??= new Map();
+        const roomFiles = session.doc.getMap("files");
+        const branchFiles = draft.branch.getMap("files");
+        const branchPaths = draft.branch.getMap("paths");
+        for (const id of branchFiles.keys()) {
+          if (roomFiles.get(id)) continue;
+          const text = branchFiles.get(id);
+          if (text?.kind?.() === "Text") {
+            draft.preResolutionFiles.set(id, {
+              id,
+              path: branchPaths.get(id) ?? null,
+              text: text.toString(),
+              container: text,
+            });
+          }
+        }
         draft.branch.import(update);
         draft.base = session.doc.frontiers();
         // The replacement update is based at this moved frontier. Operations
@@ -741,6 +804,7 @@ export function createProposals({ session, send, mayEdit }) {
         resolutionPending: null,
         appliedVersion: null,
         retryTimer: null,
+        preResolutionFiles: new Map(),
       };
       subscribe(proposal);
       changed();
@@ -762,6 +826,9 @@ export function createProposals({ session, send, mayEdit }) {
     flush() { if (proposal) flushDraft(proposal); },
     reconnect() {
       for (const draft of allDrafts()) {
+        const previousId = draft.id;
+        if (draft.resolutionPending) finishResolution(draft);
+        if (!allDrafts().includes(draft) || draft.id !== previousId) continue;
         if (draft.resolutionBlocked) continue;
         clearTimeout(draft.retryTimer);
         draft.retryTimer = null;
@@ -881,13 +948,15 @@ export function createProposals({ session, send, mayEdit }) {
       return allDrafts().filter((draft) => draft.resolutionBlocked).map((draft) => {
         const paths = draft.branch.getMap("paths");
         const files = draft.branch.getMap("files");
+        const byId = new Map();
+        for (const id of files.keys()) {
+          const text = files.get(id);
+          if (text?.kind?.() === "Text") byId.set(String(id), { id, path: paths.get(id) ?? null, text: text.toString() });
+        }
+        for (const file of draft.recoveryExtraFiles ?? []) byId.set(String(file.id), file);
         return {
           id: draft.id,
-          files: [...files.keys()].flatMap((id) => {
-            const text = files.get(id);
-            if (text?.kind?.() !== "Text") return [];
-            return [{ id, path: paths.get(id) ?? null, text: text.toString() }];
-          }),
+          files: [...byId.values()],
         };
       });
     },
