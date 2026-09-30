@@ -133,6 +133,8 @@ librepaper admin serve --publishers alice,anne@example.org --commenters @example
 
 `--publishers` has no default. `--commenters` defaults to `anyone`. Both are ceilings.
 
+A domain matches exactly: `@example.org` admits `alice@example.org`, not `alice@mail.example.org`.
+
 Forwarded client identity is trusted only from networks in advanced config:
 
 ```yaml
@@ -147,7 +149,7 @@ Google sign-in: verified Gmail and Google Workspace only. After upgrading, sign 
 
 ## OAuth
 
-OAuth is optional if both `--publishers` and `--commenters` are `anyone`.
+Publishing always needs at least one OAuth client, GitHub or Google.
 
 GitHub: create app at [github.com/settings/developers](https://github.com/settings/developers) with `/auth/callback`. Pass id via `--github-client-id` or `LIBREPAPER_GITHUB_CLIENT_ID`; secret via `LIBREPAPER_GITHUB_CLIENT_SECRET` only.
 
