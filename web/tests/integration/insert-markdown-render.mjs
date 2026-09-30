@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import katex from 'katex';
 import { call, handOver } from '../../src/lib/renderer-wasm.js';
 import { INSERT_ACTIONS,buildInsertion,insertionAvailability } from '../../src/lib/insert.js';
-const binary=readFileSync(new URL('../../dist/wasm/citations.wasm',import.meta.url));
+const binary=readFileSync(new URL('../../wasm/citations.wasm',import.meta.url));
 const engine=new WebAssembly.Instance(new WebAssembly.Module(binary),{}).exports;
 const bib='@article{smith2020,author={Smith, Jane},title={Rivers},year={2020},journal={Journal}}';
 let text='---\nbibliography: refs.bib\nbibliography-style: apa\n---\n\n# Intro\n\n';

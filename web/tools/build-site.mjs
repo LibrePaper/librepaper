@@ -20,7 +20,7 @@ import { nav } from "../../site/nav.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const siteDir = resolve(here, "../../site");
 const outDir = resolve(siteDir, ".build");
-const wasmPath = resolve(here, "../dist/wasm/markdown.wasm");
+const wasmPath = resolve(here, "../wasm/markdown.wasm");
 
 /* -------------------------------------------------------------- the engine */
 

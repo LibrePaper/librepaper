@@ -11,6 +11,17 @@ const script = new URL("../publish-mirror.mjs", import.meta.url).pathname;
 const secret = "do-not-print-this-secret";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
+// A minimal manifest.json that passes LaTeX preflight, with an empty bundles index.
+async function writeLatexManifest(source, indexPath = "bundles.json") {
+  const index = Buffer.from('{"bundles":{}}\n');
+  await mkdir(join(source, indexPath, ".."), { recursive: true });
+  await writeFile(join(source, indexPath), index);
+  await writeFile(join(source, "manifest.json"), JSON.stringify({
+    format: 1,
+    releases: { release: { files: {}, bundles: { index: indexPath, count: 0, sha256: sha256(index) } } },
+  }));
+}
+
 test("AWS failure diagnostics expose safe service codes and actionable hints only", () => {
   const serviceMessage = awsFailureMessage({
     status: 254,
@@ -76,25 +87,25 @@ fs.appendFileSync(process.env.AWS_LOG, JSON.stringify(entry) + '\\n');
 `;
 
 test("publisher validates prefixes and selects explicit browser metadata", () => {
-  assert.throws(() => parseArgs(["--dir", ".", "--prefix", "../typst"]), /prefix must be exactly/);
-  assert.deepEqual(metadataFor("typst/objects/" + "a".repeat(64) + ".wasm"), {
+  assert.throws(() => parseArgs(["--dir", ".", "--prefix", "../wasm"]), /prefix must be exactly/);
+  assert.deepEqual(metadataFor("wasm/" + "a".repeat(64) + "/markdown.wasm"), {
     contentType: "application/wasm", contentEncoding: "gzip", cacheControl: "public, max-age=31536000, immutable",
   });
   assert.deepEqual(metadataFor("latex/manifest.json"), {
     contentType: "application/json", contentEncoding: "gzip", cacheControl: "no-store",
   });
   assert.equal(metadataFor("latex/bundles.json").cacheControl, "no-cache");
-  assert.equal(metadataFor("typst/licenses/OFL.txt").cacheControl, "public, max-age=86400");
-  assert.equal(metadataFor("typst/fonts/example.otf").contentEncoding, undefined);
-  assert.equal(metadataFor("typst/cache/engine/bundles.json").cacheControl, "no-cache");
-  assert.equal(metadataFor("typst/engine.fmt").contentType, "application/octet-stream");
-  assert.equal(metadataFor("typst/engine.fmt").contentEncoding, "gzip");
-  assert.equal(metadataFor("typst/archive.tar").contentEncoding, "gzip");
-  assert.equal(metadataFor("typst/engine.data").contentEncoding, "gzip");
+  assert.equal(metadataFor("latex/licenses/OFL.txt").cacheControl, "public, max-age=86400");
+  assert.equal(metadataFor("latex/fonts/example.otf").contentEncoding, undefined);
+  assert.equal(metadataFor("latex/cache/engine/bundles.json").cacheControl, "no-cache");
+  assert.equal(metadataFor("latex/engine.fmt").contentType, "application/octet-stream");
+  assert.equal(metadataFor("latex/engine.fmt").contentEncoding, "gzip");
+  assert.equal(metadataFor("latex/archive.tar").contentEncoding, "gzip");
+  assert.equal(metadataFor("latex/engine.data").contentEncoding, "gzip");
   assert.deepEqual(metadataFor("latex/receipt.pdf.gz"), {
     contentType: "application/gzip", contentEncoding: undefined, cacheControl: "public, max-age=3600",
   });
-  assert.throws(() => parseArgs(["--dir", ".", "--prefix", "typst", "--bogus"]), /unknown option/);
+  assert.throws(() => parseArgs(["--dir", ".", "--prefix", "wasm", "--bogus"]), /unknown option/);
 });
 
 test("dry run lists large files without staging or gzip compression", async () => {
@@ -106,7 +117,7 @@ test("dry run lists large files without staging or gzip compression", async () =
   try {
     const before = new Set((await readdir(tmpdir())).filter((name) => name.startsWith("librepaper-mirror-")));
     const lines = [];
-    const result = await publish({ dir: root, prefix: "typst", dryRun: true, env: {}, output: (line) => lines.push(line) });
+    const result = await publish({ dir: root, prefix: "wasm", dryRun: true, env: {}, output: (line) => lines.push(line) });
     const after = new Set((await readdir(tmpdir())).filter((name) => name.startsWith("librepaper-mirror-")));
     assert.equal(result.count, 1);
     assert.equal(result.uploaded, 0);
@@ -127,7 +138,7 @@ test("S3 endpoint must be HTTPS without embedded credentials, query, or fragment
   try {
     for (const endpoint of ["http://s3.example.invalid", "https://user:pass@s3.example.invalid",
       "https://s3.example.invalid/?token=x", "https://s3.example.invalid/#fragment"]) {
-      await assert.rejects(publish({ dir: root, prefix: "typst", env: { ...baseEnv, S3_ENDPOINT: endpoint }, output: () => {} }),
+      await assert.rejects(publish({ dir: root, prefix: "wasm", env: { ...baseEnv, S3_ENDPOINT: endpoint }, output: () => {} }),
         /S3_ENDPOINT/);
     }
   } finally {
@@ -170,14 +181,14 @@ test("LaTeX preflight verifies release files, index, and relative bundle records
   }
 });
 
-test("Typst hash mismatch fails preflight before making AWS calls", async () => {
-  const root = await mkdtemp(join(tmpdir(), "publish-mirror-typst-preflight-"));
+test("WASM hash mismatch fails preflight before making AWS calls", async () => {
+  const root = await mkdtemp(join(tmpdir(), "publish-mirror-wasm-preflight-"));
   const source = join(root, "mirror");
   const bin = join(root, "bin");
   const log = join(root, "aws.jsonl");
   await mkdir(join(source, "0".repeat(64)), { recursive: true });
   await mkdir(bin);
-  await writeFile(join(source, "0".repeat(64), "typst.wasm"), "not-the-hash");
+  await writeFile(join(source, "0".repeat(64), "markdown.wasm"), "not-the-hash");
   const fakeAws = join(bin, "aws");
   await writeFile(fakeAws, `#!${process.execPath}\nrequire('node:fs').appendFileSync(process.env.AWS_LOG, 'called\\n');\n`);
   await chmod(fakeAws, 0o755);
@@ -185,7 +196,7 @@ test("Typst hash mismatch fails preflight before making AWS calls", async () => 
     S3_ENDPOINT: "https://s3.example.invalid", S3_REGION: "region-1", S3_BUCKET: "dedicated-assets",
     AWS_ACCESS_KEY_ID: "access", AWS_SECRET_ACCESS_KEY: secret };
   try {
-    await assert.rejects(publish({ dir: source, prefix: "typst", env, output: () => {} }), /hash directory does not match/);
+    await assert.rejects(publish({ dir: source, prefix: "wasm", env, output: () => {} }), /hash directory does not match/);
     await assert.rejects(stat(log), { code: "ENOENT" });
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -208,15 +219,14 @@ test("successful S3 publishing gzips payloads, skips transport files, and upload
   await writeFile(join(source, "engine.fmt"), Buffer.from([0, 255, 1]));
   await writeFile(join(source, "archive.tar"), "tar bytes");
   await writeFile(join(source, "icudt.dat.gz"), Buffer.from([31, 139, 8, 0, 1]));
-  const typstBytes = Buffer.from("compiled wasm");
-  const typstHash = sha256(typstBytes);
-  await mkdir(join(source, typstHash));
-  await writeFile(join(source, typstHash, "typst.wasm"), typstBytes);
+  const assetBytes = Buffer.from("compiled wasm");
+  const assetHash = sha256(assetBytes);
+  await mkdir(join(source, assetHash));
+  await writeFile(join(source, assetHash, "engine.wasm"), assetBytes);
   await writeFile(join(source, "engine", "bundles.json"), '{"bundle":"hash"}\n');
   await mkdir(join(source, "zz"));
-  await writeFile(join(source, "zz", "index.json"), '{"index":true}\n');
+  await writeLatexManifest(source, "zz/index.json");
   await writeFile(join(source, "index.html"), "<h1>index</h1>");
-  await writeFile(join(source, "manifest.json"), '{"version":1}\n');
   await writeFile(join(source, "_headers"), "ignored");
   await writeFile(join(source, ".assetsignore"), "ignored");
   await writeFile(join(source, "nested", "old.js.br"), "ignored");
@@ -232,38 +242,38 @@ test("successful S3 publishing gzips payloads, skips transport files, and upload
     AWS_ACCESS_KEY_ID: "access", AWS_SECRET_ACCESS_KEY: secret };
   const records = async () => (await readFile(log, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
   try {
-    const result = await publish({ dir: source, prefix: "typst", env, output: () => {} });
+    const result = await publish({ dir: source, prefix: "latex", env, output: () => {} });
     assert.equal(result.count, 11);
     assert.equal(result.uploaded, 11);
     const entries = await records();
     assert.ok(entries.every((entry) => ["s3api put-object", "s3api get-object"].includes(entry.command)));
     const puts = entries.filter((entry) => entry.command === "s3api put-object");
     const keys = puts.map((entry) => entry.key);
-    assert.equal(keys.at(-1), "typst/manifest.json");
+    assert.equal(keys.at(-1), "latex/manifest.json");
     const firstIndex = keys.findIndex((key) => /(?:^|\/)(?:bundles\.json|index\.html|index\.json|manifest\.json)$/.test(key));
     assert.ok(firstIndex > 0);
     assert.ok(keys.slice(firstIndex).every((key) => /(?:^|\/)(?:bundles\.json|index\.html|index\.json|manifest\.json)$/.test(key)));
-    assert.deepEqual(keys.slice(-4), ["typst/engine/bundles.json", "typst/index.html", "typst/zz/index.json", "typst/manifest.json"]);
-    for (const skipped of ["typst/_headers", "typst/.assetsignore", "typst/nested/old.js.br", "typst/nested/x.metadata", "typst/nested/x.cfmeta", "typst/.cloudflare/meta.json"]) {
+    assert.deepEqual(keys.slice(-4), ["latex/engine/bundles.json", "latex/index.html", "latex/zz/index.json", "latex/manifest.json"]);
+    for (const skipped of ["latex/_headers", "latex/.assetsignore", "latex/nested/old.js.br", "latex/nested/x.metadata", "latex/nested/x.cfmeta", "latex/.cloudflare/meta.json"]) {
       assert.ok(!keys.includes(skipped), `${skipped} should be skipped`);
     }
     const byKey = new Map(puts.map((entry) => [entry.key, entry]));
-    assert.equal(Buffer.from(byKey.get("typst/readme.txt").body, "base64").toString(), "payload text\n");
-    assert.equal(byKey.get("typst/readme.txt").contentType, "text/plain; charset=utf-8");
-    assert.equal(byKey.get("typst/readme.txt").contentEncoding, "gzip");
-    assert.equal(Buffer.from(byKey.get("typst/empty.txt").body, "base64").length, 0);
-    assert.equal(Buffer.from(byKey.get("typst/engine.data").body, "base64").toString("hex"), "000102ff");
-    assert.equal(byKey.get("typst/engine.fmt").contentType, "application/octet-stream");
-    assert.equal(byKey.get("typst/engine.fmt").contentEncoding, "gzip");
-    assert.equal(byKey.get("typst/archive.tar").contentType, "application/x-tar");
-    assert.equal(Buffer.from(byKey.get("typst/icudt.dat.gz").body, "base64").toString("hex"), "1f8b080001");
-    assert.equal(byKey.get("typst/icudt.dat.gz").contentType, "application/gzip");
-    assert.equal(byKey.get("typst/icudt.dat.gz").contentEncoding, null);
-    assert.equal(byKey.get("typst/manifest.json").cacheControl, "no-store");
-    assert.equal(byKey.get("typst/engine/bundles.json").cacheControl, "no-cache");
-    assert.equal(Buffer.from(byKey.get(`typst/${typstHash}/typst.wasm`).body, "base64").toString(), "compiled wasm");
+    assert.equal(Buffer.from(byKey.get("latex/readme.txt").body, "base64").toString(), "payload text\n");
+    assert.equal(byKey.get("latex/readme.txt").contentType, "text/plain; charset=utf-8");
+    assert.equal(byKey.get("latex/readme.txt").contentEncoding, "gzip");
+    assert.equal(Buffer.from(byKey.get("latex/empty.txt").body, "base64").length, 0);
+    assert.equal(Buffer.from(byKey.get("latex/engine.data").body, "base64").toString("hex"), "000102ff");
+    assert.equal(byKey.get("latex/engine.fmt").contentType, "application/octet-stream");
+    assert.equal(byKey.get("latex/engine.fmt").contentEncoding, "gzip");
+    assert.equal(byKey.get("latex/archive.tar").contentType, "application/x-tar");
+    assert.equal(Buffer.from(byKey.get("latex/icudt.dat.gz").body, "base64").toString("hex"), "1f8b080001");
+    assert.equal(byKey.get("latex/icudt.dat.gz").contentType, "application/gzip");
+    assert.equal(byKey.get("latex/icudt.dat.gz").contentEncoding, null);
+    assert.equal(byKey.get("latex/manifest.json").cacheControl, "no-store");
+    assert.equal(byKey.get("latex/engine/bundles.json").cacheControl, "no-cache");
+    assert.equal(Buffer.from(byKey.get(`latex/${assetHash}/engine.wasm`).body, "base64").toString(), "compiled wasm");
     assert.ok(puts.every((entry) => entry.acl === "public-read"));
-    const manifestPutIndex = entries.findIndex((entry) => entry.command === "s3api put-object" && entry.key === "typst/manifest.json");
+    const manifestPutIndex = entries.findIndex((entry) => entry.command === "s3api put-object" && entry.key === "latex/manifest.json");
     assert.ok(manifestPutIndex > 0);
     assert.equal(entries.slice(0, manifestPutIndex).filter((entry) => entry.command === "s3api put-object").length,
       entries.slice(0, manifestPutIndex).filter((entry) => entry.command === "s3api get-object").length);
@@ -273,7 +283,7 @@ test("successful S3 publishing gzips payloads, skips transport files, and upload
     }
 
     await rm(log);
-    await publish({ dir: source, prefix: "typst", configureCors: true, env, output: () => {} });
+    await publish({ dir: source, prefix: "latex", configureCors: true, env, output: () => {} });
     const corsEntries = await records();
     assert.equal(corsEntries.at(-1).command, "s3api put-bucket-cors");
   } finally {
@@ -289,11 +299,11 @@ test("tampered readback aborts before publishing the root manifest", async () =>
   const store = join(root, "aws-store.json");
   const wasmBytes = Buffer.from("verified wasm release");
   const wasmHash = sha256(wasmBytes);
-  const tamperedKey = `typst/${wasmHash}/typst.wasm`;
+  const tamperedKey = `latex/${wasmHash}/engine.wasm`;
   await mkdir(join(source, wasmHash), { recursive: true });
   await mkdir(bin);
-  await writeFile(join(source, wasmHash, "typst.wasm"), wasmBytes);
-  await writeFile(join(source, "manifest.json"), '{"release":"current"}\n');
+  await writeFile(join(source, wasmHash, "engine.wasm"), wasmBytes);
+  await writeLatexManifest(source);
   const fakeAws = join(bin, "aws");
   await writeFile(fakeAws, fakeAwsProgram);
   await chmod(fakeAws, 0o755);
@@ -302,11 +312,11 @@ test("tampered readback aborts before publishing the root manifest", async () =>
     S3_BUCKET: "dedicated-assets", AWS_ACCESS_KEY_ID: "access", AWS_SECRET_ACCESS_KEY: secret };
   try {
     for (const [mode, error] of [["bytes", /uploaded object bytes mismatch/], ["metadata", /metadata mismatch/], ["gzip", /header|gzip|compression/i]]) {
-      await assert.rejects(publish({ dir: source, prefix: "typst", env: { ...env, AWS_TAMPER_MODE: mode }, output: () => {} }), error);
+      await assert.rejects(publish({ dir: source, prefix: "latex", env: { ...env, AWS_TAMPER_MODE: mode }, output: () => {} }), error);
     }
     const entries = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
     assert.ok(entries.some((entry) => entry.command === "s3api get-object" && entry.key === tamperedKey));
-    assert.ok(!entries.some((entry) => entry.command === "s3api put-object" && entry.key === "typst/manifest.json"));
+    assert.ok(!entries.some((entry) => entry.command === "s3api put-object" && entry.key === "latex/manifest.json"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -321,15 +331,15 @@ test("AWS upload failures exit unsuccessfully without claiming publication or pr
   const wasmBytes = Buffer.from("verified before upload");
   const wasmHash = sha256(wasmBytes);
   await mkdir(join(source, wasmHash));
-  await writeFile(join(source, wasmHash, "typst.wasm"), wasmBytes);
-  await writeFile(join(source, "manifest.json"), "{}\n");
+  await writeFile(join(source, wasmHash, "engine.wasm"), wasmBytes);
+  await writeLatexManifest(source);
   const fakeAws = join(bin, "aws");
   await writeFile(fakeAws, "#!/bin/sh\nprintf '%s\\n' \"$AWS_SECRET_ACCESS_KEY\" >&2\nexit 17\n");
   await chmod(fakeAws, 0o755);
   try {
     let stderr = "";
     try {
-      execFileSync(process.execPath, [script, "--dir", source, "--prefix", "typst"], {
+      execFileSync(process.execPath, [script, "--dir", source, "--prefix", "latex"], {
         env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, S3_ENDPOINT: "https://s3.example.invalid",
           S3_REGION: "region-1", S3_BUCKET: "dedicated-assets", AWS_ACCESS_KEY_ID: "access",
           AWS_SECRET_ACCESS_KEY: secret },
@@ -343,6 +353,23 @@ test("AWS upload failures exit unsuccessfully without claiming publication or pr
     assert.match(stderr, /AWS CLI operation failed/);
     assert.doesNotMatch(stderr, /Published/);
     assert.doesNotMatch(stderr, new RegExp(secret));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("wasm preflight accepts only <sha256>/<name>.wasm files whose directory is their hash", async () => {
+  const root = await mkdtemp(join(tmpdir(), "publish-mirror-wasm-layout-"));
+  const bytes = Buffer.from("module bytes");
+  const hash = sha256(bytes);
+  await mkdir(join(root, hash));
+  await writeFile(join(root, hash, "markdown.wasm"), bytes);
+  try {
+    const result = await preflightMirror({ dir: root, prefix: "wasm" });
+    assert.equal(result.count, 1);
+    assert.equal(result.bytes, bytes.length);
+    await writeFile(join(root, "stray.txt"), "not a module");
+    await assert.rejects(preflightMirror({ dir: root, prefix: "wasm" }), /must be <sha256>\/<name>\.wasm/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

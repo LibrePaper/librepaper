@@ -4,7 +4,7 @@ import { gzipSync } from "node:zlib";
 import { call, handOver, load } from "../../src/lib/renderer-wasm.js";
 
 function module(name) {
-  const bytes = readFileSync(new URL(`../../dist/wasm/${name}.wasm`, import.meta.url));
+  const bytes = readFileSync(new URL(`../../wasm/${name}.wasm`, import.meta.url));
   console.log(`${name}: ${bytes.length} bytes, ${gzipSync(bytes).length} gzip bytes`);
   return new WebAssembly.Instance(new WebAssembly.Module(bytes), {}).exports;
 }
@@ -56,7 +56,7 @@ const originalFetch = globalThis.fetch;
 let fetches = 0;
 globalThis.fetch = async () => {
   if (++fetches <= 2) throw new Error("temporary failure");
-  return new Response(readFileSync(new URL("../../dist/wasm/bibliography.wasm", import.meta.url)), { headers: { "Content-Type": "application/wasm" } });
+  return new Response(readFileSync(new URL("../../wasm/bibliography.wasm", import.meta.url)), { headers: { "Content-Type": "application/wasm" } });
 };
 try {
   await assert.rejects(load("https://example.test/retry.wasm"), /temporary failure/);

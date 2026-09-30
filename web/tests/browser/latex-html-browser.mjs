@@ -72,7 +72,7 @@ if (!hostedMirrorUrl) {
     mirrorRoot = overlay;
   }
   mirrorServer = await ephemeralMirror(mirrorRoot);
-  mirrorBase = mirrorServer.url;
+  mirrorBase = mirrorServer.latexUrl;
 }
 const server = createServer(async (req, res) => {
   try {
@@ -181,7 +181,7 @@ See equation~\eqref{eq:test}.
     const appBase = `http://localhost:${port}`;
     const env = { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" };
     app = spawn(resolve(process.env.LIBREPAPER_BIN), ["admin", "serve", "--port", String(port), "--data-directory", appData,
-      "--publishers", "any", "--commenters", "anyone", "--latex-mirror", mirrorBase], { env, stdio: ["ignore", "ignore", "pipe"] });
+      "--publishers", "any", "--commenters", "anyone", "--asset-mirror", new URL("../", mirrorBase).href], { env, stdio: ["ignore", "ignore", "pipe"] });
     app.stderr.on("data", (bytes) => { appLog += bytes; });
     await until("app startup", async () => {
       if (app.exitCode !== null) throw new Error(appLog);

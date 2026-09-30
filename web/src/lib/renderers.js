@@ -34,7 +34,7 @@ export { snapshotDigest };
 
 /// Whether this deployment serves LaTeX distributions, which is the one
 /// renderer that is a property of the deployment rather than of the build:
-/// the compiler is not in the binary, it is behind `--latex-mirror`, and a
+/// the compiler is not in the binary, it is behind `--asset-mirror`, and a
 /// deployment without a mirror has nowhere to send a browser for one. Set
 /// from what `/api/documents/<slug>` reports, which is the same flag
 /// `/api/config` answers with.

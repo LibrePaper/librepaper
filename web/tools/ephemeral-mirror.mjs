@@ -1,6 +1,8 @@
-// Serve a local wasm-latex mirror over an ephemeral HTTPS origin.  The
-// production server accepts HTTPS mirrors only, and browser checks should
-// exercise the same cross-origin fetch/CORS path as a deployment.
+// Serve a local wasm-latex mirror over an ephemeral HTTPS origin, under the
+// latex/ prefix of an asset mirror.  The production server accepts HTTPS
+// mirrors only, and browser checks should exercise the same cross-origin
+// fetch/CORS path as a deployment.  `url` is the asset mirror to hand the
+// server (--asset-mirror); `latexUrl` is where the LaTeX files live beneath it.
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:https";
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
@@ -24,7 +26,9 @@ export async function ephemeralMirror(directory) {
       return;
     }
     try {
-      const relative = decodeURIComponent(new URL(request.url || "/", "https://localhost/").pathname).replace(/^\/+/, "");
+      const requested = decodeURIComponent(new URL(request.url || "/", "https://localhost/").pathname).replace(/^\/+/, "");
+      if (!requested.startsWith("latex/")) throw new Error("outside the latex prefix");
+      const relative = requested.slice("latex/".length);
       const file = resolve(root, relative);
       if (file !== root && !file.startsWith(root + sep)) throw new Error("mirror path escaped root");
       if (!statSync(file).isFile()) throw new Error("mirror file not found");
@@ -54,6 +58,7 @@ export async function ephemeralMirror(directory) {
   });
   return {
     url: `https://localhost:${server.address().port}/`,
+    latexUrl: `https://localhost:${server.address().port}/latex/`,
     server,
     tls,
   };

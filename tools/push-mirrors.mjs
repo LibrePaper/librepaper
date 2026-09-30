@@ -1,20 +1,57 @@
 #!/usr/bin/env node
 
 // Load deployment credentials through SOPS, validate both prepared mirrors,
-// then publish them with the shared integrity-checking publisher.
+// then publish them with the shared integrity-checking publisher. The LaTeX
+// mirror is prepared in ../wasm-latex; the wasm mirror is staged here from
+// web/wasm and wasm-modules.lock as <sha256>/<module>.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { statSync } from "node:fs";
+import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { preflightMirror, publish, publisherConfiguration } from "./publish-mirror.mjs";
 
 const runFile = promisify(execFile);
 const keys = process.env.KEYS || "deploy/keys.yaml";
-const mirrors = [
-  { dir: process.env.TYPST_MIRROR || "../wasm-typst/mirror", prefix: "typst" },
-  { dir: process.env.MIRROR || "../wasm-latex/mirror", prefix: "latex" },
-];
+const root = fileURLToPath(new URL("..", import.meta.url));
+const wasmDirectory = process.env.WASM_DIR || join(root, "web/wasm");
+const wasmLock = process.env.WASM_LOCK || join(root, "wasm-modules.lock");
+
+// Copy every module in wasm-modules.lock from wasmDirectory into a temporary
+// tree laid out as <sha256>/<module>, refusing any file whose bytes do not
+// hash to the lock. Returns the tree; the caller removes it.
+export async function stageWasmMirror(directory = wasmDirectory, lockPath = wasmLock) {
+  const rows = (await readFile(lockPath, "utf8"))
+    .split("\n")
+    .map((line) => line.replace(/#.*$/, "").trim())
+    .filter(Boolean)
+    .map((line) => line.split(/\s+/));
+  if (!rows.length) throw new Error("wasm-modules.lock has no modules");
+  const staged = await mkdtemp(join(tmpdir(), "librepaper-wasm-mirror-"));
+  try {
+    for (const [module, , , sha256, ...extra] of rows) {
+      if (extra.length || !/^[a-f0-9]{64}$/.test(sha256 || "")) throw new Error(`${module || "lock entry"}: expected module repo tag sha256`);
+      let bytes;
+      try {
+        bytes = await readFile(join(directory, module));
+      } catch {
+        throw new Error(`${module} not found in ${directory}; run make wasm first`);
+      }
+      if (createHash("sha256").update(bytes).digest("hex") !== sha256) {
+        throw new Error(`${module} in ${directory} does not match wasm-modules.lock; run make wasm first`);
+      }
+      await mkdir(join(staged, sha256), { recursive: true });
+      await copyFile(join(directory, module), join(staged, sha256, module));
+    }
+  } catch (error) {
+    await rm(staged, { recursive: true, force: true });
+    throw error;
+  }
+  return staged;
+}
 
 export function mappedEnvironment(env) {
   const bucketSource = env.S3_BUCKET || env.OVH_S3_BUCKET;
@@ -81,6 +118,18 @@ async function run() {
 async function publishPrepared(rawEnv, { dryRun = false } = {}) {
   const env = dryRun ? rawEnv : mappedEnvironment(rawEnv);
   if (!dryRun) publisherConfiguration(env);
+  const staged = await stageWasmMirror();
+  try {
+    await publishMirrors([
+      { dir: staged, prefix: "wasm" },
+      { dir: process.env.MIRROR || "../wasm-latex/mirror", prefix: "latex" },
+    ], env, dryRun);
+  } finally {
+    await rm(staged, { recursive: true, force: true });
+  }
+}
+
+async function publishMirrors(mirrors, env, dryRun) {
   // Validate both trees before either publisher can make a remote call.
   for (const mirror of mirrors) {
     try {
