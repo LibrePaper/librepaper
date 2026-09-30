@@ -149,6 +149,8 @@ impl Server {
             // private starter set, while ordinary document creation remains
             // governed by that policy at its request boundary.
             policy_editor: true,
+            policy_comment: true,
+            automation: false,
             unowned_publisher: false,
         };
         for (position, starter) in STARTERS.iter().enumerate() {
@@ -221,6 +223,12 @@ impl Server {
             .create_document(crate::storage::postgres::NewDocument {
                 slug: slug.to_string(),
                 owner_id: account_id,
+                owner_session_generation: Some(
+                    actor
+                        .session_generation
+                        .parse()
+                        .map_err(|_| "invalid onboarding session".to_string())?,
+                ),
                 ownership_mode: if actor.unowned_publisher {
                     "open".into()
                 } else {

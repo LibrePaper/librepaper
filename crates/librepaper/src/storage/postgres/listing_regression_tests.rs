@@ -35,6 +35,7 @@ async fn document(catalog: &PostgresCatalog, owner_id: Uuid, mode: &str) -> Uuid
         .create_document(NewDocument {
             slug: format!("schema-review-{}", Uuid::now_v7()),
             owner_id,
+            owner_session_generation: None,
             ownership_mode: mode.into(),
             title: "Schema test".into(),
             source_format: "markdown".into(),

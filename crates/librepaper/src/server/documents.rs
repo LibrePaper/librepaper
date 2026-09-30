@@ -397,6 +397,8 @@ impl Server {
             session_generation: who.session_generation.clone(),
             link_hash: String::new(),
             policy_editor: true,
+            policy_comment: self.commenters.allows(&who.handle),
+            automation: false,
             unowned_publisher: false,
         };
 
@@ -461,7 +463,7 @@ impl Server {
                     main: main.clone(),
                 },
                 parsed.files.clone(),
-                actor,
+                actor.clone(),
             )
             .await
         {
@@ -480,7 +482,7 @@ impl Server {
         // leaves it as it is. A brand-new document already has the title it
         // was created with.
         if mine && !parsed.title.is_empty() && parsed.title != entry.title {
-            if let Err(error) = self.store.rename(&key, &parsed.title).await {
+            if let Err(error) = self.store.rename(&key, &parsed.title, &actor).await {
                 return write_json(409, &json!({"error": error}));
             }
         }
@@ -1184,8 +1186,21 @@ impl Server {
             Ok(Some(_)) | Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        match self.store.rename(slug, &title).await {
+        let actor = crate::document::store::MutationActor {
+            account_id: who.id.clone(),
+            owner_key: who.key.clone(),
+            session_generation: who.session_generation.clone(),
+            link_hash: String::new(),
+            policy_editor: true,
+            policy_comment: self.commenters.allows(&who.handle),
+            automation: false,
+            unowned_publisher: false,
+        };
+        match self.store.rename(slug, &title, &actor).await {
             Ok(()) => write_json(200, &json!({"slug": slug, "title": title})),
+            Err(error) if error == "ownership changed" => {
+                write_json(409, &json!({"error": error}))
+            }
             Err(error) => {
                 eprintln!("could not rename {slug}: {error}");
                 write_json(500, &json!({"error": "could not rename the project"}))
@@ -1298,6 +1313,8 @@ impl Server {
             session_generation: who.session_generation.clone(),
             link_hash: String::new(),
             policy_editor: true,
+            policy_comment: self.commenters.allows(&who.handle),
+            automation: false,
             unowned_publisher: false,
         };
         match self
