@@ -150,14 +150,15 @@ pub(crate) struct ServiceFlags {
         value_name = "URL"
     )]
     site_origin: Option<String>,
-    /// HTTPS static mirror from which browsers fetch LaTeX distributions.
+    /// HTTPS static mirror from which browsers fetch the wasm renderers
+    /// (`wasm/`) and LaTeX distributions (`latex/`).
     #[arg(
         long,
-        env = "LIBREPAPER_LATEX_MIRROR",
+        env = "LIBREPAPER_ASSET_MIRROR",
         value_name = "URL",
-        default_value = crate::config::DEFAULT_LATEX_MIRROR
+        default_value = crate::config::DEFAULT_ASSET_MIRROR
     )]
-    latex_mirror: String,
+    asset_mirror: String,
     /// Serve the font files in this directory to typst documents that name a
     /// family the compiler does not embed; `publish` fetches the same fonts.
     /// Without it, such a document is set in the compiler's default faces.
@@ -541,7 +542,7 @@ async fn run_admin(command: AdminCommand) {
                 site_origin: service.site_origin,
                 expire_after: service.expire_after,
                 expire_from: service.expire_from,
-                latex_mirror: service.latex_mirror,
+                asset_mirror: service.asset_mirror,
                 typst_fonts: service.typst_fonts,
                 no_local: service.no_local,
                 config,

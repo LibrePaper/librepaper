@@ -6,10 +6,12 @@
 use serde::Serialize;
 use std::path::PathBuf;
 
-/// The public static compiler distribution used when an operator does not
-/// host a mirror copy. Browsers fetch it directly; the origin never proxies
-/// these bytes.
-pub const DEFAULT_LATEX_MIRROR: &str = "https://latex.librepaper.workers.dev/";
+/// The public static asset mirror used when an operator does not host a copy:
+/// the browser wasm modules under `wasm/` and the LaTeX distributions under
+/// `latex/`. Browsers fetch them directly; the origin never proxies these
+/// bytes.
+pub const DEFAULT_ASSET_MIRROR: &str =
+    "https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/";
 
 /// Private disposable state used by the server process, and the fixed
 /// filesystem layout of a local deployment directory.

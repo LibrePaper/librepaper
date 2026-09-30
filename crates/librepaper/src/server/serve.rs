@@ -50,9 +50,10 @@ pub struct ServeOptions {
     pub site_origin: Option<String>,
     pub expire_after: Option<String>,
     pub expire_from: Option<String>,
-    /// HTTPS static mirror URL published to browsers. Distribution bytes are
-    /// fetched directly by the browser and never pass through this process.
-    pub latex_mirror: String,
+    /// HTTPS static mirror URL published to browsers. Renderer and LaTeX
+    /// distribution bytes are fetched directly by the browser and never pass
+    /// through this process.
+    pub asset_mirror: String,
     /// A directory of font files served to typst documents, or nothing. See
     /// `crate::server::fonts`.
     pub typst_fonts: Option<String>,
@@ -66,11 +67,11 @@ pub struct ServeOptions {
 /// Validate the only supported mirror shape before opening storage or binding
 /// a port. A local directory and plain HTTP would make browser failures look
 /// like missing compiler assets, so operators get an actionable startup error.
-pub(crate) fn validate_latex_mirror(value: &str) -> Result<String, String> {
+pub(crate) fn validate_asset_mirror(value: &str) -> Result<String, String> {
     let value = value.trim();
     let mut parsed = url::Url::parse(value).map_err(|_| {
         format!(
-            "--latex-mirror must be an https: URL for a static mirror; see the mirror documentation (got {value:?})"
+            "--asset-mirror must be an https: URL for a static mirror; see the mirror documentation (got {value:?})"
         )
     })?;
     if parsed.scheme() != "https"
@@ -80,7 +81,7 @@ pub(crate) fn validate_latex_mirror(value: &str) -> Result<String, String> {
         || parsed.query().is_some()
         || parsed.fragment().is_some()
     {
-        return Err("--latex-mirror must be an https: URL without credentials, a query, or a fragment; see https://github.com/LibrePaper/wasm-latex/blob/main/docs/mirror.md".to_string());
+        return Err("--asset-mirror must be an https: URL without credentials, a query, or a fragment; see https://github.com/LibrePaper/wasm-latex/blob/main/docs/mirror.md".to_string());
     }
     parsed.set_path(&format!("{}/", parsed.path().trim_end_matches('/')));
     Ok(parsed.to_string())
@@ -283,7 +284,8 @@ pub async fn serve(options: ServeOptions) {
     };
     // Read before anything is opened or a port is claimed: a mirror value
     // which cannot work is a typo the operator is still standing in front of.
-    let latex = validate_latex_mirror(&options.latex_mirror).unwrap_or_else(|err| die(err));
+    let assets = validate_asset_mirror(&options.asset_mirror).unwrap_or_else(|err| die(err));
+    let latex = format!("{assets}latex/");
     // Likewise the site. It becomes a destination a browser is sent to, so it
     // is an absolute http(s) origin or it is a mistake -- a bare host would
     // be read as a path on this deployment and send a signed-out reader to a
@@ -360,7 +362,7 @@ pub async fn serve(options: ServeOptions) {
     }
 
     let config = Arc::new(options.config);
-    let shell = load_shell(&config).unwrap_or_else(|err| die(err));
+    let shell = load_shell(&assets).unwrap_or_else(|err| die(err));
     let secrets = &deployment_paths.secrets;
     let key_path = secrets.join("session.key");
     let key = session_key_file(&key_path, key_path.exists()).unwrap_or_else(|err| die(err));
@@ -472,11 +474,9 @@ pub async fn serve(options: ServeOptions) {
     if let Some(library) = &instance.fonts {
         println!("  fonts: {}", library.describe());
     }
-    if let Some(mirror) = &instance.latex {
-        println!("  latex mirror: {mirror}");
-        if mirror == crate::config::DEFAULT_LATEX_MIRROR {
-            println!("  the project mirror promises only releases carried by this build");
-        }
+    println!("  asset mirror: {assets}");
+    if assets == crate::config::DEFAULT_ASSET_MIRROR {
+        println!("  the project mirror promises only releases carried by this build");
     }
     if let Some(local) = &local {
         println!(

@@ -359,11 +359,11 @@ pub(super) fn write_asset(asset: &ShellFile, headers: &HeaderMap) -> Reply {
 mod asset_tests {
     use super::*;
 
-    fn module() -> ShellFile {
+    fn bundle() -> ShellFile {
         ShellFile {
-            kind: "application/wasm",
-            body: axum::body::Bytes::from_static(b"raw wasm"),
-            brotli: Some(axum::body::Bytes::from_static(b"brotli wasm")),
+            kind: "text/javascript; charset=utf-8",
+            body: axum::body::Bytes::from_static(b"raw script"),
+            brotli: Some(axum::body::Bytes::from_static(b"brotli script")),
             immutable: true,
         }
     }
@@ -373,7 +373,7 @@ mod asset_tests {
         if let Some(value) = accept_encoding {
             headers.insert(header::ACCEPT_ENCODING, value.parse().unwrap());
         }
-        let response = write_asset(&module(), &headers);
+        let response = write_asset(&bundle(), &headers);
         let response_headers = response.headers().clone();
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
@@ -383,16 +383,19 @@ mod asset_tests {
     }
 
     #[tokio::test]
-    async fn renderer_negotiates_its_precompressed_representation() {
+    async fn bundle_negotiates_its_precompressed_representation() {
         let (headers, body) = served(Some("gzip, br")).await;
-        assert_eq!(body, b"brotli wasm");
+        assert_eq!(body, b"brotli script");
         assert_eq!(headers.get("content-encoding").unwrap(), "br");
-        assert_eq!(headers.get("content-type").unwrap(), "application/wasm");
+        assert_eq!(
+            headers.get("content-type").unwrap(),
+            "text/javascript; charset=utf-8"
+        );
         assert_eq!(headers.get("vary").unwrap(), "Accept-Encoding");
     }
 
     #[tokio::test]
-    async fn renderer_keeps_identity_as_a_fallback() {
+    async fn bundle_keeps_identity_as_a_fallback() {
         for encoding in [
             None,
             Some("identity"),
@@ -400,7 +403,7 @@ mod asset_tests {
             Some("br;q=0, *;q=1"),
         ] {
             let (headers, body) = served(encoding).await;
-            assert_eq!(body, b"raw wasm", "encoding was {encoding:?}");
+            assert_eq!(body, b"raw script", "encoding was {encoding:?}");
             assert!(headers.get("content-encoding").is_none());
             assert_eq!(headers.get("vary").unwrap(), "Accept-Encoding");
         }

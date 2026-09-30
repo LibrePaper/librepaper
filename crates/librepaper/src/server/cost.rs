@@ -272,7 +272,6 @@ pub(super) async fn middleware(
     }
     let permit = if path.starts_with("/api/fonts/")
         || path.starts_with("/published/")
-        || path.starts_with("/wasm/")
         || path.starts_with("/assets/")
         || (path.starts_with("/api/") && path.contains("/assets/"))
     {

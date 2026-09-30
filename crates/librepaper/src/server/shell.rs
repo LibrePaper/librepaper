@@ -1,5 +1,5 @@
-//! The reader shell: the pages, the bundles they load, and the renderers they
-//! render with, all compiled into the binary.
+//! The reader shell: the pages and the bundles they load, compiled into the
+//! binary. The renderers are not: the pages are told where to fetch them.
 //!
 //! What is embedded is a build output. `web/` holds the Svelte sources, bun
 //! and vite build them into `web/dist`, and this serves whatever is there --
@@ -9,24 +9,16 @@
 use std::collections::HashMap;
 
 use include_dir::{include_dir, Dir, File};
-use sha2::{Digest, Sha256};
-
-use crate::config::Configuration;
 
 static SHELL: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../web/dist");
-const TYPST_ASSETS_PIN: &str = include_str!("../../../../typst-assets.lock");
+const WASM_LOCK: &str = include_str!("../../../../wasm-modules.lock");
 
-/// The renderers, which are build outputs of the engine crate rather than of
-/// the web build, and are addressed by a digest of their own bytes: a module
-/// is fetched once per browser and cached for a year, so a fixed route that
-/// outlived a rebuild would hand a stale module to a loader that no longer
-/// speaks to it. The reader page is told the current URLs when it is served.
-const MODULES: &[(&str, &str)] = &[
-    ("markdown", "wasm/markdown.wasm"),
-    ("bibliography", "wasm/bibliography.wasm"),
-    ("citations", "wasm/citations.wasm"),
-    ("typst", "wasm/typst.wasm"),
-];
+/// The renderers, which are not in the binary. Each is a release of its own
+/// engine repository, published to the asset mirror under a directory named
+/// for the SHA-256 of its bytes: a module is fetched once per browser and
+/// cached for a year, so the URL has to change whenever the module does. The
+/// reader page is told the current URLs when it is served.
+const MODULES: &[&str] = &["markdown", "bibliography", "citations", "typst"];
 
 pub fn content_type(name: &str) -> &'static str {
     match name.rsplit('.').next() {
@@ -54,12 +46,11 @@ pub struct ShellFile {
     pub kind: &'static str,
     pub body: axum::body::Bytes,
     /// A precompressed HTTP representation of `body`, when the build supplied
-    /// one. Renderer releases carry these so serving a large module costs no
-    /// compression work per request.
+    /// one, so serving a bundle costs no compression work per request.
     pub brotli: Option<axum::body::Bytes>,
     /// A file whose bytes never change under this name, so it can be cached
     /// for a year rather than five minutes. Everything the bundler names for
-    /// its own contents is one, and so are the renderers.
+    /// its own contents is one.
     pub immutable: bool,
 }
 
@@ -69,119 +60,82 @@ fn file(name: &str) -> Option<&'static [u8]> {
     SHELL.get_file(name).map(File::contents)
 }
 
-/// Where a renderer is served from: its name under /wasm/, stamped with a
-/// digest of the bytes, so the URL changes whenever the module does.
-fn module_route(name: &str, body: &[u8]) -> String {
-    let digest = hex::encode(Sha256::digest(body));
-    format!("/wasm/{name}.{}.wasm", &digest[..16])
-}
-
-/// An optional browser-only Typst mirror pin. An empty lock uses the
-/// embedded-font module at its local content-addressed route.
-fn typst_static_url_from(source: &str) -> Result<Option<String>, String> {
-    let pin: serde_json::Value = serde_json::from_str(source)
-        .map_err(|error| format!("invalid typst-assets.lock: {error}"))?;
-    if pin.get("fontsSha256").is_some() {
-        return Err("typst-assets.lock no longer supports external-font manifests; publish the embedded-font Typst module".into());
-    }
-    let url = pin
-        .get("url")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let sha = pin
-        .get("sha256")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    if url.is_empty() && sha.is_empty() {
-        return Ok(None);
-    }
-    let valid_sha = |value: &str| {
-        value.len() == 64
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    };
-    let valid_url = url.strip_prefix("https://").is_some_and(|rest| {
-        let Some((authority, path)) = rest.split_once('/') else {
-            return false;
+/// The pinned digest of each renderer, read from `wasm-modules.lock`: comment
+/// lines start with `#`, and each other line is `module repository tag sha256`.
+/// Exactly the four known modules, each once, each with a lowercase SHA-256.
+fn parse_lock(source: &str) -> Result<HashMap<String, String>, String> {
+    let mut pins = HashMap::new();
+    for line in source.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let columns: Vec<&str> = line.split_whitespace().collect();
+        let [module, _repository, _tag, sha] = columns[..] else {
+            return Err(format!(
+                "wasm-modules.lock: expected `module repository tag sha256`, got {line:?}"
+            ));
         };
-        !authority.is_empty()
-            && !authority
-                .chars()
-                .any(|character| matches!(character, '@' | '?' | '#'))
-            && !url.chars().any(|character| matches!(character, '?' | '#'))
-            && format!("/{path}").ends_with(&format!("/{sha}/typst.wasm"))
-    });
-    if !valid_url || !valid_sha(sha) {
-        return Err("typst-assets.lock must contain a public HTTPS content-addressed Typst WASM URL and its SHA-256".into());
+        let name = module.strip_suffix(".wasm").unwrap_or(module);
+        if !MODULES.contains(&name) || module == name {
+            return Err(format!("wasm-modules.lock: unknown module {module:?}"));
+        }
+        let valid_sha = sha.len() == 64
+            && sha
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+        if !valid_sha {
+            return Err(format!(
+                "wasm-modules.lock: {module} needs a lowercase 64-digit SHA-256, got {sha:?}"
+            ));
+        }
+        if pins.insert(name.to_string(), sha.to_string()).is_some() {
+            return Err(format!("wasm-modules.lock: {module} appears twice"));
+        }
     }
-    Ok(Some(url.to_string()))
+    for name in MODULES {
+        if !pins.contains_key(*name) {
+            return Err(format!("wasm-modules.lock: missing {name}.wasm"));
+        }
+    }
+    Ok(pins)
 }
 
-fn typst_static_url() -> Result<Option<String>, String> {
-    typst_static_url_from(TYPST_ASSETS_PIN)
-}
-
-/// The Typst module embedded by the build.
-pub fn typst_module() -> Option<&'static [u8]> {
-    file("wasm/typst.wasm")
+/// The browser URL of every renderer, `{mirror}wasm/{sha256}/{module}.wasm`,
+/// as the JSON object a page is given in place of `__MODULES__`. `mirror` is
+/// the validated asset mirror, which ends in `/`.
+fn modules_json(mirror: &str, lock: &str) -> Result<String, String> {
+    let pins = parse_lock(lock)?;
+    let mut modules = serde_json::Map::new();
+    for name in MODULES {
+        let url = format!("{mirror}wasm/{}/{name}.wasm", pins[*name]);
+        modules.insert(name.to_string(), serde_json::Value::String(url));
+    }
+    Ok(serde_json::Value::Object(modules).to_string())
 }
 
 /// The source formats this process can render in a reader, and so offer an
-/// editor for. Markdown always; HTML always, since its renderer is the
-/// identity and needs no module at all; typst when the module was built.
+/// editor for. Markdown and typst are rendered by modules the browser loads
+/// from the asset mirror; HTML needs no module at all, its renderer being the
+/// identity.
 pub fn renderers() -> Vec<String> {
-    let mut list = vec![
+    vec![
         "markdown".to_string(),
         "quarto".to_string(),
         "html".to_string(),
-    ];
-    if typst_module().is_some() {
-        list.push("typst".to_string());
-    }
-    list
+        "typst".to_string(),
+    ]
 }
 
 /// Everything the server answers with, ready to serve.
-pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>, String> {
-    // The renderers first, because the reader page has to be told where they
-    // are before it is served.
+pub fn load_shell(asset_mirror: &str) -> Result<HashMap<String, ShellFile>, String> {
+    // Where the renderers are comes first, because the reader page has to be
+    // told before it is served.
     let mut shell = HashMap::new();
-    let mut modules = serde_json::Map::new();
-    let typst_static = typst_static_url()?;
-    for (name, path) in MODULES {
-        let Some(body) = file(path) else { continue };
-        let brotli_path = format!("{path}.br");
-        let brotli = file(&brotli_path)
-            .ok_or_else(|| format!("missing {brotli_path} in the shell: run make wasm"))?;
-        let route = module_route(name, body);
-        let module_url = if *name == "typst" {
-            typst_static.as_deref().unwrap_or(&route)
-        } else {
-            &route
-        };
-        modules.insert(
-            name.to_string(),
-            serde_json::Value::String(module_url.to_string()),
-        );
-        shell.insert(
-            route,
-            ShellFile {
-                kind: "application/wasm",
-                body: axum::body::Bytes::from_static(body),
-                brotli: Some(axum::body::Bytes::from_static(brotli)),
-                immutable: true,
-            },
-        );
-    }
-    let modules = serde_json::Value::Object(modules).to_string();
+    let modules = modules_json(asset_mirror, WASM_LOCK)?;
 
     for entry in walk(&SHELL) {
         let path = entry.path().to_string_lossy().to_string();
-        // The renderers are served under their digest.
-        if path.starts_with("wasm/") {
-            continue;
-        }
         // A compressed copy is an encoding of the file beside it, not a file
         // of its own. It is attached below; it is never a route, or a browser
         // that asked for the bundle could be handed brotli it never
@@ -240,32 +194,61 @@ mod shell_tests {
     use super::*;
 
     fn shell() -> HashMap<String, ShellFile> {
-        load_shell(&Configuration::default()).expect("the shell is embedded in the binary")
+        load_shell(crate::config::DEFAULT_ASSET_MIRROR)
+            .expect("the shell is embedded in the binary")
+    }
+
+    fn lock(sha: &str) -> String {
+        format!(
+            "# pinned renderers\n\
+             markdown.wasm wasm-markdown v0.1.1 {sha}\n\
+             bibliography.wasm wasm-bibliography v0.1.0 {sha}\n\
+             citations.wasm wasm-citations v0.1.0 {sha}\n\
+             typst.wasm wasm-typst v0.1.0 {sha}\n"
+        )
     }
 
     #[test]
-    fn an_empty_typst_pin_uses_the_embedded_module_and_rejects_old_font_pins() {
-        assert_eq!(typst_static_url_from("{}"), Ok(None));
+    fn the_checked_in_lock_parses() {
+        parse_lock(WASM_LOCK).expect("wasm-modules.lock is valid");
+    }
+
+    #[test]
+    fn a_module_url_is_the_mirror_then_its_digest_then_its_name() {
         let sha = "a".repeat(64);
-        let pin = format!(
-            r#"{{"url":"https://assets.example/typst/{sha}/typst.wasm","sha256":"{sha}"}}"#
-        );
-        assert_eq!(
-            typst_static_url_from(&pin),
-            Ok(Some(format!(
-                "https://assets.example/typst/{sha}/typst.wasm"
-            )))
-        );
-        let wrong_sha = "b".repeat(64);
-        let mismatched = pin.replace(
-            &format!("\"sha256\":\"{sha}\""),
-            &format!("\"sha256\":\"{wrong_sha}\""),
-        );
-        assert!(typst_static_url_from(&mismatched).is_err());
-        assert!(typst_static_url_from(
-            r#"{"url":"https://assets.example/typst.wasm","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fontsSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#
-        )
-        .is_err());
+        let json = modules_json("https://assets.example/", &lock(&sha)).unwrap();
+        let modules: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for name in MODULES {
+            assert_eq!(
+                modules[name],
+                format!("https://assets.example/wasm/{sha}/{name}.wasm")
+            );
+        }
+        assert_eq!(modules.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_malformed_lock_is_refused() {
+        let sha = "a".repeat(64);
+        let good = lock(&sha);
+        assert!(parse_lock(&good.replace("citations.wasm", "other.wasm")).is_err());
+        assert!(parse_lock(&good.replace(&sha, &"A".repeat(64))).is_err());
+        assert!(parse_lock(&good.replace(&sha, "abc")).is_err());
+        assert!(parse_lock("markdown.wasm wasm-markdown v0.1.1\n").is_err());
+        let without_typst: String = good
+            .lines()
+            .filter(|line| !line.starts_with("typst"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(parse_lock(&without_typst).is_err());
+        assert!(parse_lock(&format!("{good}typst.wasm wasm-typst v0.1.0 {sha}\n")).is_err());
+    }
+
+    #[test]
+    fn no_renderer_is_a_route_of_the_shell() {
+        for route in shell().keys() {
+            assert!(!route.starts_with("/wasm/"), "{route} is served");
+        }
     }
 
     /// The bundle a reader waits for is the one worth compressing, and the
