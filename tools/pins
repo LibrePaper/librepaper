@@ -14,6 +14,7 @@ usage: tools/pins <command>
                                not match a lock)
   update wasm <repo> <tag>     move one renderer pin, e.g. wasm-markdown vX.Y.Z
   update loro <commit>         move the binding pin to a full 40-char sha
+  update latex [mirror-dir]    pin the one release in ../wasm-latex/mirror
   help, -h, --help             show this message
 USAGE
 }
@@ -38,6 +39,9 @@ case "${1:-help}" in
 					exit 1
 				fi
 				node web/tools/update-loro-codemirror.mjs "$3"
+				;;
+			latex)
+				node web/tools/update-latex-pin.mjs "${3:-../wasm-latex/mirror}"
 				;;
 			*)
 				usage >&2

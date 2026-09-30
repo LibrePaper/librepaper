@@ -11,7 +11,7 @@ Browsers fetch renderers and LaTeX files from one OVH S3 bucket (`bhs`). The bin
 - Base URL: `--asset-mirror` or `LIBREPAPER_ASSET_MIRROR`, default `DEFAULT_ASSET_MIRROR` in `crates/librepaper/src/config.rs`
 - `assets.lock`: pins all five, compiled into the binary; browsers use the server's pin (`latexMirror` in `/api/config`)
   - `*.wasm` rows: repository, tag, sha256 of the module
-  - `latex` row: `latex wasm-latex <tag> <sha256>`, edited by hand
+  - `latex` row: `latex wasm-latex <tag> <sha256>`, set by `tools/pins update latex`
 - `web/wasm/`: fetched modules, for tests and publishing only
 
 ## Pins
@@ -39,11 +39,8 @@ make mirror                                # prints the release hash
 Then here:
 
 ```sh
-# edit assets.lock: latex row -> engines-YYYY.MM.DD <hash>
-deploy/assets check                        # validate ../wasm-latex/mirror
-deploy/assets smoke                        # compile the tutorial in Chromium
-deploy/assets publish --test
-deploy/assets publish                      # upload before committing the pin
+tools/pins update latex                    # pin the one release in ../wasm-latex/mirror
+deploy/assets publish                      # check, smoke, probe, upload before committing
 git commit assets.lock -m "Pin engines-YYYY.MM.DD"
 ```
 
@@ -51,9 +48,9 @@ git commit assets.lock -m "Pin engines-YYYY.MM.DD"
 
 ```sh
 tools/pins fetch && deploy/assets build
-deploy/assets publish --dry-run    # no credentials, no network
-deploy/assets publish --test       # two small files: bucket, CORS, connectivity
-deploy/assets publish
+tools/pins update latex
+deploy/assets publish --dry-run    # stages 1-3 only; no credentials, no bucket
+deploy/assets publish              # check, smoke, probe, upload
 ```
 
 - Needs Node.js, SOPS, AWS CLI v2 (falls back to `nix shell nixpkgs#awscli2`)
@@ -63,12 +60,12 @@ deploy/assets publish
   - overridden by `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 - One-time: create an S3 user in the OVH console, not the bucket; `publish` creates it so the user owns it (only the owner can set CORS)
 - `publish` does, in order:
-  - refuses if any pinned GitHub release is a draft
-  - creates the bucket if needed, sets CORS (GET, HEAD, any origin)
-  - preflight: modules match their pins; the LaTeX directory matches its manifest, nothing missing or extra
-  - `aws s3 sync --size-only --acl public-read`, gzip level 6, never `--delete`
-  - each `release.json` last, so no release is visible half uploaded
-  - spot checks: public read with CORS works, bucket listing does not
+  1. check mirror: modules match their pins; LaTeX directory matches its manifest, nothing missing or extra
+  2. verify GitHub releases are public (not drafts)
+  3. smoke: compile the tutorial in Chromium
+  4. create bucket if needed, set CORS (GET, HEAD, any origin)
+  5. upload two small test files, verify public read with CORS
+  6. upload all assets (`aws s3 sync --size-only --acl public-read`, gzip level 6, never `--delete`), each `release.json` last so no release is visible half uploaded; verify public read with CORS, verify bucket listing is private
 
 ## Properties
 
