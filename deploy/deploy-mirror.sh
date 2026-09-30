@@ -9,9 +9,10 @@ set -euo pipefail
 # 3. sops deploy/keys.yaml: add OVH_S3_ENDPOINT, OVH_S3_REGION, OVH_S3_USER, OVH_S3_SECRET, OVH_S3_ARN.
 # 4. make wasm && make mirrors: fetch the pinned browser wasm modules into web/wasm and build
 #    the LaTeX mirror (in wasm-latex).
-# 5. deploy/deploy-mirror.sh --test: verify bucket, CORS, and connectivity (uploads two small test files).
-# 6. deploy/deploy-mirror.sh: publish all mirrors.
-# 7. Afterwards (manual): point DEFAULT_ASSET_MIRROR (crates/librepaper/src/config.rs) at https://<bucket>.s3.<region>.io.cloud.ovh.net/,
+# 5. Publish every GitHub release assets.lock pins (a draft fails the preflight check).
+# 6. deploy/deploy-mirror.sh --test: verify bucket, CORS, and connectivity (uploads two small test files).
+# 7. deploy/deploy-mirror.sh: publish all mirrors.
+# 8. Afterwards (manual): point DEFAULT_ASSET_MIRROR (crates/librepaper/src/config.rs) at https://<bucket>.s3.<region>.io.cloud.ovh.net/,
 #    and pin the published LaTeX release (latex/<sha256>/) and wasm modules in assets.lock.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +33,19 @@ case "${1:-}" in
 esac
 
 cd "$REPO_ROOT"
+
+# Every pin must name a public GitHub release: `make wasm` downloads the modules
+# anonymously, and the LaTeX release's source link is its licence obligation. A
+# draft release answers 404 to anyone signed out, so check before uploading.
+public() { [ "$(curl -sIL -o /dev/null -w '%{http_code}' "$1")" = 200 ] || { printf '%s\n' "Error: $2 is not publicly downloadable (a draft release?): $1" >&2; exit 1; }; }
+while read -r module repo tag _; do
+  [ "$module" = latex ] && continue
+  public "https://github.com/LibrePaper/$repo/releases/download/$tag/$module" "$repo $tag"
+done < <(grep -v '^#' assets.lock | grep .)
+LATEX_ID=$(awk '$1 == "latex" { print $4 }' assets.lock)
+LATEX_RELEASE="${MIRROR:-../wasm-latex/mirror}/$LATEX_ID/release.json"
+[ -f "$LATEX_RELEASE" ] || { printf '%s\n' "Error: $LATEX_RELEASE missing; run make mirror in wasm-latex" >&2; exit 1; }
+public "$(node -p 'require(process.argv[1]).source.corresponding_source.url' "$(realpath "$LATEX_RELEASE")")" "wasm-latex source for $LATEX_ID"
 
 # Decrypt and read keys.
 KEYS="${KEYS:-deploy/keys.yaml}"
@@ -90,7 +104,6 @@ else
   make mirrors-push
   # The LaTeX release the build pins: the `latex` row of assets.lock names its
   # directory, latex/<sha256>/. Everything on the mirror is immutable.
-  LATEX_ID=$(awk '$1 == "latex" { print $4 }' assets.lock)
   VERIFY_KEY="latex/${LATEX_ID}/release.json"
 fi
 
