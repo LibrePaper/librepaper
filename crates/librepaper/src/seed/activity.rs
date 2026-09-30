@@ -534,7 +534,7 @@ pub async fn simulate(
             .begin_document_command(document_id, &authority, crate::log::sequencer::Rung::Editor)
             .await
             .map_err(|error| error.to_string())?;
-        if let Some(pending) = pending_assets.take() {
+        if let Some(pending) = pending_assets.take().filter(|pending| !pending.is_empty()) {
             catalog
                 .complete_assets_in_transaction(&mut tx, &pending)
                 .await
@@ -820,5 +820,58 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.contains("actor session changed"), "{error}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn activity_simulation_accepts_text_only_documents_with_a_valid_session() {
+        let Some(catalog) = crate::tests::catalog().await else {
+            return;
+        };
+        let _writer = catalog.claim_writer().await.unwrap();
+        let owner = catalog
+            .create_account(crate::storage::postgres::NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some("text-only-seed-session".into()),
+                handle: "text-only-seed-session".into(),
+                display_name: "Seed owner".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        let document = catalog
+            .create_document(crate::storage::postgres::NewDocument {
+                slug: "seed-text-only-session".into(),
+                owner_id: owner.id,
+                owner_session_generation: Some(owner.session_generation),
+                ownership_mode: "owned".into(),
+                title: "Text only seed test".into(),
+                source_format: "markdown".into(),
+                main_path: "paper.md".into(),
+                settings: serde_json::json!({"version": 1}),
+            })
+            .await
+            .unwrap();
+
+        simulate(
+            catalog.clone(),
+            document.id,
+            "seed-text-only-session",
+            "paper.md",
+            "# Text only seed test\n",
+            &BTreeMap::new(),
+            &[],
+            Vec::new(),
+            owner.id,
+            owner.session_generation,
+            "Seed owner",
+            1,
+        )
+        .await
+        .unwrap();
+
+        let head = catalog.log_head(document.id).await.unwrap();
+        assert!(head.update_sequence > 0, "simulation wrote no history");
     }
 }
