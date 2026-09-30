@@ -6,7 +6,8 @@ use time::Duration;
 use uuid::Uuid;
 
 use super::super::{
-    MutationAuthorization, NewAccount, NewAsset, NewDocument, PostgresCatalog, PostgresOptions,
+    AccessRole, MutationAuthorization, NewAccount, NewAsset, NewDocument, PostgresCatalog,
+    PostgresOptions,
 };
 
 async fn catalog() -> PostgresCatalog {
@@ -230,7 +231,13 @@ async fn stale_owner_cannot_rename_share_or_transfer_after_ownership_moves() {
         .transfer_document_owner(document.id, owner.id, next_owner.id, &owner_auth)
         .await
         .unwrap());
+    catalog
+        .set_grant(document.id, owner.id, AccessRole::Editor)
+        .await
+        .unwrap();
 
+    // The former owner still has an editor grant, but document administration
+    // remains restricted to the current owner.
     assert!(catalog
         .update_document_title(document.id, &owner_auth, "stale title")
         .await
