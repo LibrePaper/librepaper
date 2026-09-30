@@ -851,6 +851,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   const said = [];
   const ctx = context({
     connected: true, persistence: { pending: 1, local: true, joined: true },
+    proposalUnacknowledged: false,
     say: (value) => { said.push(value); },
   });
   vm.runInContext(body("  function reportPersistence()", "  // There is no save, so a close"), ctx);
@@ -863,17 +864,22 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   ctx.persistence.joined = true;
   vm.runInContext("reportPersistence()", ctx);
   assert.deepEqual(said, ["Saved on the server."]);
+  ctx.proposalUnacknowledged = true;
+  vm.runInContext("reportPersistence()", ctx);
+  assert.match(said[1], /tracked change is still waiting/,
+    "unacknowledged tracked edits are not reported as saved after room persistence catches up");
+  ctx.proposalUnacknowledged = false;
   ctx.connected = false;
   vm.runInContext("reportPersistence()", ctx);
-  assert.match(said[1], /^Offline. Everything typed so far has already reached the server./);
+  assert.match(said[2], /^Offline. Everything typed so far has already reached the server./);
   ctx.persistence.pending = 2;
   vm.runInContext("reportPersistence()", ctx);
-  assert.match(said[2], /in this browser only/, "work the server has not seen is not called saved");
-  assert.doesNotMatch(said[1] + said[2], /saved/i, "the word is the server's");
+  assert.match(said[3], /in this browser only/, "work the server has not seen is not called saved");
+  assert.doesNotMatch(said[2] + said[3], /saved/i, "the word is the server's");
   // A local write that failed says so through its own failure, not here.
   ctx.persistence = { pending: 0, local: true, localError: "quota exceeded" };
   vm.runInContext("reportPersistence()", ctx);
-  assert.equal(said.length, 3);
+  assert.equal(said.length, 4);
 }
 
 // Reconnect metadata is checked before the old session can send its CRDT.

@@ -35,6 +35,7 @@ import { tick } from ${JSON.stringify(join(root, "node_modules/svelte/src/index-
 import Changes from ${JSON.stringify(join(root, "src/components/reader/Changes.svelte"))};
 
 window.decided = [];
+window.discarded = [];
 window.revealed = [];
 
 // Two proposals over two files. The first is an agent run: two hunks, so
@@ -58,6 +59,8 @@ const comments = [
   { id: 'c1', motivation: 'editing', exact: 'sat', proposed: 'perched',
     author: 'hopper@example.org', path: 'paper.md', source: { path: 'paper.md', exact: 'sat' } },
 ];
+const linkedComment = { id: 'linked', proposal: 'run', motivation: 'editing', exact: 'cat', proposed: 'tabby',
+  body: 'A clearer animal.', author: 'ada@example.org', path: 'paper.md' };
 
 const files = [{ id: 'f1', path: 'paper.md' }, { id: 'f2', path: 'notes.md' }];
 
@@ -66,6 +69,7 @@ const handlers = {
     window.decided.push([item.proposal, item.hunk, action]);
     return Promise.resolve({ ok: true });
   },
+  ondiscard: (item) => { window.discarded.push(item.proposal); return Promise.resolve({ ok: true }); },
   onproposalreveal: (item) => window.revealed.push(item.id),
   onaccept: (comment) => { window.decided.push(['comment', comment.id, 'accept']); return Promise.resolve({ ok: true }); },
   onreject: (comment) => { window.decided.push(['comment', comment.id, 'reject']); return Promise.resolve({ ok: true }); },
@@ -76,11 +80,17 @@ const handlers = {
 let component = null;
 window.show = async (props = {}) => {
   if (component) await unmount(component);
-  window.decided = []; window.revealed = []; window.asked = null;
+  window.decided = []; window.discarded = []; window.revealed = []; window.asked = null;
   component = mount(Changes, { target: document.body, props: {
     proposals: rows, comments, files, canReview: true, canModerate: true, ...handlers, ...props,
   } });
   await tick();
+};
+window.linkedDedupCheck = async () => {
+  await window.show({ comments: [...comments, linkedComment] });
+  const visible = window.rows();
+  await window.act('suggestion:linked', 'accept');
+  return { rows: visible, decided: window.decided };
 };
 
 window.rows = () => [...document.querySelectorAll('.change-row')].map((row) => ({
@@ -131,12 +141,16 @@ window.key = (key) => {
 // anybody has opened it.
 const openItems = () => [...document.querySelectorAll('[data-part="content"][data-state="open"] [data-part="item"]')];
 window.menuItems = async () => {
-  press(document.querySelector('.changes-menu'));
+  const trigger = document.querySelector('.changes-menu');
+  if (!trigger) return [];
+  press(trigger);
   await settle();
   return openItems().map((node) => node.textContent.trim());
 };
 window.menu = async (label) => {
-  press(document.querySelector('.changes-menu'));
+  const trigger = document.querySelector('.changes-menu');
+  if (!trigger) throw new Error('change menu is unavailable');
+  press(trigger);
   await settle();
   const item = openItems().find((node) => node.textContent.trim() === label);
   if (!item) throw new Error('no menu item ' + label);
@@ -204,26 +218,39 @@ try {
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("panel", () => page.evaluate("window.ready"), 15000);
 
-  // One card per hunk, and the words on both sides of each decision. A
-  // reviewer choosing whether to lose a sentence has to be able to read it.
+// One card per proposal hunk, and the words on both sides of each decision.
+// Linked comments are tested separately because the comment and proposal are
+// two views of one suggestion, not two queue entries.
   const rows = await page.evaluate("window.rows()");
   // File order, then offset within the file -- the order a reviewer reads the
   // paper in, not the order the proposals happen to have arrived in. A
   // suggestion is anchored by its words rather than by an offset, so it sorts
   // to the end of its file rather than to the top of it.
   assert.deepEqual(rows.map((row) => row.id), ["run#0", "moved#0", "suggestion:c1", "run#1"],
-    "every hunk is its own card, in reading order, with suggestions among them");
+    "proposal hunks and unlinked suggestions are shown in reading order");
   assert.equal(rows[0].removed, "− cat", "the words a change would take out stay readable");
   assert.equal(rows[0].added, "+ tabby", "beside the ones it would put in");
   assert.equal(rows.find((row) => row.id === "run#1").removed, "", "a pure insertion shows nothing struck through");
   assert.match(await page.evaluate("window.count()"), /4 pending/);
 
+  // A legacy linked suggestion may have several hunks, but the comment card
+  // represents one proposed replacement and must make one whole decision.
+  const linked = await page.evaluate("window.linkedDedupCheck()");
+  assert.equal(linked.rows.length, 1, "linked proposal hunks collapse into the suggestion's single queue row");
+  assert.equal(linked.rows[0].id, "suggestion:linked");
+  assert.equal(linked.rows[0].removed, "− cat");
+  assert.equal(linked.rows[0].added, "+ tabby");
+  assert.deepEqual(linked.decided, [["comment", "linked", "accept"]], "the whole suggestion is accepted once");
+  await page.evaluate("window.show()");
+
   // A hunk whose base has moved is shown and cannot be answered: the words at
   // those offsets are no longer the words the author proposed changing.
   const moved = rows.find((row) => row.id === "moved#0");
   assert.equal(moved.blocked, true, "a stale hunk is marked as needing attention");
-  assert.deepEqual(await page.evaluate('window.actions("moved#0")'), { accept: true, reject: true },
-    "and neither verb can be pressed on it");
+  assert.deepEqual(await page.evaluate('window.actions("moved#0")'), { accept: true, reject: false },
+    "a stale hunk can be rejected without merging, while acceptance is held back");
+  assert.equal(await page.evaluate("document.querySelector('.change-detail .empty-link:last-child')?.textContent.trim()"), "Discard change",
+    "an editor can discard a stale proposal without merging it");
   // The verbs belong to the change being looked at and to no other: a queue
   // of twenty is not twenty invitations to answer something unread.
   assert.equal(await page.evaluate("document.querySelectorAll('.row-action').length"), 2,
@@ -244,10 +271,16 @@ try {
   await until("reset", async () => (await page.evaluate("window.decided")).length === 0, 4000);
   await page.evaluate('window.key("j")');
   await until("moved down", async () => (await page.evaluate("window.rows()")).some((row) => row.id === "moved#0" && row.active), 4000);
-  // A stale card refuses the keyboard as it refuses the button, and says why.
+  // A stale card refuses acceptance and says why; rejection stays available.
   await page.evaluate('window.key("a")');
   await until("refused", async () => /has changed/.test(await page.evaluate("window.feedback()")), 4000);
   assert.deepEqual(await page.evaluate("window.decided"), [], "a stale hunk is not answered by pressing A at it");
+  await page.evaluate('window.act("moved#0", "reject")');
+  await until("stale rejected", async () => (await page.evaluate("window.decided")).length > 0, 4000);
+  assert.deepEqual(await page.evaluate("window.decided"), [["moved", 0, "reject"]]);
+  await page.evaluate('window.look("moved#0")');
+  await page.evaluate("document.querySelector('.change-detail .empty-link:last-child').click()");
+  await until("stale discarded", async () => (await page.evaluate("window.discarded")).length === 1, 4000);
   await page.evaluate('window.key("j")');await page.evaluate('window.key("j")');
   await until("at the last card", async () => (await page.evaluate("window.rows()")).some((row) => row.id === "run#1" && row.active), 4000);
   await page.evaluate('window.key("r")');
@@ -283,6 +316,25 @@ try {
   assert.equal(groups[1].contested, false, "a change nobody contests is an ordinary card");
   assert.equal(groups[1].id, "carol#0");
   assert.match(await page.evaluate("window.count()"), /1 contested/);
+
+  // Queue-wide decisions leave rival rows for an explicit choice.
+  await page.evaluate("window.show({ proposals: window.rivals, comments: [] })");
+  await page.evaluate("window.menu('Accept all pending changes')");
+  await page.evaluate("window.barButton('Accept all').click()");
+  await until("bulk rival guard", async () => (await page.evaluate("window.decided")).length === 1, 4000);
+  assert.deepEqual(await page.evaluate("window.decided"), [["carol", 0, "accept"]]);
+  assert.match(await page.evaluate("window.feedback()"), /excluded/);
+  // Even a manually selected rival cannot be sent through the bulk path.
+  // Rivals are answered through their individual row action instead.
+  await page.evaluate("window.show({ proposals: window.rivals, comments: [] })");
+  await page.evaluate("window.menu('Select multiple')");
+  await page.evaluate('window.pick("alice#0")');
+  assert.equal(await page.evaluate("window.barButton('Accept')?.disabled"), true,
+    "bulk accept remains disabled for explicitly selected rival proposals");
+  await page.evaluate("window.show({ proposals: window.rivals, comments: [] })");
+  await page.evaluate('window.act("alice#0", "accept")');
+  await until("chosen rival accepted individually", async () => (await page.evaluate("window.decided")).length === 1, 4000);
+  assert.deepEqual(await page.evaluate("window.decided"), [["alice", 0, "accept"]]);
 
   // Both rivals are still answerable on their own: grouping them presents the
   // choice, it does not take the decision away or make it a single action.
@@ -357,12 +409,12 @@ try {
   await page.evaluate("window.show()");
   await until("queue back", async () => (await page.evaluate("window.rows()")).length === 4, 4000);
   await page.evaluate("window.menu('Reject all pending changes')");
-  await until("asked to confirm", async () => /Reject all 3\?/.test(await page.evaluate("document.querySelector('.confirm-bar .select-count')?.textContent || ''")), 4000);
+  await until("asked to confirm", async () => /Reject all 4\?/.test(await page.evaluate("document.querySelector('.confirm-bar .select-count')?.textContent || ''")), 4000);
   assert.deepEqual(await page.evaluate("window.decided"), [], "nothing is answered by opening the menu item");
   await page.evaluate("[...document.querySelectorAll('.confirm-bar .bar-action')].find((node) => node.textContent.trim() === 'Reject all').click()");
-  await until("all rejected", async () => (await page.evaluate("window.decided")).length === 3, 4000);
-  assert.match(await page.evaluate("window.feedback()"), /excluded/,
-    "the stale hunk is held back from the whole-queue verb too");
+  await until("all rejected", async () => (await page.evaluate("window.decided")).length === 4, 4000);
+  assert.ok((await page.evaluate("window.decided")).some(([proposal, hunk, action]) => proposal === "moved" && action === "reject"),
+    "reject all can decline a stale hunk because full rejection never merges its source text");
 
   // A reader is offered neither the verbs nor a tick that leads nowhere: this
   // queue has no reading to offer without onproposalpreview.
@@ -381,7 +433,7 @@ try {
   assert.equal(empty.actions, 0, "with no verb standing over nothing");
   assert.equal((await page.evaluate("window.rows()")).length, 0, "and no rows remain");
 
-  console.log("changes-browser: one card per hunk, verbs on the change being read, rival changes stand together, ticking is a mode, the whole queue asks first, stale hunks inert");
+  console.log("changes-browser: linked suggestions appear once, stale proposals can be discarded or rejected, and bulk review excludes rivals");
 } finally {
   await page?.close();
   server?.close();

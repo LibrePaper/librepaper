@@ -34,7 +34,9 @@ export function createFrameOverlays({ ready, send }) {
         end: comment.end,
         motivation: comment.motivation,
         resolved: Boolean(comment.resolved),
-        proposed: comment.proposed ?? "",
+        // Missing replacement data is not an empty replacement. JSON omits
+        // undefined, while an explicit empty string remains a real deletion.
+        proposed: comment.proposed == null ? undefined : comment.proposed,
         outcome: comment.outcome || "",
         color: comment.color || undefined,
       }));

@@ -108,7 +108,7 @@
   } from "@codemirror/lint";
   import { LoroExtensions } from "../../vendor/loro-codemirror/index.ts";
   import { undoManagerField, undo as undoCommand, redo as redoCommand } from "../lib/loro-undo.js";
-  import { UndoManager } from "loro-crdt";
+  import { LoroText, UndoManager } from "loro-crdt";
 
   import { typstLanguage } from "../lib/typst-mode.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
@@ -117,6 +117,7 @@
   import { createProposals } from "../lib/proposals.js";
   import { proposalMarks, setProposalMarks } from "../lib/proposal-marks.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
+  import { projectDirectory } from "../lib/projection.js";
   import { untrack } from "svelte";
 
   // Whether what is typed here goes into a proposal rather than into the paper
@@ -135,7 +136,7 @@
     // the server resolves it (§5.1a), and until then the text on screen still
     // says what it said.
     review = [], reviewing = null,
-    onchange, oncaret, onfilechange, onbibliography, onsave, onquit } = $props();
+    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, onproposalstatus } = $props();
 
   // One field instance for the component, because it is one editor: a state
   // field is identified by the object, so building a fresh one per file would
@@ -177,17 +178,31 @@
   // the proposal's text instead of the room document's text. The send function
   // is passed from the Reader and routes messages through the room socket.
   let proposals = null;
+  let proposalUnsubscribe = null;
   $effect(() => {
     if (!send || !session) return;
     // Never over a branch somebody is typing into: replacing the API would
     // orphan the fork, which is still holding unflushed work and would have
     // nothing left to flush it.
-    if (proposals?.drafting?.()) return;
+    if (proposals?.drafting?.() || proposals?.status?.()?.pending) return;
+    proposalUnsubscribe?.();
+    proposalUnsubscribe = null;
     proposals = createProposals({
       session,
       send: (message) => send?.(message),
       mayEdit: editable,
     });
+    proposalUnsubscribe = proposals.onchange?.(() => {
+      const expected = boundDoc();
+      if (view && activeDocument !== expected) {
+        queueMicrotask(() => {
+          if (view && activeDocument !== boundDoc()) rebind();
+          else drawProposals();
+        });
+      } else drawProposals();
+      onproposalstatus?.(proposals?.status?.() || null);
+    }) || null;
+    onproposalstatus?.(proposals.status?.() || null);
   });
 
   /// Rebind the editor to whichever text it should now be writing into.
@@ -216,10 +231,15 @@
   let proposalFlushTimer = null;
   function scheduleProposalFlush() {
     if (!proposals?.drafting?.()) return;
+    // Local branch operations are not covered by the room's persistence
+    // counter. Report them as soon as CodeMirror creates them, before the
+    // delayed network flush starts.
+    onproposalstatus?.(proposals.status?.() || null);
     clearTimeout(proposalFlushTimer);
     proposalFlushTimer = setTimeout(() => {
       proposalFlushTimer = null;
       proposals?.flush?.();
+      onproposalstatus?.(proposals?.status?.() || null);
     }, PROPOSAL_FLUSH_MS);
   }
 
@@ -232,12 +252,21 @@
     return Boolean(proposals?.drafting?.());
   }
 
+  export function proposalStatus() {
+    return proposals?.status?.() || null;
+  }
+
+  export function reconnectProposals() {
+    return proposals?.reconnect?.();
+  }
+
   /// Start proposing rather than editing. Forks the document, and from here
   /// what is typed accumulates on the branch and is flushed to the server
   /// instead of reaching the paper.
   export function startTracking() {
     if (!proposals || proposals.drafting()) return;
     proposals.start();
+    onproposalstatus?.(proposals.status?.() || null);
     rebind();
   }
 
@@ -258,6 +287,7 @@
     // dead manager per tracking session from accumulating in the map.
     const branch = proposals.doc();
     proposals.stop();
+    onproposalstatus?.(proposals.status?.() || null);
     if (branch) undoManagers.delete(branch);
     rebind();
   }
@@ -267,23 +297,24 @@
   // changed and the reviewer needs to recompute.
   export function receiveProposal(message) {
     if (!proposals) return;
-    const error = message.type === "error" && message.stale;
-    if (error) {
-      // The proposal has moved on. Recompute and let the reviewer decide again.
-      return;
-    }
     // Track whether this browser has a draft before applying the message.
     const was = Boolean(proposals.drafting?.());
-    const resolved = proposals.doc?.();
+    const previous = proposals.doc?.();
     proposals.apply?.(message);
+    const current = proposals.doc?.();
+    onproposalstatus?.(proposals.status?.() || null);
     // If the proposal that just resolved was our own draft, restart tracking
     // with the merged document. The update from the server arrives on the socket
     // before the decision, so the room document already holds the merged result.
     if (was && !proposals.drafting?.()) {
       clearTimeout(proposalFlushTimer);
       proposalFlushTimer = null;
-      if (resolved) undoManagers.delete(resolved);
+      if (previous) undoManagers.delete(previous);
       startTracking();
+    } else if (was && current && current !== previous) {
+      // A resolved proposal can leave the manager tracking on the same local
+      // intent with a fresh branch identity. Bind CodeMirror to that branch.
+      rebind();
     }
   }
 
@@ -301,11 +332,12 @@
   }
   function bibliographyEntries() { return parsedBibliography?.entries || []; }
   function bibliographyRequest() {
-    const tree = session?.tree?.() || { main: "", texts: {} };
-    const id = showing || session?.mainId?.() || "";
-    const main = session?.paths?.get(id) || tree.main || "";
+    const doc = boundDoc();
+    const tree = doc ? treeForDoc(doc) : { main: "", texts: {} };
+    const id = showing || doc?.getMap("meta")?.get("main") || "";
+    const main = pathOfDoc(doc, id) || tree.main || "";
     const activeFormat = formatOf(main);
-    return { main, format: activeFormat, source: session?.textOf?.(id)?.toString?.() ?? tree.texts?.[main] ?? "", texts: tree.texts || {} };
+    return { main, format: activeFormat, source: getTextFromDoc(id)?.toString?.() ?? tree.texts?.[main] ?? "", texts: tree.texts || {} };
   }
   function refreshBibliography() {
     if (typeof analyze !== "function" || !session) return;
@@ -324,7 +356,7 @@
       const newlyAvailable = !parsedBibliography && result.entries.length > 0;
       parsedBibliography = result;
       onbibliography?.(result, request);
-      const currentFormat = formatOf(session?.paths?.get(showing));
+      const currentFormat = formatOf(pathOfDoc(boundDoc(), showing));
       const currentContext = view && citationContext(view.state.doc.toString(), view.state.selection.main.head, currentFormat);
       if (newlyAvailable && view?.hasFocus && currentContext) startCompletion(view);
     }).catch((error) => {
@@ -340,7 +372,7 @@
   }
 
   async function remoteBibliography(query) {
-    if (!hasPairing() || !["markdown", "quarto"].includes(formatOf(session?.paths?.get(showing)))) return [];
+    if (!hasPairing() || !["markdown", "quarto"].includes(formatOf(pathOfDoc(boundDoc(), showing)))) return [];
     const generation = ++zoteroSearchGeneration;
     await new Promise((resolve) => setTimeout(resolve, 180));
     if (generation !== zoteroSearchGeneration) return [];
@@ -352,7 +384,7 @@
       const message = error?.message || String(error);
       if (message !== lastZoteroError) {
         lastZoteroError = message;
-        onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message: `Zotero unavailable: ${message}`, file: session?.paths?.get(showing) || "", line: 0 }] }, bibliographyRequest());
+        onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message: `Zotero unavailable: ${message}`, file: pathOfDoc(boundDoc(), showing), line: 0 }] }, bibliographyRequest());
       }
       return [];
     }
@@ -364,56 +396,58 @@
 
   async function importZotero(entry, target) {
     if (!editable || !session || target.view !== view || !showing) return false;
-    const active = session.textOf(showing);
+    const doc = boundDoc();
+    const active = getTextFromDoc(showing);
+    if (!active) return false;
     const fromUnicode = active.convertPos(target.from, "utf16", "unicode") ?? target.from;
     const toUnicode = active.convertPos(target.to, "utf16", "unicode") ?? target.to;
     // Reassigned below when the document moved while the item was fetched.
     let fromCursor = active.getCursor(fromUnicode, 0);
     let toCursor = active.getCursor(toUnicode, 0);
-    const activeSession = session, activeFile = showing;
+    const activeSession = session, activeFile = showing, activePath = pathOfDoc(doc, showing);
     try {
       const fetched = await zoteroItem(entry.zotero_item);
-      if (session !== activeSession || showing !== activeFile || view !== target.view || !editable) return false;
+      if (session !== activeSession || boundDoc() !== doc || showing !== activeFile || pathOfDoc(doc, activeFile) !== activePath || view !== target.view || !editable) return false;
 
-      const fromResult = session.doc.getCursorPos(fromCursor);
+      const fromResult = doc.getCursorPos(fromCursor);
       if (!fromResult) return false;
       if (fromResult.update) fromCursor = fromResult.update;
-      const toResult = session.doc.getCursorPos(toCursor);
+      const toResult = doc.getCursorPos(toCursor);
       if (!toResult) return false;
       if (toResult.update) toCursor = toResult.update;
 
       const start_utf16 = active.convertPos(fromResult.offset, "unicode", "utf16") ?? 0;
       const end_utf16 = active.convertPos(toResult.offset, "unicode", "utf16") ?? 0;
 
-      const tree = session.tree();
+      const tree = treeForDoc(doc);
       const mainPath = tree.main;
-      const mainId = session.idOf(mainPath);
-      const main = session.textOf(mainId);
+      const mainId = textIdForPath(doc, mainPath);
+      const main = getTextFromDoc(mainId);
       const plan = planZoteroImport({
         source: main?.toString() || "", mainPath, texts: tree.texts,
         item: { ...fetched, zotero_item: entry.zotero_item },
       });
-      const bibId = session.idOf(plan.path);
-      const bib = bibId ? session.textOf(bibId) : null;
+      const bibId = textIdForPath(doc, plan.path);
+      const bib = bibId ? getTextFromDoc(bibId) : null;
       const changes = [{ from: Math.min(start_utf16, end_utf16), to: Math.max(start_utf16, end_utf16), insert: plan.key }];
-      if (plan.registration && main === active) changes.push(plan.registration);
+      if (plan.registration && mainId === activeFile) changes.push(plan.registration);
       changes.sort((a, b) => a.from - b.from || a.to - b.to);
-      const setupShift = plan.registration && main === active && plan.registration.from <= Math.min(start_utf16, end_utf16)
+      const setupShift = plan.registration && mainId === activeFile && plan.registration.from <= Math.min(start_utf16, end_utf16)
         ? plan.registration.insert.length - (plan.registration.to - plan.registration.from) : 0;
       if (bib) {
         if (plan.addition) bib.insert(bib.toString().length, plan.addition);
-      } else session.addText(plan.path, plan.bibtex);
-      if (plan.registration && main && main !== active) {
+      } else addTextToDoc(doc, plan.path, plan.bibtex);
+      if (plan.registration && main && mainId !== activeFile) {
         if (plan.registration.to > plan.registration.from) main.delete(plan.registration.from, plan.registration.to - plan.registration.from);
         main.insert(plan.registration.from, plan.registration.insert);
       }
       target.view.dispatch({ changes, selection: { anchor: Math.min(start_utf16, end_utf16) + setupShift + plan.key.length }, annotations: Transaction.userEvent.of("input.complete") });
-      session.doc.commit();
+      doc.commit();
       proposals?.flush?.();
       scheduleBibliography();
       return true;
     } catch (error) {
-      onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message: `Zotero import failed: ${error?.message || error}`, file: session?.paths?.get(showing) || "", line: 0 }] }, bibliographyRequest());
+      onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message: `Zotero import failed: ${error?.message || error}`, file: pathOfDoc(boundDoc(), showing), line: 0 }] }, bibliographyRequest());
       return false;
     }
   }
@@ -469,8 +503,9 @@
   /// diagnostic has no place at all -- which is a different thing from being
   /// about the main file, and is why the line is checked first.
   function fileOf(diagnostic) {
-    if (!diagnostic.file) return session.mainId?.() || "";
-    return session.idOf?.(diagnostic.file) || "";
+    const doc = boundDoc();
+    if (!diagnostic.file) return doc?.getMap("meta")?.get("main") || "";
+    return textIdForPath(doc, diagnostic.file);
   }
 
   /// Paints what a compile had to say: an underline on the span it names, a
@@ -636,7 +671,8 @@
   // write into a different document.
   export function captureInsertTarget() {
     if (!view || !session || !showing || editable === false) return null;
-    const loroText = session.textOf?.(showing) || session.text;
+    const doc = boundDoc();
+    const loroText = getTextFromDoc(showing);
     if (!loroText) return null;
     const { from, to } = view.state.selection.main;
     // Convert UTF-16 offsets to Unicode code points for cursor creation.
@@ -644,6 +680,7 @@
     const toUnicode = loroText.convertPos(to, "utf16", "unicode") ?? to;
     return {
       session,
+      doc,
       file: showing,
       fromCursor: loroText.getCursor(fromUnicode, 0),
       toCursor: loroText.getCursor(toUnicode, 0),
@@ -657,12 +694,13 @@
   export function getInsertContext() {
     const target = captureInsertTarget();
     if (!target || !view) return null;
-    const path = session.paths?.get(showing) || "";
+    const doc = target.doc;
+    const path = pathOfDoc(doc, showing);
     const lower = path.toLowerCase();
     const insertFormat = lower.endsWith(".qmd") ? "quarto" : formatOf(path) || (!path ? format : "");
-    const tree = session.tree?.() || { main: "", texts: {} };
-    const mainPath = tree.main || session.mainPath?.() || path;
-    const mainText = session.textOf?.(session.idOf?.(mainPath))?.toString?.() || tree.texts?.[mainPath] || "";
+    const tree = treeForDoc(doc);
+    const mainPath = tree.main || path;
+    const mainText = tree.texts?.[mainPath] || "";
     return {
       format: insertFormat,
       path,
@@ -691,9 +729,10 @@
   export function applyInsertResult(result, capturedContext = null) {
     if (!result || typeof result.text !== "string" || !view || !session || !editable) return false;
     const target = insertTargets.get(capturedContext?.targetId);
-    if (!target || target.session !== session || target.file !== showing || session.paths.get(showing) !== capturedContext.path) return false;
-    const loroText = session.textOf(showing);
-    const doc = session.doc;
+    if (!target || target.session !== session || target.doc !== boundDoc() || target.file !== showing || pathOfDoc(target.doc, showing) !== capturedContext.path) return false;
+    const loroText = getTextFromDoc(showing);
+    const doc = target.doc;
+    if (!loroText) return false;
 
     // Resolve cursors to current positions, updating them if Loro indicates staleness.
     let fromCursor = target.fromCursor;
@@ -745,7 +784,7 @@
     for (const edit of result.additionalEdits || []) {
       if (!Number.isInteger(edit?.from) || !Number.isInteger(edit?.to) || typeof edit.insert !== "string") return false;
       const path = edit.path || capturedContext.path;
-      const fileText = session.textOf(session.idOf(path));
+      const fileText = getTextFromDoc(textIdForPath(doc, path));
       const snapshot = path === capturedContext.path ? capturedContext.text : capturedContext.files?.find(file => file.path === path)?.text;
       if (!fileText || typeof snapshot !== "string" || edit.from < 0 || edit.to < edit.from || edit.to > snapshot.length) return false;
       const editFrom = mapOffset(edit.from, snapshot, fileText.toString()), editTo = mapOffset(edit.to, snapshot, fileText.toString());
@@ -773,7 +812,7 @@
         if (edit.insert) plan.text.insert(edit.from, edit.insert);
       }
     }
-    session.doc.commit();
+    doc.commit();
     proposals?.flush?.();
     releaseInsertContext(capturedContext);
     view.focus();
@@ -800,7 +839,7 @@
   /// When tracking is on, binds to the proposal's text; otherwise binds to the room's.
   function stateFor(id) {
     const text = getTextFromDoc(id);
-    const path = session.paths?.get(id) || "";
+    const path = pathOfDoc(boundDoc(), id);
     // One per document, not per file: the undo manager is constructed from the
     // document and tracks the operations this peer made anywhere in it.
     // Handing it a text is a type error the binding reports as a failure to
@@ -855,7 +894,7 @@
         languageOf(path, format),
         autocompletion({
           activateOnTyping: true,
-          override: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(session?.paths?.get(showing)), remote: remoteBibliography, onRemote: importZotero })],
+          override: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(boundDoc(), showing)), remote: remoteBibliography, onRemote: importZotero })],
         }),
         // Where a compile's errors are shown: the gutter mark, and with it the
         // underline and the hover the lint extension draws.
@@ -956,11 +995,42 @@
   // into the paper and the branch stayed empty. Which is what "track changes
   // records nothing" looked like.
   function getTextFromDoc(id) {
-    if (proposals?.drafting?.()) {
-      const proposalText = proposals.text(id);
-      if (proposalText) return proposalText;
+    const doc = boundDoc();
+    const text = doc?.getMap("files")?.get(id);
+    return text?.kind?.() === "Text" ? text : null;
+  }
+
+  function pathOfDoc(doc, id) { return doc?.getMap("paths")?.get(id) || ""; }
+  function textIdForPath(doc, path) {
+    for (const [id, candidate] of doc?.getMap("paths")?.entries?.() || []) if (candidate === path) return id;
+    return "";
+  }
+  function treeForDoc(doc) {
+    const projection = projectDirectory(doc);
+    const texts = Object.create(null), files = Object.create(null), digests = Object.create(null);
+    for (const [path, file] of projection.files) {
+      if (file.kind === "text") {
+        texts[path] = projection.texts.get(path);
+        files[path] = { kind: "text", id: file.id };
+      } else {
+        digests[path] = file.digest;
+        files[path] = { kind: "asset", sha: file.digest };
+      }
     }
-    return session.textOf?.(id) || (id === session.mainId?.() ? session.text : null);
+    return { main: projection.main, texts, files, digests };
+  }
+  function addTextToDoc(doc, path, body = "") {
+    const bytes = new Uint8Array(6);
+    crypto.getRandomValues(bytes);
+    const id = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const text = new LoroText();
+    if (body) text.insert(0, body);
+    doc.getMap("files").setContainer(id, text);
+    doc.getMap("paths").set(id, path);
+    const meta = doc.getMap("meta");
+    if (!meta.get("main")) meta.set("main", id);
+    doc.commit({ origin: DIRECTORY_ORIGIN });
+    return id;
   }
 
   /// The document the binding belongs to: the branch while one is being
@@ -1036,7 +1106,7 @@
     // must not recreate the editor when a pane or diagnostic changes.
     return untrack(() => {
       const initial = untrack(() => {
-        const first = file || session.mainId?.() || "";
+        const first = file || boundDoc()?.getMap("meta")?.get("main") || "";
         showing = first;
         const documentStates = stateMap(boundDoc());
         if (first && !documentStates.has(first)) documentStates.set(first, stateFor(first));
@@ -1072,6 +1142,8 @@
           proposals?.flush?.();
         }
         proposals?.detach?.();
+        proposalUnsubscribe?.();
+        proposalUnsubscribe = null;
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         if (view) viewCallbacks.delete(view);
         view?.destroy();
