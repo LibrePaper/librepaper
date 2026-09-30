@@ -275,6 +275,17 @@ fn validate_proposed_changes(
         let Some(path) = tip_paths.get(&id) else {
             return Err(ProposalError::Failed("a new text file has no path".into()));
         };
+        let has_text = match at_tip.get_map(session::FILES).get(&id) {
+            Some(ValueOrContainer::Container(Container::Text(text))) => {
+                !text.to_string().is_empty()
+            }
+            _ => false,
+        };
+        if !has_text {
+            return Err(ProposalError::Failed(
+                "a proposal cannot add an empty text file".into(),
+            ));
+        }
         if existing_paths.contains(path) {
             return Err(ProposalError::Failed("a new text file reuses an existing path".into()));
         }
@@ -480,7 +491,12 @@ fn overlaps_source_change(deltas: &[TextDelta], start: usize, end: usize) -> boo
                 at = delete_end;
             }
             TextDelta::Insert { .. } => {
-                if start <= at && at <= end {
+                let overlaps = if start == end {
+                    at == start
+                } else {
+                    start < at && at < end
+                };
+                if overlaps {
                     return true;
                 }
             }
@@ -619,7 +635,6 @@ pub fn resolve(
     branch_bytes: &[u8],
     declined: &HashSet<usize>,
     against: &Frontiers,
-    reviewer: PeerID,
 ) -> Result<Vec<u8>, ProposalError> {
     if against != &proposal.tip {
         return Err(ProposalError::Stale);
@@ -631,8 +646,11 @@ pub fn resolve(
     let at_base = branch
         .fork_at(&proposal.base)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
-    let found = hunks_of_batch(&batch, |cid| at_base.get_text(cid.clone()).to_string());
-    let accepted: HashSet<usize> = (0..found.len())
+    let at_tip = branch
+        .fork_at(&proposal.tip)
+        .map_err(|error| ProposalError::Failed(error.to_string()))?;
+    let reviewed = hunks_of_batch(&batch, |cid| at_base.get_text(cid.clone()).to_string());
+    let accepted: HashSet<usize> = (0..reviewed.len())
         .filter(|index| !declined.contains(index))
         .collect();
     if accepted.is_empty() {
@@ -640,7 +658,13 @@ pub fn resolve(
         // also avoids keeping an unreviewed branch in the shared document.
         return Ok(Vec::new());
     }
-    validate_accepted_hunks_on_branch(doc, proposal, &branch, &accepted)?;
+    // Declined hunks are also imported as inverse operations. If a coauthor
+    // replaced one of those spans, its old text would otherwise be reinserted
+    // next to the coauthor's replacement. Validate every reviewed span before
+    // a mixed resolution; a fully rejected branch returned above without a
+    // merge and remains discardable even after arbitrary source edits.
+    let all_hunks: HashSet<usize> = (0..reviewed.len()).collect();
+    validate_accepted_hunks_on_branch(doc, proposal, &branch, &all_hunks)?;
     if declined.is_empty() {
         let operations = session::encode_diff(&branch, &session::encode_vector(doc))
             .map_err(ProposalError::Failed)?;
@@ -667,11 +691,33 @@ pub fn resolve(
     branch
         .apply_diff(reverts)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
+    let base_ids = session::text_ids_of(&at_base);
+    let tip_ids = session::text_ids_of(&at_tip);
+    let files = branch.get_map(session::FILES);
+    let paths = branch.get_map(session::PATHS);
+    for id in tip_ids
+        .values()
+        .filter(|id| !base_ids.values().any(|base_id| base_id == *id))
+    {
+        let Some(ValueOrContainer::Container(Container::Text(text))) = at_tip
+            .get_map(session::FILES)
+            .get(id)
+        else {
+            continue;
+        };
+        let container = text.id();
+        let file_hunks: Vec<usize> = reviewed
+            .iter()
+            .filter(|(candidate, _)| candidate == &container)
+            .map(|(_, hunk)| hunk.index)
+            .collect();
+        if !file_hunks.is_empty() && file_hunks.iter().all(|index| declined.contains(index)) {
+            let _ = files.delete(id);
+            let _ = paths.delete(id);
+        }
+    }
     branch.commit();
 
-    // The resolution operations use a fresh peer because socket IDs and
-    // reviewer counters can collide with later edits.
-    let _ = reviewer;
     let operations = session::encode_diff(&branch, &session::encode_vector(doc))
         .map_err(ProposalError::Failed)?;
     session::apply_update(doc, &operations).map_err(ProposalError::Failed)?;
@@ -726,6 +772,13 @@ pub struct OpenProposal {
     pub author: String,
     pub owner_key: String,
     pub base: Frontiers,
+    /// A reconnect of an id the client already received an acknowledgement
+    /// for. If both the live row and its retained outcome have expired, do
+    /// not recreate the old branch from the client's stale snapshot.
+    pub resume: bool,
+    /// A retry of the same id reads the row before checking reachability of
+    /// the original base, which may have moved or been compacted meanwhile.
+    pub stored: Option<StoredProposal>,
 }
 
 impl Command for OpenProposal {
@@ -733,6 +786,42 @@ impl Command for OpenProposal {
 
     fn name(&self) -> &'static str {
         "proposal-open"
+    }
+
+    fn load(&mut self) -> BoxFuture<'_, std::result::Result<(), CommandError>> {
+        Box::pin(async move {
+            self.stored = self
+                .catalog
+                .proposal(self.id)
+                .await
+                .map_err(CommandError::from)?;
+            if self.resume && self.stored.is_none() {
+                if self
+                    .catalog
+                    .proposal_outcome(self.document_id, self.id)
+                    .await
+                    .map_err(CommandError::from)?
+                    .is_some()
+                {
+                    return Err(CommandError::Conflict(
+                        "proposal has already been resolved".into(),
+                    ));
+                }
+                return Err(CommandError::Conflict(
+                    "proposal status is unknown; its saved outcome may have expired".into(),
+                ));
+            }
+            if self
+                .stored
+                .as_ref()
+                .is_some_and(|stored| stored.owner_key.as_deref() != Some(self.owner_key.as_str()))
+            {
+                return Err(CommandError::Conflict(
+                    "proposal id belongs to another author".into(),
+                ));
+            }
+            Ok(())
+        })
     }
 
     /// Forking here is also the check that the room can reach this base at
@@ -744,9 +833,11 @@ impl Command for OpenProposal {
         &mut self,
         head: &Head<'_>,
     ) -> std::result::Result<Option<PreparedSource>, CommandError> {
-        head.doc()
-            .fork_at(&self.base)
-            .map_err(|_| CommandError::Conflict(ProposalError::UnknownBase.to_string()))?;
+        if self.stored.is_none() {
+            head.doc()
+                .fork_at(&self.base)
+                .map_err(|_| CommandError::Conflict(ProposalError::UnknownBase.to_string()))?;
+        }
         // A proposal opens empty. The author's first keystroke arrives as an
         // `UpdateProposal`, so there is nothing to store yet and the tip is
         // the base; opening never moves the document.
@@ -1045,13 +1136,14 @@ pub struct DecideProposalHunk {
     pub decided: Vec<StoredDecision>,
     pub hunk_index: i32,
     pub accepted: bool,
+    /// Decide every hunk as one answer. This is restricted to proposals linked
+    /// to a suggestion comment; ordinary typed proposals remain per-hunk.
+    pub all: bool,
     pub decided_by: String,
     pub note: Option<String>,
     /// The tip the reviewer was looking at when they answered, encoded the
     /// same way the browser encoded it (`Proposal::tip.encode()`).
     pub against: Vec<u8>,
-    /// Legacy caller peer; reverts use a fresh peer to avoid counter collisions.
-    pub reviewer: PeerID,
     pub request_id: Uuid,
     /// Set by `evaluate`, so `transact` does not have to recompute it under a
     /// different lock than the one it was measured under. The caller
@@ -1108,6 +1200,17 @@ impl Command for DecideProposalHunk {
                 .await
                 .map_err(CommandError::from)?
                 .ok_or_else(|| CommandError::Conflict("that proposal is not open".into()))?;
+            if self.all
+                && !self
+                    .catalog
+                    .proposal_has_suggestion(self.document_id, self.proposal_id)
+                    .await
+                    .map_err(CommandError::from)?
+            {
+                return Err(CommandError::Conflict(
+                    "whole-proposal decisions are only available for suggestions".into(),
+                ));
+            }
             // That the row belongs to this document is checked in `transact`
             // under the row lock, where it also has to be checked for the
             // benefit of anything that reached `transact` another way.
@@ -1134,36 +1237,66 @@ impl Command for DecideProposalHunk {
             tip: Frontiers::decode(&self.stored.tip_frontiers)
                 .map_err(|error| CommandError::Conflict(error.to_string()))?,
         };
+        if self.all && !self.accepted {
+            // Rejecting a suggestion discards the branch. Its hunks need not
+            // be rebuilt, and a stale or corrupt branch must remain discardable.
+            self.total_hunks = 0;
+            self.final_decisions = vec![(0, false)];
+            return Ok(None);
+        }
         let found = hunks(head.doc(), &proposal, &self.stored.branch_bytes)
             .map_err(|error| CommandError::Conflict(error.to_string()))?;
         self.total_hunks = found.len() as i64;
-        if self.hunk_index < 0 || i64::from(self.hunk_index) >= self.total_hunks {
+        if self.all {
+            if found.is_empty() {
+                return Err(CommandError::Conflict(
+                    "this suggestion no longer changes the source".into(),
+                ));
+            }
+            self.final_decisions = (0..self.total_hunks)
+                .map(|index| (index as i32, self.accepted))
+                .collect();
+        } else if self.hunk_index < 0 || i64::from(self.hunk_index) >= self.total_hunks {
             return Err(CommandError::Conflict(
                 "that hunk is not part of this proposal".into(),
             ));
         }
 
-        let mut decided = self.decided.clone();
-        if let Some(existing) = decided
-            .iter_mut()
-            .find(|item| item.hunk_index == self.hunk_index)
-        {
-            existing.accepted = self.accepted;
-            existing.decided_by = self.decided_by.clone();
-            existing.note = self.note.clone();
+        let mut decided = if self.all {
+            self.final_decisions
+                .iter()
+                .map(|(hunk_index, accepted)| StoredDecision {
+                    hunk_index: *hunk_index,
+                    accepted: *accepted,
+                    decided_by: self.decided_by.clone(),
+                    note: self.note.clone(),
+                })
+                .collect()
         } else {
-            decided.push(StoredDecision {
-                hunk_index: self.hunk_index,
-                accepted: self.accepted,
-                decided_by: self.decided_by.clone(),
-                note: self.note.clone(),
-            });
+            self.decided.clone()
+        };
+        if !self.all {
+            if let Some(existing) = decided
+                .iter_mut()
+                .find(|item| item.hunk_index == self.hunk_index)
+            {
+                existing.accepted = self.accepted;
+                existing.decided_by = self.decided_by.clone();
+                existing.note = self.note.clone();
+            } else {
+                decided.push(StoredDecision {
+                    hunk_index: self.hunk_index,
+                    accepted: self.accepted,
+                    decided_by: self.decided_by.clone(),
+                    note: self.note.clone(),
+                });
+            }
+            self.final_decisions = decided
+                .iter()
+                .map(|item| (item.hunk_index, item.accepted))
+                .collect();
+            self.final_decisions.sort_by_key(|(hunk, _)| *hunk);
         }
-        self.final_decisions = decided
-            .iter()
-            .map(|item| (item.hunk_index, item.accepted))
-            .collect();
-        self.final_decisions.sort_by_key(|(hunk, _)| *hunk);
         if self.accepted {
             validate_accepted_hunks(
                 head.doc(),
@@ -1173,7 +1306,7 @@ impl Command for DecideProposalHunk {
             )
             .map_err(|error| CommandError::Conflict(error.to_string()))?;
         }
-        if decided.len() as i64 != self.total_hunks {
+        if !self.all && decided.len() as i64 != self.total_hunks {
             // Not the last answer yet: the row this command writes in
             // `transact` is all there is to do.
             return Ok(None);
@@ -1196,7 +1329,6 @@ impl Command for DecideProposalHunk {
             return Ok(None);
         }
         let branch_bytes = self.stored.branch_bytes.clone();
-        let reviewer = self.reviewer;
         let client_seq = client_seq_of(self.request_id);
         head.prepare(client_seq, |draft| {
             resolve(
@@ -1205,7 +1337,6 @@ impl Command for DecideProposalHunk {
                 &branch_bytes,
                 &declined,
                 &proposal.tip,
-                reviewer,
             )
             .map(|_| ())
             .map_err(|error| error.to_string())
@@ -1219,9 +1350,25 @@ impl Command for DecideProposalHunk {
         evidence: &'a Evidence,
     ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
         Box::pin(async move {
-            let complete = self
-                .catalog
-                .decide_proposal_hunk(
+            let (complete, removed_comments) = if self.all {
+                let removed = self
+                    .catalog
+                    .resolve_suggestion(
+                        &mut *tx,
+                        self.document_id,
+                        self.proposal_id,
+                        &self.against,
+                        self.accepted,
+                        self.accepted.then_some(self.total_hunks as usize),
+                        &self.decided_by,
+                        Some(self.request_id),
+                    )
+                    .await?;
+                (true, removed)
+            } else {
+                let complete = self
+                    .catalog
+                    .decide_proposal_hunk(
                     &mut *tx,
                     self.document_id,
                     self.proposal_id,
@@ -1233,6 +1380,17 @@ impl Command for DecideProposalHunk {
                     self.total_hunks,
                 )
                 .await?;
+                let removed = if complete {
+                    // A decided proposal is deleted, not kept: its hunks and
+                    // linked suggestion comments go with it.
+                    self.catalog
+                        .delete_proposal(&mut *tx, self.proposal_id)
+                        .await?
+                } else {
+                    Vec::new()
+                };
+                (complete, removed)
+            };
             if !complete {
                 return Ok(ProposalDecided {
                     resolved: false,
@@ -1242,15 +1400,23 @@ impl Command for DecideProposalHunk {
                     removed_comments: Vec::new(),
                 });
             }
+            if !self.all {
+                PostgresCatalog::record_proposal_outcome(
+                    &mut *tx,
+                    self.document_id,
+                    self.proposal_id,
+                    &self.stored.base_frontiers,
+                    &self.stored.tip_frontiers,
+                    &self.final_decisions,
+                    false,
+                    Some(self.request_id),
+                )
+                .await?;
+            }
 
             // A decided proposal is deleted, not kept: its hunks and the
             // suggestion comment it answers go with it. A proposal typed
             // directly rather than suggested has no comment to remove.
-            let removed_comments = self
-                .catalog
-                .delete_proposal(&mut *tx, self.proposal_id)
-                .await?;
-
             // The idempotency record for the merge this decision produced,
             // if it produced one: a retry with the same request id finds
             // this row rather than resolving the proposal a second time
@@ -1324,6 +1490,22 @@ mod tests {
 
         let proposal = Proposal { base, tip };
         (room, proposal, bytes)
+    }
+
+    fn same_file_two_hunks() -> (LoroDoc, Proposal, Vec<u8>) {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat. The dog ran.");
+        room.commit();
+        let base = room.state_frontiers();
+        let base_vector = session::encode_vector(&room);
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        session::put_text(&branch, "main.md", "The tabby sat. The dog sprinted.");
+        branch.commit();
+        let tip = branch.state_frontiers();
+        let bytes = session::encode_diff(&branch, &base_vector).unwrap();
+        (room, Proposal { base, tip }, bytes)
     }
 
     /// A room whose author edited two words in one file, then absorbed a
@@ -1510,7 +1692,7 @@ mod tests {
         // Accept it whole. The author's word lands; the other writer's
         // sentence is still there, because it was never part of the diff.
         let declined = HashSet::new();
-        resolve(&room, &proposal, &bytes, &declined, &tip, REVIEWER).unwrap();
+        resolve(&room, &proposal, &bytes, &declined, &tip).unwrap();
         let text = text_at(&room, "main.md");
         assert!(
             text.contains("tabby"),
@@ -1538,7 +1720,7 @@ mod tests {
     fn accepting_one_file_and_declining_the_other_keeps_both_authorships() {
         let (room, proposal, bytes) = room_and_proposal();
         let declined = HashSet::from([1]);
-        let update = resolve(&room, &proposal, &bytes, &declined, &proposal.tip, REVIEWER).unwrap();
+        let update = resolve(&room, &proposal, &bytes, &declined, &proposal.tip).unwrap();
 
         assert_eq!(
             text_at(&room, "main.md"),
@@ -1580,7 +1762,7 @@ mod tests {
     fn declining_everything_leaves_the_document_where_it_was() {
         let (room, proposal, bytes) = room_and_proposal();
         let declined = HashSet::from([0, 1]);
-        resolve(&room, &proposal, &bytes, &declined, &proposal.tip, REVIEWER).unwrap();
+        resolve(&room, &proposal, &bytes, &declined, &proposal.tip).unwrap();
         assert_eq!(text_at(&room, "main.md"), "The cat sat.");
         assert_eq!(text_at(&room, "notes.md"), "The dog ran.");
     }
@@ -1595,7 +1777,6 @@ mod tests {
             &bytes,
             &HashSet::from([0, 1]),
             &proposal.tip,
-            REVIEWER,
         )
         .unwrap();
         assert!(update.is_empty());
@@ -1611,7 +1792,6 @@ mod tests {
             &bytes,
             &HashSet::new(),
             &proposal.tip,
-            REVIEWER,
         )
         .unwrap();
         assert_eq!(text_at(&room, "main.md"), "The tabby sat.");
@@ -1636,7 +1816,6 @@ mod tests {
             &bytes,
             &HashSet::new(),
             &reviewed,
-            REVIEWER,
         );
         assert!(
             matches!(refused, Err(ProposalError::Stale)),
@@ -1658,7 +1837,6 @@ mod tests {
             &bytes,
             &HashSet::from([1]),
             &proposal.tip,
-            REVIEWER,
         )
         .unwrap();
         assert_eq!(text_at(&room, "main.md"), "The tabby sat.");
@@ -1684,10 +1862,250 @@ mod tests {
         // Reject the first hunk after a length-changing concurrent edit before
         // it. Its inverse belongs on the proposal branch, where offsets still
         // name the reviewed text.
-        resolve(&room, &proposal, &bytes, &HashSet::from([0]), &proposal.tip, REVIEWER)
+        resolve(&room, &proposal, &bytes, &HashSet::from([0]), &proposal.tip)
             .unwrap();
         assert_eq!(text_at(&room, "main.md"), "Note. The cat sat.");
         assert_eq!(text_at(&room, "notes.md"), "The dog sprinted.");
+    }
+
+    #[test]
+    fn rejecting_a_later_hunk_keeps_the_accepted_earlier_hunk() {
+        let (room, proposal, bytes) = same_file_two_hunks();
+        let found = hunks(&room, &proposal, &bytes).unwrap();
+        assert_eq!(found.len(), 2);
+
+        resolve(
+            &room,
+            &proposal,
+            &bytes,
+            &HashSet::from([1]),
+            &proposal.tip,
+        )
+        .unwrap();
+        assert_eq!(
+            text_at(&room, "main.md"),
+            "The tabby sat. The dog ran.",
+            "the later rejection must not apply its inverse at the earlier hunk's shifted offset"
+        );
+    }
+
+    #[test]
+    fn a_coauthor_edit_between_hunks_survives_final_accept_of_the_first() {
+        let (room, proposal, bytes) = same_file_two_hunks();
+        let coauthor = room.fork();
+        coauthor.set_peer_id(REVIEWER).unwrap();
+        let id = session::text_ids_of(&coauthor)["main.md"].clone();
+        let Some(ValueOrContainer::Container(Container::Text(text))) =
+            coauthor.get_map(session::FILES).get(&id)
+        else {
+            panic!("main text exists");
+        };
+        text.insert_utf16(13, "Meanwhile, ").unwrap();
+        coauthor.commit();
+        let concurrent = session::encode_diff(&coauthor, &session::encode_vector(&room)).unwrap();
+        session::apply_update(&room, &concurrent).unwrap();
+
+        resolve(
+            &room,
+            &proposal,
+            &bytes,
+            &HashSet::from([1]),
+            &proposal.tip,
+        )
+        .unwrap();
+        assert_eq!(
+            text_at(&room, "main.md"),
+            "The tabby sat. Meanwhile, The dog ran.",
+            "a coauthor's text between hunks survives the inverse of the later declined hunk"
+        );
+    }
+
+    #[test]
+    fn a_changed_declined_hunk_refuses_a_mixed_resolution() {
+        let (room, proposal, bytes) = same_file_two_hunks();
+        let coauthor = room.fork();
+        coauthor.set_peer_id(REVIEWER).unwrap();
+        session::put_text(&coauthor, "main.md", "The cat sat. The fox ran.");
+        coauthor.commit();
+        let concurrent = session::encode_diff(&coauthor, &session::encode_vector(&room)).unwrap();
+        session::apply_update(&room, &concurrent).unwrap();
+
+        let refused = resolve(
+            &room,
+            &proposal,
+            &bytes,
+            &HashSet::from([1]),
+            &proposal.tip,
+        );
+        assert!(
+            matches!(refused, Err(ProposalError::Stale)),
+            "reverting a declined hunk over a rival replacement would resurrect the old word: {refused:?}"
+        );
+        assert!(text_at(&room, "main.md").contains("fox"));
+    }
+
+    #[test]
+    fn concurrent_insertions_at_a_replacement_boundary_are_adjacent() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.commit();
+        let base = room.state_frontiers();
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        session::put_text(&branch, "main.md", "The tabby sat.");
+        branch.commit();
+        let proposal = Proposal {
+            base: base.clone(),
+            tip: branch.state_frontiers(),
+        };
+        let bytes = session::encode_diff(&branch, &session::encode_vector(&room)).unwrap();
+
+        let coauthor = room.fork();
+        coauthor.set_peer_id(REVIEWER).unwrap();
+        let id = session::text_ids_of(&coauthor)["main.md"].clone();
+        let Some(ValueOrContainer::Container(Container::Text(text))) =
+            coauthor.get_map(session::FILES).get(&id)
+        else {
+            panic!("main text exists");
+        };
+        text.insert_utf16(4, "very ").unwrap();
+        text.insert_utf16(12, "-like").unwrap();
+        coauthor.commit();
+        let concurrent = session::encode_diff(&coauthor, &session::encode_vector(&room)).unwrap();
+        session::apply_update(&room, &concurrent).unwrap();
+
+        assert!(validate_accepted_hunks(&room, &proposal, &bytes, &HashSet::from([0])).is_ok());
+        resolve(&room, &proposal, &bytes, &HashSet::new(), &proposal.tip).unwrap();
+        assert_eq!(text_at(&room, "main.md"), "The very tabby-like sat.");
+    }
+
+    #[test]
+    fn rival_insert_at_a_pure_insertion_point_is_stale() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.commit();
+        let (branch, base, tip, _) = from_suggestion(&room, "main.md", 4, "", "very ").unwrap();
+        let proposal = Proposal { base, tip };
+        let bytes = session::encode_diff(&branch, &session::encode_vector(&room)).unwrap();
+        let coauthor = room.fork();
+        coauthor.set_peer_id(REVIEWER).unwrap();
+        coauthor.get_text(session::text_ids_of(&coauthor)["main.md"].clone())
+            .insert_utf16(4, "other ")
+            .unwrap();
+        coauthor.commit();
+        let concurrent = session::encode_diff(&coauthor, &session::encode_vector(&room)).unwrap();
+        session::apply_update(&room, &concurrent).unwrap();
+
+        assert!(matches!(
+            validate_accepted_hunks(&room, &proposal, &bytes, &HashSet::from([0])),
+            Err(ProposalError::Stale)
+        ));
+    }
+
+    #[test]
+    fn a_branch_with_unpublished_operations_past_its_declared_tip_is_stale() {
+        let (room, proposal, bytes) = same_file_two_hunks();
+        let branch = rebuild(&room, &proposal, &bytes).unwrap();
+        session::put_text(&branch, "main.md", "The tabby sat. The dog sprinted! ");
+        branch.commit();
+        let bytes_with_extra_operations =
+            session::encode_diff(&branch, &session::encode_vector(&room)).unwrap();
+        assert!(matches!(
+            hunks(&room, &proposal, &bytes_with_extra_operations),
+            Err(ProposalError::Stale)
+        ));
+    }
+
+    #[test]
+    fn a_proposal_cannot_change_unreviewed_document_metadata() {
+        let (room, mut proposal, bytes) = same_file_two_hunks();
+        let branch = rebuild(&room, &proposal, &bytes).unwrap();
+        branch
+            .get_map(session::META)
+            .insert("latex.engine", "unreviewed-engine")
+            .unwrap();
+        branch.commit();
+        proposal.tip = branch.state_frontiers();
+        let new_bytes = session::encode_diff(&branch, &session::encode_vector(&room)).unwrap();
+
+        assert!(matches!(
+            hunks(&room, &proposal, &new_bytes),
+            Err(ProposalError::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn declining_a_new_file_removes_its_path_and_text_entry() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.commit();
+        let base = room.state_frontiers();
+        let vector = session::encode_vector(&room);
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        session::put_text(&branch, "main.md", "The tabby sat.");
+        session::put_text(&branch, "extra.md", "New unreviewed text.");
+        branch.commit();
+        let proposal = Proposal {
+            base,
+            tip: branch.state_frontiers(),
+        };
+        let bytes = session::encode_diff(&branch, &vector).unwrap();
+        let at_base = branch.fork_at(&proposal.base).unwrap();
+        let batch = branch.diff(&proposal.base, &proposal.tip).unwrap();
+        let reviewed = hunks_of_batch(&batch, |cid| at_base.get_text(cid.clone()).to_string());
+        let new_id = session::text_ids_of(&branch)["extra.md"].clone();
+        let Some(ValueOrContainer::Container(Container::Text(new_text))) =
+            branch.get_map(session::FILES).get(&new_id)
+        else {
+            panic!("new text file exists");
+        };
+        let new_container = new_text.id();
+        let declined_index = reviewed
+            .iter()
+            .find(|(container, _)| container == &new_container)
+            .map(|(_, hunk)| hunk.index)
+            .expect("new file has a reviewed hunk");
+
+        resolve(
+            &room,
+            &proposal,
+            &bytes,
+            &HashSet::from([declined_index]),
+            &proposal.tip,
+        )
+        .unwrap();
+        assert_eq!(text_at(&room, "main.md"), "The tabby sat.");
+        assert!(!session::paths_of(&room).values().any(|path| path == "extra.md"));
+        assert!(!session::texts_of(&room).contains_key("extra.md"));
+    }
+
+    #[test]
+    fn an_empty_new_file_cannot_hide_inside_an_accepted_text_change() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.commit();
+        let base = room.state_frontiers();
+        let vector = session::encode_vector(&room);
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        session::put_text(&branch, "main.md", "The tabby sat.");
+        session::put_text(&branch, "empty.md", "");
+        branch.commit();
+        let proposal = Proposal {
+            base,
+            tip: branch.state_frontiers(),
+        };
+        let bytes = session::encode_diff(&branch, &vector).unwrap();
+
+        assert!(matches!(
+            hunks(&room, &proposal, &bytes),
+            Err(ProposalError::Failed(_))
+        ));
     }
 
     #[test]
@@ -1790,7 +2208,6 @@ mod suggestion_tests {
     use super::*;
 
     const OWNER: PeerID = 1;
-    const REVIEWER: PeerID = 3;
 
     fn room_with(body: &str) -> LoroDoc {
         let room = session::new_doc();
@@ -1812,7 +2229,7 @@ mod suggestion_tests {
             base,
             tip: tip.clone(),
         };
-        resolve(room, &proposal, &bytes, &declined, &tip, REVIEWER).unwrap();
+        resolve(room, &proposal, &bytes, &declined, &tip).unwrap();
     }
 
     fn text_of(room: &LoroDoc) -> String {

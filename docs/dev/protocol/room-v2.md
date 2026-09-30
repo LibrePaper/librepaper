@@ -417,6 +417,52 @@ correlation. Errors are explicit and are never silently dropped for an
 unauthorized annotation, edit, or label request. A missing or empty
 request_id remains accepted for compatibility with browser clients.
 
+## Tracked proposals
+
+The browser keeps a tracked branch locally while it is empty. When it first
+publishes a changed branch, it chooses a UUID and uses that value as the
+`proposal-open` `request_id` and the proposal ID. Replaying the same open ID
+returns the existing proposal for the same authenticated owner, even when its
+base has since moved. Other users cannot update that row. The open and update
+acknowledgements include `applied_version`, `base` and `tip`.
+Ownership is the stable authenticated identity stored with the proposal, not
+its display name. Rows from before ownership was recorded are read-only; any
+editor may discard one.
+
+Every `proposal-update` carries `expected_version`, the last
+`applied_version` the client received. The server checks it while holding the
+proposal row lock. A delayed older update receives an error with
+`version_conflict: true` and the current `applied_version`, `base` and `tip`;
+the client keeps its branch, refreshes the
+acknowledged version and retries its latest complete branch. Replaying the
+same exact branch bytes and tip is idempotent. On reconnect, clients list open
+proposals and replay their own known IDs to learn whether each is still open
+or has already been resolved. The server retains a final outcome for 30 days;
+it includes `resolved_base`, `resolved_tip`, the final `decisions`, and
+`discarded`. After that period the server may no longer know the result, so a
+client must keep the draft and report that its status is unknown.
+When replaying a previously acknowledged ID, send `proposal-open` with
+`resume: true`. A live row is returned and a retained outcome is replayed;
+if neither remains, the server returns `status_unknown: true` and does not
+recreate the proposal from an old snapshot. Initial opens and retries whose
+first acknowledgement may have been lost use `resume: false`.
+
+Each suggestion is one decision, represented by one UTF-16 splice. Its
+`proposal-decide` message uses `all: true`, omits `hunk`, and carries the
+reviewed `tip` and `accepted` choice. This mode is only allowed for a proposal
+linked to a suggestion comment. It replaces any legacy per-hunk answers and
+resolves the whole suggestion atomically. Typed tracked changes omit `all` and
+continue to decide one hunk at a time. A final accepted answer is refused if
+any reviewed span was concurrently changed; insertions directly before or
+after a replacement remain adjacent and do not make it stale. Competing
+changes to the same insertion point are refused.
+
+An editor may send `proposal-discard` for any stale, empty or unwanted tracked
+change. It deletes the branch without importing it into the source and does
+not require the proposal branch to be rebuildable. Its acknowledgement carries
+the original `resolved_base` and `resolved_tip`; a lost acknowledgement can be
+recovered by replaying the same proposal ID.
+
 The server bounds WebSocket frames and CRDT updates using the configured
 message, document, file, and update-rate ceilings. A peer must reconnect after
 transport closure and resynchronize with `doc-open` and a state vector. It

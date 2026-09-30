@@ -125,11 +125,10 @@ async function tipOf(socket, proposal) {
   return open.tip;
 }
 
-/// Decides hunk 0 with exactly the shape the browser sends, and returns the
-/// server's answer, an acknowledgement or an error.
+/// Decides the whole suggestion with exactly the shape the browser sends.
 async function decide(socket, comment, accepted, { request_id = randomUUID() } = {}) {
   const tip = await tipOf(socket, comment.proposal);
-  socket.send({ type: "proposal-decide", proposal_id: comment.proposal, hunk: 0, accepted, tip, request_id });
+  socket.send({ type: "proposal-decide", proposal_id: comment.proposal, all: true, accepted, tip, request_id });
   return socket.next("the answer to the decision", (frame) =>
     (frame.type === "proposal-decided" || frame.type === "error") && frame.request_id === request_id);
 }
@@ -231,7 +230,7 @@ try {
     const comment = await suggest(socket, slug, "Delta", "Dover");
     const request_id = randomUUID();
     const tip = await tipOf(socket, comment.proposal);
-    const decision = { type: "proposal-decide", proposal_id: comment.proposal, hunk: 0, accepted: true, tip, request_id };
+    const decision = { type: "proposal-decide", proposal_id: comment.proposal, all: true, accepted: true, tip, request_id };
     for (const attempt of ["first", "retry"]) {
       socket.send(decision);
       const answer = await socket.next(`the ${attempt} answer`, (frame) =>

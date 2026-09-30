@@ -450,6 +450,10 @@ impl Server {
             "reject" => {
                 let existing = existing.expect("validated above");
                 let stored = pending_proposal(&catalog, &existing).await?;
+                let decision_request_id = parse_uuid(
+                    &comment_uuid(&key.scoped_request_id(actor)),
+                    "operation id",
+                )?;
                 let mut cmd = room::RejectSuggestion::new(
                     catalog,
                     document_id,
@@ -457,6 +461,7 @@ impl Server {
                     stored.id,
                     stored.tip_frontiers,
                     &writer,
+                    decision_request_id,
                 );
                 let operation = key.clone();
                 let mut cmd = crate::log::recorded::RecordedCommand::new(

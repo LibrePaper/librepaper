@@ -914,6 +914,7 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
         open.id,
         open.tip_frontiers.clone(),
         &deployment.writer(),
+        Uuid::new_v4(),
     );
     room.command(&deployment.authority(), &mut cmd)
         .await

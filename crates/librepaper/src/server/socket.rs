@@ -9,7 +9,7 @@ use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };
 use crate::room::Room;
-use crate::storage::postgres::StoredProposal;
+use crate::storage::postgres::{StoredProposal, StoredProposalOutcome};
 
 /// Bound both queue and transport writes so a slow peer cannot pin the reader
 /// or the writer task down indefinitely.
@@ -108,6 +108,55 @@ fn proposal_json(stored: &StoredProposal, decisions: &[(i32, bool)]) -> Value {
             .map(|(hunk, accepted)| json!({"hunk": hunk, "accepted": accepted}))
             .collect::<Vec<_>>(),
     })
+}
+
+fn proposal_outcome_json(outcome: &StoredProposalOutcome, request_id: &str) -> Value {
+    let decisions = outcome
+        .decisions
+        .0
+        .iter()
+        .map(|(hunk, accepted)| json!({"hunk": hunk, "accepted": accepted}))
+        .collect::<Vec<_>>();
+    if outcome.discarded {
+        json!({
+            "type":"proposal-discarded",
+            "proposal_id":outcome.proposal_id,
+            "discarded":true,
+            "resolved_base":encode_update(&outcome.base_frontiers),
+            "resolved_tip":encode_update(&outcome.tip_frontiers),
+            "decisions":decisions,
+            "decision_request_id":outcome.decision_request_id,
+            "replay":true,
+            "request_id":request_id,
+            "version":1,
+            "protocol":PROTOCOL
+        })
+    } else {
+        json!({
+            "type":"proposal-decided",
+            "proposal_id":outcome.proposal_id,
+            "resolved":true,
+            "resolved_base":encode_update(&outcome.base_frontiers),
+            "resolved_tip":encode_update(&outcome.tip_frontiers),
+            "decisions":decisions,
+            "decision_request_id":outcome.decision_request_id,
+            "replay":true,
+            "request_id":request_id,
+            "version":1,
+            "protocol":PROTOCOL
+        })
+    }
+}
+
+fn is_proposal_version_conflict(error: &CommandError) -> bool {
+    let message = match error {
+        CommandError::Conflict(message) => Some(message.as_str()),
+        CommandError::Storage(crate::storage::postgres::Error::Conflict(message)) => {
+            Some(message.as_str())
+        }
+        _ => None,
+    };
+    message == Some("proposal changed since it was read")
 }
 
 async fn send_outgoing_with_timeout(
@@ -1087,6 +1136,13 @@ impl Server {
                                     )).await;
                                     continue 'reader;
                                 };
+                                if let Ok(Some(outcome)) = room
+                                    .catalog()
+                                    .proposal_outcome(room.document_id, request_id)
+                                    .await
+                                {
+                                    proposal_outcome_json(&outcome, incoming.request_id())
+                                } else {
                                 let base = crate::room::decode_update(incoming.base())
                                     .and_then(|bytes| loro::Frontiers::decode(&bytes).ok());
                                 let Some(base) = base else {
@@ -1102,6 +1158,8 @@ impl Server {
                                     author: by.clone(),
                                     owner_key: author.clone(),
                                     base,
+                                    resume: incoming.resume(),
+                                    stored: None,
                                 };
                                 match room.command(&who.document_authority(), &mut command).await {
                                     Ok(stored) => {
@@ -1115,7 +1173,27 @@ impl Server {
                                             "version": 1, "protocol": PROTOCOL,
                                         })
                                     }
-                                    Err(error) => refuse(error),
+                                    Err(error) => {
+                                        if let Ok(Some(outcome)) = room
+                                            .catalog()
+                                            .proposal_outcome(room.document_id, request_id)
+                                            .await
+                                        {
+                                            proposal_outcome_json(&outcome, incoming.request_id())
+                                        } else {
+                                            let status_unknown = matches!(
+                                                &error,
+                                                CommandError::Conflict(message)
+                                                    if message.starts_with("proposal status is unknown")
+                                            );
+                                            let mut payload = refuse(error);
+                                            if status_unknown {
+                                                payload["status_unknown"] = json!(true);
+                                            }
+                                            payload
+                                        }
+                                    },
+                                }
                                 }
                             }
                             "proposal-update" => {
@@ -1146,24 +1224,48 @@ impl Server {
                                     )).await;
                                     continue 'reader;
                                 };
-                                // The version gating the transition is a plain
-                                // read, not part of the sequencer's lock: the
-                                // author is the only writer of their own
-                                // branch, so a race here is only ever against
-                                // themselves, and `transact`'s `WHERE
-                                // version=$5` is the actual guard (§7.2).
-                                let Ok(Some(stored)) = room.catalog().proposal(proposal_id).await else {
-                                    let _ = send_outgoing(&tx, Outgoing::Text(
-                                        json!({"type":"error","message":"that proposal is not open","proposal_id":incoming.proposal_id(),"request_id":incoming.request_id()}).to_string(),
-                                    )).await;
-                                    continue 'reader;
+                                // The pre-read distinguishes a missing row and
+                                // lets us replay a retained final result. The
+                                // acknowledged version in the message, checked
+                                // under the row lock, guards against delayed
+                                // writes from this author's own connection.
+                                let _stored = match room.catalog().proposal(proposal_id).await {
+                                    Ok(Some(stored)) => stored,
+                                    Ok(None) => {
+                                        if let Ok(Some(outcome)) = room
+                                            .catalog()
+                                            .proposal_outcome(room.document_id, proposal_id)
+                                            .await
+                                        {
+                                            let response = proposal_outcome_json(
+                                                &outcome,
+                                                incoming.request_id(),
+                                            );
+                                            let _ = send_outgoing(
+                                                &tx,
+                                                Outgoing::Text(response.to_string()),
+                                            )
+                                            .await;
+                                        } else {
+                                            let _ = send_outgoing(&tx, Outgoing::Text(
+                                                json!({"type":"error","message":"that proposal is not open","proposal_id":incoming.proposal_id(),"request_id":incoming.request_id()}).to_string(),
+                                            )).await;
+                                        }
+                                        continue 'reader;
+                                    }
+                                    Err(error) => {
+                                        let _ = send_outgoing(&tx, Outgoing::Text(
+                                            json!({"type":"error","message":error.to_string(),"proposal_id":incoming.proposal_id(),"request_id":incoming.request_id()}).to_string(),
+                                        )).await;
+                                        continue 'reader;
+                                    }
                                 };
                                 let mut command = UpdateProposal {
                                     document_id: room.document_id,
                                     catalog: room.catalog().clone(),
                                     id: proposal_id,
                                     owner_key: author.clone(),
-                                    expected_version: stored.version,
+                                    expected_version: incoming.expected_version(),
                                     tip,
                                     base,
                                     branch,
@@ -1184,7 +1286,25 @@ impl Server {
                                             "version": 1, "protocol": PROTOCOL,
                                         })
                                     }
-                                    Err(error) => refuse(error),
+                                    Err(error) => {
+                                        let version_conflict = is_proposal_version_conflict(&error);
+                                        let mut payload = refuse(error);
+                                        if version_conflict {
+                                            payload["version_conflict"] = json!(true);
+                                            if let Ok(Some(current)) = room.catalog().proposal(proposal_id).await {
+                                                payload["applied_version"] = json!(current.version);
+                                                payload["base"] = json!(encode_update(&current.base_frontiers));
+                                                payload["tip"] = json!(encode_update(&current.tip_frontiers));
+                                            }
+                                        } else if let Ok(Some(outcome)) = room
+                                            .catalog()
+                                            .proposal_outcome(room.document_id, proposal_id)
+                                            .await
+                                        {
+                                            payload = proposal_outcome_json(&outcome, incoming.request_id());
+                                        }
+                                        payload
+                                    },
                                 }
                             }
                             "proposal-decide" => {
@@ -1215,33 +1335,54 @@ impl Server {
                                 // which rereads this under the sequencer lock
                                 // (`room/proposals.rs`'s `DecideProposalHunk`
                                 // doc comment).
-                                let Ok(Some(stored)) = room.catalog().proposal(proposal_id).await else {
-                                    // A decided proposal is deleted, so a
-                                    // lost-response retry of the decision that
-                                    // completed it finds no row. The label that
-                                    // decision wrote is its answer.
-                                    let replayed = matches!(
-                                        room.catalog().label_by_request(room.document_id, request_id).await,
-                                        Ok(Some(_))
-                                    );
-                                    let answer = if replayed {
-                                        json!({
-                                            "type": "proposal-decided",
-                                            "proposal_id": incoming.proposal_id(),
-                                            "hunk": incoming.hunk(),
-                                            "accepted": incoming.accepted(),
-                                            "resolved": true,
-                                            "resolved_tip": incoming.tip(),
-                                            "resolved_base": null,
-                                            "decisions": [{"hunk":incoming.hunk(),"accepted":incoming.accepted()}],
-                                            "request_id": incoming.request_id(),
-                                            "version": 1, "protocol": PROTOCOL,
-                                        })
-                                    } else {
-                                        json!({"type":"error","message":"that proposal is not open","proposal_id":incoming.proposal_id(),"request_id":incoming.request_id()})
-                                    };
-                                    let _ = send_outgoing(&tx, Outgoing::Text(answer.to_string())).await;
-                                    continue 'reader;
+                                let stored = match room.catalog().proposal(proposal_id).await {
+                                    Ok(Some(stored)) => stored,
+                                    Ok(None) => {
+                                        let answer = match room
+                                            .catalog()
+                                            .proposal_outcome(room.document_id, proposal_id)
+                                            .await
+                                        {
+                                            Ok(Some(outcome)) => proposal_outcome_json(
+                                                &outcome,
+                                                incoming.request_id(),
+                                            ),
+                                            _ => {
+                                                // Legacy completed proposals
+                                                // predate retained outcomes.
+                                                let replayed = matches!(
+                                                    room.catalog()
+                                                        .label_by_request(room.document_id, request_id)
+                                                        .await,
+                                                    Ok(Some(_))
+                                                );
+                                                if replayed {
+                                                    json!({
+                                                        "type":"proposal-decided",
+                                                        "proposal_id":incoming.proposal_id(),
+                                                        "hunk":incoming.hunk(),
+                                                        "accepted":incoming.accepted(),
+                                                        "resolved":true,
+                                                        "resolved_tip":incoming.tip(),
+                                                        "resolved_base":null,
+                                                        "decisions":[{"hunk":incoming.hunk(),"accepted":incoming.accepted()}],
+                                                        "request_id":incoming.request_id(),
+                                                        "version":1,"protocol":PROTOCOL
+                                                    })
+                                                } else {
+                                                    json!({"type":"error","message":"that proposal is not open","proposal_id":incoming.proposal_id(),"request_id":incoming.request_id()})
+                                                }
+                                            }
+                                        };
+                                        let _ = send_outgoing(&tx, Outgoing::Text(answer.to_string())).await;
+                                        continue 'reader;
+                                    }
+                                    Err(error) => {
+                                        let _ = send_outgoing(&tx, Outgoing::Text(
+                                            json!({"type":"error","message":error.to_string(),"proposal_id":incoming.proposal_id(),"request_id":incoming.request_id()}).to_string(),
+                                        )).await;
+                                        continue 'reader;
+                                    }
                                 };
                                 let Ok(decided) = room.catalog().decisions(proposal_id).await else {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
@@ -1257,10 +1398,10 @@ impl Server {
                                     decided,
                                     hunk_index: incoming.hunk() as i32,
                                     accepted: incoming.accepted(),
+                                    all: incoming.all(),
                                     decided_by: by.clone(),
                                     note,
                                     against,
-                                    reviewer: socket_id,
                                     request_id,
                                     total_hunks: 0,
                                     final_decisions: Vec::new(),
@@ -1305,6 +1446,13 @@ impl Server {
                             }
                             "proposal-discard" => match uuid::Uuid::parse_str(incoming.proposal_id()) {
                                 Ok(proposal_id) => {
+                                    if let Ok(Some(outcome)) = room
+                                        .catalog()
+                                        .proposal_outcome(room.document_id, proposal_id)
+                                        .await
+                                    {
+                                        proposal_outcome_json(&outcome, incoming.request_id())
+                                    } else {
                                     let mut command = DiscardProposal {
                                         document_id: room.document_id,
                                         catalog: room.catalog().clone(),
@@ -1343,6 +1491,7 @@ impl Server {
                                         }
                                         Err(error) => refuse(error),
                                     }
+                                    }
                                 }
                                 Err(_) => json!({"type":"error","message":"that proposal id could not be read","proposal_id":incoming.proposal_id(),"request_id":incoming.request_id(),"version":1,"protocol":PROTOCOL}),
                             },
@@ -1378,7 +1527,10 @@ impl Server {
                         };
                         // Everyone reviewing needs to know a decision was made,
                         // not just whoever made it.
-                        if payload["type"] == "proposal-decided" {
+                        if incoming.kind() == "proposal-decide"
+                            && payload["type"] == "proposal-decided"
+                            && payload["replay"] != true
+                        {
                             room.broadcast_editors_except(Some(socket_id), &payload).await;
                         }
                         if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
