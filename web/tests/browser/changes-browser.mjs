@@ -1,9 +1,8 @@
 // The review queue, in a real browser.
 //
-// A proposal is a branch and a decision names one of its hunks (SPEC-loro.md
-// §3.3, §5.1), so the panel's unit is a hunk, not a proposal: an agent run
-// that touches four passages is four cards and four answers, and the document
-// does not move until the last of them is given (§5.1a).
+// Ordinary proposal decisions name one hunk (SPEC-loro.md §3.3, §5.1). A
+// linked agent suggestion is one whole replacement even when legacy storage
+// associates it with several hunks. The panel must keep those paths clear.
 //
 // What is pinned here is what a reviewer can actually do -- see the words a
 // change would take out beside the ones it would put in, walk the queue from
@@ -37,6 +36,7 @@ import Changes from ${JSON.stringify(join(root, "src/components/reader/Changes.s
 window.decided = [];
 window.discarded = [];
 window.revealed = [];
+window.recovered = 0;
 
 // Two proposals over two files. The first is an agent run: two hunks, so
 // answering one of them leaves the other waiting and the paper unchanged.
@@ -75,28 +75,50 @@ const handlers = {
   onreject: (comment) => { window.decided.push(['comment', comment.id, 'reject']); return Promise.resolve({ ok: true }); },
   onreveal: (comment) => window.revealed.push(comment.id),
   onproposalpreview: (ids) => { window.asked = ids; },
+  onrecover: () => { window.recovered += 1; },
 };
 
 let component = null;
 window.show = async (props = {}) => {
   if (component) await unmount(component);
-  window.decided = []; window.discarded = []; window.revealed = []; window.asked = null;
+  window.decided = []; window.discarded = []; window.revealed = []; window.asked = null; window.recovered = 0;
   component = mount(Changes, { target: document.body, props: {
     proposals: rows, comments, files, canReview: true, canModerate: true, ...handlers, ...props,
   } });
   await tick();
 };
 window.linkedDedupCheck = async () => {
-  await window.show({ comments: [...comments, linkedComment] });
+  await window.show({ proposals: rows.filter((row) => row.proposal === 'run'), comments: [linkedComment] });
   const visible = window.rows();
+  await window.menu('Select multiple');
+  window.pick('suggestion:linked');
+  const previewEnabled = !window.barButton('Read')?.disabled;
+  await window.show({ proposals: rows.filter((row) => row.proposal === 'run'), comments: [linkedComment] });
   await window.act('suggestion:linked', 'accept');
-  return { rows: visible, decided: window.decided };
+  return { rows: visible, decided: window.decided, previewEnabled };
+};
+window.linkedUnavailableCheck = async () => {
+  const partial = [{ ...rows[0], status: 'accepted' }, rows[1]];
+  await window.show({ proposals: partial, comments: [{ ...linkedComment, proposed: null }] });
+  const visible = window.rows();
+  await window.look('suggestion:linked');
+  const actions = await window.actions('suggestion:linked');
+  const discardLabel = document.querySelector('.change-detail .empty-link:last-child')?.textContent.trim() || '';
+  await document.querySelector('.change-detail .empty-link:last-child')?.click();
+  return { visible, actions, discardLabel, discarded: window.discarded };
+};
+window.recoveryControlCheck = async () => {
+  await window.show({ proposals: [], comments: [], recoveryRequired: true });
+  const text = document.querySelector('.tracking-recovery')?.textContent.trim() || '';
+  document.querySelector('.tracking-recovery button')?.click();
+  return { text, recovered: window.recovered };
 };
 
 window.rows = () => [...document.querySelectorAll('.change-row')].map((row) => ({
   id: row.querySelector('.row-main')?.id?.replace('change-', '') || '',
   removed: row.querySelector('.deletion')?.textContent?.trim() || '',
   added: row.querySelector('.insertion')?.textContent?.trim() || '',
+  summary: row.querySelector('.row-summary')?.textContent?.trim() || '',
   active: row.classList.contains('active'),
   blocked: row.classList.contains('blocked'),
 }));
@@ -240,7 +262,21 @@ try {
   assert.equal(linked.rows[0].id, "suggestion:linked");
   assert.equal(linked.rows[0].removed, "− cat");
   assert.equal(linked.rows[0].added, "+ tabby");
+  assert.equal(linked.previewEnabled, true, "a linked suggestion remains available to the whole-proposal preview");
   assert.deepEqual(linked.decided, [["comment", "linked", "accept"]], "the whole suggestion is accepted once");
+  const unavailable = await page.evaluate("window.linkedUnavailableCheck()");
+  assert.equal(unavailable.visible.length, 1);
+  assert.equal(unavailable.visible[0].id, "suggestion:linked");
+  assert.equal(unavailable.visible[0].removed, "", "missing replacement text is not drawn as a deletion");
+  assert.equal(unavailable.visible[0].added, "");
+  assert.equal(unavailable.visible[0].summary, "Suggested replacement unavailable");
+  assert.deepEqual(unavailable.actions, { accept: true, reject: false },
+    "an unavailable whole replacement cannot be accepted but can be rejected");
+  assert.equal(unavailable.discardLabel, "Discard change");
+  assert.deepEqual(unavailable.discarded, ["run"]);
+  const recovery = await page.evaluate("window.recoveryControlCheck()");
+  assert.match(recovery.text, /preserved here for manual recovery/);
+  assert.equal(recovery.recovered, 1, "the recovery message exposes a direct export action");
   await page.evaluate("window.show()");
 
   // A hunk whose base has moved is shown and cannot be answered: the words at
@@ -323,7 +359,8 @@ try {
   await page.evaluate("window.barButton('Accept all').click()");
   await until("bulk rival guard", async () => (await page.evaluate("window.decided")).length === 1, 4000);
   assert.deepEqual(await page.evaluate("window.decided"), [["carol", 0, "accept"]]);
-  assert.match(await page.evaluate("window.feedback()"), /excluded/);
+  assert.equal(await page.evaluate("window.feedback()"), "1 change accepted.",
+    "the bulk action count reflects only proposals eligible for safe acceptance");
   // Even a manually selected rival cannot be sent through the bulk path.
   // Rivals are answered through their individual row action instead.
   await page.evaluate("window.show({ proposals: window.rivals, comments: [] })");

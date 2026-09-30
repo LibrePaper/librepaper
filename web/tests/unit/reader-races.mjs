@@ -844,6 +844,29 @@ for (const invalidate of [null, "navigation", "main"]) {
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 
+// Proposal metadata is requested after source hydration on both first join and
+// reconnect. An empty doc-rows join may not emit a source-change callback, so
+// readiness, rather than a changed-text event, releases the pending request.
+{
+  const sent = [];
+  const active = { joined: false };
+  const ctx = context({
+    proposalListNeeded: true,
+    session: active,
+    connected: true,
+    collaboration: { send: (message) => sent.push(message) },
+  });
+  vm.runInContext(body("  function sendProposalListWhenReady", "  function attachProposalManager"), ctx);
+  ctx.sendProposalListWhenReady(active);
+  assert.deepEqual(sent, [], "proposal list waits until the source join is hydrated");
+  assert.equal(ctx.proposalListNeeded, true);
+  active.joined = true;
+  ctx.sendProposalListWhenReady(active);
+  assert.deepEqual(sent, [{ type: "proposal-list" }],
+    "an unchanged reconnect join still requests proposals once hydration completes");
+  assert.equal(ctx.proposalListNeeded, false);
+}
+
 // Ctrl-S names where the work is, and reserves "saved" for the server. This
 // browser's own storage is evictable and is one device, so an offline Ctrl-S
 // says what will happen to the typing rather than calling it saved.
@@ -852,6 +875,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   const ctx = context({
     connected: true, persistence: { pending: 1, local: true, joined: true },
     proposalUnacknowledged: false,
+    trackedProposalStatus: null,
     say: (value) => { said.push(value); },
   });
   vm.runInContext(body("  function reportPersistence()", "  // There is no save, so a close"), ctx);
@@ -869,17 +893,22 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.match(said[1], /tracked change is still waiting/,
     "unacknowledged tracked edits are not reported as saved after room persistence catches up");
   ctx.proposalUnacknowledged = false;
+  ctx.trackedProposalStatus = { recoveryRequired: true, error: "manual recovery required" };
+  vm.runInContext("reportPersistence()", ctx);
+  assert.match(said[2], /preserved in this browser but needs manual recovery/,
+    "a draft requiring manual recovery is not described as a retryable pending send");
+  ctx.trackedProposalStatus = null;
   ctx.connected = false;
   vm.runInContext("reportPersistence()", ctx);
-  assert.match(said[2], /^Offline. Everything typed so far has already reached the server./);
+  assert.match(said[3], /^Offline. Everything typed so far has already reached the server./);
   ctx.persistence.pending = 2;
   vm.runInContext("reportPersistence()", ctx);
-  assert.match(said[3], /in this browser only/, "work the server has not seen is not called saved");
-  assert.doesNotMatch(said[2] + said[3], /saved/i, "the word is the server's");
+  assert.match(said[4], /in this browser only/, "work the server has not seen is not called saved");
+  assert.doesNotMatch(said[3] + said[4], /saved/i, "the word is the server's");
   // A local write that failed says so through its own failure, not here.
   ctx.persistence = { pending: 0, local: true, localError: "quota exceeded" };
   vm.runInContext("reportPersistence()", ctx);
-  assert.equal(said.length, 4);
+  assert.equal(said.length, 5);
 }
 
 // Reconnect metadata is checked before the old session can send its CRDT.

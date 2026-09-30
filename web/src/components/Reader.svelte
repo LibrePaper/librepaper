@@ -931,7 +931,7 @@
   let proposalListNeeded = false;
 
   function sendProposalListWhenReady(active = session) {
-    if (!proposalListNeeded || !active || active !== session || !connected) return;
+    if (!proposalListNeeded || !active || active !== session || !connected || !active.joined) return;
     proposalListNeeded = false;
     collaboration?.send({ type: "proposal-list" });
   }
@@ -1004,7 +1004,8 @@
     const drawn = [];
     const rows = [];
     for (const proposal of openProposals.values()) {
-      const hunks = hunksOfProposal(session.doc, proposal).map((hunk) => {
+      const sourceHunks = hunksOfProposal(session.doc, proposal);
+      const hunks = sourceHunks.map((hunk) => {
         const mapped = locateProposalHunk(session.doc, proposal, hunk);
         return {
           ...hunk,
@@ -1014,7 +1015,10 @@
           stale: Boolean(mapped.stale),
         };
       });
-      drawn.push({ id: proposal.id, author: proposal.author, hunks });
+      // Keep original base coordinates for the Editor overlay. It may be
+      // showing an author's private draft, whose local edits shift these
+      // positions differently from the live-document positions used below.
+      drawn.push({ id: proposal.id, author: proposal.author, base: proposal.base, hunks: sourceHunks });
       for (const hunk of hunks) {
         const fileId = hunk.file || "";
         const path = hunk.path || (fileId && session.paths?.get(fileId)) || "";
@@ -1170,8 +1174,12 @@
 
   function receive(event) {
     const proposalWaiter = event.request_id && suggestionDecisions.get(event.request_id);
+    // Let the draft manager observe every server error so it can settle open,
+    // update, and recovery state. Only proposal-scoped errors belong in the
+    // proposal branch below; unrelated request IDs must keep their handlers.
+    if (event.type === "error") proposalManager?.apply?.(event);
     if (event.type?.startsWith("proposal-")
-        || (event.type === "error" && (event.proposal_id || event.request_id))) {
+        || (event.type === "error" && (event.proposal_id || proposalWaiter))) {
       if (event.type === "proposal-list") {
         openProposals.clear();
         for (const open of event.proposals || []) {
@@ -1233,7 +1241,7 @@
           else waiting.reject(new Error(event.message || "that decision was refused"));
         }
       }
-      proposalManager?.apply?.(event);
+      if (event.type !== "error") proposalManager?.apply?.(event);
       if (event.type === "proposal-discarded" || event.type === "proposal-decided" && event.resolved) annotations.refresh();
       return;
     }
@@ -1351,9 +1359,14 @@
     // their carets are. A reader receives all of this too -- that is how they
     // see the current text -- and sends none of it.
     if (event.type === "doc-state") {
-      session
+      const active = session;
+      active
         ?.start(event)
-        .then(() => paintPreview())
+        .then(() => {
+          if (active !== session) return;
+          paintPreview();
+          sendProposalListWhenReady(active);
+        })
         .catch((error) => say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" }));
       peers = event.count || 1;
       return;
@@ -1366,9 +1379,14 @@
       // is sequenced behind any `start` that is still mid-fetch for a
       // referenced base (project-session.js `joinGate`), so it can no longer
       // be assumed synchronous.
-      session
+      const active = session;
+      active
         ?.rows(event)
-        .then(() => paintPreview())
+        .then(() => {
+          if (active !== session) return;
+          paintPreview();
+          sendProposalListWhenReady(active);
+        })
         .catch((error) => say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" }));
       return;
     }
@@ -1476,7 +1494,9 @@
 
   // A close is only worth interrupting when the work has reached neither this
   // browser's storage nor the server.
-  const proposalUnacknowledged = $derived(Boolean(trackedProposalStatus?.pending));
+  const proposalUnacknowledged = $derived(Boolean(
+    trackedProposalStatus?.pending || trackedProposalStatus?.error || trackedProposalStatus?.recoveryRequired,
+  ));
   const atRisk = $derived(Boolean(mayEdit && (proposalUnacknowledged || persistence.localError || (persistence.pending && !persistence.local))));
 
   // What the document is called, which is what the rendered page is titled.
@@ -3389,6 +3409,18 @@
     // A local write that failed or is still in flight is not worth
     // reassuring anybody about; the failure says so on its own.
     if (persistence.localError || persistence.localPending) return;
+    if (trackedProposalStatus?.recoveryRequired) {
+      say("A tracked change is preserved in this browser but needs manual recovery. Copy its text somewhere safe before discarding or replacing it.",
+        { kind: "problem", id: "reader:persistence" });
+      return;
+    }
+    if (trackedProposalStatus?.error) {
+      say(connected
+        ? `A tracked change needs attention: ${String(trackedProposalStatus.error?.message || trackedProposalStatus.error)}. Keep this tab open while it is handled.`
+        : `Offline. A tracked change is kept in this browser but needs attention: ${String(trackedProposalStatus.error?.message || trackedProposalStatus.error)}. Reconnect and keep this tab open.`,
+      { kind: "problem", id: "reader:persistence" });
+      return;
+    }
     if (proposalUnacknowledged) {
       say(connected
         ? "A tracked change is still waiting for the server to confirm it."
@@ -3408,6 +3440,16 @@
     }
     if (!persistence.joined || persistence.pending) return;
     say("Saved on the server.", { id: "reader:persistence" });
+  }
+
+  function downloadTrackedRecovery() {
+    const drafts = proposalManager?.recoveryTexts?.() || [];
+    if (!drafts.length) {
+      say("The preserved tracked text is no longer available for export.", { kind: "problem", id: "reader:proposal-recovery" });
+      return;
+    }
+    const contents = JSON.stringify({ document: SLUG, drafts }, null, 2);
+    saveBlob(new Blob([contents], { type: "application/json" }), `${SLUG}-tracked-draft-recovery.json`);
   }
 
   async function makeAvailableOffline() {
@@ -3816,6 +3858,7 @@
     <Changes proposals={reviewRows} {comments} {files} {identity} commentingAs={doc.commenting_as || "Anonymous"}
       {canModerate} canReview={mayEdit}
       {tracking} canTrack={mayEdit && editing} ontracking={setTracking}
+      recoveryRequired={Boolean(trackedProposalStatus?.recoveryRequired)} onrecover={downloadTrackedRecovery}
       {went} {replacements} canComment={mayChat} onreveal={revealAnnotation}
       selected={selectedAnnotation} onresolve={resolve} ondelete={askDelete}
       ondeletemany={askDeleteMany} onreply={reply}
@@ -3925,7 +3968,7 @@
         </div>
       {:else if Editor && sourceBound}
         {#key sourceEpoch}
-          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} editable={mayEdit}
+          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {rules} editable={mayEdit}
                   send={collaboration?.sendLive} {review} {reviewing}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone} onproposalstatus={(status) => { trackedProposalStatus = status; }}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; }} />

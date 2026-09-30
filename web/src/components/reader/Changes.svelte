@@ -4,11 +4,12 @@
   import Icon from "../Icon.svelte";
 
   let {
-    // One row per hunk. A decision names a proposal and an index within it
-    // (SPEC-loro.md §5.2), so the unit of the queue is a hunk and not a
-    // proposal: an agent run that touches four passages is four answers.
+    // Ordinary proposals can still be reviewed by hunk. A linked suggestion
+    // is one whole decision, including legacy proposals that contain several
+    // hunks.
     proposals = [], comments = [], files = [], tracking = false,
     canTrack = true, canReview = true, selected = "", selectedProposal = "", filters = {},
+    recoveryRequired = false, onrecover,
     authors = [], sessions = [], ontracking, onfilter, onselect,
     onaccept, onreject, onproposalreveal, onproposaldecide, ondiscard,
     onprevious, onnext, onreveal, onresolve, ondelete, onreply, onhistory, onproposalpreview,
@@ -106,9 +107,13 @@
         proposal: id,
         __kind: "suggestion",
         before: comment.original_anchor?.target?.exact ?? comment.exact ?? first.before ?? "",
-        // Missing annotation text is unavailable; the proposal diff is the
-        // fallback. An explicit empty string still means a deletion.
-        after: comment.proposed == null ? first.after ?? "" : comment.proposed,
+        // The first hunk cannot stand in for a missing whole-suggestion
+        // replacement: legacy proposals may have several unrelated hunks.
+        // Empty string is an available replacement that deletes the passage.
+        after: comment.proposed == null ? undefined : comment.proposed,
+        unavailable: comment.proposed == null,
+        status: comment.resolved ? comment.outcome || "accepted" : "pending",
+        resolved: Boolean(comment.resolved),
         stale: hunks.some((row) => Boolean(row.stale)),
         contested: hunks.find((row) => row.contested)?.contested || "",
         replies: comment.replies || first.replies,
@@ -169,7 +174,7 @@
   /// request and at least one proposal to put in it; a queue of nothing but
   /// comment suggestions has no branches to merge.
   const canPreview = $derived(
-    Boolean(onproposalpreview) && filteredRows.some((item) => item.__kind === "proposal"),
+    Boolean(onproposalpreview) && filteredRows.some((item) => item.__kind === "proposal" || item.proposal),
   );
   /// Whether ticking a row leads anywhere: to a reading, or to a decision
   /// about several changes at once. Without one of those the checkbox is a
@@ -204,7 +209,7 @@
   const chosenChanges = $derived(
     selectedRows.filter((item) => pending(item) && reviewAllowed(item) && (!blocker(item) || item.proposal)),
   );
-  const selectedAcceptable = $derived(chosenChanges.filter((item) => !blocker(item) && !item.contested));
+  const selectedAcceptable = $derived(chosenChanges.filter((item) => !blocker(item) && !item.contested && !item.unavailable));
   const selectedRejectable = $derived(chosenChanges);
   const showExtraFilters = $derived(derivedAuthors.length > 1 || derivedFiles.length > 1);
   /// Everything on show that this caller could actually answer for: what the
@@ -212,8 +217,8 @@
   const answerable = $derived(
     pendingRows.filter((item) => reviewAllowed(item) && (!blocker(item) || item.proposal)),
   );
-  const acceptAllRows = $derived(answerable.filter((item) => !blocker(item) && !item.contested));
-  const rejectAllRows = answerable;
+  const acceptAllRows = $derived(answerable.filter((item) => !blocker(item) && !item.contested && !item.unavailable));
+  const rejectAllRows = $derived(answerable);
   /// Whether the filename belongs on the metadata line. One file under review
   /// names itself in every row, which is a word that tells the reviewer
   /// nothing; two or more and it is the only thing placing the change.
@@ -245,6 +250,7 @@
   /// nobody wrote.
   function blocker(item) {
     if (!item) return "";
+    if (item.unavailable) return "The suggested replacement is unavailable.";
     if (item.stale) return typeof item.stale === "string" ? item.stale : "The text this was written against has changed.";
     if (item.conflict) return typeof item.conflict === "string" ? item.conflict : "Concurrent edits need attention.";
     return "";
@@ -276,6 +282,7 @@
   async function decide(item, action) {
     const id = rowId(item); const why = blocker(item);
     if (!pending(item) || !reviewAllowed(item) || deciding.has(id)) return;
+    if (action === "accept" && item.unavailable) { feedback = blocker(item); activate(item); return; }
     if (why && (action === "accept" || !item.proposal)) { feedback = `Cannot ${action} this change: ${why}`; activate(item); return; }
     addBusy(id); feedback = "";
     const ids = pendingRows.map(rowId); const oldIndex = ids.indexOf(id);
@@ -343,7 +350,9 @@
   function resolve(item) {
     // Reveal focuses the editor, so take focus back to the row button via focusRow in activate.
     activate(item, { focus: true });
-    feedback = "This change was written against text that has since moved. Ask its author to offer it again.";
+    feedback = item.unavailable
+      ? "The suggested replacement is unavailable. Reject or discard this change."
+      : "This change was written against text that has since moved. Ask its author to offer it again.";
   }
   function keydown(event) {
     if (event.defaultPrevented || event.isComposing || event.target.closest("input,select,textarea,[contenteditable=true],details,[data-scope='menu']")) return;
@@ -409,6 +418,7 @@
       </div>
     </div>
     <div class="changes-meta" aria-live="polite">{allPending} pending{pendingRows.length !== allPending ? ` · ${pendingRows.length} shown` : ""}{contestedCount ? ` · ${contestedCount} contested` : ""}</div>
+    {#if recoveryRequired}<div class="tracking-recovery" role="alert"><span>A declined tracked edit could not be rebased. Its text is preserved here for manual recovery.</span><button type="button" class="empty-link" onclick={() => onrecover?.()}>Download preserved text</button></div>{/if}
   </header>
   <!-- One control, only visible when there are multiple authors or files to filter by. -->
   {#if showExtraFilters}<div class="filter-bar">
@@ -465,7 +475,7 @@
     <!-- The change first and whoever wrote it after it, smaller: the proposed
          words are the thing being reviewed, and a username set above them in
          bold reads as though the author were. -->
-    <div class="row-head">{#if selecting}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Tick ${authorLabel(item)}'s change`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}<span class="row-summary">{shortDiff(item)}</span>{/if}</span><span class="row-meta"><span class="row-author">{authorLabel(item)}</span>{#if showPath}<span class="row-context">{pathOf(item)}</span>{/if}{#if why}<span class="row-warning">needs attention</span>{/if}</span></button></div>
+    <div class="row-head">{#if selecting}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Tick ${authorLabel(item)}'s change`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-diff">{#if item.unavailable}<span class="row-summary">Suggested replacement unavailable</span>{:else}{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}<span class="row-summary">{shortDiff(item)}</span>{/if}{/if}</span><span class="row-meta"><span class="row-author">{authorLabel(item)}</span>{#if showPath}<span class="row-context">{pathOf(item)}</span>{/if}{#if why}<span class="row-warning">needs attention</span>{/if}</span></button></div>
     {#if isOpen && why}<div id={`change-detail-${id}`} class="change-detail" role="region" aria-label={`Details for change in ${pathOf(item)}`}>
       <div class="conflict" role="alert"><p>{why}</p><button type="button" class="empty-link" onclick={() => resolve(item)}>Show the passage</button>{#if item.proposal && ondiscard}<button type="button" class="empty-link" disabled={deciding.has(id)} onclick={async () => { addBusy(id); try { await ondiscard(item); feedback = "Change discarded."; } catch (error) { feedback = error?.message || "Could not discard this change."; } finally { removeBusy(id); } }}>Discard change</button>{/if}</div>
     </div>{/if}
@@ -511,6 +521,7 @@
      `--panel-muted` is what every other panel means by quiet. */
   .changes-meta, .row-meta, .changes-hint { color: var(--panel-muted); font-size: var(--panel-meta-size); }
   .changes-meta { margin-top: .1rem; }
+  .tracking-recovery { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin-top: .45rem; padding: .45rem; border-left: 2px solid var(--color-warning-solid); background: var(--color-raised); color: var(--color-text); font-size: var(--panel-meta-size); }
   /* The track and thumb are `.switch` in librepaper.css, worn here and in the
      settings dialog alike; this is only where the words sit beside them. */
   .changes-panel :global(.tracking-toggle) { display: flex; align-items: center; gap: .35rem; flex: 0 0 auto; font-size: var(--panel-meta-size); white-space: nowrap; }
