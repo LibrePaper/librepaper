@@ -245,9 +245,9 @@ impl Server {
             .iter()
             .map(|(path, bytes)| ((*path).into(), bytes.to_vec()))
             .collect();
-        let (texts, assets) = self
+        let (texts, assets, staged_assets) = self
             .store
-            .sort_and_write_assets(document.id, files)
+            .sort_and_stage_assets(document.id, files)
             .await
             .map_err(|e| e.to_string())?;
         let texts: std::collections::BTreeMap<String, String> = texts.into_iter().collect();
@@ -263,6 +263,7 @@ impl Server {
             starter.source,
             &texts,
             &assets,
+            staged_assets,
             account_id,
             owner_session_generation,
             &author_label,
