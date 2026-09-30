@@ -19,7 +19,7 @@
   let expanded = $state("");
   let checked = $state(new Set());
   let deciding = $state(new Set());
-  let localFilters = $state({ status: "pending", author: "", file: "", session: "" });
+  let localFilters = $state({ author: "", file: "", session: "" });
   let feedback = $state("");
   // Ticking changes is a mode you enter, not the state the queue sits in. A
   // review is one change at a time; answering several at once is the rarer
@@ -90,9 +90,7 @@
   const orderedRows = $derived([...allRows].sort((a, b) => orderOf(a) - orderOf(b) || pathOf(a).localeCompare(pathOf(b)) || positionOf(a) - positionOf(b) || String(value(a, "created_at", "created")).localeCompare(String(value(b, "created_at", "created"))) || rowId(a).localeCompare(rowId(b))));
   const activeFilters = $derived({ ...localFilters, ...(filters || {}) });
   const filteredRows = $derived(orderedRows.filter((item) => {
-    const status = activeFilters.status || "pending";
-    if (status === "pending" && !pending(item)) return false;
-    if (status !== "pending" && status !== "all" && statusOf(item) !== status) return false;
+    if (!pending(item)) return false;
     return (!activeFilters.author || authorOf(item) === activeFilters.author) && (!activeFilters.file || pathOf(item) === activeFilters.file) && (!activeFilters.session || sessionOf(item) === activeFilters.session);
   }));
   const pendingRows = $derived(filteredRows.filter(pending));
@@ -181,18 +179,14 @@
   /// names itself in every row, which is a word that tells the reviewer
   /// nothing; two or more and it is the only thing placing the change.
   const showPath = $derived(derivedFiles.length > 1);
-  const statusNames = { pending: "Pending changes", accepted: "Accepted changes", rejected: "Rejected changes", all: "All changes" };
   const filterLabel = $derived([
-    statusNames[activeFilters.status] || statusNames.pending,
+    "Pending changes",
     activeFilters.author ? authorFilterLabel(activeFilters.author) : "",
     activeFilters.file || "",
   ].filter(Boolean).join(" · "));
-  /// Whether anything is hidden behind the status filter -- what the empty
-  /// state offers to show when the pending queue is done.
-  const resolvedCount = $derived(allRows.length - allPending);
   /// The ••• appears only when it holds something: an empty menu is a button
   /// that opens nothing.
-  const hasMenu = $derived(canPick || (canReview && answerable.length > 0) || (activeFilters.status === "pending" && resolvedCount > 0));
+  const hasMenu = $derived(canPick || (canReview && answerable.length > 0));
 
   $effect(() => {
     const valid = new Set(allRows.filter(pending).map(rowId));
@@ -297,11 +291,10 @@
     if (value === "select") startSelecting();
     else if (value === "accept-all") confirming = "accept";
     else if (value === "reject-all") confirming = "reject";
-    else if (value === "resolved") updateFilter("status", "all");
   }
   function chooseFilter(value) {
     const [key, ...rest] = String(value).split(":");
-    if (key === "status" || key === "author" || key === "file") updateFilter(key, rest.join(":"));
+    if (key === "author" || key === "file") updateFilter(key, rest.join(":"));
   }
   function move(offset) { const index = filteredRows.findIndex((item) => rowId(item) === active); const item = filteredRows[index + offset] || filteredRows[index]; if (item) activate(item, { focus: true }); }
   // A stale hunk has one way forward: look at the passage as it stands now.
@@ -371,20 +364,14 @@
               <Menu.Item value="accept-all" class="menuitem">Accept all pending changes</Menu.Item>
               <Menu.Item value="reject-all" class="menuitem">Reject all pending changes</Menu.Item>
             {/if}
-            {#if activeFilters.status === "pending" && resolvedCount}
-              <Menu.Item value="resolved" class="menuitem">Show resolved changes</Menu.Item>
-            {/if}
           </ExplorerMenu>
         </Menu>{/if}
       </div>
     </div>
     <div class="changes-meta" aria-live="polite">{allPending} pending{pendingRows.length !== allPending ? ` · ${pendingRows.length} shown` : ""}{contestedCount ? ` · ${contestedCount} contested` : ""}</div>
   </header>
-  <!-- One control, not a dropdown beside a button that opens more of them:
-       status is what a reviewer changes, and author and file -- when there is
-       more than one of either -- sit inside the same popover rather than
-       claiming a row of their own. -->
-  <div class="filter-bar">
+  <!-- One control, only visible when there are multiple authors or files to filter by. -->
+  {#if showExtraFilters}<div class="filter-bar">
     <Menu onSelect={(chosen) => chooseFilter(chosen.value)}>
       <Menu.Trigger>
         {#snippet element(attributes)}
@@ -392,12 +379,7 @@
         {/snippet}
       </Menu.Trigger>
       <ExplorerMenu>
-        <div class="changes-menu-label">Status</div>
-        {#each [["pending", "Pending"], ["accepted", "Accepted"], ["rejected", "Rejected"], ["all", "All"]] as [key, label]}
-          <Menu.Item value={`status:${key}`} class="menuitem"><span class="menuitem-check">{activeFilters.status === key ? "✓" : ""}</span>{label}</Menu.Item>
-        {/each}
         {#if derivedAuthors.length > 1}
-          <hr class="hr my-1" />
           <div class="changes-menu-label">Author</div>
           <Menu.Item value="author:" class="menuitem"><span class="menuitem-check">{activeFilters.author ? "" : "✓"}</span>Anyone</Menu.Item>
           {#each derivedAuthors as author}
@@ -405,7 +387,7 @@
           {/each}
         {/if}
         {#if derivedFiles.length > 1}
-          <hr class="hr my-1" />
+          {#if derivedAuthors.length > 1}<hr class="hr my-1" />{/if}
           <div class="changes-menu-label">File</div>
           <Menu.Item value="file:" class="menuitem"><span class="menuitem-check">{activeFilters.file ? "" : "✓"}</span>Every file</Menu.Item>
           {#each derivedFiles as file}
@@ -414,7 +396,7 @@
         {/if}
       </ExplorerMenu>
     </Menu>
-  </div>
+  </div>{/if}
   <!-- Ticking rows, and the verbs that go with it, for as long as the mode
        lasts. Reading a chosen set of proposals as prose lives here too: it is
        a reading and not a version -- nothing is decided by opening it -- and
@@ -433,8 +415,7 @@
   </div>{/if}
   {#if feedback}<p class="panel-status" role="status" aria-live="polite">{feedback}</p>{/if}
   {#if !filteredRows.length}<div class="changes-empty" role="status">
-    <p class="panel-muted">{activeFilters.status === "pending" ? "No pending changes." : "No changes match these filters."}</p>
-    {#if activeFilters.status === "pending" && resolvedCount}<button type="button" class="empty-link" onclick={() => updateFilter("status", "all")}>View resolved changes</button>{/if}
+    <p class="panel-muted">{activeFilters.author || activeFilters.file ? "No changes match these filters." : "No pending changes."}</p>
   </div>{/if}
   <!-- One entry per decision, except where several proposals answer the same
        question: those stand together so the choice between them is visible
@@ -444,7 +425,7 @@
     <!-- The change first and whoever wrote it after it, smaller: the proposed
          words are the thing being reviewed, and a username set above them in
          bold reads as though the author were. -->
-    <div class="row-head">{#if selecting}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Tick ${authorLabel(item)}'s change`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}<span class="row-summary">{shortDiff(item)}</span>{/if}</span><span class="row-meta"><span class="row-author">{authorLabel(item)}</span>{#if showPath}<span class="row-context">{pathOf(item)}</span>{/if}{#if statusOf(item) !== "pending"}<span class="row-status">{statusOf(item)}</span>{/if}{#if why}<span class="row-warning">needs attention</span>{/if}</span></button></div>
+    <div class="row-head">{#if selecting}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Tick ${authorLabel(item)}'s change`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}<span class="row-summary">{shortDiff(item)}</span>{/if}</span><span class="row-meta"><span class="row-author">{authorLabel(item)}</span>{#if showPath}<span class="row-context">{pathOf(item)}</span>{/if}{#if why}<span class="row-warning">needs attention</span>{/if}</span></button></div>
     {#if isOpen && why}<div id={`change-detail-${id}`} class="change-detail" role="region" aria-label={`Details for change in ${pathOf(item)}`}>
       <div class="conflict" role="alert"><p>{why}</p><button type="button" class="empty-link" onclick={() => resolve(item)}>Show the passage</button></div>
     </div>{/if}
