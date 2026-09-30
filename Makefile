@@ -46,7 +46,7 @@ PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(LCM)
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
 
-.PHONY: help build install test check fmt serve demo wipe kill clean snapshot web pins site site-serve
+.PHONY: help build install test check fmt serve demo demo-run wipe kill clean snapshot web pins site site-serve
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -203,8 +203,24 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # The site server is a background process, so the recipe traps its own exit
 # and takes it down: a preview server left holding SITE_PORT would make the
 # next `make demo` fail on --strictPort.
-demo: SIMULATE_ACTIVITY ?= 21
-demo: $(BIN)  ## Serve the site, the app, a local companion and simulated activity (SIMULATE_ACTIVITY=21)
+#
+# Publishing needs sign-in, so `demo` runs under the sops-encrypted deployment
+# keys when it can decrypt them: their GitHub app is registered for
+# http://localhost:$(PORT). Without sops or the key, the demo starts with no
+# sign-in, and reading and commenting still work.
+DEMO_KEYS ?= tools/deploy-keys.yaml
+demo:  ## Serve the site, the app, a local companion and simulated activity (SIMULATE_ACTIVITY=21)
+	@if [ -z "$$LIBREPAPER_GITHUB_CLIENT_ID" ] && command -v sops >/dev/null 2>&1 \
+		&& sops --decrypt --extract '["LIBREPAPER_GITHUB_CLIENT_ID"]' $(DEMO_KEYS) >/dev/null 2>&1; then \
+		echo "demo: GitHub sign-in from $(DEMO_KEYS)"; \
+		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run'; \
+	else \
+		echo "demo: no sign-in (sops cannot decrypt $(DEMO_KEYS)); publishing is off"; \
+		exec $(MAKE) --no-print-directory demo-run; \
+	fi
+
+demo-run: SIMULATE_ACTIVITY ?= 21
+demo-run: $(BIN)
 	@tools/deploy-assets check
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
 	@set -e; \
