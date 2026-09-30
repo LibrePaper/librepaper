@@ -1930,7 +1930,6 @@
     paint: () => void paintPreview(),
   });
   const buildPreferences = $derived(buildSettings.state.preferences);
-  const latexSettingsState = $derived(buildSettings.state.latex);
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
   const quartoPreviewMode = $derived(buildSettings.state.quartoPreviewMode);
@@ -2664,11 +2663,6 @@
     if (value === "format-html") {
       if (displayedFormat === "latex") return void setLatexOutput("html");
       if (displayedFormat === "typst") return void setTypstOutput("html");
-    }
-    if (value.startsWith("engine-latex-")) {
-      const engine = value.slice("engine-latex-".length);
-      if (["auto", "pdflatex", "xelatex", "lualatex"].includes(engine)) setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { selection: "tool", backend: "browser", tool: "tex", engine }));
-      return;
     }
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
     if (value === "preview-latex-html") return void setLatexOutput("html");
@@ -3504,37 +3498,6 @@
   <Menu.Item value="format-pdf" class="menuitem" disabled={!selectableFormat}>
     <span class="menuitem-check">{selectedFormat === "pdf" ? "✓" : ""}</span>PDF
   </Menu.Item>
-  <hr class="hr my-1" />
-  <div class="menu-section-label">Engine</div>
-  {#if sourceFormat === "quarto"}
-    <!-- Which engine is drawing follows from Local execution below, rather
-         than being chosen twice: with it off this is the browser's own
-         Markdown draft, which never runs any code; with it on, Quarto runs
-         the document on this computer through the local app and its own page
-         is what appears here. Nothing rendered is ever uploaded. -->
-    <Menu.Item value="engine-quarto" class="menuitem" disabled>
-      <span class="menuitem-check">✓</span>{localExecution && quartoPreviewMode === "quarto" ? "Quarto" : "Markdown"}
-    </Menu.Item>
-  {:else if displayedFormat === "typst"}
-    <!-- The same, for a Typst document: this browser's own Typst rendering,
-         or the PDF Calepin delivers after running the document's chunks on
-         this computer. HTML is always the browser Typst renderer, even while
-         local execution is on. -->
-    <Menu.Item value="engine-typst" class="menuitem" disabled>
-      <span class="menuitem-check">✓</span>{localExecution && typstPreviewMode === "calepin" && typstOutput !== "html" ? "Calepin" : "Typst"}
-    </Menu.Item>
-  {:else if displayedFormat === "latex"}
-    {#each [["auto", "Automatic"], ["pdflatex", "pdfLaTeX"], ["xelatex", "XeLaTeX"], ["lualatex", "LuaLaTeX"]] as [engine, label]}
-      <Menu.Item value="engine-latex-{engine}" class="menuitem">
-        <span class="menuitem-check">{(latexSettingsState.engine || "auto") === engine ? "✓" : ""}</span>{label}
-      </Menu.Item>
-    {/each}
-  {:else if displayedFormat === "markdown"}
-    <Menu.Item value="engine-markdown" class="menuitem" disabled><span class="menuitem-check">✓</span>Markdown</Menu.Item>
-  {:else if displayedFormat === "html"}
-    <Menu.Item value="engine-html" class="menuitem" disabled><span class="menuitem-check">✓</span>HTML</Menu.Item>
-  {/if}
-  <hr class="hr my-1" />
 {/snippet}
 
 {#snippet viewItems()}

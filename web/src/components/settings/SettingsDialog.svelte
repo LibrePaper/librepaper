@@ -96,8 +96,13 @@
         {:else if shown.id === "storage"}
           {#if context.signedIn}<QuotaSettings />{/if}
           {#if context.format === "latex" && mayEdit}<StorageSettings />{/if}
-        {:else if shown.id === "build"}
-          <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
+        {:else if shown.id === "render"}
+          <!-- Build preferences are stored per document, and a document has one
+               format, so only that format's subsection is shown. -->
+          <section class="settings-subsection">
+            <h4 class="settings-subhead">{({ latex: "LaTeX", typst: "Typst", markdown: "Markdown", quarto: "Markdown" })[sourceFormat]}</h4>
+            <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
+          </section>
         {:else if shown.id === "local"}
           <LocalAppSettings {main} {sourceFormat} {mayEdit} {onbindingid} />
           <section class="settings-subsection">

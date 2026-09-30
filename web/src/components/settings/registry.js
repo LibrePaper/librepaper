@@ -35,11 +35,11 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "build", says: "Build", offered: build,
+    id: "render", says: "Render", offered: build,
     note: "Only this browser and user.",
     entries: [
-      { id: "build-tool", says: "Build tool", terms: "compiler engine browser local companion automatic latex typst markdown quarto" },
-      { id: "build-engine", says: "Engine", terms: "pdflatex xelatex lualatex" },
+      { id: "render-tool", says: "Build tool", terms: "compiler render browser local companion automatic latex typst markdown quarto" },
+      { id: "render-engine", says: "Engine", terms: "pdflatex xelatex lualatex render compiler" },
     ],
   },
   {

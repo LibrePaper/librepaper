@@ -82,8 +82,8 @@
   async function connect() { try { await localBridge.connectApp(); } catch { /* local status carries instructions */ } }
 </script>
 
-<SettingRow id="build-tool" title="Build tool" description="Build choices belong to this browser and user. Collaborators cannot change them.">
-  <select class="select setting-select" aria-label="Build tool" value={selected}
+<SettingRow id="render-tool" title={format === "latex" ? "Compiler" : "Build tool"} description="Build choices belong to this browser and user. Collaborators cannot change them.">
+  <select class="select setting-select" aria-label={format === "latex" ? "Compiler" : "Build tool"} value={selected}
           onchange={(event) => {
             chooseOption(event.currentTarget.value);
           }}>
@@ -117,7 +117,7 @@
 </SettingRow>{/if}
 
 {#if ["typst", "quarto", "markdown"].includes(format) && outputChoices.length > 1}
-  <SettingRow id="build-output" title="Output" description="Choose the preview or export format for this browser.">
+  <SettingRow id="render-output" title="Output" description="Choose the preview or export format for this browser.">
     <select class="select setting-select" aria-label="Build output" value={preferences.output || "html"} onchange={(event) => chooseOutput(event.currentTarget.value)}>
       {#each outputChoices as output}<option value={output} disabled={disabledOutput(output)}>{output.toUpperCase()}</option>{/each}
     </select>
@@ -125,10 +125,10 @@
 {/if}
 
 {#if format === "quarto" || preferences.tool === "quarto"}
-  <SettingRow id="build-profile" title="Quarto profile" description="Optional profile used by local Quarto builds.">
+  <SettingRow id="render-profile" title="Quarto profile" description="Optional profile used by local Quarto builds.">
     <input class="input input-sm setting-input" aria-label="Quarto profile" value={preferences.profile || ""} onchange={(event) => chooseProfile(event.currentTarget.value)} />
   </SettingRow>
-  <SettingRow id="build-parameters" title="Quarto parameters" description="JSON object passed as typed Quarto parameters.">
+  <SettingRow id="render-parameters" title="Quarto parameters" description="JSON object passed as typed Quarto parameters.">
     <textarea class="textarea setting-input" aria-label="Quarto parameters" rows="3" value={JSON.stringify(preferences.parameters || {}, null, 2)} onchange={(event) => chooseParameters(event.currentTarget.value)}></textarea>
   </SettingRow>
   <p class="setting-description">One-shot local builds run in a temporary project copy. Live previews use the explicitly authorized project folder.</p>

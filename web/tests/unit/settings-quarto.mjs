@@ -40,7 +40,7 @@ assert.match(local, /placeholder=\{quarto \? "main\.qmd" : sourceFormat === "typ
 // accidentally exposing project-wide LaTeX choices in a Quarto document
 // while still requiring the local service controls above.
 assert.match(registry, /const latex = \(\{ format, mayEdit \}\) => format === "latex" && mayEdit;/);
-assert.match(registry, /id: "build", says: "Build", offered: build,/);
+assert.match(registry, /id: "render", says: "Render", offered: build,/);
 assert.match(registry, /id: "storage-latex",.*offered: latex }/);
 assert.match(storage, /id="storage-latex"/);
 // The account's own storage is a section of the same category, gated on being
@@ -63,7 +63,7 @@ assert.doesNotMatch(rendering, /preview\.url/);
 // No scope groups in the navigation: every category is a flat entry, and the
 // two that are not this browser's alone say so in a note under their title.
 assert.doesNotMatch(registry, /GROUPS|group:/);
-assert.match(registry, /id: "build",[\s\S]*?note: "Only this browser and user\."/);
+assert.match(registry, /id: "render",[\s\S]*?note: "Only this browser and user\."/);
 assert.match(registry, /id: "local",[\s\S]*?note: "LibrePaper on this computer"/);
 
 // Choosing a build tool is mostly a browser question -- which engine, which
