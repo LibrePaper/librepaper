@@ -47,7 +47,7 @@ try {
   const request = randomBytes(24).toString("base64url");
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("hex");
-  await cli("open", `librepaper://connect?${new URLSearchParams({ origin: site, project: "paper", request, challenge, return: returnUrl })}`);
+  await cli("open", `librepaper://connect?${new URLSearchParams({ origin: site, request, challenge, return: returnUrl })}`);
   let target;
   for (let attempt = 0; attempt < 30; attempt++) {
     try { target = await readFile(opened, "utf8"); if (target) break; } catch {}
@@ -58,11 +58,10 @@ try {
   assert.match(target, /\/librepaper\/local\/pair\/request\?/, "the link opens the one consent page");
   const registration = await fetch(target);
   assert.equal(registration.status, 200);
-  assert.match(await registration.text(), /paper/);
-  const form = new URLSearchParams({ origin: site, project: "paper", request, challenge, return: returnUrl });
+  const form = new URLSearchParams({ origin: site, request, challenge, return: returnUrl });
   const consent = await fetch(`${base}/pair`, { method: "POST", headers: { Origin: `http://127.0.0.1:${port}`, "Sec-Fetch-Site": "same-origin" }, body: form });
   assert.equal(consent.status, 200, await consent.text());
-  const claim = () => fetch(`${base}/connect/claim`, { method: "POST", headers: { Origin: site, "Content-Type": "application/json" }, body: JSON.stringify({ origin: site, project: "paper", request, verifier }) });
+  const claim = () => fetch(`${base}/connect/claim`, { method: "POST", headers: { Origin: site, "Content-Type": "application/json" }, body: JSON.stringify({ origin: site, request, verifier }) });
   const accepted = await claim();
   assert.equal(accepted.status, 200);
   const { token } = await accepted.json();

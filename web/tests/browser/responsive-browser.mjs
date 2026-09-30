@@ -65,7 +65,7 @@ globalThis.WebSocket = class {
 };
 // The agent panel shows its chat only once the local app is paired, so the
 // harness seeds a pairing and answers the app's two probe routes.
-localStorage.setItem('librepaper-local-pairings', JSON.stringify({[location.origin + '|paper']:{token:'pair-token',expires:Date.now()/1000+3600}}));
+localStorage.setItem('librepaper-local-connections', JSON.stringify({[location.origin]:{token:'pair-token',expires:Date.now()/1000+3600}}));
 globalThis.fetch = async (url, init = {}) => {
   const path = String(url);
   if (path.startsWith('http://127.0.0.1:8763/')) {

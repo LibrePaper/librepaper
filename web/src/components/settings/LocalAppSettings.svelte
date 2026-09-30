@@ -33,8 +33,7 @@
     copyError = false;
   });
   const connected = $derived(local?.state === "connected");
-  const canPair = $derived(["unauthorized", "reachable"].includes(local?.state));
-  const tone = $derived(connected ? "good" : canPair || ["denied", "incompatible"].includes(local?.state) ? "warn" : "off");
+  const tone = $derived(connected ? "good" : ["denied", "incompatible"].includes(local?.state) ? "warn" : "off");
   const status = $derived(({ unknown: "Companion not connected", unreachable: "Companion not connected", denied: "Local network access blocked", reachable: "Companion found", unauthorized: "Companion needs permission", connected: "Companion connected", incompatible: "Companion needs an update" })[local?.state] || "Companion not connected");
   const installer = "https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh";
   const windowsInstaller = "https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1";
@@ -138,23 +137,22 @@
       {#if connected}
         Local tools are available to LibrePaper.
       {:else if local?.state === "denied"}
-        Allow local-network access for this site in your browser, then retry.
+        Allow local-network access for this site in your browser, then connect.
       {:else if local?.state === "incompatible"}
-        Install the latest companion version, then retry.
+        Install the latest companion version, then connect.
       {:else if local?.state === "unauthorized" || local?.state === "reachable"}
         The companion is running. Connect to approve access for this site.
       {:else if local?.state === "unreachable"}
-        Open the companion after installing it, then retry here.
+        Install and open the companion, then connect.
       {:else}
         Install and open the companion to use local tools.
       {/if}
     </div>
   </div>
   <div class="setting-control">
-    {#if canPair}
-      <button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={pair}>{connecting ? "Waiting…" : "Connect companion"}</button>
+    {#if local?.state !== "connected"}
+      <button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={pair}>{connecting ? "Connecting…" : "Connect"}</button>
     {/if}
-    {#if !connected}<button type="button" class="btn btn-sm lp-control-outline" disabled={connecting} onclick={() => void localBridge.retry()}>Retry</button>{/if}
   </div>
 </div>
 {#if connectionError}<p class="setting-description local-error" role="alert">{connectionError}</p>{/if}

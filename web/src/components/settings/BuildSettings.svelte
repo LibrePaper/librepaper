@@ -45,7 +45,7 @@
     const capability = capabilityFor(local?.capabilities, preferences.tool);
     return !capability || !Array.isArray(capability.outputs) || !capability.outputs.includes(output);
   }
-  const statusMessage = $derived(({ unknown: "The local companion has not been looked for yet.", unreachable: "Local companion unavailable.", denied: "Local network access was blocked by the browser.", reachable: "Local companion is running; connect this document.", unauthorized: "Connect this document to use local tools.", incompatible: "Update the local companion to use these tools.", connected: "Local companion connected." })[local?.state] || "");
+  const statusMessage = $derived(({ unknown: "The local companion has not been looked for yet.", unreachable: "Local companion unavailable.", denied: "Local network access was blocked by the browser.", reachable: "Local companion is running; connect this site.", unauthorized: "Connect this site to use local tools.", incompatible: "Update the local companion to use these tools.", connected: "Local companion connected." })[local?.state] || "");
   function version(entry) { return capabilityFor(local?.capabilities, entry.id)?.version; }
   function engineLabel(engine) { return engine === "pdflatex" ? "pdfLaTeX" : engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"; }
   const savedMissing = $derived(preferences.selection === "tool" && preferences.tool && !builders.some((entry) => entry.id === preferences.tool) ? preferences.tool : "");
@@ -113,7 +113,6 @@
   {#if ["unreachable", "denied"].includes(local?.state)}<button type="button" class="btn btn-sm lp-control-brand" onclick={connect}>Open companion</button>{/if}
   {#if ["unauthorized", "reachable"].includes(local?.state)}<button type="button" class="btn btn-sm lp-control-brand" onclick={connect}>Connect</button>{/if}
   {#if local?.state !== "connected"}<a class="btn btn-sm lp-control-outline" href="https://github.com/LibrePaper/librepaper/releases/latest" target="_blank" rel="noreferrer">Install companion</a>{/if}
-  <button type="button" class="btn btn-sm lp-control-outline" onclick={() => void localBridge.retry()}>{local?.state === "unknown" ? "Look for it" : "Retry"}</button>
   <button type="button" class="btn btn-sm lp-control-outline" disabled={local?.state !== "connected"} onclick={rescan}>Rescan</button>
 </SettingRow>{/if}
 

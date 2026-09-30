@@ -93,15 +93,15 @@ assert.equal(local.status().state, "connected");
 setup(() => response(403, {}));
 await assert.rejects(local.connectApp(), /expired or was refused/);
 assert.equal(attempts, 1);
-assert.ok(!storage.has("librepaper-local-pairings"));
+assert.ok(!storage.has("librepaper-local-connections"));
 
 setup(() => { local.configure({ project: "another-paper" }); return response(200, { token: "wrong-project", expires: 100000 }); });
 await assert.rejects(local.connectApp(), /document changed/);
-assert.ok(!storage.has("librepaper-local-pairings"));
+assert.ok(!storage.has("librepaper-local-connections"));
 
 setup(() => response(202, {}));
 await assert.rejects(local.connectApp({ timeoutMs: 1500 }), /did not connect/);
-assert.ok(!storage.has("librepaper-local-pairings"));
+assert.ok(!storage.has("librepaper-local-connections"));
 local._testing.reset();
 console.log("local-companion: cold launch, direct ask, verifier isolation, restart, already-connected, rejection, scope change and timeout passed");
 
