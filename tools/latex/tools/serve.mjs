@@ -1,10 +1,11 @@
 // A server for a LaTeX mirror on disk or at a URL and the harness page that drives
 // it, for the browser checks. The mirror is
 // built and deployed by the wasm-latex repository (`make mirror`, `make push`
-// there; layout and manifest in wasm-latex/docs/mirror.md), and this serves it
-// the way the Cloudflare Worker does -- `manifest.json` never cached,
-// `bundles.json` revalidated, everything else under /mirror/ digest-named and
-// cached for a year -- so what a check sees here is what a browser sees there.
+// there; layout in wasm-latex/docs/mirror.md), and this serves it the way the
+// asset mirror does -- everything under /mirror/ is immutable and cached for a
+// year -- so what a check sees here is what a browser sees there. The mirror
+// directory holds one or more release directories, `<sha256>/`; a page
+// pins one by using `/mirror/<sha256>/` as its LaTeX mirror URL.
 //
 // `/__bytes` reports bytes served since the last `/__reset`, by path, so a
 // check can measure what a compile downloaded.
@@ -75,8 +76,6 @@ function resolve(url) {
 }
 
 function cacheControl(url) {
-  if (url.endsWith("/manifest.json")) return "no-store";
-  if (url.endsWith("/bundles.json")) return "no-cache";
   if (url.startsWith("/mirror/")) return "public, max-age=31536000, immutable";
   return "no-store";
 }

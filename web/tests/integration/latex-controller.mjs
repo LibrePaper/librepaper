@@ -90,17 +90,19 @@ FakeWorker.onCreate = (instance) => {
 };
 const worker = () => liveWorker;
 
-// Format 1: `releases[id]` carries `engines`/`files`/`bundles`/
-// `bibliography`/`source`, and resolves package files through its bundles
-// index. `FakeWorker` above answers `configure`
-// unconditionally, so these fields are for realism against `latex.js`'s own
-// reads of the manifest rather than exercised by `worker.js` itself here;
-// section 15 below drives the real `worker.js` and its `format`/`bundles`
-// checks directly.
-const MANIFEST = {
-  format: 1,
-  default_release: "r1",
-  releases: { r1: { id: "r1", base: "engines/r1/", engines: {}, bundles: { index: "engines/r1/bundles/bundles.json" } } },
+// Format 2: `release.json` carries `engines`/`files`/`bundles`/
+// `bibliography`/`source`, every path relative to the release directory, and
+// resolves package files through its bundles index. `FakeWorker` above answers
+// `configure` unconditionally, so these fields are for realism against
+// `latex.js`'s own reads of the release rather than exercised by `worker.js`
+// itself here; section 15 below drives the real `worker.js` and its
+// `format`/`bundles` checks directly.
+const RELEASE = {
+  format: 2,
+  id: "r1",
+  engines: {},
+  files: {},
+  bundles: { index: "bundles/bundles.json" },
 };
 function jsonResponse(body) {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -108,7 +110,7 @@ function jsonResponse(body) {
 
 const fakeFetch = async (url) => {
   const key = typeof url === "string" ? url : url.toString();
-  return jsonResponse(MANIFEST);
+  return jsonResponse(RELEASE);
 };
 
 const latex = await import("../../src/lib/latex.js?latex-controller-check");
@@ -132,7 +134,7 @@ async function until(done, ms = 10_000) {
 
 /// Waits until the worker created for the current compile actually exists.
 /// The path from `compile()` to the first `new Worker(...)` crosses several
-/// real awaits (the manifest fetch, `crypto.subtle.digest` for the job
+/// real awaits (the release fetch, `crypto.subtle.digest` for the job
 /// identity), so a fixed tick count is a race; polling is not.
 async function untilWorker(previous) {
   await until(() => worker() !== previous);
@@ -474,25 +476,25 @@ function nextProject() {
     return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
   }
 
-  const BASE = "https://mirror.example/mirror/";
+  const BASE = "https://mirror.example/mirror/latex/rel1/";
   const bundlesIndexBytes = enc.encode(JSON.stringify({ bundles: {}, files: {} }));
   const workerBytes = enc.encode("var Module = self.Module = {}; ");
   const resolverEvidenceBytes = enc.encode("self.__resolverEvidenceLoaded = true;");
 
   const files = {
-    "bundles/bundles.json": { url: "engines/rel1/bundles/bundles.json", sha256: await sha256Hex(bundlesIndexBytes), size: bundlesIndexBytes.length },
-    "xetex.fmt.gz": { url: "engines/rel1/xetex.fmt.gz", sha256: await sha256Hex(fmtGz), size: fmtGz.length },
-    "icudt68l.dat.gz": { url: "engines/rel1/icudt68l.dat.gz", sha256: await sha256Hex(icuGz), size: icuGz.length },
-    "xetex-resolver-evidence.js": { url: "engines/rel1/xetex-resolver-evidence.js", sha256: await sha256Hex(resolverEvidenceBytes), size: resolverEvidenceBytes.length },
+    "bundles/bundles.json": { url: "bundles/bundles.json", sha256: await sha256Hex(bundlesIndexBytes), size: bundlesIndexBytes.length },
+    "xetex.fmt.gz": { url: "xetex.fmt.gz", sha256: await sha256Hex(fmtGz), size: fmtGz.length },
+    "icudt68l.dat.gz": { url: "icudt68l.dat.gz", sha256: await sha256Hex(icuGz), size: icuGz.length },
+    "xetex-resolver-evidence.js": { url: "xetex-resolver-evidence.js", sha256: await sha256Hex(resolverEvidenceBytes), size: resolverEvidenceBytes.length },
   };
   for (const name of ["xetex.worker.js", "dvipdfm.worker.js", "bibtex.worker.js", "pdftex.worker.js"]) {
-    files[name] = { url: `engines/rel1/${name}`, sha256: await sha256Hex(workerBytes), size: workerBytes.length };
+    files[name] = { url: name, sha256: await sha256Hex(workerBytes), size: workerBytes.length };
   }
   const release = {
+    format: 2,
     id: "rel1",
     digest: "c".repeat(64),
-    base: "engines/rel1/",
-      bundles: { index: "engines/rel1/bundles/bundles.json", sha256: await sha256Hex(bundlesIndexBytes) },
+      bundles: { index: "bundles/bundles.json", sha256: await sha256Hex(bundlesIndexBytes) },
     engines: {
       xetex: { worker: "xetex.worker.js", files: ["xetex.worker.js"], format: "xetex.fmt.gz", icu: "icudt68l.dat.gz" },
       dvipdfm: { worker: "dvipdfm.worker.js", files: ["dvipdfm.worker.js"] },
@@ -582,7 +584,7 @@ function nextProject() {
   }
 
   try {
-    await send("configure", { base: BASE, release, format: 1 });
+    await send("configure", { base: BASE, release });
     await send("stage", { engine: "xelatex", tree: { main: "main.tex", texts: { "main.tex": "x" } }, generated: {} });
 
     const xetexWorker = engineWorkers.find((w) => w.messages.some((m) => m.cmd === "loadicudata"));
@@ -638,10 +640,10 @@ function nextProject() {
 }
 
 // ============================================================================
-// 16. `worker.js`'s `configure` refuses a manifest release this build cannot
+// 16. `worker.js`'s `configure` refuses a release this build cannot
 // compile against, rather than silently falling to a per-file path that no
 // longer exists: a release with no `bundles` at all ("this mirror predates
-// bundled releases"), and a manifest whose `format` is not 1 (naming the
+// bundled releases"), and a release whose `format` is not 2 (naming the
 // format it got).
 // ============================================================================
 {
@@ -669,24 +671,22 @@ function nextProject() {
   try {
     const noBundles = await send("configure", {
       base: "https://mirror.example/mirror/",
-      release: { id: "rel-old", base: "engines/rel-old/", engines: {} },
-      format: 1,
+      release: { format: 2, id: "rel-old", engines: {} },
     }).catch((error) => error);
     assert.ok(noBundles instanceof Error, "a release with no bundles is refused");
     assert.match(noBundles.message, /predates bundled releases/);
 
     const wrongFormat = await send("configure", {
       base: "https://mirror.example/mirror/",
-      release: { id: "rel1", base: "engines/rel1/", engines: {}, bundles: { index: "engines/rel1/bundles/bundles.json" } },
-      format: 2,
+      release: { format: 1, id: "rel1", engines: {}, bundles: { index: "bundles/bundles.json" } },
     }).catch((error) => error);
-    assert.ok(wrongFormat instanceof Error, "an unsupported manifest format is refused");
+    assert.ok(wrongFormat instanceof Error, "an unsupported release format is refused");
     assert.match(wrongFormat.message, /format 1/);
     assert.match(wrongFormat.message, /format 2/);
   } finally {
     globalThis.self = previousSelf;
   }
-  console.log("latex worker/configure: a bundle-less release and a wrong manifest format are both refused");
+  console.log("latex worker/configure: a bundle-less release and a wrong release format are both refused");
 }
 
 latex._testing.reset();
@@ -696,7 +696,7 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
 // not that "this release" does not, which would imply a later one might --
 // and downloads no engine to find out.
 {
-  latex._testing.inject({ worker: FakeWorker, fetch: async () => jsonResponse(MANIFEST) });
+  latex._testing.inject({ worker: FakeWorker, fetch: async () => jsonResponse(RELEASE) });
   latex.configure({ project: nextProject(), settings: { engine: 'lualatex', release: 'r1' } });
   const result = await latex.compile(tree('main.tex', 'LuaLaTeX selection'));
   assert.equal(result.ok, false);
@@ -709,8 +709,8 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
 
 // Releases that ship Biber use it without probing local LibrePaper.
 {
-  const browserManifest = structuredClone(MANIFEST);
-  browserManifest.releases.r1.engines.biber = { worker: 'biber.worker.js' };
+  const browserRelease = structuredClone(RELEASE);
+  browserRelease.engines.biber = { worker: 'biber.worker.js' };
   let runs = 0;
   const browserBiber = { async runBiber(request, { signal, release }) {
     assert.equal(signal.aborted, false);
@@ -719,7 +719,7 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
     return { ok: true, bbl: enc.encode('BROWSER-BBL'), blg: '', tool: { backend: 'browser', version: '2.22' } };
   } };
   const fetched = [];
-  const fetch = async url => { fetched.push(String(url)); return jsonResponse(browserManifest); };
+  const fetch = async url => { fetched.push(String(url)); return jsonResponse(browserRelease); };
   latex._testing.reset();
   latex._testing.inject({ worker: FakeWorker, fetch, biber: browserBiber,
   });

@@ -3,7 +3,7 @@
 # consumed here through their pinned releases.
 #
 # The renderers themselves, and the word diff both sides share, live in
-# LibrePaper/wasm-* and are pinned by tag. See wasm-modules.lock for the
+# LibrePaper/wasm-* and are pinned by tag. See assets.lock for the
 # browser modules, which are fetched rather than built.
 [workspace]
 resolver = "2"

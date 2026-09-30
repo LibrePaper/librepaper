@@ -56,8 +56,8 @@ let resourcesOverride;
 let fetchImpl = (...args) => fetch(...args);
 let nowImpl = () => Date.now();
 
-let manifest = null;
-let manifestPromise = null;
+let release = null;
+let releasePromise = null;
 
 let currentProject = null;
 let currentSettings = { engine: "auto" };
@@ -118,12 +118,13 @@ function supersededError() {
   return named("Superseded", "Superseded");
 }
 
-/// Points this module at the direct HTTPS mirror advertised by `/api/config`.
+/// Points this module at the pinned release directory (`<mirror>latex/<id>/`)
+/// advertised by `/api/config`. The browser never picks a release.
 export function at(url) {
   if (url && url !== base) {
     base = url.endsWith("/") ? url : url + "/";
-    manifest = null;
-    manifestPromise = null;
+    release = null;
+    releasePromise = null;
     retireWorker();
   }
   return base;
@@ -143,21 +144,25 @@ function retireWorker() {
   pendingCalls.clear();
 }
 
-async function loadManifest() {
-  if (manifest) return manifest;
-  if (!manifestPromise) {
-    manifestPromise = fetchImpl(base + "manifest.json").then(async (response) => {
-      if (!response.ok) throw new Error(`no LaTeX mirror at ${base} (${response.status})`);
-      manifest = await response.json();
-      return manifest;
+async function loadRelease() {
+  if (release) return release;
+  if (!releasePromise) {
+    releasePromise = fetchImpl(absoluteBase() + "release.json").then(async (response) => {
+      if (!response.ok) throw new Error(`no LaTeX release at ${base} (${response.status})`);
+      const data = await response.json();
+      if (data.format !== 2) {
+        throw new Error(`this LaTeX release is format ${data.format ?? "unknown"}, but this build only speaks format 2`);
+      }
+      release = data;
+      return release;
     });
   }
   try {
-    return await manifestPromise;
+    return await releasePromise;
   } finally {
     // A failed fetch must not poison the module: the next compile tries
     // again rather than repeating a network error forever from cache.
-    if (!manifest) manifestPromise = null;
+    if (!release) releasePromise = null;
   }
 }
 
@@ -209,20 +214,6 @@ export function setSettings(next) {
     engine: currentSettings.engine === "auto" ? null : currentSettings.engine,
     release: null,
   });
-}
-
-export async function releases() {
-  const data = await loadManifest();
-  return {
-    default: data.default_release,
-    current: data.default_release,
-    available: Object.entries(data.releases || {}).map(([id, entry]) => ({
-      id,
-      texlive: entry.texlive,
-      kernel: entry.kernel,
-      sizes: entry.sizes,
-    })),
-  };
 }
 
 // --- Engine selection -------------------------------------------------------
@@ -318,7 +309,7 @@ function call(target, cmd, payload, { timeoutMs = 0 } = {}) {
   });
 }
 
-async function ensureWorker(releaseEntry, manifestFormat) {
+async function ensureWorker(releaseEntry) {
   if (worker && configuredRelease === releaseEntry.id) return worker;
   if (worker) retireWorker();
   // The literal `new Worker(new URL(..., import.meta.url), { type: "module" })`
@@ -334,9 +325,9 @@ async function ensureWorker(releaseEntry, manifestFormat) {
   attachHandlers(target);
   worker = target;
   // The worker resolves every engine and package URL against this, and a
-  // The worker receives the configured absolute mirror URL, so all manifest
+  // The worker receives the pinned release directory URL, so all release
   // paths resolve against the direct mirror rather than an app route.
-  await call(target, "configure", { base: absoluteBase(), release: releaseEntry, format: manifestFormat });
+  await call(target, "configure", { base: absoluteBase(), release: releaseEntry });
   configuredRelease = releaseEntry.id;
   return target;
 }
@@ -475,9 +466,9 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
   const engine = resolveEngine(tree, currentSettings);
 
-  let manifestData;
+  let releaseEntry;
   try {
-    manifestData = await loadManifest();
+    releaseEntry = await loadRelease();
   } catch (error) {
     checkpoint();
     const inputs = await snapshotDigest(tree).catch(() => "");
@@ -487,7 +478,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       tree,
       inputs,
       engine,
-      release: manifestData?.default_release || "unknown",
+      release: releaseEntry?.id || "unknown",
     });
     return buildResult({
       job,
@@ -500,29 +491,12 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   }
   checkpoint();
 
-  const releaseId = manifestData.default_release;
+  const releaseId = releaseEntry.id;
   const inputs = await snapshotDigest(tree);
   const job = await jobsMod.makeJob({ project: currentProject, generation: generationAtStart, tree, inputs, engine, release: releaseId });
   checkpoint();
 
   const attempts = [];
-  const releaseEntry = manifestData.releases?.[releaseId];
-  if (!releaseEntry) {
-    return buildResult({
-      job,
-      attempts,
-      startedAt,
-      ok: false,
-      failure: {
-        kind: "resources",
-        message: releaseId
-          ? `LaTeX release "${releaseId}" is not available in this deployment's mirror.`
-          : "This deployment's LaTeX mirror has no default engine release. The operator must build and deploy the mirror from the wasm-latex repository (make mirror, then make push there), or configure a working --asset-mirror.",
-        stage: "browser",
-      },
-      provenance: baseProvenance(engine, releaseId),
-    });
-  }
   // LuaLaTeX is never selected for the author (see `engine.js`'s `detect`);
   // reaching here means the setting or a `% !TEX engine` directive asked for
   // it by name. No release ships LuaTeX, so say that rather than implying a
@@ -542,7 +516,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
   let target;
   try {
-    target = await ensureWorker(releaseEntry, manifestData.format);
+    target = await ensureWorker(releaseEntry);
   } catch (error) {
     checkpoint();
     return handleBrowserFailure({
@@ -922,10 +896,10 @@ export const _testing = {
     if (fetchOverride !== undefined) {
       fetchImpl = fetchOverride;
       // A new fetch means a check is simulating a different deployment;
-      // `manifest.json` is cached for the module's whole lifetime otherwise,
-      // which would leak one scenario's manifest into the next.
-      manifest = null;
-      manifestPromise = null;
+      // `release.json` is cached for the module's whole lifetime otherwise,
+      // which would leak one scenario's release into the next.
+      release = null;
+      releasePromise = null;
     }
     if (now !== undefined) nowImpl = now;
   },
@@ -937,7 +911,7 @@ export const _testing = {
     resourcesOverride = undefined;
     fetchImpl = (...args) => fetch(...args);
     nowImpl = () => Date.now();
-    manifest = null;
-    manifestPromise = null;
+    release = null;
+    releasePromise = null;
   },
 };

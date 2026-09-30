@@ -285,3 +285,7 @@ assets to the mirror.
 An operator can host a copy and keep compiler requests on their own
 infrastructure by passing `--asset-mirror URL` to `librepaper admin serve`. The URL
 must be an HTTPS static mirror with the documented mirror layout and headers.
+The LaTeX files live in one release directory, `latex/<sha256>/`, whose id is
+the SHA-256 of its `MANIFEST.json` and which the build pins in `assets.lock`.
+Everything on the mirror is immutable and the mirror only grows, so an older
+binary keeps working against the release it pinned.

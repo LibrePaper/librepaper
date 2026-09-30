@@ -6,8 +6,8 @@
 //
 // It reuses `tools/latex/tools/serve.mjs` (package A) rather than reimplementing a
 // mirror server: that file already answers every mirror route (the engine
-// name-lookup route, the digest-shaped static route, `/mirror/manifest.json`).
-// If the mirror's `manifest.json` has no `releases` yet (wasm-latex still
+// name-lookup route, the digest-shaped static route, `/mirror/<id>/release.json`).
+// If the mirror has no release directory yet (wasm-latex still
 // building it), this file polls for up to 20 minutes before giving up and
 // reporting that the check could not run.
 //
@@ -50,29 +50,35 @@ function log(browserName, ...args) {
 
 // --- wait for a mirror ------------------------------------------------------
 
+// The pinned release: MIRROR is either a release URL (`<asset-mirror>latex/<id>/`)
+// or a local mirror directory holding a `<sha256>/` release directory. Returns
+// the release.json entry and the path serve.mjs exposes its directory at, which
+// is what the page hands the worker as its base.
 async function waitForMirror() {
   if (/^https?:\/\//i.test(MIRROR)) {
-    const response = await fetch(new URL('manifest.json', MIRROR.replace(/\/?$/, '/')), {
-      cache: 'no-store', signal: AbortSignal.timeout(30000),
+    const response = await fetch(new URL('release.json', MIRROR.replace(/\/?$/, '/')), {
+      signal: AbortSignal.timeout(30000),
     });
-    if (!response.ok) throw new Error(`mirror manifest: HTTP ${response.status}`);
-    const manifest = await response.json();
-    if (manifest.format !== 1 || !manifest.releases?.[manifest.default_release]) {
-      throw new Error('mirror manifest has no format-1 default release');
-    }
-    return manifest;
+    if (!response.ok) throw new Error(`mirror release.json: HTTP ${response.status}`);
+    const release = await response.json();
+    if (release.format !== 2) throw new Error('mirror release.json is not format 2');
+    return { release, path: "/mirror/" };
   }
-  const manifestPath = join(MIRROR, "manifest.json");
   const deadline = Date.now() + 20 * 60 * 1000;
   for (;;) {
     try {
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-      if (manifest.releases && Object.keys(manifest.releases).length > 0) return manifest;
+      const ids = readdirSync(MIRROR, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name))
+        .map((entry) => entry.name);
+      if (ids.length === 1) {
+        const release = JSON.parse(readFileSync(join(MIRROR, ids[0], "release.json"), "utf8"));
+        if (release.format === 2) return { release, path: `/mirror/${ids[0]}/` };
+      }
     } catch {
       /* not written yet, or mid-write */
     }
     if (Date.now() > deadline) {
-      throw new Error(`${MIRROR}/manifest.json has no releases after 20 minutes; the mirror was not built in time`);
+      throw new Error(`${MIRROR} has no single format-2 release directory after 20 minutes; the mirror was not built in time`);
     }
     await new Promise((r) => setTimeout(r, 5000));
   }
@@ -134,10 +140,10 @@ function inspectPdfBytes(bytesArray, scratch) {
 // bibliography/index work, run the helper, write its output back, rerun until
 // the log stops asking for it or 8 passes are used.
 const PAGE_DRIVER = `
-async function __librepaperInit(base) {
-  const manifest = await (await fetch(base + "/mirror/manifest.json")).json();
-  const release = manifest.releases[manifest.default_release];
-  // Format 1: bundled releases resolve package files through bundles.json.
+async function __librepaperInit(releaseUrl) {
+  const release = await (await fetch(releaseUrl + "release.json")).json();
+  // Format 2: paths are relative to the release directory; bundled releases
+  // resolve package files through bundles.json.
   const worker = new Worker("/src/lib/latex/worker.js", { type: "module" });
   let seq = 0;
   const pending = new Map();
@@ -157,17 +163,17 @@ async function __librepaperInit(base) {
       worker.postMessage(Object.assign({ id, cmd }, extra || {}));
     });
   }
-  const configured = await send("configure", { base: base + "/mirror/", release, format: manifest.format });
+  const configured = await send("configure", { base: releaseUrl, release });
   globalThis.__librepaper = { worker, send, release, configured };
   return { engines: configured.engines };
 }
 
-async function __librepaperControllerCompile(base, tree) {
-  // Exercise the public controller, including its manifest-backed Biber
+async function __librepaperControllerCompile(releaseUrl, tree) {
+  // Exercise the public controller, including its release-backed Biber
   // route.  The hand-written protocol driver below remains useful for the
   // corpus cases, but it cannot prove browser-biber provenance.
   const latex = await import("/src/lib/latex.js");
-  latex.at(base + "/mirror/");
+  latex.at(releaseUrl);
   latex.configure({ project: "browser-biber-check", settings: { engine: "pdflatex" } });
   return latex.compile(tree, { manual: true });
 }
@@ -271,8 +277,9 @@ async function runJob(driver, expression, timeoutMs = 240000) {
 const SUMMARY = `(r) => ({ ok: r.ok, status: r.status, log: r.log, pdf: __librepaperBytes(r.pdf), synctex: __librepaperBytes(r.synctex), passes: r.__passes, ranBibtex: r.__ranBibtex })`;
 
 async function main(browserName) {
-  const manifest = await waitForMirror();
-  log(browserName, `mirror ready: default_release=${manifest.default_release}`);
+  const { release, path: mirrorPath } = await waitForMirror();
+  const releaseUrl = `${BASE}${mirrorPath}`;
+  log(browserName, `mirror ready: release=${release.id}`);
 
   const scratch = mkdtempSync(join(tmpdir(), "librepaper-latex-browser-"));
   const server = spawn(process.execPath, [join(ROOT, "tools", "latex", "tools", "serve.mjs"), "--port", String(PORT), "--mirror", MIRROR], {
@@ -286,12 +293,12 @@ async function main(browserName) {
   let driver;
   const timings = {};
   try {
-    await until("mirror server", async () => (await fetch(`${BASE}/mirror/manifest.json`)).ok, 20000);
+    await until("mirror server", async () => (await fetch(`${releaseUrl}release.json`)).ok, 20000);
     driver = await browser(browserName, join(scratch, browserName), DEBUG_PORT);
     await driver.navigate(`${BASE}/`);
     await until("harness page", () => driver.evaluate("document.readyState === 'complete'"), 20000);
     await driver.evaluate(PAGE_DRIVER);
-    const init = await driver.evaluate(`__librepaperInit(${JSON.stringify(BASE)})`);
+    const init = await driver.evaluate(`__librepaperInit(${JSON.stringify(releaseUrl)})`);
     log(browserName, "configured:", JSON.stringify(init));
 
     // The dedicated fixture uses biblatex's Biber backend and cites Knuth.
@@ -301,7 +308,7 @@ async function main(browserName) {
       const tree = treeOf("e2e/biber", "main.tex");
       const result = await runJob(
         driver,
-        `__librepaperControllerCompile(${JSON.stringify(BASE)}, ${JSON.stringify(tree)}).then(r => ({ ...r, pdf: __librepaperBytes(r.pdf), synctex: __librepaperBytes(r.synctex) }))`,
+        `__librepaperControllerCompile(${JSON.stringify(releaseUrl)}, ${JSON.stringify(tree)}).then(r => ({ ...r, pdf: __librepaperBytes(r.pdf), synctex: __librepaperBytes(r.synctex) }))`,
       );
       const pdfBytes = result.pdf ? Buffer.from(result.pdf, "base64") : null;
       const inspected = inspectPdfBytes(pdfBytes, scratch);

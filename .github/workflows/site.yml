@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: oven-sh/setup-bun@v2
       # The markdown renderer, fetched and verified against
-      # wasm-modules.lock the same way the shell's own build does; the docs
+      # assets.lock the same way the shell's own build does; the docs
       # site is rendered by exactly this module, not a copy of it. Only this
       # one module: the others (typst.wasm alone is 30+ MB) render formats
       # the docs site never compiles.

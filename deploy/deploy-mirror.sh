@@ -11,7 +11,8 @@ set -euo pipefail
 #    the LaTeX mirror (in wasm-latex).
 # 5. deploy/deploy-mirror.sh --test: verify bucket, CORS, and connectivity (uploads two small test files).
 # 6. deploy/deploy-mirror.sh: publish all mirrors.
-# 7. Afterwards (manual): point DEFAULT_ASSET_MIRROR (crates/librepaper/src/config.rs) at https://<bucket>.s3.<region>.io.cloud.ovh.net/.
+# 7. Afterwards (manual): point DEFAULT_ASSET_MIRROR (crates/librepaper/src/config.rs) at https://<bucket>.s3.<region>.io.cloud.ovh.net/,
+#    and pin the published LaTeX release (latex/<sha256>/) and wasm modules in assets.lock.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -87,7 +88,10 @@ else
   # Normal mode: run make mirrors-push.
   printf '%s\n' "Publishing mirrors..."
   make mirrors-push
-  VERIFY_KEY="latex/manifest.json"
+  # The LaTeX release the build pins: the `latex` row of assets.lock names its
+  # directory, latex/<sha256>/. Everything on the mirror is immutable.
+  LATEX_ID=$(awk '$1 == "latex" { print $4 }' assets.lock)
+  VERIFY_KEY="latex/${LATEX_ID}/release.json"
 fi
 
 # Verify: fetch public URL with Origin header; expect 200 + access-control-allow-origin.

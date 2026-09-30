@@ -191,7 +191,7 @@ relevant to readers as well as editors.
 **Current.** `deploy/install.sh` and `deploy/install-companion.sh` check release
 archives against `checksums.txt` from the same release. The release workflow
 uses ad-hoc macOS signing. The repository's SOPS secrets file has one PGP
-recipient. Wasm modules are pinned by digest in `wasm-modules.lock`.
+recipient. Wasm modules are pinned by digest in `assets.lock`.
 
 **Recommendation.** Authenticate releases with a verification identity that
 installers trust independently of the downloaded checksum file. Specify key

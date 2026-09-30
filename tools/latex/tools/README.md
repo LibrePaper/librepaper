@@ -2,30 +2,36 @@
 
 LibrePaper consumes a deployed LaTeX engine mirror -- engines and the TeX Live
 package bundles -- built and pushed from the **wasm-latex** repository
-(`make mirror`, `make push` there; layout and manifest documented in
-`wasm-latex/docs/mirror.md`, format 1, bundled releases only). Nothing in this
-repository builds that mirror any more. What is still here:
+(`make mirror`, `make push` there; layout documented in
+`wasm-latex/docs/mirror.md`). Nothing in this repository builds that mirror any
+more. A release is an immutable directory `latex/<id>/`, where `<id>` is the
+SHA-256 of `<id>/MANIFEST.json`, described by `<id>/release.json` (format 2,
+every path relative to the release directory, bundled releases only). The
+mirror is append-only; the release a build uses is pinned in `assets.lock`.
+What is still here:
 
 ## Consumer-side check
 
-`tools/latex/tools/check-mirror.mjs` rejects a mirror before a deployment uses it:
+`tools/latex/tools/check-mirror.mjs` rejects a release before a deployment uses it:
 
 ```sh
-node tools/latex/tools/check-mirror.mjs tools/latex/mirror                       # a local directory
-node tools/latex/tools/check-mirror.mjs https://latex.librepaper.workers.dev/
+node tools/latex/tools/check-mirror.mjs tools/latex/mirror                     # every <id>/ in a mirror directory
+node tools/latex/tools/check-mirror.mjs tools/latex/mirror/<id>                # one release directory
+node tools/latex/tools/check-mirror.mjs https://assets.example/latex/<id>/     # a release URL
 ```
 
-It checks that `manifest.json` parses, `manifest.format === 1`, the default
-release has a complete pdfTeX engine, and `bundles` is present on it. Given a
-directory (not a URL) it also verifies every engine file and bundle tar on
-disk against `bundles.json`'s digests. `make latex-check MIRROR=<url or dir>`
-runs it; `make latex-smoke MIRROR=<dir>` (default `../wasm-latex/mirror`,
-where wasm-latex builds it) runs it and then compiles and displays the
-seeded LaTeX example in headless Chromium.
+It checks that `release.json` parses, `format === 2`, the release has a
+complete pdfTeX engine, and `bundles` is present. Given a directory it also
+verifies that the directory name is the SHA-256 of `MANIFEST.json` and checks
+every engine file and bundle tar on disk against `release.json` and
+`bundles.json`'s digests. `make latex-check MIRROR=<url or dir>` runs it;
+`make latex-smoke MIRROR=<dir>` (default `../wasm-latex/mirror`, where
+wasm-latex builds it) runs it and then compiles and displays the seeded LaTeX
+example in headless Chromium.
 
 ## Reproduction status
 
 Build reproduction and source receipts belong to the wasm-latex repository.
 The mirror retains those receipts and the source URL from its staged
-release; the manifest leaves `source.reproduced` false where wasm-latex has
+release; `release.json` leaves `source.reproduced` false where wasm-latex has
 not independently rebuilt an engine from source yet.

@@ -74,7 +74,8 @@ A self-hoster can serve the browser distribution from their own mirror rather
 than the project one; see
 [Privacy and the LaTeX mirror](../host.html#privacy-and-the-latex-mirror).
 
-`make deploy` checks that the selected mirror contains a default engine
+`make deploy` checks that the selected mirror's release directories
+(`latex/<sha256>/`, each described by `release.json`) hold a complete engine
 release with its TeX Live bundles (`tools/latex/tools/check-mirror.mjs`; see
 `make latex-check` and `make latex-smoke`, MIRROR=). Older per-file mirrors
 and SwiftLaTeX/BusyTeX releases are rejected as legacy. `make latex-smoke` compiles `docs/examples/tutorial-latex/librepaper.tex`
@@ -84,5 +85,5 @@ and selectable text before you point a deployment at it.
 LibrePaper always serves the LaTeX editor and compiler configuration. Browsers
 fetch distribution files directly from the HTTPS mirror; the origin does not
 proxy or cache them. A directory path or an `http:` mirror is refused at
-startup. The browser verifies each file against the mirror manifest before
-use.
+startup. The browser verifies each file against the pinned release's `release.json`
+before use.
