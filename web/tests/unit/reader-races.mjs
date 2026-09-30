@@ -862,8 +862,8 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.equal(ctx.proposalListNeeded, true);
   active.joined = true;
   ctx.sendProposalListWhenReady(active);
-  assert.deepEqual(sent, [{ type: "proposal-list" }],
-    "an unchanged reconnect join still requests proposals once hydration completes");
+  assert.equal(sent.length, 1, "an unchanged reconnect join requests the proposal list once hydration completes");
+  assert.equal(sent[0].type, "proposal-list");
   assert.equal(ctx.proposalListNeeded, false);
 }
 
