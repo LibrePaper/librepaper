@@ -12,8 +12,8 @@ set -euo pipefail
 # 6. deploy/deploy-mirror.sh: publish all mirrors.
 # 7. Afterwards (manual): point DEFAULT_LATEX_MIRROR and typst-assets.lock at https://<bucket>.s3.<region>.io.cloud.ovh.net/.
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_MODE=0
 
 case "${1:-}" in
@@ -33,18 +33,16 @@ cd "$REPO_ROOT"
 
 # Decrypt and read keys.
 KEYS="${KEYS:-deploy/keys.yaml}"
-SECRETS_JSON=$(sops --decrypt --output-type json "$KEYS")
-
-# Extract OVH credentials and derive bucket.
-OVH_S3_ENDPOINT=$(printf '%s' "$SECRETS_JSON" | grep -o '"OVH_S3_ENDPOINT":"[^"]*' | cut -d'"' -f4)
-OVH_S3_REGION=$(printf '%s' "$SECRETS_JSON" | grep -o '"OVH_S3_REGION":"[^"]*' | cut -d'"' -f4)
-OVH_S3_USER=$(printf '%s' "$SECRETS_JSON" | grep -o '"OVH_S3_USER":"[^"]*' | cut -d'"' -f4)
-OVH_S3_SECRET=$(printf '%s' "$SECRETS_JSON" | grep -o '"OVH_S3_SECRET":"[^"]*' | cut -d'"' -f4)
-OVH_S3_ARN=$(printf '%s' "$SECRETS_JSON" | grep -o '"OVH_S3_ARN":"[^"]*' | cut -d'"' -f4)
+key() { sops --decrypt --extract "[\"$1\"]" "$KEYS"; }
+OVH_S3_ENDPOINT=$(key OVH_S3_ENDPOINT)
+OVH_S3_REGION=$(key OVH_S3_REGION)
+OVH_S3_USER=$(key OVH_S3_USER)
+OVH_S3_SECRET=$(key OVH_S3_SECRET)
+OVH_S3_ARN=$(key OVH_S3_ARN)
 
 # Derive bucket from ARN: arn:aws:s3:::bucket -> bucket
-S3_BUCKET="${S3_BUCKET:-$(printf '%s' "$OVH_S3_ARN" | sed 's|^arn:aws:s3:::\([a-z0-9][a-z0-9.-]*[a-z0-9]\)$|\1|')}"
-if [ -z "$S3_BUCKET" ]; then
+S3_BUCKET="${S3_BUCKET:-${OVH_S3_ARN#arn:aws:s3:::}}"
+if [ -z "$S3_BUCKET" ] || [ "$S3_BUCKET" = "$OVH_S3_ARN" ]; then
   printf '%s\n' "Error: could not derive bucket from OVH_S3_ARN or S3_BUCKET is not set" >&2
   exit 1
 fi
@@ -77,18 +75,13 @@ if [ "$TEST_MODE" = 1 ]; then
   TYPST_MIRROR="${TYPST_MIRROR:-../wasm-typst/mirror}"
   MIRROR="${MIRROR:-../wasm-latex/mirror}"
 
-  if [ -f "$TYPST_MIRROR/LICENSE" ]; then
-    $aws_cmd s3api put-object --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_S3_REGION" \
-      --bucket "$S3_BUCKET" --key "test/LICENSE" --body "$TYPST_MIRROR/LICENSE" \
-      --content-type "text/plain" --acl public-read
-  fi
-
-  if [ -f "$MIRROR/_headers" ]; then
-    $aws_cmd s3api put-object --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_S3_REGION" \
-      --bucket "$S3_BUCKET" --key "test/_headers" --body "$MIRROR/_headers" \
-      --content-type "text/plain" --acl public-read
-  fi
-
+  # A missing file fails the run instead of being skipped.
+  $aws_cmd s3api put-object --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_S3_REGION" \
+    --bucket "$S3_BUCKET" --key "test/LICENSE" --body "$TYPST_MIRROR/LICENSE" \
+    --content-type "text/plain" --acl public-read
+  $aws_cmd s3api put-object --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_S3_REGION" \
+    --bucket "$S3_BUCKET" --key "test/_headers" --body "$MIRROR/_headers" \
+    --content-type "text/plain" --acl public-read
   VERIFY_KEY="test/LICENSE"
 else
   # Normal mode: run make mirrors-push.
@@ -100,9 +93,8 @@ fi
 # Verify: fetch public URL with Origin header; expect 200 + access-control-allow-origin.
 printf '%s\n' "Verifying deployment..."
 VERIFY_URL="https://$S3_BUCKET.s3.$OVH_S3_REGION.io.cloud.ovh.net/$VERIFY_KEY"
-RESPONSE=$(curl -s -w "\n%{http_code}" -H "Origin: https://example.com" "$VERIFY_URL")
-HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -1)
-HEADERS=$(printf '%s' "$RESPONSE" | head -n-1)
+HEADERS=$(curl -s -o /dev/null -D - -H "Origin: https://example.com" "$VERIFY_URL")
+HTTP_CODE=$(printf "%s" "$HEADERS" | head -1 | cut -d" " -f2)
 
 if [ "$HTTP_CODE" != "200" ]; then
   printf '%s\n' "Error: verification failed (HTTP $HTTP_CODE)" >&2

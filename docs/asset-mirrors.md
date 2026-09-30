@@ -25,14 +25,11 @@ make mirrors-push
 SOPS decrypts the key file into memory for the publishing process. Both local
 mirrors are integrity-checked before either upload begins. The publisher reads
 each uploaded object back and verifies its bytes and response metadata before
-<<<<<<< HEAD
 publishing release indexes. Each upload uses a public-read ACL (listing stays
-private), and the GET/HEAD any-origin CORS rule is applied on every push.
-Application URL pins remain manual.
-=======
-publishing release indexes. Use `deploy/deploy-mirror.sh` to create the bucket
-as the publisher user, configure CORS once, push mirrors, and verify deployment.
->>>>>>> d52d88d9 (Update docs: CORS setup now via deploy-mirror.sh)
+private). `deploy/deploy-mirror.sh` creates the bucket as the publisher user,
+sets CORS once, pushes both mirrors, and verifies public reads; `--test`
+uploads two small files instead of the mirrors. Application URL pins remain
+manual.
 
 Publisher credentials need object read/write access. Allow anonymous reads only
 for `typst/*` and `latex/*`; keep listing private. Uploads use gzip where suitable,
