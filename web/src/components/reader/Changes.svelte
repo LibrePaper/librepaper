@@ -428,7 +428,7 @@
       </div>
     </div>
     <div class="changes-meta" aria-live="polite">{allPending} pending{pendingRows.length !== allPending ? ` · ${pendingRows.length} shown` : ""}{contestedCount ? ` · ${contestedCount} contested` : ""}</div>
-    {#if recoveryRequired}<div class="tracking-recovery" role="alert"><span>A declined tracked edit could not be rebased. Its text is preserved here for manual recovery.</span><button type="button" class="empty-link" onclick={() => onrecover?.()}>Download preserved text</button></div>{/if}
+    {#if recoveryRequired}<div class="tracking-recovery" role="alert"><span>A tracked draft needs attention. Its text is preserved here for manual recovery.</span><button type="button" class="empty-link" onclick={() => onrecover?.()}>Download preserved text</button></div>{/if}
   </header>
   <!-- One control, only visible when there are multiple authors or files to filter by. -->
   {#if showExtraFilters}<div class="filter-bar">
