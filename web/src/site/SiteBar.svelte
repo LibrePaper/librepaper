@@ -11,7 +11,7 @@
   let { mark = true, docs = true } = $props();
 
   // Replaced at build time by vite.site.config.js: the published site points
-  // at the deployment, a local build at whatever `make deploy` started.
+  // at the deployment, a local build at whatever `make demo` started.
   const app = __APP_ORIGIN__;
 </script>
 

@@ -90,7 +90,7 @@ pub(crate) fn validate_asset_mirror(value: &str) -> Result<String, String> {
 /// Validate the marketing site's address. It is handed to a browser as the
 /// place signing out goes, so it has to be an origin a browser can be sent
 /// to: a scheme and a host, no credentials, and nothing after the host. Plain
-/// HTTP is allowed because `make deploy` serves the site on localhost, which
+/// HTTP is allowed because `make demo` serves the site on localhost, which
 /// is the one place it is not a mistake.
 pub(crate) fn validate_site_origin(value: &str) -> Result<String, String> {
     let value = value.trim();
@@ -591,7 +591,7 @@ mod site_origin_tests {
         assert_eq!(
             validate_site_origin("http://localhost:8082"),
             Ok("http://localhost:8082".to_string()),
-            "plain HTTP on loopback is `make deploy`, not a mistake"
+            "plain HTTP on loopback is `make demo`, not a mistake"
         );
         for refused in [
             "paper.example",

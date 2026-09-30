@@ -218,7 +218,7 @@ async fn open(url: &str) {
 }
 
 /// Exits non-zero when nothing is answering, so a script can branch on it:
-/// `make deploy` uses it to decide whether to start a companion or leave the
+/// `make demo` uses it to decide whether to start a companion or leave the
 /// one already running alone. Reports the service address, code and pairings,
 /// then the native tools found and missing.
 async fn status(tool_path: Vec<PathBuf>) {

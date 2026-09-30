@@ -15,9 +15,9 @@ pins a module (repository, tag, sha256 of the module); the `latex` row
 by the sha256 of its `MANIFEST.json`. A browser never chooses a release; it uses
 the one its server was built with.
 
-`make wasm` fetches the pinned modules from public GitHub releases into
+`tools/pins fetch` fetches the pinned modules from public GitHub releases into
 `web/wasm/`. The binary does not need them; tests, tools and publishing do.
-`make wasm-update REPO=wasm-markdown TAG=vX.Y.Z` moves a module pin. The `latex`
+`tools/pins update wasm wasm-markdown vX.Y.Z` moves a module pin. The `latex`
 row is edited by hand.
 
 A LaTeX release is an immutable directory, `latex/<id>/`, where `<id>` is the
@@ -25,13 +25,13 @@ SHA-256 of `<id>/MANIFEST.json`. It holds `release.json` (format 2, every path
 relative to that directory), `MANIFEST.json`, the engine files, and `bundles/`
 with its index `bundles/bundles.json`. There is no top-level manifest and no
 default release. The LaTeX mirror is built in the sibling `wasm-latex`
-repository with `make mirror`, which holds exactly one release; `make mirrors`
+repository with `make mirror`, which holds exactly one release; `deploy/assets build`
 runs that from here. `MIRROR=` points at its output (default
 `../wasm-latex/mirror`).
 
 ## Publishing
 
-Install Node.js, SOPS and AWS CLI v2 (`make mirrors-push` falls back to
+Install Node.js, SOPS and AWS CLI v2 (`deploy/assets publish` falls back to
 `nix shell nixpkgs#awscli2` when AWS is missing and Nix is present), and keep
 the encrypted publisher keys in `deploy/keys.yaml`. The file supplies
 `OVH_S3_ENDPOINT`, `OVH_S3_REGION`, `OVH_S3_USER` (the S3 access key),
@@ -42,30 +42,30 @@ mapped values.
 
 One-time setup: under Public Cloud, Object Storage, Users, create an S3 user and
 generate its S3 credentials. Do not create the bucket in the console.
-`deploy/deploy-mirror.sh` creates it with that key so the user owns it, because
+`deploy/assets publish` creates it with that key so the user owns it, because
 OVH lets only the owner set CORS.
 
 ```sh
-make wasm && make mirrors
+tools/pins fetch && deploy/assets build
 
 # Validate the modules and the LaTeX mirror; no credentials or network needed.
-make mirrors-push MIRRORS_DRY_RUN=1
+deploy/assets publish --dry-run
 
 # Check the bucket, CORS and connectivity by uploading two small test files.
-deploy/deploy-mirror.sh --test
+deploy/assets publish --test
 
 # Publish.
-deploy/deploy-mirror.sh
+deploy/assets publish
 ```
 
-`deploy/deploy-mirror.sh` reads the keys through SOPS. It first checks that
+`deploy/assets publish` reads the keys through SOPS. It first checks that
 every GitHub release `assets.lock` pins is public (a draft answers 404 to
 anyone signed out). It then creates the bucket if needed, sets CORS (GET and
-HEAD from any origin), runs `make mirrors-push`, and verifies that a pinned
+HEAD from any origin), runs `tools/push-mirrors.mjs`, and verifies that a pinned
 object is publicly readable with a CORS header and that listing the bucket is
 not public.
 
-`make mirrors-push` runs `tools/push-mirrors.mjs` and `tools/publish-mirror.mjs`.
+`deploy/assets publish` runs `tools/push-mirrors.mjs` and `tools/publish-mirror.mjs`.
 A preflight checks that each module hashes to its pin and that the LaTeX
 directory is `<sha256>/` with a `MANIFEST.json` that hashes to the directory
 name, a format 2 `release.json`, every file and bundle it names present with
@@ -93,5 +93,5 @@ object while listing the bucket stays private.
 An operator may host a copy of the tree for the pins of their binary and pass
 `--asset-mirror https://host/` (or `LIBREPAPER_ASSET_MIRROR`). The host must
 serve those exact paths over HTTPS with CORS for GET and HEAD.
-`make latex-check MIRROR=<dir or url>` validates a LaTeX release before a
+`deploy/assets check <dir or url>` validates a LaTeX release before a
 deployment points at it.

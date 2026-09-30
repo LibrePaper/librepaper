@@ -1,7 +1,7 @@
 # The fuzz targets: libFuzzer driving the functions that read what somebody
 # else wrote -- a peer on the socket, a reader's selection, an author's files,
 # bytes off object storage. Outside the workspace because they need a nightly compiler and the
-# sanitizer runtime, and nothing that builds the binary should. `make fuzz`
+# sanitizer runtime, and nothing that builds the binary should. `tools/suite fuzz`
 # runs every target for a minute; `cargo fuzz --fuzz-dir . run <name>` from this directory
 # runs one until it finds something.
 #

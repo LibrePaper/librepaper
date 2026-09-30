@@ -769,24 +769,24 @@ embeds; nothing under that directory is edited by hand.
 
 ```sh
 make web      # the pages, from web/
-make wasm     # the pinned browser renderers
+tools/pins fetch  # the pinned browser renderers
 make build    # dist/librepaper, with the pages and renderers embedded
 make install  # build and install to ~/.local/bin (override PREFIX= or BINDIR=)
 make test     # rustfmt, clippy and the test suite
-make test-external          # Quarto/R/Python and local-service integrations
-make test-release-workloads # supported limits and diagnostic workloads
+tools/suite external   # Quarto/R/Python and local-service integrations
+tools/suite workloads  # supported limits and diagnostic workloads
 ```
 
 `make build` needs [bun](https://bun.sh) and Node.js. The browser renderers are
 fetched from the exact tags and SHA256 digests in `assets.lock`;
-`make wasm-check` verifies that those tags also match the native renderer
+`tools/pins check` verifies that those tags also match the native renderer
 dependencies without network access. To update one renderer, name both values
-explicitly, for example `make wasm-update REPO=wasm-markdown TAG=v0.2.0`, then
+explicitly, for example `tools/pins update wasm wasm-markdown v0.2.0`, then
 review the resulting Cargo and lockfile diff.
 
 The four browser modules (markdown, bibliography, citations and typst) are not
-embedded in the binary. `make wasm` fetches them from public GitHub releases into the ignored
-`web/wasm/`, which tests, tools and publishing read, and `make mirrors-push`
+embedded in the binary. `tools/pins fetch` fetches them from public GitHub releases into the ignored
+`web/wasm/`, which tests, tools and publishing read, and `deploy/assets publish`
 publishes them to the asset mirror under `wasm/<sha256>/<module>`, where the
 SHA-256 is the one `assets.lock` pins. The same lock pins the LaTeX release
 directory, `latex/<sha256>/`, in a `latex` row. The server hands browsers those
@@ -795,18 +795,18 @@ URLs, on the mirror named by `--asset-mirror`. See
 
 ### Running it locally
 
-`make deploy` runs the site, the application, a local companion and simulated
-activity together. It first runs `make latex-check` on the LaTeX mirror at
+`make demo` runs the site, the application, a local companion and simulated
+activity together. It first runs `deploy/assets check` on the LaTeX mirror at
 `MIRROR=` (default `../wasm-latex/mirror`), then `make serve`, which uses the
-Docker PostgreSQL that `make postgres-dev` keeps unless
+Docker PostgreSQL that `tools/db dev` keeps unless
 `LIBREPAPER_DATABASE_URL` is set. Configure an OAuth app in `.env` (see
-`.env.example`; `make secrets` opens a shell with the deployment keys loaded),
+`.env.example`; `deploy/keys shell` opens a shell with the deployment keys loaded),
 then sign in: every new account receives five private,
 editable examples, one each in HTML, Markdown, Typst, LaTeX and Quarto. Use
 `PUBLISHERS=any COMMENTERS=anyone` for local development.
 
 Examples are created once per new account, survive restarts, and stay deleted
-if you remove them. Existing accounts are left unchanged, and `make deploy`
+if you remove them. Existing accounts are left unchanged, and `make demo`
 never resets or seeds the shared catalogue. The five starter sources ship
 inside the binary, so signing in needs neither Quarto nor a checkout of this
 repository.

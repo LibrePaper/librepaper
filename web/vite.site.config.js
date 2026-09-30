@@ -22,7 +22,7 @@ const outDir = resolve(import.meta.dirname, "../site/_site");
 // the end, so plugin ordering elsewhere never matters.
 // Where the application lives, which is a different host from this static
 // site. The published site points at the deployment; a local run points at
-// whatever `make deploy` started, so the Sign in button reaches a server that
+// whatever `make demo` started, so the Sign in button reaches a server that
 // is actually listening instead of hanging on one that is not.
 //
 // Two places need it, so it is applied two ways: `define` for the Svelte bar,

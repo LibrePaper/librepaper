@@ -1,5 +1,5 @@
 // Integration check against the actual built WASM, using Poppler as an
-// independent PDF parser. Run after `make wasm`; requires pdfinfo/pdftotext.
+// independent PDF parser. Run after `tools/pins fetch`; requires pdfinfo/pdftotext.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

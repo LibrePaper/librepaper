@@ -77,4 +77,4 @@ if (!nativeCount) throw new Error(`${repo}: no native Cargo dependency with an e
 for (const [path, changed] of updates) await writeFile(path, changed);
 await writeFile(lockPath, changedLock);
 console.log(`${repo}: updated ${nativeCount} native dependency tag(s) and browser lock to ${tag}`);
-console.log("Run `cargo update -p <native-renderer>` (or cargo check) and `make wasm` before committing.");
+console.log("Run `cargo update -p <native-renderer>` (or cargo check) and `tools/pins fetch` before committing.");

@@ -4,7 +4,7 @@
 # renderer libraries directly. The web app in web/ is Svelte,
 # bundled by vite and installed by bun. The binary embeds the web build (from
 # web/dist) and serves it. The WASM renderers are not embedded: they are
-# published to the asset mirror (make mirrors-push) and browsers load them there.
+# published to the asset mirror (deploy/assets publish) and browsers load them there.
 
 # Local settings, kept out of the repository: the GitHub OAuth app and who may
 # publish. Copy .env.example to .env and fill it in. Values are read as Make
@@ -17,11 +17,11 @@ PREFIX  ?= $(HOME)/.local
 BINDIR  ?= $(PREFIX)/bin
 DESTDIR ?=
 # The browser renderers, fetched into web/wasm (not embedded in the binary):
-# tests read them, and mirrors-push publishes them to the asset mirror.
+# tests read them, and deploy/assets publish sends them to the asset mirror.
 WASM    := web/wasm/markdown.wasm
 BIB     := web/wasm/bibliography.wasm
 CITES   := web/wasm/citations.wasm
-# Fetched, not built: see assets.lock and the bottom of this file.
+# Fetched, not built: see assets.lock and the pinned inputs section below.
 TYPST   := web/wasm/typst.wasm
 # The pages. web/dist is entirely a build output, so it is an input to
 # nothing: what the pages are built from lives in web/src and web/public.
@@ -34,6 +34,8 @@ SHELL_OUT := web/dist/index.html
 LCM_DIR := web/vendor/loro-codemirror
 LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
            $(LCM_DIR)/awareness.ts $(LCM_DIR)/ephemeral.ts $(LCM_DIR)/utils.ts
+# Everything tools/pins fetch writes; see the pinned inputs section below.
+PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(LCM)
 # web/src/site is deliberately not in this list. The marketing page and the
 # docs chrome are built by vite.site.config.js into site/_site, which the
 # binary does not embed, and no page under web/pages reaches them. Counting
@@ -44,8 +46,7 @@ LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
 
-.DEFAULT_GOAL := help
-.PHONY: help build install test check-all browser test-external test-release-workloads smoke serve kill clean snapshot wasm wasm-check wasm-update loro-codemirror loro-update fmt web fuzz
+.PHONY: help build install test check fmt serve demo wipe kill clean snapshot web pins site site-serve
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -70,7 +71,7 @@ $(BIN): $(SOURCES) $(SHELL_OUT)
 
 # The suite reads the built shell -- a test that asserts a page names its own
 # bundle needs that bundle to exist -- so the pages are built first.
-test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
+test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@cd web && bun run check
 	@cd web && bun run check:names
 	@cargo fmt --check
@@ -95,98 +96,24 @@ test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 # other check was green.
 	@echo
 	@echo "test: passed -- NOT everything. Still to run:"
-	@echo "  make browser                              the components in a real chromium"
+	@echo "  tools/suite browser                       the components in a real chromium"
 	@echo "  LIBREPAPER_TEST_POSTGRES_URL=... \\"
 	@echo "    cargo test -p librepaper --lib -- --ignored --test-threads=1"
-	@echo "  make check-all                            test + browser in one go"
-
-# Explicit suites kept out of the default inventory because they require
-# host tools or intentionally exercise release-sized resource ceilings.
-test-external:  ## Run Quarto/R/Python and real local-service integration tests
-	@cargo test -p librepaper quarto -- --ignored --nocapture --test-threads=1 \
-		--skip quarto_project_scope_collects_pages_and_nested_web_resources \
-		--skip quarto_book_scope_keeps_chapter_navigation
-
-test-release-workloads:  ## Run supported-limit and diagnostic workloads
-	@cargo test -p librepaper the_supported_maximum_source_survives_a_restart -- --ignored --nocapture
-	@cargo test -p librepaper measure_source_history_profiles -- --ignored --nocapture
-	@cargo test -p librepaper profile_unchanged_resident_metadata -- --ignored --nocapture
-	@cargo test -p librepaper persistence_capacity_workload -- --ignored --nocapture
-	@cargo test -p librepaper persistence_default_limits_refuse_without_discarding_dirty_rooms -- --ignored --nocapture
-	@cargo test -p librepaper mcp_protocol_transfer_benchmark -- --ignored --nocapture
+	@echo "  make check                                test + browser + reader smoke in one go"
 
 # One command that means what a green `test` looks like it means. The Postgres
 # cases stay out even here: they want a database to point at and they TRUNCATE
 # it, which is not something a default target should assume it may do.
-check-all: test browser  ## Run the test suite AND the browser components
-
-# The components, in a real browser. Not part of `test`: each one builds a
-# bundle with vite and drives a headless chromium, which is minutes rather than
-# seconds. But nothing else runs them, and a substrate change once left three of
-# them referring to a library that had been uninstalled -- broken for as long as
-# nobody looked, because every other check passed.
-#
-# The per-test bound is generous rather than tuned: the LaTeX one drives a real
-# TeX Live through a browser and takes minutes by itself, and a tighter bound
-# reported that passing test as broken.
-# $(LCM) because each test builds its own bundle from web/src, and the editor
-# imports the CodeMirror binding, which is fetched rather than vendored. The CI
-# job runs this target on its own, so the dependency has to be here: without it
-# every test that builds Editor.svelte failed with an unresolved import, which
-# is how removing the vendored source from the repository broke this job.
-browser: wasm $(LCM)  ## Run the component tests in headless chromium (needs chromium)
-	@command -v chromium >/dev/null || command -v google-chrome >/dev/null || \
-		{ echo "no chromium to drive; skipping the browser tests"; exit 0; }
-	@failed=""; \
-	for test in web/tests/browser/*.mjs; do \
-		printf '%s: ' "$$(basename $$test)"; \
-		if (cd web && timeout 900 node "../$$test" >/tmp/browser-test.log 2>&1); then \
-			echo ok; \
-		else \
-			echo FAILED; failed="$$failed $$(basename $$test)"; \
-			sed 's/^/    /' /tmp/browser-test.log | tail -8; \
-		fi; \
-	done; \
-	[ -z "$$failed" ] || { echo "failed:$$failed"; exit 1; }
-
-# The rendered reader, in a real browser. Not part of `test`: it needs the
-# built binary and a chromium, and it starts a server of its own on a
-# temporary directory. It touches no deployment and no data but its own.
-smoke: $(BIN)  ## Drive the reader in headless chromium (needs chromium)
-	@command -v chromium >/dev/null || command -v google-chrome >/dev/null || \
-		{ echo "no chromium to drive; skipping the browser smoke test"; exit 0; }
-	@bun web/tools/browser-smoke.mjs $(BIN)
+check: test  ## Run the test suite, the browser components and the reader smoke test
+	@tools/suite browser
+	@tools/suite smoke
 
 fmt:  ## Format every crate
 	@cargo fmt
 
-# The fuzz targets in tools/fuzz/: libFuzzer over the functions that read what
-# somebody else wrote -- the path rules, the shared document and its repair, a
-# v1 update against the admission ceilings, a catalog source archive off object
-# storage, the anchoring that places a reader's selection in a source file
-# the author uploaded, and what a page in the browser may say to the loopback
-# build service. Each runs for FUZZ_SECONDS, then stops; a finding is left in
-# tools/fuzz/artifacts/. Needs a nightly toolchain and cargo-fuzz
-# (`cargo install cargo-fuzz`). No sanitizer:
-# the code under test is safe Rust, the oracle is the assertions, and the
-# sanitizer doubles the build time to find nothing the panics do not.
-FUZZ_SECONDS ?= 60
-# Every target unless told otherwise. `update` used to be held back for a
-# panic inside yrs, reproduced by an ignored test that went with the
-# substrate; there is no yrs now and nothing is excluded.
-FUZZ_TARGETS ?= $(shell cargo fuzz list --fuzz-dir tools/fuzz)
-# The global export would evaluate this for every recipe, even outside fuzz.
-unexport FUZZ_TARGETS
-fuzz: wasm $(SHELL_OUT)  ## Run every fuzz target for FUZZ_SECONDS (default 60) each
-	@command -v cargo-fuzz >/dev/null || { echo "cargo-fuzz is not installed: cargo install cargo-fuzz"; exit 1; }
-	@for target in $(FUZZ_TARGETS); do \
-		echo "fuzzing $$target for $(FUZZ_SECONDS)s"; \
-		cargo fuzz run --fuzz-dir tools/fuzz -s none $$target -- -max_total_time=$(FUZZ_SECONDS) || exit 1; \
-	done
-
 # Release builds are described in .github/workflows/release.yml and run when a
 # v* tag is pushed. This does the same thing locally, without tagging.
-snapshot: wasm $(SHELL_OUT)  ## Build the release binary locally, without tagging
+snapshot: pins $(SHELL_OUT)
 	@cargo build --release -p librepaper
 	@echo "target/release/librepaper"
 
@@ -212,76 +139,22 @@ ASSET_MIRROR_FLAG ?= $(if $(ASSET_MIRROR),--asset-mirror $(ASSET_MIRROR))
 # has a calendar in it rather than the one cell a document published once has.
 # The operations are real; only the clock is invented. See seed::activity.
 # 0 -- or nothing at all -- asks for no simulation, which is what `serve`
-# does on its own; `deploy` supplies a default below.
+# does on its own; `demo` supplies a default below.
 SIMULATE_ACTIVITY_FLAG ?= $(if $(filter-out 0,$(SIMULATE_ACTIVITY)),--simulate-activity $(SIMULATE_ACTIVITY))
 
 OPEN ?= 1
 
 # Without LIBREPAPER_DATABASE_URL, the server uses the Docker PostgreSQL that
-# postgres-dev keeps, started here if it is not running.
+# tools/db dev keeps, started here if it is not running.
 serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, ASSET_MIRROR=, LIBREPAPER_DATABASE_URL=)
-	@test -n "$(LIBREPAPER_DATABASE_URL)" || $(MAKE) --no-print-directory postgres-dev
+	@test -n "$(LIBREPAPER_DATABASE_URL)" || tools/db dev >/dev/null
 	@test "$(OPEN)" = 1 && command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
-	@LIBREPAPER_DATABASE_URL="$${LIBREPAPER_DATABASE_URL:-$(DEV_POSTGRES_URL)}" \
+	@LIBREPAPER_DATABASE_URL="$${LIBREPAPER_DATABASE_URL:-$$(tools/db url)}" \
 		$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(ASSET_MIRROR_FLAG) $(SIMULATE_ACTIVITY_FLAG)
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
 	@pkill -f '[d]ist/librepaper admin serve' && echo "stopped" || echo "nothing to stop"
-
-.PHONY: deploy latex-check latex-smoke mirrors mirrors-push
-
-# The mirrors -- the LaTeX compiler engines and TeX Live bundles, and the four
-# browser wasm modules (web/wasm) -- are published together. assets.lock pins
-# both: each module by digest, and the LaTeX release directory `latex/<sha256>/`
-# by its id. `make wasm && make mirrors` prepares both; `mirrors-push` publishes
-# them, and the mirror only ever grows. MIRROR= points at the LaTeX mirror
-# output, a directory of release directories (`<sha256>/`).
-MIRROR ?= ../wasm-latex/mirror
-
-latex-check:  ## Validate the LaTeX mirror build at MIRROR= (no network for a directory)
-	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
-
-latex-smoke: $(BIN)  ## Compile and display the LaTeX tutorial in Chromium against MIRROR=
-	@node tools/latex/tools/check-mirror.test.mjs
-	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
-	@node web/tools/latex-e2e.mjs $(BIN) browser docs/examples/tutorial-latex/librepaper.tex 120 $(MIRROR)
-
-mirrors:  ## Build the LaTeX mirror that mirrors-push publishes (LaTeX needs a staged release; see wasm-latex)
-	$(MAKE) -C $(dir $(MIRROR)) mirror
-
-mirrors-push:  ## Publish the wasm modules and the prepared LaTeX mirror (MIRRORS_DRY_RUN=1 validates both without credentials)
-	@if [ "$${MIRRORS_DRY_RUN:-}" = 1 ] || command -v aws >/dev/null 2>&1; then \
-		MIRROR='$(MIRROR)' node tools/push-mirrors.mjs; \
-	elif command -v nix >/dev/null 2>&1; then \
-		MIRROR='$(MIRROR)' nix shell nixpkgs#awscli2 -c node tools/push-mirrors.mjs; \
-	else \
-		printf '%s\n' 'mirrors-push: AWS CLI v2 is required; install aws or install Nix to use the temporary nixpkgs fallback.' >&2; \
-		exit 1; \
-	fi
-
-# The local deployment keeps PostgreSQL on the same machine in a persistent
-# Docker volume. An explicitly configured database URL always wins, so hosted
-# and native PostgreSQL installations do not involve Docker.
-DEV_POSTGRES_CONTAINER ?= librepaper-postgres
-DEV_POSTGRES_PORT      ?= 55432
-DEV_POSTGRES_VOLUME    ?= librepaper-postgres-data
-DEV_POSTGRES_PASSWORD  ?= librepaper-local
-DEV_POSTGRES_URL       := postgresql://postgres:$(DEV_POSTGRES_PASSWORD)@127.0.0.1:$(DEV_POSTGRES_PORT)/librepaper
-
-.PHONY: postgres-dev
-postgres-dev:  ## Start the persistent PostgreSQL used by an unconfigured local deploy
-	@command -v docker >/dev/null || { echo "make deploy needs Docker or LIBREPAPER_DATABASE_URL"; exit 1; }
-	@docker inspect $(DEV_POSTGRES_CONTAINER) >/dev/null 2>&1 || docker run -d \
-		--name $(DEV_POSTGRES_CONTAINER) --restart unless-stopped \
-		-p 127.0.0.1:$(DEV_POSTGRES_PORT):5432 \
-		-e POSTGRES_PASSWORD=$(DEV_POSTGRES_PASSWORD) -e POSTGRES_DB=librepaper \
-		-v $(DEV_POSTGRES_VOLUME):/var/lib/postgresql/data postgres:17-alpine >/dev/null
-	@docker start $(DEV_POSTGRES_CONTAINER) >/dev/null
-	@for attempt in $$(seq 1 30); do \
-		docker exec $(DEV_POSTGRES_CONTAINER) pg_isready -U postgres -d librepaper >/dev/null 2>&1 && exit 0; \
-		sleep 1; \
-	done; echo "PostgreSQL did not become ready"; exit 1
 
 # Starting over. The local deployment is seeded state and nothing else -- the
 # accounts, the five example copies per account and the CRDT history behind
@@ -291,21 +164,20 @@ postgres-dev:  ## Start the persistent PostgreSQL used by an unconfigured local 
 # swap are encoded for the engine that was replaced, and the reader says so
 # ("Invalid magic bytes") instead of opening them.
 #
-# Only the Docker deployment this Makefile owns. A configured
+# Only the Docker deployment tools/db owns. A configured
 # LIBREPAPER_DATABASE_URL points somewhere this target has no business
 # dropping, so it refuses rather than guessing.
-.PHONY: wipe
 wipe:  ## Delete the local deployment -- database and data directory -- and start over
 	@if [ -n "$(LIBREPAPER_DATABASE_URL)" ]; then \
 		echo "LIBREPAPER_DATABASE_URL is set: wipe that database yourself."; exit 1; \
 	fi
 	@$(MAKE) --no-print-directory kill >/dev/null
-	@$(MAKE) --no-print-directory postgres-dev
+	@tools/db dev >/dev/null
 	@# FORCE, because a server that outlived `kill` still holds a connection
 	@# and DROP DATABASE waits for it otherwise.
-	@docker exec $(DEV_POSTGRES_CONTAINER) psql -U postgres -c \
+	@docker exec $${DEV_POSTGRES_CONTAINER:-librepaper-postgres} psql -U postgres -c \
 		'DROP DATABASE IF EXISTS librepaper WITH (FORCE)' >/dev/null
-	@docker exec $(DEV_POSTGRES_CONTAINER) psql -U postgres -c 'CREATE DATABASE librepaper' >/dev/null
+	@docker exec $${DEV_POSTGRES_CONTAINER:-librepaper-postgres} psql -U postgres -c 'CREATE DATABASE librepaper' >/dev/null
 	@# The blobs and the session key. The schema comes back from the
 	@# migrations on the next start, and the directory with it.
 	@rm -rf "$(DATA)"
@@ -330,9 +202,10 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 #
 # The site server is a background process, so the recipe traps its own exit
 # and takes it down: a preview server left holding SITE_PORT would make the
-# next `make deploy` fail on --strictPort.
-deploy: SIMULATE_ACTIVITY ?= 21
-deploy: latex-check $(BIN)  ## Check the local LaTeX mirror, then serve the site, the app, a local companion and simulated activity (SIMULATE_ACTIVITY=21)
+# next `make demo` fail on --strictPort.
+demo: SIMULATE_ACTIVITY ?= 21
+demo: $(BIN)  ## Serve the site, the app, a local companion and simulated activity (SIMULATE_ACTIVITY=21)
+	@deploy/assets check
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
 	@set -e; \
 	(cd web && bun run serve:site -- --port $(SITE_PORT) --strictPort >/dev/null 2>&1) & \
@@ -350,19 +223,6 @@ deploy: latex-check $(BIN)  ## Check the local LaTeX mirror, then serve the site
 	LIBREPAPER_SITE_ORIGIN=http://localhost:$(SITE_PORT) \
 		$(MAKE) serve OPEN=0 LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY)
 
-# The deployment keys -- OVH credentials, endpoints, the GitHub app
-# -- live sops-encrypted in deploy/keys.yaml. A target cannot export into the
-# shell that ran make, so `secrets` opens a subshell with them decrypted in
-# its environment; exit it to drop them. `mirrors-push` loads its own keys.
-KEYS ?= deploy/keys.yaml
-.PHONY: secrets
-
-secrets:  ## Open an interactive shell with the sops-encrypted deployment keys in its environment
-	@test -f $(KEYS) || { echo "no $(KEYS)"; exit 1; }
-	@test -t 0 || { echo "make secrets opens an interactive subshell and needs a terminal" >&2; echo "use: sops exec-env $(KEYS) '<command>'" >&2; exit 2; }
-	@echo "$(KEYS) is loaded in this shell; exit to drop it"
-	@sops exec-env $(KEYS) "$${SHELL:-/bin/sh}"
-
 # --- the web app -----------------------------------------------------------
 #
 # Svelte, Skeleton, CodeMirror and Loro, bundled into the pages the binary
@@ -370,37 +230,26 @@ secrets:  ## Open an interactive shell with the sops-encrypted deployment keys i
 # edited by hand. The build refuses to run if a page has drifted from the
 # design system -- see web/tests/unit/vocabulary.js.
 
-web: $(SHELL_OUT)  ## Build the pages from web/
+web: $(SHELL_OUT)
 
 $(SHELL_OUT): $(WEB) $(LCM)
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
 	@cd web && bun install --silent && bun run build
 
 
-# --- the CodeMirror binding ------------------------------------------------
+# --- the pinned inputs -----------------------------------------------------
 #
-# A fork of loro-codemirror, fetched rather than vendored. Upstream cannot keep
-# an editor in step with a document holding more than one container, which is
-# every update here; docs/loro-codemirror.md says what is changed and why.
-#
-# It was vendored into web/vendor until 2026-09-16, which meant the same source
-# existed twice -- here and in the fork -- and they drifted, the fork sitting
-# three fixes behind for a while with nothing to notice it. Now the fork is the
-# only copy and this fetches it by pinned commit, verifying every file against
-# loro-codemirror.lock and writing nothing that does not match.
+# The browser wasm renderers (assets.lock) and the loro-codemirror binding
+# (loro-codemirror.lock) are fetched, not built or vendored, and verified
+# against their locks; tools/pins owns fetching and moving them. Files already
+# correct are left alone, so running it on every build is cheap. `pins` is the
+# internal step. The files themselves depend on it order-only: a clean checkout
+# resolves them as prerequisites, an already-fetched one does not re-run it.
 
-loro-codemirror:  ## Fetch and verify the pinned CodeMirror binding
-	@node web/tools/fetch-loro-codemirror.mjs
+pins:
+	@tools/pins fetch
 
-# As with the renderers: the files are produced by the phony target above, and
-# this rule lets Make resolve them as prerequisites on a clean checkout while
-# leaving an already-correct file's mtime alone.
-$(LCM): | loro-codemirror
-
-# Move the pin to a commit you name. Never resolves a branch or a "latest".
-loro-update:  ## Move the binding pin (COMMIT=<full 40-char sha>)
-	@test -n "$(COMMIT)" || { echo "usage: make loro-update COMMIT=<full 40-char sha>"; exit 1; }
-	@node web/tools/update-loro-codemirror.mjs $(COMMIT)
+$(PINNED): | pins
 
 # --- the docs site ----------------------------------------------------------
 #
@@ -409,62 +258,9 @@ loro-update:  ## Move the binding pin (COMMIT=<full 40-char sha>)
 # wrapped in the sidebar from site/nav.js, beside the landing page authored in
 # web/src/site/. Built by vite.site.config.js into site/_site, which nothing
 # else reads -- it is deployed on its own by .github/workflows/site.yml.
-.PHONY: site site-serve
-
-site: wasm  ## Build the static docs site into site/_site
+site: pins
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
 	@cd web && bun install --silent && bun run build:site
 
-site-serve: site  ## Serve the built docs site on SITE_PORT (Ctrl-C to stop)
+site-serve: site
 	@cd web && bun run serve:site -- --port $(SITE_PORT) --strictPort
-
-# --- the browser renderers -------------------------------------------------
-#
-# Not built here any more. Each renderer is a repository of its own -- see
-# assets.lock -- and releases a module built from the same tag this
-# binary pins the crate at, so what the editor previews and what a save stores
-# still come out of one version of one implementation.
-#
-# The fetch verifies every module against the digest in the lock and writes
-# nothing that does not match, so a build either has the renderers it pinned or
-# fails saying which one moved. Files already correct are left alone, which
-# makes this cheap enough to run on every build.
-
-wasm: wasm-check  ## Fetch and verify the pinned browser renderers
-	@node web/tools/fetch-modules.mjs
-
-wasm-check:  ## Check native and browser renderer tags without network access
-	@node web/tools/check-renderer-pins.mjs
-
-# The files are produced by the phony aggregate above. This rule lets Make
-# resolve them as prerequisites on a clean checkout.
-$(WASM) $(BIB) $(CITES) $(TYPST): | wasm
-
-# Update one explicitly named renderer tag in Cargo.toml and assets.lock.
-# The command never looks up or selects a latest release implicitly.
-wasm-update:  ## Update one renderer (REPO=wasm-markdown TAG=vX.Y.Z)
-	@test -n "$(REPO)" -a -n "$(TAG)" || { echo 'usage: make wasm-update REPO=wasm-markdown TAG=vX.Y.Z' >&2; exit 2; }
-	@node web/tools/update-module-pin.mjs --repo "$(REPO)" --tag "$(TAG)"
-
-# The compile-time-checked SQL cache. `.sqlx/` is what lets an ordinary build
-# verify every query without a database; it goes stale the moment a query or a
-# migration changes, so regenerating it is part of changing either.
-#
-# Both targets use their own database, separate from the one `make deploy`
-# keeps, because preparing applies every migration to it.
-SQLX_POSTGRES_DB  ?= librepaper_sqlx
-SQLX_DATABASE_URL := postgresql://postgres:$(DEV_POSTGRES_PASSWORD)@127.0.0.1:$(DEV_POSTGRES_PORT)/$(SQLX_POSTGRES_DB)
-
-.PHONY: sqlx-database
-sqlx-database: postgres-dev  ## Recreate the schema-only database the SQL checks run against
-	@docker exec $(DEV_POSTGRES_CONTAINER) psql -U postgres -c 'DROP DATABASE IF EXISTS $(SQLX_POSTGRES_DB)' >/dev/null
-	@docker exec $(DEV_POSTGRES_CONTAINER) psql -U postgres -c 'CREATE DATABASE $(SQLX_POSTGRES_DB)' >/dev/null
-	@DATABASE_URL='$(SQLX_DATABASE_URL)' sqlx migrate run --source crates/librepaper/migrations/postgres
-
-.PHONY: sqlx-prepare
-sqlx-prepare: sqlx-database  ## Regenerate .sqlx/ after changing any query or migration
-	@SQLX_OFFLINE=false DATABASE_URL='$(SQLX_DATABASE_URL)' cargo sqlx prepare --workspace -- --all-targets
-
-.PHONY: sqlx-check
-sqlx-check: sqlx-database  ## Fail if .sqlx/ no longer matches the queries in the tree
-	@SQLX_OFFLINE=false DATABASE_URL='$(SQLX_DATABASE_URL)' cargo sqlx prepare --check --workspace -- --all-targets

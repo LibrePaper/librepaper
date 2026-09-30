@@ -40,10 +40,10 @@ export async function stageWasmMirror(directory = wasmDirectory, lockPath = wasm
       try {
         bytes = await readFile(join(directory, module));
       } catch {
-        throw new Error(`${module} not found in ${directory}; run make wasm first`);
+        throw new Error(`${module} not found in ${directory}; run tools/pins fetch first`);
       }
       if (createHash("sha256").update(bytes).digest("hex") !== sha256) {
-        throw new Error(`${module} in ${directory} does not match assets.lock; run make wasm first`);
+        throw new Error(`${module} in ${directory} does not match assets.lock; run tools/pins fetch first`);
       }
       await mkdir(join(staged, sha256), { recursive: true });
       await copyFile(join(directory, module), join(staged, sha256, module));
@@ -137,7 +137,7 @@ async function publishMirrors(mirrors, env, dryRun) {
     try {
       statSync(mirror.dir);
     } catch {
-      throw new Error(`${mirror.prefix} mirror not found at ${mirror.dir}; run make mirrors first`);
+      throw new Error(`${mirror.prefix} mirror not found at ${mirror.dir}; run deploy/assets build first`);
     }
     console.log(`Checking ${mirror.prefix} mirror...`);
     const result = await preflightMirror(mirror);

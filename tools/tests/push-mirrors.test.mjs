@@ -181,6 +181,6 @@ test("staging refuses a module whose bytes do not match assets.lock", async () =
     await writeFile(join(paths.wasm, "markdown.wasm"), "tampered");
     await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /does not match assets\.lock/);
     await rm(join(paths.wasm, "markdown.wasm"));
-    await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /run make wasm first/);
+    await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /run tools\/pins fetch first/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

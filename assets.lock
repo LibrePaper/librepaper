@@ -1,6 +1,6 @@
 # Every browser asset this build serves, pinned.
 #
-# Each is built and released by its own repository; `make wasm` fetches them
+# Each is built and released by its own repository; `tools/pins fetch` fetches them
 # and refuses anything whose bytes do not hash to what is written here. The
 # digest is the contract: it also pins what the asset mirror serves, so
 # browsers load exactly what that repository released. Modules are at
@@ -8,7 +8,7 @@
 # whose MANIFEST.json hashes to that value (the latex row's sha256 is the
 # sha256 of the release's MANIFEST.json).
 #
-# To move a pin: run `make wasm-update REPO=wasm-markdown TAG=vX.Y.Z` with an
+# To move a pin: run `tools/pins update wasm wasm-markdown vX.Y.Z` with an
 # explicit repository and tag, then review the native and browser pin diff.
 #
 # module             repository          tag       sha256

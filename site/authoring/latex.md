@@ -74,11 +74,11 @@ A self-hoster can serve the browser distribution from their own mirror rather
 than the project one; see
 [Privacy and the LaTeX mirror](../host.html#privacy-and-the-latex-mirror).
 
-`make deploy` checks that the local LaTeX mirror build (`MIRROR=`, default `../wasm-latex/mirror`) holds release directories
+`make demo` checks that the local LaTeX mirror build (`MIRROR=`, default `../wasm-latex/mirror`) holds release directories
 (`<sha256>/`, each described by `release.json`) with a complete engine
 release with its TeX Live bundles (`tools/latex/tools/check-mirror.mjs`; see
-`make latex-check` and `make latex-smoke`, MIRROR=). Older per-file mirrors
-and SwiftLaTeX/BusyTeX releases are rejected as legacy. `make latex-smoke` compiles `docs/examples/tutorial-latex/librepaper.tex`
+`deploy/assets check` and `deploy/assets smoke`, MIRROR=). Older per-file mirrors
+and SwiftLaTeX/BusyTeX releases are rejected as legacy. `deploy/assets smoke` compiles `docs/examples/tutorial-latex/librepaper.tex`
 in a fresh Chromium profile against MIRROR= and requires visible PDF pages
 and selectable text before you point a deployment at it.
 

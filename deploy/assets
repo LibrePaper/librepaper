@@ -16,7 +16,7 @@ set -euo pipefail
 #
 # Each publish:
 # 1. Publish every GitHub release assets.lock pins (a draft fails the check below).
-# 2. make wasm && deploy/assets build: fetch the pinned wasm modules into web/wasm and
+# 2. tools/pins fetch && deploy/assets build: fetch the pinned wasm modules into web/wasm and
 #    build the LaTeX mirror (in ../wasm-latex, or MIRROR=).
 # 3. deploy/assets publish --test: verify bucket, CORS and connectivity (uploads two small files).
 # 4. deploy/assets publish: create the bucket if needed, set CORS, upload the wasm modules and
@@ -101,7 +101,7 @@ cmd_publish() {
     return
   fi
 
-  # Every pin must name a public GitHub release: `make wasm` downloads the modules
+  # Every pin must name a public GitHub release: `tools/pins fetch` downloads the modules
   # anonymously, and the LaTeX release's source link is its licence obligation. A
   # draft release answers 404 to anyone signed out, so check before uploading.
   public() { [ "$(curl -sIL -o /dev/null -w '%{http_code}' "$1")" = 200 ] || { printf '%s\n' "Error: $2 is not publicly downloadable (a draft release?): $1" >&2; exit 1; }; }

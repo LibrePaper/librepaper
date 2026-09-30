@@ -9,7 +9,7 @@
 resolver = "2"
 members = ["crates/librepaper", "crates/librepaper-document-core"]
 # The fuzz targets need libFuzzer and a nightly compiler, so they build on
-# their own: `make fuzz`, or `cargo fuzz --fuzz-dir tools/fuzz run <target>`.
+# their own: `tools/suite fuzz`, or `cargo fuzz --fuzz-dir tools/fuzz run <target>`.
 exclude = ["tools/fuzz", "tools/measure"]
 
 # Release packaging is managed by cargo-dist. Only the application package is

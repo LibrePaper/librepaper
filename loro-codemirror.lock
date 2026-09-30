@@ -5,13 +5,13 @@
 # so this build uses a fork carrying the fixes until a release contains them:
 # see docs/loro-codemirror.md for what is changed and why.
 #
-# `make loro-codemirror` fetches these files and refuses anything whose bytes
+# `tools/pins fetch` fetches these files and refuses anything whose bytes
 # do not hash to what is written here. They land in web/vendor/loro-codemirror,
 # which is build output and not in the repository -- the source lives in the
 # fork, so there is one copy of it rather than two to keep in step.
 #
 # To move the pin: push to the fork, then run
-# `make loro-update COMMIT=<full sha>` and review the diff.
+# `tools/pins update loro <full sha>` and review the diff.
 
 repository  vincentarelbundock/loro-codemirror
 commit      1c6f37704af5fb02547609513d39511c716953a7

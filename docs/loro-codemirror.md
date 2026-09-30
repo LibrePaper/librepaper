@@ -5,7 +5,7 @@ Upstream is <https://github.com/loro-dev/loro-codemirror>, MIT. The fork is
 package's `src/` with four changes to it, plus a test suite of its own at
 `web/tests/unit/loro-codemirror.mjs`.
 
-**The source is not in this repository.** `make loro-codemirror` fetches it
+**The source is not in this repository.** `tools/pins fetch` fetches it
 from the fork at the commit `loro-codemirror.lock` pins, verifies every file
 against the digest recorded there, and writes it to `web/vendor/loro-codemirror`
 -- which is build output and gitignored. It was vendored here until 2026-09-16,
@@ -13,7 +13,7 @@ which meant the same source existed twice and the two drifted: the fork sat
 three fixes behind for a while, and nothing noticed until the fork's own test
 suite was run against both. One copy, pinned, verified.
 
-To change the binding: push to the fork, `make loro-update COMMIT=<full sha>`,
+To change the binding: push to the fork, `tools/pins update loro <full sha>`,
 review the lock diff, and run the tests. The pin is a full commit sha, never a
 branch or a tag, because a pin that can move on its own is not a pin.
 
