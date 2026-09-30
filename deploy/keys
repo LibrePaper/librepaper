@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Deployment keys dispatcher. KEYS= overrides the file.
+
+KEYS="${KEYS:-deploy/keys.yaml}"
+
+# Convert to absolute path so script works from any cwd
+if [[ "$KEYS" != /* ]]; then
+    KEYS="$(cd "$(dirname "$0")/.." && pwd)/$KEYS"
+fi
+
+usage() {
+    cat <<EOF
+usage: deploy/keys [COMMAND]
+
+Manage sops-encrypted deployment keys from $KEYS.
+
+Commands:
+  shell       Open interactive subshell with keys loaded in environment
+  edit        Edit the keys file with sops
+  names       List key names (not values)
+  help        Show this message
+  -h          Show this message
+
+Environment:
+  KEYS=<path>  Override the keys file (default: deploy/keys.yaml)
+
+Examples:
+  deploy/keys shell                 # Start a subshell with keys
+  deploy/keys edit                  # Edit keys with sops
+  deploy/keys names                 # List all key names
+  KEYS=/tmp/keys.yaml deploy/keys shell
+EOF
+}
+
+# Check if keys file exists
+if [ ! -f "$KEYS" ]; then
+    echo "no $KEYS" >&2
+    exit 1
+fi
+
+case "${1:-help}" in
+    shell)
+        # Interactive subshell with sops-decrypted environment
+        if [ ! -t 0 ]; then
+            echo "deploy/keys shell opens an interactive subshell and needs a terminal" >&2
+            echo "use: sops exec-env $KEYS '<command>'" >&2
+            exit 2
+        fi
+        echo "$KEYS is loaded in this shell; exit to drop it"
+        sops exec-env "$KEYS" "${SHELL:-/bin/sh}"
+        ;;
+    edit)
+        # Edit with sops
+        sops "$KEYS"
+        ;;
+    names)
+        # List key names only (exclude 'sops' which is metadata)
+        sops -d "$KEYS" | grep -v '^sops:' | sed -n '/^[A-Za-z_]/p' | cut -d: -f1 | sort
+        ;;
+    help|-h|--help)
+        usage
+        ;;
+    *)
+        usage >&2
+        exit 1
+        ;;
+esac
