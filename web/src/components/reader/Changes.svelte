@@ -96,7 +96,17 @@
       const id = String(comment.proposal || "");
       const hunks = proposalRows.get(id) || [];
       if (!id || !hunks.length) {
-        out.push({ ...comment, __kind: "suggestion" });
+        out.push({
+          ...comment,
+          __kind: "suggestion",
+          // An absent replacement is not an empty replacement. Keep this
+          // explicit even when the linked proposal has no hunk rows to use
+          // for its display fallback.
+          after: comment.proposed == null ? undefined : comment.proposed,
+          unavailable: comment.proposed == null,
+          status: comment.resolved ? comment.outcome || "accepted" : "pending",
+          resolved: Boolean(comment.resolved),
+        });
         continue;
       }
       linked.add(id);

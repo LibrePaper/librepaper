@@ -108,6 +108,15 @@ window.linkedUnavailableCheck = async () => {
   await document.querySelector('.change-detail .empty-link:last-child')?.click();
   return { visible, actions, discardLabel, discarded: window.discarded };
 };
+window.linkedUnavailableWithoutHunksCheck = async () => {
+  await window.show({ proposals: [], comments: [{ ...linkedComment, proposed: null }] });
+  const visible = window.rows();
+  await window.look('suggestion:linked');
+  const actions = await window.actions('suggestion:linked');
+  const discardLabel = document.querySelector('.change-detail .empty-link:last-child')?.textContent.trim() || '';
+  await document.querySelector('.change-detail .empty-link:last-child')?.click();
+  return { visible, actions, discardLabel, discarded: window.discarded };
+};
 window.recoveryControlCheck = async () => {
   await window.show({ proposals: [], comments: [], recoveryRequired: true });
   const text = document.querySelector('.tracking-recovery')?.textContent.trim() || '';
@@ -275,6 +284,18 @@ try {
     "an unavailable whole replacement cannot be accepted but can be rejected");
   assert.equal(unavailable.discardLabel, "Discard change");
   assert.deepEqual(unavailable.discarded, ["run"]);
+  const unavailableWithoutHunks = await page.evaluate("window.linkedUnavailableWithoutHunksCheck()");
+  assert.equal(unavailableWithoutHunks.visible.length, 1,
+    "a linked suggestion remains in the queue when its proposal has no visible hunk rows");
+  assert.equal(unavailableWithoutHunks.visible[0].id, "suggestion:linked");
+  assert.equal(unavailableWithoutHunks.visible[0].removed, "",
+    "a missing replacement without hunk rows is not presented as a deletion");
+  assert.equal(unavailableWithoutHunks.visible[0].added, "");
+  assert.equal(unavailableWithoutHunks.visible[0].summary, "Suggested replacement unavailable");
+  assert.deepEqual(unavailableWithoutHunks.actions, { accept: true, reject: false },
+    "the unavailable linked suggestion cannot be accepted but remains rejectable");
+  assert.equal(unavailableWithoutHunks.discardLabel, "Discard change");
+  assert.deepEqual(unavailableWithoutHunks.discarded, ["run"]);
   const recovery = await page.evaluate("window.recoveryControlCheck()");
   assert.match(recovery.text, /preserved here for manual recovery/);
   assert.equal(recovery.recovered, 1, "the recovery message exposes a direct export action");
@@ -377,6 +398,7 @@ try {
 
   // Both rivals are still answerable on their own: grouping them presents the
   // choice, it does not take the decision away or make it a single action.
+  await page.evaluate("window.show({ proposals: window.rivals, comments: [] })");
   await page.evaluate('window.act("bob#0", "accept")');
   await until("rival answered", async () => (await page.evaluate("window.decided")).length > 0, 4000);
   assert.deepEqual(await page.evaluate("window.decided"), [["bob", 0, "accept"]]);
