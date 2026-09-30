@@ -2,12 +2,13 @@
 title: "The CLI"
 ---
 
-LibrePaper is a server and a web app. User commands: `login`, `logout`, `list`, `export`. Namespaces: `admin` (deployment), `local` (companion on your machine).
+LibrePaper is a server and a web app. User commands are `login`, `logout`, `list`, and `export`. Two namespaces handle specialized jobs: `admin` for deployment, and `local` for the companion on your machine.
+
+Pass the server address with a flag or set an environment variable once:
 
 ```sh
-# Pass --server or set LIBREPAPER_SERVER env var
 librepaper <COMMAND> --server https://librepaper.arelbundock.com
-# Or once:
+# Or set once and omit the flag:
 export LIBREPAPER_SERVER="https://librepaper.arelbundock.com"
 librepaper <COMMAND>
 ```
@@ -37,13 +38,13 @@ librepaper export c9k ./paper-copy --at "v1"    # historical snapshot
 
 ## Operating a deployment
 
-- `librepaper admin serve` - the server; see `--help` and [hosting page](host.html) for flags
-- `librepaper admin backup` / `admin restore` - recovery points
-- Operational state: `curl http://127.0.0.1:8080/api/status`
+- `librepaper admin serve` starts the server. See `--help` and the [hosting page](host.html) for flags.
+- `librepaper admin backup` and `librepaper admin restore` create and restore verified recovery points.
+- Check operational state: `curl http://127.0.0.1:8080/api/status`
 
 ## The companion
 
-Runs native tools (Quarto, Typst) and holds document agents.
+The companion runs native tools (Quarto and Typst rendering) and holds document agents.
 
 ```sh
 librepaper local start                          # start in background
@@ -54,9 +55,9 @@ librepaper local disconnect <origin>            # revoke a website's pairing
 librepaper local agent list                     # list agents; add <id> -- <cmd> adds one
 ```
 
-Flags: `--foreground` (run in this process), `--at-login` (auto-start), `--tool-path` (colon-separated dirs).
+Use `--foreground` to run in this process, `--at-login` to auto-start when you log in, or `--tool-path` (colon-separated dirs) to find tools.
 
-Project folder render: choose under *Settings*, *Local app*, *Project folder* in browser. Permissions and presets also there. Dialog approvals on this machine; no-display machines: check `companion.log` for code, approve within 5 minutes.
+To render a document against a project folder on your disk, choose the folder under *Settings*, *Local app*, *Project folder* in the browser. Permissions and presets are also configured there. Any permission request triggers a dialog on this machine, which no website can click. On a machine with no display, check `companion.log` for the code and run `librepaper local approve <code>` within 5 minutes.
 
 ## Agents
 
