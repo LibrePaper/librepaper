@@ -4,809 +4,198 @@ title: "Architecture"
 
 ## Where code runs
 
-LibrePaper ships as a single executable: the server, the command line, and the
-embedded web application. At runtime the work divides three ways.
-
 | Where | What happens there |
 | --- | --- |
 | The browser | Editing, typesetting, rendering, offline copies |
 | The server | Identity, authority, durability, live relay, review decisions |
 | The author's machine | Quarto, Typst to HTML, Zotero |
 
-Typesetting runs in the browser. The Markdown, Typst and LaTeX engines are
-WebAssembly modules that execute on the reader's machine. The deployment never
-compiles a document and never stores a compiler, so a small server can host a
-lot of papers and a self-hoster does not operate a TeX installation. The LaTeX
-engines and their pinned TeX Live package set are fetched from an HTTPS mirror,
-which an operator can point at their own copy.
-
-Authority is decided by the server, on every request, never inferred from
-what a browser sent. Which proposed change enters a document is the server's
-decision alone.
-
-The author's machine is optional. Markdown, LaTeX and Typst all compile in
-the browser, Typst to PDF included, so nothing local is required to write or
-read a paper. A loopback companion, the same binary run as
-`librepaper local start`, covers the two cases the browser cannot: Quarto,
-which executes code, and Typst to self-contained HTML. It also reaches Zotero,
-read-only. No TeX job ever reaches it.
+Typesetting runs in WebAssembly modules in the browser. The deployment never compiles documents or stores compilers. LaTeX engines and TeX Live packages are fetched from an HTTPS mirror (configurable). Authority is decided server-side on every request, never inferred from the browser. The optional companion app (`librepaper local start`) handles Quarto (code execution) and Typst to self-contained HTML; it reaches Zotero read-only and never runs TeX.
 
 ## Records and caches
 
-Stored information is either a record or a cache.
-
-A *record* describes what somebody did, at a moment. Nothing that happens
-afterwards may edit it. What a reviewer selected when they left a comment is a
-record, and so is who wrote a sentence.
-
-A *cache* describes where something is now. It is recomputed whenever the
-document moves and discarded without consequence. Where a commented passage sits
-in today's version of the paper is a cache.
-
-The two are kept in separate fields, computed by separate code, and the cache is
-never written back into the record. A comment that loses its place reports that
-rather than being re-pointed at different words.
+Records describe what somebody did at a moment and cannot be edited afterwards. Caches describe where something is now and are recomputed on every document change. A comment that loses its place reports that rather than being re-pointed.
 
 ## Trust model
 
-Four kinds of participant, in decreasing order of what they may assume.
+1. The operator sees every draft, comment, identity and presence event in clear (no end-to-end encryption).
+2. The document owner holds every authority.
+3. A link holder holds exactly the role their link names; links expire.
+4. Documents are hostile; bytes uploaded run their own scripts inside the reader.
 
-1. The operator runs the binary and the database, and sees every draft,
-   comment, identity and presence event in the clear. There is no end-to-end
-   encryption. Self-hosting is the answer to not wanting to trust someone
-   else's operator.
-2. The owner of a document holds every authority over it.
-3. A link holder holds exactly the role their link names, for as long as the
-   link lives. The link is the credential, which is why links expire.
-4. A document is hostile. The bytes somebody uploads run their own scripts
-   and are framed inside the reader, and may have been written by anyone with
-   editor access.
-
-The fourth point is what most of the isolation in the system exists for.
-Published documents are served from a second configured origin, and the server
-refuses to start if the two share a host. A published document may run its own
-code and may not fetch code from another host. Messages crossing between the
-reader and the framed document are origin-checked at both ends and addressed to
-a named origin rather than a wildcard.
+Published documents are served from a second configured origin (separate host required). Documents may run their own code but not fetch code from other hosts. Messages between reader and document are origin-checked at both ends.
 
 ## The document
 
-### A directory
-
-A paper is rarely one file. The shared, live object in LibrePaper is a whole
-directory, held as four maps in one CRDT document:
+A directory is held as four maps in one CRDT document:
 
 | map | keys | values |
 | --- | --- | --- |
-| `files` | a file id | the text at it |
-| `paths` | a file id | the path that text is known by |
-| `assets` | a path | the digest of the bytes at it |
-| `meta` | `main`, engine, markers | the document's own settings |
+| `files` | file id | text |
+| `paths` | file id | path |
+| `assets` | path | digest of bytes |
+| `meta` | `main`, engine, markers | document settings |
 
-### File identity
+Text is stored under an opaque id; paths are separate entries pointing at ids. Renames move strings in `paths` without touching text. Comments name files by id, so renames don't orphan reviews. Figure bytes sit in the object store under their digest; identical uploads are stored once. The editable source is authoritative; comment ranges are translated to source when made.
 
-A text is stored under an opaque id. The path it is known by is a separate entry
-pointing at that id. A rename moves one string in `paths` and leaves the text
-where it is, so a keystroke made into a file while it is being renamed still
-lands in the right text.
+The CRDT is a single Rust library linked natively on the server and compiled to WebAssembly in the browser. Every offset counts UTF-16 code units (matching browser counts). Cursors use Unicode code points; diffs use code points (server) or UTF-16 (browser). Diff information never crosses the network; each side computes from its own state. Both are pinned by tests.
 
-A comment names the file it is about by id, so renaming a chapter does not
-orphan the review on it.
-
-### Assets
-
-A figure's bytes are not in the shared document. The document holds the path and
-the digest. The bytes sit in the object store under that digest. Identical
-uploads are stored once, and an asset is verified on retrieval: the bytes either
-hash to the digest the document names or they do not.
-
-### Source and rendering
-
-The editable source is the only authoritative content. A comment made on a
-rendered page is translated into a range of the source when it is made, and the
-source range is what is kept, so re-rendering cannot orphan a comment.
-
-### One implementation
-
-The CRDT is a single Rust library. The server links it natively, so it can hold
-a document without a JavaScript runtime beside it. The browser runs the same
-library compiled to WebAssembly. Encoding an anchor and decoding it months later
-to decide which range a rejected change rewrites is therefore the same code on
-both sides.
-
-### UTF-16 offsets
-
-Every offset that crosses a boundary counts UTF-16 code units, matching what a
-browser counts and what every reader selection arrives measured in.
-
-Two things underneath count differently and are converted at their edge.
-Cursors, the CRDT anchors described under [comments](#comments), are
-indexed in Unicode code points. Diffs are indexed in whichever basis the
-library was compiled for: code points on the server, UTF-16 in the browser.
-
-Diff offsets are held to two rules. Diff information never crosses the network;
-each side computes the diff it needs from the state it already has. And a diff
-offset is never compared with a UTF-16 offset. Anything stored outside the
-document refers to positions by cursor, which carries no integer basis. Both
-rules are pinned by tests.
-
-### Size ceilings
-
-Each document's log (its source plus edit history) is capped by `log_quota_mb` in the
-advanced configuration file, 32 MB by default. History counts toward this limit, so a
-heavily rewritten paper can reach it with little visible text. When a document reaches
-this limit, new edits are refused with the message "this document's log is at its quota
-and is waiting to be compacted". A configuration whose limits could accept work the
-deployment cannot durably save is refused at startup rather than at the first save.
+Each document's log is capped by `log_quota_mb` (advanced config, default 32 MB). New edits are refused when the limit is reached. Deployments whose limits cannot accept work they cannot save are refused at startup.
 
 ## Storage and history
 
-### Two stores
+PostgreSQL holds accounts, documents, grants, share links, annotations, replies, update logs, labels, proposals, hunk decisions, and storage accounting. The object store holds immutable blobs: collaboration bases, source archives, document assets and published files, keyed by content digest or never-reused names.
 
-A deployment keeps its state in PostgreSQL and its bulk bytes in an object
-store.
+Document state is persisted as a compressed base plus an ordered log in Postgres, compacted periodically. The base is full operation history compressed with zstd (a million keystrokes costs a few hundred kilobytes). There is no retention window on edit history.
 
-Postgres holds what must be ordered, related and transactional: accounts,
-documents, grants and share links, annotations and replies, the log of
-updates and the labels named on it, proposals and their hunk decisions, and
-storage accounting.
+A checkpoint records the whole directory as a canonical tree. Checkpoints are written when somebody labels a moment, restores an earlier version, commits from the command line, or a proposal is accepted. The manifest is served to the browser. Checkpoints can be labelled and are kept until the document is deleted.
 
-The object store holds immutable blobs: collaboration bases, source archives,
-document assets and published files, keyed by content digest or by a name that
-is never reused. Nothing in it is modified in place. A new state is a new key,
-and an old key is reclaimed only once nothing points at it.
+Source archives are produced on request (keyed by tree digest), not at checkpoint time. They are content-addressed and the fastest way to retrieve a document at a point in time.
 
-### The live document
+Document assets are content-addressed; identical uploads are stored once. Uploads reserve quota before the blob write begins and release it if cancelled.
 
-A document's collaborative state is persisted as one compressed base plus an
-ordered log of updates in Postgres, compacted periodically.
+Storage limits:
+- `--publisher-storage-limit`
+- `--deployment-storage-limit`
+- `--publisher-upload-limit`
+- `log_quota_mb` (advanced config)
 
-The base is the document's full operation history, exported as updates from an
-empty version vector and compressed with zstd. Character-by-character typing
-run-length-encodes almost perfectly, so a million keystrokes of history costs a
-few hundred kilobytes.
+Owners can set softer history budgets and retention thresholds but cannot raise deployment hard limits. Documents may expire based on creation or last edit.
 
-Because the base carries the whole operation graph, there is no retention window
-on edit history, no thinning pass, and no point past which blame is lost. A
-document whose history exceeds the deployment's ceiling is refused at admission.
+`librepaper admin backup` writes a snapshot-consistent Postgres dump plus referenced objects and verifies it. `restore` restores into a fresh directory.
 
-### Checkpoints
-
-Live saving and the version timeline are separate mechanisms. Saving is
-continuous. A checkpoint is a distinct event that records the whole document
-directory as a canonical tree: every file, its path and its contents, plus the
-compile settings in force.
-
-Nothing schedules a checkpoint, and nothing prunes one. One is written when
-somebody labels a moment, restores an earlier version, commits from the
-command line, or a proposal is accepted -- and at no other time: there is no
-quiet-period timer, and a plain comment does not write one, since a comment
-carries its own evidence of the moment it was made without needing a named
-one. The clock does not write history, because the operation graph above
-already holds every keystroke between two checkpoints and can be read at any
-position in it. A checkpoint is therefore a name somebody put on a moment,
-not a recovery point: recovery is the operation log's job.
-
-Recording the whole directory is what makes a checkpoint restorable. A chapter
-and the file that includes it cannot come back out of step, because they were
-captured together.
-
-The manifest, meaning the list of checkpoints with their times, actors and
-labels, is served to the browser as it stands. Checkpoints can be labelled, and
-every checkpoint -- labelled or not -- is kept until the document is deleted.
-
-A checkpoint's actor is who recorded the event, which is not necessarily who
-wrote each changed passage. The API reports authorship as unknown rather than
-naming the checkpointer.
-
-### Source archives
-
-A checkpoint can also have a format-independent source archive: the directory
-as plain files, readable without the CRDT. It is produced on request rather
-than written the moment the checkpoint is made, keyed by the tree's own
-digest. Requesting one records the request; a later restore or export can ask
-again and get the same archive without recomputing it, and a failed attempt
-is retried rather than left silently missing. Because it is content-addressed
-and independent of the collaboration format, it is also the fastest way to
-retrieve a document at a point in time once it exists.
-
-### Asset storage
-
-Document assets are content-addressed. An asset key is the digest of its bytes,
-nothing deletes from that table directly, and an orphan sweeper treats live keys
-as live. Uploading the same figure twice stores it once, and two documents
-referencing the same bytes share them.
-
-An upload reserves its quota claim before the blob write begins and releases it
-if the write is cancelled, so a slow upload cannot be double-counted and an
-abandoned one cannot leak capacity.
-
-### Quotas
-
-Storage limits are set per deployment and enforced at several scopes:
-
-| Limit | Caps |
-| --- | --- |
-| `--publisher-storage-limit` | everything one publisher holds |
-| `--deployment-storage-limit` | the whole deployment |
-| `--publisher-upload-limit` | uploads one publisher may make in an hour |
-| `log_quota_mb` (advanced config) | per-document log size, in megabytes |
-
-Owners can set a softer history budget, retention density and warning thresholds
-of their own, but these cannot raise the deployment's hard limits. Material
-reductions require a preview and confirmation and carry a grace period.
-
-Documents may also expire. A retention duration counts from creation or from
-the document's last edit, and zero means never.
-
-### Backups
-
-`librepaper admin backup` writes a recovery point covering both stores
-together, a snapshot-consistent Postgres dump plus the immutable objects it
-references, and verifies it. `restore` restores one into a fresh directory.
-
-Backup contents are plain at rest. An operator holding backups holds the
-documents.
-
-### Background work
-
-Maintenance -- compaction, archiving, deletion -- runs on an in-process
-bounded queue rather than a table other processes poll. There is nothing to
-lose on restart: what survives is the durable state the work exists to act
-on (a document over a compaction threshold, a label with a requested archive
-and no archive yet, a document marked for deletion), and the process
-rediscovers and re-enqueues it at startup. An idle deployment issues no
-maintenance queries at all. Reclamation releases a storage charge only after
-physical deletion is confirmed. Superseded objects become eligible only
-after a grace period during which no current root or lease protects them.
-Reaching a byte quota does not prevent cleanup from running.
+Maintenance (compaction, archiving, deletion) runs on an in-process bounded queue. An idle deployment issues no maintenance queries. Reclamation releases storage only after physical deletion. Superseded objects become eligible after a grace period.
 
 ## Comments
 
-A comment is about a passage of a document's source, at a checkpoint. Three
-separate things are kept about it.
+Three things are kept about each comment:
 
 | | what it is | lifetime |
 | --- | --- | --- |
-| Original anchor | what the reviewer selected, in the document as it then stood | written once, never modified |
-| Derived attachment | where that passage is now | a cache, recomputed on every edit |
-| Presentation context | the words as the page had them | display evidence, never identity |
+| Original anchor | what the reviewer selected in the document as it stood | written once, never modified |
+| Derived attachment | where that passage is now | cache, recomputed on every edit |
+| Presentation context | rendered quotation | display evidence, never identity |
 
-The original anchor is a checkpoint plus either a UTF-16 range of one file, named
-by its stable id, or the document as a whole. Nothing writes to it after it is
-created.
+The original anchor is a checkpoint plus a UTF-16 range or the whole document. Every anchor is a range (no point annotations).
 
-The derived attachment is keyed by the checkpoint it was computed against and is
-discarded whenever the source moves. Nothing it contains is written back into
-the anchor.
+Locating: The server bridges rendered page to source by flattening both with syntax blanked and whitespace collapsed. Selection is looked for in the flattened source, mapping positions back. It refuses to locate if a passage reads identically in several places.
 
-The presentation context is the rendered quotation. It is what a person reads to
-understand a comment, and what a highlight is painted from. Nothing resolves
-through it, so re-rendering a document cannot orphan a comment.
+Resolving: Cursors follow characters through insertions and deletions. Resolution falls back to searching for quoted words if cursors are unusable. Two equally good candidates produce `ambiguous`. Replacement cursors are stored in cache, never anchor. Results are attached at position, deleted, or ambiguous.
 
-Every anchor is a range of words, because every annotation is made by selecting
-some. There are no point annotations.
+Marks are painted in the browser; source identity and current attachment come from the server.
 
-### Locating
-
-A reader selects text on a rendered page, and the comment has to be about the
-source. The renderers cannot bridge that, since they return a page and a list of
-diagnostics and say nothing about where either came from. The server does the
-crossing itself, once, when the comment is made.
-
-The bridge is the prose. A heading is `# Title` in Markdown and `Title` on the
-page, and a formula is neither, but the words between the markup are the same
-words. Both sides are flattened, with syntax characters blanked and runs of
-whitespace collapsed, and the selection is looked for in the flattened source.
-Blanking preserves length and the collapse carries a map, so a position found in
-the flattened copy is a position in the file itself.
-
-It refuses rather than guesses. A passage that reads identically in several
-places, with nothing around it to distinguish them, is not located. The result is
-verified against the checkpoint and then frozen.
-
-### Resolving
-
-Where the passage has since moved is a separate question, asked afresh every
-time the document is served.
-
-A cursor captured when the comment was made follows the characters it sits
-between through every subsequent insertion and deletion, and reports where they
-went. A resolved cursor is not by itself proof that anything survived, because a
-cursor whose content was deleted is deliberately relocated to the boundary it
-occupied. So a resolved pair is checked against the quoted text before it is
-believed, and a collapsed one is reported as deleted rather than as a position.
-A cursor carries its container, so an anchor that resolves into a different file
-than the one it names is rejected.
-
-When there are no usable cursors, resolution falls back to searching for the
-quoted words in their source context. Two equally good candidates produce
-`ambiguous`, not the first of them.
-
-Replacement cursors returned during resolution are stored into the cache and
-never into the anchor.
-
-A comment is therefore attached at a position, deleted, or ambiguous, and each
-of those is shown as what it is.
-
-### Marks
-
-The highlight a reader sees is painted in the browser. Source identity and
-current attachment come from the server, and the in-page search only decides
-where to draw. A mark that cannot be placed does not move the comment.
-
-### Export
-
-Comment fields follow the W3C Web Annotation Data Model, so exporting is
-reshaping rather than translation: `exact`, `prefix` and `suffix` are a
-`TextQuoteSelector`, `motivation` uses the standard vocabulary, and `creator` and
-`created` mean what the specification says. `resolved` is an extension, which the
-model permits.
-
-`librepaper export DOCUMENT` writes them out in Markdown or JSON.
+Comments follow the W3C Web Annotation Data Model (reshaping, not translation). `librepaper export DOCUMENT` writes them in Markdown or JSON.
 
 ## Track changes
 
-A tracked change is a branch: a fork of the document at a known point,
-collecting ordinary edits.
+A tracked change is a branch: a fork of the document at a known point. Everything awaiting a decision is one object:
+- typing with **Track changes** on (usually one hunk)
+- a suggestion from a comment thread (one hunk)
+- an agent run (many hunks)
 
-```
-main:  --*--*--*--*--*--------------*  merge
-           \--o--o--o--o----------/
-              branch: ordinary edits
-```
+All appear in the **Changes** pane. The stored object is called a proposal. A branch is stored as a blob of operations alongside a Postgres row (not a room, no sockets, nothing inside the shared document).
 
-Everything that means "a change awaiting a decision" is this one object,
-differing only in who opened it and how it is presented:
+A hunk is a maximal run of non-retain operations. Replacing "cat" with "tabby" is one decision, not two. Character-level raw differences are grouped: two changes separated by eight or fewer retained units are one hunk. A decision names a hunk by branch, base, tip and index.
 
-- typing with **Track changes** on, usually one hunk
-- a suggestion from a comment thread, one hunk
-- an agent run, with many
+Accepting a whole branch imports it. Accepting part of one: (1) import the branch, (2) compute inverse difference, (3) keep only rejected hunks, (4) apply as reviewer. Result is the accepted subset with accepted text attributed to author and removal to reviewer. Steps 1-4 are atomic; intermediate state is never persisted.
 
-All of them appear in the **Changes** pane, where they are reviewed. The stored
-object is called a proposal in the database and the protocol.
+The server counts in code points; the browser counts UTF-16. No diff information crosses the network; each side computes from its own state.
 
-A branch is stored as a blob of operations alongside a row in Postgres. It is
-not a room, holds no sockets, and nothing about it lives inside the shared
-document. Review state, meaning its id, base and tip, author, status, decider,
-decision time and comment, is written only by the server.
+Two branches touching the same passage are grouped into one card. Adjacent edits are not grouped. Stale rows are excluded.
 
-### Hunks
-
-Review is the text difference between where the branch forked and where it has
-reached. That arrives as a flat run of retain, insert and delete operations with
-no notion of which belong together.
-
-A *hunk* is a maximal run of non-retain operations. Replacing "cat" with
-"tabby" is one decision, not a delete and an insert.
-
-The raw difference is character-level: that replacement is several tiny edits
-with a letter or two retained between them, because that is the shortest path
-from one to the other. Nobody reviews at that grain, so two changes separated by
-eight or fewer retained units are treated as one hunk, roughly a word.
-
-A decision names a hunk by its index, so the browser and the server must group
-identically or declining the second hunk reverts something else. Both sides carry
-the constant, and neither may change it alone.
-
-### Deciding
-
-Accepting a whole branch imports it. Rejecting one drops it.
-
-Accepting part of one is a merge followed by a revert:
-
-1. Import the whole branch. Every one of the author's operations, with their
-   authorship, enters the graph.
-2. Compute the inverse difference, which would undo the branch entirely.
-3. Keep only the rejected hunks of it. An accepted hunk collapses to a retain,
-   because that text stays.
-4. Apply that as the reviewer.
-
-The result is exactly the accepted subset, with the accepted text attributed to
-its author and the removal attributed to the reviewer.
-
-Applying text re-authors it as the applying peer, so this ordering is what keeps
-a reviewer from appearing to have written the prose they approved.
-
-Steps 1 to 4 are one atomic server operation. The intermediate state contains the
-rejected text and is never relayed to a peer or persisted as a version.
-
-### Naming a hunk
-
-The server counts text in code points and the browser counts UTF-16, so the two
-disagree about offsets. No difference information crosses the network in either
-direction. Each side computes what it needs from the document state it already
-has, and a decision names a hunk by branch, base, tip and index: four
-identifiers, no offsets.
-
-### Contention
-
-Two branches touching the same passage are two answers to the same question. The
-browser already holds every open branch's bytes, so it detects overlap itself:
-changes to the same words in the same file are grouped into one card with one
-choice. Adjacent edits are not grouped, since two changes that merely touch at
-the ends can both happen. Stale rows are excluded, because their extent
-describes text that is no longer present.
-
-### Speculative reading
-
-Because a branch is a fork rather than an overlay, any subset of open changes
-can be merged into a scratch document and read as finished prose. The browser
-forks the room, imports the chosen subset and reads the result. Nothing is
-persisted and nothing syncs to it.
-
-### Blame
-
-Attribution survives a partial accept, and every intermediate state stays
-reachable in the operation history. After a chain of changes, each partly
-accepted, the question of who wrote the sentence now in the paper has an answer.
+Any subset of open changes can be merged into a scratch document and read as finished prose (speculative reading). Attribution survives partial accept; operation history is fully reachable.
 
 ## Publishing and rendering
 
-### The engines
+Markdown, Typst and LaTeX are compiled by WebAssembly modules in the browser (plain WebAssembly with small exports). Each module's URL carries a digest; the same pinned releases back native command-line tools.
 
-Markdown, Typst and LaTeX are compiled by WebAssembly modules that run in the
-browser. They are plain WebAssembly with a small set of exports rather than
-generated bindings, so the glue is short: reserve memory in the module, write the
-source into it as UTF-8, call compile, read the page back out.
+LaTeX engines and TeX Live packages are fetched from an HTTPS mirror from `latex/<sha256>/` (pinned in `assets.lock`). The mirror is append-only; files are content-addressed and cached in browser storage. An operator can host a copy with `--asset-mirror URL`.
 
-Each module's URL carries a digest of its bytes, so a module cached for a year
-cannot outlive the loader that talks to it. The same pinned releases back the
-native command-line tools, so a document renders the same way in both.
+Compilation runs in one worker per module. Markdown and Quarto produce flow HTML; LaTeX and Typst produce paged PDF. The deployment never renders or stores a compiler. The editor keeps the last successfully rendered page while the engine warms.
 
-The LaTeX engines and their pinned TeX Live package set are not served by the
-deployment. A browser fetches them from an HTTPS mirror, from one immutable
-release directory, `latex/<sha256>/`, that the build pins in `assets.lock`.
-The mirror is append-only, so a binary keeps working against the release it
-was built with. The files are verified content-addressed bundles that stay in
-browser storage, so the next document costs nothing to fetch. That mirror therefore sees a browser's IP address and
-which digest-named files it asks for, which can suggest a document's field or
-template. It never receives document source or input assets. An operator can
-host a copy and pass `--asset-mirror URL` to keep those requests on their own
-infrastructure.
+Quarto is handled as a browser-side subset (no code execution, filters, shortcodes or JavaScript). A `.qmd` is kept as source with a short-lived draft representation for annotation mapping.
 
-Compilation runs in a worker, one per module, so warming a large Typst module
-cannot delay a Markdown preview. Packages and fonts fetched by an earlier compile
-are kept for the life of that worker.
+There is no publish step and no stored rendered page. A reader sees the same head an editor sees, projected (text tree, main file, format, assets), identified by tree digest not version number. Opening, reconnecting and every edit resolve to fetch-and-render.
 
-Markdown and Quarto produce flow HTML. LaTeX and Typst produce a paged PDF.
-Rendering stays in the browser or, for the two cases it cannot cover, in a
-local companion. The deployment never renders and never stores a compiler.
+The projection algorithm is implemented in Rust and JavaScript, held to the same behaviour by `web/tests/fixtures/projection.json`. When a document changes, the socket carries `source-changed {digest}` (digest only, not text). The reader refetches using digest as etag; unchanged files reuse cache.
 
-The editor keeps the last successfully rendered page and paints it while the
-engine warms, so opening a document does not start with a blank pane.
+Readers and commenters never receive CRDT bytes or edit history; projections carry text and assets only.
 
-Quarto is handled as a browser-side subset. A `.qmd` is always kept as source,
-and a short-lived draft representation is built for the Markdown renderer,
-recording enough structure to map source annotations without guessing from
-rendered paragraphs. It does not execute code, filters, shortcodes or JavaScript.
-
-### What a reader sees
-
-There is no publish step and no stored rendered page. A reader sees the same
-head an editor sees, projected: the text tree, the main file, the format and
-the assets a text-only pass over the document derives from it, identified by
-a digest of that tree rather than by a version number. Opening, reconnecting
-and every edit that lands all resolve to the same operation -- fetch the
-current projection and render it -- so there is no separate moment at which
-a reader's copy becomes stale in a way that needs a publish to fix.
-
-The projection algorithm that turns the document into a render tree and a
-file panel is one algorithm, implemented once in Rust and once in
-JavaScript, and both implementations are held to the same behaviour by a
-shared fixture (`web/tests/fixtures/projection.json`) so a reader's browser
-and the server agree on what a projection is without either serving the
-other a stored answer.
-
-When the document changes under a reader, the socket carries
-`source-changed {digest}`: not the new text, just its digest. The reader
-refetches the projection using that digest as an etag, so an unaffected file
-already in the browser's cache is not re-sent. Rendering itself -- Markdown,
-Typst, LaTeX, Quarto's draft subset -- runs in the reader's own browser with
-the same WebAssembly engines an editor's browser uses, so the deployment
-never renders and never stores a compiled page. Readers and commenters still
-never receive CRDT bytes or edit history; a projection carries text and
-assets, not the operation log behind them.
-
-### Serving
-
-Projected source and its assets are served only on the document origin,
-never the one the application answers on. A signed display capability
-conveys no source credential, and the reader's live link or account
-authority is rechecked on every response, including conditional asset
-requests.
-
-Assets use stable document-scoped paths with private revalidation, so
-unchanged assets reuse browser cache bytes across edits: only a file whose
-digest actually changed is worth re-fetching.
-
-Every document renders under one policy: it may run its own code and may not
-fetch code from another host. Serving reports the hosts of a document that
-tries to. Images, fonts and connections still reach the open web, which is
-an accepted leak rather than an oversight.
+Projected source and assets are served only on the document origin, never the application origin. Reader link or account authority is rechecked on every response. Assets use stable document-scoped paths with private revalidation. Documents may run their own code but not fetch code from other hosts.
 
 ## Live collaboration
 
-### The room
+A room holds one document's comments and open sockets, in one process. Writes reach all readers without polling.
 
-A room is one document's comments and the open sockets of everyone reading it,
-held in one process. A write by one reader reaches the others without anybody
-polling.
+The socket carries document updates, presence, comments and `source-changed {digest}` notices. Presence (who is here, where is their cursor) is ephemeral and never persisted. Editors synchronise source through the socket; readers use it for annotations and digest notices. Both follow the same authority rules since readers see the same head as editors.
 
-The socket carries document updates, presence, comments and
-`source-changed {digest}` notices. Presence, meaning who is here and where
-their cursor is, travels as ephemeral state that is never persisted.
+Source is edited in CodeMirror 6, bound to the shared document. Each editor keeps their own undo history and sees others' carets where they are.
 
-Editors synchronise source through the socket. Readers use the same
-connection for annotations and for the digest notices that tell them when to
-refetch the projection; source updates and read access follow the same
-authority rules either way, since a reader now sees the same head an editor
-does, not a separately published copy.
+A dropped socket loses nothing; comments post via HTTP and reconnect resends the full list. Silent disconnections (NAT expiry, sleep) are detected by periodic polling of connection liveness. Queue depth and transport writes are bounded server-side. Authority is rechecked while a socket is open.
 
-The source is edited in CodeMirror 6, bound to the shared document, so each
-editor keeps their own undo history and sees the others' carets where they
-actually are. CodeMirror loads when the editor opens.
+Identity comes from GitHub or Google (browser), or the deployment's device flow (terminal). Both end as a handle (policy-gated) and an id (everything else keys on). Cookies use `__Host-` naming on HTTPS; OAuth uses PKCE and state cookies; logout is POST-only.
 
-### Losing the socket
+Access comes from a grant on an account or a share link. Links name a role (reader, commenter, editor); possession is the grant. Links expire by default. The share dialog offers renewal (new key) and rotation (revoke and mint together). Keys never reach logs; only hashes are recorded.
 
-A dropped socket loses nothing. Comments post over an ordinary HTTP route, and
-the opening frame on reconnect resends the full list, so a broadcast missed
-during a gap heals itself. What a drop costs is seeing other people's comments as
-they arrive.
+An editor can make a project available offline while connected. LibrePaper stores application resources, editor modules, project identity and metadata locally, opened from an offline start page. While offline: source edits, file creation/renames, main file choice, cached asset reads, and preview with available dependencies work. Asset uploads need connection. Comments are local drafts and submitted explicitly after reconnecting. Decisions, restores, publishes and sharing changes require server authority and are not queued.
 
-A silent disconnection is handled separately. A NAT mapping expires or a laptop
-sleeps, the socket is gone without a close frame, `readyState` stays open, and
-the page looks connected while receiving nothing. So the connection is polled
-periodically about whether it is still alive rather than trusted to report its
-own death.
-
-Both queue depth and transport writes are bounded on the server, so a slow peer
-cannot pin the reader or block the connection from being torn down.
-Authorisation is rechecked while a socket is open, not only when it is
-established.
-
-### Identity
-
-Identity comes from a provider, GitHub or Google. A browser signs in through that
-provider's OAuth flow and carries a signed cookie afterwards. A terminal signs in
-through the deployment's own device flow and carries the resulting token as a
-bearer credential. Both end as a handle, which deployment policy either allows or
-not, and an id, which everything else keys on.
-
-Cookies use `__Host-` naming wherever the deployment is HTTPS, the OAuth flow
-uses PKCE and state cookies, and logout is POST-only. Capabilities are stored
-only as digests.
-
-### Share links
-
-Access to a document comes from a grant on an account or from a share link. A
-link names a role, reader, commenter or editor, and possession of the link is the
-grant.
-
-Links carry an expiry by default, because a round of review has an end and a link
-that lives forever can be forwarded indefinitely. The share dialog offers
-renewal, which mints a new key. A revoke and a mint in one request is a rotation.
-
-A key never reaches a log. What is recorded anywhere is its hash. Browsers
-present it on a header, except on the socket, which carries it as a query
-parameter because a browser cannot set a header there.
-
-Ownership can be transferred outright, which moves every authority to the new
-owner.
-
-### Working offline
-
-An editor can make a project available offline while connected. LibrePaper then
-stores the application resources, editor modules, project identity and metadata
-locally, and the project can be opened from an offline start page after closing
-every tab and restarting the browser.
-
-Local typing never waits for the network. While offline, source edits, file
-creation and renames, choosing the main file, reading cached assets and
-previewing with available dependencies all work locally. Adding asset bytes needs
-a connection. Comments are kept as local drafts and submitted explicitly after
-reconnecting. Operations requiring current server authority, such as deciding a
-proposal, restoring, publishing or changing sharing, are not queued for delayed
-execution.
-
-Local persistence and remote durability are separate states, and the
-interface reports them separately: saving on this device, saved on this device
-but not yet synced, or synced. A connected socket, a successful send, or an empty
-queue after a restart is not evidence of durability, and conservative status is
-preferred to false success.
-
-On reconnection, document identity and current authority are checked before local
-changes are sent. A rejection preserves recoverable local work rather than
-discarding it, and a reconciliation that might remove locally edited content
-preserves a recoverable version first.
-
-Browser storage is not a backup. Eviction, clearing site data, or a lost profile
-or device can remove unsynchronised work. The application says so when offline
-availability is enabled, and offers ordinary source-and-asset export.
-
-Local caches are isolated by account and access context, so switching accounts
-cannot expose another account's cache, and multiple tabs cannot report each
-other's pending work as remotely durable.
+Local persistence and remote durability are separate; the interface reports both. A connected socket or empty queue after restart is not evidence of durability. On reconnection, document identity and current authority are checked before sending local changes. Browser storage is not a backup; eviction or clearing site data can remove unsynchronised work. Local caches are isolated by account and access context.
 
 ## Companion app
 
-`librepaper local start` runs a loopback service that executes tools installed
-on the author's machine, and the same binary is what an agent runs in to edit a
-document. Discovery resolves local tools to explicit absolute paths.
+`librepaper local start` runs a loopback service executing tools on the author's machine. Discovery resolves local tools to absolute paths.
 
-### What runs
+The companion handles two cases the browser cannot: Quarto (code execution) and Calepin (self-contained HTML from Typst with embedded images). It reaches Zotero read-only. Everything else compiles in the browser. Typst produces PDF there; LaTeX and Biber are WebAssembly only.
 
-Two things, and both are cases the browser cannot cover.
+Versioned protocol over loopback HTTP with bounded limits on body, upload, file count, PDF, log size and job deadline. Health endpoint identifies the service and negotiates version (nothing else). Requests with mismatched `Host` header are answered before parsing (DNS rebinding protection).
 
-Quarto executes code, so it is never run in the browser: the browser treats
-a `.qmd` as a subset that will not run code, filters, shortcodes or JavaScript.
-A document with computations is rendered here.
+A browser pairs with the service per origin and project. Pairings live in the user's state directory keyed by origin and project. Only the token hash is written to disk; tokens expire.
 
-Calepin produces a self-contained HTML page from a Typst document, with its
-images embedded. It wraps `typst`, and it is the only Typst path that leaves
-the browser.
+A browser cannot enumerate applications; the client makes one bounded probe and remembers the outcome.
 
-The companion also reaches Zotero, read-only, through that application's own
-loopback API.
+Presets are owned by the companion. Only opaque id and metadata cross to the browser; paths, arguments and environment stay on the machine. Presets may not set loader or interpreter environment variables.
 
-Everything else compiles in the browser and never reaches the companion. Typst
-produces its PDF there. LaTeX and Biber are WebAssembly there, and no TeX or
-Biber job is accepted here at all.
+An agent edits via MCP to the server (not loopback). MCP owns transport; the room owns effects and durability. The patch language is independent of MCP. A caller supplies source tree identity and immutable byte ranges; the validator produces a new source without guessing anchors. Patches whose ranges don't match are refused. Validated batches apply across all text files in one commit. The operation persists before changes; the receipt commits only after durability.
 
-### The protocol
+Agent work arrives as a [tracked change](#track-changes) branch and is reviewed and decided like human suggestions. Nothing enters the document without a decision. An agent's authority is its link; the caller's session never widens it.
 
-A versioned protocol over loopback HTTP, with bounded limits on body size,
-upload size, file count, PDF size, log size and job deadline. The health
-endpoint returns enough to identify the service and negotiate a version, and
-nothing else: no tool paths, no projects, no jobs.
+The private assistant channel is a short-lived rendezvous between browser and runner. The server relays bounded events while both sockets are connected. It is not a queue or transcript store.
 
-A request whose `Host` header does not match is answered before anything else
-is parsed, since that is what DNS rebinding looks like.
-
-### Pairing
-
-A browser pairs with the service per origin and project. Pairings live in a
-small file under the user's state directory, keyed by origin and project. The
-token itself is never written to disk, only its hash, so reading that file does
-not hand out access. Tokens expire.
-
-### Detection
-
-A browser cannot enumerate installed applications or prove one is absent. The
-client makes one bounded probe of one documented endpoint, remembers the
-outcome for a while, and lets the caller decide what to try next.
-
-### Presets
-
-Presets are owned by the companion. Only an opaque id and descriptive metadata
-cross the bridge to the browser; executable paths, argument vectors and
-environment values stay on the machine. A preset may not set loader or
-interpreter environment variables, refused at validation time.
-
-### Agent edits
-
-An agent edits a document through the same room and the same durability rules
-as a person, over MCP to the server rather than over the loopback protocol
-above. MCP owns the transport, and the room owns effects and durability.
-
-The patch language is independent of MCP. A caller supplies a source tree
-identity and immutable byte ranges, and the validator produces a new source
-without guessing an anchor: a patch whose ranges do not match the tree it names
-is refused rather than applied approximately. A validated batch is applied
-across every text file in one commit.
-
-The operation is persisted before the document changes, and the receipt is
-committed only after the resulting state is durable. A caller that loses its
-response can therefore ask what happened rather than repeating the edit.
-
-An agent's work arrives as a [tracked change](#track-changes), a branch
-with as many hunks as it made, so it is reviewed and decided like a human
-suggestion. Nothing it writes enters the document without a decision.
-
-An agent's authority is the link it was given. A caller's own session never
-widens it.
-
-Highlights an agent paints inside a document are drawn on the document origin,
-outside the application's stylesheet, because that frame is a different origin
-by design.
-
-### Assistant channel
-
-The private assistant channel is a short-lived rendezvous between one browser
-and one local runner. The server relays bounded events while both sockets are
-connected. It is not a queue and not a transcript store. Task queues and
-reconnect reconciliation belong to the runner on the user's computer.
-
-### Prompt injection
-
-A document is written by whoever has editor access, and an agent reading one is
-reading untrusted text. Nothing in the system bounds this. An agent operating
-on a shared document should be treated as acting on the instructions of
-everyone who can write to it.
-
-### Running others' code
-
-The companion executes code authored by anyone with editor access to the
-document being built. Quarto runs a document's code by design, which is the
-point of sending it here. Running the companion against a shared document
-therefore means running collaborators' code on your machine.
+A document is written by editor-access holders; an agent reading one reads untrusted text. Agents on shared documents should be treated as acting on everyone's instructions. The companion executes code from anyone with editor access; running it against shared documents means running collaborators' code on your machine.
 
 ## The interface
 
-The pages are [Skeleton](https://skeleton.dev) on Tailwind 4. Skeleton supplies
-the furniture, meaning buttons, cards, inputs, tables, dialogs, tooltips and
-toasts, and `web/src/styles/theme.css` colours all of it from LibrePaper's own
-four colours, so the palette is written down once.
+Pages use [Skeleton](https://skeleton.dev) on Tailwind 4. Skeleton provides buttons, cards, inputs, tables, dialogs, tooltips and toasts. `web/src/styles/theme.css` colours everything from four colours (palette written once). Three rules, enforced by `make test`:
 
-Three rules keep a growing application looking like one application, and
-`make test` enforces them:
+1. Colours and sizes come from theme, not hex values or arbitrary Tailwind sizes.
+2. A control is a component; there is one `IconButton`.
+3. Layout comes from `Page`, `Stack` and `Row`, assembled not measured.
 
-1. A colour or a size comes from the theme. A hex value or an arbitrary
-   Tailwind size in a component is a decision made twice.
-2. A control is a component. There is one `IconButton`, so there cannot be a
-   fourth kind of button that is almost like the other three.
-3. Layout comes from `Page`, `Stack` and `Row`, so a new screen is assembled
-   rather than measured.
-
-Two things sit outside that system deliberately. An agent paints its highlights
-inside a document on the document origin, where none of this stylesheet reaches
-it. And the colours identifying people in a shared editing session travel over
-the wire to other browsers, so they cannot be a local theme decision.
+Agent highlights are drawn on the document origin (outside this stylesheet). Identifying colours in shared sessions travel over the wire (not a local decision).
 
 ## Building from source
 
-The binary embeds the web build and the pinned browser renderers.
+The binary embeds the web build and pinned browser renderers.
 
-| | What it is | Built by |
-| --- | --- | --- |
-| `web/` | the pages: Svelte, Skeleton, CodeMirror 6, Loro | bun and vite |
-| `crates/librepaper/` | the server and the command line | cargo |
+| Built by |
+| --- |
+| `web/` (Svelte, Skeleton, CodeMirror 6, Loro): bun and vite |
+| `crates/librepaper/` (server and CLI): cargo |
 
-Renderer implementations live in the `wasm-*` repositories. Cargo links their
-pinned native libraries, and the browser uses WebAssembly artifacts from the
-same release tags. The web build writes into `web/dist`, which the binary
-embeds; nothing under that directory is edited by hand.
+Renderer implementations live in `wasm-*` repositories. Cargo links pinned native libraries; the browser uses WebAssembly artifacts from the same release tags. The web build writes to `web/dist`, which the binary embeds.
 
 ```sh
-make web      # the pages, from web/
-tools/pins fetch  # the pinned browser renderers
-make build    # dist/librepaper, with the pages and renderers embedded
-make install  # build and install to ~/.local/bin (override PREFIX= or BINDIR=)
-make test     # rustfmt, clippy and the test suite
-tools/suite external   # Quarto/R/Python and local-service integrations
-tools/suite workloads  # supported limits and diagnostic workloads
+make web                # pages from web/
+tools/pins fetch        # pinned browser renderers
+make build              # dist/librepaper with pages and renderers
+make install            # to ~/.local/bin (override PREFIX= or BINDIR=)
+make test               # rustfmt, clippy and test suite
+tools/suite external    # Quarto/R/Python and local-service integrations
+tools/suite workloads   # supported limits and diagnostics
 ```
 
-`make build` needs [bun](https://bun.sh) and Node.js. The browser renderers are
-fetched from the exact tags and SHA256 digests in `assets.lock`;
-`tools/pins check` verifies that those tags also match the native renderer
-dependencies without network access. To update one renderer, name both values
-explicitly, for example `tools/pins update wasm wasm-markdown v0.2.0`, then
-review the resulting Cargo and lockfile diff.
+Build needs [bun](https://bun.sh) and Node.js. Browser renderers are fetched from exact tags and SHA256 digests in `assets.lock`. `tools/pins check` verifies tags match native dependencies without network access. To update a renderer: `tools/pins update wasm wasm-markdown v0.2.0`, then review Cargo and lockfile diff.
 
-The four browser modules (markdown, bibliography, citations and typst) are not
-embedded in the binary. `tools/pins fetch` fetches them from public GitHub releases into the ignored
-`web/wasm/`, which tests, tools and publishing read, and `deploy/assets publish`
-publishes them to the asset mirror under `wasm/<sha256>/<module>`, where the
-SHA-256 is the one `assets.lock` pins. The same lock pins the LaTeX release
-directory, `latex/<sha256>/`, in a `latex` row. The server hands browsers those
-URLs, on the mirror named by `--asset-mirror`. See
-[asset mirrors](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md) for publishing.
+The four browser modules (markdown, bibliography, citations, typst) are not embedded. `tools/pins fetch` fetches them to `web/wasm/` (ignored). `deploy/assets publish` publishes to the asset mirror at `wasm/<sha256>/<module>` (SHA256 from `assets.lock`). The same lock pins LaTeX at `latex/<sha256>/`. The server passes these URLs to browsers on the mirror named by `--asset-mirror`. See [asset mirrors](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md).
 
-### Running it locally
-
-`make demo` runs the site, the application, a local companion and simulated
-activity together. It first runs `deploy/assets check` on the LaTeX mirror at
-`MIRROR=` (default `../wasm-latex/mirror`), then `make serve`, which uses the
-Docker PostgreSQL that `tools/db dev` keeps unless
-`LIBREPAPER_DATABASE_URL` is set. Configure an OAuth app in `.env` (see
-`.env.example`; `deploy/keys shell` opens a shell with the deployment keys loaded),
-then sign in: every new account receives five private,
-editable examples, one each in HTML, Markdown, Typst, LaTeX and Quarto. Use
-`PUBLISHERS=any COMMENTERS=anyone` for local development.
-
-Examples are created once per new account, survive restarts, and stay deleted
-if you remove them. Existing accounts are left unchanged, and `make demo`
-never resets or seeds the shared catalogue. The five starter sources ship
-inside the binary, so signing in needs neither Quarto nor a checkout of this
-repository.
+`make demo` runs the site, application, local companion and simulated activity. It runs `deploy/assets check` on the LaTeX mirror at `MIRROR=` (default `../wasm-latex/mirror`), then `make serve` with Docker PostgreSQL from `tools/db dev` (or `LIBREPAPER_DATABASE_URL`). Configure OAuth in `.env` (see `.env.example`; `deploy/keys shell` loads deployment keys). Every new account gets five private editable examples (HTML, Markdown, Typst, LaTeX, Quarto). Use `PUBLISHERS=any COMMENTERS=anyone` for local development. Examples are created once per account, survive restarts, and stay deleted if removed. Existing accounts are unchanged; the catalogue is never reset or seeded. Starter sources ship in the binary.
