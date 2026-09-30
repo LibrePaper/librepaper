@@ -59,7 +59,7 @@ async function sha(bytes) {
 }
 
 function setup(fetch) {
-  const values = new Map([["librepaper-local-pairings", JSON.stringify({ "example.test|paper": { token: "token" } })]]);
+  const values = new Map([["librepaper-local-connections", JSON.stringify({ "example.test|paper": { token: "token" } })]]);
   _testing.reset();
   configure({ origin: "example.test", project: "paper" });
   _testing.inject({ storage: { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) }, fetch, wait: async () => {} });
