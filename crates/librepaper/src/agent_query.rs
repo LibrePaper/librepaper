@@ -37,7 +37,7 @@ pub struct QuerySnapshot {
     /// unchanged document builds this snapshot for the cost of an `Arc`
     /// clone, not a copy of every file. It is never returned whole.
     #[serde(default)]
-    pub projected: Arc<librepaper_document_core::Projected>,
+    pub projected: Arc<crate::document::projection::Projected>,
     /// Per-request projections that are not part of the capture: a render's
     /// diagnostics, a rendered receipt, the changes between two views. The
     /// request that asked for them puts them here, keyed by
@@ -53,7 +53,7 @@ pub struct QuerySnapshot {
 
 impl QuerySnapshot {
     /// What the sequencer projected: the directory this capture is of.
-    pub fn projection(&self) -> &librepaper_document_core::Projection {
+    pub fn projection(&self) -> &crate::document::projection::Projection {
         &self.projected.projection
     }
 
@@ -1719,7 +1719,7 @@ fn range_count(value: &Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use librepaper_document_core::projection::Entry;
+    use crate::document::projection::projection::Entry;
 
     /// A projection of the same shape the sequencer produces: `kind`,
     /// `id`, the content `digest`, and `bytes` as a text's UTF-8 length.
@@ -1737,10 +1737,10 @@ mod tests {
     /// Wraps a projection and its bodies the way a captured snapshot shares
     /// them: one `Arc`, not a field per half.
     fn snapshot_of(
-        projection: librepaper_document_core::Projection,
+        projection: crate::document::projection::Projection,
         texts: BTreeMap<String, String>,
-    ) -> Arc<librepaper_document_core::Projected> {
-        Arc::new(librepaper_document_core::Projected { projection, texts })
+    ) -> Arc<crate::document::projection::Projected> {
+        Arc::new(crate::document::projection::Projected { projection, texts })
     }
 
     fn snapshot() -> QuerySnapshot {
@@ -1750,7 +1750,7 @@ mod tests {
             tree_digest: "rev-a".into(),
             comment_revision: "rev-c".into(),
             projected: snapshot_of(
-                librepaper_document_core::Projection {
+                crate::document::projection::Projection {
                     main: "main.md".into(),
                     main_id: "file-1".into(),
                     files: [
@@ -2100,7 +2100,7 @@ mod tests {
             tree_digest: "structural-pagination".into(),
             comment_revision: "rev-c".into(),
             projected: snapshot_of(
-                librepaper_document_core::Projection {
+                crate::document::projection::Projection {
                     main: "main.md".into(),
                     ..Default::default()
                 },
@@ -2159,7 +2159,7 @@ mod tests {
             tree_digest: "index-benchmark-revision".into(),
             comment_revision: "rev-c".into(),
             projected: snapshot_of(
-                librepaper_document_core::Projection {
+                crate::document::projection::Projection {
                     main: "main.md".into(),
                     ..Default::default()
                 },
@@ -2202,8 +2202,8 @@ mod thread_pagination_tests {
         QuerySnapshot {
             tree_digest: "rev-a".into(),
             comment_revision: revision.into(),
-            projected: Arc::new(librepaper_document_core::Projected {
-                projection: librepaper_document_core::Projection {
+            projected: Arc::new(crate::document::projection::Projected {
+                projection: crate::document::projection::Projection {
                     main: "main.md".into(),
                     ..Default::default()
                 },
@@ -2352,8 +2352,8 @@ mod thread_pagination_tests {
         let snapshot = QuerySnapshot {
             tree_digest: "rev-a".into(),
             comment_revision: "rev-1".into(),
-            projected: Arc::new(librepaper_document_core::Projected {
-                projection: librepaper_document_core::Projection {
+            projected: Arc::new(crate::document::projection::Projected {
+                projection: crate::document::projection::Projection {
                     main: "main.md".into(),
                     ..Default::default()
                 },

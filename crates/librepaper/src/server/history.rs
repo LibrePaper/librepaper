@@ -49,7 +49,7 @@ fn projection_wire(
     metadata: MomentMetadata<'_>,
     storage_id: &str,
     source_format: &str,
-    projected: &librepaper_document_core::Projected,
+    projected: &crate::document::projection::Projected,
 ) -> Value {
     let MomentMetadata {
         sha,

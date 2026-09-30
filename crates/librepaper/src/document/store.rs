@@ -826,7 +826,7 @@ impl Store {
             .map_err(|error| error.to_string())?;
         let rules = self.config.paths();
         let projected = sequencer
-            .with_head(|doc| librepaper_document_core::project(doc, &rules))
+            .with_head(|doc| crate::document::projection::project(doc, &rules))
             .await
             .map_err(|error| error.to_string())?;
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();

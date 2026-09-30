@@ -1,13 +1,13 @@
 //! What a path in a document's directory may be.
 //!
-//! The rules themselves live in `librepaper-document-core`, beside the
-//! projection that applies them (SPEC-server-is-a-log §4.4 step 2): the
-//! projection is the one place a path is actually decided, and a rule the
-//! projection did not consult would be a rule nothing enforced. What is here
-//! is the binding to this deployment's configuration, and the placeholder
-//! name a route gives a file somebody uploaded without a usable one.
+//! The rules themselves live in the projection module, beside the projection
+//! that applies them (SPEC-server-is-a-log §4.4 step 2): the projection is the
+//! one place a path is actually decided, and a rule the projection did not
+//! consult would be a rule nothing enforced. What is here is the binding to
+//! this deployment's configuration, and the placeholder name a route gives a
+//! file somebody uploaded without a usable one.
 
-pub use librepaper_document_core::paths::{
+pub use crate::document::projection::paths::{
     check, collision_key, kind_of, normalise, suffixed, Kind, Rules, MAX_SEGMENTS,
 };
 

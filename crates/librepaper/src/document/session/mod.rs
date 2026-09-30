@@ -82,7 +82,7 @@ mod astral_tests {
     fn an_edit_past_an_astral_character_lands_where_it_was_aimed() {
         // "😀 cat" -- the emoji is 2 UTF-16 units, so "cat" starts at 3.
         let doc = doc_with(&format!("{EMOJI} cat"));
-        let edits = [wasm_helpers::text::Edit {
+        let edits = [Edit {
             at: 3,
             delete: 3,
             insert: "dog".into(),
@@ -98,7 +98,7 @@ mod astral_tests {
     #[test]
     fn an_insert_between_two_astral_characters_splits_neither() {
         let doc = doc_with(&format!("{EMOJI}{EMOJI}"));
-        let edits = [wasm_helpers::text::Edit {
+        let edits = [Edit {
             at: 2,
             delete: 0,
             insert: "x".into(),

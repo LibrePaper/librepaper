@@ -237,7 +237,7 @@ async fn typing_throughput_release_benchmark() {
                 let applied = session::apply_edits_at(
                     &doc,
                     "paper.md",
-                    &[wasm_helpers::text::Edit {
+                    &[session::Edit {
                         at: len,
                         delete: 0,
                         insert: chunk.clone(),
@@ -481,7 +481,7 @@ async fn typing_throughput_release_benchmark() {
                 if !session::apply_edits_at(
                     &doc,
                     "paper.md",
-                    &[wasm_helpers::text::Edit {
+                    &[session::Edit {
                         at: len,
                         delete: 0,
                         insert: chunk.clone(),
@@ -893,7 +893,7 @@ async fn compaction_cost_release_benchmark() {
                 session::apply_edits_at(
                     &doc,
                     "paper.md",
-                    &[wasm_helpers::text::Edit {
+                    &[session::Edit {
                         at: len,
                         delete: 0,
                         insert: chunk.clone(),
@@ -971,7 +971,7 @@ async fn compaction_cost_release_benchmark() {
                     if !session::apply_edits_at(
                         &doc,
                         "paper.md",
-                        &[wasm_helpers::text::Edit {
+                        &[session::Edit {
                             at: len,
                             delete: 0,
                             insert: chunk.clone(),
@@ -1352,7 +1352,7 @@ async fn seed_concurrent_document(
             session::apply_edits_at(
                 &doc,
                 "paper.md",
-                &[wasm_helpers::text::Edit {
+                &[session::Edit {
                     at: len,
                     delete: 0,
                     insert: chunk.clone(),
@@ -1704,7 +1704,7 @@ async fn concurrent_compaction_release_benchmark() {
                     if !session::apply_edits_at(
                         &doc,
                         "paper.md",
-                        &[wasm_helpers::text::Edit {
+                        &[session::Edit {
                             at: len,
                             delete: 0,
                             insert: chunk.clone(),
@@ -1951,7 +1951,7 @@ async fn update_import_cost_probe() {
             assert!(session::apply_edits_at(
                 &many,
                 "paper.md",
-                &[wasm_helpers::text::Edit {
+                &[session::Edit {
                     at,
                     delete: 0,
                     insert: chunk.to_string(),
@@ -2046,7 +2046,7 @@ async fn batched_import_cost_probe() {
         assert!(session::apply_edits_at(
             &typist,
             "paper.md",
-            &[wasm_helpers::text::Edit {
+            &[session::Edit {
                 at,
                 delete: 0,
                 insert: chunk.clone(),
@@ -2271,7 +2271,7 @@ async fn capacity_editor(
         if !session::apply_edits_at(
             &doc,
             &path,
-            &[wasm_helpers::text::Edit {
+            &[session::Edit {
                 at: len,
                 delete: 0,
                 insert: chunk.clone(),
@@ -3505,7 +3505,7 @@ async fn maintenance_backlog_capacity_benchmark() {
                 session::apply_edits_at(
                     &doc,
                     "paper.md",
-                    &[wasm_helpers::text::Edit {
+                    &[session::Edit {
                         at: len,
                         delete: 0,
                         insert: push_text.clone(),

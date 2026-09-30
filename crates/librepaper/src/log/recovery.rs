@@ -1527,7 +1527,7 @@ async fn source_producing_evidence_matches_the_row_it_names() {
     let after_fork = reconstructed
         .fork_at(&after_frontier)
         .expect("after_frontier is reachable in the reconstructed log");
-    let after_projected = librepaper_document_core::project(&after_fork, &config.paths());
+    let after_projected = crate::document::projection::project(&after_fork, &config.paths());
     assert_eq!(
         after_projected.projection.digest(),
         evidence.after_digest.as_deref().unwrap(),
@@ -1547,7 +1547,7 @@ async fn source_producing_evidence_matches_the_row_it_names() {
     let before_fork = reconstructed
         .fork_at(&before_frontier)
         .expect("before_frontier is reachable in the reconstructed log");
-    let before_projected = librepaper_document_core::project(&before_fork, &config.paths());
+    let before_projected = crate::document::projection::project(&before_fork, &config.paths());
     assert_eq!(
         before_projected.projection.digest(),
         evidence.before_digest,

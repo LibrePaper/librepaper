@@ -20,7 +20,7 @@ use crate::util::die;
 #[derive(serde::Deserialize)]
 struct ProjectSnapshot {
     digest: String,
-    projection: librepaper_document_core::Projection,
+    projection: crate::document::projection::Projection,
     #[serde(default)]
     texts: std::collections::BTreeMap<String, String>,
 }

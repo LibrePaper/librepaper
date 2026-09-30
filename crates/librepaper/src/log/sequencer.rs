@@ -261,7 +261,7 @@ pub struct Head<'a> {
     rules_owner: &'a Configuration,
     pub vector: VersionVector,
     pub frontier: Frontiers,
-    pub projection: Arc<librepaper_document_core::Projected>,
+    pub projection: Arc<crate::document::projection::Projected>,
     /// What `prepare` reserves a fork against, and what it is reserved
     /// against (§9.2: "temporary forks, each reserving the parent's
     /// estimate"). Computed once by `Sequencer::command` from the same
@@ -328,7 +328,7 @@ impl Head<'_> {
         if header.change_num == 0 {
             return Ok(None);
         }
-        let projected = librepaper_document_core::project(&draft, &self.rules_owner.paths());
+        let projected = crate::document::projection::project(&draft, &self.rules_owner.paths());
         Ok(Some(PreparedSource {
             batch,
             end: header.partial_end_vv,
@@ -358,7 +358,7 @@ pub struct PreparedSource {
     end: VersionVector,
     pub after_frontier: Frontiers,
     pub after_digest: String,
-    pub after_projection: Arc<librepaper_document_core::Projected>,
+    pub after_projection: Arc<crate::document::projection::Projected>,
     client_seq: i64,
     /// §9.2's fork reservation, released when this is dropped (§7 step 5,
     /// success or failure alike).
@@ -730,7 +730,7 @@ struct Inner {
     cache: Option<Cache>,
     /// The projection of the cache at its current version, so a poll that
     /// changes nothing costs nothing. Cleared whenever the cache moves.
-    projection: Option<Arc<librepaper_document_core::Projected>>,
+    projection: Option<Arc<crate::document::projection::Projected>>,
     /// Why this document cannot be read, when it cannot (§9.3).
     unreadable: Option<String>,
     /// Set when this process has lost the writer lease (§10): "this
@@ -1895,7 +1895,7 @@ impl Sequencer {
         if inner.projection.is_none() {
             let projected = {
                 let cache = inner.cache.as_ref().expect("a cache was just built");
-                Arc::new(librepaper_document_core::project(
+                Arc::new(crate::document::projection::project(
                     &cache.doc,
                     &self.config.paths(),
                 ))
@@ -2107,7 +2107,7 @@ impl Sequencer {
     /// know whether the document moved (comment re-anchoring, for one) needs
     /// the same restraint: a document nobody has looked at recently should
     /// not have a cache built for it just to answer "did it change".
-    pub async fn projection_if_warm(&self) -> Option<Arc<librepaper_document_core::Projected>> {
+    pub async fn projection_if_warm(&self) -> Option<Arc<crate::document::projection::Projected>> {
         let mut inner = self.inner.lock().await;
         if inner.fenced.is_some() || inner.unreadable.is_some() || inner.cache.is_none() {
             return None;
@@ -2117,7 +2117,7 @@ impl Sequencer {
         }
         let projected = {
             let cache = inner.cache.as_ref().expect("checked above");
-            Arc::new(librepaper_document_core::project(
+            Arc::new(crate::document::projection::project(
                 &cache.doc,
                 &self.config.paths(),
             ))
@@ -2127,7 +2127,7 @@ impl Sequencer {
     }
 
     /// The projection at head, building a cache entry if there is not one.
-    pub async fn projection(&self) -> Result<Arc<librepaper_document_core::Projected>> {
+    pub async fn projection(&self) -> Result<Arc<crate::document::projection::Projected>> {
         let mut inner = self.inner.lock().await;
         inner.readable()?;
         if let Some(projection) = &inner.projection {
@@ -2139,7 +2139,7 @@ impl Sequencer {
         }
         let projected = {
             let cache = inner.cache.as_ref().expect("a cache was just built");
-            Arc::new(librepaper_document_core::project(
+            Arc::new(crate::document::projection::project(
                 &cache.doc,
                 &self.config.paths(),
             ))
@@ -2153,9 +2153,9 @@ impl Sequencer {
     pub async fn projection_at(
         &self,
         frontier: &Frontiers,
-    ) -> Result<librepaper_document_core::Projected> {
+    ) -> Result<crate::document::projection::Projected> {
         self.with_fork_at(frontier, |fork| {
-            librepaper_document_core::project(fork, &self.config.paths())
+            crate::document::projection::project(fork, &self.config.paths())
         })
         .await
     }
@@ -2199,7 +2199,7 @@ impl Sequencer {
     /// is built once and cached, rather than recomputed per comment page.
     pub async fn with_projected_head<T>(
         &self,
-        read: impl FnOnce(&LoroDoc, &librepaper_document_core::Projected) -> T,
+        read: impl FnOnce(&LoroDoc, &crate::document::projection::Projected) -> T,
     ) -> Result<T> {
         let mut inner = self.inner.lock().await;
         inner.readable()?;
@@ -2209,7 +2209,7 @@ impl Sequencer {
         }
         if inner.projection.is_none() {
             let cache = inner.cache.as_ref().expect("a cache was just built");
-            inner.projection = Some(Arc::new(librepaper_document_core::project(
+            inner.projection = Some(Arc::new(crate::document::projection::project(
                 &cache.doc,
                 &self.config.paths(),
             )));
@@ -2643,7 +2643,7 @@ impl Sequencer {
     /// than add a real one.
     fn emit_source_changed(&self, inner: &mut Inner) {
         let digest: Option<String> = inner.cache.as_ref().map(|cache| {
-            librepaper_document_core::project(&cache.doc, &self.config.paths())
+            crate::document::projection::project(&cache.doc, &self.config.paths())
                 .projection
                 .digest()
         });
@@ -2893,7 +2893,7 @@ mod prepare_budget_tests {
             rules_owner: config,
             vector: doc.oplog_vv(),
             frontier: doc.oplog_frontiers(),
-            projection: Arc::new(librepaper_document_core::project(doc, &config.paths())),
+            projection: Arc::new(crate::document::projection::project(doc, &config.paths())),
             budget: budget.clone(),
             estimate,
         }

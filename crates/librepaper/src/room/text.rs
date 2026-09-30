@@ -36,7 +36,7 @@
 //!   into a named helper would not remove any behavioral decision, only add
 //!   an import.
 //!
-//! `wasm_helpers::text::Edit` offsets, `session::replace_text`'s arithmetic
+//! `session::Edit` offsets, `session::replace_text`'s arithmetic
 //! and a JavaScript string's own indexing all agree on UTF-16 code units,
 //! which is why none of the above ever converts to UTF-8 byte offsets
 //! internally.

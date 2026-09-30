@@ -5,19 +5,19 @@
 //! digests rather than by two people reading one specification
 //! (SPEC-server-is-a-log §4.4, §14.2).
 //!
-//! `LIBREPAPER_REGENERATE_FIXTURES=1 cargo test -p librepaper-document-core`
+//! `LIBREPAPER_REGENERATE_FIXTURES=1 cargo test -p librepaper`
 //! rewrites the `expect` blocks in place. Read the diff before committing it:
 //! this test is only worth what the expectations say.
 
 use std::collections::BTreeMap;
 
-use librepaper_document_core::{paths::Rules, project, Projection};
+use librepaper::document::projection::{paths::Rules, project, Projection};
 use loro::{LoroDoc, LoroText, LoroValue};
 use serde_json::{json, Map, Value};
 
 fn corpus_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../web/tests/fixtures/projection.json")
+        .join("../web/tests/fixtures/projection.json")
 }
 
 fn strings(value: &Value, key: &str) -> Vec<String> {
@@ -53,7 +53,7 @@ fn insert_value(map: &loro::LoroMap, key: &str, value: &Value) {
 
 fn build(case: &Value) -> LoroDoc {
     let doc = LoroDoc::new();
-    for root in librepaper_document_core::ROOTS {
+    for root in librepaper::document::projection::ROOTS {
         let _ = doc.get_map(root);
     }
     let files = doc.get_map("files");
@@ -138,7 +138,7 @@ fn the_shared_corpus_projects_the_same_way_on_both_sides() {
         asset: &asset,
         derived: &derived,
         max_path: corpus["rules"]["max_path"].as_u64().unwrap_or(255) as usize,
-        max_segments: librepaper_document_core::paths::MAX_SEGMENTS,
+        max_segments: librepaper::document::projection::paths::MAX_SEGMENTS,
     };
 
     let regenerate = std::env::var("LIBREPAPER_REGENERATE_FIXTURES").is_ok();

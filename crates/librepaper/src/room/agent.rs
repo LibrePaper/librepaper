@@ -435,7 +435,7 @@ fn apply_patch_edits(
             .ok_or_else(|| format!("file is absent: {path}"))?;
         let edits: Vec<_> = patches
             .into_iter()
-            .map(|patch| wasm_helpers::text::Edit {
+            .map(|patch| session::Edit {
                 at: byte_to_utf16(original.text, patch.start),
                 delete: byte_to_utf16(&original.text[patch.start..], patch.end - patch.start),
                 insert: patch.replacement.clone(),
