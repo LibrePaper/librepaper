@@ -97,7 +97,7 @@ async fn cleanup_runs_with_two_pool_connections_and_the_writer_lease_held() {
         objects.path(),
         false,
     ));
-    let maintenance = super::super::Maintenance::new(catalog.clone(), blobs);
+    let maintenance = super::Maintenance::new(catalog.clone(), blobs);
 
     maintenance
         .delete_orphans(1, time::Duration::days(7))
