@@ -89,6 +89,21 @@ pub(super) async fn announce_proposal(room: &Room, id: &str) {
     .await;
 }
 
+/// Tells connected editors that a tracked proposal has resolved through an
+/// MCP command. Without the final outcome frame, their in-memory review queue
+/// keeps displaying a row that no longer exists in the durable proposal list.
+pub(super) async fn announce_proposal_outcome(room: &Room, id: uuid::Uuid, request_id: uuid::Uuid) {
+    let Ok(Some(outcome)) = room
+        .catalog()
+        .proposal_outcome(room.document_id, id)
+        .await
+    else {
+        return;
+    };
+    let payload = proposal_outcome_json(&outcome, &request_id.to_string());
+    room.broadcast_editors_except(None, &payload).await;
+}
+
 /// A stored proposal as the wire has always shaped it: id, author, and the
 /// base/tip/branch a browser needs to rebuild the branch and compute its own
 /// hunks (`web/src/lib/proposals.js`'s `decodeProposal`). The frontiers travel

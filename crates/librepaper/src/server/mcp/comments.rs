@@ -478,6 +478,12 @@ impl Server {
                     .command(&authority, &mut cmd)
                     .await
                     .map_err(command_failure)?;
+                crate::server::socket::announce_proposal_outcome(
+                    &room,
+                    stored.id,
+                    decision_request_id,
+                )
+                .await;
                 json!({"comment_id": comment_id})
             }
             "delete" => {

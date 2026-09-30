@@ -49,7 +49,7 @@ use crate::log::{Command, CommandError, Evidence, Head, PreparedSource};
 use crate::storage::postgres::{
     self, NewLabel, NewProposal, PostgresCatalog, StoredDecision, StoredProposal,
 };
-use loro::cursor::Side;
+use loro::cursor::{PosType, Side};
 
 /// Where a branch forked and where it has reached.
 ///
@@ -317,6 +317,13 @@ pub fn sides(
     Ok((at_base, at_tip))
 }
 
+/// Text for a changed container at a proposal's base. A proposal may create a
+/// new file, whose text container does not exist at the base yet.
+fn base_text(doc: &LoroDoc, id: ContainerID) -> String {
+    doc.try_get_text(id)
+        .map_or_else(String::new, |text| text.to_string())
+}
+
 /// What a reviewer is deciding about: the hunks between the branch's base and
 /// its tip, numbered across every file it touches.
 pub fn hunks(
@@ -337,7 +344,7 @@ pub fn hunks(
         .fork_at(&proposal.base)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
     Ok(
-        hunks_of_batch(&batch, |cid| at_base.get_text(cid.clone()).to_string())
+        hunks_of_batch(&batch, |cid| base_text(&at_base, cid.clone()))
             .into_iter()
             .map(|(_, h)| h)
             .collect(),
@@ -379,7 +386,7 @@ fn validate_accepted_hunks_on_branch(
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
     let ids = session::text_ids_of(&at_base);
     let tip_ids = session::text_ids_of(&at_tip);
-    let review_hunks = hunks_of_batch(&batch, |cid| at_base.get_text(cid.clone()).to_string());
+    let review_hunks = hunks_of_batch(&batch, |cid| base_text(&at_base, cid.clone()));
     if accepted.iter().any(|index| *index >= review_hunks.len()) {
         return Err(ProposalError::Stale);
     }
@@ -439,18 +446,34 @@ fn validate_accepted_hunks_on_branch(
             return Err(ProposalError::Stale);
         }
         let start_utf16 = chars[..start_cp].iter().collect::<String>().encode_utf16().count() as u32;
-        let end_utf16 = chars[..end_cp].iter().collect::<String>().encode_utf16().count() as u32;
         let start = crate::document::session::cursor_at_file_id(
             &at_base, id, start_utf16, Side::Right,
         )
         .ok_or(ProposalError::Stale)?;
-        let end = crate::document::session::cursor_at_file_id(
-            &at_base, id, end_utf16, Side::Left,
-        )
-        .ok_or(ProposalError::Stale)?;
+        let end = if hunk.deleted == 0 {
+            start.clone()
+        } else {
+            at_base
+                .try_get_text(cid.clone())
+                .and_then(|text| text.get_cursor(end_cp - 1, Side::Right))
+                .ok_or(ProposalError::Stale)?
+        };
         let range = crate::document::session::offsets_of_cursors_in_file(doc, id, &start, &end)
             .map_err(|_| ProposalError::Stale)?;
-        if range.start_utf16 > range.end_utf16 {
+        let end_utf16 = if hunk.deleted == 0 {
+            range.end_utf16
+        } else {
+            let end_position = doc
+                .get_cursor_pos(&end)
+                .map_err(|_| ProposalError::Stale)?
+                .current
+                .pos
+                .saturating_add(1);
+            doc.try_get_text(cid.clone())
+                .and_then(|text| text.convert_pos(end_position, PosType::Unicode, PosType::Utf16))
+                .ok_or(ProposalError::Stale)? as u32
+        };
+        if range.start_utf16 > end_utf16 {
             return Err(ProposalError::Stale);
         }
         let current = match doc.get_map(session::FILES).get(id) {
@@ -463,7 +486,7 @@ fn validate_accepted_hunks_on_branch(
             .collect::<String>()
             .encode_utf16()
             .collect();
-        if current_units.get(range.start_utf16 as usize..range.end_utf16 as usize)
+        if current_units.get(range.start_utf16 as usize..end_utf16 as usize)
             != Some(old_span.as_slice())
         {
             return Err(ProposalError::Stale);
@@ -550,10 +573,10 @@ pub fn keyed_hunks(
         .fork_at(&proposal.base)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
     Ok(
-        hunks_of_batch(&batch, |cid| at_base.get_text(cid.clone()).to_string())
+        hunks_of_batch(&batch, |cid| base_text(&at_base, cid.clone()))
             .into_iter()
             .map(|(cid, hunk)| {
-                let old: Vec<char> = at_base.get_text(cid.clone()).to_string().chars().collect();
+                let old: Vec<char> = base_text(&at_base, cid.clone()).chars().collect();
                 let start = hunk.start.min(old.len());
                 let end = (hunk.start + hunk.deleted).min(old.len());
                 HunkKey {
@@ -649,7 +672,7 @@ pub fn resolve(
     let at_tip = branch
         .fork_at(&proposal.tip)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
-    let reviewed = hunks_of_batch(&batch, |cid| at_base.get_text(cid.clone()).to_string());
+    let reviewed = hunks_of_batch(&batch, |cid| base_text(&at_base, cid.clone()));
     let accepted: HashSet<usize> = (0..reviewed.len())
         .filter(|index| !declined.contains(index))
         .collect();
@@ -1925,7 +1948,7 @@ mod tests {
         let (room, proposal, bytes) = same_file_two_hunks();
         let coauthor = room.fork();
         coauthor.set_peer_id(REVIEWER).unwrap();
-        session::put_text(&coauthor, "main.md", "The cat sat. The fox ran.");
+        session::put_text(&coauthor, "main.md", "The cat sat. The dog jumped.");
         coauthor.commit();
         let concurrent = session::encode_diff(&coauthor, &session::encode_vector(&room)).unwrap();
         session::apply_update(&room, &concurrent).unwrap();
@@ -1941,7 +1964,7 @@ mod tests {
             matches!(refused, Err(ProposalError::Stale)),
             "reverting a declined hunk over a rival replacement would resurrect the old word: {refused:?}"
         );
-        assert!(text_at(&room, "main.md").contains("fox"));
+        assert!(text_at(&room, "main.md").contains("jumped"));
     }
 
     #[test]
@@ -1991,9 +2014,13 @@ mod tests {
         let bytes = session::encode_diff(&branch, &session::encode_vector(&room)).unwrap();
         let coauthor = room.fork();
         coauthor.set_peer_id(REVIEWER).unwrap();
-        coauthor.get_text(session::text_ids_of(&coauthor)["main.md"].clone())
-            .insert_utf16(4, "other ")
-            .unwrap();
+        let id = session::text_ids_of(&coauthor)["main.md"].clone();
+        let Some(ValueOrContainer::Container(Container::Text(text))) =
+            coauthor.get_map(session::FILES).get(&id)
+        else {
+            panic!("main text exists");
+        };
+        text.insert_utf16(4, "other ").unwrap();
         coauthor.commit();
         let concurrent = session::encode_diff(&coauthor, &session::encode_vector(&room)).unwrap();
         session::apply_update(&room, &concurrent).unwrap();
@@ -2056,7 +2083,7 @@ mod tests {
         let bytes = session::encode_diff(&branch, &vector).unwrap();
         let at_base = branch.fork_at(&proposal.base).unwrap();
         let batch = branch.diff(&proposal.base, &proposal.tip).unwrap();
-        let reviewed = hunks_of_batch(&batch, |cid| at_base.get_text(cid.clone()).to_string());
+        let reviewed = hunks_of_batch(&batch, |cid| base_text(&at_base, cid.clone()));
         let new_id = session::text_ids_of(&branch)["extra.md"].clone();
         let Some(ValueOrContainer::Container(Container::Text(new_text))) =
             branch.get_map(session::FILES).get(&new_id)
