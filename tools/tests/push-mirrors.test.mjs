@@ -150,6 +150,7 @@ fs.appendFileSync(process.env.AWS_LOG,JSON.stringify({cmd,key,endpoint:val('--en
     const puts = calls.filter((call) => call.cmd === "s3api put-object");
     assert.ok(puts.some((call) => call.key.startsWith("typst/")));
     assert.ok(puts.some((call) => call.key.startsWith("latex/")));
+    assert.ok(calls.some((call) => call.cmd === "s3api put-bucket-cors"));
     assert.ok(calls.every((call) => call.endpoint === "https://ovh.example.invalid" && call.region === "bhs" &&
       call.bucket === "explicit-bucket" && call.id === "override-id" && call.secret === "override-secret"));
   } finally { await rm(root, { recursive: true, force: true }); }

@@ -25,9 +25,9 @@ make mirrors-push
 SOPS decrypts the key file into memory for the publishing process. Both local
 mirrors are integrity-checked before either upload begins. The publisher reads
 each uploaded object back and verifies its bytes and response metadata before
-publishing release indexes. CORS remains an explicit separate operation via
-`tools/publish-mirror.mjs --configure-cors`; `mirrors-push` does not change
-bucket policy, public access, or application URL pins.
+publishing release indexes. Each upload uses a public-read ACL (listing stays
+private), and the GET/HEAD any-origin CORS rule is applied on every push.
+Application URL pins remain manual.
 
 Publisher credentials need object read/write access. Allow anonymous reads only
 for `typst/*` and `latex/*`; keep listing private. Uploads use gzip where suitable,

@@ -328,7 +328,8 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
         await stageSource(file.absolute, body, preflight.expected.get(file.relative), metadata.contentEncoding === "gzip");
         const args = ["s3api", "put-object", "--endpoint-url", target.endpoint, "--region", target.region,
           "--bucket", target.bucket, "--key", key, "--body", body,
-          "--content-type", metadata.contentType, "--cache-control", metadata.cacheControl];
+          "--content-type", metadata.contentType, "--cache-control", metadata.cacheControl,
+          "--acl", "public-read"];
         if (metadata.contentEncoding) args.push("--content-encoding", metadata.contentEncoding);
         await aws(args, env);
         await rm(body, { force: true });

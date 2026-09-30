@@ -52,11 +52,11 @@ if (command === 's3api put-object') {
   const decoded = value('--content-encoding') === 'gzip' ? gunzipSync(encoded) : encoded;
   store[key] = { encoded: encoded.toString('base64'), decoded: decoded.toString('base64'),
     contentType: value('--content-type'), contentEncoding: value('--content-encoding') || undefined,
-    cacheControl: value('--cache-control') };
+    cacheControl: value('--cache-control'), acl: value('--acl') };
   if (bodyPath.includes('/librepaper-mirror-')) entry.bodyPath = bodyPath;
   entry.body = decoded.toString('base64');
   Object.assign(entry, { contentType: store[key].contentType,
-    contentEncoding: store[key].contentEncoding || null, cacheControl: store[key].cacheControl });
+    contentEncoding: store[key].contentEncoding || null, cacheControl: store[key].cacheControl, acl: store[key].acl });
 }
 if (command === 's3api get-object') {
   const object = store[key];
@@ -262,6 +262,7 @@ test("successful S3 publishing gzips payloads, skips transport files, and upload
     assert.equal(byKey.get("typst/manifest.json").cacheControl, "no-store");
     assert.equal(byKey.get("typst/engine/bundles.json").cacheControl, "no-cache");
     assert.equal(Buffer.from(byKey.get(`typst/${typstHash}/typst.wasm`).body, "base64").toString(), "compiled wasm");
+    assert.ok(puts.every((entry) => entry.acl === "public-read"));
     const manifestPutIndex = entries.findIndex((entry) => entry.command === "s3api put-object" && entry.key === "typst/manifest.json");
     assert.ok(manifestPutIndex > 0);
     assert.equal(entries.slice(0, manifestPutIndex).filter((entry) => entry.command === "s3api put-object").length,

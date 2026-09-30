@@ -97,7 +97,7 @@ async function publishPrepared(rawEnv, { dryRun = false } = {}) {
     return;
   }
   for (const mirror of mirrors) {
-    await publish({ ...mirror, dryRun, env });
+    await publish({ ...mirror, dryRun, env, configureCors: true });
   }
 }
 
