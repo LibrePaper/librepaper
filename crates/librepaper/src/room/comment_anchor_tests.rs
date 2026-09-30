@@ -934,7 +934,8 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
         .await
         .unwrap()
         .expect("MCP rejection records a whole-proposal result");
-    assert!(receipt.discarded);
+    assert!(!receipt.discarded);
+    assert_eq!(receipt.decisions.0, vec![(0, false)]);
     assert!(
         room.comment_by_id(&created.id, true)
             .await
