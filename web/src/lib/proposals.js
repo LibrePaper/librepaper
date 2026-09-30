@@ -129,6 +129,7 @@ function hunkify(deltas, oldText = "") {
       // Filled in by the caller, which is the only place that knows which
       // container this delta run came from.
       file: /** @type {string | null} */ (null),
+      path: /** @type {string | null} */ (null),
     });
     cursor += deleted;
     at = range.end;
@@ -532,6 +533,25 @@ export function createProposals({ session, send, mayEdit }) {
       try { sourceAtResolution = session.doc.forkAt(resolvedTip); } catch { return; }
       sourceAtResolution?.destroy?.();
     } else if (!draft.inverseApplied) {
+      let publishedOwn = 0;
+      let published = null;
+      try {
+        published = draft.branch.forkAt(resolvedTip);
+        publishedOwn = ownOps(draft, published.oplogVersion());
+      } catch {
+        draft.error = "the published proposal version is unavailable for local recovery";
+        changed();
+        return;
+      } finally {
+        published?.destroy?.();
+      }
+      // With no author operations beyond the published tip there is no local
+      // tail to preserve. The server already discarded the proposal, and
+      // importing an inverse can only risk fighting newer room text.
+      if (ownOps(draft) <= publishedOwn) {
+        destroy(draft);
+        return;
+      }
       let resolvedBranch = null;
       try {
         resolvedBranch = draft.branch.forkAt(resolvedTip);
@@ -593,6 +613,9 @@ export function createProposals({ session, send, mayEdit }) {
     draft.openPending = false;
     draft.openBase = null;
     draft.inflight = null;
+    draft.discarding = false;
+    draft.discardCause = null;
+    draft.discardRequestId = null;
     draft.ackOwn = ownOps(draft, draft.baseVersion);
     draft.ackTipBytes = encodeBase64(encodeFrontiers(draft.base));
     draft.resolutionPending = null;
@@ -718,6 +741,7 @@ export function createProposals({ session, send, mayEdit }) {
             type: "proposal-open",
             request_id: draft.id,
             base: encodeBase64(encodeFrontiers(draft.openBase ?? draft.base)),
+            resume: true,
           });
           if (result?.ok !== false) draft.openPending = true;
           else draft.error = result.error?.message || "offline";
@@ -790,7 +814,8 @@ export function createProposals({ session, send, mayEdit }) {
       return { ok: true, pending: true };
     },
     status() {
-      const draft = proposal || [...retained.values()].at(-1);
+      const draft = [...allDrafts()].find((item) => item.resolutionBlocked) ||
+        proposal || [...retained.values()].at(-1);
       const pending = allDrafts().filter((item) => item.openPending || item.inflight || item.error ||
         hasTextChanges(item.base, item.branch) === null || hasTextChanges(item.base, item.branch) && dirty(item)).length;
       if (!draft) return { state: "idle", error: "", pending };
@@ -801,6 +826,20 @@ export function createProposals({ session, send, mayEdit }) {
         pending,
         recoveryRequired: Boolean(draft.resolutionBlocked),
       };
+    },
+    recoveryTexts() {
+      return allDrafts().filter((draft) => draft.resolutionBlocked).map((draft) => {
+        const paths = draft.branch.getMap("paths");
+        const files = draft.branch.getMap("files");
+        return {
+          id: draft.id,
+          files: [...files.keys()].flatMap((id) => {
+            const text = files.get(id);
+            if (text?.kind?.() !== "Text") return [];
+            return [{ id, path: paths.get(id) ?? null, text: text.toString() }];
+          }),
+        };
+      });
     },
     onchange(callback) {
       if (typeof callback !== "function") return () => {};

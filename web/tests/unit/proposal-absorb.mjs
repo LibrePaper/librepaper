@@ -181,6 +181,7 @@ import { createProposals } from "../../src/lib/proposals.js";
   const query = sent.at(-1);
   assert.equal(query.type, "proposal-open", "reconnect checks the durable proposal outcome");
   assert.equal(query.request_id, id, "the query reuses the proposal id");
+  assert.equal(query.resume, true, "known ids query status without recreating expired rows");
   proposals.apply({ type: "proposal-decided", proposal_id: id,
     decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip,
     resolved_base: open.base });
@@ -214,6 +215,7 @@ import { createProposals } from "../../src/lib/proposals.js";
   proposals.flush();
   const discard = sent.at(-1);
   assert.equal(discard.type, "proposal-discard", "the empty proposal row is removed");
+  proposals.text("f1").insert(0, "X"); // typing after the delete request remains private
   proposals.apply({
     type: "proposal-discarded",
     proposal_id: id,
@@ -222,7 +224,9 @@ import { createProposals } from "../../src/lib/proposals.js";
     resolved_tip: update.tip,
     resolved_base: open.base,
   });
-  assert.equal(proposals.drafting(), false, "the emptied branch closes without a replacement row");
+  assert.notEqual(proposals.id(), id, "the residual typing receives a fresh proposal id");
+  assert.ok(proposals.text("f1").toString().includes("X"), "typing after the delete request survives");
+  assert.equal(sent.at(-1).type, "proposal-open", "the residual branch is sent after deletion settles");
 }
 
 // When a reviewer rejects the published tip, a local edit made inside that
@@ -268,6 +272,38 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.ok(!proposals.text("f1").toString().includes("tabby"), "the rejected published replacement is removed");
   assert.equal(sent.at(-1).type, "proposal-open", "the remainder opens lazily from the current room");
 }
+// The final decision can reach this client before the accepted source update.
+// Hold it pending until the room contains the resolved proposal frontier.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "The cat sat.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  proposals.text("f1").delete(4, 3);
+  proposals.text("f1").insert(4, "tabby");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [{ hunk: 0, accepted: true }], resolved_tip: update.tip, resolved_base: open.base });
+  assert.equal(proposals.drafting(), true, "the final event waits for its source graph");
+
+  const sourceUpdate = Uint8Array.from(atob(update.update), (character) => character.charCodeAt(0));
+  room.import(sourceUpdate);
+  assert.equal(proposals.drafting(), false, "the accepted source import completes resolution");
+}
 // A stale rejected span must not be inversed over a coauthor replacement:
 // preserve the full local branch and expose a recovery error instead.
 {
@@ -292,6 +328,7 @@ import { createProposals } from "../../src/lib/proposals.js";
   const update = sent.at(-1);
   proposals.apply({ type: "proposal-updated", proposal_id: id,
     request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  branchText.insert(6, "X"); // an unacknowledged local tail must be preserved
 
   const other = room.fork();
   other.setPeerId(3n);
@@ -309,6 +346,12 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.equal(proposals.status().state, "error", "unsafe inverse is surfaced for manual recovery");
   assert.equal(proposals.text("f1").toString(), beforeResolution, "the local and coauthor text is left untouched");
   assert.equal(sent.length, sendsBeforeResolution, "unsafe remainder is not silently republished");
+  proposals.stop();
+  proposals.start();
+  const recovery = proposals.recoveryTexts().find((item) => item.id === id);
+  assert.ok(recovery, "the blocked draft remains available after Editor recreation");
+  assert.ok(recovery.files.some((file) => file.text.includes("X")), "the export contains the unsent tail");
+  assert.equal(proposals.status().recoveryRequired, true, "recovery status survives a new active draft");
 }
 // Rejecting a newly created file's published text preserves a local tail in
 // that file and keeps its path metadata so the remainder can be reviewed.
