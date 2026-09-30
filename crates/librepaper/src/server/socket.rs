@@ -1107,10 +1107,21 @@ impl Server {
                                     )).await;
                                     continue 'reader;
                                 };
-                                let (Some(branch), Some(tip)) = (
+                                // An absent base is not an error: it leaves the
+                                // proposal's base where it is. A present one
+                                // that cannot be read is.
+                                let base = if incoming.base().is_empty() {
+                                    Some(None)
+                                } else {
+                                    crate::room::decode_update(incoming.base())
+                                        .and_then(|bytes| loro::Frontiers::decode(&bytes).ok())
+                                        .map(Some)
+                                };
+                                let (Some(branch), Some(tip), Some(base)) = (
                                     crate::room::decode_update(incoming.update()),
                                     crate::room::decode_update(incoming.tip())
                                         .and_then(|bytes| loro::Frontiers::decode(&bytes).ok()),
+                                    base,
                                 ) else {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
                                         json!({"type":"error","message":"that proposal update could not be read","request_id":incoming.request_id()}).to_string(),
@@ -1135,6 +1146,7 @@ impl Server {
                                     id: proposal_id,
                                     expected_version: stored.version,
                                     tip,
+                                    base,
                                     branch,
                                 };
                                 match room.command(&who.document_authority(), &mut command).await {

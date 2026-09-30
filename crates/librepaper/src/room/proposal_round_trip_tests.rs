@@ -189,6 +189,7 @@ async fn update(
         id: stored.id,
         expected_version: stored.version,
         tip: tip.clone(),
+        base: None,
         branch: branch.to_vec(),
     };
     room.command(authority, &mut command).await.unwrap()

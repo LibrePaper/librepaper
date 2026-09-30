@@ -291,15 +291,59 @@ export function createProposals({ session, send, mayEdit }) {
 
   // Everything since the fork, addressed by name: see `flush`.
   const sendUpdate = (draft, update = draft.branch.export({ mode: "update", from: draft.baseVersion })) => {
-    send({
+    draft.sentOwn = ownOps(draft);
+    const msg = {
       type: "proposal-update",
       proposal_id: draft.id,
       tip: encodeBase64(encodeFrontiers(draft.tip)),
       update: encodeBase64(update),
-    });
+    };
+    // If the base was moved by absorb, send it along so the server knows
+    // what imports have been merged in.
+    if (draft.baseMoved) {
+      msg.base = encodeBase64(encodeFrontiers(draft.base));
+      draft.baseMoved = false;
+    }
+    send(msg);
   };
 
-  return {
+  // How many operations the author has written into the branch: the fork
+  // has a peer of its own, so its counter is exactly the author's typing.
+  const ownOps = (draft) => draft.branch.oplogVersion().get(draft.branch.peerIdStr) ?? 0;
+
+  // Subscribe to room updates and absorb edits by others into the branch.
+  // The branch is the author's draft, base to tip. When remote edits arrive
+  // via import, the base must move to include them or they would read as the
+  // author's own new words.
+  const absorb = () => {
+    if (!proposal) return;
+    // Commit the branch first so frontiers() below names text the author sees.
+    proposal.branch.commit();
+    // Export what the room gained since the branch was last synced with it.
+    const update = session.doc.export({
+      mode: "update",
+      from: proposal.branch.oplogVersion(),
+    });
+    if (update.byteLength) {
+      try {
+        proposal.branch.import(update);
+      } catch {
+        // If import fails, leave the branch as is; do not log.
+      }
+      // The proposal is base to tip. Absorbed edits are now in the branch,
+      // so move the base forward to include them, or they would look like the
+      // author typed them.
+      proposal.base = session.doc.frontiers();
+      proposal.baseMoved = true;
+    }
+    // Only the author's own unsent words justify a send; the moved base
+    // rides along with the next one. Sending on every remote edit would
+    // resend the whole branch, and after this author's proposal resolves it
+    // would address a proposal the server has already deleted.
+    if (ownOps(proposal) !== proposal.sentOwn) api.flush();
+  };
+
+  const api = {
     // Fork the session document at its current frontier and remember the base.
     // Returns the existing proposal if one is already open.
     start() {
@@ -329,7 +373,16 @@ export function createProposals({ session, send, mayEdit }) {
         // is nothing to address an update to until then, so it is repeated
         // when the name arrives rather than dropped.
         unsent: false,
+        baseMoved: false,
+        sentOwn: 0,
       };
+
+      // Subscribe to imports from other authors and absorb them into the branch.
+      proposal.unsubscribe = doc.subscribe((event) => {
+        if (event.by === "import") {
+          absorb();
+        }
+      });
 
       // Tell the server we've opened a proposal at this frontier.
       send({
@@ -424,6 +477,7 @@ export function createProposals({ session, send, mayEdit }) {
     // Close the local branch. The server owns the decision from here on.
     stop() {
       if (!proposal) return;
+      proposal.unsubscribe?.();
       // Work with no name to send it under is kept until the name arrives.
       if (!proposal.id && proposal.unsent) closing = proposal;
       else proposal.branch.destroy?.();
@@ -447,6 +501,7 @@ export function createProposals({ session, send, mayEdit }) {
         if (closing && !closing.id && message.proposal_id) {
           closing.id = String(message.proposal_id);
           sendUpdate(closing);
+          closing.unsubscribe?.();
           closing.branch.destroy?.();
           closing = null;
         }
@@ -472,6 +527,7 @@ export function createProposals({ session, send, mayEdit }) {
       return hunksOfProposal(session.doc, proposalData);
     },
   };
+  return api;
 }
 
 // Encode a Uint8Array to base64. Used to wrap Loro's encodeFrontiers result

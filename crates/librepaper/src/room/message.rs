@@ -146,6 +146,10 @@ pub enum KnownMessage {
         update: String,
         #[serde(default)]
         tip: String,
+        /// Where the proposal's base moves to, when the author has absorbed
+        /// other people's edits into their branch. Empty leaves it alone.
+        #[serde(default)]
+        base: String,
         #[serde(default)]
         request_id: String,
     },
@@ -348,7 +352,7 @@ impl KnownMessage {
     string_field!(vector, vector, DocOpen);
     string_field!(protocol, protocol, DocOpen);
     string_field!(proposal_id, proposal_id, ProposalUpdate | ProposalDecide);
-    string_field!(base, base, ProposalOpen);
+    string_field!(base, base, ProposalOpen | ProposalUpdate);
     string_field!(tip, tip, ProposalUpdate | ProposalDecide);
     string_field!(note, note, ProposalDecide);
     string_field!(why, why, DocLabel);

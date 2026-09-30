@@ -388,6 +388,10 @@ pub struct UpdateProposal {
     pub id: Uuid,
     pub expected_version: i64,
     pub tip: Frontiers,
+    /// A new base, when the author has absorbed other people's edits into
+    /// their branch and so moved the fork point forward. `None` keeps the
+    /// stored base.
+    pub base: Option<Frontiers>,
     pub branch: Vec<u8>,
 }
 
@@ -403,10 +407,18 @@ impl Command for UpdateProposal {
     /// (they arrive only when the proposal resolves), so there is nothing
     /// about it `head` can confirm. The version column is the whole of the
     /// precondition, and it is checked transactionally in `transact`.
+    ///
+    /// A new base is the exception: `rebuild` forks at it on every later
+    /// read, so it gets the same reachability check `OpenProposal` makes.
     fn evaluate(
         &mut self,
-        _head: &Head<'_>,
+        head: &Head<'_>,
     ) -> std::result::Result<Option<PreparedSource>, CommandError> {
+        if let Some(base) = &self.base {
+            head.doc()
+                .fork_at(base)
+                .map_err(|_| CommandError::Conflict(ProposalError::UnknownBase.to_string()))?;
+        }
         Ok(None)
     }
 
@@ -423,6 +435,7 @@ impl Command for UpdateProposal {
                     self.id,
                     self.expected_version,
                     self.tip.encode(),
+                    self.base.as_ref().map(Frontiers::encode),
                     self.branch.clone(),
                 )
                 .await

@@ -1918,6 +1918,7 @@ impl SequencerCommand for RefineSuggestion {
                     self.proposal_id,
                     self.expected_version,
                     tip_frontiers,
+                    None,
                     branch_bytes,
                 )
                 .await?;

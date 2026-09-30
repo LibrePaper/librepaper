@@ -112,11 +112,13 @@ impl PostgresCatalog {
         id: Uuid,
         expected_version: i64,
         tip_frontiers: Vec<u8>,
+        base_frontiers: Option<Vec<u8>>,
         branch_bytes: Vec<u8>,
     ) -> Result<StoredProposal> {
         sqlx::query(
             "UPDATE document_proposals
-             SET tip_frontiers=$3,branch_bytes=$4,version=version+1,updated_at=now()
+             SET tip_frontiers=$3,branch_bytes=$4,version=version+1,updated_at=now(),
+                 base_frontiers=COALESCE($6, base_frontiers)
              WHERE id=$1 AND document_id=$2 AND version=$5",
         )
         .bind(id)
@@ -124,6 +126,7 @@ impl PostgresCatalog {
         .bind(tip_frontiers)
         .bind(branch_bytes)
         .bind(expected_version)
+        .bind(base_frontiers)
         .execute(&mut **tx)
         .await?;
         // Whether or not the update applied, the caller is handed the row as
