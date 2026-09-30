@@ -6,7 +6,7 @@ import { join } from "node:path";
 const rootArg = process.argv.indexOf("--root");
 const root = rootArg >= 0 ? process.argv[rootArg + 1] : new URL("../..", import.meta.url).pathname;
 if (!root || (rootArg >= 0 && !process.argv[rootArg + 1])) throw new Error("--root requires a directory");
-const lockPath = join(root, "wasm-modules.lock");
+const lockPath = join(root, "assets.lock");
 const required = new Map([
   ["markdown.wasm", "wasm-markdown"],
   ["bibliography.wasm", "wasm-bibliography"],
@@ -21,6 +21,7 @@ for (const [lineNumber, raw] of (await readFile(lockPath, "utf8")).split("\n").e
   const fields = line.split(/\s+/);
   if (fields.length !== 4) throw new Error(`${lockPath}:${lineNumber + 1}: expected module repo tag sha256`);
   const [module, repo, tag, sha256] = fields;
+  if (module === "latex") continue; // the LaTeX mirror release pin is not a browser wasm module
   if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error(`${module}: invalid sha256`);
   if (lock.has(module)) throw new Error(`${module}: duplicate lock entry`);
   lock.set(module, { repo, tag });
@@ -28,7 +29,7 @@ for (const [lineNumber, raw] of (await readFile(lockPath, "utf8")).split("\n").e
 
 for (const [module, repo] of required) {
   const pin = lock.get(module);
-  if (!pin) throw new Error(`${module}: missing from wasm-modules.lock`);
+  if (!pin) throw new Error(`${module}: missing from assets.lock`);
   if (pin.repo !== repo) throw new Error(`${module}: expected ${repo}, found ${pin.repo}`);
 }
 for (const module of lock.keys()) if (!required.has(module)) throw new Error(`${module}: unexpected browser module`);

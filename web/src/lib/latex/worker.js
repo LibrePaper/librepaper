@@ -7,7 +7,7 @@
 // makeindex), replacing the old two-message SwiftLaTeX protocol with the one
 // shown below:
 //
-//   in  { id, cmd: "configure", base, release, format }
+//   in  { id, cmd: "configure", base, release }
 //   in  { id, cmd: "stage", engine, tree, generated }
 //   in  { id, cmd: "tex", engine, main }
 //   in  { id, cmd: "bibtex", stem, eight }
@@ -126,7 +126,7 @@ class Worker2 {
 
   // -- configure --------------------------------------------------------
 
-  async configure({ base, release, format }) {
+  async configure({ base, release }) {
     if (this.release && this.release.id !== release?.id) {
       // A different release: nothing initialized against the old one is
       // safe to keep (different engine builds, different TeX Live).
@@ -136,21 +136,18 @@ class Worker2 {
     this.release = release;
     this.bundleIndexBytes = null;
 
-    // The mirror's manifest carries its own format number; this worker
-    // speaks exactly one (bundled releases, `engines`/`files`/`bundles`/
-    // `bibliography`/`source`, no per-file TeX Live snapshot). A different
-    // number is a mirror this build cannot compile against at all, not a
-    // degraded mode to fall back from.
-    if (format !== 1) {
-      throw new Error(`this LaTeX mirror's manifest is format ${format ?? "unknown"}, but this build only speaks format 1`);
+    // This worker speaks exactly one release format (2: paths relative to the
+    // release directory `base`, bundled releases). Anything else is a release
+    // this build cannot compile against at all, not a degraded mode.
+    if (release?.format !== 2) {
+      throw new Error(`this LaTeX release is format ${release?.format ?? "unknown"}, but this build only speaks format 2`);
     }
 
     // SPEC-latex.md "The index": every release fetches its `bundles.json`
-    // once here, revalidated (`no-cache`) since it is the one bundling file
-    // named without a digest, then verified against the digest the release
-    // entry pins -- the same trust boundary `fetchVerified` gives every
-    // digested file, just without Cache Storage, since this file is small
-    // and expected to change release to release. A release with no
+    // once here, then verified against the digest the release entry pins -- the
+    // same trust boundary `fetchVerified` gives every digested file, just
+    // without Cache Storage, since this file is small. Everything under a
+    // release directory is immutable, so no revalidation is needed. A release with no
     // `bundles` at all predates this mirror shape entirely and is refused
     // rather than served through a per-file TeX Live path that no longer
     // exists in this worker.
@@ -162,7 +159,7 @@ class Worker2 {
       throw new Error("Missing or invalid manifest metadata for bundles.json");
     }
     const url = resolve(this.base, release.bundles.index);
-    const response = await fetch(url, { cache: "no-cache" });
+    const response = await fetch(url);
     if (!response.ok) throw new Error(`bundles.json fetch failed: ${url}: ${response.status}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (bytes.length !== bundleInfo.size) {
@@ -194,7 +191,7 @@ class Worker2 {
     }
     const spec = this.release?.engines?.[kind];
     if (!spec) throw new Error(`release ${this.release?.id} has no ${kind} engine`);
-    const workerUrl = resolve(this.base, `${this.release.base}${spec.worker}`);
+    const workerUrl = resolve(this.base, spec.worker);
     const names = [...new Set([...(spec.files || [spec.worker]), ...(COMPATIBILITY_ASSETS[kind] || [])])];
     if (!names.includes(spec.worker)) throw new Error(`Incomplete ${kind} asset inventory: ${spec.worker}`);
     const assets = {};

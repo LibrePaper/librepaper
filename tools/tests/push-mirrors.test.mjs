@@ -16,25 +16,29 @@ async function makeMirrors(root, wasmName = "wasm dir", latexName = "latex mirro
   const module = Buffer.from("valid markdown wasm");
   await mkdir(wasm, { recursive: true });
   await writeFile(join(wasm, "markdown.wasm"), module);
-  const lock = join(root, "wasm-modules.lock");
-  await writeFile(lock, `# test lock\nmarkdown.wasm wasm-markdown v0.1.1 ${hash(module)}\n`);
+  const lock = join(root, "assets.lock");
+  await writeFile(lock, `# test lock\nmarkdown.wasm wasm-markdown v0.1.1 ${hash(module)}\nlatex wasm-latex v0.1.0 ${"a".repeat(64)}\n`);
+  // One release directory: <id>/ where id is the SHA-256 of MANIFEST.json.
+  const manifest = Buffer.from('{"label":"push-mirrors"}\n');
+  const id = hash(manifest);
+  const release = join(latex, id);
   const asset = Buffer.from("latex engine");
-  await mkdir(latex, { recursive: true });
-  await writeFile(join(latex, "engine.js"), asset);
-  await writeFile(join(latex, "manifest.json"), JSON.stringify({
-    format: 1,
-    releases: { release: { files: { engine: { url: "engine.js", size: asset.length, sha256: hash(asset) } },
-      bundles: { index: "bundles.json", count: 1, sha256: hash(Buffer.from('{"bundles":{"core":{"url":"bundle.tar","size":6,"sha256":"' + hash(Buffer.from("bundle")) + '"}}}')) } } },
-  }));
   const bundle = Buffer.from("bundle");
   const index = Buffer.from(JSON.stringify({ bundles: { core: { url: "bundle.tar", size: bundle.length, sha256: hash(bundle) } } }));
-  // Refresh manifest metadata after serializing the index.
-  const manifest = JSON.parse(await readFile(join(latex, "manifest.json"), "utf8"));
-  manifest.releases.release.bundles.sha256 = hash(index);
-  await writeFile(join(latex, "manifest.json"), JSON.stringify(manifest));
-  await writeFile(join(latex, "bundles.json"), index);
-  await writeFile(join(latex, "bundle.tar"), bundle);
-  return { wasm, lock, latex, moduleHash: hash(module) };
+  await mkdir(join(release, "bundles"), { recursive: true });
+  await writeFile(join(release, "MANIFEST.json"), manifest);
+  await writeFile(join(release, "engine.js"), asset);
+  await writeFile(join(release, "bundles", "bundles.json"), index);
+  await writeFile(join(release, "bundles", "bundle.tar"), bundle);
+  await writeFile(join(release, "release.json"), JSON.stringify({
+    format: 2, id,
+    files: {
+      engine: { url: "engine.js", size: asset.length, sha256: hash(asset) },
+      "bundles.json": { url: "bundles/bundles.json", size: index.length, sha256: hash(index) },
+    },
+    bundles: { index: "bundles/bundles.json", count: 1, sha256: hash(index) },
+  }));
+  return { wasm, lock, latex, release, moduleHash: hash(module) };
 }
 
 test("OVH variables map safely, canonical overrides win, and only an exact bucket ARN is derived", () => {
@@ -76,7 +80,7 @@ test("dry run stages the wasm mirror, hashes both mirrors and skips SOPS, even w
       PATH: `${bin}:${process.env.PATH}`, MIRRORS_DRY_RUN: "1", WASM_DIR: paths.wasm, WASM_LOCK: paths.lock, MIRROR: paths.latex,
       SOPS_CALLED: join(root, "sops-called") } });
     assert.match(output, /Validated wasm: 1 files/);
-    assert.match(output, /Validated latex: 4 files/);
+    assert.match(output, /Validated latex: 5 files/);
     await assert.rejects(readFile(join(root, "sops-called")));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -102,7 +106,7 @@ test("both mirrors are preflighted before any AWS upload", async () => {
   const root = await mkdtemp(join(tmpdir(), "push-mirrors-preflight-"));
   const bin = join(root, "bin");
   const paths = await makeMirrors(root);
-  await writeFile(join(paths.latex, "manifest.json"), "invalid manifest");
+  await writeFile(join(paths.release, "release.json"), "invalid release");
   await mkdir(bin);
   const sops = join(bin, "sops");
   const aws = join(bin, "aws");
@@ -117,7 +121,7 @@ test("both mirrors are preflighted before any AWS upload", async () => {
       PATH: `${bin}:${process.env.PATH}`, WASM_DIR: paths.wasm, WASM_LOCK: paths.lock, MIRROR: paths.latex, AWS_CALLED: calls } }); }
     catch (caught) { error = caught; }
     assert.ok(error);
-    assert.match(error.stderr, /LaTeX manifest\.json is invalid JSON/);
+    assert.match(error.stderr, /release\.json is invalid JSON/);
     await assert.rejects(readFile(calls));
     assert.doesNotMatch(error.stderr, /secret/);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -157,7 +161,7 @@ fs.appendFileSync(process.env.AWS_LOG,JSON.stringify({cmd,key,endpoint:val('--en
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("staging refuses a module whose bytes do not match wasm-modules.lock", async () => {
+test("staging refuses a module whose bytes do not match assets.lock", async () => {
   const root = await mkdtemp(join(tmpdir(), "push-mirrors-stage-"));
   const paths = await makeMirrors(root);
   try {
@@ -166,7 +170,7 @@ test("staging refuses a module whose bytes do not match wasm-modules.lock", asyn
       assert.equal(await readFile(join(staged, paths.moduleHash, "markdown.wasm"), "utf8"), "valid markdown wasm");
     } finally { await rm(staged, { recursive: true, force: true }); }
     await writeFile(join(paths.wasm, "markdown.wasm"), "tampered");
-    await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /does not match wasm-modules\.lock/);
+    await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /does not match assets\.lock/);
     await rm(join(paths.wasm, "markdown.wasm"));
     await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /run make wasm first/);
   } finally { await rm(root, { recursive: true, force: true }); }

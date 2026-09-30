@@ -5,13 +5,17 @@
 // server (--asset-mirror); `latexUrl` is where the LaTeX files live beneath it.
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:https";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 export async function ephemeralMirror(directory) {
   const root = resolve(directory);
   if (!statSync(root).isDirectory()) throw new Error(`mirror is not a directory: ${directory}`);
+  const releases = readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  if (releases.length !== 1) throw new Error(`expected exactly one <sha256> release directory in ${directory}, found ${releases.length}`);
+  const releaseId = releases[0].name;
   const tls = mkdtempSync(join(tmpdir(), "librepaper-mirror-tls-"));
   const key = join(tls, "key.pem");
   const cert = join(tls, "cert.pem");
@@ -41,7 +45,7 @@ export async function ephemeralMirror(directory) {
         : "application/octet-stream";
       response.writeHead(200, {
         "access-control-allow-origin": "*",
-        "cache-control": relative === "manifest.json" ? "no-store" : "public, max-age=31536000, immutable",
+        "cache-control": "public, max-age=31536000, immutable",
         "content-type": type,
         "content-length": body.length,
       });
@@ -58,7 +62,8 @@ export async function ephemeralMirror(directory) {
   });
   return {
     url: `https://localhost:${server.address().port}/`,
-    latexUrl: `https://localhost:${server.address().port}/latex/`,
+    latexUrl: `https://localhost:${server.address().port}/latex/${releaseId}/`,
+    releaseId,
     server,
     tls,
   };

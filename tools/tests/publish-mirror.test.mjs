@@ -11,15 +11,28 @@ const script = new URL("../publish-mirror.mjs", import.meta.url).pathname;
 const secret = "do-not-print-this-secret";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-// A minimal manifest.json that passes LaTeX preflight, with an empty bundles index.
-async function writeLatexManifest(source, indexPath = "bundles.json") {
+// A minimal release directory `<id>/` that passes LaTeX preflight: id is the
+// SHA-256 of MANIFEST.json, release.json is format 2 with paths relative to the
+// directory, and the bundles index is empty. `assets` are extra listed files.
+async function writeLatexRelease(source, assets = {}, label = "release") {
+  const manifest = Buffer.from(`{"label":"${label}"}\n`);
+  const id = sha256(manifest);
+  const dir = join(source, id);
   const index = Buffer.from('{"bundles":{}}\n');
-  await mkdir(join(source, indexPath, ".."), { recursive: true });
-  await writeFile(join(source, indexPath), index);
-  await writeFile(join(source, "manifest.json"), JSON.stringify({
-    format: 1,
-    releases: { release: { files: {}, bundles: { index: indexPath, count: 0, sha256: sha256(index) } } },
+  await mkdir(join(dir, "bundles"), { recursive: true });
+  await writeFile(join(dir, "MANIFEST.json"), manifest);
+  await writeFile(join(dir, "bundles", "bundles.json"), index);
+  const files = { "bundles.json": { url: "bundles/bundles.json", size: index.length, sha256: sha256(index) } };
+  for (const [name, bytes] of Object.entries(assets)) {
+    await mkdir(join(dir, name, ".."), { recursive: true });
+    await writeFile(join(dir, name), bytes);
+    files[name] = { url: name, size: bytes.length, sha256: sha256(bytes) };
+  }
+  await writeFile(join(dir, "release.json"), JSON.stringify({
+    format: 2, id, engines: {}, files,
+    bundles: { index: "bundles/bundles.json", count: 0, sha256: sha256(index) },
   }));
+  return { id, dir };
 }
 
 test("AWS failure diagnostics expose safe service codes and actionable hints only", () => {
@@ -91,13 +104,13 @@ test("publisher validates prefixes and selects explicit browser metadata", () =>
   assert.deepEqual(metadataFor("wasm/" + "a".repeat(64) + "/markdown.wasm"), {
     contentType: "application/wasm", contentEncoding: "gzip", cacheControl: "public, max-age=31536000, immutable",
   });
-  assert.deepEqual(metadataFor("latex/manifest.json"), {
-    contentType: "application/json", contentEncoding: "gzip", cacheControl: "no-store",
+  const releaseId = "b".repeat(64);
+  assert.deepEqual(metadataFor(`latex/${releaseId}/release.json`), {
+    contentType: "application/json", contentEncoding: "gzip", cacheControl: "public, max-age=31536000, immutable",
   });
-  assert.equal(metadataFor("latex/bundles.json").cacheControl, "no-cache");
+  assert.equal(metadataFor(`latex/${releaseId}/bundles/bundles.json`).cacheControl, "public, max-age=31536000, immutable");
   assert.equal(metadataFor("latex/licenses/OFL.txt").cacheControl, "public, max-age=86400");
   assert.equal(metadataFor("latex/fonts/example.otf").contentEncoding, undefined);
-  assert.equal(metadataFor("latex/cache/engine/bundles.json").cacheControl, "no-cache");
   assert.equal(metadataFor("latex/engine.fmt").contentType, "application/octet-stream");
   assert.equal(metadataFor("latex/engine.fmt").contentEncoding, "gzip");
   assert.equal(metadataFor("latex/archive.tar").contentEncoding, "gzip");
@@ -148,34 +161,65 @@ test("S3 endpoint must be HTTPS without embedded credentials, query, or fragment
 
 test("LaTeX preflight verifies release files, index, and relative bundle records", async () => {
   const root = await mkdtemp(join(tmpdir(), "publish-mirror-latex-preflight-"));
-  const indexPath = join(root, "engines", "release-label", "bundles", "bundles.json");
+  const manifest = Buffer.from('{"label":"preflight"}\n');
+  const id = sha256(manifest);
+  const dir = join(root, id);
   const bundleBytes = Buffer.from("bundle bytes");
   const bundleHash = sha256(bundleBytes);
-  const bundlePath = join(root, "engines", "release-label", "bundles", "b", bundleHash, "bundle.tar");
   const indexBytes = Buffer.from(JSON.stringify({ bundles: {
     core: { url: `b/${bundleHash}/bundle.tar`, size: bundleBytes.length, sha256: bundleHash },
   } }));
   const assetBytes = Buffer.from("engine js");
-  await mkdir(join(root, "engines", "release-label", "bundles"), { recursive: true });
-  await mkdir(join(root, "engines", "release-label", "bundles", "b", bundleHash), { recursive: true });
-  await writeFile(indexPath, indexBytes);
-  await writeFile(bundlePath, bundleBytes);
-  await writeFile(join(root, "engine.js"), assetBytes);
-  await writeFile(join(root, "manifest.json"), JSON.stringify({
-    format: 1,
-    releases: { "this-is-an-engine-release-label": {
-      files: { engine: { url: "engine.js", size: assetBytes.length, sha256: sha256(assetBytes) } },
-      bundles: { index: "engines/release-label/bundles/bundles.json", sha256: sha256(indexBytes), count: 1 },
-    } },
+  await mkdir(join(dir, "bundles", "b", bundleHash), { recursive: true });
+  await writeFile(join(dir, "MANIFEST.json"), manifest);
+  await writeFile(join(dir, "bundles", "bundles.json"), indexBytes);
+  await writeFile(join(dir, "bundles", "b", bundleHash, "bundle.tar"), bundleBytes);
+  await writeFile(join(dir, "engine.js"), assetBytes);
+  await writeFile(join(dir, "release.json"), JSON.stringify({
+    format: 2, id,
+    files: {
+      engine: { url: "engine.js", size: assetBytes.length, sha256: sha256(assetBytes) },
+      "bundles.json": { url: "bundles/bundles.json", size: indexBytes.length, sha256: sha256(indexBytes) },
+    },
+    bundles: { index: "bundles/bundles.json", sha256: sha256(indexBytes), count: 1 },
   }));
   try {
     const result = await preflightMirror({ dir: root, prefix: "latex" });
-    assert.equal(result.count, 4);
-    const orphan = join(root, "engines", "old-release", "bundles", "b", "0".repeat(64));
-    await mkdir(orphan, { recursive: true });
-    await writeFile(join(orphan, "orphan.tar"), "corrupt retained bundle");
+    assert.equal(result.count, 5);
+    assert.equal(result.bytes, manifest.length + bundleBytes.length + indexBytes.length + assetBytes.length +
+      (await stat(join(dir, "release.json"))).size);
+
+    // An unlisted file in a release is an orphan.
+    await writeFile(join(dir, "orphan.txt"), "not in any manifest");
+    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /no manifest names/);
+    await rm(join(dir, "orphan.txt"));
+
+    // Nothing but release directories at the top level.
+    await writeFile(join(root, "manifest.json"), "{}");
+    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /<sha256>\/ release directory/);
+    await rm(join(root, "manifest.json"));
+
+    // A retained bundle whose hash directory lies about its bytes.
+    const liar = join(dir, "bundles", "b", "0".repeat(64));
+    await mkdir(liar, { recursive: true });
+    await writeFile(join(liar, "orphan.tar"), "corrupt retained bundle");
     await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /bundle hash directory does not match/);
-    assert.equal(result.bytes, bundleBytes.length + indexBytes.length + assetBytes.length + (await stat(join(root, "manifest.json"))).size);
+    await rm(liar, { recursive: true });
+
+    // The directory name must be the SHA-256 of MANIFEST.json.
+    await writeFile(join(dir, "MANIFEST.json"), '{"label":"changed"}\n');
+    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /does not match the SHA-256 of MANIFEST.json/);
+    await writeFile(join(dir, "MANIFEST.json"), manifest);
+
+    // release.json must be format 2 and reference bytes that match.
+    await writeFile(join(dir, "engine.js"), "tampered");
+    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /integrity mismatch/);
+    await writeFile(join(dir, "engine.js"), assetBytes);
+    const release = JSON.parse(await readFile(join(dir, "release.json"), "utf8"));
+    await writeFile(join(dir, "release.json"), JSON.stringify({ ...release, format: 1 }));
+    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /must use format 2/);
+    await writeFile(join(dir, "release.json"), JSON.stringify({ ...release, files: { engine: { url: "../escape.js", size: 1, sha256: "0".repeat(64) } } }));
+    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /unsafe URL/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -203,36 +247,30 @@ test("WASM hash mismatch fails preflight before making AWS calls", async () => {
   }
 });
 
-test("successful S3 publishing gzips payloads, skips transport files, and uploads indexes last", async () => {
+test("successful S3 publishing gzips payloads, skips transport files, and uploads release.json last", async () => {
   const root = await mkdtemp(join(tmpdir(), "publish-mirror-success-"));
   const source = join(root, "mirror");
   const bin = join(root, "bin");
   const log = join(root, "aws.jsonl");
   await mkdir(source);
-  await mkdir(join(source, "engine"));
-  await mkdir(join(source, ".cloudflare"));
-  await mkdir(join(source, "nested"));
   await mkdir(bin);
-  await writeFile(join(source, "readme.txt"), "payload text\n");
-  await writeFile(join(source, "empty.txt"), "");
-  await writeFile(join(source, "engine.data"), Buffer.from([0, 1, 2, 255]));
-  await writeFile(join(source, "engine.fmt"), Buffer.from([0, 255, 1]));
-  await writeFile(join(source, "archive.tar"), "tar bytes");
-  await writeFile(join(source, "icudt.dat.gz"), Buffer.from([31, 139, 8, 0, 1]));
-  const assetBytes = Buffer.from("compiled wasm");
-  const assetHash = sha256(assetBytes);
-  await mkdir(join(source, assetHash));
-  await writeFile(join(source, assetHash, "engine.wasm"), assetBytes);
-  await writeFile(join(source, "engine", "bundles.json"), '{"bundle":"hash"}\n');
-  await mkdir(join(source, "zz"));
-  await writeLatexManifest(source, "zz/index.json");
-  await writeFile(join(source, "index.html"), "<h1>index</h1>");
+  const { id, dir } = await writeLatexRelease(source, {
+    "readme.txt": Buffer.from("payload text\n"),
+    "empty.txt": Buffer.alloc(0),
+    "engine.data": Buffer.from([0, 1, 2, 255]),
+    "engine.fmt": Buffer.from([0, 255, 1]),
+    "archive.tar": Buffer.from("tar bytes"),
+    "icudt.dat.gz": Buffer.from([31, 139, 8, 0, 1]),
+    "engine.wasm": Buffer.from("compiled wasm"),
+  });
+  await mkdir(join(dir, "nested"));
+  await mkdir(join(dir, ".cloudflare"));
   await writeFile(join(source, "_headers"), "ignored");
   await writeFile(join(source, ".assetsignore"), "ignored");
-  await writeFile(join(source, "nested", "old.js.br"), "ignored");
-  await writeFile(join(source, "nested", "x.metadata"), "ignored");
-  await writeFile(join(source, "nested", "x.cfmeta"), "ignored");
-  await writeFile(join(source, ".cloudflare", "meta.json"), "ignored");
+  await writeFile(join(dir, "nested", "old.js.br"), "ignored");
+  await writeFile(join(dir, "nested", "x.metadata"), "ignored");
+  await writeFile(join(dir, "nested", "x.cfmeta"), "ignored");
+  await writeFile(join(dir, ".cloudflare", "meta.json"), "ignored");
 
   const fakeAws = join(bin, "aws");
   await writeFile(fakeAws, fakeAwsProgram);
@@ -243,41 +281,38 @@ test("successful S3 publishing gzips payloads, skips transport files, and upload
   const records = async () => (await readFile(log, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
   try {
     const result = await publish({ dir: source, prefix: "latex", env, output: () => {} });
-    assert.equal(result.count, 11);
-    assert.equal(result.uploaded, 11);
+    assert.equal(result.count, 10);
+    assert.equal(result.uploaded, 10);
     const entries = await records();
     assert.ok(entries.every((entry) => ["s3api put-object", "s3api get-object"].includes(entry.command)));
     const puts = entries.filter((entry) => entry.command === "s3api put-object");
     const keys = puts.map((entry) => entry.key);
-    assert.equal(keys.at(-1), "latex/manifest.json");
-    const firstIndex = keys.findIndex((key) => /(?:^|\/)(?:bundles\.json|index\.html|index\.json|manifest\.json)$/.test(key));
-    assert.ok(firstIndex > 0);
-    assert.ok(keys.slice(firstIndex).every((key) => /(?:^|\/)(?:bundles\.json|index\.html|index\.json|manifest\.json)$/.test(key)));
-    assert.deepEqual(keys.slice(-4), ["latex/engine/bundles.json", "latex/index.html", "latex/zz/index.json", "latex/manifest.json"]);
-    for (const skipped of ["latex/_headers", "latex/.assetsignore", "latex/nested/old.js.br", "latex/nested/x.metadata", "latex/nested/x.cfmeta", "latex/.cloudflare/meta.json"]) {
+    assert.equal(keys.at(-1), `latex/${id}/release.json`);
+    for (const skipped of ["latex/_headers", "latex/.assetsignore", `latex/${id}/nested/old.js.br`, `latex/${id}/nested/x.metadata`, `latex/${id}/nested/x.cfmeta`, `latex/${id}/.cloudflare/meta.json`]) {
       assert.ok(!keys.includes(skipped), `${skipped} should be skipped`);
     }
     const byKey = new Map(puts.map((entry) => [entry.key, entry]));
-    assert.equal(Buffer.from(byKey.get("latex/readme.txt").body, "base64").toString(), "payload text\n");
-    assert.equal(byKey.get("latex/readme.txt").contentType, "text/plain; charset=utf-8");
-    assert.equal(byKey.get("latex/readme.txt").contentEncoding, "gzip");
-    assert.equal(Buffer.from(byKey.get("latex/empty.txt").body, "base64").length, 0);
-    assert.equal(Buffer.from(byKey.get("latex/engine.data").body, "base64").toString("hex"), "000102ff");
-    assert.equal(byKey.get("latex/engine.fmt").contentType, "application/octet-stream");
-    assert.equal(byKey.get("latex/engine.fmt").contentEncoding, "gzip");
-    assert.equal(byKey.get("latex/archive.tar").contentType, "application/x-tar");
-    assert.equal(Buffer.from(byKey.get("latex/icudt.dat.gz").body, "base64").toString("hex"), "1f8b080001");
-    assert.equal(byKey.get("latex/icudt.dat.gz").contentType, "application/gzip");
-    assert.equal(byKey.get("latex/icudt.dat.gz").contentEncoding, null);
-    assert.equal(byKey.get("latex/manifest.json").cacheControl, "no-store");
-    assert.equal(byKey.get("latex/engine/bundles.json").cacheControl, "no-cache");
-    assert.equal(Buffer.from(byKey.get(`latex/${assetHash}/engine.wasm`).body, "base64").toString(), "compiled wasm");
+    const at = (name) => byKey.get(`latex/${id}/${name}`);
+    assert.equal(Buffer.from(at("readme.txt").body, "base64").toString(), "payload text\n");
+    assert.equal(at("readme.txt").contentType, "text/plain; charset=utf-8");
+    assert.equal(at("readme.txt").contentEncoding, "gzip");
+    assert.equal(Buffer.from(at("empty.txt").body, "base64").length, 0);
+    assert.equal(Buffer.from(at("engine.data").body, "base64").toString("hex"), "000102ff");
+    assert.equal(at("engine.fmt").contentType, "application/octet-stream");
+    assert.equal(at("engine.fmt").contentEncoding, "gzip");
+    assert.equal(at("archive.tar").contentType, "application/x-tar");
+    assert.equal(Buffer.from(at("icudt.dat.gz").body, "base64").toString("hex"), "1f8b080001");
+    assert.equal(at("icudt.dat.gz").contentType, "application/gzip");
+    assert.equal(at("icudt.dat.gz").contentEncoding, null);
+    // Everything under a release directory is immutable: no special cases.
+    assert.ok(puts.every((entry) => entry.cacheControl === "public, max-age=31536000, immutable"));
+    assert.equal(Buffer.from(at("engine.wasm").body, "base64").toString(), "compiled wasm");
     assert.ok(puts.every((entry) => entry.acl === "public-read"));
-    const manifestPutIndex = entries.findIndex((entry) => entry.command === "s3api put-object" && entry.key === "latex/manifest.json");
-    assert.ok(manifestPutIndex > 0);
-    assert.equal(entries.slice(0, manifestPutIndex).filter((entry) => entry.command === "s3api put-object").length,
-      entries.slice(0, manifestPutIndex).filter((entry) => entry.command === "s3api get-object").length);
-    assert.equal((await readFile(join(source, "icudt.dat.gz"))).toString("hex"), "1f8b080001");
+    const releasePutIndex = entries.findIndex((entry) => entry.command === "s3api put-object" && entry.key === `latex/${id}/release.json`);
+    assert.ok(releasePutIndex > 0);
+    assert.equal(entries.slice(0, releasePutIndex).filter((entry) => entry.command === "s3api put-object").length,
+      entries.slice(0, releasePutIndex).filter((entry) => entry.command === "s3api get-object").length);
+    assert.equal((await readFile(join(dir, "icudt.dat.gz"))).toString("hex"), "1f8b080001");
     for (const entry of entries.filter((row) => row.bodyPath)) {
       await assert.rejects(stat(entry.bodyPath), { code: "ENOENT" });
     }
@@ -291,19 +326,16 @@ test("successful S3 publishing gzips payloads, skips transport files, and upload
   }
 });
 
-test("tampered readback aborts before publishing the root manifest", async () => {
+test("tampered readback aborts before publishing release.json", async () => {
   const root = await mkdtemp(join(tmpdir(), "publish-mirror-tampered-readback-"));
   const source = join(root, "mirror");
   const bin = join(root, "bin");
   const log = join(root, "aws.jsonl");
   const store = join(root, "aws-store.json");
-  const wasmBytes = Buffer.from("verified wasm release");
-  const wasmHash = sha256(wasmBytes);
-  const tamperedKey = `latex/${wasmHash}/engine.wasm`;
-  await mkdir(join(source, wasmHash), { recursive: true });
+  await mkdir(source);
   await mkdir(bin);
-  await writeFile(join(source, wasmHash, "engine.wasm"), wasmBytes);
-  await writeLatexManifest(source);
+  const { id } = await writeLatexRelease(source, { "engine.wasm": Buffer.from("verified wasm release") });
+  const tamperedKey = `latex/${id}/engine.wasm`;
   const fakeAws = join(bin, "aws");
   await writeFile(fakeAws, fakeAwsProgram);
   await chmod(fakeAws, 0o755);
@@ -316,7 +348,7 @@ test("tampered readback aborts before publishing the root manifest", async () =>
     }
     const entries = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
     assert.ok(entries.some((entry) => entry.command === "s3api get-object" && entry.key === tamperedKey));
-    assert.ok(!entries.some((entry) => entry.command === "s3api put-object" && entry.key === "latex/manifest.json"));
+    assert.ok(!entries.some((entry) => entry.command === "s3api put-object" && entry.key === `latex/${id}/release.json`));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -328,11 +360,7 @@ test("AWS upload failures exit unsuccessfully without claiming publication or pr
   const bin = join(root, "bin");
   await mkdir(source);
   await mkdir(bin);
-  const wasmBytes = Buffer.from("verified before upload");
-  const wasmHash = sha256(wasmBytes);
-  await mkdir(join(source, wasmHash));
-  await writeFile(join(source, wasmHash, "engine.wasm"), wasmBytes);
-  await writeLatexManifest(source);
+  await writeLatexRelease(source, { "engine.wasm": Buffer.from("verified before upload") });
   const fakeAws = join(bin, "aws");
   await writeFile(fakeAws, "#!/bin/sh\nprintf '%s\\n' \"$AWS_SECRET_ACCESS_KEY\" >&2\nexit 17\n");
   await chmod(fakeAws, 0o755);

@@ -26,9 +26,9 @@ export function createHtmlCompiler({
 } = {}) {
   let engine = null;
   let engineKey = null;
-  let manifest = null;
-  let manifestBase = null;
-  let manifestRequest = null;
+  let pinned = null;
+  let pinnedBase = null;
+  let pinnedRequest = null;
   let queued = null;
   let running = false;
   let cancelActive = null;
@@ -53,27 +53,27 @@ export function createHtmlCompiler({
   async function configuration(base, settings = {}) {
     base = new URL(base || DEFAULT_BASE, globalThis.location?.href || "http://localhost/").href;
     if (!base.endsWith("/")) base += "/";
-    if (manifestBase !== base || !manifest) {
-      if (!manifestRequest || manifestRequest.base !== base) {
+    if (pinnedBase !== base || !pinned) {
+      if (!pinnedRequest || pinnedRequest.base !== base) {
         const pending = (async () => {
-          const response = await request(new URL("manifest.json", base));
-          if (!response.ok) throw new Error(`LaTeX mirror unavailable (${response.status})`);
+          const response = await request(new URL("release.json", base));
+          if (!response.ok) throw new Error(`LaTeX release unavailable (${response.status})`);
           const data = await response.json();
-          if (data.format !== 1) throw new Error("Unsupported LaTeX mirror format");
+          if (data.format !== 2) throw new Error("Unsupported LaTeX release format");
           return data;
         })();
-        manifestRequest = { base, pending };
+        pinnedRequest = { base, pending };
       }
-      const captured = manifestRequest;
-      try { manifest = await captured.pending; manifestBase = base; }
-      finally { if (manifestRequest === captured) manifestRequest = null; }
+      const captured = pinnedRequest;
+      try { pinned = await captured.pending; pinnedBase = base; }
+      finally { if (pinnedRequest === captured) pinnedRequest = null; }
     }
-    // HTML previews always use the mirror's current default release. Legacy
-    // per-document release values are deliberately ignored.
+    // HTML previews always use the release the server pinned (`base` is its
+    // directory). Legacy per-document release values are deliberately ignored.
     const capturedSettings = { ...settings };
     delete capturedSettings.release;
-    const releaseId = manifest.default_release;
-    const release = manifest.releases?.[releaseId];
+    const release = pinned;
+    const releaseId = release.id;
     const spec = release?.engines?.latexml;
     if (!spec) throw new Error("This LaTeX release does not include the HTML preview renderer.");
     const capturedRelease = structuredClone(release);
@@ -103,7 +103,7 @@ export function createHtmlCompiler({
     if (current !== epoch) throw superseded();
     const target = makeEngine({
       kind: "latexml",
-      url: new URL(`${release.base}${spec.worker}`, base).href,
+      url: new URL(spec.worker, base).href,
       base,
       texliveUrl: new URL(".", indexUrl).href,
       release,
@@ -132,7 +132,7 @@ export function createHtmlCompiler({
 
   async function run({ tree, options }, current) {
     const started = Date.now();
-    // A queued historical render carries the manifest identity resolved by
+    // A queued historical render carries the release identity resolved by
     // the caller. Its base is authoritative; consulting the live chooser
     // here could fetch a different release than the cache key names.
     const base = new URL(options.configuration?.base || options.base || DEFAULT_BASE, globalThis.location?.href || "http://localhost/").href;

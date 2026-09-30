@@ -107,7 +107,7 @@ class EngineDriver {
   constructor(kind, url, base, texliveUrl, format, release, assets, workerName, onProgress, onDownload) {
     this.kind = kind;
     this.url = url;
-    this.base = base || new URL("../../", url).href;
+    this.base = base || new URL("./", url).href;
     this.texliveUrl = texliveUrl;
     this.format = format ?? null;
     this.release = release ?? null;

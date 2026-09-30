@@ -1,14 +1,14 @@
-// Manifest read/write helpers shared by the mirror-serving dev tools.
+// Release read helpers shared by the mirror-serving dev tools.
 //
 // Building the mirror itself -- the compiler engines, TeX Live bundles, the
 // SwiftLaTeX/BusyTeX/TeXlyre distribution comparisons this file used to
 // fetch, and the SwiftLaTeX package-fetching endpoint -- moved to the
-// wasm-latex repository (`make mirror`, `make push` there; layout and
-// manifest in wasm-latex/docs/mirror.md). Nothing here fetches anything
-// anymore; this file only reads and writes `manifest.json` in the shape
-// `tools/latex/tools/serve.mjs` expects.
+// wasm-latex repository (`make mirror`, `make push` there; layout in
+// wasm-latex/docs/mirror.md). Nothing here fetches anything anymore; this
+// file only finds and reads the immutable release directories
+// (`<sha256>/release.json`) `tools/latex/tools/serve.mjs` expects.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
@@ -16,17 +16,18 @@ const HERE = dirname(new URL(import.meta.url).pathname);
 const REPO = dirname(dirname(dirname(HERE)));
 const OUT = join(REPO, "tools", "latex", "mirror");
 
-/// The manifest as it stands, or an empty one. It is the mirror's index and
-/// the only file the browser fetches by a name without a digest in it.
-export function readManifest(out = OUT) {
-  const path = join(out, "manifest.json");
-  if (!existsSync(path)) return { format: 1, version: 1, releases: {} };
-  return JSON.parse(readFileSync(path, "utf8"));
+/// The release ids (directory names) present in a mirror directory.
+export function releaseIds(out = OUT) {
+  if (!existsSync(out)) return [];
+  return readdirSync(out, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort();
 }
 
-export function writeManifest(manifest, out = OUT) {
-  mkdirSync(out, { recursive: true });
-  writeFileSync(join(out, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+/// One release's `release.json` (format 2, paths relative to its directory).
+export function readRelease(id, out = OUT) {
+  return JSON.parse(readFileSync(join(out, id, "release.json"), "utf8"));
 }
 
 if (process.argv[1] && process.argv[1].endsWith("mirror.mjs")) {

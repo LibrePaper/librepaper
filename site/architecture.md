@@ -455,9 +455,11 @@ cannot outlive the loader that talks to it. The same pinned releases back the
 native command-line tools, so a document renders the same way in both.
 
 The LaTeX engines and their pinned TeX Live package set are not served by the
-deployment. A browser fetches them from an HTTPS mirror, as verified
-content-addressed bundles that stay in browser storage, so the next document
-costs nothing to fetch. That mirror therefore sees a browser's IP address and
+deployment. A browser fetches them from an HTTPS mirror, from one immutable
+release directory, `latex/<sha256>/`, that the build pins in `assets.lock`.
+The mirror is append-only, so a binary keeps working against the release it
+was built with. The files are verified content-addressed bundles that stay in
+browser storage, so the next document costs nothing to fetch. That mirror therefore sees a browser's IP address and
 which digest-named files it asks for, which can suggest a document's field or
 template. It never receives document source or input assets. An operator can
 host a copy and pass `--asset-mirror URL` to keep those requests on their own
@@ -776,7 +778,7 @@ make test-release-workloads # supported limits and diagnostic workloads
 ```
 
 `make build` needs [bun](https://bun.sh) and Node.js. The browser renderers are
-fetched from the exact tags and SHA256 digests in `wasm-modules.lock`;
+fetched from the exact tags and SHA256 digests in `assets.lock`;
 `make wasm-check` verifies that those tags also match the native renderer
 dependencies without network access. To update one renderer, name both values
 explicitly, for example `make wasm-update REPO=wasm-markdown TAG=v0.2.0`, then
@@ -785,8 +787,9 @@ review the resulting Cargo and lockfile diff.
 The four browser modules (markdown, bibliography, citations and typst) are not
 embedded in the binary. `make wasm` fetches them into the ignored `web/wasm/`,
 and `make mirrors-push` publishes them to the asset mirror under
-`wasm/<sha256>/<module>`, where the SHA-256 is the one `wasm-modules.lock`
-pins. Browsers load them from the mirror named by `--asset-mirror`. See
+`wasm/<sha256>/<module>`, where the SHA-256 is the one `assets.lock`
+pins. The same lock pins the LaTeX release directory, `latex/<sha256>/`, in a
+`latex` row. Browsers load them from the mirror named by `--asset-mirror`. See
 [`docs/asset-mirrors.md`](../docs/asset-mirrors.md) for the pending OVH mirror
 cutover steps.
 

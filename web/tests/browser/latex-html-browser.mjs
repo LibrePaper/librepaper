@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { readFileSync, writeFileSync, readdirSync, symlinkSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, symlinkSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { browser, until } from "../../tools/browser-driver.mjs";
@@ -23,13 +23,17 @@ if (!hostedMirrorUrl && spawnSync("openssl", ["version"], { stdio: "ignore" }).e
   console.log("latex-html-browser: no openssl for the HTTPS mirror; skipping (install openssl, or set LATEXML_MIRROR_URL)");
   process.exit(0);
 }
-const manifest = hostedMirrorUrl
-  ? await (await fetch(new URL("manifest.json", hostedMirrorUrl))).json()
-  : JSON.parse(readFileSync(join(mirror, "manifest.json"), "utf8"));
-const release = structuredClone(manifest.releases[manifest.default_release]);
-// Exercise the actual deployment manifest when checking an assembled mirror.
+// A hosted mirror is a release URL (`<asset-mirror>latex/<id>/`); a local one is
+// a directory holding exactly one `<sha256>` release directory.
+const localIds = hostedMirrorUrl ? [] : readdirSync(mirror, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name)).map((entry) => entry.name);
+if (!hostedMirrorUrl && localIds.length !== 1) throw new Error(`expected exactly one <sha256> release directory in ${mirror}, found ${localIds.length}`);
+const release = structuredClone(hostedMirrorUrl
+  ? await (await fetch(new URL("release.json", hostedMirrorUrl))).json()
+  : JSON.parse(readFileSync(join(mirror, localIds[0], "release.json"), "utf8")));
+// Exercise the actual deployment release when checking an assembled mirror.
 // Otherwise overlay freshly built artifacts for engine development.
-const legacyRelease = Object.keys(manifest.releases).find(id => !manifest.releases[id].engines?.latexml);
+const legacyRelease = "legacy-release";
 const useMirror = Boolean(hostedMirrorUrl) || process.env.LATEXML_USE_MIRROR === "1";
 const engineFiles = [
   "latexml.worker.js", "latexml.js", "latexml.wasm", "kpse-resolve.js", "bundle-mode.js", "latexml.css",
@@ -40,18 +44,17 @@ const engineFiles = [
 if (useMirror) {
   assert.ok(release.engines.latexml, "the deployment mirror must advertise LaTeXML");
 } else {
-  // Keep the synthetic release's worker and inventory names in the same
-  // namespace. `createHtmlCompiler` requires the worker to be one of
-  // `spec.files`, while EngineDriver resolves every inventory entry from the
-  // release's base. The engine directory is symlinked below, so this is the
-  // same layout as a published release without copying its large WASM files.
-  release.base = "latexml-test/";
+  // The synthetic release lists the freshly built engine files by their bare
+  // names, as a published release does: `createHtmlCompiler` requires the worker
+  // to be one of `spec.files`, and every path resolves against the release
+  // directory. The overlay below symlinks the engine files into that directory,
+  // so this is the same layout as a published release without copying its
+  // large WASM files.
   release.engines.latexml = { worker: "latexml.worker.js", files: engineFiles };
   release.files = { ...release.files, ...Object.fromEntries(engineFiles.map((name) => {
     const bytes = readFileSync(join(engineRoot, name));
-    return [name, { url: `latexml-test/${name}`, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }];
+    return [name, { url: name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }];
   })) };
-  manifest.releases[manifest.default_release] = release;
 }
 const contentTypes = { ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".css": "text/css" };
 let mirrorRoot = mirror;
@@ -64,11 +67,13 @@ if (!hostedMirrorUrl) {
   // normal static mirror layout to a cross-origin browser.
   if (!useMirror) {
     overlay = mkdtempSync(join(tmpdir(), "librepaper-latexml-mirror-"));
-    for (const name of readdirSync(mirror)) {
-      if (name !== "manifest.json") symlinkSync(join(mirror, name), join(overlay, name));
+    const overlayRelease = join(overlay, localIds[0]);
+    mkdirSync(overlayRelease);
+    for (const name of readdirSync(join(mirror, localIds[0]))) {
+      if (name !== "release.json" && !engineFiles.includes(name)) symlinkSync(join(mirror, localIds[0], name), join(overlayRelease, name));
     }
-    symlinkSync(engineRoot, join(overlay, "latexml-test"));
-    writeFileSync(join(overlay, "manifest.json"), JSON.stringify(manifest));
+    for (const name of engineFiles) symlinkSync(join(engineRoot, name), join(overlayRelease, name));
+    writeFileSync(join(overlayRelease, "release.json"), JSON.stringify(release));
     mirrorRoot = overlay;
   }
   mirrorServer = await ephemeralMirror(mirrorRoot);
@@ -181,7 +186,7 @@ See equation~\eqref{eq:test}.
     const appBase = `http://localhost:${port}`;
     const env = { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" };
     app = spawn(resolve(process.env.LIBREPAPER_BIN), ["admin", "serve", "--port", String(port), "--data-directory", appData,
-      "--publishers", "any", "--commenters", "anyone", "--asset-mirror", new URL("../", mirrorBase).href], { env, stdio: ["ignore", "ignore", "pipe"] });
+      "--publishers", "any", "--commenters", "anyone", "--asset-mirror", new URL("../../", mirrorBase).href], { env, stdio: ["ignore", "ignore", "pipe"] });
     app.stderr.on("data", (bytes) => { appLog += bytes; });
     await until("app startup", async () => {
       if (app.exitCode !== null) throw new Error(appLog);

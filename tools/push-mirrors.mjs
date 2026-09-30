@@ -3,7 +3,7 @@
 // Load deployment credentials through SOPS, validate both prepared mirrors,
 // then publish them with the shared integrity-checking publisher. The LaTeX
 // mirror is prepared in ../wasm-latex; the wasm mirror is staged here from
-// web/wasm and wasm-modules.lock as <sha256>/<module>.
+// web/wasm and assets.lock as <sha256>/<module>.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -18,9 +18,9 @@ const runFile = promisify(execFile);
 const keys = process.env.KEYS || "deploy/keys.yaml";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const wasmDirectory = process.env.WASM_DIR || join(root, "web/wasm");
-const wasmLock = process.env.WASM_LOCK || join(root, "wasm-modules.lock");
+const wasmLock = process.env.WASM_LOCK || join(root, "assets.lock");
 
-// Copy every module in wasm-modules.lock from wasmDirectory into a temporary
+// Copy every wasm module in assets.lock from wasmDirectory into a temporary
 // tree laid out as <sha256>/<module>, refusing any file whose bytes do not
 // hash to the lock. Returns the tree; the caller removes it.
 export async function stageWasmMirror(directory = wasmDirectory, lockPath = wasmLock) {
@@ -28,8 +28,10 @@ export async function stageWasmMirror(directory = wasmDirectory, lockPath = wasm
     .split("\n")
     .map((line) => line.replace(/#.*$/, "").trim())
     .filter(Boolean)
-    .map((line) => line.split(/\s+/));
-  if (!rows.length) throw new Error("wasm-modules.lock has no modules");
+    .map((line) => line.split(/\s+/))
+    // The latex row pins a mirror release directory, not a wasm module.
+    .filter(([module]) => module !== "latex");
+  if (!rows.length) throw new Error("assets.lock has no modules");
   const staged = await mkdtemp(join(tmpdir(), "librepaper-wasm-mirror-"));
   try {
     for (const [module, , , sha256, ...extra] of rows) {
@@ -41,7 +43,7 @@ export async function stageWasmMirror(directory = wasmDirectory, lockPath = wasm
         throw new Error(`${module} not found in ${directory}; run make wasm first`);
       }
       if (createHash("sha256").update(bytes).digest("hex") !== sha256) {
-        throw new Error(`${module} in ${directory} does not match wasm-modules.lock; run make wasm first`);
+        throw new Error(`${module} in ${directory} does not match assets.lock; run make wasm first`);
       }
       await mkdir(join(staged, sha256), { recursive: true });
       await copyFile(join(directory, module), join(staged, sha256, module));

@@ -6,24 +6,23 @@ const deferred = () => {
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 };
-const manifest = {
-  format: 1, default_release: "r1",
-  releases: Object.fromEntries(["r1", "r2"].map((id) => [id, {
-    id, base: `engines/${id}/`, engines: { latexml: { worker: "latexml.worker.js", files: ["latexml.worker.js"] } },
-    bundles: { index: "bundles/bundles.json", sha256: "a".repeat(64) },
-    files: {
-      "bundles/bundles.json": { url: "bundles/bundles.json", sha256: "a".repeat(64), size: 2 },
-      "latexml.worker.js": { url: "latexml.worker.js", sha256: "b".repeat(64), size: 1 },
-    },
-  }])),
+// The pinned release: `release.json` in the release directory, every path relative to it.
+const release = {
+  format: 2,
+  id: "r1", engines: { latexml: { worker: "latexml.worker.js", files: ["latexml.worker.js"] } },
+  bundles: { index: "bundles/bundles.json", sha256: "a".repeat(64) },
+  files: {
+    "bundles/bundles.json": { url: "bundles/bundles.json", sha256: "a".repeat(64), size: 2 },
+    "latexml.worker.js": { url: "latexml.worker.js", sha256: "b".repeat(64), size: 1 },
+  },
 };
 function harness(options = {}) {
   const instances = [], reads = [], verified = [];
   const compiler = createHtmlCompiler({
     deadline: options.deadline ?? 1000,
-    request: async (url) => { reads.push(String(url)); return { ok: true, json: async () => options.manifest ?? manifest }; },
-    verified: async (release, url, check) => {
-      verified.push({ release, url, check });
+    request: async (url) => { reads.push(String(url)); return { ok: true, json: async () => options.release ?? release }; },
+    verified: async (pinned, url, check) => {
+      verified.push({ release: pinned, url, check });
       return { arrayBuffer: async () => new TextEncoder().encode("{}").buffer };
     },
     makeEngine: (config) => {
@@ -73,15 +72,14 @@ assert.equal(warm.verified.length, 1, "returning to HTML does not reload the bun
 warm.cancel();
 assert.equal(warm.instances[0].dead, true, "normal teardown still releases the warm engine");
 
-const legacyManifest = structuredClone(manifest);
-legacyManifest.releases.legacy = { engines: { pdftex: {} } };
-const legacy = harness({ manifest: legacyManifest });
+const legacyRelease = { format: 2, id: "legacy", engines: { pdftex: {} } };
+const legacy = harness();
 const pinnedSettings = Object.freeze({ release: "legacy", engine: "pdflatex" });
 assert.equal((await legacy.compile(tree("existing document"), { base, settings: pinnedSettings })).ok, true);
-assert.equal(legacy.instances[0].config.url, "https://example.org/latex/engines/r1/latexml.worker.js");
+assert.equal(legacy.instances[0].config.url, "https://example.org/latex/latexml.worker.js");
 assert.equal(pinnedSettings.release, "legacy", "legacy settings remain immutable at the caller");
 legacy.cancel();
-const unsupported = harness({ manifest: { format: 1, default_release: "legacy", releases: { legacy: legacyManifest.releases.legacy } } });
+const unsupported = harness({ release: legacyRelease });
 await assert.rejects(unsupported.compile(tree("no renderer"), { base, settings: pinnedSettings }), /does not include the HTML preview renderer/);
 assert.equal(unsupported.instances.length, 0);
 unsupported.cancel();

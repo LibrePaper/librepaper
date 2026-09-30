@@ -25,7 +25,6 @@ const MIME = new Map([
   [".tar", "application/x-tar"], [".ttf", "font/ttf"], [".txt", "text/plain; charset=utf-8"],
   [".wasm", "application/wasm"], [".woff", "font/woff"], [".woff2", "font/woff2"], [".xml", "application/xml"],
 ]);
-const MANIFESTS = new Set(["manifest.json", "bundles.json", "index.html", "index.json"]);
 const SHA256 = /^[a-f0-9]{64}$/;
 const AWS_OPERATIONS = new Set(["put-object", "get-object", "put-bucket-cors"]);
 const AWS_HINTS = new Map([
@@ -90,8 +89,7 @@ export function metadataFor(key) {
   const name = key.split("/").at(-1).toLowerCase();
   const extension = name.includes(".") ? `.${name.split(".").at(-1)}` : "";
   const contentType = MIME.get(extension) || "application/octet-stream";
-  const cacheControl = name === "manifest.json" ? "no-store" : name === "bundles.json" ? "no-cache" :
-    /(^|\/)(licen[cs]e|copying|notice)(\.|\/|$)/i.test(key) || /(^|\/)licenses\//i.test(key)
+  const cacheControl = /(^|\/)(licen[cs]e|copying|notice)(\.|\/|$)/i.test(key) || /(^|\/)licenses\//i.test(key)
       ? "public, max-age=86400" : HASH.test(key)
         ? "public, max-age=31536000, immutable" : "public, max-age=3600";
   const gzip = COMPRESSIBLE.has(extension);
@@ -184,55 +182,95 @@ async function validateMirrorFiles(root, prefix, files) {
       }
     }
   } else {
-    const manifestPath = "manifest.json";
-    const manifestRecord = expected.get(manifestPath);
-    if (!manifestRecord) throw new Error("LaTeX mirror is missing root manifest.json");
-    const manifestBytes = await readFile(join(root, manifestPath));
-    if (createHash("sha256").update(manifestBytes).digest("hex") !== manifestRecord.sha256) {
-      throw new Error("LaTeX manifest changed during integrity preflight");
+    await validateLatexReleases(root, files, expected);
+  }
+  return { expected, count: files.length, bytes: totalBytes };
+}
+
+/// Every string anywhere in a parsed JSON value, so a release's own
+/// inventory (files, licences, notices) can vouch for the files it names.
+function jsonStrings(value, found = []) {
+  if (typeof value === "string") found.push(value);
+  else if (Array.isArray(value)) for (const item of value) jsonStrings(item, found);
+  else if (value && typeof value === "object") for (const item of Object.values(value)) jsonStrings(item, found);
+  return found;
+}
+
+/// A LaTeX mirror is a set of immutable release directories, `<id>/`, where
+/// `id` is the SHA-256 of `<id>/MANIFEST.json`. Nothing sits at the top level
+/// but those directories, and every path inside a release is relative to it.
+async function validateLatexReleases(root, files, expected) {
+  const ids = new Set();
+  for (const file of files) {
+    const id = file.relative.split("/")[0];
+    if (!file.relative.includes("/") || !SHA256.test(id)) {
+      throw new Error(`LaTeX mirror file must live in a <sha256>/ release directory: ${file.relative}`);
     }
-    let manifest;
-    try { manifest = JSON.parse(manifestBytes.toString("utf8")); } catch { throw new Error("LaTeX manifest.json is invalid JSON"); }
-    if (manifest?.format !== 1 || !manifest.releases || typeof manifest.releases !== "object" || Array.isArray(manifest.releases)) {
-      throw new Error("LaTeX manifest.json must use format 1 and contain releases");
+    ids.add(id);
+  }
+  if (!ids.size) throw new Error("LaTeX mirror has no releases");
+  for (const id of [...ids].sort()) {
+    const label = `LaTeX release ${id.slice(0, 12)}`;
+    const manifestRecord = expected.get(`${id}/MANIFEST.json`);
+    if (!manifestRecord) throw new Error(`${label} is missing MANIFEST.json`);
+    if (manifestRecord.sha256 !== id) throw new Error(`${label} directory does not match the SHA-256 of MANIFEST.json`);
+    if (!expected.get(`${id}/release.json`)) throw new Error(`${label} is missing release.json`);
+    let release;
+    try { release = JSON.parse((await readFile(join(root, id, "release.json"))).toString("utf8")); } catch { throw new Error(`${label} release.json is invalid JSON`); }
+    if (release?.format !== 2) throw new Error(`${label} release.json must use format 2`);
+    if (release.id !== id) throw new Error(`${label} release.json id does not match its directory`);
+    if (!release.files || typeof release.files !== "object" || Array.isArray(release.files)) {
+      throw new Error(`${label} has no files map`);
     }
-    const releases = Object.values(manifest.releases);
-    if (!releases.length) throw new Error("LaTeX manifest.json has no releases");
-    for (const [releaseIndex, release] of releases.entries()) {
-      const label = `LaTeX release ${releaseIndex + 1}`;
-      if (!release?.files || typeof release.files !== "object" || Array.isArray(release.files)) {
-        throw new Error(`${label} has no files map`);
-      }
-      for (const [name, record] of Object.entries(release.files)) {
-        const rel = safeRelativePath(root, "", record?.url, `${label} file ${name}`);
-        expectedReference(expected, rel, record?.size, record?.sha256, `${label} file ${name}`);
-      }
-      const bundleMeta = release.bundles;
-      if (!bundleMeta || !Number.isSafeInteger(bundleMeta.count) || bundleMeta.count < 0 || !SHA256.test(bundleMeta.sha256 || "")) {
-        throw new Error(`${label} has invalid bundles metadata`);
-      }
-      const indexRel = safeRelativePath(root, "", bundleMeta.index, `${label} bundles index`);
-      const indexRecord = expected.get(indexRel);
-      if (!indexRecord) throw new Error(`${label} bundles index will not be published: ${indexRel}`);
-      const indexBytes = await readFile(join(root, indexRel));
-      const indexHash = createHash("sha256").update(indexBytes).digest("hex");
-      if (indexHash !== bundleMeta.sha256 || indexHash !== indexRecord.sha256) {
-        throw new Error(`${label} bundles index SHA-256 mismatch: ${indexRel}`);
-      }
-      let index;
-      try { index = JSON.parse(indexBytes.toString("utf8")); } catch { throw new Error(`${label} bundles index is invalid JSON`); }
-      if (!index?.bundles || typeof index.bundles !== "object" || Array.isArray(index.bundles) ||
-          Object.keys(index.bundles).length !== bundleMeta.count) {
-        throw new Error(`${label} bundles index count does not match manifest.json`);
-      }
-      const indexDir = dirname(indexRel).split(sep).join("/");
-      for (const [name, bundle] of Object.entries(index.bundles)) {
-        const rel = safeRelativePath(root, indexDir, bundle?.url, `${label} bundle ${name}`);
-        expectedReference(expected, rel, bundle?.size, bundle?.sha256, `${label} bundle ${name}`);
+    const releaseRoot = join(root, id);
+    const referenced = new Set([`${id}/MANIFEST.json`, `${id}/release.json`]);
+    const reference = (rel, size, sha256, what) => {
+      expectedReference(expected, rel, size, sha256, what);
+      referenced.add(rel);
+    };
+    for (const [name, record] of Object.entries(release.files)) {
+      const rel = safeRelativePath(releaseRoot, "", record?.url, `${label} file ${name}`);
+      reference(`${id}/${rel}`, record?.size, record?.sha256, `${label} file ${name}`);
+    }
+    const bundleMeta = release.bundles;
+    if (!bundleMeta || !Number.isSafeInteger(bundleMeta.count) || bundleMeta.count < 0 || !SHA256.test(bundleMeta.sha256 || "")) {
+      throw new Error(`${label} has invalid bundles metadata`);
+    }
+    const indexRel = safeRelativePath(releaseRoot, "", bundleMeta.index, `${label} bundles index`);
+    const indexKey = `${id}/${indexRel}`;
+    const indexRecord = expected.get(indexKey);
+    if (!indexRecord) throw new Error(`${label} bundles index will not be published: ${indexRel}`);
+    const indexBytes = await readFile(join(root, indexKey));
+    const indexHash = createHash("sha256").update(indexBytes).digest("hex");
+    if (indexHash !== bundleMeta.sha256 || indexHash !== indexRecord.sha256) {
+      throw new Error(`${label} bundles index SHA-256 mismatch: ${indexRel}`);
+    }
+    referenced.add(indexKey);
+    let index;
+    try { index = JSON.parse(indexBytes.toString("utf8")); } catch { throw new Error(`${label} bundles index is invalid JSON`); }
+    if (!index?.bundles || typeof index.bundles !== "object" || Array.isArray(index.bundles) ||
+        Object.keys(index.bundles).length !== bundleMeta.count) {
+      throw new Error(`${label} bundles index count does not match release.json`);
+    }
+    const indexDir = dirname(indexRel).split(sep).join("/");
+    for (const [name, bundle] of Object.entries(index.bundles)) {
+      const rel = safeRelativePath(releaseRoot, indexDir === "." ? "" : indexDir, bundle?.url, `${label} bundle ${name}`);
+      reference(`${id}/${rel}`, bundle?.size, bundle?.sha256, `${label} bundle ${name}`);
+    }
+    // No orphans: every other file must be named by release.json or
+    // MANIFEST.json, either as a file or as a directory ending in "/".
+    const named = jsonStrings(release);
+    try { jsonStrings(JSON.parse((await readFile(join(root, id, "MANIFEST.json"))).toString("utf8")), named); } catch { /* the id check above is the integrity gate */ }
+    const names = new Set(named.map((value) => value.replace(/^\.\//, "")));
+    const directories = [...names].filter((value) => value.endsWith("/"));
+    for (const key of expected.keys()) {
+      if (!key.startsWith(`${id}/`) || referenced.has(key)) continue;
+      const rel = key.slice(id.length + 1);
+      if (!names.has(rel) && !directories.some((directory) => rel.startsWith(directory))) {
+        throw new Error(`${label} contains a file no manifest names: ${rel}`);
       }
     }
   }
-  return { expected, count: files.length, bytes: totalBytes };
 }
 
 export async function preflightMirror({ dir, prefix }) {
@@ -306,8 +344,8 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
   const info = await stat(root).catch(() => null);
   if (!info?.isDirectory()) throw new Error("--dir must name an existing directory");
   const files = (await listFiles(root)).sort((a, b) => {
-    const rank = (file) => file.relative === "manifest.json" ? 2 :
-      MANIFESTS.has(file.relative.split("/").at(-1).toLowerCase()) ? 1 : 0;
+    // A release becomes visible only once its release.json exists, so it goes last.
+    const rank = (file) => file.relative.endsWith("/release.json") ? 1 : 0;
     return rank(a) - rank(b) || a.relative.localeCompare(b.relative);
   });
   if (!files.length) throw new Error("mirror directory has no publishable files");

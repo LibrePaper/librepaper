@@ -21,7 +21,7 @@ DESTDIR ?=
 WASM    := web/wasm/markdown.wasm
 BIB     := web/wasm/bibliography.wasm
 CITES   := web/wasm/citations.wasm
-# Fetched, not built: see wasm-modules.lock and the bottom of this file.
+# Fetched, not built: see assets.lock and the bottom of this file.
 TYPST   := web/wasm/typst.wasm
 # The pages. web/dist is entirely a build output, so it is an input to
 # nothing: what the pages are built from lives in web/src and web/public.
@@ -227,9 +227,11 @@ kill:  ## Stop a server started with make serve
 .PHONY: deploy latex-check latex-smoke mirrors mirrors-push
 
 # The mirrors -- the LaTeX compiler engines and TeX Live bundles, and the four
-# browser wasm modules (web/wasm, pinned by wasm-modules.lock) -- are published
-# together. `make wasm && make mirrors` prepares both; `mirrors-push` publishes
-# them. MIRROR= points at the LaTeX mirror output.
+# browser wasm modules (web/wasm) -- are published together. assets.lock pins
+# both: each module by digest, and the LaTeX release directory `latex/<sha256>/`
+# by its id. `make wasm && make mirrors` prepares both; `mirrors-push` publishes
+# them, and the mirror only ever grows. MIRROR= points at the LaTeX mirror
+# output, a directory of release directories (`<sha256>/`).
 MIRROR ?= ../wasm-latex/mirror
 
 latex-check:
@@ -419,7 +421,7 @@ site-serve: site  ## Serve the built docs site on SITE_PORT (Ctrl-C to stop)
 # --- the browser renderers -------------------------------------------------
 #
 # Not built here any more. Each renderer is a repository of its own -- see
-# wasm-modules.lock -- and releases a module built from the same tag this
+# assets.lock -- and releases a module built from the same tag this
 # binary pins the crate at, so what the editor previews and what a save stores
 # still come out of one version of one implementation.
 #
@@ -438,7 +440,7 @@ wasm-check:  ## Check native and browser renderer tags without network access
 # resolve them as prerequisites on a clean checkout.
 $(WASM) $(BIB) $(CITES) $(TYPST): | wasm
 
-# Update one explicitly named renderer tag in Cargo.toml and wasm-modules.lock.
+# Update one explicitly named renderer tag in Cargo.toml and assets.lock.
 # The command never looks up or selects a latest release implicitly.
 wasm-update:  ## Update one renderer (REPO=wasm-markdown TAG=vX.Y.Z)
 	@test -n "$(REPO)" -a -n "$(TAG)" || { echo 'usage: make wasm-update REPO=wasm-markdown TAG=vX.Y.Z' >&2; exit 2; }

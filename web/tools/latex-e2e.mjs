@@ -91,8 +91,8 @@ async function main() {
   const mirrorUrl = /^https:\/\//i.test(MIRROR_ARG)
     ? MIRROR_ARG.replace(/\/?$/, "/")
     : (mirror = await ephemeralMirror(MIRROR_ARG)).latexUrl;
-  // The server takes the asset mirror; the LaTeX files are beneath it at latex/.
-  const assetMirror = new URL("../", mirrorUrl).href;
+  // The server takes the asset mirror; the pinned release is beneath it at latex/<id>/.
+  const assetMirror = new URL("../../", mirrorUrl).href;
   const args = [
     "admin", "serve", "--port", String(PORT), "--data-directory", data,
     "--publishers", "any", "--commenters", "anyone", "--asset-mirror", assetMirror,

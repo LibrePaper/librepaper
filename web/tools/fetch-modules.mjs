@@ -1,4 +1,4 @@
-// Fetches the browser renderers named in wasm-modules.lock, and verifies them.
+// Fetches the browser renderers named in assets.lock, and verifies them.
 //
 // The modules are built and released by their own repositories, so this is
 // how they arrive: by tag, over HTTPS, checked against the digest recorded in
@@ -19,13 +19,13 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 const root = new URL("../..", import.meta.url).pathname;
-const lock = join(root, "wasm-modules.lock");
+const lock = join(root, "assets.lock");
 const out = join(root, "web/wasm");
 const only = process.argv[2];
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-const entries = (await readFile(lock, "utf8"))
+const rows = (await readFile(lock, "utf8"))
   .split("\n")
   .map((line) => line.replace(/#.*$/, "").trim())
   .filter(Boolean)
@@ -43,8 +43,16 @@ const expected = new Map([
   ["citations.wasm", "wasm-bibliography"],
   ["typst.wasm", "wasm-typst"],
 ]);
+// The lock pins four wasm modules plus one `latex` row: the LaTeX mirror release
+// directory `latex/<sha256>/`. The latex row names no file here; it is fetched
+// by the browser from the asset mirror, not by this tool.
+const latexRows = rows.filter(({ module }) => module === "latex");
+const entries = rows.filter(({ module }) => module !== "latex");
+if (latexRows.length !== 1 || latexRows[0].repo !== "wasm-latex") {
+  throw new Error("assets.lock must contain exactly one latex row from wasm-latex");
+}
 if (entries.length !== expected.size || new Set(entries.map(({ module }) => module)).size !== expected.size || entries.some(({ module, repo }) => expected.get(module) !== repo)) {
-  throw new Error("wasm-modules.lock must contain exactly the four required renderer modules");
+  throw new Error("assets.lock must contain exactly the four required wasm modules plus one latex row");
 }
 
 await mkdir(out, { recursive: true });
@@ -63,7 +71,7 @@ for (const { module, repo, tag, sha256 } of entries) {
   const bytes = Buffer.from(await response.arrayBuffer());
   const got = digest(bytes);
   if (got !== sha256) {
-    throw new Error(`${module}: the bytes at ${url} are not what wasm-modules.lock pins.\n  expected ${sha256}\n  received ${got}\nNothing was written. Either the release moved, or the lock is stale.`);
+    throw new Error(`${module}: the bytes at ${url} are not what assets.lock pins.\n  expected ${sha256}\n  received ${got}\nNothing was written. Either the release moved, or the lock is stale.`);
   }
   if (module === "typst.wasm") {
     const instantiated = await WebAssembly.instantiate(bytes, {});

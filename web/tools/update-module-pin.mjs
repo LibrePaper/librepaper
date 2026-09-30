@@ -18,7 +18,7 @@ if (!["--repo", "--tag"].every((name) => args.includes(name)) || args.some((arg,
 }
 
 const root = rootValue || new URL("../..", import.meta.url).pathname;
-const lockPath = join(root, "wasm-modules.lock");
+const lockPath = join(root, "assets.lock");
 const lock = await readFile(lockPath, "utf8");
 const expected = new Map([["markdown.wasm", "wasm-markdown"], ["bibliography.wasm", "wasm-bibliography"], ["citations.wasm", "wasm-bibliography"], ["typst.wasm", "wasm-typst"]]);
 const rows = [];
@@ -26,10 +26,11 @@ for (const raw of lock.split("\n")) {
   const line = raw.replace(/#.*$/, "").trim();
   if (!line) continue;
   const fields = line.split(/\s+/);
-  if (fields.length !== 4 || !/^[a-f0-9]{64}$/.test(fields[3])) throw new Error("wasm-modules.lock contains a malformed entry");
-  rows.push(fields);
+  if (fields.length !== 4 || !/^[a-f0-9]{64}$/.test(fields[3])) throw new Error("assets.lock contains a malformed entry");
+  // The `latex` row pins a mirror release directory, not a wasm module.
+  if (fields[0] !== "latex") rows.push(fields);
 }
-if (rows.length !== expected.size || new Set(rows.map(([module]) => module)).size !== expected.size || rows.some(([module, entryRepo]) => expected.get(module) !== entryRepo)) throw new Error("wasm-modules.lock must contain exactly the four required renderer modules");
+if (rows.length !== expected.size || new Set(rows.map(([module]) => module)).size !== expected.size || rows.some(([module, entryRepo]) => expected.get(module) !== entryRepo)) throw new Error("assets.lock must contain exactly the four required wasm modules plus one latex row");
 if (!rows.some(([, entryRepo]) => entryRepo === repo)) throw new Error(`${repo}: no lock entry`);
 const sumsText = sumsFile
   ? await readFile(sumsFile, "utf8")

@@ -41,7 +41,7 @@ Browser rendering and local or bring-your-own AI integrations do not require hos
 
 The existing LaTeX browser mirror remains on Cloudflare. The four browser wasm
 modules are no longer embedded in the server: they are published to the asset
-mirror under `wasm/<sha256>/<module>`, pinned by `wasm-modules.lock`, and
+mirror under `wasm/<sha256>/<module>`, pinned by `assets.lock`, and
 browsers load them from there; the deployed app changes only after redeployment.
 Cloudflare Static Assets has a 25 MiB per-file limit and free static
 requests under the documented configuration ([billing and limits](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/), [platform limits](https://developers.cloudflare.com/workers/platform/limits/)). The embedded-font Typst WASM is 33.8 MB raw / 14.4 MB gzip, so the prepared OVH publisher targets a dedicated public S3 bucket with gzip transfer encoding and explicit MIME and cache headers. The local LaTeX mirror totals about 10.85 GB raw, including legacy `.br` sidecars; publishing skips those sidecars and stores gzip-compressed eligible files, so measure the uploaded bucket for billable size. The OVH endpoint and pin remain pending live checks; keep the existing mirror live through cutover. See [asset mirror publishing and cutover](asset-mirrors.md).
