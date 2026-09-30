@@ -128,9 +128,7 @@ it. Do not describe the existing command as encrypted in either case.
 An [operator-managed age recovery drill](../../tools/frugal-recovery/README.md)
 now exercises this path with private plaintext staging, removal of the original
 backup before decryption, object comparisons and application replay of restored
-heads and history. The [local results](../../tools/frugal-validation/REPORT.md)
-also record fixes to PostgreSQL tool connection selection and simulated seed
-history. This provides a tested procedure; deployment scheduling, off-host
+heads and history. This provides a tested procedure; deployment scheduling, off-host
 copies, retention and recovery-key custody still need operator configuration.
 
 Verify recovery with the encryption layer and its keys, not just successful
