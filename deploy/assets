@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build, check and publish the browser assets: the wasm modules and the LaTeX
+# mirror that DEFAULT_ASSET_MIRROR names (an OVH S3 bucket).
+#
+# The bucket holds wasm/<sha256>/<module>.wasm and latex/<sha256>/ (the release
+# assets.lock pins). Nothing is ever deleted, so older binaries keep working.
+#
+# One-time setup:
+# 1. Public Cloud > Object Storage > Users: create an S3 user and generate its S3 credentials.
+# 2. Do NOT create the bucket in the console; `publish` creates it with that user, because
+#    OVH lets only the bucket owner set CORS.
+# 3. sops deploy/keys.yaml: add OVH_S3_ENDPOINT, OVH_S3_REGION, OVH_S3_USER (access key),
+#    OVH_S3_SECRET and OVH_S3_ARN (arn:aws:s3:::<bucket>).
+#
+# Each publish:
+# 1. Publish every GitHub release assets.lock pins (a draft fails the check below).
+# 2. make wasm && deploy/assets build: fetch the pinned wasm modules into web/wasm and
+#    build the LaTeX mirror (in ../wasm-latex, or MIRROR=).
+# 3. deploy/assets publish --test: verify bucket, CORS and connectivity (uploads two small files).
+# 4. deploy/assets publish: create the bucket if needed, set CORS, upload the wasm modules and
+#    the LaTeX mirror, then check that a pinned object is publicly readable with CORS and
+#    that listing is private.
+# Upload before shipping a binary that carries a new pin.
+
+usage() {
+  cat <<'USAGE'
+Usage: deploy/assets <command> [args]
+
+Commands:
+  build                     Build the LaTeX mirror (make -C <dir of MIRROR> mirror)
+  check [DIR|URL]           Validate the LaTeX mirror (a directory also gets the
+                            wasm publish dry-run); no credentials, no network for a directory
+  smoke                     Build dist/librepaper, then compile and display the LaTeX
+                            tutorial in Chromium against MIRROR
+  publish [--test] [--dry-run]
+                            Upload the wasm modules and the LaTeX mirror to the bucket.
+                            --test     upload two small files to verify bucket, CORS, connectivity
+                            --dry-run  validate both without credentials or touching the bucket
+  help, -h, --help          Show this help
+
+Environment:
+  MIRROR=DIR      LaTeX mirror directory (default ../wasm-latex/mirror)
+  KEYS=FILE       sops-encrypted keys (default deploy/keys.yaml)
+  S3_BUCKET=NAME  bucket name (default: derived from OVH_S3_ARN)
+USAGE
+}
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+MIRROR="${MIRROR:-../wasm-latex/mirror}"
+
+cmd_build() {
+  make -C "$(dirname "$MIRROR")/" mirror
+}
+
+cmd_check() {
+  local target="${1:-$MIRROR}"
+  node tools/latex/tools/check-mirror.mjs "$target"
+  case "$target" in
+    http://* | https://*) ;;
+    *) MIRRORS_DRY_RUN=1 MIRROR="$target" node tools/push-mirrors.mjs ;;
+  esac
+}
+
+cmd_smoke() {
+  make --no-print-directory dist/librepaper
+  node tools/latex/tools/check-mirror.test.mjs
+  node tools/latex/tools/check-mirror.mjs "$MIRROR"
+  node web/tools/latex-e2e.mjs dist/librepaper browser docs/examples/tutorial-latex/librepaper.tex 120 "$MIRROR"
+}
+
+# Upload the wasm modules and the prepared LaTeX mirror. Needs AWS_* in the
+# environment (set by cmd_publish) unless MIRRORS_DRY_RUN=1.
+push_mirrors() {
+  if [ "${MIRRORS_DRY_RUN:-}" = 1 ] || command -v aws >/dev/null 2>&1; then
+    MIRROR="$MIRROR" node tools/push-mirrors.mjs
+  elif command -v nix >/dev/null 2>&1; then
+    MIRROR="$MIRROR" nix shell nixpkgs#awscli2 -c node tools/push-mirrors.mjs
+  else
+    printf '%s\n' 'publish: AWS CLI v2 is required; install aws or install Nix to use the temporary nixpkgs fallback.' >&2
+    exit 1
+  fi
+}
+
+cmd_publish() {
+  local TEST_MODE=0 DRY_RUN=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --test) TEST_MODE=1 ;;
+      --dry-run) DRY_RUN=1 ;;
+      *) usage >&2; exit 1 ;;
+    esac
+    shift
+  done
+
+  if [ "$DRY_RUN" = 1 ]; then
+    MIRRORS_DRY_RUN=1 push_mirrors
+    return
+  fi
+
+  # Every pin must name a public GitHub release: `make wasm` downloads the modules
+  # anonymously, and the LaTeX release's source link is its licence obligation. A
+  # draft release answers 404 to anyone signed out, so check before uploading.
+  public() { [ "$(curl -sIL -o /dev/null -w '%{http_code}' "$1")" = 200 ] || { printf '%s\n' "Error: $2 is not publicly downloadable (a draft release?): $1" >&2; exit 1; }; }
+  local module repo tag _
+  while read -r module repo tag _; do
+    [ "$module" = latex ] && continue
+    public "https://github.com/LibrePaper/$repo/releases/download/$tag/$module" "$repo $tag"
+  done < <(grep -v '^#' assets.lock | grep .)
+  LATEX_ID=$(awk '$1 == "latex" { print $4 }' assets.lock)
+  LATEX_RELEASE="$MIRROR/$LATEX_ID/release.json"
+  [ -f "$LATEX_RELEASE" ] || { printf '%s\n' "Error: $LATEX_RELEASE missing; run deploy/assets build" >&2; exit 1; }
+  public "$(node -p 'require(process.argv[1]).source.corresponding_source.url' "$(realpath "$LATEX_RELEASE")")" "wasm-latex source for $LATEX_ID"
+
+  # Decrypt and read keys.
+  KEYS="${KEYS:-deploy/keys.yaml}"
+  key() { sops --decrypt --extract "[\"$1\"]" "$KEYS"; }
+  OVH_S3_ENDPOINT=$(key OVH_S3_ENDPOINT)
+  OVH_S3_REGION=$(key OVH_S3_REGION)
+  OVH_S3_USER=$(key OVH_S3_USER)
+  OVH_S3_SECRET=$(key OVH_S3_SECRET)
+  OVH_S3_ARN=$(key OVH_S3_ARN)
+
+  # Derive bucket from ARN: arn:aws:s3:::bucket -> bucket
+  S3_BUCKET="${S3_BUCKET:-${OVH_S3_ARN#arn:aws:s3:::}}"
+  if [ -z "$S3_BUCKET" ] || [ "$S3_BUCKET" = "$OVH_S3_ARN" ]; then
+    printf '%s\n' "Error: could not derive bucket from OVH_S3_ARN or S3_BUCKET is not set" >&2
+    exit 1
+  fi
+
+  # Export AWS credentials (read-only here, not echoed).
+  export AWS_ACCESS_KEY_ID="$OVH_S3_USER"
+  export AWS_SECRET_ACCESS_KEY="$OVH_S3_SECRET"
+
+  # Choose aws command: prefer aws if available, else nix shell.
+  local aws_cmd
+  if command -v aws >/dev/null 2>&1; then
+    aws_cmd="aws"
+  else
+    aws_cmd="nix shell nixpkgs#awscli2 -c aws"
+  fi
+
+  # Ensure bucket exists.
+  if ! $aws_cmd s3api head-bucket --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_S3_REGION" --bucket "$S3_BUCKET" 2>/dev/null; then
+    printf '%s\n' "Creating bucket $S3_BUCKET..."
+    $aws_cmd s3 mb "s3://$S3_BUCKET" --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_S3_REGION"
+  fi
+
+  # Apply CORS: allow GET/HEAD from any origin.
+  printf '%s\n' "Configuring CORS..."
+  local CORS_CONFIG='{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"MaxAgeSeconds":3600}]}'
+  $aws_cmd s3api put-bucket-cors --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_S3_REGION" --bucket "$S3_BUCKET" --cors-configuration "$CORS_CONFIG"
+
+  local VERIFY_KEY
+  if [ "$TEST_MODE" = 1 ]; then
+    # Test mode: upload two small test files.
+    printf '%s\n' "Uploading test files..."
+
+    # A missing file fails the run instead of being skipped.
+    $aws_cmd s3api put-object --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_S3_REGION" \
+      --bucket "$S3_BUCKET" --key "test/markdown.wasm" --body "web/wasm/markdown.wasm" \
+      --content-type "application/wasm" --acl public-read
+    $aws_cmd s3api put-object --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_S3_REGION" \
+      --bucket "$S3_BUCKET" --key "test/_headers" --body "$MIRROR/_headers" \
+      --content-type "text/plain" --acl public-read
+    VERIFY_KEY="test/markdown.wasm"
+  else
+    # Normal mode: publish everything.
+    printf '%s\n' "Publishing assets..."
+    push_mirrors
+    # The LaTeX release the build pins: the `latex` row of assets.lock names its
+    # directory, latex/<sha256>/. Everything on the mirror is immutable.
+    VERIFY_KEY="latex/${LATEX_ID}/release.json"
+  fi
+
+  # Verify: fetch public URL with Origin header; expect 200 + access-control-allow-origin.
+  printf '%s\n' "Verifying deployment..."
+  local VERIFY_URL="https://$S3_BUCKET.s3.$OVH_S3_REGION.io.cloud.ovh.net/$VERIFY_KEY"
+  local HEADERS HTTP_CODE LIST_RESPONSE
+  HEADERS=$(curl -s -o /dev/null -D - -H "Origin: https://example.com" "$VERIFY_URL")
+  HTTP_CODE=$(printf "%s" "$HEADERS" | head -1 | cut -d" " -f2)
+
+  if [ "$HTTP_CODE" != "200" ]; then
+    printf '%s\n' "Error: verification failed (HTTP $HTTP_CODE)" >&2
+    exit 1
+  fi
+
+  if ! printf '%s' "$HEADERS" | grep -qi "access-control-allow-origin"; then
+    printf '%s\n' "Error: CORS header missing in response" >&2
+    exit 1
+  fi
+
+  # Verify that bucket root listing is not public.
+  LIST_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "https://$S3_BUCKET.s3.$OVH_S3_REGION.io.cloud.ovh.net/")
+  if [ "$LIST_RESPONSE" = "200" ]; then
+    printf '%s\n' "Error: bucket listing is public (should be private)" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "Success: assets published to s3://$S3_BUCKET/ with CORS enabled."
+}
+
+sub="${1:-help}"
+[ $# -gt 0 ] && shift
+case "$sub" in
+  build) cmd_build "$@" ;;
+  check) cmd_check "$@" ;;
+  smoke) cmd_smoke "$@" ;;
+  publish) cmd_publish "$@" ;;
+  help | -h | --help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac
