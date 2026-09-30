@@ -460,7 +460,7 @@ content-addressed bundles that stay in browser storage, so the next document
 costs nothing to fetch. That mirror therefore sees a browser's IP address and
 which digest-named files it asks for, which can suggest a document's field or
 template. It never receives document source or input assets. An operator can
-host a copy and pass `--latex-mirror URL` to keep those requests on their own
+host a copy and pass `--asset-mirror URL` to keep those requests on their own
 infrastructure.
 
 Compilation runs in a worker, one per module, so warming a large Typst module
@@ -782,12 +782,11 @@ dependencies without network access. To update one renderer, name both values
 explicitly, for example `make wasm-update REPO=wasm-markdown TAG=v0.2.0`, then
 review the resulting Cargo and lockfile diff.
 
-The browser Typst build can use a mirror of the embedded-font WASM published
-by the `wasm-typst` repository. `typst-assets.lock` can pin the mirror's `typst.wasm`
-URL and SHA-256; `make wasm` verifies the download in the ignored
-`web/.cache/typst-assets` cache. An empty lock keeps the embedded-font browser
-module. This optional browser pin leaves `wasm-modules.lock` and the native
-Typst dependency on their existing release pins. See
+The four browser modules (markdown, bibliography, citations and typst) are not
+embedded in the binary. `make wasm` fetches them into the ignored `web/wasm/`,
+and `make mirrors-push` publishes them to the asset mirror under
+`wasm/<sha256>/<module>`, where the SHA-256 is the one `wasm-modules.lock`
+pins. Browsers load them from the mirror named by `--asset-mirror`. See
 [`docs/asset-mirrors.md`](../docs/asset-mirrors.md) for the pending OVH mirror
 cutover steps.
 

@@ -283,5 +283,5 @@ template. Compiler downloads do not send document source or private input
 assets to the mirror.
 
 An operator can host a copy and keep compiler requests on their own
-infrastructure by passing `--latex-mirror URL` to `librepaper admin serve`. The URL
+infrastructure by passing `--asset-mirror URL` to `librepaper admin serve`. The URL
 must be an HTTPS static mirror with the documented mirror layout and headers.

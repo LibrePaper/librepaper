@@ -73,8 +73,8 @@ export function parseArgs(args) {
     } else throw new Error(`unknown option: ${arg}`);
   }
   if (!options.dir) throw new Error("--dir <mirror> is required");
-  if (!options.prefix) throw new Error("--prefix typst|latex is required");
-  if (!/^(typst|latex)$/.test(options.prefix)) throw new Error("prefix must be exactly typst or latex");
+  if (!options.prefix) throw new Error("--prefix wasm|latex is required");
+  if (!/^(wasm|latex)$/.test(options.prefix)) throw new Error("prefix must be exactly wasm or latex");
   return options;
 }
 
@@ -173,13 +173,14 @@ async function validateMirrorFiles(root, prefix, files) {
     totalBytes += record.size;
   }
 
-  if (prefix === "typst") {
-    const modules = files.filter((file) => /^([a-f0-9]{64})\/typst\.wasm$/.test(file.relative));
-    if (!modules.length) throw new Error("Typst mirror has no <sha256>/typst.wasm module");
-    for (const file of modules) {
-      const [, pathHash] = file.relative.match(/^([a-f0-9]{64})\/typst\.wasm$/);
-      if (expected.get(file.relative).sha256 !== pathHash) {
-        throw new Error(`Typst WASM hash directory does not match raw bytes: ${file.relative}`);
+  if (prefix === "wasm") {
+    // Every module is content-addressed: <sha256>/<name>.wasm, the directory
+    // being the hash of the bytes, so a URL can never name different bytes.
+    for (const file of files) {
+      const match = file.relative.match(/^([a-f0-9]{64})\/[a-z][a-z0-9-]*\.wasm$/);
+      if (!match) throw new Error(`wasm mirror file must be <sha256>/<name>.wasm: ${file.relative}`);
+      if (expected.get(file.relative).sha256 !== match[1]) {
+        throw new Error(`WASM hash directory does not match raw bytes: ${file.relative}`);
       }
     }
   } else {
@@ -235,7 +236,7 @@ async function validateMirrorFiles(root, prefix, files) {
 }
 
 export async function preflightMirror({ dir, prefix }) {
-  if (!/^(typst|latex)$/.test(prefix || "")) throw new Error("prefix must be exactly typst or latex");
+  if (!/^(wasm|latex)$/.test(prefix || "")) throw new Error("prefix must be exactly wasm or latex");
   const root = resolve(dir);
   const info = await stat(root).catch(() => null);
   if (!info?.isDirectory()) throw new Error("--dir must name an existing directory");
@@ -300,7 +301,7 @@ async function verifyDownloaded(path, response, metadata, expected, key) {
 }
 
 export async function publish({ dir, prefix, dryRun = false, configureCors = false, env = process.env, output = console.log }) {
-  if (!/^(typst|latex)$/.test(prefix || "")) throw new Error("prefix must be exactly typst or latex");
+  if (!/^(wasm|latex)$/.test(prefix || "")) throw new Error("prefix must be exactly wasm or latex");
   const root = resolve(dir);
   const info = await stat(root).catch(() => null);
   if (!info?.isDirectory()) throw new Error("--dir must name an existing directory");

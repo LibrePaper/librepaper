@@ -5,17 +5,19 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { bucketFromArn, mappedEnvironment, selectedOvhFields } from "../push-mirrors.mjs";
+import { bucketFromArn, mappedEnvironment, selectedOvhFields, stageWasmMirror } from "../push-mirrors.mjs";
 
 const script = new URL("../push-mirrors.mjs", import.meta.url).pathname;
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-async function makeMirrors(root, typstName = "typst mirror", latexName = "latex mirror") {
-  const typst = join(root, typstName);
+async function makeMirrors(root, wasmName = "wasm dir", latexName = "latex mirror") {
+  const wasm = join(root, wasmName);
   const latex = join(root, latexName);
-  const wasm = Buffer.from("valid typst wasm");
-  await mkdir(join(typst, hash(wasm)), { recursive: true });
-  await writeFile(join(typst, hash(wasm), "typst.wasm"), wasm);
+  const module = Buffer.from("valid markdown wasm");
+  await mkdir(wasm, { recursive: true });
+  await writeFile(join(wasm, "markdown.wasm"), module);
+  const lock = join(root, "wasm-modules.lock");
+  await writeFile(lock, `# test lock\nmarkdown.wasm wasm-markdown v0.1.1 ${hash(module)}\n`);
   const asset = Buffer.from("latex engine");
   await mkdir(latex, { recursive: true });
   await writeFile(join(latex, "engine.js"), asset);
@@ -32,7 +34,7 @@ async function makeMirrors(root, typstName = "typst mirror", latexName = "latex 
   await writeFile(join(latex, "manifest.json"), JSON.stringify(manifest));
   await writeFile(join(latex, "bundles.json"), index);
   await writeFile(join(latex, "bundle.tar"), bundle);
-  return { typst, latex };
+  return { wasm, lock, latex, moduleHash: hash(module) };
 }
 
 test("OVH variables map safely, canonical overrides win, and only an exact bucket ARN is derived", () => {
@@ -61,19 +63,19 @@ test("a null OVH bucket allows the exact bucket ARN fallback", () => {
   assert.equal(mappedEnvironment(selected).S3_BUCKET, "asset-bucket");
 });
 
-test("dry run hashes both overridden mirrors and skips SOPS, even without credentials", async () => {
+test("dry run stages the wasm mirror, hashes both mirrors and skips SOPS, even without credentials", async () => {
   const root = await mkdtemp(join(tmpdir(), "push-mirrors-dryrun-"));
   const bin = join(root, "bin");
-  const paths = await makeMirrors(root, "typst 'mirror'", "latex mirror");
+  const paths = await makeMirrors(root, "wasm 'dir'", "latex mirror");
   await mkdir(bin);
   const sops = join(bin, "sops");
   await writeFile(sops, `#!${process.execPath}\nrequire('node:fs').writeFileSync(process.env.SOPS_CALLED, 'yes');\n`);
   await chmod(sops, 0o755);
   try {
     const output = execFileSync(process.execPath, [script], { encoding: "utf8", env: { ...process.env,
-      PATH: `${bin}:${process.env.PATH}`, MIRRORS_DRY_RUN: "1", TYPST_MIRROR: paths.typst, MIRROR: paths.latex,
+      PATH: `${bin}:${process.env.PATH}`, MIRRORS_DRY_RUN: "1", WASM_DIR: paths.wasm, WASM_LOCK: paths.lock, MIRROR: paths.latex,
       SOPS_CALLED: join(root, "sops-called") } });
-    assert.match(output, /Validated typst: 1 files/);
+    assert.match(output, /Validated wasm: 1 files/);
     assert.match(output, /Validated latex: 4 files/);
     await assert.rejects(readFile(join(root, "sops-called")));
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -112,7 +114,7 @@ test("both mirrors are preflighted before any AWS upload", async () => {
   try {
     let error;
     try { execFileSync(process.execPath, [script], { encoding: "utf8", env: { ...process.env,
-      PATH: `${bin}:${process.env.PATH}`, TYPST_MIRROR: paths.typst, MIRROR: paths.latex, AWS_CALLED: calls } }); }
+      PATH: `${bin}:${process.env.PATH}`, WASM_DIR: paths.wasm, WASM_LOCK: paths.lock, MIRROR: paths.latex, AWS_CALLED: calls } }); }
     catch (caught) { error = caught; }
     assert.ok(error);
     assert.match(error.stderr, /LaTeX manifest\.json is invalid JSON/);
@@ -144,13 +146,28 @@ fs.appendFileSync(process.env.AWS_LOG,JSON.stringify({cmd,key,endpoint:val('--en
   await chmod(aws, 0o755);
   try {
     execFileSync(process.execPath, [script], { encoding: "utf8", env: { ...process.env,
-      PATH: `${bin}:${process.env.PATH}`, TYPST_MIRROR: paths.typst, MIRROR: paths.latex, AWS_LOG: log, AWS_STORE: store,
+      PATH: `${bin}:${process.env.PATH}`, WASM_DIR: paths.wasm, WASM_LOCK: paths.lock, MIRROR: paths.latex, AWS_LOG: log, AWS_STORE: store,
       S3_BUCKET: "explicit-bucket", AWS_ACCESS_KEY_ID: "override-id", AWS_SECRET_ACCESS_KEY: "override-secret" } });
     const calls = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
     const puts = calls.filter((call) => call.cmd === "s3api put-object");
-    assert.ok(puts.some((call) => call.key.startsWith("typst/")));
+    assert.ok(puts.some((call) => call.key === `wasm/${paths.moduleHash}/markdown.wasm`));
     assert.ok(puts.some((call) => call.key.startsWith("latex/")));
     assert.ok(calls.every((call) => call.endpoint === "https://ovh.example.invalid" && call.region === "bhs" &&
       call.bucket === "explicit-bucket" && call.id === "override-id" && call.secret === "override-secret"));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("staging refuses a module whose bytes do not match wasm-modules.lock", async () => {
+  const root = await mkdtemp(join(tmpdir(), "push-mirrors-stage-"));
+  const paths = await makeMirrors(root);
+  try {
+    const staged = await stageWasmMirror(paths.wasm, paths.lock);
+    try {
+      assert.equal(await readFile(join(staged, paths.moduleHash, "markdown.wasm"), "utf8"), "valid markdown wasm");
+    } finally { await rm(staged, { recursive: true, force: true }); }
+    await writeFile(join(paths.wasm, "markdown.wasm"), "tampered");
+    await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /does not match wasm-modules\.lock/);
+    await rm(join(paths.wasm, "markdown.wasm"));
+    await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /run make wasm first/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

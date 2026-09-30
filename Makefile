@@ -3,7 +3,8 @@
 # The application crate provides the server and CLI and links the pinned
 # renderer libraries directly. The web app in web/ is Svelte,
 # bundled by vite and installed by bun. The binary embeds the web build (from
-# web/dist) and the WASM renderers, and serves them.
+# web/dist) and serves it. The WASM renderers are not embedded: they are
+# published to the asset mirror (make mirrors-push) and browsers load them there.
 
 # Local settings, kept out of the repository: the GitHub OAuth app and who may
 # publish. Copy .env.example to .env and fill it in. Values are read as Make
@@ -15,14 +16,13 @@ BIN     := dist/librepaper
 PREFIX  ?= $(HOME)/.local
 BINDIR  ?= $(PREFIX)/bin
 DESTDIR ?=
-# The markdown renderer, fetched for the browser: the editor previews with it,
-# and it is embedded in the binary like every other shell file.
-WASM    := web/dist/wasm/markdown.wasm
-BIB     := web/dist/wasm/bibliography.wasm
-CITES   := web/dist/wasm/citations.wasm
+# The browser renderers, fetched into web/wasm (not embedded in the binary):
+# tests read them, and mirrors-push publishes them to the asset mirror.
+WASM    := web/wasm/markdown.wasm
+BIB     := web/wasm/bibliography.wasm
+CITES   := web/wasm/citations.wasm
 # Fetched, not built: see wasm-modules.lock and the bottom of this file.
-TYPST   := web/dist/wasm/typst.wasm
-WASM_BR := $(WASM).br $(BIB).br $(CITES).br $(TYPST).br
+TYPST   := web/wasm/typst.wasm
 # The pages. web/dist is entirely a build output, so it is an input to
 # nothing: what the pages are built from lives in web/src and web/public.
 SHELL_OUT := web/dist/index.html
@@ -42,8 +42,7 @@ LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
 # landing page recompiled the whole crate. The site builds on its own: see the
 # site target at the bottom of this file.
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js)
-# The renderers are generated, so they are not also inputs to themselves.
-SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml typst-assets.lock
+SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
 
 .DEFAULT_GOAL := help
 .PHONY: help build install test check-all browser test-external test-release-workloads smoke serve kill clean snapshot wasm wasm-check wasm-update loro-codemirror loro-update fmt web fuzz
@@ -52,16 +51,15 @@ help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
 	@grep -hE '^[a-z.A-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' | sort
 
-build: $(BIN)  ## Build dist/librepaper, with the shell and renderers embedded
+build: $(BIN)  ## Build dist/librepaper, with the shell embedded
 
 install: $(BIN)  ## Build and install to ~/.local/bin (override PREFIX= or BINDIR=)
 	@install -d "$(DESTDIR)$(BINDIR)"
 	@install -m 755 "$(BIN)" "$(DESTDIR)$(BINDIR)/librepaper"
 	@echo "Installed $(DESTDIR)$(BINDIR)/librepaper"
 
-# Rebuilt whenever any source, page or renderer changes.
-# Keep every required renderer in step with the shell and native compiler.
-$(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(TYPST) $(WASM_BR) $(SHELL_OUT) | wasm
+# Rebuilt whenever any source or page changes.
+$(BIN): $(SOURCES) $(SHELL_OUT)
 	@mkdir -p $(dir $@)
 	@cargo build --release -p librepaper
 	@# Copied beside and renamed over: a server running from the old binary
@@ -136,7 +134,7 @@ check-all: test browser  ## Run the test suite AND the browser components
 # job runs this target on its own, so the dependency has to be here: without it
 # every test that builds Editor.svelte failed with an unresolved import, which
 # is how removing the vendored source from the repository broke this job.
-browser: $(LCM)  ## Run the component tests in headless chromium (needs chromium)
+browser: wasm $(LCM)  ## Run the component tests in headless chromium (needs chromium)
 	@command -v chromium >/dev/null || command -v google-chrome >/dev/null || \
 		{ echo "no chromium to drive; skipping the browser tests"; exit 0; }
 	@failed=""; \
@@ -203,10 +201,10 @@ PORT       ?= 8081
 SITE_PORT  ?= 8082
 DATA       ?= librepaper-data
 # Browsers fetch LaTeX directly from an HTTPS static mirror. With no override,
-# the binary uses the project mirror. `LATEX_MIRROR=` selects an operator-hosted
+# the binary uses the project mirror. `ASSET_MIRROR=` selects an operator-hosted
 # copy for local runs.
-LATEX_MIRROR      ?=
-LATEX_MIRROR_FLAG ?= $(if $(LATEX_MIRROR),--latex-mirror $(LATEX_MIRROR))
+ASSET_MIRROR      ?=
+ASSET_MIRROR_FLAG ?= $(if $(ASSET_MIRROR),--asset-mirror $(ASSET_MIRROR))
 
 # SIMULATE_ACTIVITY=<days> writes every starter document a new account is
 # given as though it had been typed over that many days, so the history panel
@@ -218,9 +216,9 @@ SIMULATE_ACTIVITY_FLAG ?= $(if $(filter-out 0,$(SIMULATE_ACTIVITY)),--simulate-a
 
 OPEN ?= 1
 
-serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX_MIRROR=; everything else through .env)
+serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, ASSET_MIRROR=; everything else through .env)
 	@test "$(OPEN)" = 1 && command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
-	@$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(LATEX_MIRROR_FLAG) $(SIMULATE_ACTIVITY_FLAG)
+	@$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(ASSET_MIRROR_FLAG) $(SIMULATE_ACTIVITY_FLAG)
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
@@ -228,11 +226,10 @@ kill:  ## Stop a server started with make serve
 
 .PHONY: deploy latex-check latex-smoke mirrors mirrors-push
 
-# The mirrors -- the compiler engines and the TeX Live bundles for LaTeX,
-# and the Typst compiler -- are built in their sibling repositories. Run
-# `make mirrors` to build both from wasm-latex/ and wasm-typst/; `mirrors-push`
-# then publishes them together. TYPST_MIRROR= and MIRROR= point at their outputs.
-TYPST_MIRROR ?= ../wasm-typst/mirror
+# The mirrors -- the LaTeX compiler engines and TeX Live bundles, and the four
+# browser wasm modules (web/wasm, pinned by wasm-modules.lock) -- are published
+# together. `make wasm && make mirrors` prepares both; `mirrors-push` publishes
+# them. MIRROR= points at the LaTeX mirror output.
 MIRROR ?= ../wasm-latex/mirror
 
 latex-check:
@@ -243,15 +240,14 @@ latex-smoke: $(BIN)  ## Compile and display the LaTeX tutorial in Chromium again
 	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
 	@node web/tools/latex-e2e.mjs $(BIN) browser docs/examples/tutorial-latex/librepaper.tex 120 $(MIRROR)
 
-mirrors:  ## Build the Typst and LaTeX mirrors that mirrors-push publishes (LaTeX needs a staged release; see wasm-latex)
-	$(MAKE) -C $(dir $(TYPST_MIRROR)) mirror
+mirrors:  ## Build the LaTeX mirror that mirrors-push publishes (LaTeX needs a staged release; see wasm-latex)
 	$(MAKE) -C $(dir $(MIRROR)) mirror
 
-mirrors-push:  ## Publish prepared Typst and LaTeX mirrors (MIRRORS_DRY_RUN=1 validates both without credentials)
+mirrors-push:  ## Publish the wasm modules and the prepared LaTeX mirror (MIRRORS_DRY_RUN=1 validates both without credentials)
 	@if [ "$${MIRRORS_DRY_RUN:-}" = 1 ] || command -v aws >/dev/null 2>&1; then \
-		TYPST_MIRROR='$(TYPST_MIRROR)' MIRROR='$(MIRROR)' node tools/push-mirrors.mjs; \
+		MIRROR='$(MIRROR)' node tools/push-mirrors.mjs; \
 	elif command -v nix >/dev/null 2>&1; then \
-		TYPST_MIRROR='$(TYPST_MIRROR)' MIRROR='$(MIRROR)' nix shell nixpkgs#awscli2 -c node tools/push-mirrors.mjs; \
+		MIRROR='$(MIRROR)' nix shell nixpkgs#awscli2 -c node tools/push-mirrors.mjs; \
 	else \
 		printf '%s\n' 'mirrors-push: AWS CLI v2 is required; install aws or install Nix to use the temporary nixpkgs fallback.' >&2; \
 		exit 1; \
@@ -362,8 +358,8 @@ secrets:  ## Open an interactive shell with the sops-encrypted deployment keys i
 	@echo "$(KEYS) is loaded in this shell; exit to drop it"
 	@sops exec-env $(KEYS) "$${SHELL:-/bin/sh}"
 
-# Build the Typst and LaTeX mirrors in their sibling repositories, then publish
-# both prepared trees together with `make mirrors-push`. Nothing builds them here.
+# Build the LaTeX mirror in its sibling repository, then publish it with the wasm
+# modules using `make mirrors-push`. Nothing builds them here.
 
 # --- the web app -----------------------------------------------------------
 #
@@ -439,9 +435,8 @@ wasm-check:  ## Check native and browser renderer tags without network access
 	@node web/tools/check-renderer-pins.mjs
 
 # The files are produced by the phony aggregate above. This rule lets Make
-# resolve them as binary prerequisites on a clean checkout while preserving
-# their mtimes so a changed renderer causes the embedding binary to rebuild.
-$(WASM) $(BIB) $(CITES) $(TYPST) $(WASM_BR): | wasm
+# resolve them as prerequisites on a clean checkout.
+$(WASM) $(BIB) $(CITES) $(TYPST): | wasm
 
 # Update one explicitly named renderer tag in Cargo.toml and wasm-modules.lock.
 # The command never looks up or selects a latest release implicitly.

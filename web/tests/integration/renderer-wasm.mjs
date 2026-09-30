@@ -50,7 +50,7 @@ assert.throws(
 // can run before `make wasm`, while CI/build checks catch a missing export or a
 // mismatch between UTF-16 offsets and JavaScript slices.
 try {
-  const bytes = readFileSync(fileURLToPath(new URL("../../dist/wasm/markdown.wasm", import.meta.url)));
+  const bytes = readFileSync(fileURLToPath(new URL("../../wasm/markdown.wasm", import.meta.url)));
   const real = new WebAssembly.Instance(new WebAssembly.Module(bytes), {}).exports;
   validateExports(real, "markdown.wasm");
   const before = "red 🦎 fox at noisy river";
@@ -69,7 +69,7 @@ try {
 
 for (const name of ["markdown", "typst", "bibliography", "citations"]) {
   try {
-    const bytes = readFileSync(fileURLToPath(new URL(`../../dist/wasm/${name}.wasm`, import.meta.url)));
+    const bytes = readFileSync(fileURLToPath(new URL(`../../wasm/${name}.wasm`, import.meta.url)));
     const real = new WebAssembly.Instance(new WebAssembly.Module(bytes), {}).exports;
     validateExports(real, `${name}.wasm`);
     if (name === "bibliography" || name === "citations") assert.equal(typeof real.bibliography, "function");

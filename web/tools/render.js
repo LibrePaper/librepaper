@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 function load(name) {
-  const path = new URL(`../dist/wasm/${name}.wasm`, import.meta.url);
+  const path = new URL(`../wasm/${name}.wasm`, import.meta.url);
   try {
     const module = new WebAssembly.Module(readFileSync(path));
     return new WebAssembly.Instance(module, {}).exports;

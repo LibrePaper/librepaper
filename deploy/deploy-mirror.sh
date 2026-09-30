@@ -7,10 +7,11 @@ set -euo pipefail
 # 1. Public Cloud > Object Storage > Users: create a user, download S3 credentials.
 # 2. Do NOT create the bucket in the console; this script creates it so the user owns it.
 # 3. sops deploy/keys.yaml: add OVH_S3_ENDPOINT, OVH_S3_REGION, OVH_S3_USER, OVH_S3_SECRET, OVH_S3_ARN.
-# 4. make mirrors: build the Typst and LaTeX mirrors (in wasm-typst and wasm-latex).
+# 4. make wasm && make mirrors: fetch the pinned browser wasm modules into web/wasm and build
+#    the LaTeX mirror (in wasm-latex).
 # 5. deploy/deploy-mirror.sh --test: verify bucket, CORS, and connectivity (uploads two small test files).
 # 6. deploy/deploy-mirror.sh: publish all mirrors.
-# 7. Afterwards (manual): point DEFAULT_LATEX_MIRROR and typst-assets.lock at https://<bucket>.s3.<region>.io.cloud.ovh.net/.
+# 7. Afterwards (manual): point DEFAULT_ASSET_MIRROR (crates/librepaper/src/config.rs) at https://<bucket>.s3.<region>.io.cloud.ovh.net/.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -72,17 +73,16 @@ $aws_cmd s3api put-bucket-cors --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_
 if [ "$TEST_MODE" = 1 ]; then
   # Test mode: upload two small test files.
   printf '%s\n' "Uploading test files..."
-  TYPST_MIRROR="${TYPST_MIRROR:-../wasm-typst/mirror}"
   MIRROR="${MIRROR:-../wasm-latex/mirror}"
 
   # A missing file fails the run instead of being skipped.
   $aws_cmd s3api put-object --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_S3_REGION" \
-    --bucket "$S3_BUCKET" --key "test/LICENSE" --body "$TYPST_MIRROR/LICENSE" \
-    --content-type "text/plain" --acl public-read
+    --bucket "$S3_BUCKET" --key "test/markdown.wasm" --body "web/wasm/markdown.wasm" \
+    --content-type "application/wasm" --acl public-read
   $aws_cmd s3api put-object --endpoint-url "$OVH_S3_ENDPOINT" --region "$OVH_S3_REGION" \
     --bucket "$S3_BUCKET" --key "test/_headers" --body "$MIRROR/_headers" \
     --content-type "text/plain" --acl public-read
-  VERIFY_KEY="test/LICENSE"
+  VERIFY_KEY="test/markdown.wasm"
 else
   # Normal mode: run make mirrors-push.
   printf '%s\n' "Publishing mirrors..."
