@@ -13,6 +13,10 @@ without reading the source. An operator may keep more than this -- a reverse
 proxy, a backup system and a hosting provider each have logs of their own --
 and only they can tell you about those.
 
+## Security and privacy limitations
+
+There is no end-to-end encryption. Whoever runs the server and its database can read every draft, every comment, every identity and every presence event in the clear. Backups are written unencrypted, and a backup archive is the whole deployment in plain form.
+
 ## What a deployment stores
 
 | What | Where | Written when |
@@ -59,6 +63,17 @@ is shared with a third party, so under the ePrivacy rules none of it requires
 a consent banner. An operator who adds analytics of their own changes that
 answer and takes on the consent question with it.
 
+Reading is not invisible. An anonymous reader gets a persistent signed visitor credential
+so their comments hold together across visits. While a document is open, the collaboration
+layer broadcasts presence and cursor position, so an author watching the document sees
+a reader arrive, sees roughly where they are in the text, and sees when they leave.
+There is currently no way to read without being visible this way.
+
+A comment from a reader who is not signed in carries a pseudonym instead of an account name.
+It hides who you are from other readers. It does not hide you from the operator: a digest of
+your visitor credential travels with the write and is stored beside the comment. Treat a
+pseudonymous comment as pseudonymous to the room and attributable to whoever runs the server.
+
 ## What leaves the deployment
 
 - **Sign-in.** GitHub or Google, whichever the operator enabled, receives the
@@ -71,9 +86,31 @@ answer and takes on the consent question with it.
 - **The local companion.** The writing assistant runs on your own computer.
   The server relays messages between the browser and the companion while both
   are connected and keeps no transcript.
+- **Embedded resources in documents.** A published document is a web page that
+  runs its own code. It can fetch images, web fonts, and data from any host it
+  names, and that host learns the reader's address, browser, and the exact moment
+  they opened it. This needs no JavaScript; an image tag is enough. For anonymous
+  or blind review, distribute a PDF or require documents published with every
+  resource embedded (use `embed-resources: true` in Quarto).
 
 An operator's hosting, database and object-storage providers necessarily see
 what they store. Which ones those are, and where, is theirs to name.
+
+## Additional privacy details
+
+LaTeX mirror. Browsers compiling LaTeX in the page fetch TeX packages from
+a public mirror, which by default is the LibrePaper project's service. The mirror
+sees each reader's address and the exact set of packages a document pulls, which is
+a usable fingerprint of the document. Operators who do not want this dependency can
+host their own mirror.
+
+Local companion. The page can reach the LibrePaper app on your own computer,
+over loopback, to build a document with locally installed tools. The page never
+looks on its own. Opening a document reaches nothing. The first loopback request
+is made by a gesture that needs it: turning on local execution, choosing a local
+build tool, a Zotero lookup, or opening the Local app settings. This is why a browser
+puts up its local-network permission prompt only when you ask for it, not when you
+open the document.
 
 ## How long things are kept
 
