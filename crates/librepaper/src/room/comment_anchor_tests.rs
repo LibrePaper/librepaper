@@ -854,16 +854,17 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
         .await
         .unwrap();
 
-    // Not `created`: what MCP validates is the indexed read, and that is
-    // the shape whose projections are empty.
+    // Not `created`: MCP validates the indexed read, which now derives the
+    // proposed text from the linked branch while leaving the outcome empty.
     let served = room
         .comment_by_id(&created.id, true)
         .await
         .unwrap()
         .expect("the suggestion is readable");
     assert!(
-        served.proposed.is_none() && served.outcome.is_empty(),
-        "the served shape carries no proposal projection",
+        served.proposed.as_deref() == Some("*interval* contains the mean")
+            && served.outcome.is_empty(),
+        "the served shape derives proposed text from the branch",
     );
     assert!(!served.proposal.is_empty(), "it does carry a proposal id");
 

@@ -21,6 +21,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { LoroDoc, decodeFrontiers, encodeFrontiers } from "loro-crdt";
 import { psqlCommand } from "../../tools/postgres-test.mjs";
 import { startDeployment } from "../helpers/deployment.mjs";
 
@@ -161,6 +162,59 @@ async function replayOutcome(socket, proposal, prior, decisions) {
   assert.equal(list.proposals.some((entry) => entry.id === proposal), false);
 }
 
+/// Replaces the single-splice suggestion branch with a realistic legacy
+/// branch containing two distant changes. Old clients could record one
+/// decision per hunk, while current suggestion decisions must answer both.
+async function installLegacyTwoHunkBranch(socket, proposal, prior) {
+  const stateFrame = socket.next("the document state", (frame) =>
+    frame.type === "doc-state" || frame.type === "doc-rows");
+  socket.send({ type: "doc-open", protocol: "librepaper.room.v3", vector: "", request_id: randomUUID() });
+  const first = await stateFrame;
+  const state = first.type === "doc-state" ? first : null;
+  const rows = first.type === "doc-rows"
+    ? first
+    : await socket.next("the document rows", (frame) => frame.type === "doc-rows");
+  const doc = new LoroDoc();
+  if (state?.base) {
+    doc.import(Buffer.from(state.base, "base64"));
+  } else if (state?.ref) {
+    const snapshot = await fetch(new URL(state.ref, deployment.base), {
+      headers: { cookie: deployment.cookie },
+    });
+    assert.equal(snapshot.status, 200, "the document snapshot reference is readable");
+    doc.import(new Uint8Array(await snapshot.arrayBuffer()));
+  }
+  for (const update of [...(state?.updates || []), ...(rows.updates || [])]) {
+    doc.import(Buffer.from(update, "base64"));
+  }
+  const base = decodeFrontiers(Buffer.from(prior.base, "base64"));
+  const atBase = doc.forkAt(base);
+  const branch = atBase.fork();
+  branch.setPeerId(BigInt(Date.now()) + 1_000_000n);
+  const paths = branch.getMap("paths");
+  const fileId = [...paths.entries()].find(([, path]) => path === "paper.md")?.[0];
+  assert.ok(fileId, "the document state includes its main text file");
+  const text = branch.getMap("files").get(fileId);
+  const original = text.toString();
+  const exact = "Alpha 0123456789abcdefghij Omega";
+  const start = original.indexOf(exact);
+  assert.notEqual(start, -1, "the proposal base contains the selected words");
+  const finalWord = original.indexOf("Omega", start);
+  text.delete(finalWord, "Omega".length);
+  text.insert(finalWord, "Omicron");
+  text.delete(start, "Alpha".length);
+  text.insert(start, "Aleph");
+  branch.commit();
+  const tip = Buffer.from(encodeFrontiers(branch.frontiers())).toString("hex");
+  const bytes = Buffer.from(branch.export({ mode: "update", from: atBase.oplogVersion() })).toString("hex");
+  sql(`UPDATE document_proposals
+    SET tip_frontiers=decode('${tip}','hex'), branch_bytes=decode('${bytes}','hex'), version=version+1
+    WHERE id='${proposal}'`);
+  branch.destroy?.();
+  atBase.destroy?.();
+  doc.destroy?.();
+}
+
 function assertGone(comment) {
   assert.equal(count("document_proposals", "id", comment.proposal), 0, "the proposal row is deleted");
   assert.equal(count("annotations", "proposal_id", comment.proposal), 0, "no annotation still points at the proposal");
@@ -281,6 +335,8 @@ try {
   {
     const exact = "Alpha 0123456789abcdefghij Omega";
     const comment = await suggest(socket, slug, exact, "Aleph 0123456789abcdefghij Omicron");
+    const original = await stateOf(socket, comment.proposal);
+    await installLegacyTwoHunkBranch(socket, comment.proposal, original);
     const prior = await stateOf(socket, comment.proposal);
     const tipBytes = Buffer.from(prior.tip, "base64").toString("hex");
     sql(`INSERT INTO document_proposal_hunks
