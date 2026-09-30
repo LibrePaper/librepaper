@@ -368,6 +368,24 @@ const OWNER = 1n;
   adjacent.room.commit();
   assert.equal(locateProposalHunk(adjacent.room, adjacentData, adjacentHunk).stale, false,
     "an insertion exactly at a replacement boundary remains adjacent");
+
+  const endBoundary = make("The cat sat.");
+  const endFrom = endBoundary.room.oplogVersion();
+  const endBase = endBoundary.room.frontiers();
+  const endBranch = endBoundary.room.fork();
+  endBranch.setPeerId(AUTHOR + 3n);
+  endBranch.getMap("files").get("f1").delete(4, 3);
+  endBranch.getMap("files").get("f1").insert(4, "tabby");
+  endBranch.commit();
+  const endData = { base: endBase, tip: endBranch.frontiers(),
+    bytes: endBranch.export({ mode: "update", from: endFrom }) };
+  const [endHunk] = createProposals({ session: { doc: endBoundary.room }, send: () => {}, mayEdit: true })
+    .hunksOf(endData);
+  endBoundary.source.insert(7, "!");
+  endBoundary.room.commit();
+  const endMapped = locateProposalHunk(endBoundary.room, endData, endHunk);
+  assert.equal(endMapped.position, 4);
+  assert.equal(endMapped.stale, false, "the end cursor stays before a boundary insertion");
 }
 
 console.log("proposals: parity tests passed");
