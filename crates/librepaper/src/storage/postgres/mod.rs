@@ -446,6 +446,7 @@ mod tests {
             .create_document(NewDocument {
                 slug: format!("slug-{tag}"),
                 owner_id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "A Paper".into(),
                 source_format: "markdown".into(),
@@ -503,6 +504,7 @@ mod tests {
             .create_document(NewDocument {
                 slug: "v3-second".into(),
                 owner_id: account.id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "Same title".into(),
                 source_format: "quarto".into(),
@@ -513,6 +515,24 @@ mod tests {
             .unwrap();
 
         let collaborator = seed_account(&catalog, "v3-collaborator").await;
+        let owner_authority = MutationAuthorization {
+            principal_key: account.handle.clone(),
+            account_id: Some(account.id),
+            session_generation: Some(account.session_generation),
+            token_hash: None,
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
+        };
+        let collaborator_authority = MutationAuthorization {
+            principal_key: collaborator.handle.clone(),
+            account_id: Some(collaborator.id),
+            session_generation: Some(collaborator.session_generation),
+            token_hash: None,
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
+        };
         assert_eq!(
             catalog
                 .set_grant(first.id, collaborator.id, AccessRole::Editor)
@@ -673,7 +693,11 @@ mod tests {
         );
 
         assert!(catalog
-            .update_document_identity(second.id, "Transferred", collaborator.id, "owned")
+            .transfer_document_owner(second.id, account.id, collaborator.id, &owner_authority)
+            .await
+            .unwrap());
+        assert!(catalog
+            .update_document_title(second.id, &collaborator_authority, "Transferred")
             .await
             .unwrap());
         assert_eq!(
@@ -689,7 +713,16 @@ mod tests {
             Some(AccessRole::Owner)
         );
         assert!(catalog
-            .update_document_identity(second.id, "Same title", account.id, "owned")
+            .transfer_document_owner(
+                second.id,
+                collaborator.id,
+                account.id,
+                &collaborator_authority,
+            )
+            .await
+            .unwrap());
+        assert!(catalog
+            .update_document_title(second.id, &owner_authority, "Same title")
             .await
             .unwrap());
 
@@ -907,6 +940,7 @@ mod tests {
             .create_document(NewDocument {
                 slug: "v3-erase-document".into(),
                 owner_id: erased.id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "Erase document".into(),
                 source_format: "markdown".into(),

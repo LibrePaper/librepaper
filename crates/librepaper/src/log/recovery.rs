@@ -128,6 +128,7 @@ async fn bare_with_config(slug: &str, config: Configuration) -> Option<Bare> {
         .create_document(NewDocument {
             slug: slug.into(),
             owner_id: account.id,
+            owner_session_generation: None,
             ownership_mode: "owned".into(),
             title: "Spike".into(),
             source_format: "markdown".into(),
@@ -1247,6 +1248,7 @@ async fn opening_more_documents_than_the_budget_holds_evicts_a_subscribed_entry_
             .create_document(NewDocument {
                 slug: slug.clone(),
                 owner_id: account.id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "Spike".into(),
                 source_format: "markdown".into(),
@@ -1695,6 +1697,7 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
             .create_document(NewDocument {
                 slug: slug.clone(),
                 owner_id: account.id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "Sweep".into(),
                 source_format: "markdown".into(),

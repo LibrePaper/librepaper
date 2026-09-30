@@ -130,6 +130,7 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
         .create_document(NewDocument {
             slug: format!("snapshots-{tag}"),
             owner_id: account.id,
+            owner_session_generation: None,
             ownership_mode: "owned".into(),
             title: "Snapshots".into(),
             source_format: "markdown".into(),

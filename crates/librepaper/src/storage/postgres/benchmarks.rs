@@ -75,6 +75,7 @@ async fn document(catalog: &PostgresCatalog, owner: uuid::Uuid, slug: String) ->
         .create_document(NewDocument {
             slug,
             owner_id: owner,
+            owner_session_generation: None,
             ownership_mode: "owned".into(),
             title: "Throughput benchmark".into(),
             source_format: "markdown".into(),

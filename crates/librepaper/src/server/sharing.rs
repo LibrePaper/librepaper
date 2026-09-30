@@ -209,6 +209,8 @@ impl Server {
             session_generation: caller.session_generation.clone(),
             link_hash: String::new(),
             policy_editor: true,
+            policy_comment: true,
+            automation: false,
             unowned_publisher: caller.id.is_empty(),
         };
         self.store
@@ -382,6 +384,8 @@ impl Server {
             session_generation: current_who.id.session_generation.clone(),
             link_hash: current_who.link.clone(),
             policy_editor: self.publishers.allows(&current_who.id.handle),
+            policy_comment: self.commenters.allows(&current_who.id.handle),
+            automation: current_who.automation,
             unowned_publisher: false,
         };
         let updated = self
@@ -451,7 +455,8 @@ impl Server {
             Ok(entry) => entry,
             Err(ModifyError::NotFound) => return write_json(404, &json!({"error": "not found"})),
             Err(ModifyError::Refused(message)) => {
-                return write_json(400, &json!({"error": message}))
+                let status = if message == "ownership changed" { 409 } else { 400 };
+                return write_json(status, &json!({"error": message}))
             }
             Err(ModifyError::Storage(err)) => {
                 eprintln!("could not record the sharing of {slug}: {err}");
@@ -670,12 +675,41 @@ impl Server {
             if uuid::Uuid::parse_str(&current_who.id.id).ok() != Some(document.owner_id) {
                 return write_json(409, &json!({"error":"ownership changed"}));
             }
-            if let Err(error) = catalog
-                .update_document_identity(document.id, &document.title, target.id, "owned")
+            let expected_owner = match uuid::Uuid::parse_str(&current_who.id.id) {
+                Ok(owner) => owner,
+                Err(_) => return write_json(409, &json!({"error":"ownership changed"})),
+            };
+            let transfer_actor = crate::storage::postgres::MutationAuthorization {
+                principal_key: current_who.key.clone(),
+                account_id: Some(expected_owner),
+                session_generation: current_who.id.session_generation.parse().ok(),
+                token_hash: if current_who.link.is_empty() {
+                    None
+                } else {
+                    hex::decode(&current_who.link)
+                        .ok()
+                        .and_then(|bytes| bytes.try_into().ok())
+                },
+                policy_edit: self.publishers.allows(&current_who.id.handle),
+                policy_comment: self.commenters.allows(&current_who.id.handle),
+                automation: current_who.automation,
+            };
+            match catalog
+                .transfer_document_owner(document.id, expected_owner, target.id, &transfer_actor)
                 .await
             {
+                Ok(true) => {}
+                Ok(false) => return write_json(409, &json!({"error":"ownership changed"})),
+                Err(crate::storage::postgres::Error::Conflict(_)) => {
+                    return write_json(409, &json!({"error":"ownership changed"}))
+                }
+                Err(crate::storage::postgres::Error::NotFound) => {
+                    return write_json(404, &json!({"error":"not found"}))
+                }
+                Err(error) => {
                 eprintln!("could not transfer {slug}: {error}");
                 return write_json(500, &json!({"error":"could not record the change"}));
+                }
             }
         }
         // The catalogue path has already committed the ownership change in

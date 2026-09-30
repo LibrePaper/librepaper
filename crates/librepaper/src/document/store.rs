@@ -418,7 +418,32 @@ pub struct MutationActor {
     pub link_hash: String,
     /// Whether the current publisher policy still admits this editor.
     pub policy_editor: bool,
+    /// Whether the current commenter policy admits this account.
+    pub policy_comment: bool,
+    /// Whether this request uses link-bounded automation authority.
+    pub automation: bool,
     pub unowned_publisher: bool,
+}
+
+impl MutationActor {
+    fn authorization(&self) -> crate::storage::postgres::MutationAuthorization {
+        let authority = crate::storage::postgres::Authority {
+            principal_key: self.owner_key.clone(),
+            account_id: uuid::Uuid::parse_str(&self.account_id).ok(),
+            link_hash: if self.link_hash.is_empty() {
+                None
+            } else {
+                hex::decode(&self.link_hash)
+                    .ok()
+                    .and_then(|bytes| bytes.try_into().ok())
+            },
+            session_generation: self.session_generation.parse().ok(),
+            policy_edit: self.policy_editor,
+            policy_comment: self.policy_comment,
+            automation: self.automation,
+        };
+        authority.mutation_authorization()
+    }
 }
 
 impl std::fmt::Display for PutError {
@@ -961,6 +986,14 @@ impl Store {
                 status: 401,
                 message: "bundle actor account is invalid",
             })?;
+        let session_generation =
+            actor
+                .session_generation
+                .parse::<i64>()
+                .map_err(|_| PutError::Authorization {
+                    status: 401,
+                    message: "bundle actor session is invalid",
+                })?;
         let document = match catalog
             .document_by_slug(&value.slug)
             .await
@@ -971,6 +1004,7 @@ impl Store {
                 .create_document(crate::storage::postgres::NewDocument {
                     slug: value.slug.clone(),
                     owner_id: account_id,
+                    owner_session_generation: Some(session_generation),
                     ownership_mode: if actor.unowned_publisher {
                         "open".into()
                     } else {
@@ -1012,6 +1046,10 @@ impl Store {
             principal_key: actor.owner_key.clone(),
             account_id: Some(account_id),
             link_hash: None,
+            session_generation: Some(session_generation),
+            policy_edit: actor.policy_editor,
+            policy_comment: actor.policy_comment,
+            automation: actor.automation,
         };
         let mut command = ReplaceProject {
             request_id: Uuid::new_v4(),
@@ -1090,7 +1128,12 @@ impl Store {
         Ok(usize::from(self.begin_delete(slug).await?.is_some()))
     }
 
-    pub async fn rename(&self, slug: &str, title: &str) -> Result<(), String> {
+    pub async fn rename(
+        &self,
+        slug: &str,
+        title: &str,
+        actor: &MutationActor,
+    ) -> Result<(), String> {
         if title.is_empty() {
             return Ok(());
         }
@@ -1100,17 +1143,19 @@ impl Store {
             .await
             .map_err(|e| e.to_string())?
         else {
-            return Ok(());
+            return Err("document not found".into());
         };
-        catalog
-            .update_document_identity(
-                document.id,
-                title,
-                document.owner_id,
-                &document.ownership_mode,
-            )
+        let changed = catalog
+            .update_document_title(document.id, &actor.authorization(), title)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| match error {
+                CatalogError::Conflict(_) => "ownership changed".to_string(),
+                CatalogError::NotFound => "document not found".to_string(),
+                other => other.to_string(),
+            })?;
+        if !changed {
+            return Err("ownership changed".into());
+        }
         Ok(())
     }
 
@@ -1182,12 +1227,8 @@ impl Store {
             .await
             .map_err(|e| ModifyError::Storage(e.to_string()))?;
         change(&mut entry).map_err(ModifyError::Refused)?;
-        let owner = uuid::Uuid::parse_str(&entry.publisher_id).unwrap_or(document.owner_id);
-        let mode = if entry.unowned { "open" } else { "owned" };
-        catalog
-            .update_document_identity(document.id, &entry.title, owner, mode)
-            .await
-            .map_err(|e| ModifyError::Storage(e.to_string()))?;
+        let actor = actor.ok_or_else(|| ModifyError::Refused("owner access is required".into()))?;
+        let authorization = actor.authorization();
         let links = entry
             .links
             .iter()
@@ -1213,10 +1254,6 @@ impl Store {
                 ))
             })
             .collect::<Result<Vec<_>, ModifyError>>()?;
-        catalog
-            .replace_share_links(document.id, &links)
-            .await
-            .map_err(|e| ModifyError::Storage(e.to_string()))?;
         let live_hashes = entry
             .links
             .iter()
@@ -1224,9 +1261,15 @@ impl Store {
             .filter_map(|link| hex::decode(&link.hash).ok())
             .collect::<Vec<_>>();
         catalog
-            .prune_link_grants(document.id, &live_hashes)
+            .save_document_sharing(document.id, &authorization, &links, &live_hashes)
             .await
-            .map_err(|e| ModifyError::Storage(e.to_string()))?;
+            .map_err(|error| match error {
+                CatalogError::Conflict(_) => {
+                    ModifyError::Refused("ownership changed".into())
+                }
+                CatalogError::NotFound => ModifyError::NotFound,
+                other => ModifyError::Storage(other.to_string()),
+            })?;
         self.get_result(slug)
             .await
             .map_err(|e| ModifyError::Storage(e.to_string()))?
@@ -1327,7 +1370,7 @@ async fn entries_from_documents(
             let mut account_grants = HashMap::new();
             for grant in grants_by_document.remove(&document.id).unwrap_or_default() {
                 let Some(hash) = grant.source_link_hash else {
-                    if let Some(role) = Role::parse(&grant.role) {
+                    if let Some(role) = grant.role.as_deref().and_then(Role::parse) {
                         account_grants.insert(grant.account_id.to_string(), role);
                     }
                     continue;

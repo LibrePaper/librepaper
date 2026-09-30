@@ -138,6 +138,7 @@ impl Deployment {
             .create_document(NewDocument {
                 slug: slug.into(),
                 owner_id: self.account_id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "Trash".into(),
                 source_format: "markdown".into(),

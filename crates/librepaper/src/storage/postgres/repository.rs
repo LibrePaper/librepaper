@@ -14,6 +14,10 @@ pub struct NewAccount {
     pub email: Option<String>,
 }
 
+#[cfg(test)]
+#[path = "lifecycle_regression_tests.rs"]
+mod lifecycle_regression_tests;
+
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct AccountRecord {
     pub id: Uuid,
@@ -34,6 +38,10 @@ pub struct AccountRecord {
 pub struct NewDocument {
     pub slug: String,
     pub owner_id: Uuid,
+    /// When supplied, creation is admitted only if the owner still has this
+    /// authenticated session generation. Trusted internal creation may omit
+    /// it, but the owner account must always be active.
+    pub owner_session_generation: Option<i64>,
     pub ownership_mode: String,
     pub title: String,
     pub source_format: String,
@@ -230,31 +238,122 @@ impl PostgresCatalog {
         Ok(deleted)
     }
 
-    pub async fn update_document_identity(
+    pub async fn update_document_title(
         &self,
         id: Uuid,
+        actor: &super::MutationAuthorization,
         title: &str,
-        owner_id: Uuid,
-        ownership_mode: &str,
     ) -> Result<bool> {
-        if title.is_empty() || !matches!(ownership_mode, "owned" | "open") {
+        if title.is_empty() {
             return Err(Error::Invalid("invalid document metadata".into()));
         }
         let mut tx = self.begin_writer_transaction().await?;
-        let changed = sqlx::query!(
-            "UPDATE documents SET title=$2,owner_id=$3,ownership_mode=$4,
-             updated_at=now() WHERE id=$1 AND status='active'",
-            id,
-            title,
-            owner_id,
-            ownership_mode,
+        super::annotations::authorize_mutation(&mut tx, id, actor, true).await?;
+        let expected_owner_id = Self::require_document_owner(&mut tx, id, actor).await?;
+        let changed = sqlx::query(
+            "UPDATE documents SET title=$3,updated_at=now()
+             WHERE id=$1 AND owner_id=$2 AND status='active'",
         )
+        .bind(id)
+        .bind(expected_owner_id)
+        .bind(title)
         .execute(&mut *tx)
         .await?
         .rows_affected()
             == 1;
         tx.commit().await?;
         Ok(changed)
+    }
+
+    /// Transfers ownership only while the document still belongs to the
+    /// expected owner. Lock the target account first, matching account
+    /// erasure's account-before-document lock order.
+    pub async fn transfer_document_owner(
+        &self,
+        id: Uuid,
+        expected_owner_id: Uuid,
+        new_owner_id: Uuid,
+        actor: &super::MutationAuthorization,
+    ) -> Result<bool> {
+        let mut tx = self.begin_writer_transaction().await?;
+        let target = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM accounts WHERE id=$1 AND status='active' FOR SHARE",
+        )
+        .bind(new_owner_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if target.is_none() {
+            return Err(Error::Conflict("target account is unavailable".into()));
+        }
+        super::annotations::authorize_mutation(&mut tx, id, actor, true).await?;
+        Self::require_document_owner(&mut tx, id, actor).await?;
+        if actor.account_id != Some(expected_owner_id) {
+            return Err(Error::Conflict("ownership changed".into()));
+        }
+        let changed = sqlx::query(
+            "UPDATE documents SET owner_id=$3,ownership_mode='owned',updated_at=now()
+             WHERE id=$1 AND owner_id=$2 AND status='active'",
+        )
+        .bind(id)
+        .bind(expected_owner_id)
+        .bind(new_owner_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    /// Save a document's link set and prune grants sourced from removed links
+    /// in one transaction. Authorization and replacement share the same
+    /// transaction so ownership and session changes cannot race the save.
+    #[allow(clippy::type_complexity)]
+    pub async fn save_document_sharing(
+        &self,
+        document_id: Uuid,
+        actor: &super::MutationAuthorization,
+        links: &[(
+            String,
+            [u8; 32],
+            Vec<u8>,
+            String,
+            Option<OffsetDateTime>,
+            Option<i64>,
+        )],
+        live_hashes: &[Vec<u8>],
+    ) -> Result<()> {
+        let mut tx = self.begin_writer_transaction().await?;
+        super::annotations::authorize_mutation(&mut tx, document_id, actor, true).await?;
+        Self::require_document_owner(&mut tx, document_id, actor).await?;
+        Self::replace_share_links_tx(&mut tx, document_id, links).await?;
+        Self::prune_link_grants_tx(&mut tx, document_id, live_hashes).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn require_document_owner(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        actor: &super::MutationAuthorization,
+    ) -> Result<Uuid> {
+        if actor.automation {
+            return Err(Error::Conflict("owner access is required".into()));
+        }
+        let account_id = actor
+            .account_id
+            .ok_or_else(|| Error::Conflict("owner access is required".into()))?;
+        let owner_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT owner_id FROM documents WHERE id=$1 AND status='active' FOR UPDATE",
+        )
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        if owner_id != account_id {
+            return Err(Error::Conflict("ownership changed".into()));
+        }
+        Ok(owner_id)
     }
 
     pub async fn create_account(&self, input: NewAccount) -> Result<AccountRecord> {
@@ -368,26 +467,30 @@ impl PostgresCatalog {
     pub async fn create_document(&self, input: NewDocument) -> Result<DocumentRecord> {
         validate_document(&input)?;
         let id = new_id();
-        sqlx::query_as!(
-            DocumentRecord,
+        sqlx::query_as::<_, DocumentRecord>(
             "INSERT INTO documents
              (id,slug,owner_id,ownership_mode,title,status,source_format,main_path,settings)
-             VALUES($1,$2,$3,$4,$5,'active',$6,$7,$8)
+             SELECT $1,$2,a.id,$4,$5,'active',$6,$7,$8
+             FROM accounts a
+             WHERE a.id=$3 AND a.status='active'
+               AND ($9::bigint IS NULL OR a.session_generation=$9)
+             FOR SHARE
              RETURNING id,slug,owner_id,ownership_mode,title,status,source_format,
-                       main_path,update_sequence,
-                       settings,created_at,updated_at,deleted_at",
-            id,
-            input.slug,
-            input.owner_id,
-            input.ownership_mode,
-            input.title,
-            input.source_format,
-            input.main_path,
-            input.settings,
+                       main_path,update_sequence,settings,created_at,updated_at,deleted_at",
         )
-        .fetch_one(&self.pool)
+        .bind(id)
+        .bind(input.slug)
+        .bind(input.owner_id)
+        .bind(input.ownership_mode)
+        .bind(input.title)
+        .bind(input.source_format)
+        .bind(input.main_path)
+        .bind(input.settings)
+        .bind(input.owner_session_generation)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(Error::from)
+        .map_err(Error::from)?
+        .ok_or_else(|| Error::Conflict("owner account is inactive or session changed".into()))
     }
 
     pub async fn document_by_slug(&self, slug: &str) -> Result<Option<DocumentRecord>> {
@@ -570,7 +673,7 @@ impl PostgresCatalog {
         }
         let mut tx = self.begin_writer_transaction().await?;
         if let Some(actor) = actor {
-            PostgresCatalog::authorize_annotation_mutation(&mut tx, document_id, actor, true)
+            super::annotations::authorize_mutation(&mut tx, document_id, actor, true)
                 .await?;
         }
         // The owner is read under the same lock that guards the document's
@@ -622,6 +725,14 @@ impl PostgresCatalog {
                 })
                 .collect());
         }
+        // Serialize quota observations across different documents owned by
+        // the same account. The document row lock above handles duplicate
+        // completion races for this document; this deployment mutex also
+        // protects the per-owner count and byte total across documents.
+        let _lock =
+            sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
+                .fetch_one(&mut *tx)
+                .await?;
         let uploads = sqlx::query_scalar!(
             r#"SELECT count(*) AS "count!" FROM document_assets a
                JOIN documents d ON d.id=a.document_id
@@ -637,12 +748,8 @@ impl PostgresCatalog {
             total.saturating_add(input.byte_length)
         });
         let owner_usage = owner_usage_bytes(&mut *tx, document.owner_id).await?;
-        // Lock taken by the first statement; the deployment total is blob bytes
-        // plus every current base plus every document's uncompacted rows.
-        let _lock =
-            sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
-                .fetch_one(&mut *tx)
-                .await?;
+        // The deployment total is blob bytes plus every current base plus
+        // every document's uncompacted rows.
         let log_usage = sqlx::query_scalar!(
             r#"SELECT (COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0))::bigint AS "total!""#
         )
