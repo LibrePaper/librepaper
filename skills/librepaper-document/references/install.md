@@ -19,7 +19,7 @@ The installer verifies the release archive's checksum and installs into
 in every command rather than editing the user's shell configuration.
 
 - `LIBREPAPER_VERSION` selects a release.
-- `CARGO_INSTALL_ROOT` selects an installation root (default: `~/.cargo`).
+- `LIBREPAPER_INSTALL_DIR` selects an installation directory.
 - Windows: use the matching executable from the
   [release page](https://github.com/LibrePaper/librepaper/releases).
 

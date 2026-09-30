@@ -41,7 +41,7 @@ let pgUrl = process.env.LIBREPAPER_TEST_POSTGRES_URL;
 if (!pgUrl) {
   try {
     const containerName = `librepaper-smoke-${process.pid}`;
-    execSync(`docker run -d --rm --name "${containerName}" -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=librepaper -p 127.0.0.1::5432 postgres:16-alpine`, { stdio: "ignore" });
+    execSync(`docker run -d --rm --name "${containerName}" -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=librepaper -p 127.0.0.1::5432 postgres:17-alpine`, { stdio: "ignore" });
     pgContainer = containerName;
     let port = null;
     for (let i = 0; i < 60; i++) {
