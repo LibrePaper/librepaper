@@ -223,7 +223,12 @@ impl Server {
             .create_document(crate::storage::postgres::NewDocument {
                 slug: slug.to_string(),
                 owner_id: account_id,
-                owner_session_generation: Some(account.session_generation),
+                owner_session_generation: Some(
+                    actor
+                        .session_generation
+                        .parse()
+                        .map_err(|_| "invalid onboarding session".to_string())?,
+                ),
                 ownership_mode: if actor.unowned_publisher {
                     "open".into()
                 } else {
