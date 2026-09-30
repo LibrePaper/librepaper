@@ -191,6 +191,9 @@ async fn update(
         tip: tip.clone(),
         base: None,
         branch: branch.to_vec(),
+        stored: None,
+        decided: Vec::new(),
+        carried: Vec::new(),
     };
     room.command(authority, &mut command).await.unwrap()
 }
@@ -603,4 +606,82 @@ async fn two_reviewers_deciding_at_once_still_apply_what_they_accepted() {
             .is_none(),
         "and deleted, with its hunk decisions"
     );
+}
+
+/// A decision survives the author absorbing a coauthor's edit.
+///
+/// The author's branch takes in a word somebody else changed and moves its
+/// base past it, which moves the tip and so renumbers the hunks. The decision
+/// already made has to follow its change: kept, it must still count toward
+/// resolving, and the answer applied at the end must be the one given to that
+/// change and no other.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_decision_follows_its_hunk_when_the_base_moves() {
+    let Some(deployment) = deployment("carry").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let path = "paper.md";
+    let middle = " It was a long and quiet afternoon in the old town.";
+    other_writer_types(&room, path, &format!("The cat sat on the mat.{middle} Far away, a dog ran.\n")).await;
+
+    let base = frontier(&room).await;
+    let (branch_bytes, tip) = room
+        .log()
+        .with_fork_at(&base, |at| {
+            author_forks(at, 4242, path, &format!("The tabby sat on the mat.{middle} Far away, a dog sprinted.\n"))
+        })
+        .await
+        .unwrap();
+    let stored = open(&room, &deployment.authority, "Ada", &base).await;
+    let stored = update(&room, &deployment.authority, &stored, &tip, &branch_bytes).await;
+
+    let first = decide(&room, &deployment.authority, stored.id, 0, true, &tip, 7)
+        .await
+        .unwrap();
+    assert!(!first.resolved, "one of two hunks answered");
+
+    // A coauthor changes a word between the two hunks, and the author's
+    // branch absorbs it: the base moves to the room's frontier and the tip to
+    // the branch's, with the author's own operations unchanged.
+    other_writer_types(&room, path, "The cat sat on the mat. It was a long and sleepy afternoon in the old town. Far away, a dog ran.\n").await;
+    let new_base = frontier(&room).await;
+    let new_tip = room
+        .log()
+        .with_fork_at(&new_base, |at| {
+            session::apply_update(at, &branch_bytes).unwrap();
+            at.state_frontiers()
+        })
+        .await
+        .unwrap();
+    let mut command = UpdateProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id: stored.id,
+        expected_version: stored.version,
+        tip: new_tip.clone(),
+        base: Some(new_base),
+        branch: branch_bytes.clone(),
+        stored: None,
+        decided: Vec::new(),
+        carried: Vec::new(),
+    };
+    room.command(&deployment.authority, &mut command).await.unwrap();
+
+    let decided = room.catalog().decisions(stored.id).await.unwrap();
+    assert_eq!(
+        decided.iter().map(|d| (d.hunk_index, d.accepted)).collect::<Vec<_>>(),
+        vec![(0, true)],
+        "the accepted hunk keeps its answer under the new numbering"
+    );
+
+    let last = decide(&room, &deployment.authority, stored.id, 1, false, &new_tip, 7)
+        .await
+        .unwrap();
+    assert!(last.resolved, "the second answer completes the review");
+    let body = text(&room, path).await;
+    assert!(body.contains("tabby"), "the accepted change landed, got {body:?}");
+    assert!(body.contains("sleepy"), "the coauthor's word is kept, got {body:?}");
+    assert!(body.contains("dog ran."), "the declined change did not land, got {body:?}");
 }

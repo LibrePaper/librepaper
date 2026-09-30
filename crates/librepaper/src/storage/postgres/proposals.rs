@@ -261,4 +261,57 @@ impl PostgresCatalog {
         .await
         .map_err(Error::from)
     }
+
+    /// Every decision on every open proposal of a document, as (proposal id,
+    /// hunk index, accepted), so a listing costs one query rather than one per
+    /// proposal.
+    pub async fn decisions_for_document(
+        &self,
+        document_id: Uuid,
+    ) -> Result<Vec<(Uuid, i32, bool)>> {
+        sqlx::query_as::<_, (Uuid, i32, bool)>(
+            "SELECT h.proposal_id,h.hunk_index,h.accepted
+             FROM document_proposal_hunks h
+             JOIN document_proposals p ON p.id=h.proposal_id
+             WHERE p.document_id=$1
+             ORDER BY h.proposal_id,h.hunk_index",
+        )
+        .bind(document_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    /// Replaces a proposal's decisions with the ones that survived a tip
+    /// change, renumbered against the new diff and stamped with the new tip.
+    /// The old rows are numbered against a diff that no longer exists, so none
+    /// of them may stay.
+    pub async fn replace_decisions(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        proposal_id: Uuid,
+        decided_against: &[u8],
+        rows: &[(i32, bool, String, Option<String>)],
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM document_proposal_hunks WHERE proposal_id=$1")
+            .bind(proposal_id)
+            .execute(&mut **tx)
+            .await?;
+        for (hunk_index, accepted, decided_by, note) in rows {
+            sqlx::query(
+                "INSERT INTO document_proposal_hunks(proposal_id,hunk_index,accepted,decided_by,
+                                                     decided_against,note)
+                 VALUES($1,$2,$3,$4,$5,$6)",
+            )
+            .bind(proposal_id)
+            .bind(hunk_index)
+            .bind(accepted)
+            .bind(decided_by)
+            .bind(decided_against)
+            .bind(note)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
 }

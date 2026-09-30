@@ -215,6 +215,117 @@ pub fn hunks(
     )
 }
 
+/// How much untouched text on each side a [`HunkKey`] remembers.
+const KEY_CONTEXT: usize = 16;
+
+/// A hunk described by what it says rather than by its number.
+///
+/// Hunk indexes are only stable against one diff, and the diff changes when the
+/// author absorbs a coauthor's edits. The container, the text removed, the text
+/// inserted and a little of the old side on each end are what stay the same
+/// when the same change is found again, so they are what a decision follows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HunkKey {
+    pub index: usize,
+    pub container: String,
+    pub removed: String,
+    pub inserted: String,
+    pub prefix: String,
+    pub suffix: String,
+}
+
+impl HunkKey {
+    fn same_change(&self, other: &HunkKey) -> bool {
+        self.container == other.container
+            && self.removed == other.removed
+            && self.inserted == other.inserted
+            && self.prefix == other.prefix
+            && self.suffix == other.suffix
+    }
+}
+
+/// The hunks of [`hunks`], each with the key that identifies it across diffs.
+///
+/// Slicing is by code point, the basis `start` and `deleted` are in.
+pub fn keyed_hunks(
+    doc: &LoroDoc,
+    proposal: &Proposal,
+    branch_bytes: &[u8],
+) -> Result<Vec<HunkKey>, ProposalError> {
+    let branch = rebuild(doc, proposal, branch_bytes)?;
+    let batch = branch
+        .diff(&proposal.base, &proposal.tip)
+        .map_err(|error| ProposalError::Failed(error.to_string()))?;
+    let at_base = branch
+        .fork_at(&proposal.base)
+        .map_err(|error| ProposalError::Failed(error.to_string()))?;
+    Ok(
+        hunks_of_batch(&batch, |cid| at_base.get_text(cid.clone()).to_string())
+            .into_iter()
+            .map(|(cid, hunk)| {
+                let old: Vec<char> = at_base.get_text(cid.clone()).to_string().chars().collect();
+                let start = hunk.start.min(old.len());
+                let end = (hunk.start + hunk.deleted).min(old.len());
+                HunkKey {
+                    index: hunk.index,
+                    container: format!("{cid:?}"),
+                    removed: old[start..end].iter().collect(),
+                    inserted: hunk.inserted,
+                    prefix: old[start.saturating_sub(KEY_CONTEXT)..start]
+                        .iter()
+                        .collect(),
+                    suffix: old[end..(end + KEY_CONTEXT).min(old.len())]
+                        .iter()
+                        .collect(),
+                }
+            })
+            .collect(),
+    )
+}
+
+/// One decision as it is stored, for the pure remapping below: hunk index,
+/// accepted, decided by, note.
+pub type CarriedDecision = (i32, bool, String, Option<String>);
+
+/// Moves decisions from the hunk numbering of an old diff to a new one.
+///
+/// A decision follows its hunk only when exactly one new hunk has the same key;
+/// if the change vanished, was edited, or is ambiguous, the decision is dropped
+/// and the reviewer is asked again. Two decisions never land on one index.
+pub fn carry_decisions(
+    old: &[HunkKey],
+    new: &[HunkKey],
+    decided: &[StoredDecision],
+) -> Vec<CarriedDecision> {
+    let mut out: Vec<CarriedDecision> = Vec::new();
+    for decision in decided {
+        let Some(before) = old
+            .iter()
+            .find(|key| key.index as i32 == decision.hunk_index)
+        else {
+            continue;
+        };
+        let mut matches = new.iter().filter(|key| key.same_change(before));
+        let (Some(found), None) = (matches.next(), matches.next()) else {
+            continue;
+        };
+        out.push((
+            found.index as i32,
+            decision.accepted,
+            decision.decided_by.clone(),
+            decision.note.clone(),
+        ));
+    }
+    let mut seen = HashSet::new();
+    let clashes: HashSet<i32> = out
+        .iter()
+        .map(|row| row.0)
+        .filter(|index| !seen.insert(*index))
+        .collect();
+    out.retain(|row| !clashes.contains(&row.0));
+    out
+}
+
 /// Carries a decided proposal into the document, and returns the single update
 /// that did it.
 ///
@@ -393,6 +504,14 @@ pub struct UpdateProposal {
     /// stored base.
     pub base: Option<Frontiers>,
     pub branch: Vec<u8>,
+    /// The stored row, read by `load` only when there are decisions to remap.
+    pub stored: Option<StoredProposal>,
+    /// The decisions already recorded, read by `load`. Empty for most updates,
+    /// and then there is nothing to remap.
+    pub decided: Vec<StoredDecision>,
+    /// The decisions that survive the move, renumbered against the new diff.
+    /// Set by `evaluate`, written by `transact` when `decided` was not empty.
+    pub carried: Vec<CarriedDecision>,
 }
 
 impl Command for UpdateProposal {
@@ -400,6 +519,29 @@ impl Command for UpdateProposal {
 
     fn name(&self) -> &'static str {
         "proposal-update"
+    }
+
+    // The row and its decisions, read with the sequencer lock held so what
+    // `evaluate` remaps is what `transact` replaces.
+    fn load(&mut self) -> BoxFuture<'_, std::result::Result<(), CommandError>> {
+        Box::pin(async move {
+            self.decided = self
+                .catalog
+                .decisions(self.id)
+                .await
+                .map_err(CommandError::from)?;
+            if self.decided.is_empty() {
+                return Ok(());
+            }
+            self.stored = Some(
+                self.catalog
+                    .proposal(self.id)
+                    .await
+                    .map_err(CommandError::from)?
+                    .ok_or_else(|| CommandError::Conflict("that proposal is not open".into()))?,
+            );
+            Ok(())
+        })
     }
 
     /// Nothing here checks the branch against the head document: its
@@ -419,6 +561,39 @@ impl Command for UpdateProposal {
                 .fork_at(base)
                 .map_err(|_| CommandError::Conflict(ProposalError::UnknownBase.to_string()))?;
         }
+        let Some(stored) = &self.stored else {
+            return Ok(None);
+        };
+        if self.decided.is_empty() {
+            return Ok(None);
+        }
+        // Decisions are keyed by hunk number, and moving the tip renumbers the
+        // hunks. Follow each decision to the hunk that says the same thing in
+        // the new diff, so none is applied to a change the reviewer never saw.
+        let conflict = |error: ProposalError| CommandError::Conflict(error.to_string());
+        let decode = |bytes: &[u8]| {
+            Frontiers::decode(bytes).map_err(|error| CommandError::Conflict(error.to_string()))
+        };
+        let old_base = decode(&stored.base_frontiers)?;
+        let old = keyed_hunks(
+            head.doc(),
+            &Proposal {
+                base: old_base.clone(),
+                tip: decode(&stored.tip_frontiers)?,
+            },
+            &stored.branch_bytes,
+        )
+        .map_err(conflict)?;
+        let new = keyed_hunks(
+            head.doc(),
+            &Proposal {
+                base: self.base.clone().unwrap_or(old_base),
+                tip: self.tip.clone(),
+            },
+            &self.branch,
+        )
+        .map_err(conflict)?;
+        self.carried = carry_decisions(&old, &new, &self.decided);
         Ok(None)
     }
 
@@ -428,18 +603,27 @@ impl Command for UpdateProposal {
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
         Box::pin(async move {
-            self.catalog
+            let tip = self.tip.encode();
+            let row = self
+                .catalog
                 .update_proposal_branch(
                     tx,
                     self.document_id,
                     self.id,
                     self.expected_version,
-                    self.tip.encode(),
+                    tip.clone(),
                     self.base.as_ref().map(Frontiers::encode),
                     self.branch.clone(),
                 )
-                .await
-                .map_err(CommandError::from)
+                .await?;
+            // Only when the version check applied: a refused update leaves the
+            // old tip in place, and the old numbering with it.
+            if !self.decided.is_empty() && row.tip_frontiers == tip {
+                self.catalog
+                    .replace_decisions(tx, self.id, &tip, &self.carried)
+                    .await?;
+            }
+            Ok(row)
         })
     }
 }
@@ -729,6 +913,101 @@ mod tests {
 
         let proposal = Proposal { base, tip };
         (room, proposal, bytes)
+    }
+
+    /// A room whose author edited two words in one file, then absorbed a
+    /// coauthor's edit elsewhere. Returns the keys before and after.
+    fn keys_before_and_after_absorbing(author_edits_again: bool) -> (Vec<HunkKey>, Vec<HunkKey>) {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat on the mat. It was a long and quiet afternoon in the old town. Far away, a dog ran.");
+        room.commit();
+        let base = room.state_frontiers();
+        let at_fork = session::encode_vector(&room);
+
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        session::put_text(
+            &branch,
+            "main.md",
+            "The tabby sat on the mat. It was a long and quiet afternoon in the old town. Far away, a dog sprinted.",
+        );
+        branch.commit();
+        let tip = branch.state_frontiers();
+        let bytes = session::encode_diff(&branch, &at_fork).unwrap();
+        let old = keyed_hunks(
+            &room,
+            &Proposal {
+                base: base.clone(),
+                tip: tip.clone(),
+            },
+            &bytes,
+        )
+        .unwrap();
+        assert_eq!(old.len(), 2, "two hunks to decide, got {old:?}");
+
+        // A coauthor changes a word in the middle, well past both hunks' context.
+        let coauthor = room.fork();
+        coauthor.set_peer_id(REVIEWER).unwrap();
+        session::put_text(
+            &coauthor,
+            "main.md",
+            "The cat sat on the mat. It was a long and sleepy afternoon in the old town. Far away, a dog ran.",
+        );
+        coauthor.commit();
+        let update = session::encode_diff(&coauthor, &session::encode_vector(&room)).unwrap();
+        session::apply_update(&room, &update).unwrap();
+        session::apply_update(&branch, &update).unwrap();
+        let new_base = room.state_frontiers();
+
+        if author_edits_again {
+            let text = "The tabby sat on the mat. It was a long and sleepy afternoon in the old town. Far away, a dog dashed.";
+            session::put_text(&branch, "main.md", text);
+        }
+        branch.commit();
+        let new_tip = branch.state_frontiers();
+        let new_bytes = session::encode_diff(&branch, &at_fork).unwrap();
+        let new = keyed_hunks(
+            &room,
+            &Proposal {
+                base: new_base,
+                tip: new_tip,
+            },
+            &new_bytes,
+        )
+        .unwrap();
+        (old, new)
+    }
+
+    fn decision(index: i32, accepted: bool) -> StoredDecision {
+        StoredDecision {
+            hunk_index: index,
+            accepted,
+            decided_by: "reviewer".into(),
+            note: None,
+        }
+    }
+
+    /// Absorbing a coauthor's edit renumbers nothing the author did, so both
+    /// decisions follow their hunks.
+    #[test]
+    fn decisions_follow_unchanged_hunks_across_an_absorbed_edit() {
+        let (old, new) = keys_before_and_after_absorbing(false);
+        assert_eq!(new.len(), 2, "the author's two hunks remain, got {new:?}");
+        let carried = carry_decisions(&old, &new, &[decision(0, true), decision(1, false)]);
+        assert_eq!(carried.len(), 2, "both carried, got {carried:?}");
+        assert_eq!((carried[0].0, carried[0].1), (0, true));
+        assert_eq!((carried[1].0, carried[1].1), (1, false));
+    }
+
+    /// A decided hunk the author then changed is a different change, so its
+    /// decision is dropped while the untouched one is kept.
+    #[test]
+    fn a_decision_is_dropped_when_the_author_changes_its_hunk() {
+        let (old, new) = keys_before_and_after_absorbing(true);
+        let carried = carry_decisions(&old, &new, &[decision(0, true), decision(1, false)]);
+        assert_eq!(carried.len(), 1, "only the untouched hunk keeps its answer");
+        assert_eq!((carried[0].0, carried[0].1), (0, true));
     }
 
     fn text_at(doc: &LoroDoc, path: &str) -> String {

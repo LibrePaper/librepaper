@@ -934,6 +934,18 @@
   function proposalTip(id) {
     return openProposals.get(id)?.tipBytes || "";
   }
+  // Seed decidedHunks from decisions array in a decoded proposal.
+  // Clears the entry if decisions is empty, preserving instant feedback.
+  function seedDecisions(decoded) {
+    if (Array.isArray(decoded.decisions) && decoded.decisions.length) {
+      decidedHunks.set(decoded.id, {
+        tip: decoded.tipBytes,
+        hunks: new Map(decoded.decisions.map((d) => [Number(d.hunk), d.accepted ? "accepted" : "rejected"])),
+      });
+    } else {
+      decidedHunks.delete(decoded.id);
+    }
+  }
 
   // The same proposals as something to look at: `review` is what the editor
   // draws over the text, and `reviewRows` is one card per hunk for the
@@ -1125,7 +1137,10 @@
         openProposals.clear();
         for (const open of event.proposals || []) {
           const decoded = decodeProposal(open);
-          if (decoded) openProposals.set(decoded.id, decoded);
+          if (decoded) {
+            openProposals.set(decoded.id, decoded);
+            seedDecisions(decoded);
+          }
         }
         // Drop decided hunks from proposals no longer open
         for (const id of decidedHunks.keys()) {
@@ -1141,6 +1156,7 @@
         const decoded = decodeProposal(event.proposal);
         if (decoded) {
           openProposals.set(decoded.id, decoded);
+          seedDecisions(decoded);
           recomputeReview();
         }
       } else if (event.type === "proposal-decided" && !event.resolved) {

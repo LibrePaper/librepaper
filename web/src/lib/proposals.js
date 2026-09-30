@@ -272,6 +272,7 @@ export function decodeProposal(raw) {
     tip: decodeFrontiers(decodeBase64(raw.tip)),
     tipBytes: raw.tip || "",
     bytes: raw.branch ? decodeBase64(raw.branch) : null,
+    decisions: Array.isArray(raw.decisions) ? raw.decisions : [],
   };
 }
 

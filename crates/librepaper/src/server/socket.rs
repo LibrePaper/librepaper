@@ -69,11 +69,19 @@ pub(super) async fn announce_proposal(room: &Room, id: &str) {
     let Ok(Some(proposal)) = room.catalog().proposal(id).await else {
         return;
     };
+    let decisions: Vec<(i32, bool)> = room
+        .catalog()
+        .decisions(id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|decision| (decision.hunk_index, decision.accepted))
+        .collect();
     room.broadcast_editors_except(
         None,
         &json!({
             "type": "proposal-changed",
-            "proposal": proposal_json(&proposal),
+            "proposal": proposal_json(&proposal, &decisions),
             "version": 1, "protocol": PROTOCOL,
         }),
     )
@@ -85,14 +93,19 @@ pub(super) async fn announce_proposal(room: &Room, id: &str) {
 /// hunks (`web/src/lib/proposals.js`'s `decodeProposal`). The frontiers travel
 /// as the exact bytes `document_proposals` holds, because a decision compares
 /// the tip it names against these bytes rather than against a frontier
-/// re-encoded from them (room/proposals.rs's `DecideProposalHunk`).
-fn proposal_json(stored: &StoredProposal) -> Value {
+/// re-encoded from them (room/proposals.rs's `DecideProposalHunk`). The hunks
+/// already decided ride along so a browser can show them without asking.
+fn proposal_json(stored: &StoredProposal, decisions: &[(i32, bool)]) -> Value {
     json!({
         "id": stored.id.to_string(),
         "author": stored.author,
         "base": encode_update(&stored.base_frontiers),
         "tip": encode_update(&stored.tip_frontiers),
         "branch": encode_update(&stored.branch_bytes),
+        "decisions": decisions
+            .iter()
+            .map(|(hunk, accepted)| json!({"hunk": hunk, "accepted": accepted}))
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -1148,6 +1161,9 @@ impl Server {
                                     tip,
                                     base,
                                     branch,
+                                    stored: None,
+                                    decided: Vec::new(),
+                                    carried: Vec::new(),
                                 };
                                 match room.command(&who.document_authority(), &mut command).await {
                                     Ok(_) => {
@@ -1271,12 +1287,27 @@ impl Server {
                                 }
                             }
                             "proposal-list" => match room.catalog().open_proposals(room.document_id).await {
-                                Ok(open) => json!({
-                                    "type": "proposal-list",
-                                    "proposals": open.iter().map(proposal_json).collect::<Vec<_>>(),
-                                    "request_id": incoming.request_id(),
-                                    "version": 1, "protocol": PROTOCOL,
-                                }),
+                                Ok(open) => {
+                                    let mut decided: std::collections::HashMap<uuid::Uuid, Vec<(i32, bool)>> =
+                                        std::collections::HashMap::new();
+                                    for (id, hunk, accepted) in room
+                                        .catalog()
+                                        .decisions_for_document(room.document_id)
+                                        .await
+                                        .unwrap_or_default()
+                                    {
+                                        decided.entry(id).or_default().push((hunk, accepted));
+                                    }
+                                    json!({
+                                        "type": "proposal-list",
+                                        "proposals": open
+                                            .iter()
+                                            .map(|p| proposal_json(p, decided.get(&p.id).map_or(&[][..], Vec::as_slice)))
+                                            .collect::<Vec<_>>(),
+                                        "request_id": incoming.request_id(),
+                                        "version": 1, "protocol": PROTOCOL,
+                                    })
+                                }
                                 Err(error) => json!({
                                     "type": "error",
                                     "message": error.to_string(),
