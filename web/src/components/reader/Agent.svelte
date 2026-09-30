@@ -604,7 +604,7 @@
     {@render connectPrompt()}
   {:else}
     <div class="chat-history">
-    {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || starting} onclick={() => void act(() => client.create())}>{starting ? "Connecting…" : "Connect"}</button>{/if}
+    {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || starting} onclick={() => void act(() => client.create())}>{starting ? "Connecting…" : "Retry connection"}</button>{/if}
     {#if connection.id && !connection.connected}
       <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm lp-control-outline" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
     {/if}

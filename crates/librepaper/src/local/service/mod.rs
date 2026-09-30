@@ -1607,7 +1607,7 @@ pub(super) fn project_query(uri: &axum::http::Uri) -> Option<String> {
 
 /// Whether `entry` belongs to the requesting origin: the whole scope of a
 /// lookup by id, since a pairing covers every project of its origin.
-pub(super) fn owned_by(entry: &JobEntry, origin: Option<&str>) -> bool {
+fn owned_by(entry: &JobEntry, origin: Option<&str>) -> bool {
     pairing::normalize_origin(&entry.origin) == pairing::normalize_origin(origin.unwrap_or_default())
 }
 

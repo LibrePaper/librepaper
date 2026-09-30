@@ -1400,7 +1400,7 @@ async function buildWorkspaceForm(tree) {
 export async function syncWorkspace({ tree } = {}) {
   const pairing = requirePairing();
   const form = await buildWorkspaceForm(tree);
-  const response = await send("PUT", "workspace", { token: pairing.token, formBody: form });
+  const response = await send("PUT", `workspace?${new URLSearchParams({ project: current.project })}`, { token: pairing.token, formBody: form });
   return response.json();
 }
 
