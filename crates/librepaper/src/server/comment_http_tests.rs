@@ -38,6 +38,7 @@ struct Deployment {
     owner_id: Uuid,
     owner_session_generation: String,
     commenter_id: Uuid,
+    commenter_session_generation: String,
     _writer: crate::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
@@ -152,12 +153,13 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         owner_id: owner.id,
         owner_session_generation: owner.session_generation.to_string(),
         commenter_id: commenter.id,
+        commenter_session_generation: commenter.session_generation.to_string(),
         _writer: writer,
         _objects: objects,
     })
 }
 
-fn viewer(account_id: Uuid, handle: &str, role: Role) -> Viewer {
+fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) -> Viewer {
     Viewer {
         id: Identity {
             provider: String::new(),
@@ -165,7 +167,7 @@ fn viewer(account_id: Uuid, handle: &str, role: Role) -> Viewer {
             handle: handle.into(),
             name: handle.into(),
             picture: String::new(),
-            session_generation: String::new(),
+            session_generation: session_generation.into(),
         },
         key: handle.into(),
         link: String::new(),
@@ -203,7 +205,12 @@ async fn an_empty_attribution_key_is_the_previous_agents_rejection_reproduced() 
     // Same shape of body a hand-built curl request would send, parsed the
     // same way the HTTP and socket handlers both parse it.
     let incoming: RoomMessage = serde_json::from_value(comment_body()).unwrap();
-    let who = viewer(deployment.commenter_id, "commenter", Role::Commenter);
+    let who = viewer(
+        deployment.commenter_id,
+        "commenter",
+        &deployment.commenter_session_generation,
+        Role::Commenter,
+    );
     // The one thing a hand-built request is missing that a real browser
     // never is: an attribution key. `comment_author` never returns "" for a
     // signed-in caller or one with a valid visitor cookie -- only for a
@@ -243,7 +250,12 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
     // exactly this grant; setting it here by hand is standing in for that
     // resolution, not bypassing the check under test (the rung check inside
     // `authorize_annotation_mutation`, which does hit the database).
-    let who = viewer(deployment.commenter_id, "commenter", Role::Commenter);
+    let who = viewer(
+        deployment.commenter_id,
+        "commenter",
+        &deployment.commenter_session_generation,
+        Role::Commenter,
+    );
     let (result, ok) = deployment
         .server
         .apply_from(
@@ -363,7 +375,12 @@ async fn a_whole_document_remark_from_a_commenter_lands_too() {
         "request_id": Uuid::new_v4().to_string(),
     }))
     .unwrap();
-    let who = viewer(deployment.commenter_id, "commenter", Role::Commenter);
+    let who = viewer(
+        deployment.commenter_id,
+        "commenter",
+        &deployment.commenter_session_generation,
+        Role::Commenter,
+    );
     let (result, ok) = deployment
         .server
         .apply_from(
@@ -402,7 +419,12 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
         .get(&deployment.slug)
         .await
         .unwrap();
-    let who = viewer(deployment.commenter_id, "commenter", Role::Commenter);
+    let who = viewer(
+        deployment.commenter_id,
+        "commenter",
+        &deployment.commenter_session_generation,
+        Role::Commenter,
+    );
     let author = format!("account:{}", deployment.commenter_id);
 
     // One real comment through the wire, so the document's contents are not
@@ -419,7 +441,12 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
     let actor = crate::storage::postgres::MutationAuthorization {
         principal_key: deployment.commenter_id.to_string(),
         account_id: Some(deployment.commenter_id),
-        session_generation: Some(1),
+        session_generation: Some(
+            deployment
+                .commenter_session_generation
+                .parse()
+                .expect("seeded account generation is numeric"),
+        ),
         token_hash: None,
         policy_edit: false,
         policy_comment: true,
@@ -591,9 +618,14 @@ async fn get_comments(deployment: &Deployment) -> super::Reply {
 /// A real request through the HTTP handler, with whatever query string a
 /// traversal has reached.
 async fn get_comment_page(deployment: &Deployment, query: &str) -> super::Reply {
-    let mut identity = viewer(deployment.commenter_id, "commenter", Role::Commenter).id;
+    let mut identity = viewer(
+        deployment.commenter_id,
+        "commenter",
+        &deployment.commenter_session_generation,
+        Role::Commenter,
+    )
+    .id;
     identity.provider = "github".into();
-    identity.session_generation = "1".into();
     let cookie = crate::auth::sign_session(&[0u8; 32], &identity, crate::util::now_unix() + 3600);
     let request = axum::http::Request::builder()
         .uri(format!(

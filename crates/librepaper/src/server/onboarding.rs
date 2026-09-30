@@ -219,16 +219,15 @@ impl Server {
         account_id: uuid::Uuid,
         days: u32,
     ) -> Result<(), String> {
+        let owner_session_generation: i64 = actor
+            .session_generation
+            .parse()
+            .map_err(|_| "invalid onboarding session".to_string())?;
         let document = catalog
             .create_document(crate::storage::postgres::NewDocument {
                 slug: slug.to_string(),
                 owner_id: account_id,
-                owner_session_generation: Some(
-                    actor
-                        .session_generation
-                        .parse()
-                        .map_err(|_| "invalid onboarding session".to_string())?,
-                ),
+                owner_session_generation: Some(owner_session_generation),
                 ownership_mode: if actor.unowned_publisher {
                     "open".into()
                 } else {
@@ -265,6 +264,7 @@ impl Server {
             &texts,
             &assets,
             account_id,
+            owner_session_generation,
             &author_label,
             days,
         )

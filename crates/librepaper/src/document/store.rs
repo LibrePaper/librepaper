@@ -433,9 +433,7 @@ impl MutationActor {
             link_hash: if self.link_hash.is_empty() {
                 None
             } else {
-                hex::decode(&self.link_hash)
-                    .ok()
-                    .and_then(|bytes| bytes.try_into().ok())
+                hex::decode(&self.link_hash).ok()
             },
             session_generation: self.session_generation.parse().ok(),
             policy_edit: self.policy_editor,

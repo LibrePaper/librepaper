@@ -452,7 +452,9 @@ pub async fn simulate(
     main_body: &str,
     texts: &BTreeMap<String, String>,
     assets: &[(String, String)],
+    pending_assets: Vec<crate::storage::postgres::NewAsset>,
     author_account_id: Uuid,
+    author_session_generation: i64,
     author_label: &str,
     days: u32,
 ) -> Result<(), String> {
@@ -463,13 +465,6 @@ pub async fn simulate(
     if head.update_sequence != 0 {
         return Err(format!("{slug} already has a history of its own"));
     }
-    let author = catalog
-        .account(author_account_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .filter(|account| account.status == "active")
-        .ok_or_else(|| format!("the seed author account for {slug} is not active"))?;
-
     let mut dice = Dice::new(slug);
     let now = OffsetDateTime::now_utc();
     let others: Vec<String> = texts.keys().cloned().collect();
@@ -494,7 +489,7 @@ pub async fn simulate(
         principal_key: peer_key.clone(),
         account_id: Some(author_account_id),
         link_hash: None,
-        session_generation: Some(author.session_generation),
+        session_generation: Some(author_session_generation),
         policy_edit: true,
         policy_comment: true,
         automation: false,
@@ -506,6 +501,7 @@ pub async fn simulate(
     let mut vector = loro::VersionVector::default();
     let mut next_sequence = head.update_sequence;
     let mut present: Vec<String> = Vec::new();
+    let mut pending_assets = Some(pending_assets);
 
     for (index, step) in steps.iter().enumerate() {
         for path in &step.arriving {
@@ -538,6 +534,12 @@ pub async fn simulate(
             .begin_document_command(document_id, &authority, crate::log::sequencer::Rung::Editor)
             .await
             .map_err(|error| error.to_string())?;
+        if let Some(pending) = pending_assets.take() {
+            catalog
+                .complete_assets_in_transaction(&mut tx, &pending)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         let sequence = catalog
             .insert_log_row(
                 &mut tx,
@@ -762,5 +764,61 @@ mod tests {
         );
         // Too short to navigate is too short to label.
         assert!(names(&[true, true, true]).is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn activity_simulation_keeps_the_authenticated_session_generation() {
+        let Some(catalog) = crate::tests::catalog().await else {
+            return;
+        };
+        let _writer = catalog.claim_writer().await.unwrap();
+        let owner = catalog
+            .create_account(crate::storage::postgres::NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some("stale-seed-session".into()),
+                handle: "stale-seed-session".into(),
+                display_name: "Seed owner".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        let document = catalog
+            .create_document(crate::storage::postgres::NewDocument {
+                slug: "seed-stale-session".into(),
+                owner_id: owner.id,
+                owner_session_generation: Some(owner.session_generation),
+                ownership_mode: "owned".into(),
+                title: "Seed session test".into(),
+                source_format: "markdown".into(),
+                main_path: "paper.md".into(),
+                settings: serde_json::json!({"version": 1}),
+            })
+            .await
+            .unwrap();
+        sqlx::query("UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1")
+            .bind(owner.id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+
+        let error = simulate(
+            catalog,
+            document.id,
+            "seed-stale-session",
+            "paper.md",
+            "# Seed session test\n",
+            &BTreeMap::new(),
+            &[],
+            Vec::new(),
+            owner.id,
+            owner.session_generation,
+            "Seed owner",
+            1,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("actor session changed"), "{error}");
     }
 }
