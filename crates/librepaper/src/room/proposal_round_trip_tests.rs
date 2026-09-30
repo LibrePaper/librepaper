@@ -445,7 +445,7 @@ async fn resuming_an_unknown_proposal_id_does_not_create_a_row() {
     };
     let unknown = room.command(&deployment.authority, &mut command).await;
     assert!(
-        matches!(unknown, Err(crate::log::CommandError::Conflict(message)) if message.starts_with("proposal status is unknown")),
+        matches!(&unknown, Err(crate::log::CommandError::Conflict(message)) if message.starts_with("proposal status is unknown")),
         "got {unknown:?}"
     );
     assert!(deployment.catalog.proposal(id).await.unwrap().is_none());
