@@ -181,6 +181,7 @@ import { createProposals } from "../../src/lib/proposals.js";
   const query = sent.at(-1);
   assert.equal(query.type, "proposal-open", "reconnect checks the durable proposal outcome");
   assert.equal(query.request_id, id, "the query reuses the proposal id");
+  assert.equal(query.resume, true, "known ids query status without recreating expired rows");
   proposals.apply({ type: "proposal-decided", proposal_id: id,
     decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip,
     resolved_base: open.base });

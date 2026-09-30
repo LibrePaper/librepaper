@@ -741,6 +741,7 @@ export function createProposals({ session, send, mayEdit }) {
             type: "proposal-open",
             request_id: draft.id,
             base: encodeBase64(encodeFrontiers(draft.openBase ?? draft.base)),
+            resume: true,
           });
           if (result?.ok !== false) draft.openPending = true;
           else draft.error = result.error?.message || "offline";
