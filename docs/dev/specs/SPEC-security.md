@@ -173,13 +173,13 @@ anonymity or conceal the authorship of a write.
 **The LaTeX mirror.** Browsers fetch the compiler and packages from the
 configured mirror, by default the project mirror. Digest verification protects
 integrity, not request privacy or availability. The public
-[hosting manual](../../site/host.md#privacy-and-the-latex-mirror) now explains
+[hosting manual](../../host.md#privacy-and-the-latex-mirror) now explains
 the dependency and `--latex-mirror`; documentation is no longer absent. A
 concrete self-hosting recipe or direct link to the mirror layout/build guide
 is still needed. Do not describe document source as being uploaded there.
 
 **Next work.** Reconcile [docs/privacy.md](../privacy.md) and the public
-[privacy page](../../site/privacy.md) with actual rendering and presence
+[privacy page](../../privacy.md) with actual rendering and presence
 behavior. Disclose outbound requests and editor visibility before proposing
 additional privacy controls. Browser-first rendering makes mirror requests
 relevant to readers as well as editors.

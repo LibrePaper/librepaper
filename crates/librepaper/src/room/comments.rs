@@ -544,7 +544,7 @@ fn reply_row_to_reply(row: ReplyRecord) -> Reply {
 // There is no whole-document read here any more, and no room-held list for
 // one to fill. Every consumer -- a browser, a socket `hello`, an export, an
 // agent -- walks the same keyset traversal a page at a time. See
-// `docs/protocol/comments-v1.md` for the contract this implements.
+// `docs/dev/protocol/comments-v1.md` for the contract this implements.
 
 /// How many comments one page carries when a caller does not say, and the
 /// most it may ask for. These are transport page sizes, not admission
@@ -1995,7 +1995,7 @@ impl AcceptSuggestion {
 
 /// What accepting a suggestion answers with. The suggestion comment is
 /// deleted along with its proposal, so only its id survives. `resolved_in` is
-/// `docs/protocol/room-v2.md`'s "the `source_sequence` of that row, which is
+/// `docs/dev/protocol/room-v2.md`'s "the `source_sequence` of that row, which is
 /// the only durable name the state has now that there are no version ids" --
 /// the row §7 step 4 wrote alongside the merge.
 pub struct Accepted {

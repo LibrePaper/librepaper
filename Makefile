@@ -37,7 +37,7 @@ LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
 # Everything tools/pins fetch writes; see the pinned inputs section below.
 PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(LCM)
 # web/src/site is deliberately not in this list. The marketing page and the
-# docs chrome are built by vite.site.config.js into site/_site, which the
+# docs chrome are built by vite.site.config.js into docs/_site, which the
 # binary does not embed, and no page under web/pages reaches them. Counting
 # them here made a one-line copy change rebuild the application bundle, which
 # rewrites every file in web/dist, which build.rs watches -- so editing the
@@ -253,10 +253,10 @@ $(PINNED): | pins
 
 # --- the docs site ----------------------------------------------------------
 #
-# A separate static artifact, not the shell above: site/**/*.md rendered by
+# A separate static artifact, not the shell above: docs/**/*.md rendered by
 # the same markdown engine the application embeds (web/tools/build-site.mjs),
-# wrapped in the sidebar from site/nav.js, beside the landing page authored in
-# web/src/site/. Built by vite.site.config.js into site/_site, which nothing
+# wrapped in the sidebar from docs/nav.js, beside the landing page authored in
+# web/src/site/. Built by vite.site.config.js into docs/_site, which nothing
 # else reads -- it is deployed on its own by .github/workflows/site.yml.
 site: pins
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }

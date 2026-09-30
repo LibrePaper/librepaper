@@ -1,4 +1,4 @@
-# The docs site, built from site/**/*.md and web/src/site/ and deployed to
+# The docs site, built from docs/**/*.md and web/src/site/ and deployed to
 # GitHub Pages. Separate from ci.yml: this touches neither the binary nor its
 # test suite, so it only runs when something it actually reads has changed.
 name: site
@@ -7,7 +7,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "site/**"
+      - "docs/**"
       - "web/**"
       - ".github/workflows/site.yml"
 
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site/_site
+          path: docs/_site
 
   deploy:
     needs: build

@@ -42,7 +42,7 @@ does not add a desktop shortcut or register the `librepaper://` link handler.
 
 The manual lives at **[librepaper.org](https://librepaper.org)** -- authoring
 in each format, sharing and review, the CLI, and running a server of your own.
-Its source is in [`site/`](site/), and `make site` builds it.
+Its source is in [`docs/`](docs/), and `make site` builds it.
 
 The ordinary CLI covers `login`, `logout`, `list`, and one-shot `export`.
 `admin` operates a deployment, `local` operates the companion on your own
@@ -61,7 +61,7 @@ pins each wasm module by digest and the LaTeX release directory,
 `latex/<sha256>/`, by its id, and the binary carries the pins. Everything on
 the mirror is immutable and the mirror only grows, so older binaries keep
 working. Operators can host their own copy with `--asset-mirror`.
-See [`docs/asset-mirrors.md`](docs/asset-mirrors.md).
+See [`docs/asset-mirrors.md`](docs/dev/asset-mirrors.md).
 
 - [Getting started](https://librepaper.org/start.html)
 - [Running a server](https://librepaper.org/host.html)
