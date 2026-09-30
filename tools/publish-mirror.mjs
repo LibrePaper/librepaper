@@ -338,6 +338,30 @@ async function verifyDownloaded(path, response, metadata, expected, key) {
   }
 }
 
+const size = (bytes) => bytes >= 2 ** 30 ? `${(bytes / 2 ** 30).toFixed(1)} GB` : `${(bytes / 2 ** 20).toFixed(1)} MB`;
+const duration = (seconds) => seconds >= 3600 ? `${Math.floor(seconds / 3600)}h${Math.floor(seconds % 3600 / 60)}m`
+  : seconds >= 60 ? `${Math.floor(seconds / 60)}m${Math.floor(seconds % 60)}s` : `${Math.floor(seconds)}s`;
+
+/// Upload progress on stderr, so the `output` a caller captures stays clean: a
+/// redrawn bar on a terminal, a line every ten seconds otherwise.
+function progress(prefix, totalFiles, totalBytes) {
+  const started = Date.now();
+  let last = 0;
+  return (files, bytes, final = false) => {
+    const now = Date.now();
+    const tty = process.stderr.isTTY;
+    if (!final && now - last < (tty ? 100 : 10_000)) return;
+    last = now;
+    const elapsed = (now - started) / 1000;
+    const fraction = totalBytes ? bytes / totalBytes : 1;
+    const eta = bytes ? duration(elapsed * (totalBytes - bytes) / bytes) : "?";
+    const bar = "#".repeat(Math.round(fraction * 20)).padEnd(20, "-");
+    const line = `${prefix} [${bar}] ${String(Math.floor(fraction * 100)).padStart(3)}%  ${files}/${totalFiles} files  ` +
+      `${size(bytes)}/${size(totalBytes)}  ${final ? `done in ${duration(elapsed)}` : `ETA ${eta}`}`;
+    process.stderr.write(tty ? `\r${line}\x1b[K${final ? "\n" : ""}` : `${line}\n`);
+  };
+}
+
 export async function publish({ dir, prefix, dryRun = false, configureCors = false, env = process.env, output = console.log }) {
   if (!/^(wasm|latex)$/.test(prefix || "")) throw new Error("prefix must be exactly wasm or latex");
   const root = resolve(dir);
@@ -355,6 +379,8 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
   if (dryRun) output("Integrity preflight skipped in dry run.");
   let staging;
   let uploaded = 0;
+  let uploadedBytes = 0;
+  const report = dryRun ? null : progress(prefix, files.length, preflight.bytes);
   try {
     for (const [index, file] of files.entries()) {
       const key = `${prefix}/${file.relative}`;
@@ -384,6 +410,8 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
           await rm(downloadPath, { force: true });
         }
         uploaded += 1;
+        uploadedBytes += preflight.expected.get(file.relative).size;
+        report(uploaded, uploadedBytes, uploaded === files.length);
       }
     }
     if (configureCors && !dryRun) {
@@ -394,6 +422,8 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
     output(dryRun ? `Dry run: ${files.length} files; no objects changed.` : `Published ${uploaded} objects to s3://${target.bucket}/${prefix}/.`);
     return { count: files.length, uploaded, dryRun };
   } finally {
+    // A failure mid-upload must not print its error onto the end of the bar.
+    if (report && uploaded && uploaded < files.length && process.stderr.isTTY) process.stderr.write("\n");
     if (staging) await rm(staging, { recursive: true, force: true });
   }
 }
