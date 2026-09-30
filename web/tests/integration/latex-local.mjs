@@ -108,7 +108,7 @@ async function testProbeDenied() {
   setup({ fetchImpl: async () => { throw new Error("Access to the network address space was blocked"); } });
   const status = await local.probe();
   check("a permission-denied fetch classifies as denied", status.state === "denied", status.state);
-  check("denied carries instructions", /local network/.test(status.instructions));
+  check("denied carries instructions", /local-network access/.test(status.instructions));
 }
 
 async function testProbeIncompatible() {
@@ -389,11 +389,17 @@ async function testWatchingNeverReachesLoopback() {
     await fire();
     check("the reconnect runs once the session is engaged", calls > engagedCalls, `calls=${calls}`);
 
-    // A different document starts over: its own pairing, its own question.
+    // Another document on the same origin keeps the pairing and the session.
     local.configure({ project: "other", origin: "https://a" });
+    const sameOriginCalls = calls;
+    await fire();
+    check("opening another document on the same origin stays engaged", calls > sameOriginCalls, `calls=${calls}`);
+
+    // A different origin starts over: its own pairing, its own question.
+    local.configure({ project: "other", origin: "https://b" });
     const switchedCalls = calls;
     await fire();
-    check("opening another document disengages again", calls === switchedCalls, `calls=${calls}`);
+    check("opening another origin disengages again", calls === switchedCalls, `calls=${calls}`);
     stop();
   } finally {
     globalThis.setTimeout = realSetTimeout;

@@ -84,7 +84,6 @@ companionUp = true;
 await local.connectApp({ timeoutMs: 10000 });
 assert.equal(link, "", "a reachable companion is asked without a link");
 assert.equal(pairBody.origin, "https://papers.example");
-assert.equal(pairBody.project, "paper");
 assert.equal(pairBody.request, claimBody.request);
 assert.equal(pairBody.challenge, createHash("sha256").update(claimBody.verifier).digest("hex"));
 assert.ok(!JSON.stringify(pairBody).includes(claimBody.verifier));
@@ -95,7 +94,7 @@ await assert.rejects(local.connectApp(), /expired or was refused/);
 assert.equal(attempts, 1);
 assert.ok(!storage.has("librepaper-local-connections"));
 
-setup(() => { local.configure({ project: "another-paper" }); return response(200, { token: "wrong-project", expires: 100000 }); });
+setup(() => { local.configure({ origin: "https://other.example" }); return response(200, { token: "wrong-project", expires: 100000 }); });
 await assert.rejects(local.connectApp(), /document changed/);
 assert.ok(!storage.has("librepaper-local-connections"));
 

@@ -59,7 +59,7 @@ async function sha(bytes) {
 }
 
 function setup(fetch) {
-  const values = new Map([["librepaper-local-connections", JSON.stringify({ "example.test|paper": { token: "token" } })]]);
+  const values = new Map([["librepaper-local-connections", JSON.stringify({ "example.test": { token: "token" } })]]);
   _testing.reset();
   configure({ origin: "example.test", project: "paper" });
   _testing.inject({ storage: { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) }, fetch, wait: async () => {} });
@@ -185,7 +185,7 @@ console.log("quarto-local: protocol 2 preview retains its bound entrypoint inven
 let syncRequest = null;
 setup(async (url, init = {}) => {
   assert.equal(init.method, "PUT");
-  assert.ok(url.endsWith("/librepaper/local/workspace"));
+  assert.ok(new URL(url).pathname.endsWith("/librepaper/local/workspace"));
   assert.equal(init.headers.Authorization, "Bearer token");
   syncRequest = init;
   return response({ synced: 2 });
@@ -338,7 +338,7 @@ console.log("quarto-local: preview lifecycle calls work, and calepinAvailable de
   for (const engine of ["quarto", "calepin"]) {
     const calls = [];
     setup(async (url, init) => {
-      if (init.method === "PUT" && url.endsWith("/workspace")) {
+      if (init.method === "PUT" && new URL(url).pathname.endsWith("/workspace")) {
         calls.push("sync");
         return response({ synced: 1 });
       }
