@@ -5,9 +5,13 @@
 //! Bound to loopback only, `Host`-checked against DNS rebinding, CORS-scoped
 //! to origins that hold a pairing (or, for `health`/`connect`, to any origin
 //! at all -- there is nothing sensitive to leak before a pairing exists).
-//! Every other route is bearer-authenticated, and the token names both the
-//! origin and the project it may act on: an authenticated request for
-//! someone else's project is answered exactly as a stranger's would be.
+//! Every other route is bearer-authenticated, and the token names the
+//! origin it was issued to, and nothing narrower: one pairing covers every
+//! document that site opens. Requests that create something name their
+//! project in the body (or, for the bindings list, the query), and a lookup
+//! by id is scoped to the origin, so an authenticated request for another
+//! origin's job, preview or binding is answered exactly as a stranger's
+//! would be.
 //!
 //! The compilation itself is behind the `Runner` trait so this file never
 //! has to know how a job actually runs. `NativeRunner` calls into
@@ -421,7 +425,6 @@ const PAIR_REQUEST_TTL: Duration = Duration::from_secs(120);
 
 struct PendingPair {
     origin: String,
-    project: String,
     challenge: String,
     /// Where the consent result page sends the browser back when there is
     /// no opener to poll claim for it. Required, and checked against the
@@ -993,7 +996,7 @@ async fn dispatch(
             consent::handle_disconnect(inner, headers, origin).await
         }
         ["bindings"] if *method == Method::GET => {
-            handle_bindings_list(inner, headers, origin).await
+            handle_bindings_list(inner, headers, origin, request).await
         }
         ["bindings", "folder"] if *method == Method::POST => {
             handle_binding_folder(inner, headers, origin, request).await
@@ -1151,10 +1154,17 @@ fn handle_health(inner: &Inner) -> Reply {
 
 /* ------------------------------------------------------- folder bindings */
 
-async fn handle_bindings_list(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(project) => project,
-        Err(response) => return response,
+async fn handle_bindings_list(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let Some(project) = project_query(request.uri()) else {
+        return write_json(400, &json!({"error": "bindings list needs a valid project"}));
     };
     write_json(
         200,
@@ -1170,13 +1180,12 @@ async fn handle_binding_revoke(
     origin: Option<&str>,
     id: &str,
 ) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(project) => project,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
     let revoked = inner
         .quarto_bindings
-        .revoke_scoped(id, origin.unwrap_or_default(), &project);
+        .revoke_origin_binding(id, origin.unwrap_or_default());
     write_json(200, &json!({"revoked": revoked}))
 }
 
@@ -1186,20 +1195,16 @@ async fn handle_binding_folder(
     origin: Option<&str>,
     request: Request<Body>,
 ) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(project) => project,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
     let body = match read_json_body::<protocol::FolderBindingRequest>(request).await {
         Ok(body) => body,
         Err(response) => return response,
     };
-    if body.project != project {
-        return write_json(
-            403,
-            &json!({"error": "project does not match the connected token"}),
-        );
-    }
+    let Some(project) = pairing::valid_project(&body.project) else {
+        return write_json(400, &json!({"error": "binding needs a valid project"}));
+    };
     if let Err(error) = crate::local::quarto::validate_binding_entrypoint(&body.entrypoint) {
         return write_json(400, &json!({"error": error}));
     }
@@ -1217,10 +1222,10 @@ async fn handle_binding_folder(
         Err(error) => return write_json(400, &json!({"error": error})),
     };
     // Permission may have been revoked while the user considered the dialog.
-    if authenticate(inner, headers, origin).ok().as_deref() != Some(&project) {
+    if authenticate(inner, headers, origin).is_err() {
         return write_json(
             401,
-            &json!({"error": "This document is no longer connected."}),
+            &json!({"error": "This site is no longer connected."}),
         );
     }
     let binding = match inner.quarto_bindings.grant(
@@ -1265,10 +1270,9 @@ async fn handle_capabilities(
 /* ------------------------------------------------------ Settings routes */
 
 async fn handle_settings(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
-    let _project = match authenticate(inner, headers, origin) {
-        Ok(p) => p,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
 
     let is_standalone = standalone(inner);
 
@@ -1294,10 +1298,9 @@ async fn handle_startup(
     origin: Option<&str>,
     request: Request<Body>,
 ) -> Reply {
-    let _project = match authenticate(inner, headers, origin) {
-        Ok(p) => p,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
 
     if !standalone(inner) {
         return write_json(
@@ -1336,10 +1339,9 @@ async fn handle_startup(
 }
 
 async fn handle_quit(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
-    let _project = match authenticate(inner, headers, origin) {
-        Ok(p) => p,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
 
     if !standalone(inner) {
         return write_json(
@@ -1376,10 +1378,9 @@ async fn handle_integration_set(
     name: &str,
     request: Request<Body>,
 ) -> Reply {
-    let _project = match authenticate(inner, headers, origin) {
-        Ok(p) => p,
-        Err(response) => return response,
-    };
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
 
     let which = match super::integrations::Integration::parse(name) {
         Ok(w) => w,
@@ -1572,15 +1573,15 @@ async fn read_multipart_upload(
 
 /* ------------------------------------------------------------- helpers */
 
-/// The project a request's `Authorization: Bearer <token>` is authorized
-/// for, checked against the `Origin` header the same token was issued to.
+/// Checks a request's `Authorization: Bearer <token>` against the `Origin`
+/// header the same token was issued to.
 /// The one gate every route but `health`/`connect` shares.
 #[allow(clippy::result_large_err)] // as `server.rs`'s `read_upload`: the error is a response
 pub(super) fn authenticate(
     inner: &Inner,
     headers: &HeaderMap,
     origin: Option<&str>,
-) -> Result<String, Reply> {
+) -> Result<(), Reply> {
     let Some(origin) = origin else {
         return Err(write_json(403, &json!({"error": "missing Origin header"})));
     };
@@ -1588,10 +1589,26 @@ pub(super) fn authenticate(
     if token.is_empty() {
         return Err(write_json(401, &json!({"error": "missing bearer token"})));
     }
-    match inner.pairing.authenticate(origin, &token) {
-        Some(project) => Ok(project),
-        None => Err(write_json(401, &json!({"error": "unauthorized"}))),
+    if inner.pairing.authenticate(origin, &token) {
+        Ok(())
+    } else {
+        Err(write_json(401, &json!({"error": "unauthorized"})))
     }
+}
+
+/// The validated `?project=` query parameter, for the routes that carry no
+/// JSON body to name a project in.
+pub(super) fn project_query(uri: &axum::http::Uri) -> Option<String> {
+    let query = uri.query()?;
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == "project")
+        .and_then(|(_, value)| pairing::valid_project(&value))
+}
+
+/// Whether `entry` belongs to the requesting origin: the whole scope of a
+/// lookup by id, since a pairing covers every project of its origin.
+fn owned_by(entry: &JobEntry, origin: Option<&str>) -> bool {
+    pairing::normalize_origin(&entry.origin) == pairing::normalize_origin(origin.unwrap_or_default())
 }
 
 fn standalone(inner: &Inner) -> bool {
@@ -1753,10 +1770,9 @@ async fn handle_preview(
     id: Option<&str>,
     request: Request<Body>,
 ) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
+    if let Err(e) = authenticate(inner, headers, origin) {
+        return e;
+    }
     let origin = pairing::normalize_origin(origin.unwrap_or_default());
     if let Some(id) = id {
         let mut previews = inner.previews.lock().await;
@@ -1767,7 +1783,7 @@ async fn handle_preview(
         let Some(preview) = previews
             .0
             .get_mut(id)
-            .filter(|p| p.origin == origin && p.project == project)
+            .filter(|p| p.origin == origin)
         else {
             return plain(404, "preview not found");
         };
@@ -1812,8 +1828,11 @@ async fn handle_preview(
         },
         Err(e) => return e,
     };
-    if pairing::normalize_origin(&job.origin) != origin || job.project != project {
+    if pairing::normalize_origin(&job.origin) != origin {
         return plain(403, "preview scope mismatch");
+    }
+    if pairing::valid_project(&job.project).is_none() {
+        return plain(400, "invalid preview request");
     }
     let mut job = job;
     job.origin = origin.clone();
@@ -1849,7 +1868,7 @@ async fn handle_preview(
                             .zip(
                                 inner
                                     .quarto_bindings
-                                    .get_scoped(&p.binding_id, &origin, &project),
+                                    .get_scoped(&p.binding_id, &origin, &job.project),
                             )
                             .is_some_and(|(a, b)| a.root == b.root)
                 })
@@ -1872,10 +1891,9 @@ async fn handle_preview_page(
     origin: Option<&str>,
     id: &str,
 ) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
+    if let Err(e) = authenticate(inner, headers, origin) {
+        return e;
+    }
     let origin = pairing::normalize_origin(origin.unwrap_or_default());
     let mut previews = inner.previews.lock().await;
     let active_pairings = inner.pairing.active_pairings();
@@ -1885,7 +1903,7 @@ async fn handle_preview_page(
     let Some(preview) = previews
         .0
         .get(id)
-        .filter(|p| p.origin == origin && p.project == project)
+        .filter(|p| p.origin == origin)
     else {
         return plain(404, "preview not found");
     };
@@ -2328,7 +2346,7 @@ mod settings_tests {
 
         let (token, _) = inner
             .pairing
-            .issue("https://example.test", "p", "test")
+            .issue("https://example.test", "test")
             .unwrap();
         let request = Request::put("/integrations/quarto")
             .header("authorization", format!("Bearer {token}"))
@@ -2369,7 +2387,7 @@ mod settings_tests {
 
         let (token, _) = inner
             .pairing
-            .issue("https://example.test", "p", "test")
+            .issue("https://example.test", "test")
             .unwrap();
         let request = Request::put("/integrations/quarto")
             .header("authorization", format!("Bearer {token}"))
@@ -2413,7 +2431,7 @@ mod settings_tests {
 
         let (token, _) = inner
             .pairing
-            .issue("https://example.test", "p", "test")
+            .issue("https://example.test", "test")
             .unwrap();
         let request = Request::put("/integrations/quarto")
             .header("authorization", format!("Bearer {token}"))

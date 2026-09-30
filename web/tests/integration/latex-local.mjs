@@ -108,7 +108,7 @@ async function testProbeDenied() {
   setup({ fetchImpl: async () => { throw new Error("Access to the network address space was blocked"); } });
   const status = await local.probe();
   check("a permission-denied fetch classifies as denied", status.state === "denied", status.state);
-  check("denied carries instructions", /local network/.test(status.instructions));
+  check("denied carries instructions", /local-network access/.test(status.instructions));
 }
 
 async function testProbeIncompatible() {
@@ -125,7 +125,7 @@ async function testProbeUnauthorizedThenConnected() {
   const status = await local.probe();
   check("reachable with no pairing classifies as unauthorized", status.state === "unauthorized", status.state);
 
-  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://librepaper.example|demo": { token: "tok", expires: 0, instance: "abc" } }));
+  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://librepaper.example": { token: "tok", expires: 0, instance: "abc" } }));
   local._testing.inject({
     fetch: async (url) => {
       if (url.endsWith("/health")) return jsonResponse(200, HEALTH_OK);
@@ -141,7 +141,7 @@ async function testProbeUnauthorizedThenConnected() {
 async function testProbeDropsExpiredToken() {
   const storage = fakeStorage();
   local.configure({ project: "demo", origin: "https://librepaper.example" });
-  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://librepaper.example|demo": { token: "stale", expires: 0, instance: "abc" } }));
+  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://librepaper.example": { token: "stale", expires: 0, instance: "abc" } }));
   setup({ storage, fetchImpl: async (url) => {
     if (url.endsWith("/health")) return jsonResponse(200, HEALTH_OK);
     if (url.endsWith("/capabilities")) return jsonResponse(401, { error: "expired" });
@@ -150,8 +150,8 @@ async function testProbeDropsExpiredToken() {
   local.configure({ project: "demo", origin: "https://librepaper.example" });
   const status = await local.probe();
   check("a 401 verifying capabilities falls back to unauthorized", status.state === "unauthorized", status.state);
-  const stored = JSON.parse(storage.getItem("librepaper-local-pairings"));
-  check("the stale token is dropped from storage", !("https://librepaper.example|demo" in stored));
+  const stored = JSON.parse(storage.getItem("librepaper-local-connections"));
+  check("the stale token is dropped from storage", !("https://librepaper.example" in stored));
 }
 
 /* --------------------------------------------------------- negative-cache backoff */
@@ -185,7 +185,7 @@ async function testRetryAndConnectClearBackoff() {
 async function testDisconnectRemovesPairing() {
   const storage = fakeStorage();
   local.configure({ project: "proj1", origin: "https://app.example" });
-  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://app.example|proj1": { token: "tok", expires: 0, instance: "x" } }));
+  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://app.example": { token: "tok", expires: 0, instance: "x" } }));
   setup({ storage, fetchImpl: async (url) => {
     if (url.endsWith("/disconnect")) return jsonResponse(200, {});
     if (url.endsWith("/health")) return jsonResponse(200, HEALTH_OK);
@@ -193,8 +193,8 @@ async function testDisconnectRemovesPairing() {
   } });
   local.configure({ project: "proj1", origin: "https://app.example" });
   await local.disconnect();
-  const stored = JSON.parse(storage.getItem("librepaper-local-pairings"));
-  check("disconnect() removes the pairing", !("https://app.example|proj1" in stored));
+  const stored = JSON.parse(storage.getItem("librepaper-local-connections"));
+  check("disconnect() removes the pairing", !("https://app.example" in stored));
 }
 
 /* --------------------------------------------------------- multipart bodies */
@@ -202,7 +202,7 @@ async function testDisconnectRemovesPairing() {
 async function testMultipartBuildBody() {
   const storage = fakeStorage();
   local.configure({ project: "proj1", origin: "https://app.example" });
-  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://app.example|proj1": { token: "tok", expires: 0, instance: "x" } }));
+  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://app.example": { token: "tok", expires: 0, instance: "x" } }));
   const nonUtf8 = new Uint8Array([0xff, 0xfe, 0x00, 0x80, 0x81, 0x41, 0x42]);
   const pdf = new TextEncoder().encode("%PDF-fake");
   const log = new TextEncoder().encode("typst log");
@@ -255,7 +255,7 @@ async function testMultipartBuildBody() {
 async function testOutputDigestIsVerified() {
   const storage = fakeStorage();
   local.configure({ project: "proj1", origin: "https://app.example" });
-  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://app.example|proj1": { token: "tok", expires: 0, instance: "x" } }));
+  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://app.example": { token: "tok", expires: 0, instance: "x" } }));
   const announced = new TextEncoder().encode("%PDF-real");
   const served = new TextEncoder().encode("%PDF-fake");
   setup({ storage, fetchImpl: async (url, init) => {
@@ -279,7 +279,7 @@ async function testOutputDigestIsVerified() {
 async function testPollingIntervals() {
   const storage = fakeStorage();
   local.configure({ project: "p", origin: "https://a" });
-  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://a|p": { token: "tok", expires: 0, instance: "x" } }));
+  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://a": { token: "tok", expires: 0, instance: "x" } }));
   const { now } = setup({ storage, fetchImpl: null });
   local.configure({ project: "p", origin: "https://a" });
   const waits = [];
@@ -308,7 +308,7 @@ async function testPollingIntervals() {
 async function testCancelViaAbort() {
   const storage = fakeStorage();
   local.configure({ project: "p", origin: "https://a" });
-  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://a|p": { token: "tok", expires: 0, instance: "x" } }));
+  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://a": { token: "tok", expires: 0, instance: "x" } }));
   setup({ storage, fetchImpl: null });
   local.configure({ project: "p", origin: "https://a" });
   let canceled = false;
@@ -335,7 +335,7 @@ async function testCancelViaAbort() {
 async function testRefusedUnreachableUnauthorized() {
   const storage = fakeStorage();
   local.configure({ project: "p", origin: "https://a" });
-  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://a|p": { token: "tok", expires: 0, instance: "x" } }));
+  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://a": { token: "tok", expires: 0, instance: "x" } }));
 
   setup({ storage, fetchImpl: async () => jsonResponse(409, { error: "a newer generation is already queued" }) });
   local.configure({ project: "p", origin: "https://a" });
@@ -366,8 +366,8 @@ async function testWatchingNeverReachesLoopback() {
   let calls = 0;
   const now = clock();
   setup({ storage, now, fetchImpl: async () => { calls += 1; return jsonResponse(200, HEALTH_OK); } });
-  storage.setItem("librepaper-local-pairings", JSON.stringify({
-    "https://a|p": { token: "token", expires: now.now() + 3_600_000, instance: "abc123" },
+  storage.setItem("librepaper-local-connections", JSON.stringify({
+    "https://a": { token: "token", expires: now.now() + 3_600_000, instance: "abc123" },
   }));
   // The background reconnect is a real timer; hold its callbacks instead of
   // waiting fifteen seconds for each one.
@@ -389,11 +389,17 @@ async function testWatchingNeverReachesLoopback() {
     await fire();
     check("the reconnect runs once the session is engaged", calls > engagedCalls, `calls=${calls}`);
 
-    // A different document starts over: its own pairing, its own question.
+    // Another document on the same origin keeps the pairing and the session.
     local.configure({ project: "other", origin: "https://a" });
+    const sameOriginCalls = calls;
+    await fire();
+    check("opening another document on the same origin stays engaged", calls > sameOriginCalls, `calls=${calls}`);
+
+    // A different origin starts over: its own pairing, its own question.
+    local.configure({ project: "other", origin: "https://b" });
     const switchedCalls = calls;
     await fire();
-    check("opening another document disengages again", calls === switchedCalls, `calls=${calls}`);
+    check("opening another origin disengages again", calls === switchedCalls, `calls=${calls}`);
     stop();
   } finally {
     globalThis.setTimeout = realSetTimeout;

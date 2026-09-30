@@ -10,9 +10,9 @@
 //
 // State that must survive a reload lives in `localStorage`, plain and
 // unencrypted, because the token it stores is scoped to loopback and to one
-// project/origin pair (see SPEC "Connection boundary") -- it is not a secret
-// worth more protection than that, and pretending otherwise would not change
-// what a script running on this origin can already do.
+// origin (see SPEC "Connection boundary") -- it is not a secret worth more
+// protection than that, and pretending otherwise would not change what a
+// script running on this origin can already do.
 //
 // Every dependency this file needs from the ambient browser -- fetch,
 // storage, wall clock, the wait between polls -- is reached through `deps`
@@ -31,7 +31,7 @@ export const QUARTO_JOB_KINDS = Object.freeze(["render", "refresh", "frozen"]);
 const LOCAL_BASE = "librepaper/local/";
 
 const ADDRESS_KEY = "librepaper-local-address";
-const PAIRINGS_KEY = "librepaper-local-pairings";
+const PAIRINGS_KEY = "librepaper-local-connections";
 const BINDINGS_KEY = "librepaper-local-quarto-bindings";
 const PENDING_KEY = "librepaper-local-pending";
 const PENDING_TTL_MS = 10 * 60 * 1000;
@@ -283,16 +283,20 @@ function intakeFragment() {
 // replaces it for a project that keeps data the document does not share.
 export const HOSTED_BINDING = "hosted";
 
+function projectKey() {
+  return `${current.origin}|${current.project}`;
+}
+
 export function bindingId() {
   const all = readJSON(BINDINGS_KEY, {});
-  return String(all[pairingKey()] || HOSTED_BINDING);
+  return String(all[projectKey()] || HOSTED_BINDING);
 }
 
 export function setBindingId(id) {
   const all = readJSON(BINDINGS_KEY, {});
   const value = String(id || "").trim();
-  if (value) all[pairingKey()] = value;
-  else delete all[pairingKey()];
+  if (value) all[projectKey()] = value;
+  else delete all[projectKey()];
   writeJSON(BINDINGS_KEY, all);
   return value;
 }
@@ -303,19 +307,20 @@ export function setBindingId(id) {
 let current = { project: null, origin: "", active: true };
 
 export function configure({ project, origin, active = true } = {}) {
-  const previous = pairingKey();
+  const previousOrigin = current.origin;
   cancelAutoReconnect();
   current = {
     project: project !== undefined ? project : current.project,
     origin: origin !== undefined ? origin : current.origin,
     active,
   };
-  if (previous !== pairingKey()) { lastInstance = null; negative = null; engaged = false; setStatus(initialStatus()); }
+  // Only reset connection state when the origin changes, not when project changes
+  if (previousOrigin !== current.origin) { lastInstance = null; negative = null; engaged = false; setStatus(initialStatus()); }
   scheduleAutoReconnect();
 }
 
 function pairingKey() {
-  return `${current.origin}|${current.project}`;
+  return current.origin;
 }
 
 export function hasPairing() { return Boolean(getPairing()?.token); }
@@ -341,7 +346,7 @@ function dropPairing() {
 function requirePairing() {
   const pairing = getPairing();
   if (!pairing || !pairing.token) {
-    throw named("Unauthorized", "No local pairing for this project");
+    throw named("Unauthorized", "The companion is not connected");
   }
   return pairing;
 }
@@ -353,15 +358,15 @@ function instructionsFor(state) {
     case "unreachable":
       return `No local LibrePaper at ${address()}. Start it with \`librepaper local start\`, or fix the address in Settings.`;
     case "denied":
-      return "Your browser blocked access to the local app. Allow local network access for this site and retry.";
+      return "Allow local-network access for this site in your browser, then connect.";
     case "unauthorized":
       return "Local LibrePaper is running but has not allowed this site yet. Click Connect and approve the dialog the companion shows.";
     case "connected":
       return "Local LibrePaper is connected.";
     case "reachable":
-      return "Local LibrePaper responded but could not be verified yet. Retry the connection.";
+      return "Local LibrePaper responded but could not be verified yet. Connect again.";
     case "incompatible":
-      return "The local LibrePaper app speaks a protocol this browser does not support. Update LibrePaper and retry.";
+      return "The local LibrePaper app speaks a protocol this browser does not support. Install the latest companion version, then connect.";
     default:
       return "";
   }
@@ -669,8 +674,8 @@ export function connectApp(options = {}) {
 }
 
 async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal } = {}) {
-  const { origin, project } = current;
-  if (!origin || !project) throw named("Unauthorized", "Open a document before enabling local rendering.");
+  const { origin } = current;
+  if (!origin) throw named("Unauthorized", "Open LibrePaper before connecting the companion.");
   const scope = pairingKey();
   // The address may legitimately change mid-attempt -- the fragment this very
   // attempt is waiting on rewrites it -- so only a change of document scope
@@ -699,10 +704,10 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
       const status = await probe({ force: true });
       checkScope();
       if (status.state === "connected") { clearPending(); return status; }
-      if (status.state === "unauthorized") throw named("Unauthorized", "This document's permission expired or was revoked. Enable local rendering again to approve it.");
+      if (status.state === "unauthorized") throw named("Unauthorized", "The permission expired or was revoked. Try connecting again to approve it.");
       if (status.state === "denied" || status.state === "incompatible") throw named("Refused", status.instructions);
     }
-    throw named("Unreachable", "The companion did not connect. Install or open it, approve the local permission window, then retry.");
+    throw named("Unreachable", "The companion did not connect. Install and open the companion, approve the local permission window, then try again.");
   }
 
   // Asked directly first, whatever the last probe said: a stale "unreachable"
@@ -715,7 +720,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
       method: "POST", mode: "cors", credentials: "omit",
       headers: { "Content-Type": "application/json" },
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
-      body: JSON.stringify({ origin, project, request, challenge, return: returnUrl }),
+      body: JSON.stringify({ origin, request, challenge, return: returnUrl }),
     });
     asked = true;
     if (response.status !== 202) {
@@ -728,7 +733,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
   }
   checkScope();
   if (!asked) {
-    deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, project, request, challenge, return: returnUrl })}`);
+    deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, request, challenge, return: returnUrl })}`);
   }
 
   const started = deps.now();
@@ -741,26 +746,26 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
         method: "POST", mode: "cors", credentials: "omit",
         headers: { "Content-Type": "application/json" },
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
-        body: JSON.stringify({ request, origin, project, verifier }),
+        body: JSON.stringify({ request, origin, verifier }),
       });
     } catch (error) {
       checkScope();
       if (/permission|blocked|private network/i.test(String(error?.message || error))) {
-        throw named("Refused", "Allow this site's local-network permission in your browser, then retry.");
+        throw named("Refused", "Allow this site's local-network permission in your browser, then connect again.");
       }
       continue; // The installed companion may still be starting.
     }
     checkScope();
     if (response.status === 202 || response.status === 404) continue;
     if (response.status === 403) {
-      let errorMessage = "This connection request expired or was refused. Enable local rendering again.";
+      let errorMessage = "This connection request expired or was refused. Try connecting again.";
       try {
         const data = await response.clone().json();
         if (data && typeof data.error === "string") errorMessage = data.error;
       } catch { /* not a JSON body; keep the generic message */ }
       throw named("Unauthorized", errorMessage);
     }
-    if (!response.ok) throw named("Refused", `The companion could not connect (${response.status}). Retry or open companion settings.`);
+    if (!response.ok) throw named("Refused", `The companion could not connect (${response.status}). Install and open the companion, then try again.`);
     const data = await response.json();
     checkScope();
     if (typeof data.token !== "string" || !data.token || !Number.isFinite(data.expires)) {
@@ -772,7 +777,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
     return probe({ force: true });
   }
   clearPending();
-  throw named("Unreachable", "The companion did not connect. Install or open it, approve the local permission window, then retry.");
+  throw named("Unreachable", "The companion did not connect. Install and open the companion, approve the local permission window, then try again.");
 }
 
 export async function disconnect() {
@@ -1395,7 +1400,7 @@ async function buildWorkspaceForm(tree) {
 export async function syncWorkspace({ tree } = {}) {
   const pairing = requirePairing();
   const form = await buildWorkspaceForm(tree);
-  const response = await send("PUT", "workspace", { token: pairing.token, formBody: form });
+  const response = await send("PUT", `workspace?${new URLSearchParams({ project: current.project })}`, { token: pairing.token, formBody: form });
   return response.json();
 }
 

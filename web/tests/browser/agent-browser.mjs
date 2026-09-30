@@ -140,11 +140,11 @@ window.WebSocket = class {
 };
 // The pairing the panel reads is the one the local compiler already uses, so
 // the harness seeds it exactly as a previously paired browser would hold it,
-// under the real key: origin and the document's own project. A pairing stored
-// under any other key is not this document's.
+// under the real key: the origin. A pairing stored under any other key is
+// not this origin's.
 // Setting window.unpaired drops it, to exercise the panel before pairing.
-window.pairingKey = location.origin + '|paper';
-if (!window.unpaired) localStorage.setItem('librepaper-local-pairings', JSON.stringify({[window.pairingKey]:{token:'pair-token',expires:Date.now()/1000+3600}}));
+window.pairingKey = location.origin;
+if (!window.unpaired) localStorage.setItem('librepaper-local-connections', JSON.stringify({[window.pairingKey]:{token:'pair-token',expires:Date.now()/1000+3600}}));
 let component;
 window.remount = async () => {
   if (component) await unmount(component);
@@ -617,7 +617,7 @@ try {
   assert.equal(await page.evaluate("window.calls.filter(call=>call.suffix==='').length"),beforeNewConversation.creates + 1);
   // Pairing, from an unpaired browser. The new flow uses pair/request which
   // is triggered by the Connect button, not a manual code entry.
-  await page.evaluate("window.unpaired=true; localStorage.removeItem('librepaper-local-pairings'); window.pairingAccepted=false");
+  await page.evaluate("window.unpaired=true; localStorage.removeItem('librepaper-local-connections'); window.pairingAccepted=false");
   await page.evaluate("window.remount()");
   await page.evaluate('document.querySelector("#agent-tab-chat").click()');
   await until("pairing prompt shown", () => page.evaluate(`Boolean(document.querySelector('.connect-required button'))`), 3000);

@@ -174,7 +174,6 @@ pub enum Target {
 #[derive(Debug, PartialEq, Eq)]
 pub struct PairLink {
     pub origin: String,
-    pub project: String,
     pub request: String,
     pub challenge: String,
     pub return_to: String,
@@ -199,7 +198,7 @@ pub fn connection_target(raw: &str, port: u16) -> Result<Target, String> {
     }
 }
 
-/// `librepaper://connect?origin&project&request&challenge&return`: the
+/// `librepaper://connect?origin&request&challenge&return`: the
 /// fields `pair` hands the companion. Validation is the shared rule
 /// `crate::local::pairing` and the consent route both call.
 fn connect_target(link: &url::Url) -> Result<Target, String> {
@@ -207,7 +206,7 @@ fn connect_target(link: &url::Url) -> Result<Target, String> {
     for (key, value) in link.query_pairs() {
         if !matches!(
             key.as_ref(),
-            "origin" | "project" | "request" | "challenge" | "return"
+            "origin" | "request" | "challenge" | "return"
         ) || fields
             .insert(key.into_owned(), value.into_owned())
             .is_some()
@@ -218,12 +217,6 @@ fn connect_target(link: &url::Url) -> Result<Target, String> {
     let origin = fields.get("origin").ok_or("The connection needs a site.")?;
     if pairing::valid_origin(origin).is_none() {
         return Err("The connection site must be an HTTP(S) origin.".into());
-    }
-    let project = fields
-        .get("project")
-        .ok_or("The connection needs a document.")?;
-    if pairing::valid_project(project).is_none() {
-        return Err("Invalid connection document.".into());
     }
     let request = fields
         .get("request")
@@ -244,7 +237,6 @@ fn connect_target(link: &url::Url) -> Result<Target, String> {
 
     Ok(Target::Pair(PairLink {
         origin: origin.clone(),
-        project: project.clone(),
         request: request.clone(),
         challenge: challenge.clone(),
         return_to: return_to.clone(),
@@ -268,7 +260,6 @@ pub async fn pair(link: &PairLink, port: u16) -> Result<(), String> {
         .header("origin", &link.origin)
         .json(&serde_json::json!({
             "origin": link.origin,
-            "project": link.project,
             "request": link.request,
             "challenge": link.challenge,
             "return": link.return_to,
@@ -533,7 +524,7 @@ mod tests {
     #[test]
     fn connect_links_carry_only_validated_pair_fields() {
         let query = format!(
-            "origin=https%3A%2F%2Fpapers.example&project=paper&request={}&challenge={}&return=https%3A%2F%2Fpapers.example%2Fdoc",
+            "origin=https%3A%2F%2Fpapers.example&request={}&challenge={}&return=https%3A%2F%2Fpapers.example%2Fdoc",
             "r".repeat(32),
             "a".repeat(64)
         );

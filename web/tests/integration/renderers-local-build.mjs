@@ -13,8 +13,8 @@ const storage = {
   setItem: (key, value) => values.set(key, String(value)),
   removeItem: (key) => values.delete(key),
 };
-values.set("librepaper-local-pairings", JSON.stringify({
-  "https://app.test|paper": { token: "token", instance: "one" },
+values.set("librepaper-local-connections", JSON.stringify({
+  "https://app.test": { token: "token", instance: "one" },
 }));
 
 function response(status, body, bytes = null) {

@@ -8,8 +8,8 @@
 //! - `service.json`: what the running `librepaper local start` printed, so
 //!   `status`/`doctor`/`disconnect` and a second `start` can find it without
 //!   asking the service itself.
-//! - `pairings.json`: one entry per `(origin, project)` a browser has
-//!   connected, keyed `"<origin>|<project>"`. The token itself is never
+//! - `pairings.json`: one entry per origin a browser has connected, keyed by
+//!   the normalised origin. A pairing covers every document that site opens. The token itself is never
 //!   written to disk -- only its SHA-256 -- so reading this file back does
 //!   not hand out live access.
 //!
@@ -45,14 +45,13 @@ pub struct ServiceState {
     pub started: i64,
 }
 
-/// One granted `(origin, project)` pairing. `token_sha256` is the only trace
+/// One granted origin pairing. `token_sha256` is the only trace
 /// of the token this file keeps -- the plaintext is shown to the caller of
 /// `connect` exactly once and never written down.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Pairing {
     pub token_sha256: String,
     pub origin: String,
-    pub project: String,
     pub created: i64,
     pub expires: i64,
     #[serde(default)]
@@ -94,34 +93,32 @@ impl PairingStore {
         let _ = std::fs::remove_file(self.service_path());
     }
 
+    /// Entries whose key is not their own origin (the old per-project keys)
+    /// are dropped rather than honoured.
     fn load(&self) -> HashMap<String, Pairing> {
-        read_json(&self.pairings_path()).unwrap_or_default()
+        let mut pairings: HashMap<String, Pairing> =
+            read_json(&self.pairings_path()).unwrap_or_default();
+        pairings.retain(|key, pairing| *key == pairing.origin);
+        pairings
     }
 
     fn save(&self, pairings: &HashMap<String, Pairing>) -> std::io::Result<()> {
         write_private_json(&self.pairings_path(), pairings)
     }
 
-    /// Grants `project` under `origin` a fresh token, replacing any pairing
-    /// already held for that exact key. Returns the plaintext token -- shown
-    /// once -- and its expiry.
-    pub fn issue(
-        &self,
-        origin: &str,
-        project: &str,
-        label: &str,
-    ) -> std::io::Result<(String, i64)> {
+    /// Grants `origin` a fresh token, replacing any pairing already held for
+    /// it. Returns the plaintext token -- shown once -- and its expiry.
+    pub fn issue(&self, origin: &str, label: &str) -> std::io::Result<(String, i64)> {
         let origin = normalize_origin(origin);
         let token = random_token();
         let now = now_unix();
         let expires = now + TOKEN_TTL_SECONDS;
         let mut pairings = self.load();
         pairings.insert(
-            key_of(&origin, project),
+            origin.clone(),
             Pairing {
                 token_sha256: hash_token(&token),
                 origin,
-                project: project.to_string(),
                 created: now,
                 expires,
                 label: label.to_string(),
@@ -131,66 +128,59 @@ impl PairingStore {
         Ok((token, expires))
     }
 
-    /// The project `token` is live for under `origin`, or `None` when there
-    /// is no such pairing, it expired, or the token does not match. The
-    /// comparison is over the stored hash, not the plaintext, and takes the
-    /// same time whether or not the bytes match.
-    pub fn authenticate(&self, origin: &str, token: &str) -> Option<String> {
+    /// Whether `token` is live for `origin`: there is such a pairing, it has
+    /// not expired, and the token matches. The comparison is over the stored
+    /// hash, not the plaintext, and takes the same time whether or not the
+    /// bytes match.
+    pub fn authenticate(&self, origin: &str, token: &str) -> bool {
         if token.is_empty() {
-            return None;
+            return false;
         }
         let origin = normalize_origin(origin);
         let hash = hash_token(token);
         let now = now_unix();
-        self.load().into_values().find_map(|pairing| {
-            let live = pairing.origin == origin && pairing.expires > now;
-            let matches =
-                crate::util::constant_time_eq(pairing.token_sha256.as_bytes(), hash.as_bytes());
-            (live && matches).then_some(pairing.project)
+        self.load().get(&origin).is_some_and(|pairing| {
+            pairing.expires > now
+                && crate::util::constant_time_eq(pairing.token_sha256.as_bytes(), hash.as_bytes())
         })
     }
 
-    /// Whether `origin` holds any live pairing at all, regardless of token --
-    /// what CORS asks before it echoes `Access-Control-Allow-Origin` on a
-    /// route other than `health`/`connect`, where there is no bearer token on
-    /// the request to check instead (a preflight carries none).
+    /// Whether `origin` holds a live pairing, regardless of token -- what
+    /// CORS asks before it echoes `Access-Control-Allow-Origin` on a route
+    /// other than `health`/`connect`, where there is no bearer token on the
+    /// request to check instead (a preflight carries none).
     pub fn has_live_pairing(&self, origin: &str) -> bool {
         let origin = normalize_origin(origin);
         let now = now_unix();
         self.load()
-            .values()
-            .any(|pairing| pairing.origin == origin && pairing.expires > now)
+            .get(&origin)
+            .is_some_and(|pairing| pairing.expires > now)
     }
 
-    /// The `(origin, project)` pairs with a live pairing, for `status` and
-    /// `start` to print.
-    pub fn active_pairings(&self) -> Vec<(String, String)> {
+    /// The origins with a live pairing, for `status` and `start` to print.
+    pub fn active_pairings(&self) -> Vec<String> {
         let now = now_unix();
-        let mut pairings: Vec<_> = self
+        let mut origins: Vec<_> = self
             .load()
             .into_values()
             .filter(|p| p.expires > now)
-            .map(|p| (p.origin, p.project))
+            .map(|p| p.origin)
             .collect();
-        pairings.sort();
-        pairings
+        origins.sort();
+        origins
     }
 
-    /// Revokes exactly one `(origin, project)` pairing -- what `POST
-    /// disconnect` does to the token that authenticated it.
-    pub fn revoke_one(&self, origin: &str, project: &str) -> bool {
+    /// Revokes the pairing for `origin` -- what `POST disconnect` does to the
+    /// origin that authenticated it.
+    pub fn revoke(&self, origin: &str) -> bool {
         let origin = normalize_origin(origin);
         let mut pairings = self.load();
-        let removed = pairings.remove(&key_of(&origin, project)).is_some();
+        let removed = pairings.remove(&origin).is_some();
         if removed {
             let _ = self.save(&pairings);
         }
         removed
     }
-}
-
-fn key_of(origin: &str, project: &str) -> String {
-    format!("{origin}|{project}")
 }
 
 /// 32 random bytes, base64url without padding -- what a bearer token is.
@@ -343,12 +333,9 @@ mod tests {
     fn issued_token_authenticates_and_is_stored_hashed() {
         let (_dir, store) = store();
         let (token, _expires) = store
-            .issue("https://Example.com:443", "proj", "browser")
+            .issue("https://Example.com:443", "browser")
             .expect("issue");
-        assert_eq!(
-            store.authenticate("https://example.com:443", &token),
-            Some("proj".to_string())
-        );
+        assert!(store.authenticate("https://example.com:443", &token));
         let raw = std::fs::read_to_string(store.pairings_path()).expect("read");
         assert!(!raw.contains(&token), "plaintext token leaked to disk");
     }
@@ -356,19 +343,20 @@ mod tests {
     #[test]
     fn wrong_token_or_origin_does_not_authenticate() {
         let (_dir, store) = store();
-        let (token, _) = store.issue("https://a", "proj", "").expect("issue");
-        assert_eq!(store.authenticate("https://a", "wrong"), None);
-        assert_eq!(store.authenticate("https://b", &token), None);
+        let (token, _) = store.issue("https://a", "").expect("issue");
+        assert!(!store.authenticate("https://a", "wrong"));
+        assert!(!store.authenticate("https://b", &token));
     }
 
     #[test]
-    fn revoke_one_leaves_other_projects_paired() {
+    fn revoke_leaves_other_origins_paired() {
         let (_dir, store) = store();
-        let (t1, _) = store.issue("https://a", "p1", "").expect("issue");
-        let (t2, _) = store.issue("https://a", "p2", "").expect("issue");
-        assert!(store.revoke_one("https://a", "p1"));
-        assert_eq!(store.authenticate("https://a", &t1), None);
-        assert_eq!(store.authenticate("https://a", &t2), Some("p2".to_string()));
+        let (t1, _) = store.issue("https://a", "").expect("issue");
+        let (t2, _) = store.issue("https://b", "").expect("issue");
+        assert!(store.revoke("https://a"));
+        assert!(!store.authenticate("https://a", &t1));
+        assert!(store.authenticate("https://b", &t2));
+        assert_eq!(store.active_pairings(), vec!["https://b".to_string()]);
     }
 
     #[test]
@@ -386,17 +374,10 @@ mod tests {
     #[test]
     fn replacing_a_grant_invalidates_the_previous_token() {
         let (_dir, store) = store();
-        let (old, _) = store
-            .issue("https://example.test", "paper", "old")
-            .expect("issue");
-        let (new, _) = store
-            .issue("https://example.test", "paper", "new")
-            .expect("issue");
-        assert_eq!(store.authenticate("https://example.test", &old), None);
-        assert_eq!(
-            store.authenticate("https://example.test", &new),
-            Some("paper".into())
-        );
+        let (old, _) = store.issue("https://example.test", "old").expect("issue");
+        let (new, _) = store.issue("https://example.test", "new").expect("issue");
+        assert!(!store.authenticate("https://example.test", &old));
+        assert!(store.authenticate("https://example.test", &new));
     }
 
     #[test]
@@ -491,29 +472,29 @@ mod tests {
     }
 
     #[test]
-    fn expired_grants_and_wrong_origin_or_project_scope_are_rejected() {
+    fn expired_grants_and_wrong_origin_are_rejected() {
         let (_dir, store) = store();
-        let (token, _) = store
-            .issue("https://example.test", "paper", "")
-            .expect("issue");
+        let (token, _) = store.issue("https://example.test", "").expect("issue");
         let mut grants = store.load();
-        let key = key_of("https://example.test", "paper");
-        grants.get_mut(&key).expect("grant").expires = now_unix() - 1;
+        grants
+            .get_mut("https://example.test")
+            .expect("grant")
+            .expires = now_unix() - 1;
         store.save(&grants).expect("save");
-        assert_eq!(store.authenticate("https://example.test", &token), None);
-        assert_eq!(store.authenticate("https://other.test", &token), None);
-        // Authentication returns the token's project; callers must compare it
-        // with the requested project before accepting a job or binding.
-        let (token, _) = store
-            .issue("https://example.test", "paper", "")
-            .expect("issue");
-        assert_eq!(
-            store.authenticate("https://example.test", &token),
-            Some("paper".into())
-        );
-        assert_ne!(
-            store.authenticate("https://example.test", &token),
-            Some("other".into())
-        );
+        assert!(!store.authenticate("https://example.test", &token));
+        assert!(!store.has_live_pairing("https://example.test"));
+        assert!(!store.authenticate("https://other.test", &token));
+    }
+
+    #[test]
+    fn per_project_entries_from_older_files_are_ignored() {
+        let (_dir, store) = store();
+        let (token, _) = store.issue("https://example.test", "").expect("issue");
+        let mut grants = store.load();
+        let pairing = grants.remove("https://example.test").expect("grant");
+        grants.insert("https://example.test|paper".to_string(), pairing);
+        store.save(&grants).expect("save");
+        assert!(!store.authenticate("https://example.test", &token));
+        assert!(store.active_pairings().is_empty());
     }
 }
