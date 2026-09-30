@@ -34,11 +34,11 @@ Examples:
 EOF
 }
 
-# Check if keys file exists
-if [ ! -f "$KEYS" ]; then
-    echo "no $KEYS" >&2
-    exit 1
-fi
+case "${1:-help}" in
+    shell|edit|names)
+        [ -f "$KEYS" ] || { echo "no $KEYS" >&2; exit 1; }
+        ;;
+esac
 
 case "${1:-help}" in
     shell)

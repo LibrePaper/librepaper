@@ -72,7 +72,7 @@ cmd_dev() {
     docker start "$DEV_POSTGRES_CONTAINER" >/dev/null
 
     # Wait for PostgreSQL to be ready (up to 30 seconds).
-    for attempt in $(seq 1 30); do
+    for _ in $(seq 1 30); do
         if docker exec "$DEV_POSTGRES_CONTAINER" pg_isready -U postgres -d librepaper >/dev/null 2>&1; then
             echo "$DEV_POSTGRES_URL"
             return 0
