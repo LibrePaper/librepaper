@@ -340,9 +340,20 @@ function groupFiles(prefix, files) {
 
 async function runPool(items, limit, work) {
   let next = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) await work(items[next++]);
+  let failed = false;
+  let firstError = null;
+  const results = await Promise.allSettled(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length && !failed) {
+      try {
+        await work(items[next++]);
+      } catch (error) {
+        failed = true;
+        firstError = error;
+        throw error;
+      }
+    }
   }));
+  if (firstError) throw firstError;
 }
 
 /// Read back a few objects' headers, cheaply: the CLI already checksummed each
@@ -430,6 +441,7 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
       const config = join(staging, "aws-config");
       await writeFile(config, `[default]\ns3 =\n  max_concurrent_requests = ${SYNC_CONCURRENCY}\n  max_queue_size = 10000\n`);
       const syncEnv = { ...env, AWS_CONFIG_FILE: config };
+      delete syncEnv.AWS_PROFILE;
       for (const [index, group] of groups.entries()) {
         const { metadata } = group;
         const bytes = group.files.reduce((total, file) => total + file.stagedSize, 0);

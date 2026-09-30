@@ -44,7 +44,7 @@ PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(LCM)
 # landing page recompiled the whole crate. The site builds on its own: see the
 # site target at the bottom of this file.
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js)
-SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
+SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml assets.lock
 
 .PHONY: help build install test check fmt serve demo demo-run wipe kill clean snapshot web pins site site-serve
 

@@ -70,12 +70,10 @@ suite_external() {
 suite_workloads() {
 	local t
 	for t in \
-		the_supported_maximum_source_survives_a_restart \
-		measure_source_history_profiles \
-		profile_unchanged_resident_metadata \
-		persistence_capacity_workload \
-		persistence_default_limits_refuse_without_discarding_dirty_rooms \
-		mcp_protocol_transfer_benchmark; do
+		active_document_capacity_benchmark \
+		maintenance_backlog_capacity_benchmark \
+		mixed_traffic_capacity_benchmark \
+		reconnect_burst_capacity_benchmark; do
 		cargo test -p librepaper "$t" -- --ignored --nocapture
 	done
 }

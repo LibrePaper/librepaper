@@ -10,7 +10,7 @@
 // Usage: browser-smoke.mjs <path-to-librepaper-binary>
 // Nothing here touches a deployment or any storage but its own temporary one.
 
-import { spawn } from "node:child_process";
+import { spawn, execSync, execFileSync } from "node:child_process";
 import {
   mkdtempSync,
   readdirSync,
@@ -34,6 +34,33 @@ const PORT = 8200 + Math.floor(Math.random() * 300);
 const BASE = `http://localhost:${PORT}`;
 let failures = 0;
 const results = [];
+
+// Set up throwaway database if LIBREPAPER_TEST_POSTGRES_URL is not set
+let pgContainer = null;
+let pgUrl = process.env.LIBREPAPER_TEST_POSTGRES_URL;
+if (!pgUrl) {
+  try {
+    const containerName = `librepaper-smoke-${process.pid}`;
+    execSync(`docker run -d --rm --name "${containerName}" -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=librepaper -p 127.0.0.1::5432 postgres:16-alpine`, { stdio: "ignore" });
+    pgContainer = containerName;
+    let port = null;
+    for (let i = 0; i < 60; i++) {
+      try {
+        const portOutput = execSync(`docker port "${containerName}" 5432/tcp`, { encoding: "utf-8" });
+        port = portOutput.split(":")[1].trim();
+        execSync(`docker exec "${containerName}" pg_isready -q -U postgres -h 127.0.0.1`, { stdio: "ignore" });
+        break;
+      } catch {
+        if (i === 59) throw new Error("PostgreSQL did not start");
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+    pgUrl = `postgres://postgres:smoke@127.0.0.1:${port}/librepaper`;
+  } catch (error) {
+    console.error("Failed to start database:", error.message);
+    process.exit(1);
+  }
+}
 
 function check(what, condition, detail = "") {
   results.push({ what, ok: Boolean(condition), detail });
@@ -59,10 +86,11 @@ async function until(what, predicate, timeout = 15000) {
 
 /* ------------------------------------------------------------- the server */
 
+const serverEnv = { ...process.env, LIBREPAPER_DATABASE_URL: pgUrl };
 const server = spawn(
   binary,
   ["admin", "serve", "--port", String(PORT), "--data-directory", data, "--publishers", "any", "--commenters", "anyone"],
-  { stdio: ["ignore", "pipe", "pipe"] },
+  { stdio: ["ignore", "pipe", "pipe"], env: serverEnv },
 );
 const serverLog = [];
 server.stdout.on("data", (chunk) => serverLog.push(String(chunk)));
@@ -1100,6 +1128,11 @@ try {
   } catch {}
   chrome?.kill();
   server.kill();
+  if (pgContainer) {
+    try {
+      execSync(`docker stop "${pgContainer}"`, { stdio: "ignore" });
+    } catch {}
+  }
   await wait(300);
   // Chromium can still be releasing file handles in its profile directory a
   // moment after the process is asked to exit; one retry after a further
