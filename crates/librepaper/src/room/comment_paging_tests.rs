@@ -219,7 +219,7 @@ impl Deployment {
                         document_id,
                         id: Uuid::new_v4(),
                         author: self.author_key(),
-                        author_peer: (index as i64) | 1,
+                        owner_key: self.author_key(),
                         base_frontiers: Vec::new(),
                         tip_frontiers: Vec::new(),
                         branch_bytes: Vec::new(),

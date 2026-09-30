@@ -5,7 +5,9 @@ use super::*;
 use crate::log::sequencer::Ingested;
 use crate::log::CommandError;
 use crate::room::outgoing::OutgoingSink;
-use crate::room::proposals::{DecideProposalHunk, OpenProposal, ProposalDecided, UpdateProposal};
+use crate::room::proposals::{
+    DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
+};
 use crate::room::Room;
 use crate::storage::postgres::StoredProposal;
 
@@ -69,11 +71,10 @@ pub(super) async fn announce_proposal(room: &Room, id: &str) {
     let Ok(Some(proposal)) = room.catalog().proposal(id).await else {
         return;
     };
-    let decisions: Vec<(i32, bool)> = room
-        .catalog()
-        .decisions(id)
-        .await
-        .unwrap_or_default()
+    let Ok(decisions) = room.catalog().decisions(id).await else {
+        return;
+    };
+    let decisions: Vec<(i32, bool)> = decisions
         .into_iter()
         .map(|decision| (decision.hunk_index, decision.accepted))
         .collect();
@@ -1099,6 +1100,7 @@ impl Server {
                                     catalog: room.catalog().clone(),
                                     id: request_id,
                                     author: by.clone(),
+                                    owner_key: author.clone(),
                                     base,
                                 };
                                 match room.command(&who.document_authority(), &mut command).await {
@@ -1107,6 +1109,9 @@ impl Server {
                                         json!({
                                             "type": "proposal-opened", "proposal_id": stored.id,
                                             "request_id": incoming.request_id(),
+                                            "applied_version": stored.version,
+                                            "base": encode_update(&stored.base_frontiers),
+                                            "tip": encode_update(&stored.tip_frontiers),
                                             "version": 1, "protocol": PROTOCOL,
                                         })
                                     }
@@ -1157,6 +1162,7 @@ impl Server {
                                     document_id: room.document_id,
                                     catalog: room.catalog().clone(),
                                     id: proposal_id,
+                                    owner_key: author.clone(),
                                     expected_version: stored.version,
                                     tip,
                                     base,
@@ -1166,12 +1172,15 @@ impl Server {
                                     carried: Vec::new(),
                                 };
                                 match room.command(&who.document_authority(), &mut command).await {
-                                    Ok(_) => {
+                                    Ok(stored) => {
                                         announce_proposal(&room, incoming.proposal_id()).await;
                                         json!({
                                             "type": "proposal-updated",
                                             "proposal_id": incoming.proposal_id(),
                                             "request_id": incoming.request_id(),
+                                            "applied_version": stored.version,
+                                            "base": encode_update(&stored.base_frontiers),
+                                            "tip": encode_update(&stored.tip_frontiers),
                                             "version": 1, "protocol": PROTOCOL,
                                         })
                                     }
@@ -1222,6 +1231,9 @@ impl Server {
                                             "hunk": incoming.hunk(),
                                             "accepted": incoming.accepted(),
                                             "resolved": true,
+                                            "resolved_tip": incoming.tip(),
+                                            "resolved_base": null,
+                                            "decisions": [{"hunk":incoming.hunk(),"accepted":incoming.accepted()}],
                                             "request_id": incoming.request_id(),
                                             "version": 1, "protocol": PROTOCOL,
                                         })
@@ -1231,11 +1243,12 @@ impl Server {
                                     let _ = send_outgoing(&tx, Outgoing::Text(answer.to_string())).await;
                                     continue 'reader;
                                 };
-                                let decided = room
-                                    .catalog()
-                                    .decisions(proposal_id)
-                                    .await
-                                    .unwrap_or_default();
+                                let Ok(decided) = room.catalog().decisions(proposal_id).await else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"proposal decisions could not be read","proposal_id":incoming.proposal_id(),"request_id":incoming.request_id()}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
                                 let mut command = DecideProposalHunk {
                                     document_id: room.document_id,
                                     catalog: room.catalog().clone(),
@@ -1250,6 +1263,7 @@ impl Server {
                                     reviewer: socket_id,
                                     request_id,
                                     total_hunks: 0,
+                                    final_decisions: Vec::new(),
                                 };
                                 match room.command(&who.document_authority(), &mut command).await {
                                     // The merge (and any reverts a partial
@@ -1258,7 +1272,7 @@ impl Server {
                                     // command produced (§5 step 5, `relay` in
                                     // `Sequencer::command`); broadcasting it a
                                     // second time here would double it.
-                                    Ok(ProposalDecided { resolved, removed_comments }) => {
+                                    Ok(ProposalDecided { resolved, resolved_tip, resolved_base, decisions, removed_comments }) => {
                                         // The proposal is gone, and so is the
                                         // suggestion comment that came with it.
                                         // Everyone, the decider included, is told
@@ -1279,6 +1293,9 @@ impl Server {
                                             "hunk": incoming.hunk(),
                                             "accepted": incoming.accepted(),
                                             "resolved": resolved,
+                                            "resolved_tip": resolved_tip.map(|tip| encode_update(&tip)),
+                                            "resolved_base": resolved_base.map(|base| encode_update(&base)),
+                                            "decisions": decisions.iter().map(|(hunk, accepted)| json!({"hunk":hunk,"accepted":accepted})).collect::<Vec<_>>(),
                                             "request_id": incoming.request_id(),
                                             "version": 1, "protocol": PROTOCOL,
                                         })
@@ -1286,16 +1303,57 @@ impl Server {
                                     Err(error) => refuse(error),
                                 }
                             }
-                            "proposal-list" => match room.catalog().open_proposals(room.document_id).await {
-                                Ok(open) => {
+                            "proposal-discard" => match uuid::Uuid::parse_str(incoming.proposal_id()) {
+                                Ok(proposal_id) => {
+                                    let mut command = DiscardProposal {
+                                        document_id: room.document_id,
+                                        catalog: room.catalog().clone(),
+                                        id: proposal_id,
+                                    };
+                                    match room.command(&who.document_authority(), &mut command).await {
+                                        Ok(discarded) => {
+                                            for comment_id in discarded.removed_comments {
+                                                let event = room.prepare_comment_event(&json!({
+                                                    "type": "delete",
+                                                    "comment_id": comment_id.to_string(),
+                                                })).await;
+                                                room.broadcast_prepared(None, &event).await;
+                                            }
+                                            let event = json!({
+                                                "type": "proposal-discarded",
+                                                "proposal_id": incoming.proposal_id(),
+                                                "discarded": true,
+                                                "resolved_base": discarded.resolved_base.as_ref().map(|base| encode_update(base)),
+                                                "resolved_tip": discarded.resolved_tip.as_ref().map(|tip| encode_update(tip)),
+                                                "request_id": incoming.request_id(),
+                                                "version": 1,
+                                                "protocol": PROTOCOL,
+                                            });
+                                            room.broadcast_editors_except(Some(socket_id), &event).await;
+                                            json!({
+                                                "type":"proposal-discarded",
+                                                "proposal_id":incoming.proposal_id(),
+                                                "discarded":true,
+                                                "resolved_base":discarded.resolved_base.map(|base| encode_update(&base)),
+                                                "resolved_tip":discarded.resolved_tip.map(|tip| encode_update(&tip)),
+                                                "request_id":incoming.request_id(),
+                                                "version":1,
+                                                "protocol":PROTOCOL
+                                            })
+                                        }
+                                        Err(error) => refuse(error),
+                                    }
+                                }
+                                Err(_) => json!({"type":"error","message":"that proposal id could not be read","proposal_id":incoming.proposal_id(),"request_id":incoming.request_id(),"version":1,"protocol":PROTOCOL}),
+                            },
+                            "proposal-list" => {
+                                let proposals = room.catalog().open_proposals(room.document_id).await;
+                                let decisions = room.catalog().decisions_for_document(room.document_id).await;
+                                match (proposals, decisions) {
+                                (Ok(open), Ok(decisions)) => {
                                     let mut decided: std::collections::HashMap<uuid::Uuid, Vec<(i32, bool)>> =
                                         std::collections::HashMap::new();
-                                    for (id, hunk, accepted) in room
-                                        .catalog()
-                                        .decisions_for_document(room.document_id)
-                                        .await
-                                        .unwrap_or_default()
-                                    {
+                                    for (id, hunk, accepted) in decisions {
                                         decided.entry(id).or_default().push((hunk, accepted));
                                     }
                                     json!({
@@ -1308,12 +1366,13 @@ impl Server {
                                         "version": 1, "protocol": PROTOCOL,
                                     })
                                 }
-                                Err(error) => json!({
+                                (Err(error), _) | (_, Err(error)) => json!({
                                     "type": "error",
                                     "message": error.to_string(),
                                     "request_id": incoming.request_id(),
                                     "version": 1, "protocol": PROTOCOL,
                                 }),
+                                }
                             },
                             _ => continue 'reader,
                         };

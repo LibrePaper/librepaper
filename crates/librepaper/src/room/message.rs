@@ -168,6 +168,13 @@ pub enum KnownMessage {
         #[serde(default)]
         request_id: String,
     },
+    #[serde(rename = "proposal-discard")]
+    ProposalDiscard {
+        #[serde(default)]
+        proposal_id: String,
+        #[serde(default)]
+        request_id: String,
+    },
     #[serde(rename = "proposal-list")]
     ProposalList {
         #[serde(default)]
@@ -279,6 +286,7 @@ impl KnownMessage {
                 | "proposal-open"
                 | "proposal-update"
                 | "proposal-decide"
+                | "proposal-discard"
                 | "proposal-list"
                 | "comment"
                 | "reply"
@@ -303,6 +311,7 @@ impl KnownMessage {
             Self::ProposalOpen { .. } => "proposal-open",
             Self::ProposalUpdate { .. } => "proposal-update",
             Self::ProposalDecide { .. } => "proposal-decide",
+            Self::ProposalDiscard { .. } => "proposal-discard",
             Self::ProposalList { .. } => "proposal-list",
             Self::Comment { .. } => "comment",
             Self::Reply { .. } => "reply",
@@ -324,6 +333,7 @@ impl KnownMessage {
             | ProposalOpen
             | ProposalUpdate
             | ProposalDecide
+            | ProposalDiscard
             | ProposalList
             | Comment
             | Reply
@@ -351,7 +361,7 @@ impl KnownMessage {
     );
     string_field!(vector, vector, DocOpen);
     string_field!(protocol, protocol, DocOpen);
-    string_field!(proposal_id, proposal_id, ProposalUpdate | ProposalDecide);
+    string_field!(proposal_id, proposal_id, ProposalUpdate | ProposalDecide | ProposalDiscard);
     string_field!(base, base, ProposalOpen | ProposalUpdate);
     string_field!(tip, tip, ProposalUpdate | ProposalDecide);
     string_field!(note, note, ProposalDecide);
