@@ -216,9 +216,13 @@ SIMULATE_ACTIVITY_FLAG ?= $(if $(filter-out 0,$(SIMULATE_ACTIVITY)),--simulate-a
 
 OPEN ?= 1
 
-serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, ASSET_MIRROR=; everything else through .env)
+# Without LIBREPAPER_DATABASE_URL, the server uses the Docker PostgreSQL that
+# postgres-dev keeps, started here if it is not running.
+serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, ASSET_MIRROR=, LIBREPAPER_DATABASE_URL=)
+	@test -n "$(LIBREPAPER_DATABASE_URL)" || $(MAKE) --no-print-directory postgres-dev
 	@test "$(OPEN)" = 1 && command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
-	@$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(ASSET_MIRROR_FLAG) $(SIMULATE_ACTIVITY_FLAG)
+	@LIBREPAPER_DATABASE_URL="$${LIBREPAPER_DATABASE_URL:-$(DEV_POSTGRES_URL)}" \
+		$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(ASSET_MIRROR_FLAG) $(SIMULATE_ACTIVITY_FLAG)
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
@@ -329,7 +333,6 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 deploy: SIMULATE_ACTIVITY ?= 21
 deploy: latex-check $(BIN)  ## Serve the site, the application and a local companion and open the site in Firefox
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
-	@test -n "$(LIBREPAPER_DATABASE_URL)" || $(MAKE) --no-print-directory postgres-dev
 	@set -e; \
 	(cd web && bun run serve:site -- --port $(SITE_PORT) --strictPort >/dev/null 2>&1) & \
 	site_pid=$$!; companion_pid=; \
@@ -343,7 +346,6 @@ deploy: latex-check $(BIN)  ## Serve the site, the application and a local compa
 	command -v firefox >/dev/null && (sleep 2; firefox http://localhost:$(SITE_PORT) >/dev/null 2>&1 &) || true; \
 	echo "site  http://localhost:$(SITE_PORT)"; \
 	echo "app   http://localhost:$(PORT)"; \
-	LIBREPAPER_DATABASE_URL="$${LIBREPAPER_DATABASE_URL:-$(DEV_POSTGRES_URL)}" \
 	LIBREPAPER_SITE_ORIGIN=http://localhost:$(SITE_PORT) \
 		$(MAKE) serve OPEN=0 LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY)
 
