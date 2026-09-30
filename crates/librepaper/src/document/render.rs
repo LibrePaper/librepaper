@@ -276,74 +276,47 @@ mod tests {
 
     #[test]
     fn markdown_heading_with_space() {
-        assert_eq!(
-            title_from_markdown("# My Title\nSome text"),
-            "My Title"
-        );
+        assert_eq!(title_from_markdown("# My Title\nSome text"), "My Title");
     }
 
     #[test]
     fn markdown_heading_with_tab() {
-        assert_eq!(
-            title_from_markdown("#\tMy Title\nSome text"),
-            "My Title"
-        );
+        assert_eq!(title_from_markdown("#\tMy Title\nSome text"), "My Title");
     }
 
     #[test]
     fn markdown_double_hash_no_match() {
-        assert_eq!(
-            title_from_markdown("## My Title\nSome text"),
-            ""
-        );
+        assert_eq!(title_from_markdown("## My Title\nSome text"), "");
     }
 
     #[test]
     fn markdown_hash_no_space() {
-        assert_eq!(
-            title_from_markdown("#NoSpace\nSome text"),
-            ""
-        );
+        assert_eq!(title_from_markdown("#NoSpace\nSome text"), "");
     }
 
     #[test]
     fn typst_heading_with_space() {
-        assert_eq!(
-            title_from_typst("= My Title\nSome text"),
-            "My Title"
-        );
+        assert_eq!(title_from_typst("= My Title\nSome text"), "My Title");
     }
 
     #[test]
     fn typst_heading_with_tab() {
-        assert_eq!(
-            title_from_typst("=\tMy Title\nSome text"),
-            "My Title"
-        );
+        assert_eq!(title_from_typst("=\tMy Title\nSome text"), "My Title");
     }
 
     #[test]
     fn typst_double_equals_no_match() {
-        assert_eq!(
-            title_from_typst("== My Title\nSome text"),
-            ""
-        );
+        assert_eq!(title_from_typst("== My Title\nSome text"), "");
     }
 
     #[test]
     fn empty_heading_no_title() {
-        assert_eq!(
-            title_from_markdown("# \n\nSome text"),
-            ""
-        );
+        assert_eq!(title_from_markdown("# \n\nSome text"), "");
     }
 
     #[test]
     fn heading_with_multiple_spaces() {
-        assert_eq!(
-            title_from_markdown("#   Spaced\nSome text"),
-            "Spaced"
-        );
+        assert_eq!(title_from_markdown("#   Spaced\nSome text"), "Spaced");
     }
 
     // `\footnote` is a prefix of `\footnotemark`, so a naive search for the

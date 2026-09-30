@@ -43,7 +43,7 @@ async fn replay(url: String, directory: PathBuf) -> BTreeMap<String, Value> {
             !head.texts.is_empty(),
             "fixture must have actual source text"
         );
-        let fingerprint = |projected: &crate::document::projection::Projected| {
+        let fingerprint = |projected: &librepaper::projection::Projected| {
             let body = serde_json::to_vec(&json!({
                 "projection": projected.projection,
                 "texts": projected.texts,

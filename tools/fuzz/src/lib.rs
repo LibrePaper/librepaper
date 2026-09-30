@@ -3,7 +3,7 @@
 //! libFuzzer produces.
 
 use librepaper::config::Configuration;
-use librepaper::document::session::Edit;
+use librepaper::session::Edit;
 use librepaper::paths::Rules;
 
 /// The deployment's default rules, which is what every real document is

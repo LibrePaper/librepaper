@@ -11,13 +11,13 @@
 
 use std::collections::BTreeMap;
 
-use librepaper::document::projection::{paths::Rules, project, Projection};
+use librepaper::paths::Rules;
+use librepaper::projection::{project, Projection};
 use loro::{LoroDoc, LoroText, LoroValue};
 use serde_json::{json, Map, Value};
 
 fn corpus_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../web/tests/fixtures/projection.json")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/tests/fixtures/projection.json")
 }
 
 fn strings(value: &Value, key: &str) -> Vec<String> {
@@ -53,7 +53,7 @@ fn insert_value(map: &loro::LoroMap, key: &str, value: &Value) {
 
 fn build(case: &Value) -> LoroDoc {
     let doc = LoroDoc::new();
-    for root in librepaper::document::projection::ROOTS {
+    for root in librepaper::projection::ROOTS {
         let _ = doc.get_map(root);
     }
     let files = doc.get_map("files");
@@ -138,7 +138,7 @@ fn the_shared_corpus_projects_the_same_way_on_both_sides() {
         asset: &asset,
         derived: &derived,
         max_path: corpus["rules"]["max_path"].as_u64().unwrap_or(255) as usize,
-        max_segments: librepaper::document::projection::paths::MAX_SEGMENTS,
+        max_segments: librepaper::projection::MAX_SEGMENTS,
     };
 
     let regenerate = std::env::var("LIBREPAPER_REGENERATE_FIXTURES").is_ok();

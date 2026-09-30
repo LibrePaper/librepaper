@@ -80,7 +80,17 @@ pub mod paths {
 pub mod session {
     pub use crate::document::session::{
         apply_edits_at, apply_update, decode_update, encode_state, main_path, new_doc, paths_of,
-        put_asset, put_text, replace_text, set_main, text_of, ASSETS, FILES, MAIN, META, PATHS,
+        put_asset, put_text, replace_text, set_main, text_of, Edit, ASSETS, FILES, MAIN, META,
+        PATHS,
+    };
+}
+
+/// The projection: a document read as a directory. The fixture corpus
+/// (`tests/projection_fixtures.rs`) and a fuzz target
+/// (`tools/fuzz/fuzz_targets/document.rs`) hold it to its definition.
+pub mod projection {
+    pub use crate::document::projection::{
+        paths::MAX_SEGMENTS, project, Entry, Projected, Projection, ROOTS,
     };
 }
 

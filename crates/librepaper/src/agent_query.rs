@@ -1719,7 +1719,7 @@ fn range_count(value: &Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::projection::projection::Entry;
+    use crate::document::projection::Entry;
 
     /// A projection of the same shape the sequencer produces: `kind`,
     /// `id`, the content `digest`, and `bytes` as a text's UTF-8 length.

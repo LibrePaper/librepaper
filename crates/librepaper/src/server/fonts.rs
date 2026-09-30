@@ -12,6 +12,7 @@
 //! Which fonts a deployment offers is the operator's decision, and the
 //! licence question is theirs too: the files are served as they are.
 
+#[path = "font_exceptions.rs"]
 mod font_exceptions;
 
 use std::path::PathBuf;
@@ -300,7 +301,7 @@ fn decode_mac_roman(coded: &[u8]) -> String {
         '†', '°', '¢', '£', '§', '•', '¶', 'ß', '®', '©', '™', '´', '¨', '≠', 'Æ', 'Ø',
         '∞', '±', '≤', '≥', '¥', 'µ', '∂', '∑', '∏', 'π', '∫', 'ª', 'º', 'Ω', 'æ', 'ø',
         '¿', '¡', '¬', '√', 'ƒ', '≈', '∆', '«', '»', '…', '\u{a0}', 'À', 'Ã', 'Õ', 'Œ', 'œ',
-        '–', '—', '"', '"', ''', ''', '÷', '◊', 'ÿ', 'Ÿ', '⁄', '€', '‹', '›', 'ﬁ', 'ﬂ',
+        '\u{2013}', '\u{2014}', '\u{201c}', '\u{201d}', '\u{2018}', '\u{2019}', '÷', '◊', 'ÿ', 'Ÿ', '⁄', '€', '‹', '›', 'ﬁ', 'ﬂ',
         '‡', '·', '‚', '„', '‰', 'Â', 'Ê', 'Á', 'Ë', 'È', 'Í', 'Î', 'Ï', 'Ì', 'Ó', 'Ô',
         '\u{f8ff}', 'Ò', 'Ú', 'Û', 'Ù', 'ı', 'ˆ', '˜', '¯', '˘', '˙', '˚', '¸', '˝', '˛', 'ˇ',
     ];
@@ -322,8 +323,9 @@ fn typographic_family(mut family: &str) -> &str {
     const SEPARATORS: [char; 3] = [' ', '-', '_'];
 
     // Modifiers that can appear in combination with suffixes.
-    const MODIFIERS: &[&str] =
-        &["extra", "ext", "ex", "x", "semi", "sem", "sm", "demi", "dem", "ultra"];
+    const MODIFIERS: &[&str] = &[
+        "extra", "ext", "ex", "x", "semi", "sem", "sm", "demi", "dem", "ultra",
+    ];
 
     // Style suffixes.
     #[rustfmt::skip]
@@ -367,10 +369,10 @@ fn typographic_family(mut family: &str) -> &str {
 
         // Also allow an extra modifier, but apply it only if it is separated
         // from the text before it (to prevent false positives).
-        if let Some(t) = MODIFIERS.iter().find_map(|s| t.strip_suffix(s))
-            && let Some(stripped) = t.strip_suffix(SEPARATORS)
-        {
-            trimmed = stripped;
+        if let Some(t) = MODIFIERS.iter().find_map(|s| t.strip_suffix(s)) {
+            if let Some(stripped) = t.strip_suffix(SEPARATORS) {
+                trimmed = stripped;
+            }
         }
     }
 
@@ -386,23 +388,17 @@ mod tests {
 
     #[test]
     fn families_in_matches_typst_output() {
-        // Test that for every font in typst_assets::fonts(), the families
-        // extracted by families_in() match what typst reports.
-        for font in typst_assets::fonts() {
-            let our_families = families_in(font.data);
-            let typst_families: Vec<String> = typst::text::Font::iter(
-                typst::foundations::Bytes::new(font.data.to_vec()),
-            )
-            .map(|f| f.info().family.to_lowercase())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
+        // Every font typst bundles is named here exactly as the compiler names it.
+        for (index, font) in typst_assets::fonts().enumerate() {
+            let our_families = families_in(font);
+            let typst_families: Vec<String> =
+                typst::text::Font::iter(typst::foundations::Bytes::new(font.to_vec()))
+                    .map(|f| f.info().family.to_lowercase())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
 
-            assert_eq!(
-                our_families, typst_families,
-                "Font {} families mismatch",
-                font.info.family
-            );
+            assert_eq!(our_families, typst_families, "bundled font {index}");
         }
     }
 }

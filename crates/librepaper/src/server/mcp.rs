@@ -1093,7 +1093,7 @@ mod selection_tests {
             main_id: "f1".into(),
             files: [(
                 path.to_string(),
-                crate::document::projection::projection::Entry {
+                crate::document::projection::Entry {
                     kind: "text".into(),
                     id: "f1".into(),
                     digest: hex::encode(<sha2::Sha256 as sha2::Digest>::digest(text.as_bytes())),

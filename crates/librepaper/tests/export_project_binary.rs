@@ -6,7 +6,7 @@ use std::process::Stdio;
 use axum::extract::Path;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use crate::document::projection::{Entry, Projection};
+use librepaper::projection::{Entry, Projection};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
