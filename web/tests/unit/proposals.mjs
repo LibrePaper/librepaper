@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { LoroDoc } from "loro-crdt";
-import { createProposals } from "../../src/lib/proposals.js";
+import { LoroDoc, LoroText } from "loro-crdt";
+import { createProposals, locateProposalHunk } from "../../src/lib/proposals.js";
 
 // This test asserts that the browser groups hunks exactly as the server does.
 // The server's grouping is in crates/librepaper/src/document/hunks.rs.
@@ -246,6 +246,128 @@ const OWNER = 1n;
   assert.equal(hunks.length, 1, "a one-word gap is one decision");
   assert.equal("The cat sat on the mat.".slice(hunks[0].start, hunks[0].start + hunks[0].deleted), "cat sat");
   assert.equal(hunks[0].inserted, "owl ran", "the retained space is part of the new side");
+}
+
+// Grouping uses code points even though all browser positions remain UTF-16.
+{
+  const room = new LoroDoc();
+  room.setPeerId(OWNER);
+  const from = room.oplogVersion();
+  room.getText("main.md").insert(0, "a😀1234567z");
+  room.commit();
+  const base = room.frontiers();
+  const branch = room.fork();
+  branch.setPeerId(AUTHOR);
+  const text = branch.getText("main.md");
+  text.delete(10, 1);
+  text.insert(10, "w");
+  text.delete(0, 1);
+  text.insert(0, "b");
+  branch.commit();
+  const proposals = createProposals({ session: { doc: room }, send: () => {}, mayEdit: true });
+  const hunks = proposals.hunksOf({
+    base,
+    tip: branch.frontiers(),
+    bytes: branch.export({ mode: "update", from }),
+  });
+  assert.equal(hunks.length, 1, "emoji counts as one retained code point when grouping");
+}
+
+// CRDT anchors move a hunk after an unrelated earlier insertion, while a
+// delete-and-retype of the same visible text still marks its identities stale.
+{
+  const room = new LoroDoc();
+  room.setPeerId(OWNER);
+  const from = room.oplogVersion();
+  const source = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  source.insert(0, "The cat sat.");
+  room.commit();
+  const base = room.frontiers();
+  const branch = room.fork();
+  branch.setPeerId(AUTHOR);
+  const branchText = branch.getMap("files").get("f1");
+  branchText.delete(4, 3);
+  branchText.insert(4, "tabby");
+  branch.commit();
+  const data = { base, tip: branch.frontiers(), bytes: branch.export({ mode: "update", from }) };
+  const proposal = createProposals({ session: { doc: room }, send: () => {}, mayEdit: true });
+  const [hunk] = proposal.hunksOf(data);
+
+  source.insert(0, "Note. ");
+  room.commit();
+  const mapped = locateProposalHunk(room, data, hunk);
+  assert.equal(mapped.position, 10, "an earlier insertion shifts the hunk through its cursor");
+  assert.equal(mapped.stale, false, "unchanged hunk text remains answerable");
+
+  source.delete(10, 3);
+  source.insert(10, "cat");
+  room.commit();
+  assert.equal(locateProposalHunk(room, data, hunk).stale, true, "same spelling has new CRDT identities");
+}
+
+// Identity overlap catches rival insertions at the same zero-width point and
+// insertions inside a replacement, while allowing adjacent boundary edits.
+{
+  const make = (text) => {
+    const room = new LoroDoc();
+    room.setPeerId(OWNER);
+    const source = room.getMap("files").setContainer("f1", new LoroText());
+    room.getMap("paths").set("f1", "main.md");
+    source.insert(0, text);
+    room.commit();
+    return { room, source };
+  };
+  const insertion = make("abcd");
+  const from = insertion.room.oplogVersion();
+  const base = insertion.room.frontiers();
+  const branch = insertion.room.fork();
+  branch.setPeerId(AUTHOR);
+  branch.getMap("files").get("f1").insert(2, "X");
+  branch.commit();
+  const data = { base, tip: branch.frontiers(), bytes: branch.export({ mode: "update", from }) };
+  const [hunk] = createProposals({ session: { doc: insertion.room }, send: () => {}, mayEdit: true }).hunksOf(data);
+
+  insertion.source.insert(2, "Y");
+  insertion.room.commit();
+  assert.equal(locateProposalHunk(insertion.room, data, hunk).stale, true, "same-gap insertion conflicts");
+
+  const replacement = make("abcd");
+  const replacementFrom = replacement.room.oplogVersion();
+  const replacementBase = replacement.room.frontiers();
+  const replacementBranch = replacement.room.fork();
+  replacementBranch.setPeerId(AUTHOR + 1n);
+  replacementBranch.getMap("files").get("f1").delete(1, 2);
+  replacementBranch.getMap("files").get("f1").insert(1, "XY");
+  replacementBranch.commit();
+  const replacementData = {
+    base: replacementBase,
+    tip: replacementBranch.frontiers(),
+    bytes: replacementBranch.export({ mode: "update", from: replacementFrom }),
+  };
+  const [replacementHunk] = createProposals({ session: { doc: replacement.room }, send: () => {}, mayEdit: true })
+    .hunksOf(replacementData);
+  replacement.source.insert(2, "Z");
+  replacement.room.commit();
+  assert.equal(locateProposalHunk(replacement.room, replacementData, replacementHunk).stale, true,
+    "an insertion inside replaced identities conflicts");
+
+  const adjacent = make("abcd");
+  const adjacentFrom = adjacent.room.oplogVersion();
+  const adjacentBase = adjacent.room.frontiers();
+  const adjacentBranch = adjacent.room.fork();
+  adjacentBranch.setPeerId(AUTHOR + 2n);
+  adjacentBranch.getMap("files").get("f1").delete(1, 2);
+  adjacentBranch.getMap("files").get("f1").insert(1, "XY");
+  adjacentBranch.commit();
+  const adjacentData = { base: adjacentBase, tip: adjacentBranch.frontiers(),
+    bytes: adjacentBranch.export({ mode: "update", from: adjacentFrom }) };
+  const [adjacentHunk] = createProposals({ session: { doc: adjacent.room }, send: () => {}, mayEdit: true })
+    .hunksOf(adjacentData);
+  adjacent.source.insert(1, "L");
+  adjacent.room.commit();
+  assert.equal(locateProposalHunk(adjacent.room, adjacentData, adjacentHunk).stale, false,
+    "an insertion exactly at a replacement boundary remains adjacent");
 }
 
 console.log("proposals: parity tests passed");
