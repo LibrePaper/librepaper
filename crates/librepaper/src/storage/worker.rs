@@ -1,7 +1,7 @@
 //! Background work, in this process, with no queue table.
 //!
-//! There are five kinds of it -- compaction, archives, deletion, account
-//! erasure and the sweep of superseded compaction bases -- and what they
+//! There are six kinds of it -- compaction, archives, deletion, account
+//! erasure, and the two bounded storage sweeps -- and what they
 //! have in common is that none of them needs a row to remember it
 //! (SPEC-server-is-a-log §8.6). Durable state is what survives a restart:
 //!
@@ -12,6 +12,7 @@
 //! | deletion | `documents.status = 'deleting'` |
 //! | account erasure | `accounts.status = 'erasing'` |
 //! | superseded bases | a `document_snapshots.delete_after` in the past |
+//! | orphan objects | object-store keys with no catalogue reference and enough age |
 //!
 //! At startup the worker scans those in bounded pages and enqueues what
 //! it finds, then runs exactly one more full pass from a fresh cursor before
@@ -20,21 +21,21 @@
 //! long ago carries a low id, and its `deleted_at` may be set while the pass
 //! is already past that id, which leaves the work invisible to the rest of
 //! the pass. The unconditional second pass, from a fresh cursor, sees it.
-//! Once both are done, the worker never runs a bare scan again on its own.
-//! Afterwards it is woken by the events that create the state: an idle
-//! deployment issues no queries beyond the lease connection, which is the
-//! last test in §14.2. A full bounded queue sets one coalesced overflow bit;
+//! Once both are done, the worker never runs a bare document scan again on its
+//! own. The two storage sweeps run on bounded periodic deadlines.
+//! Afterwards document work is woken by events that create its state. The
+//! orphan-object sweep is the exception: it runs periodically so blobs left
+//! by refused uploads are eventually reclaimed. A full bounded queue sets one coalesced overflow bit;
 //! when the worker reaches it, the worker walks the durable state again in
 //! bounded pages. Wake-ups therefore remain recoverable without allocating a
 //! waiter per sender or polling an idle database.
 //!
 //! Wake-ups that need a future deadline instead of an immediate task (a
-//! failure's backoff, a deletion's grace period, a superseded base's grace)
-//! go through one bounded, deduplicating map, [`Deadlines`]. The
-//! worker's own `select!` sleeps on the earliest entry in that map; there is
-//! no timer anywhere else, and an idle deployment with nothing failing and
-//! nothing scheduled leaves the map empty, so the worker simply blocks on
-//! `recv()` and issues no query. A map that fills up does not grow past its
+//! failure's backoff, a deletion's grace period, a superseded base's grace,
+//! and the periodic orphan sweep) go through one bounded, deduplicating map,
+//! [`Deadlines`]. The worker's own `select!` sleeps on the earliest entry in
+//! that map; there is no timer anywhere else. When no deadline is scheduled,
+//! the worker blocks on `recv()` and issues no query. A map that fills up does not grow past its
 //! bound: it refuses the new deadline, remembers the earliest time it
 //! refused, and wakes the worker to rescan durable state at that time
 //! instead, which finds the refused work again. That rescan, not the map, is
@@ -98,12 +99,18 @@ pub enum Task {
     /// same work several times over and defeat the deduplication that keys
     /// a deadline by the task itself.
     SweepSupersededBases,
+    /// One bounded pass over old object-store keys without catalogue
+    /// references. Repeated periodically so a refused upload is reclaimed
+    /// without an operator sweep.
+    SweepOrphans,
 }
 
 /// How many superseded bases one sweep pass takes. The catalogue refuses a
 /// batch outside 1..=500; a pass that fills its batch asks for itself again
 /// rather than raising the bound.
 const SWEEP_BATCH: i64 = 500;
+const ORPHAN_SWEEP_BATCH: usize = 500;
+const ORPHAN_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// What an operator can see of the worker's own overload, for the aggregate
 /// cost snapshot. Counters only: a refusal here is never a lost task, so the
@@ -462,6 +469,7 @@ impl Worker {
     /// deadlines that have come due.
     pub async fn run(mut self) {
         self.handle.ask(Task::Scan(PendingWorkCursor::default()));
+        self.handle.ask(Task::SweepOrphans);
         // Scan work stays local to the worker. A page is at most 3 * PAGE
         // tasks, and its continuation is one more task, so startup cannot
         // fill the channel or lose its cursor when live wake-ups saturate it.
@@ -525,8 +533,9 @@ impl Worker {
                                 // definition, not behind the second pass's own
                                 // starting cursor. This fires at most once per
                                 // process -- `startup` is cleared right here --
-                                // so an idle deployment still settles back to
-                                // issuing no queries at all once it is done.
+                                // so document work settles back to waiting for
+                                // events once it is done. The bounded orphan
+                                // sweep continues on its own deadline.
                                 self.startup = false;
                                 local.push_back(Task::Scan(PendingWorkCursor::default()));
                             }
@@ -605,6 +614,12 @@ impl Worker {
         match self.execute(task).await {
             Ok(()) => {
                 self.deadlines.clear(&task);
+                if task == Task::SweepOrphans {
+                    self.deadlines.at(
+                        task,
+                        tokio::time::Instant::now() + ORPHAN_SWEEP_INTERVAL,
+                    );
+                }
             }
             Err(error) => self.failed(task, error),
         }
@@ -703,6 +718,7 @@ impl Worker {
             Task::Delete(document) => self.delete(document).await,
             Task::EraseAccount { account, after } => self.erase_account(account, after).await,
             Task::SweepSupersededBases => self.sweep_superseded_bases().await,
+            Task::SweepOrphans => self.sweep_orphans().await,
         }
     }
 
@@ -729,6 +745,13 @@ impl Worker {
             self.schedule_sweep_at(due);
         }
         Ok(())
+    }
+
+    async fn sweep_orphans(&mut self) -> Result<(), String> {
+        super::maintenance::Maintenance::new(self.catalog.clone(), self.blobs.clone())
+            .delete_orphans(ORPHAN_SWEEP_BATCH, time::Duration::days(7))
+            .await
+            .map(|_| ())
     }
 
     fn schedule_sweep_at(&mut self, due: OffsetDateTime) {
@@ -943,6 +966,11 @@ impl Worker {
                 return Ok(());
             }
         }
+        let Some(lifecycle_lock) =
+            super::maintenance::BlobLifecycleLock::try_delete(self.catalog.as_ref()).await?
+        else {
+            return Err("backup is copying referenced objects; retry document purge".into());
+        };
         let mut keys: HashSet<String> = HashSet::new();
         for asset in self
             .catalog
@@ -982,6 +1010,7 @@ impl Worker {
             .finish_document_deletion(document_id)
             .await
             .map_err(|error| error.to_string())?;
+        lifecycle_lock.release().await?;
         // That may have been the last document standing between an erasing
         // account and its completion. Asking is unconditional and cheap --
         // `erase_account` reads the account row first and returns at once
@@ -1067,9 +1096,11 @@ impl Worker {
         // nothing else would ever have completed.
         match self.catalog.finish_account_erasure(account_id).await {
             Ok(_) => Ok(()),
-            // A document appeared between the page above and the count
-            // inside the transaction. Not a failure worth a backoff: the
-            // purge of that document asks for this task again.
+            // Document creation now locks an active owner row through its
+            // insert, so it cannot attach new work after erasure begins. If
+            // this still fires, the durable erasing row remains discoverable
+            // by the next startup scan; do not claim an active document will
+            // naturally be purged by the deletion worker.
             Err(super::postgres::Error::Conflict(_)) => Ok(()),
             Err(error) => Err(error.to_string()),
         }
@@ -1342,6 +1373,7 @@ mod tests {
             .create_document(NewDocument {
                 slug: "erase-me".into(),
                 owner_id: owner.id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "Erase me".into(),
                 source_format: "markdown".into(),
