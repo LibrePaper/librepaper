@@ -268,6 +268,48 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.ok(!proposals.text("f1").toString().includes("tabby"), "the rejected published replacement is removed");
   assert.equal(sent.at(-1).type, "proposal-open", "the remainder opens lazily from the current room");
 }
+// A stale rejected span must not be inversed over a coauthor replacement:
+// preserve the full local branch and expose a recovery error instead.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "The cat sat.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.delete(4, 3);
+  branchText.insert(4, "tabby");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+
+  const other = room.fork();
+  other.setPeerId(3n);
+  other.getMap("files").get("f1").delete(4, 3);
+  other.getMap("files").get("f1").insert(4, "fox");
+  other.commit();
+  room.import(other.export({ mode: "update", from: room.oplogVersion() }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const beforeResolution = proposals.text("f1").toString();
+  const sendsBeforeResolution = sent.length;
+
+  proposals.apply({ type: "proposal-decided", proposal_id: id,
+    decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip,
+    resolved_base: open.base });
+  assert.equal(proposals.status().state, "error", "unsafe inverse is surfaced for manual recovery");
+  assert.equal(proposals.text("f1").toString(), beforeResolution, "the local and coauthor text is left untouched");
+  assert.equal(sent.length, sendsBeforeResolution, "unsafe remainder is not silently republished");
+}
 // Rejecting a newly created file's published text preserves a local tail in
 // that file and keeps its path metadata so the remainder can be reviewed.
 {
