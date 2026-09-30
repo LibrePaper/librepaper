@@ -114,7 +114,7 @@
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
   import { hasPairing, searchZotero, zoteroItem } from "../lib/companion/client.js";
-  import { createProposals } from "../lib/proposals.js";
+  import { createProposals, locateProposalHunk } from "../lib/proposals.js";
   import { proposalMarks, setProposalMarks } from "../lib/proposal-marks.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { projectDirectory } from "../lib/projection.js";
@@ -128,15 +128,16 @@
   let { session, format = "", file = "", keys = "default", editable = true,
     analyze = analyzeBibliography, send = null, onproposal = null,
     // What is being proposed for this document, and which hunk of it the
-    // reviewer is looking at. `review` is the list the Reader keeps from
-    // `proposal-list`, each entry `{id, author, hunks}` with hunks already in
-    // this browser's UTF-16 basis; `reviewing` is `{proposal, hunk}` or null.
+    // reviewer is looking at. `review` carries each proposal's base and raw
+    // hunks; this editor maps them into the document it is displaying.
+    // `reviewing` is `{proposal, hunk}` or null.
     //
     // These are drawn, never applied: a proposal reaches the document when
     // the server resolves it (§5.1a), and until then the text on screen still
     // says what it said.
     review = [], reviewing = null,
-    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, onproposalstatus } = $props();
+    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, onproposalstatus,
+    rules = null } = $props();
 
   // One field instance for the component, because it is one editor: a state
   // field is identified by the object, so building a fresh one per file would
@@ -160,9 +161,21 @@
     // the text on screen, which is what the author is actually reading.
     const drafting = Boolean(proposals?.drafting?.());
     const mine = drafting ? proposals.id() : "";
+    const document_ = boundDoc();
+    const visible = (review || []).filter((one) => one.id !== mine).map((proposal) => ({
+      ...proposal,
+      hunks: (proposal.hunks || []).map((hunk) => {
+        const mapped = locateProposalHunk(document_, { base: proposal.base }, hunk);
+        return mapped.stale ? null : {
+          ...hunk,
+          start: mapped.position ?? hunk.start,
+          file: mapped.file_id || hunk.file,
+        };
+      }).filter(Boolean),
+    }));
     view.dispatch({
       effects: setProposalMarks.of({
-        proposals: mine ? (review || []).filter((one) => one.id !== mine) : review || [],
+        proposals: visible,
         showing,
         selected: reviewing,
         draft: drafting ? proposals.draftMarks() : [],
@@ -178,9 +191,20 @@
   // the proposal's text instead of the room document's text. The send function
   // is passed from the Reader and routes messages through the room socket.
   let proposals = null;
+  let proposalsSession = null;
   let proposalUnsubscribe = null;
   $effect(() => {
     if (!send || !session) return;
+    // Source swaps can replace the session while a stopped or unresolved
+    // branch is still retained. That branch belongs to its old session's
+    // manager; attach this editor to the new session without discarding it.
+    if (proposals && proposalsSession !== session) {
+      proposalUnsubscribe?.();
+      proposalUnsubscribe = null;
+      proposals.detach?.();
+      proposals = null;
+      proposalsSession = null;
+    }
     // Never over a branch somebody is typing into: replacing the API would
     // orphan the fork, which is still holding unflushed work and would have
     // nothing left to flush it.
@@ -192,6 +216,7 @@
       send: (message) => send?.(message),
       mayEdit: editable,
     });
+    proposalsSession = session;
     proposalUnsubscribe = proposals.onchange?.(() => {
       const expected = boundDoc();
       if (view && activeDocument !== expected) {
@@ -1006,7 +1031,7 @@
     return "";
   }
   function treeForDoc(doc) {
-    const projection = projectDirectory(doc);
+    const projection = projectDirectory(doc, rules ?? null);
     const texts = Object.create(null), files = Object.create(null), digests = Object.create(null);
     for (const [path, file] of projection.files) {
       if (file.kind === "text") {
@@ -1144,6 +1169,8 @@
         proposals?.detach?.();
         proposalUnsubscribe?.();
         proposalUnsubscribe = null;
+        proposals = null;
+        proposalsSession = null;
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         if (view) viewCallbacks.delete(view);
         view?.destroy();
