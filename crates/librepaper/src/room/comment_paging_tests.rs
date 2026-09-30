@@ -92,6 +92,8 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         session_generation: account.session_generation.to_string(),
         link_hash: String::new(),
         policy_editor: true,
+        policy_comment: true,
+        automation: false,
         unowned_publisher: false,
     };
     for name in [slug, &format!("{slug}-other")] {
@@ -126,6 +128,10 @@ impl Deployment {
             principal_key: self.account_id.to_string(),
             account_id: Some(self.account_id),
             link_hash: None,
+            session_generation: Some(1),
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
         }
     }
 
@@ -144,9 +150,11 @@ impl Deployment {
         MutationAuthorization {
             principal_key: self.account_id.to_string(),
             account_id: Some(self.account_id),
-            session_generation: None,
+            session_generation: Some(1),
             token_hash: None,
-            policy_editor: true,
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
         }
     }
 

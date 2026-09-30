@@ -1370,9 +1370,12 @@ impl Server {
         // against the copy already in hand first, so an open that is not
         // this caller's first never asks the store to write anything.
         let now = crate::util::now_unix();
+        let source_link_role = entry.live_link(&who.link, now).map(|link| link.granted());
         if who.id.is_signed_in()
+            && !who.automation
             && !entry.owned_by(&who.id.id)
-            && entry.link_role(&who.link, now).is_some()
+            && !entry.account_grants.contains_key(&who.id.id)
+            && source_link_role.is_some()
             && !entry
                 .guests
                 .iter()
@@ -1382,7 +1385,12 @@ impl Server {
             // about the visit, and the visit itself is what matters.
             let _ = self
                 .store
-                .pin_link_guest(slug, &who.id.id, &who.link, who.role)
+                .pin_link_guest(
+                    slug,
+                    &who.id.id,
+                    &who.link,
+                    source_link_role.expect("checked above"),
+                )
                 .await;
         }
         // And what Recent is made of. Written here rather than asked for

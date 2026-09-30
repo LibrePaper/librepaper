@@ -189,8 +189,10 @@ pub struct PatchRequest {
 pub struct AgentAuthority {
     pub account_id: String,
     pub owner_key: String,
+    pub session_generation: String,
     pub link_hash: String,
     pub policy_editor: bool,
+    pub policy_comment: bool,
     /// Trusted endpoint scope (document/account/link/generation/role). This
     /// binds operation ids to the complete authenticated actor context.
     pub operation_scope: String,
@@ -654,11 +656,13 @@ impl Room {
 
         let catalog = self.catalog().clone();
         let actor = crate::document::store::MutationActor {
-            account_id: String::new(),
-            owner_key: String::new(),
-            session_generation: String::new(),
+            account_id: authority.account_id.clone(),
+            owner_key: authority.owner_key.clone(),
+            session_generation: authority.session_generation.clone(),
             link_hash: authority.link_hash.clone(),
-            policy_editor: false,
+            policy_editor: authority.policy_editor,
+            policy_comment: authority.policy_comment,
+            automation: true,
             unowned_publisher: false,
         };
         let authorization = super::catalog::mutation_authorization(&actor)
@@ -675,6 +679,10 @@ impl Room {
             },
             account_id: authorization.account_id,
             link_hash: authorization.token_hash.map(Vec::from),
+            session_generation: authorization.session_generation,
+            policy_edit: authorization.policy_edit,
+            policy_comment: authorization.policy_comment,
+            automation: authorization.automation,
         };
 
         let request_id = {

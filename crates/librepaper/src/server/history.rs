@@ -673,7 +673,7 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        let authority = who.document_authority();
+        let authority = who.document_authority(self.ceiling_for(&who.id));
         let label_id = if current {
             // `Room::take_label` rather than a second label command of this
             // module's own: that one had no §7.2 replay lookup, so a retry
@@ -805,7 +805,7 @@ impl Server {
                 assets.push((path.clone(), file.digest.clone()));
             }
         }
-        let authority = current_who.document_authority();
+        let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
         let author_account_id = uuid::Uuid::parse_str(&current_who.id.id).ok();
         let mut command = Restore {
             request_id: uuid::Uuid::new_v4(),

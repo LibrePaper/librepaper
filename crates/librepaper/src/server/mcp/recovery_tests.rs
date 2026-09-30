@@ -106,6 +106,8 @@ async fn deployment(slug: &str) -> Option<Deployment> {
                 session_generation: owner.session_generation.to_string(),
                 link_hash: String::new(),
                 policy_editor: true,
+                policy_comment: true,
+                automation: false,
                 unowned_publisher: false,
             },
         )

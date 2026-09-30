@@ -107,6 +107,8 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         session_generation: owner.session_generation.to_string(),
         link_hash: String::new(),
         policy_editor: true,
+        policy_comment: true,
+        automation: false,
         unowned_publisher: false,
     };
     store
@@ -417,9 +419,11 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
     let actor = crate::storage::postgres::MutationAuthorization {
         principal_key: deployment.commenter_id.to_string(),
         account_id: Some(deployment.commenter_id),
-        session_generation: None,
+        session_generation: Some(1),
         token_hash: None,
-        policy_editor: false,
+        policy_edit: false,
+        policy_comment: true,
+        automation: false,
     };
     let mut seeded = Vec::new();
     {

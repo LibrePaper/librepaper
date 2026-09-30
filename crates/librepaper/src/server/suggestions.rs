@@ -179,8 +179,8 @@ impl Server {
         // The same identity `authority` below carries, in the shape
         // `authorize_annotation_mutation` checks a comment command's rung
         // against (§7): the account's live session and grant, or the link's.
-        let authorization =
-            current_who.mutation_authorization(self.ceiling_for(&current_who.id).edit);
+        let ceiling = self.ceiling_for(&current_who.id);
+        let authorization = current_who.mutation_authorization(ceiling);
         let mut cmd = match room::AgentSuggestionBatch::new(
             room.catalog().clone(),
             room.document_id,
@@ -194,7 +194,7 @@ impl Server {
             Ok(cmd) => cmd,
             Err(error) => return write_json(400, &json!({"error":error})),
         };
-        let authority = current_who.document_authority();
+        let authority = current_who.document_authority(ceiling);
         match room.command(&authority, &mut cmd).await {
             Ok(outcomes) => {
                 let results: Vec<Value> = outcomes

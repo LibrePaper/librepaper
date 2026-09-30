@@ -282,8 +282,9 @@ impl PostgresCatalog {
     /// (§7 step 4).
     ///
     /// Unlike a flush, a command *is* an authorized act: it is checked at the
-    /// commit boundary, under the same lock order -- deployment writer, then
-    /// document, then the authorization rows.
+    /// commit boundary, under the same lock order -- deployment writer, actor
+    /// account, document, then the authorization rows. Account erasure takes
+    /// account before documents, so this cannot invert its locks.
     pub async fn begin_document_command(
         &self,
         document_id: Uuid,
@@ -303,55 +304,10 @@ impl PostgresCatalog {
         authority: &super::Authority,
         rung: crate::log::sequencer::Rung,
     ) -> Result<()> {
-        use sqlx::Row as _;
         self.check_writer_epoch(tx).await?;
-        let status: Option<String> =
-            sqlx::query("SELECT status FROM documents WHERE id=$1 FOR UPDATE")
-                .bind(document_id)
-                .fetch_optional(&mut **tx)
-                .await?
-                .map(|row| row.get(0));
-        if status.as_deref() != Some("active") {
-            return Err(Error::NotFound);
-        }
-        // Which roles satisfy this command. A commenter rung is satisfied by
-        // an editor too, and by anybody at all on a document whose ownership
-        // mode is `open`, which is what makes an open document open.
-        let editor_only = matches!(rung, crate::log::sequencer::Rung::Editor);
-        let authorized: bool = sqlx::query(
-            r#"SELECT EXISTS(
-               SELECT 1 FROM documents d WHERE d.id=$1 AND d.owner_id=$2
-               UNION ALL
-               SELECT 1 FROM documents d
-                 WHERE d.id=$1 AND NOT $4 AND d.ownership_mode='open'
-               UNION ALL
-               SELECT 1 FROM grants g WHERE g.document_id=$1 AND g.account_id=$2
-                 AND (g.role='editor' OR (NOT $4 AND g.role='commenter'))
-               UNION ALL
-               SELECT 1 FROM share_links l WHERE l.document_id=$1 AND l.token_hash=$3
-                 AND (l.role='editor' OR (NOT $4 AND l.role='commenter'))
-                 AND l.revoked_at IS NULL
-                 AND (l.expires_at IS NULL OR l.expires_at > now())
-             )"#,
-        )
-        .bind(document_id)
-        .bind(authority.account_id)
-        .bind(authority.link_hash.as_deref())
-        .bind(editor_only)
-        .fetch_one(&mut **tx)
-        .await?
-        .try_get(0)?;
-        if !authorized {
-            return Err(Error::Conflict(
-                if editor_only {
-                    "current authority does not permit editing"
-                } else {
-                    "current authority does not permit commenting"
-                }
-                .into(),
-            ));
-        }
-        Ok(())
+        let actor = authority.mutation_authorization();
+        let require_editor = matches!(rung, crate::log::sequencer::Rung::Editor);
+        PostgresCatalog::authorize_mutation(tx, document_id, &actor, require_editor).await
     }
 
     /// §5.1: one transaction, one row.

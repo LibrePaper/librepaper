@@ -45,7 +45,9 @@ pub(super) fn mutation_authorization(
         account_id,
         session_generation,
         token_hash,
-        policy_editor: actor.policy_editor,
+        policy_edit: actor.policy_editor,
+        policy_comment: actor.policy_comment,
+        automation: actor.automation,
     })
 }
 

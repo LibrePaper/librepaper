@@ -127,6 +127,10 @@ async fn typing_throughput_release_benchmark() {
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,
+        session_generation: Some(owner.session_generation),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
     };
     let _writer = catalog.claim_writer().await.expect("writer lease");
     let wal_before: String = sqlx::query_scalar("SELECT pg_current_wal_lsn()::text")
@@ -788,6 +792,10 @@ async fn compaction_cost_release_benchmark() {
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,
+        session_generation: Some(owner.session_generation),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
     };
     let _writer = catalog.claim_writer().await.expect("writer lease");
 
@@ -1611,6 +1619,10 @@ async fn concurrent_compaction_release_benchmark() {
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,
+        session_generation: Some(owner.session_generation),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
     };
     let _writer = catalog.claim_writer().await.expect("writer lease");
 
@@ -3412,6 +3424,10 @@ async fn maintenance_backlog_capacity_benchmark() {
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,
+        session_generation: Some(owner.session_generation),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
     };
     let _writer = catalog.claim_writer().await.expect("writer lease");
 

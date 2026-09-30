@@ -402,30 +402,37 @@ impl Viewer {
         format!("{VISITOR_PREFIX}{}", self.key)
     }
 
-    pub fn document_authority(&self) -> crate::storage::postgres::Authority {
+    pub fn document_authority(
+        &self,
+        ceiling: crate::document::store::Ceiling,
+    ) -> crate::storage::postgres::Authority {
         crate::storage::postgres::Authority {
             principal_key: self.principal_key(),
             account_id: self.account_id(),
             link_hash: self.link_bytes(),
+            session_generation: self.id.session_generation.parse::<i64>().ok(),
+            policy_edit: ceiling.edit,
+            policy_comment: ceiling.comment,
+            automation: self.automation,
         }
     }
 
-    /// The same identity as `document_authority`, in the shape
-    /// `authorize_annotation_mutation` checks a comment command's rung
-    /// against (§7): the account's live session, and the link's token hash
-    /// rather than only its digest. `policy_editor` is the deployment's own
-    /// ceiling for this identity (`Server::ceiling_for`), passed in because
-    /// a viewer does not know the deployment's policy on its own.
+    /// The same identity as `document_authority`, in the shape the shared
+    /// commit-boundary check uses: the account's live session, the link's
+    /// token hash, and both deployment policy ceilings. A viewer does not
+    /// know the deployment's policy on its own, so callers pass it in.
     pub fn mutation_authorization(
         &self,
-        policy_editor: bool,
+        ceiling: crate::document::store::Ceiling,
     ) -> crate::storage::postgres::MutationAuthorization {
         crate::storage::postgres::MutationAuthorization {
             principal_key: self.principal_key(),
             account_id: self.account_id(),
             session_generation: self.id.session_generation.parse::<i64>().ok(),
             token_hash: self.link_bytes().and_then(|bytes| bytes.try_into().ok()),
-            policy_editor,
+            policy_edit: ceiling.edit,
+            policy_comment: ceiling.comment,
+            automation: self.automation,
         }
     }
 
@@ -1405,7 +1412,8 @@ impl Server {
             pseudonym_for(author, &room.slug)
         };
         let command = command.with_creator(creator.clone());
-        let authority = who.document_authority();
+        let ceiling = self.ceiling_for(&who.id);
+        let authority = who.document_authority(ceiling);
         // Who is writing, built once from the viewer and carried whole. The
         // things it holds used to travel as positional arguments through
         // every command constructor below.
@@ -1413,7 +1421,7 @@ impl Server {
             creator,
             uuid::Uuid::parse_str(&id.id).ok(),
             author,
-            who.mutation_authorization(self.ceiling_for(&who.id).edit),
+            who.mutation_authorization(ceiling),
             may_edit,
         );
         let temp_id = command.temp_id().to_owned();
@@ -1849,8 +1857,8 @@ mod automation_authority_tests {
         let signed_in = viewer(&account.to_string(), "alice", "");
         assert_eq!(signed_in.principal_key(), account.to_string());
         assert_eq!(
-            signed_in.document_authority().principal_key,
-            signed_in.mutation_authorization(true).principal_key
+            signed_in.document_authority(ceiling()).principal_key,
+            signed_in.mutation_authorization(ceiling()).principal_key
         );
 
         // A link-only automation caller has no upload key at all. Naming it
@@ -1859,11 +1867,13 @@ mod automation_authority_tests {
         let link_only = viewer("", "", &link);
         assert_eq!(link_only.principal_key(), format!("link:{link}"));
         assert_eq!(
-            link_only.document_authority().link_hash,
+            link_only.document_authority(ceiling()).link_hash,
             Some(vec![0xabu8; 32])
         );
         assert_eq!(
-            link_only.mutation_authorization(false).token_hash,
+            link_only
+                .mutation_authorization(Ceiling { comment: true, edit: false })
+                .token_hash,
             Some([0xabu8; 32])
         );
 
@@ -1871,21 +1881,25 @@ mod automation_authority_tests {
         let visitor = viewer("", "visitor:token-1", "");
         assert_eq!(visitor.principal_key(), "visitor:token-1");
         assert_eq!(
-            visitor.document_authority().principal_key,
-            visitor.mutation_authorization(false).principal_key
+            visitor.document_authority(ceiling()).principal_key,
+            visitor
+                .mutation_authorization(Ceiling { comment: true, edit: false })
+                .principal_key
         );
-        assert!(visitor.document_authority().account_id.is_none());
+        assert!(visitor.document_authority(ceiling()).account_id.is_none());
     }
 
     #[test]
     fn mutation_authorization_carries_the_session_generation() {
         let account = uuid::Uuid::new_v4();
         let who = viewer(&account.to_string(), "alice", "");
-        let authorization = who.mutation_authorization(true);
+        let authorization = who.mutation_authorization(ceiling());
         assert_eq!(authorization.session_generation, Some(3));
         assert_eq!(authorization.account_id, Some(account));
-        assert!(authorization.policy_editor);
-        assert!(!who.mutation_authorization(false).policy_editor);
+        assert!(authorization.policy_edit);
+        assert!(!who
+            .mutation_authorization(Ceiling { comment: true, edit: false })
+            .policy_edit);
     }
 
     #[test]

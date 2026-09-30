@@ -620,8 +620,10 @@ impl Server {
                 let authority = AgentAuthority {
                     account_id: current.id.id.clone(),
                     owner_key: current.key.clone(),
+                    session_generation: current.id.session_generation.clone(),
                     link_hash: current.link.clone(),
-                    policy_editor: self.publishers.allows(&current.id.handle),
+                    policy_editor: self.ceiling_for(&current.id).edit,
+                    policy_comment: self.ceiling_for(&current.id).comment,
                     operation_scope: actor.to_string(),
                 };
                 let room = self
@@ -733,7 +735,7 @@ impl Server {
             .map_err(|error| Failure::new("unavailable", error.to_string()))?
             .ok_or_else(|| Failure::new("not_found", "proposal does not exist"))?;
         let decided_by = self.mcp_display_name(headers, arrival, who, actor, slug);
-        let authorization = who.mutation_authorization(self.ceiling_for(&who.id).edit);
+        let authorization = who.mutation_authorization(self.ceiling_for(&who.id));
         let request_id = super::comments::parse_uuid(
             &super::comments::comment_uuid(&key.scoped_request_id(actor)),
             "operation id",
@@ -768,7 +770,7 @@ impl Server {
                 })
             },
         );
-        let authority = who.document_authority();
+        let authority = who.document_authority(self.ceiling_for(&who.id));
         let (accepted, replay) = room
             .command_reporting_replay(&authority, &mut cmd)
             .await
@@ -823,7 +825,7 @@ impl Server {
         // `take_label` finds. There is no `checkpoint_id` any more (§8.2) --
         // a label is `source_sequence` plus the frontier at that row -- so
         // that is what the response carries in place of one.
-        let authority = who.document_authority();
+        let authority = who.document_authority(self.ceiling_for(&who.id));
         let by = room
             .signed_by(
                 &who.id.id,
@@ -1146,7 +1148,7 @@ impl Server {
                 })
                 .collect();
             let author_account_id = uuid::Uuid::parse_str(&who.id.id).ok();
-            let authorization = who.mutation_authorization(self.ceiling_for(&who.id).edit);
+            let authorization = who.mutation_authorization(self.ceiling_for(&who.id));
             let mut cmd = room::AgentSuggestionBatch::new(
                 room.catalog().clone(),
                 room.document_id,
@@ -1158,7 +1160,7 @@ impl Server {
                 authorization,
             )
             .map_err(|error| Failure::new("invalid_params", error))?;
-            let authority = who.document_authority();
+            let authority = who.document_authority(self.ceiling_for(&who.id));
             let operation_receipt = self.mcp_operation_receipt(
                 actor,
                 key,

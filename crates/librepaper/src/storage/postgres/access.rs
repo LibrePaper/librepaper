@@ -33,7 +33,7 @@ impl AccessRole {
 pub struct GrantRecord {
     pub document_id: Uuid,
     pub account_id: Uuid,
-    pub role: String,
+    pub role: Option<String>,
     pub source_link_hash: Option<Vec<u8>>,
     pub created_at: OffsetDateTime,
 }
@@ -106,8 +106,38 @@ impl PostgresCatalog {
             Option<i64>,
         )],
     ) -> Result<()> {
-        let wanted: Vec<Vec<u8>> = links.iter().map(|(_, hash, ..)| hash.to_vec()).collect();
         let mut tx = self.begin_document_admin(document_id).await?;
+        Self::replace_share_links_tx(&mut tx, document_id, links).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Replace links inside a caller-owned transaction. This takes and
+    /// verifies the active document row lock in that transaction, so link
+    /// edits stay atomic with the caller's other document mutations.
+    #[allow(clippy::type_complexity)]
+    pub(crate) async fn replace_share_links_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        links: &[(
+            String,
+            [u8; 32],
+            Vec<u8>,
+            String,
+            Option<OffsetDateTime>,
+            Option<i64>,
+        )],
+    ) -> Result<()> {
+        let found = sqlx::query_scalar!(
+            "SELECT id FROM documents WHERE id=$1 AND status='active' FOR UPDATE",
+            document_id,
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
+        if found.is_none() {
+            return Err(Error::NotFound);
+        }
+        let wanted: Vec<Vec<u8>> = links.iter().map(|(_, hash, ..)| hash.to_vec()).collect();
         // Whatever this save is not keeping. A revoked row is kept rather than
         // deleted so a guest admitted through it is still recognisable as
         // having come in that way.
@@ -117,7 +147,7 @@ impl PostgresCatalog {
             document_id,
             &wanted,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         for (role, hash, sealed, label, expires, budget) in links {
             // Scoped to this document, so a token that somehow belongs to
@@ -142,7 +172,7 @@ impl PostgresCatalog {
                 *expires,
                 *budget,
             )
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?
             .rows_affected();
             if kept == 0 {
@@ -158,11 +188,10 @@ impl PostgresCatalog {
                     *expires,
                     *budget,
                 )
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
             }
         }
-        tx.commit().await?;
         Ok(())
     }
 
@@ -172,15 +201,24 @@ impl PostgresCatalog {
         live_hashes: &[Vec<u8>],
     ) -> Result<()> {
         let mut tx = self.begin_document_admin(document_id).await?;
+        Self::prune_link_grants_tx(&mut tx, document_id, live_hashes).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn prune_link_grants_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        live_hashes: &[Vec<u8>],
+    ) -> Result<()> {
         sqlx::query!(
             "DELETE FROM grants WHERE document_id=$1 AND source_link_hash IS NOT NULL
              AND NOT (source_link_hash=ANY($2))",
             document_id,
             live_hashes,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-        tx.commit().await?;
         Ok(())
     }
     pub async fn set_grant(
@@ -190,7 +228,17 @@ impl PostgresCatalog {
         role: AccessRole,
     ) -> Result<GrantRecord> {
         let role = role.persisted()?;
-        let mut tx = self.begin_document_admin(document_id).await?;
+        let mut tx = self.begin_writer_transaction().await?;
+        let target = sqlx::query_scalar!(
+            "SELECT id FROM accounts WHERE id=$1 AND status='active' FOR SHARE",
+            account_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if target.is_none() {
+            return Err(Error::NotFound);
+        }
+        Self::lock_active_document(&mut tx, document_id).await?;
         let row = sqlx::query_as!(
             GrantRecord,
             "INSERT INTO grants(document_id,account_id,role,source_link_hash) VALUES($1,$2,$3,NULL)
@@ -210,18 +258,30 @@ impl PostgresCatalog {
         &self,
         document_id: Uuid,
         account_id: Uuid,
-        role: AccessRole,
+        _role: AccessRole,
         source_link_hash: [u8; 32],
     ) -> Result<()> {
-        let role = role.persisted()?;
-        let mut tx = self.begin_document_admin(document_id).await?;
+        let mut tx = self.begin_writer_transaction().await?;
+        let target = sqlx::query_scalar!(
+            "SELECT id FROM accounts WHERE id=$1 AND status='active' FOR SHARE",
+            account_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if target.is_none() {
+            return Err(Error::NotFound);
+        }
+        Self::lock_active_document(&mut tx, document_id).await?;
         sqlx::query!(
-            "INSERT INTO grants(document_id,account_id,role,source_link_hash) VALUES($1,$2,$3,$4)
+            "INSERT INTO grants(document_id,account_id,role,source_link_hash)
+             SELECT $1,$2,NULL,$3 FROM share_links l
+             WHERE l.document_id=$1 AND l.token_hash=$3 AND l.revoked_at IS NULL
+               AND (l.expires_at IS NULL OR l.expires_at>now())
              ON CONFLICT(document_id,account_id) DO UPDATE SET
-               role=excluded.role,source_link_hash=excluded.source_link_hash",
+               role=NULL,source_link_hash=excluded.source_link_hash
+             WHERE grants.source_link_hash IS NOT NULL",
             document_id,
             account_id,
-            role,
             source_link_hash.as_slice(),
         )
         .execute(&mut *tx)
@@ -370,11 +430,12 @@ impl PostgresCatalog {
     ) -> Result<Option<AccessRole>> {
         let row = sqlx::query!(
             r#"SELECT d.owner_id,
-                (SELECT role FROM grants g WHERE g.document_id=d.id AND g.account_id=$2
-                   AND (g.source_link_hash IS NULL OR EXISTS (
-                     SELECT 1 FROM share_links gl WHERE gl.document_id=d.id
-                       AND gl.token_hash=g.source_link_hash AND gl.revoked_at IS NULL
-                       AND (gl.expires_at IS NULL OR gl.expires_at>$4)))) AS "grant_role?",
+                (SELECT CASE WHEN g.source_link_hash IS NULL THEN g.role ELSE gl.role END
+                   FROM grants g LEFT JOIN share_links gl
+                     ON gl.document_id=g.document_id AND gl.token_hash=g.source_link_hash
+                    AND gl.revoked_at IS NULL AND (gl.expires_at IS NULL OR gl.expires_at>$4)
+                   WHERE g.document_id=d.id AND g.account_id=$2
+                     AND (g.source_link_hash IS NULL OR gl.token_hash IS NOT NULL)) AS "grant_role?",
                 (SELECT role FROM share_links l WHERE l.document_id=d.id AND l.token_hash=$3
                     AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>$4)) AS "link_role?"
              FROM documents d WHERE d.id=$1 AND d.status='active'"#,
