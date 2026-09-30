@@ -1,7 +1,7 @@
 // Fetches the CodeMirror binding named in loro-codemirror.lock, and verifies it.
 //
 // The binding is a fork of loro-codemirror carrying fixes upstream has not
-// released (docs/loro-codemirror.md). It used to be vendored into the
+// released (docs/dev/loro-codemirror.md). It used to be vendored into the
 // repository, which meant the same source existed twice -- here and in the
 // fork -- and the two drifted, with the fork behind for a while without
 // anything noticing. So the fork is the only copy, and this is how it arrives:

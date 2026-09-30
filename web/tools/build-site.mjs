@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Build the static docs site: every site/**/*.md rendered to HTML by the same
+// Build the static docs site: every docs/**/*.md rendered to HTML by the same
 // markdown engine the application embeds, wrapped in one template with the
-// sidebar from site/nav.js and a per-page table of contents, mirroring
+// sidebar from docs/nav.js and a per-page table of contents, mirroring
 // web/pages/documentation.html.
 //
 // This is a Node script rather than a browser page because the site has no
@@ -15,10 +15,10 @@ import { readFile, writeFile, mkdir, readdir, copyFile } from "node:fs/promises"
 import { resolve, relative, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { call, validateExports } from "../src/lib/renderer-wasm.js";
-import { nav } from "../../site/nav.js";
+import { nav } from "../../docs/nav.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const siteDir = resolve(here, "../../site");
+const siteDir = resolve(here, "../../docs");
 const outDir = resolve(siteDir, ".build");
 const wasmPath = resolve(here, "../wasm/markdown.wasm");
 
@@ -138,8 +138,8 @@ function renderNav(currentPath) {
 }
 
 // Where a page's own script tag points, relative to the file being written:
-// pages nest to different depths under site/.build (site/.build/agents.html
-// beside site/.build/collaborate/edit.html), but the entry they all share
+// pages nest to different depths under docs/.build (docs/.build/agents.html
+// beside docs/.build/collaborate/edit.html), but the entry they all share
 // lives once, at web/src/site/docs.js.
 const docsEntry = resolve(here, "../src/site/docs.js");
 

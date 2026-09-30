@@ -81,7 +81,7 @@ pub(crate) fn validate_asset_mirror(value: &str) -> Result<String, String> {
         || parsed.query().is_some()
         || parsed.fragment().is_some()
     {
-        return Err("--asset-mirror must be an https: URL without credentials, a query, or a fragment; see https://github.com/LibrePaper/librepaper/blob/main/docs/asset-mirrors.md".to_string());
+        return Err("--asset-mirror must be an https: URL without credentials, a query, or a fragment; see https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md".to_string());
     }
     parsed.set_path(&format!("{}/", parsed.path().trim_end_matches('/')));
     Ok(parsed.to_string())

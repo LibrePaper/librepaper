@@ -791,7 +791,7 @@ publishes them to the asset mirror under `wasm/<sha256>/<module>`, where the
 SHA-256 is the one `assets.lock` pins. The same lock pins the LaTeX release
 directory, `latex/<sha256>/`, in a `latex` row. The server hands browsers those
 URLs, on the mirror named by `--asset-mirror`. See
-[`docs/asset-mirrors.md`](../docs/asset-mirrors.md) for publishing.
+[`docs/asset-mirrors.md`](dev/asset-mirrors.md) for publishing.
 
 ### Running it locally
 
