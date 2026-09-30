@@ -79,3 +79,31 @@ async fn backup_barrier_survives_commit_and_drop_releases_shared_guard() {
     drop(observer);
     catalog.close().await;
 }
+
+/// The writer lease already occupies one slot in the application pool. The
+/// object barrier therefore uses a separate direct PostgreSQL connection so
+/// the one remaining pooled connection can still serve cleanup queries.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn cleanup_runs_with_two_pool_connections_and_the_writer_lease_held() {
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").expect("test PostgreSQL URL");
+    let mut options = PostgresOptions::new(url);
+    options.max_connections = 2;
+    let catalog = std::sync::Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
+    catalog.migrate().await.expect("apply current schema");
+    let _writer = catalog.claim_writer().await.expect("claim writer lease");
+    let objects = tempfile::tempdir().expect("temporary object directory");
+    let blobs = std::sync::Arc::new(crate::storage::blob::FsStore::new(
+        objects.path(),
+        false,
+    ));
+    let maintenance = super::super::Maintenance::new(catalog.clone(), blobs);
+
+    maintenance
+        .delete_orphans(1, time::Duration::days(7))
+        .await
+        .expect("cleanup has a pooled connection while the barrier uses a direct one");
+
+    drop(_writer);
+    catalog.close().await;
+}
