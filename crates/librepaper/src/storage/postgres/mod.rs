@@ -28,7 +28,7 @@ mod repository;
 
 pub use commit::Authority;
 pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCoverage};
-pub use labels::{LabelRecord, NewLabel};
+pub use labels::{ArchiveAttach, ArchiveObject, LabelRecord, NewLabel};
 pub use ownership::WriterLease;
 pub use proposals::{NewProposal, StoredDecision, StoredProposal};
 pub use repository::{
@@ -1597,20 +1597,8 @@ mod tests {
         catalog.close().await;
     }
 
-    /// Two labels naming the same projection name the same archive object,
-    /// and the storage counter that watches `document_labels.archive_key`
-    /// counts that object once no matter how many labels point at it (§8.2,
-    /// §8.5).
-    ///
-    /// The old test asserted this of a maintenance pass,
-    /// `share_duplicate_archives`, that repointed versions written under
-    /// distinct private names at one object after the fact. That pass is
-    /// gone and nothing replaces it: an archive is now named by the digest
-    /// of what it holds from the moment it is written (§8.5), so there is
-    /// nothing left to reclaim after the fact. What is worth testing instead
-    /// is the trigger that makes sharing free: `usage_bytes` must not double
-    /// count a key two labels hold, and must give the bytes back only when
-    /// the last label naming it is gone.
+    /// Two labels naming one object are charged once. The object remains
+    /// catalogued and charged after labels are removed, until document purge.
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn two_labels_naming_the_same_archive_are_charged_once() {
@@ -1648,14 +1636,18 @@ mod tests {
 
         let before = catalog.usage_bytes(Some(account.id)).await.unwrap();
         let key = format!("documents/{}/labels/shared.tar.zst", document.id);
+        let object = ArchiveObject {
+            document_id: document.id,
+            storage_key: key.clone(),
+            tree_digest: Some(vec![1; 32]),
+            content_digest: Some(vec![2; 32]),
+            byte_length: 500,
+        };
         assert!(catalog
             .request_label_archive(document.id, one.id)
             .await
             .unwrap());
-        assert!(catalog
-            .attach_label_archive(one.id, &key, 500)
-            .await
-            .unwrap());
+        assert_eq!(catalog.attach_label_archive(one.id, &object).await.unwrap(), ArchiveAttach::Attached);
         assert_eq!(
             catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
             500,
@@ -1665,15 +1657,22 @@ mod tests {
             .request_label_archive(document.id, two.id)
             .await
             .unwrap());
-        assert!(catalog
-            .attach_label_archive(two.id, &key, 500)
-            .await
-            .unwrap());
+        // A later encoder version may produce different bytes under the same
+        // projection key. The first catalog row remains authoritative.
+        let newer_encoding = ArchiveObject {
+            content_digest: Some(vec![3; 32]),
+            byte_length: 700,
+            ..object.clone()
+        };
+        assert_eq!(catalog.attach_label_archive(two.id, &newer_encoding).await.unwrap(), ArchiveAttach::Attached);
         assert_eq!(
             catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
             500,
             "a second label naming the same key adds no bytes"
         );
+        let stored = catalog.archive_object(document.id, &key).await.unwrap().unwrap();
+        assert_eq!(stored.byte_length, 500);
+        assert_eq!(stored.content_digest.as_deref(), Some(&[2; 32][..]));
         assert_eq!(
             catalog
                 .label_archive_keys(None, 100)
@@ -1686,29 +1685,109 @@ mod tests {
             "the archive key listing names a shared key once"
         );
 
-        // Removing the first label leaves the object charged, because the
-        // second still names it.
+        // The normalized object is retained even when labels no longer name it.
         sqlx::query!("DELETE FROM document_labels WHERE id=$1", one.id)
             .execute(catalog.pool())
             .await
             .unwrap();
-        assert_eq!(
-            catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
-            500,
-            "the object is still named by the surviving label"
-        );
+        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap() - before, 500);
 
-        // And removing the last label naming it gives the bytes back.
         sqlx::query!("DELETE FROM document_labels WHERE id=$1", two.id)
             .execute(catalog.pool())
             .await
             .unwrap();
-        assert_eq!(
-            catalog.usage_bytes(Some(account.id)).await.unwrap(),
-            before,
-            "nothing names the object any more"
-        );
+        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap() - before, 500);
+        sqlx::query!("DELETE FROM documents WHERE id=$1", document.id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), before);
 
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn concurrent_archive_quota_is_checked_at_attach_and_can_be_retried() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let mut options = PostgresOptions::new(url);
+        options.policy.owner_bytes = 100;
+        let catalog = PostgresCatalog::connect(options).await.unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        let tag = new_id().simple().to_string();
+        let account = seed_account(&catalog, &format!("archive-quota-{tag}")).await;
+        let document = seed_document(&catalog, account.id, &format!("archive-quota-{tag}")).await;
+        let make_label = |sequence: i64| NewLabel {
+            id: new_id(),
+            document_id: document.id,
+            source_sequence: sequence,
+            vector: format!("vector-{sequence}").into_bytes(),
+            frontier: format!("frontier-{sequence}").into_bytes(),
+            tree_digest: None,
+            label: None,
+            reason: "restore".into(),
+            request_id: None,
+            author_account_id: Some(account.id),
+            author_label: "Owner".into(),
+        };
+        let (one, two) = {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            let one = catalog.insert_label(&mut tx, &make_label(1)).await.unwrap();
+            let two = catalog.insert_label(&mut tx, &make_label(2)).await.unwrap();
+            tx.commit().await.unwrap();
+            (one, two)
+        };
+        assert!(catalog.request_label_archive(document.id, one.id).await.unwrap());
+        assert!(catalog.request_label_archive(document.id, two.id).await.unwrap());
+        let object = |label: &LabelRecord| ArchiveObject {
+            document_id: document.id,
+            storage_key: format!("documents/{}/labels/{}.tar.zst", document.id, label.id),
+            tree_digest: Some(vec![label.sequence as u8; 32]),
+            content_digest: Some(vec![9; 32]),
+            byte_length: 60,
+        };
+        let (one_result, two_result) = tokio::join!(
+            catalog.attach_label_archive(one.id, &object(&one)),
+            catalog.attach_label_archive(two.id, &object(&two)),
+        );
+        let one_result = one_result.unwrap();
+        let two_result = two_result.unwrap();
+        assert_ne!(one_result == ArchiveAttach::Attached, two_result == ArchiveAttach::Attached);
+        assert_ne!(one_result == ArchiveAttach::RefusedQuota, two_result == ArchiveAttach::RefusedQuota);
+        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), 60);
+
+        let (refused, attached) = if one_result == ArchiveAttach::RefusedQuota {
+            (&one, &two)
+        } else {
+            (&two, &one)
+        };
+        let refused_record = catalog.label(document.id, refused.id).await.unwrap().unwrap();
+        assert!(refused_record.archive_requested_at.is_none());
+        assert_eq!(refused_record.archive_error.as_deref(), Some("storage quota exceeded"));
+
+        // Free the successful object's quota. The refused request is terminal
+        // until the client explicitly retries; that retry clears the error.
+        sqlx::query("DELETE FROM document_archives WHERE storage_key=$1")
+            .bind(format!("documents/{}/labels/{}.tar.zst", document.id, attached.id))
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        assert!(catalog.request_label_archive(document.id, refused.id).await.unwrap());
+        let retried = catalog.label(document.id, refused.id).await.unwrap().unwrap();
+        assert!(retried.archive_requested_at.is_some());
+        assert!(retried.archive_error.is_none());
+        assert_eq!(
+            catalog.attach_label_archive(refused.id, &object(refused)).await.unwrap(),
+            ArchiveAttach::Attached
+        );
+        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), 60);
+
+        sqlx::query!("DELETE FROM documents WHERE id=$1", document.id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
         catalog.close().await;
     }
 

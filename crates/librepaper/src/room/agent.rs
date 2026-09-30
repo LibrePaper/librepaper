@@ -604,9 +604,11 @@ async fn label_for_request(
     request_id: Uuid,
 ) -> Result<Option<LabelRecord>, crate::storage::postgres::Error> {
     sqlx::query_as::<_, LabelRecord>(
-        "SELECT id,document_id,sequence,source_sequence,vector,frontier,tree_digest,label,reason,\
-         request_id,author_account_id,author_label,created_at,archive_requested_at,archive_key,\
-         archive_bytes,archive_error FROM document_labels WHERE document_id=$1 AND request_id=$2",
+        "SELECT l.id,l.document_id,l.sequence,l.source_sequence,l.vector,l.frontier,l.tree_digest,l.label,l.reason,\
+         l.request_id,l.author_account_id,l.author_label,l.created_at,l.archive_requested_at,l.archive_key,\
+         a.byte_length AS archive_bytes,l.archive_error FROM document_labels l \
+         LEFT JOIN document_archives a ON a.document_id=l.document_id AND a.storage_key=l.archive_key \
+         WHERE l.document_id=$1 AND l.request_id=$2",
     )
     .bind(document_id)
     .bind(request_id)
