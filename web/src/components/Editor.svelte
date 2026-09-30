@@ -272,7 +272,17 @@
       // The proposal has moved on. Recompute and let the reviewer decide again.
       return;
     }
+    // Track whether this browser has a draft before applying the message.
+    const was = Boolean(proposals.drafting?.());
     proposals.apply?.(message);
+    // If the proposal that just resolved was our own draft, restart tracking
+    // with the merged document. The update from the server arrives on the socket
+    // before the decision, so the room document already holds the merged result.
+    if (was && !proposals.drafting?.()) {
+      clearTimeout(proposalFlushTimer);
+      proposalFlushTimer = null;
+      startTracking();
+    }
   }
 
   let bibliographyGeneration = 0;

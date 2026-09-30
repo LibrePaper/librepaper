@@ -226,7 +226,7 @@
     if (item.__kind === "suggestion") onreveal?.(item); else onproposalreveal?.(item);
     if (focus) focusRow(rowId(item));
   }
-  function reveal(item) { activate(item); }
+  function reveal(item) { activate(item, { focus: true }); }
   function toggleChecked(item) { const id = rowId(item); const next = new Set(checked); next.has(id) ? next.delete(id) : next.add(id); checked = next; }
   function decisionPromise(item, action) {
     const callback = item.__kind === "suggestion" ? (action === "accept" ? onaccept : onreject) : onproposaldecide;
@@ -308,7 +308,8 @@
   // The author has to offer the change again against the text that is there,
   // which is theirs to do and not the reviewer's.
   function resolve(item) {
-    activate(item);
+    // Reveal focuses the editor, so take focus back to the row button via focusRow in activate.
+    activate(item, { focus: true });
     feedback = "This change was written against text that has since moved. Ask its author to offer it again.";
   }
   function keydown(event) {

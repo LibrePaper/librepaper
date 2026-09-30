@@ -929,6 +929,8 @@
   // was made against. The editor holds the branch somebody is drafting; this
   // is only the list, which the reader needs to draw cards and to decide.
   const openProposals = new Map();
+  // Hunks answered while the proposal was still open: { tip, hunks: Map<hunkIndex, "accepted"|"rejected"> }
+  const decidedHunks = new Map();
   function proposalTip(id) {
     return openProposals.get(id)?.tipBytes || "";
   }
@@ -970,7 +972,7 @@
           && (hunk.before === undefined || body.slice(hunk.start, end) === hunk.before)
           && (!hunk.prefix || body.slice(Math.max(0, hunk.start - hunk.prefix.length), hunk.start) === hunk.prefix)
           && (!hunk.suffix || body.slice(end, end + hunk.suffix.length) === hunk.suffix);
-        rows.push({
+        const row = {
           // The proposal and the index within it are the decision; the joined
           // id is only so the list has something to key rows on.
           id: `${proposal.id}#${hunk.index}`,
@@ -983,7 +985,18 @@
           before: hunk.before || "",
           after: hunk.inserted,
           stale: fits ? "" : "The text this was written against has changed.",
-        });
+        };
+        // If this hunk was decided while the proposal was open, mark it with its status
+        const decided = decidedHunks.get(proposal.id);
+        if (decided) {
+          if (decided.tip === proposal.tipBytes && decided.hunks.has(hunk.index)) {
+            row.status = decided.hunks.get(hunk.index);
+          } else if (decided.tip !== proposal.tipBytes) {
+            // Tip changed, hunks were renumbered, drop the stale entry
+            decidedHunks.delete(proposal.id);
+          }
+        }
+        rows.push(row);
       }
     }
     review = drawn;
@@ -1114,6 +1127,10 @@
           const decoded = decodeProposal(open);
           if (decoded) openProposals.set(decoded.id, decoded);
         }
+        // Drop decided hunks from proposals no longer open
+        for (const id of decidedHunks.keys()) {
+          if (!openProposals.has(id)) decidedHunks.delete(id);
+        }
         recomputeReview();
       } else if (event.type === "proposal-changed") {
         // One branch has appeared or moved. The whole list is not resent for
@@ -1126,11 +1143,21 @@
           openProposals.set(decoded.id, decoded);
           recomputeReview();
         }
+      } else if (event.type === "proposal-decided" && !event.resolved) {
+        // Record the decision for this hunk so recomputeReview can mark it as accepted/rejected
+        const tip = proposalTip(event.proposal_id);
+        if (!decidedHunks.has(event.proposal_id)) {
+          decidedHunks.set(event.proposal_id, { tip, hunks: new Map() });
+        }
+        const entry = decidedHunks.get(event.proposal_id);
+        entry.hunks.set(event.hunk, event.accepted ? "accepted" : "rejected");
+        recomputeReview();
       } else if (event.type === "proposal-decided" && event.resolved) {
         // A proposal leaves the queue when it resolves, not when one of its
         // hunks is answered: until every hunk has an answer the document has
         // not moved and the rest are still to be decided (§5.1a).
         openProposals.delete(event.proposal_id);
+        decidedHunks.delete(event.proposal_id);
         if (reviewing?.proposal === event.proposal_id) reviewing = null;
         recomputeReview();
       }
