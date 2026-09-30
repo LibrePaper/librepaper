@@ -2038,6 +2038,7 @@ pub struct AcceptSuggestion {
     decided_by: String,
     actor: MutationAuthorization,
     request_id: Uuid,
+    total_hunks: Option<usize>,
 }
 
 impl AcceptSuggestion {
@@ -2065,6 +2066,7 @@ impl AcceptSuggestion {
             decided_by,
             actor,
             request_id,
+            total_hunks: None,
         }
     }
 }
@@ -2124,15 +2126,7 @@ impl SequencerCommand for AcceptSuggestion {
                 "this suggestion no longer changes the source".into(),
             ));
         }
-        let accepted: HashSet<usize> = hunks.iter().map(|hunk| hunk.index).collect();
-        crate::room::proposals::validate_accepted_hunks(
-            head.doc(),
-            &proposal,
-            &self.branch_bytes,
-            &accepted,
-        )
-        .map_err(|error| CommandError::Conflict(error.to_string()))?;
-        let reviewer = fresh_peer();
+        self.total_hunks = Some(hunks.len());
         head.prepare(self.request_id.as_u128() as i64, |draft| {
             crate::room::proposals::resolve(
                 draft,
@@ -2140,7 +2134,6 @@ impl SequencerCommand for AcceptSuggestion {
                 &self.branch_bytes,
                 &HashSet::new(),
                 &tip,
-                reviewer,
             )
             .map(|_diff| ())
             .map_err(|error| error.to_string())
@@ -2159,21 +2152,16 @@ impl SequencerCommand for AcceptSuggestion {
                 .clone()
                 .ok_or_else(|| CommandError::Conflict("accept produced no source".into()))?;
             self.catalog
-                .decide_proposal_hunk(
+                .resolve_suggestion(
                     tx,
                     self.document_id,
                     self.proposal_id,
-                    0,
-                    true,
-                    &self.decided_by,
                     &self.tip_frontiers,
-                    None,
-                    1,
+                    true,
+                    self.total_hunks,
+                    &self.decided_by,
+                    Some(self.request_id),
                 )
-                .await
-                .map_err(CommandError::from)?;
-            self.catalog
-                .delete_proposal(tx, self.proposal_id)
                 .await
                 .map_err(CommandError::from)?;
             let tree_digest = evidence
@@ -2219,6 +2207,7 @@ pub struct RejectSuggestion {
     proposal_id: Uuid,
     tip_frontiers: Vec<u8>,
     decided_by: String,
+    request_id: Uuid,
 }
 
 impl RejectSuggestion {
@@ -2229,6 +2218,7 @@ impl RejectSuggestion {
         proposal_id: Uuid,
         tip_frontiers: Vec<u8>,
         author: &CommentAuthor,
+        request_id: Uuid,
     ) -> Self {
         Self {
             catalog,
@@ -2237,6 +2227,7 @@ impl RejectSuggestion {
             proposal_id,
             tip_frontiers,
             decided_by: author.creator.clone(),
+            request_id,
         }
     }
 }
@@ -2264,21 +2255,16 @@ impl SequencerCommand for RejectSuggestion {
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
             self.catalog
-                .decide_proposal_hunk(
+                .resolve_suggestion(
                     tx,
                     self.document_id,
                     self.proposal_id,
-                    0,
-                    false,
-                    &self.decided_by,
                     &self.tip_frontiers,
+                    false,
                     None,
-                    1,
+                    &self.decided_by,
+                    Some(self.request_id),
                 )
-                .await
-                .map_err(CommandError::from)?;
-            self.catalog
-                .delete_proposal(tx, self.proposal_id)
                 .await
                 .map_err(CommandError::from)?;
             Ok(self.comment_id)
@@ -2462,16 +2448,6 @@ impl SequencerCommand for AgentSuggestionBatch {
             Ok(results)
         })
     }
-}
-
-/// A peer id for a branch that nothing else will use, minted the same way
-/// `room::proposals::fresh_peer` does but for a command a reviewer's decision
-/// authors as the deployment rather than as any editor's own socket.
-fn fresh_peer() -> loro::PeerID {
-    let bytes = crate::auth::random_bytes(8);
-    let mut id = [0u8; 8];
-    id.copy_from_slice(&bytes);
-    loro::PeerID::from_le_bytes(id) | 1
 }
 
 // -- broadcasting ---------------------------------------------------------
