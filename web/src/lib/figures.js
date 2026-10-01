@@ -10,10 +10,11 @@
 // takes the bytes and writes the image into the page itself. Markdown produces
 // HTML a browser will fetch from, so it takes a data URL -- never the route
 // the bytes came from, which on a private document carries a credential and
-// would put it inside a rendered page. Data URLs work from any origin and do not
-// run scripts when opened in a tab. PDFs stay as blob URLs because the reader's
-// figure view shows them in an <object>, which needs a blob, and browsers isolate
-// PDF viewers from the app origin.
+// would put it inside a rendered page. A data URL, unlike a blob URL made here,
+// loads in the document frame, which lives on another origin, and an SVG opened
+// from one in a tab of its own runs in an opaque origin rather than as the app.
+// PDFs stay blob URLs: the reader's figure view shows them in an <object>, and
+// browsers render them in a PDF viewer that is isolated from the page.
 
 const bytes = new Map(); // digest -> Uint8Array
 const urls = new Map(); // digest -> data: URL or blob: URL (PDFs only)
@@ -98,12 +99,8 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
           const type = typeOf(path);
           let url;
           if (type === "application/pdf") {
-            // PDFs need blob URLs for the reader's <object> view.
-            const objectUrl = URL.createObjectURL(new Blob([body], { type }));
-            url = objectUrl;
+            url = URL.createObjectURL(new Blob([body], { type }));
           } else {
-            // Other images as data URLs: any origin can load them, and they do
-            // not run scripts when opened in a tab.
             url = `data:${type};base64,${toBase64(body)}`;
           }
           // Keep the immutable store identity in the fragment, which is

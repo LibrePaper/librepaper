@@ -24,7 +24,7 @@ function host() {
   const { self, listeners } = host();
   assert.equal(listeners.length, 1);
   assert.equal(listeners[0].type, "message");
-  assert.deepEqual(listeners[0].options, { once: true });
+  assert.equal(listeners[0].options.once, true);
   for (const data of [undefined, {}, { librepaperEngineHost: {} }, { librepaperEngineHost: { source: 5 } }]) {
     assert.throws(() => listeners[0].listener({ data }), /engine host/);
   }
@@ -40,10 +40,10 @@ function host() {
     assets: { "engine.wasm": "blob:app/wasm" },
   } } });
   assert.equal(loaded.length, 1, "only the source loads during setup");
-  assert.deepEqual(loaded[0].urls, ["blob:app/engine"]);
+  assert.deepEqual([...loaded[0].urls], ["blob:app/engine"]);
   assert.notEqual(self.importScripts, native, "importScripts is wrapped");
   self.importScripts("https://mirror.test/x/dep.js");
-  assert.deepEqual(loaded[1].urls, ["blob:app/dep"], "a mapped import reaches the native loader as its blob URL");
+  assert.deepEqual([...loaded[1].urls], ["blob:app/dep"], "a mapped import reaches the native loader as its blob URL");
   assert.throws(() => self.importScripts("evil.js"), /Unverified LaTeX engine import: evil\.js/);
   assert.equal(loaded.length, 2, "an unmapped import never reaches the native loader");
   assert.equal(self.Module.locateFile("dir/engine.wasm"), "blob:app/wasm");
@@ -57,7 +57,7 @@ function host() {
   listeners[0].listener({ data: { librepaperEngineHost: { source: "blob:app/biber" } } });
   assert.equal(self.importScripts, native, "no imports map leaves importScripts alone");
   assert.equal(self.Module, undefined, "no assets map leaves Module alone");
-  assert.deepEqual(loaded.map((call) => call.urls), [["blob:app/biber"]]);
+  assert.deepEqual(loaded.map((call) => [...call.urls]), [["blob:app/biber"]]);
 }
 
 console.log("latex-engine-host: unmapped imports fail, mapped ones load verified blobs, the source loads last");

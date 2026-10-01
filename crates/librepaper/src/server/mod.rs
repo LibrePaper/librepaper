@@ -55,9 +55,9 @@ pub mod fonts;
 mod history;
 #[cfg(test)]
 mod history_frontier_tests;
+mod host_metrics;
 #[cfg(test)]
 mod isolation_http_tests;
-mod host_metrics;
 pub(crate) mod mcp;
 mod metrics;
 mod onboarding;
@@ -524,6 +524,19 @@ impl Caller {
 
 type Reply = Response<Body>;
 
+/// Every response, whatever route made it, tells the browser not to guess its
+/// type. App pages allow scripts from their own origin, so any response on
+/// this origin whose bytes a user chose -- an uploaded figure, a document's
+/// state -- must never run as a script because a browser guessed its type.
+/// Routes that already set the header keep it.
+async fn nosniff(mut response: Reply) -> Reply {
+    response
+        .headers_mut()
+        .entry(header::X_CONTENT_TYPE_OPTIONS)
+        .or_insert(HeaderValue::from_static("nosniff"));
+    response
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AuthenticationFailure {
     Invalid,
@@ -841,19 +854,6 @@ impl Server {
                 cost::middleware,
             ))
             .layer(axum::middleware::map_response(nosniff))
-    }
-
-    /// Every response, whatever route made it, tells the browser not to guess
-    /// its type. App pages allow scripts from their own origin, so any response
-    /// on this origin whose bytes a user chose (an uploaded figure, a document's
-    /// state) must never be run as a script because a browser guessed its type;
-    /// routes that already set the header keep it.
-    async fn nosniff(mut response: Response) -> Response {
-        response
-            .headers_mut()
-            .entry(header::X_CONTENT_TYPE_OPTIONS)
-            .or_insert(HeaderValue::from_static("nosniff"));
-        response
     }
 
     /// Identifies the caller: a browser by its session cookie, the CLI by the

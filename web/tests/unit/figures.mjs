@@ -8,20 +8,21 @@ import { gather, release } from "../../src/lib/figures.js";
   const pdfBytes = Uint8Array.of(0x25, 0x50, 0x44, 0x46);
 
   // Stub fetch to return the bytes for each figure.
+  const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    if (url.includes("fig.png")) {
+    if (url.endsWith("/assets/a")) {
       return {
         ok: true,
         arrayBuffer: async () => pngBytes.buffer,
       };
     }
-    if (url.includes("fig.svg")) {
+    if (url.endsWith("/assets/b")) {
       return {
         ok: true,
         arrayBuffer: async () => svgBytes.buffer,
       };
     }
-    if (url.includes("fig.pdf")) {
+    if (url.endsWith("/assets/c")) {
       return {
         ok: true,
         arrayBuffer: async () => pdfBytes.buffer,
@@ -68,7 +69,7 @@ import { gather, release } from "../../src/lib/figures.js";
     release();
   } finally {
     URL.createObjectURL = originalCreateObjectURL;
-    delete globalThis.fetch;
+    globalThis.fetch = originalFetch;
   }
 }
 

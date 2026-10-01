@@ -318,13 +318,11 @@ fn accepts_encoding(headers: &HeaderMap, wanted: &str) -> bool {
 /// The policy every shell page is served with: the app's own scripts and
 /// nothing inline.
 ///
-/// The reader no longer hands out app-origin blob URLs for images (they are
-/// data URLs), but a blob URL on this origin that the app opens in a page of
-/// its own, an SVG figure for one, would inherit this policy. Without it, a
-/// script inside the SVG would run as the app, with the reader's session. So
-/// this is defence in depth for anything the app opens from this origin. A
-/// blob URL pasted into the address bar inherits nothing, so it narrows that
-/// hole rather than closing it.
+/// A page the app opens from a blob URL on this origin inherits this policy,
+/// so a script in it cannot run as the app with the reader's session. The
+/// reader hands images out as data URLs, which open in an opaque origin
+/// whoever opens them, so this is the second line rather than the first: a
+/// blob URL pasted into the address bar inherits no policy at all.
 ///
 /// - `'self'`: the bundled modules under `/assets/`.
 /// - The TeX engines and biber run in `web/src/lib/latex/engine-host.js`, a
@@ -448,7 +446,13 @@ mod asset_tests {
             .split("; ")
             .find(|d| d.starts_with("script-src "))
             .expect("the policy names script-src");
-        for refused in ["'unsafe-inline'", "'unsafe-eval'", "blob:", "https:", "data:"] {
+        for refused in [
+            "'unsafe-inline'",
+            "'unsafe-eval'",
+            "blob:",
+            "https:",
+            "data:",
+        ] {
             assert!(!script_src.contains(refused), "{script_src}");
         }
         let worker_src = csp

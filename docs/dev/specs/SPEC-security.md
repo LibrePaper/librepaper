@@ -67,12 +67,12 @@ to `crates/librepaper/src/` unless stated otherwise.
   blob:; base-uri 'none'; frame-ancestors 'none'`. No inline script, no `eval`,
   no `blob:` or remote scripts. The reader page receives its renderer URLs as a
   JSON data block, not an inline script.
-- **Observed:** The TeX engines and Biber run in `web/src/lib/latex/engine-host.js`,
-  a worker loaded from the app origin. A same-origin worker takes its CSP from
-  its own response, so the engines may `eval` (LaTeXML calls
-  `emscripten_run_script_string`) and load their digest-verified blob scripts
-  there while the page allows neither. A worker built from a `blob:` URL would
-  inherit the page's policy instead.
+- **Observed:** The TeX engines and Biber run in
+  `web/src/lib/latex/engine-host.js`, a worker loaded from the app origin. A
+  same-origin worker takes its CSP from its own response, so the engines may
+  `eval` (LaTeXML calls `emscripten_run_script_string`) and load their
+  digest-verified blob scripts there while the page allows neither. A worker
+  built from a `blob:` URL would inherit the page's policy instead.
 - **Observed:** Figures reach the reader and the document frame as `data:` URLs
   (`web/src/lib/figures.js`); only PDFs stay app-origin `blob:` URLs, for the
   reader's `<object>` view, where browsers render them in an isolated PDF viewer.
@@ -84,10 +84,10 @@ to `crates/librepaper/src/` unless stated otherwise.
 - **Observed:** Stored bytes (`server/cost.rs`, `blob_response`: figures, version
   archives, fonts) are served as `application/octet-stream` with
   `content-disposition: attachment` and `content-security-policy: sandbox`. Every
-  response carries `x-content-type-options: nosniff` (a layer in `server/mod.rs`).
-  This is what keeps `script-src 'self'` meaningful: without nosniff, an uploaded
-  file served as octet-stream runs as a classic script when an SVG or page points
-  a `<script>` at it.
+  response carries `x-content-type-options: nosniff` (a layer in
+  `server/mod.rs`). This is what keeps `script-src 'self'` meaningful: without
+  nosniff, an uploaded file served as octet-stream runs as a classic script
+  when an SVG or page points a `<script>` at it.
 - **Decision:** No allowlist of upload file types. Extensions do not prove
   content, HTML documents already run scripts by design on the document origin,
   and the risk of an active type is where it runs, not that it is stored. Active
