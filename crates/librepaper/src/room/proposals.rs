@@ -851,6 +851,50 @@ pub fn carry_decisions(
 /// This preserves the proposal's CRDT identities while locating its inverse,
 /// then imports the final branch into the current document in one operation.
 /// Called from `DecideProposalHunk::evaluate` and the suggestion adapters.
+fn validate_new_file_keys_available(
+    current: &LoroDoc,
+    branch: &LoroDoc,
+    proposal: &Proposal,
+) -> Result<(), ProposalError> {
+    let at_base = branch
+        .fork_at(&proposal.base)
+        .map_err(|error| ProposalError::Failed(error.to_string()))?;
+    let at_tip = branch
+        .fork_at(&proposal.tip)
+        .map_err(|error| ProposalError::Failed(error.to_string()))?;
+    let files_id = at_base.get_map(session::FILES).id();
+    let paths_id = at_base.get_map(session::PATHS).id();
+    let current_files = current.get_map(session::FILES);
+    let current_paths = current.get_map(session::PATHS);
+    let history = branch.export_json_updates_without_peer_compression(
+        &at_base.oplog_vv(),
+        &at_tip.oplog_vv(),
+    );
+
+    for change in &history.changes {
+        for op in &change.ops {
+            let is_file_map = op.container == files_id;
+            if !is_file_map && op.container != paths_id {
+                continue;
+            }
+            let JsonOpContent::Map(map_op) = &op.content else {
+                return Err(ProposalError::Failed(
+                    "proposal changed a non-map file index".into(),
+                ));
+            };
+            let key = match map_op {
+                JsonMapOp::Insert { key, .. } | JsonMapOp::Delete { key } => key,
+            };
+            if (is_file_map && current_files.get(key).is_some())
+                || (!is_file_map && current_paths.get(key).is_some())
+            {
+                return Err(ProposalError::Stale);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn resolve(
     doc: &LoroDoc,
     proposal: &Proposal,
@@ -880,6 +924,7 @@ pub fn resolve(
         // also avoids keeping an unreviewed branch in the shared document.
         return Ok(Vec::new());
     }
+    validate_new_file_keys_available(doc, &branch, proposal)?;
     // Declined hunks are also imported as inverse operations. If a coauthor
     // replaced one of those spans, its old text would otherwise be reinserted
     // next to the coauthor's replacement. Validate every reviewed span before
@@ -2506,6 +2551,51 @@ mod tests {
         assert!(!session::paths_of(&room)
             .values()
             .any(|path| path == "proposal.md"));
+    }
+
+    #[test]
+    fn accepting_text_is_refused_when_a_canceled_file_key_was_reused() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.commit();
+        let base = room.state_frontiers();
+        let vector = session::encode_vector(&room);
+
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        session::put_text(&branch, "main.md", "The tabby sat.");
+        add_raw_path_text(&branch, "reused-file-id", "proposal.md", "Temporary.");
+        branch.commit();
+        assert!(session::remove_path(&branch, "proposal.md"));
+        branch.commit();
+        let proposal = Proposal {
+            base,
+            tip: branch.state_frontiers(),
+        };
+        let bytes = session::encode_diff(&branch, &vector).unwrap();
+
+        room.set_peer_id(REVIEWER).unwrap();
+        add_raw_path_text(&room, "reused-file-id", "coauthor.md", "Keep this file.");
+        room.commit();
+
+        let reviewed = hunks(&room, &proposal, &bytes).unwrap();
+        assert_eq!(reviewed.len(), 1);
+        assert!(resolve(
+            &room,
+            &proposal,
+            &bytes,
+            &HashSet::from([reviewed[0].index]),
+            &proposal.tip,
+        )
+        .unwrap()
+        .is_empty());
+        assert!(matches!(
+            resolve(&room, &proposal, &bytes, &HashSet::new(), &proposal.tip),
+            Err(ProposalError::Stale)
+        ));
+        assert_eq!(text_at(&room, "main.md"), "The cat sat.");
+        assert_eq!(text_at(&room, "coauthor.md"), "Keep this file.");
     }
 
     #[test]
