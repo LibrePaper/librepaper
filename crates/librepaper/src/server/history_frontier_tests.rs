@@ -298,3 +298,98 @@ async fn a_comments_own_frontier_reads_back_through_the_history_route() {
 
     deployment.catalog.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn archive_poll_preserves_terminal_failure_until_explicit_retry() {
+    let Some(deployment) = deployment("http-archive-explicit-retry").await else {
+        return;
+    };
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let authority = crate::storage::postgres::Authority {
+        principal_key: deployment.owner_id.to_string(),
+        account_id: Some(deployment.owner_id),
+        link_hash: None,
+        session_generation: Some(deployment.owner_session_generation.parse().unwrap()),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
+    };
+    let label = room
+        .take_label("named", Some("retry test".into()), "Owner", &authority, None)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE document_labels SET archive_requested_at=NULL,archive_error='previous failure' WHERE id=$1",
+    )
+    .bind(label.id)
+    .execute(deployment.catalog.pool())
+    .await
+    .unwrap();
+
+    let headers = owner_bearer(&deployment);
+    let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+    let context = crate::server::RequestContext::resolved(
+        &deployment.server,
+        &headers,
+        arrival,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let polled = deployment
+        .server
+        .handle_label_read(
+            &headers,
+            &context,
+            &deployment.slug,
+            &label.id.to_string(),
+            Some("archive=1"),
+        )
+        .await;
+    assert_eq!(polled.status(), 200);
+    let body = axum::body::to_bytes(polled.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["archive_status"], "failed");
+    let unchanged = deployment
+        .catalog
+        .label(room.document_id, label.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(unchanged.archive_requested_at.is_none());
+    assert_eq!(unchanged.archive_error.as_deref(), Some("previous failure"));
+
+    let retried = deployment
+        .server
+        .handle_label_read(
+            &headers,
+            &context,
+            &deployment.slug,
+            &label.id.to_string(),
+            Some("archive=1&retry=1"),
+        )
+        .await;
+    assert!(matches!(retried.status().as_u16(), 200 | 202));
+    let body = axum::body::to_bytes(retried.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_ne!(body["archive_status"], "failed", "retry response must be refreshed after admission");
+    let refreshed = deployment
+        .catalog
+        .label(room.document_id, label.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(refreshed.archive_error.is_none());
+
+    deployment.catalog.close().await;
+}
