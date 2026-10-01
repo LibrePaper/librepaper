@@ -191,7 +191,7 @@
     <ul class="trim-list">
       <li>Its editing history ({storageBytes(trimTarget.historyBytes)})</li>
       <li>All its named versions ({storageBytes(trimTarget.archiveBytes)})</li>
-      <li>Figures its current files no longer use</li>
+      <li>Figures its current files no longer use, except ones uploaded in the last hour</li>
     </ul>
     <p class="lp-text-secondary text-sm">Comments stay. This cannot be undone.</p>
   {/if}
