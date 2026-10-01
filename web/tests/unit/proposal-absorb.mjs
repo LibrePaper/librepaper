@@ -561,7 +561,7 @@ import { createProposals } from "../../src/lib/proposals.js";
   resolved.getMap("paths").delete("f2");
   resolved.commit();
   room.import(resolved.export({ mode: "update", from: room.oplogVersion() }));
-  resolved.destroy();
+  resolved.destroy?.();
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   // The file is already absent from FILES. The editor still holds the text
@@ -628,7 +628,7 @@ import { createProposals } from "../../src/lib/proposals.js";
   coauthor.getMap("files").get("f1").insert(4, "fox");
   coauthor.commit();
   room.import(coauthor.export({ mode: "update", from: room.oplogVersion() }));
-  coauthor.destroy();
+  coauthor.destroy?.();
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   session.joined = true;
