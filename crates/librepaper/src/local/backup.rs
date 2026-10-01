@@ -44,7 +44,9 @@ struct ProjectRecord {
 
 #[derive(Deserialize)]
 struct Snapshot {
+    #[serde(rename = "project_digest")]
     digest: String,
+    #[serde(rename = "tree")]
     projection: crate::document::projection::Projection,
     #[serde(default)]
     texts: BTreeMap<String, String>,
@@ -66,7 +68,9 @@ pub(crate) async fn run_backup(
         format!("{}\0{}", normalized_server, account_id).as_bytes(),
     ));
     let root = destination.join(MANAGED_DIR).join(namespace_id);
-    create_managed_directories(&root)?;
+    create_managed_directories(destination)?;
+    create_private_directory(&destination.join(MANAGED_DIR))?;
+    create_private_directory(&root)?;
     ensure_namespace(&root.join(NAMESPACE_FILE), &normalized_server, account_id)?;
     let manifest_path = root.join(MANIFEST_FILE);
     let mut manifest = load_manifest(&manifest_path, &normalized_server, account_id)?;
@@ -114,6 +118,18 @@ pub(crate) async fn run_backup(
                     .await
                     .map_err(|error| format!("backup archive verifier failed: {error}"))?;
                     if archive_matches {
+                        let cleanup_root = root.clone();
+                        let cleanup_slug = slug.to_string();
+                        let current_archive = record.archive.clone();
+                        tokio::task::spawn_blocking(move || {
+                            cleanup_superseded_archives(
+                                &cleanup_root,
+                                &cleanup_slug,
+                                &current_archive,
+                            )
+                        })
+                        .await
+                        .map_err(|error| format!("backup cleanup failed: {error}"))??;
                         return Ok(false);
                     }
                     snapshot
@@ -180,7 +196,6 @@ pub(crate) async fn run_backup(
             .await
             .map_err(|error| format!("backup archive writer failed: {error}"))??;
 
-            let old_filename = existing.map(|record| record.archive);
             manifest.projects.insert(
                 slug.to_string(),
                 ProjectRecord {
@@ -191,17 +206,7 @@ pub(crate) async fn run_backup(
             );
             write_manifest(&manifest_path, &manifest)?;
 
-            if let Some(old_filename) =
-                old_filename.filter(|old| old != &manifest.projects[slug].archive)
-            {
-                // The manifest now points at the replacement. Remove the
-                // previous file only after verifying it is still managed.
-                if owned_archive(&root, &old_filename, slug).is_ok() {
-                    fs::remove_file(root.join(old_filename)).map_err(|error| {
-                        format!("could not remove superseded backup archive: {error}")
-                    })?;
-                }
-            }
+            cleanup_superseded_archives(&root, slug, &manifest.projects[slug].archive)?;
             Ok(true)
         }
         .await;
@@ -308,7 +313,7 @@ async fn fetch_snapshot(
     token: &str,
     slug: &str,
 ) -> Result<Snapshot, String> {
-    let target = document_url(server, slug, "snapshot")?;
+    let target = document_url(server, slug, "project")?;
     let response = client
         .get(target)
         .bearer_auth(token)
@@ -477,6 +482,7 @@ fn write_archive(
     temporary
         .persist(&target)
         .map_err(|error| format!("could not publish backup archive: {}", error.error))?;
+    sync_directory(root, "backup archive")?;
     Ok(())
 }
 
@@ -548,18 +554,9 @@ fn ensure_namespace(path: &Path, server: &str, account_id: &str) -> Result<(), S
 }
 
 fn write_manifest(path: &Path, manifest: &Manifest) -> Result<(), String> {
-    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().ok_or("invalid manifest path")?)
-        .map_err(|error| format!("could not create manifest staging file: {error}"))?;
-    serde_json::to_writer(&mut temporary, manifest)
+    let bytes = serde_json::to_vec(manifest)
         .map_err(|error| format!("could not encode backup manifest: {error}"))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(|error| format!("could not sync backup manifest: {error}"))?;
-    temporary
-        .persist(path)
-        .map_err(|error| format!("could not publish backup manifest: {}", error.error))?;
-    Ok(())
+    crate::private_files::publish(path, &bytes, "backup manifest")
 }
 
 fn owned_archive(root: &Path, filename: &str, slug: &str) -> Result<(), String> {
@@ -581,6 +578,31 @@ fn owned_archive(root: &Path, filename: &str, slug: &str) -> Result<(), String> 
     let marker = archive.comment();
     if marker != format!("{OWNER_TAG}\n{slug}").as_bytes() {
         return Err("backup archive ownership marker does not match".into());
+    }
+    Ok(())
+}
+
+fn cleanup_superseded_archives(root: &Path, slug: &str, current: &str) -> Result<(), String> {
+    let mut removed = false;
+    let owned_suffix = archive_slug_suffix(slug);
+    for item in fs::read_dir(root).map_err(|error| format!("could not scan backup namespace: {error}"))? {
+        let item = item.map_err(|error| format!("could not read backup namespace: {error}"))?;
+        let filename = item.file_name();
+        let Some(filename) = filename.to_str() else {
+            continue;
+        };
+        if filename == current
+            || !filename.ends_with(&owned_suffix)
+            || owned_archive(root, filename, slug).is_err()
+        {
+            continue;
+        }
+        fs::remove_file(item.path())
+            .map_err(|error| format!("could not remove superseded backup archive: {error}"))?;
+        removed = true;
+    }
+    if removed {
+        sync_directory(root, "superseded backup archives")?;
     }
     Ok(())
 }
@@ -710,6 +732,50 @@ fn create_managed_directories(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn create_private_directory(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!("backup path {} is a symlink", path.display()));
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(format!("backup path {} is not a directory", path.display()));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(path).map_err(|error| {
+                format!("could not create private backup directory {}: {error}", path.display())
+            })?;
+        }
+        Err(error) => return Err(format!("could not inspect backup directory: {error}")),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            format!("could not secure backup directory {}: {error}", path.display())
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path, what: &str) -> Result<(), String> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("could not durable-sync {what} directory: {error}"))
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path, _what: &str) -> Result<(), String> {
+    Ok(())
+}
+
 fn checked_child(root: &Path, filename: &str) -> Result<PathBuf, String> {
     if filename.is_empty()
         || filename.contains('/')
@@ -745,9 +811,13 @@ fn safe_relative_path(path: &str) -> Result<PathBuf, String> {
 
 fn archive_name(title: &str, slug: &str) -> String {
     let safe_title = safe_stem(title);
+    format!("{safe_title}{}", archive_slug_suffix(slug))
+}
+
+fn archive_slug_suffix(slug: &str) -> String {
     let safe_slug = safe_stem(slug);
     let id = &hex::encode(Sha256::digest(slug.as_bytes()))[..12];
-    format!("{safe_title}--{safe_slug}-{id}.zip")
+    format!("--{safe_slug}-{id}.zip")
 }
 
 fn safe_stem(value: &str) -> String {
@@ -867,8 +937,8 @@ mod tests {
                 },
             );
             Json(json!({
-                "digest": projection.digest(),
-                "projection": projection,
+                "project_digest": projection.digest(),
+                "tree": projection,
                 "texts":{"paper.md":body}
             }))
         } else {
@@ -883,8 +953,8 @@ mod tests {
             let mut projection = crate::document::projection::Projection::default();
             projection.files.insert("images/plot.bin".into(), entry);
             Json(json!({
-                "digest": projection.digest(),
-                "projection": projection,
+                "project_digest": projection.digest(),
+                "tree": projection,
                 "texts":{}
             }))
         }
@@ -913,7 +983,7 @@ mod tests {
         });
         let app = Router::new()
             .route("/api/list", post(list_page))
-            .route("/api/documents/{slug}/snapshot", get(snapshot))
+            .route("/api/documents/{slug}/project", get(snapshot))
             .route("/api/documents/{slug}/assets/{digest}", get(asset))
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1004,6 +1074,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unchanged_run_removes_old_archive_left_after_manifest_rename() {
+        let (server, state, task) = start_fixture().await;
+        let output = tempfile::tempdir().unwrap();
+        run_backup(&server, "token", "account-one", output.path()).await.unwrap();
+        let root = namespace(output.path());
+        let old_name = archive_name("Paper", "paper-a1");
+        let new_name = archive_name("Renamed Paper", "paper-a1");
+        fs::copy(root.join(&old_name), root.join(&new_name)).unwrap();
+
+        // Model a crash after the replacement manifest was published but
+        // before the old archive was removed.
+        let manifest_path = root.join(MANIFEST_FILE);
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["projects"]["paper-a1"]["title"] = json!("Renamed Paper");
+        manifest["projects"]["paper-a1"]["archive"] = json!(new_name);
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        *state.title.lock().unwrap() = "Renamed Paper".into();
+
+        let report = run_backup(&server, "token", "account-one", output.path()).await.unwrap();
+        assert_eq!(report.updated, 0);
+        assert!(root.join(&new_name).is_file());
+        assert!(!root.join(old_name).exists());
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn failed_asset_download_preserves_previous_archive_and_other_projects_continue() {
         let (server, state, task) = start_fixture().await;
         let output = tempfile::tempdir().unwrap();
@@ -1067,7 +1164,14 @@ mod tests {
         let output = tempfile::tempdir().unwrap();
         run_backup(&server, "token", "account-one", output.path()).await.unwrap();
         run_backup(&server, "token", "account-two", output.path()).await.unwrap();
-        assert_eq!(fs::read_dir(output.path().join(MANAGED_DIR)).unwrap().count(), 2);
+        let managed_root = output.path().join(MANAGED_DIR);
+        assert_eq!(fs::read_dir(&managed_root).unwrap().count(), 2);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&managed_root).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(fs::metadata(namespace(output.path())).unwrap().permissions().mode() & 0o777, 0o700);
+        }
         assert!(safe_relative_path("../escape.txt").is_err());
         assert!(safe_relative_path("C:\\escape.txt").is_err());
         assert!(safe_relative_path("dir\\escape.txt").is_err());
