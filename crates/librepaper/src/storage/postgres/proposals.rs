@@ -105,6 +105,7 @@ impl PostgresCatalog {
 
     /// Moves a proposal's branch to a new tip, conditional on the version the
     /// caller read. The author typing again is what calls this.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_proposal_branch(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,

@@ -1,8 +1,8 @@
 //! Bounded lifecycle work over simple document prefixes.
 
+use sqlx::{Connection, PgConnection};
 use std::collections::HashSet;
 use std::sync::Arc;
-use sqlx::{Connection, PgConnection};
 use time::Duration;
 
 use super::blob::BlobStore;
@@ -127,10 +127,7 @@ pub(crate) struct ObjectKeyLock {
 }
 
 impl ObjectKeyLock {
-    pub(crate) async fn acquire(
-        catalog: &PostgresCatalog,
-        key: &str,
-    ) -> Result<Self, String> {
+    pub(crate) async fn acquire(catalog: &PostgresCatalog, key: &str) -> Result<Self, String> {
         let options = catalog.pool().connect_options();
         let connection = PgConnection::connect_with(&options)
             .await
@@ -160,14 +157,12 @@ impl ObjectKeyLock {
         let mut guard = Self {
             connection: Some(connection),
         };
-        let acquired: bool = sqlx::query_scalar(
-            "SELECT pg_try_advisory_lock($1,hashtext($2))",
-        )
-        .bind(OBJECT_KEY_LOCK_NAMESPACE)
-        .bind(key)
-        .fetch_one(guard.connection_mut())
-        .await
-        .map_err(|error| format!("could not try object lock: {error}"))?;
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1,hashtext($2))")
+            .bind(OBJECT_KEY_LOCK_NAMESPACE)
+            .bind(key)
+            .fetch_one(guard.connection_mut())
+            .await
+            .map_err(|error| format!("could not try object lock: {error}"))?;
         Ok(acquired.then_some(guard))
     }
 
@@ -178,14 +173,12 @@ impl ObjectKeyLock {
     }
 
     pub(crate) async fn release(mut self, key: &str) -> Result<(), String> {
-        let released: bool = sqlx::query_scalar(
-            "SELECT pg_advisory_unlock($1,hashtext($2))",
-        )
-        .bind(OBJECT_KEY_LOCK_NAMESPACE)
-        .bind(key)
-        .fetch_one(self.connection_mut())
-        .await
-        .map_err(|error| format!("could not release object lock: {error}"))?;
+        let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1,hashtext($2))")
+            .bind(OBJECT_KEY_LOCK_NAMESPACE)
+            .bind(key)
+            .fetch_one(self.connection_mut())
+            .await
+            .map_err(|error| format!("could not release object lock: {error}"))?;
         if !released {
             return Err("object lock was not held by its PostgreSQL session".into());
         }
@@ -226,7 +219,9 @@ impl Maintenance {
             return Err("base cleanup batch must be 1..=500".into());
         }
         let Some(lock) = BlobLifecycleLock::try_delete(self.catalog.as_ref()).await? else {
-            return Err("backup is copying referenced objects; retry superseded-base cleanup".into());
+            return Err(
+                "backup is copying referenced objects; retry superseded-base cleanup".into(),
+            );
         };
         let keys = sqlx::query_scalar!(
             "SELECT snapshot_key FROM document_snapshots WHERE delete_after<=now()
@@ -332,7 +327,8 @@ impl Maintenance {
                     continue;
                 }
                 let key_lock = if prefix == "documents/" {
-                    let Some(lock) = ObjectKeyLock::try_acquire(self.catalog.as_ref(), &key).await?
+                    let Some(lock) =
+                        ObjectKeyLock::try_acquire(self.catalog.as_ref(), &key).await?
                     else {
                         continue;
                     };

@@ -1,7 +1,6 @@
 //! Regressions for account erasure racing document admission and metadata
 //! writes that must not replay stale owner identity.
 
-use serde_json::json;
 use time::Duration;
 use uuid::Uuid;
 
@@ -55,7 +54,6 @@ fn document(owner_id: Uuid, slug: String, generation: Option<i64>) -> NewDocumen
         title: "Lifecycle test".into(),
         source_format: "markdown".into(),
         main_path: "main.md".into(),
-        settings: json!({"version": 1}),
     }
 }
 
@@ -176,11 +174,7 @@ async fn erasure_holding_the_account_lock_rejects_a_waiting_document_insert() {
         let slug = slug.clone();
         async move {
             catalog
-                .create_document(document(
-                    account.id,
-                    slug,
-                    Some(account.session_generation),
-                ))
+                .create_document(document(account.id, slug, Some(account.session_generation)))
                 .await
         }
     });
@@ -202,7 +196,10 @@ async fn erasure_holding_the_account_lock_rejects_a_waiting_document_insert() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    assert!(is_blocked, "document INSERT should wait behind account erasure");
+    assert!(
+        is_blocked,
+        "document INSERT should wait behind account erasure"
+    );
     erasure.commit().await.unwrap();
     assert!(inserting.await.unwrap().is_err());
     assert!(catalog.document_by_slug(&slug).await.unwrap().is_none());

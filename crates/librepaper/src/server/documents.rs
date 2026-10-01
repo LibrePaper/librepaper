@@ -1198,9 +1198,7 @@ impl Server {
         };
         match self.store.rename(slug, &title, &actor).await {
             Ok(()) => write_json(200, &json!({"slug": slug, "title": title})),
-            Err(error) if error == "ownership changed" => {
-                write_json(409, &json!({"error": error}))
-            }
+            Err(error) if error == "ownership changed" => write_json(409, &json!({"error": error})),
             Err(error) => {
                 eprintln!("could not rename {slug}: {error}");
                 write_json(500, &json!({"error": "could not rename the project"}))

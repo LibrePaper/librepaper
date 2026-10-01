@@ -345,7 +345,6 @@ async fn frugal_mixed_workload_benchmark() {
                 title: "Mixed benchmark".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: json!({"version":1}),
             })
             .await
             .expect("create doc");

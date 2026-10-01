@@ -1164,7 +1164,10 @@ async fn handle_bindings_list(
         return response;
     }
     let Some(project) = project_query(request.uri()) else {
-        return write_json(400, &json!({"error": "bindings list needs a valid project"}));
+        return write_json(
+            400,
+            &json!({"error": "bindings list needs a valid project"}),
+        );
     };
     write_json(
         200,
@@ -1223,10 +1226,7 @@ async fn handle_binding_folder(
     };
     // Permission may have been revoked while the user considered the dialog.
     if authenticate(inner, headers, origin).is_err() {
-        return write_json(
-            401,
-            &json!({"error": "This site is no longer connected."}),
-        );
+        return write_json(401, &json!({"error": "This site is no longer connected."}));
     }
     let binding = match inner.quarto_bindings.grant(
         origin.unwrap_or_default(),
@@ -1608,7 +1608,8 @@ pub(super) fn project_query(uri: &axum::http::Uri) -> Option<String> {
 /// Whether `entry` belongs to the requesting origin: the whole scope of a
 /// lookup by id, since a pairing covers every project of its origin.
 fn owned_by(entry: &JobEntry, origin: Option<&str>) -> bool {
-    pairing::normalize_origin(&entry.origin) == pairing::normalize_origin(origin.unwrap_or_default())
+    pairing::normalize_origin(&entry.origin)
+        == pairing::normalize_origin(origin.unwrap_or_default())
 }
 
 fn standalone(inner: &Inner) -> bool {
@@ -1780,11 +1781,7 @@ async fn handle_preview(
         previews
             .reap(&active_pairings, &inner.quarto_bindings)
             .await;
-        let Some(preview) = previews
-            .0
-            .get_mut(id)
-            .filter(|p| p.origin == origin)
-        else {
+        let Some(preview) = previews.0.get_mut(id).filter(|p| p.origin == origin) else {
             return plain(404, "preview not found");
         };
         if request.method() == Method::GET {
@@ -1865,11 +1862,11 @@ async fn handle_preview(
                         || inner
                             .quarto_bindings
                             .get_scoped(&q.binding_id, &entry.origin, &entry.project)
-                            .zip(
-                                inner
-                                    .quarto_bindings
-                                    .get_scoped(&p.binding_id, &origin, &job.project),
-                            )
+                            .zip(inner.quarto_bindings.get_scoped(
+                                &p.binding_id,
+                                &origin,
+                                &job.project,
+                            ))
                             .is_some_and(|(a, b)| a.root == b.root)
                 })
             })
@@ -1900,11 +1897,7 @@ async fn handle_preview_page(
     previews
         .reap(&active_pairings, &inner.quarto_bindings)
         .await;
-    let Some(preview) = previews
-        .0
-        .get(id)
-        .filter(|p| p.origin == origin)
-    else {
+    let Some(preview) = previews.0.get(id).filter(|p| p.origin == origin) else {
         return plain(404, "preview not found");
     };
     preview::Previews::recover_first_artifact(preview).await;
@@ -2344,10 +2337,7 @@ mod settings_tests {
         super::super::integrations::init(state_home.path());
         super::super::approval::script(false);
 
-        let (token, _) = inner
-            .pairing
-            .issue("https://example.test", "test")
-            .unwrap();
+        let (token, _) = inner.pairing.issue("https://example.test", "test").unwrap();
         let request = Request::put("/integrations/quarto")
             .header("authorization", format!("Bearer {token}"))
             .header("origin", "https://example.test")
@@ -2385,10 +2375,7 @@ mod settings_tests {
         super::super::integrations::init(state_home.path());
         super::super::approval::script(true);
 
-        let (token, _) = inner
-            .pairing
-            .issue("https://example.test", "test")
-            .unwrap();
+        let (token, _) = inner.pairing.issue("https://example.test", "test").unwrap();
         let request = Request::put("/integrations/quarto")
             .header("authorization", format!("Bearer {token}"))
             .header("origin", "https://example.test")
@@ -2429,10 +2416,7 @@ mod settings_tests {
             .unwrap_or_else(|poison| poison.into_inner());
         super::super::integrations::init(state_home.path());
 
-        let (token, _) = inner
-            .pairing
-            .issue("https://example.test", "test")
-            .unwrap();
+        let (token, _) = inner.pairing.issue("https://example.test", "test").unwrap();
         let request = Request::put("/integrations/quarto")
             .header("authorization", format!("Bearer {token}"))
             .header("origin", "https://example.test")

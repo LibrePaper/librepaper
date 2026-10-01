@@ -29,7 +29,10 @@ pub(super) async fn handle_workspace_put(
         return response;
     }
     let Some(project) = project_query(request.uri()) else {
-        return write_json(400, &json!({"error": "workspace sync needs a valid project"}));
+        return write_json(
+            400,
+            &json!({"error": "workspace sync needs a valid project"}),
+        );
     };
     let origin = origin.unwrap_or_default().to_string();
 

@@ -188,8 +188,8 @@ pub struct AnnotationRecord {
     pub author_label: String,
     pub color: Option<String>,
     pub proposal_id: Option<Uuid>,
-    pub source_sequence: Option<i64>,
-    pub frontier: Option<Vec<u8>>,
+    pub source_sequence: i64,
+    pub frontier: Vec<u8>,
     pub render_digest: Option<Vec<u8>>,
     pub target_kind: String,
     pub file_id: Option<String>,
@@ -1068,8 +1068,8 @@ impl<'a> Stored<'a> {
 /// range is.
 fn same_anchor(row: &AnnotationRecord, anchor: &OriginalAnchor) -> Result<bool> {
     let stored = Stored::of(anchor)?;
-    Ok(row.source_sequence == Some(anchor.source_sequence)
-        && row.frontier.as_deref() == Some(anchor.frontier.as_slice())
+    Ok(row.source_sequence == anchor.source_sequence
+        && row.frontier == anchor.frontier
         && row.target_kind == stored.kind
         && row.file_id.as_deref() == stored.file_id
         && row.start_utf16 == stored.start_utf16
@@ -1111,10 +1111,8 @@ pub fn original_anchor_from_record(row: &AnnotationRecord) -> Result<OriginalAnc
         _ => return Err(invalid("an unknown target kind")),
     };
     Ok(OriginalAnchor {
-        source_sequence: row
-            .source_sequence
-            .ok_or_else(|| invalid("no source sequence"))?,
-        frontier: row.frontier.clone().ok_or_else(|| invalid("no frontier"))?,
+        source_sequence: row.source_sequence,
+        frontier: row.frontier.clone(),
         target,
     })
 }
@@ -1184,8 +1182,8 @@ mod tests {
             author_label: "A".into(),
             color: None,
             proposal_id: None,
-            source_sequence: Some(7),
-            frontier: Some(vec![9, 9, 9]),
+            source_sequence: 7,
+            frontier: vec![9, 9, 9],
             render_digest: None,
             target_kind: "source_text".into(),
             file_id: Some("file-key".into()),
@@ -1239,7 +1237,7 @@ mod tests {
     fn same_anchor_checks_the_evidence_too() {
         let anchor = original_anchor_from_record(&row()).unwrap();
         let mut moved = row();
-        moved.source_sequence = Some(8);
+        moved.source_sequence = 8;
         assert!(!same_anchor(&moved, &anchor).unwrap());
     }
 

@@ -105,7 +105,7 @@ BEGIN
             decode('00', 'hex'), 'document'
         );
         RAISE EXCEPTION 'annotation with NULL source_sequence was accepted';
-    EXCEPTION WHEN check_violation THEN NULL;
+    EXCEPTION WHEN not_null_violation THEN NULL;
     END;
 
     BEGIN
@@ -119,7 +119,7 @@ BEGIN
             1, 'document'
         );
         RAISE EXCEPTION 'annotation with NULL frontier was accepted';
-    EXCEPTION WHEN check_violation THEN NULL;
+    EXCEPTION WHEN not_null_violation THEN NULL;
     END;
 END;
 $$;

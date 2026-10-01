@@ -143,7 +143,6 @@ impl Deployment {
                 title: "Trash".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: serde_json::json!({}),
             })
             .await
             .expect("create the document row");
@@ -452,7 +451,9 @@ async fn hastened_deletion_overrides_grace(rescan: bool) {
     let running = tokio::spawn(worker.run());
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while handle.snapshot()["deadlines"].as_u64() == Some(0) {
+    // The periodic orphan sweep holds one deadline throughout this test.
+    // Wait for the document's grace reminder as well before hastening it.
+    while handle.snapshot()["deadlines"].as_u64().unwrap() < 2 {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the worker never armed the document's grace deadline"
@@ -474,13 +475,13 @@ async fn hastened_deletion_overrides_grace(rescan: bool) {
     );
 
     let until = tokio::time::Instant::now() + Duration::from_secs(2);
-    while handle.snapshot()["deadlines"].as_u64() != Some(0) && tokio::time::Instant::now() < until
+    while handle.snapshot()["deadlines"].as_u64() != Some(1) && tokio::time::Instant::now() < until
     {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(
         handle.snapshot()["deadlines"].as_u64(),
-        Some(0),
+        Some(1),
         "successful early purge must remove its stale grace deadline"
     );
 

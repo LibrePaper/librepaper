@@ -256,11 +256,10 @@ impl PostgresCatalog {
         };
         // Admission is deliberately only an early check: the final archive
         // size is unknown until encoding and is checked again at attachment.
-        let usage_lock: i64 = sqlx::query_scalar(
-            "SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let usage_lock: i64 =
+            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+                .fetch_one(&mut *tx)
+                .await?;
         let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner).await?;
         let log_usage: i64 = sqlx::query_scalar(
             "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
@@ -310,8 +309,14 @@ impl PostgresCatalog {
     ) -> Result<ArchiveAttach> {
         if object.storage_key.is_empty()
             || object.byte_length < 0
-            || object.tree_digest.as_ref().is_some_and(|value| value.len() != 32)
-            || object.content_digest.as_ref().is_some_and(|value| value.len() != 32)
+            || object
+                .tree_digest
+                .as_ref()
+                .is_some_and(|value| value.len() != 32)
+            || object
+                .content_digest
+                .as_ref()
+                .is_some_and(|value| value.len() != 32)
         {
             return Err(Error::Invalid("invalid label archive".into()));
         }
@@ -354,22 +359,26 @@ impl PostgresCatalog {
         }
         // Keep the global accounting mutex after the document lock, matching
         // asset completion's lock order across documents.
-        let deployment_usage: i64 = sqlx::query_scalar(
-            "SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let deployment_usage: i64 =
+            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+                .fetch_one(&mut *tx)
+                .await?;
         let already_catalogued: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM document_archives WHERE storage_key=$1)",
         )
         .bind(&object.storage_key)
         .fetch_one(&mut *tx)
         .await?;
-        let delta = if already_catalogued { 0 } else { object.byte_length };
-        if !already_catalogued
-            && (object.tree_digest.is_none() || object.content_digest.is_none())
+        let delta = if already_catalogued {
+            0
+        } else {
+            object.byte_length
+        };
+        if !already_catalogued && (object.tree_digest.is_none() || object.content_digest.is_none())
         {
-            return Err(Error::Invalid("new archives require SHA-256 digests".into()));
+            return Err(Error::Invalid(
+                "new archives require SHA-256 digests".into(),
+            ));
         }
         let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
         let log_usage: i64 = sqlx::query_scalar(
@@ -416,7 +425,9 @@ impl PostgresCatalog {
         .fetch_one(&mut *tx)
         .await?;
         if stored.document_id != document_id {
-            return Err(Error::Conflict("archive key belongs to another document".into()));
+            return Err(Error::Conflict(
+                "archive key belongs to another document".into(),
+            ));
         }
         let changed = sqlx::query(
             "UPDATE document_labels SET archive_key=$2,archive_error=NULL,archive_requested_at=NULL \
@@ -485,7 +496,6 @@ impl PostgresCatalog {
         .await
         .map_err(Error::from)
     }
-
 }
 
 impl PostgresCatalog {

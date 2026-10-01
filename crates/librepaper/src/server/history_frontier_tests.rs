@@ -133,7 +133,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         vec![0u8; 32],
         config.clone(),
         Policy::parse_publishers("owner").unwrap(),
-        Policy::parse(""),
+        Policy::parse("any"),
     );
     Some(Deployment {
         server,
@@ -146,15 +146,15 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     })
 }
 
-fn viewer(account_id: Uuid, handle: &str, role: Role) -> Viewer {
+fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) -> Viewer {
     Viewer {
         id: Identity {
-            provider: String::new(),
+            provider: PROVIDER_GITHUB.into(),
             id: account_id.to_string(),
             handle: handle.into(),
             name: handle.into(),
             picture: String::new(),
-            session_generation: String::new(),
+            session_generation: session_generation.into(),
         },
         key: handle.into(),
         link: String::new(),
@@ -210,7 +210,12 @@ async fn a_comments_own_frontier_reads_back_through_the_history_route() {
         "request_id": Uuid::new_v4().to_string(),
     }))
     .unwrap();
-    let who = viewer(deployment.owner_id, "owner", Role::Owner);
+    let who = viewer(
+        deployment.owner_id,
+        "owner",
+        &deployment.owner_session_generation,
+        Role::Owner,
+    );
     let (result, ok) = deployment
         .server
         .apply_from(
@@ -317,7 +322,13 @@ async fn archive_poll_preserves_terminal_failure_until_explicit_retry() {
         automation: false,
     };
     let label = room
-        .take_label("named", Some("retry test".into()), "Owner", &authority, None)
+        .take_label(
+            "named",
+            Some("retry test".into()),
+            "Owner",
+            &authority,
+            None,
+        )
         .await
         .unwrap();
     sqlx::query(
@@ -377,7 +388,10 @@ async fn archive_poll_preserves_terminal_failure_until_explicit_retry() {
         .await
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_ne!(body["archive_status"], "failed", "retry response must be refreshed after admission");
+    assert_ne!(
+        body["archive_status"], "failed",
+        "retry response must be refreshed after admission"
+    );
     let refreshed = deployment
         .catalog
         .label(room.document_id, label.id)
@@ -386,5 +400,6 @@ async fn archive_poll_preserves_terminal_failure_until_explicit_retry() {
         .unwrap();
     assert!(refreshed.archive_error.is_none());
 
+    drop(deployment._writer);
     deployment.catalog.close().await;
 }

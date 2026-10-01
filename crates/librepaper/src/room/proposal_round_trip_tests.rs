@@ -630,13 +630,23 @@ async fn a_decision_follows_its_hunk_when_the_base_moves() {
     let room = deployment.rooms.get(&deployment.slug).await.unwrap();
     let path = "paper.md";
     let middle = " It was a long and quiet afternoon in the old town.";
-    other_writer_types(&room, path, &format!("The cat sat on the mat.{middle} Far away, a dog ran.\n")).await;
+    other_writer_types(
+        &room,
+        path,
+        &format!("The cat sat on the mat.{middle} Far away, a dog ran.\n"),
+    )
+    .await;
 
     let base = frontier(&room).await;
     let (branch_bytes, tip) = room
         .log()
         .with_fork_at(&base, |at| {
-            author_forks(at, 4242, path, &format!("The tabby sat on the mat.{middle} Far away, a dog sprinted.\n"))
+            author_forks(
+                at,
+                4242,
+                path,
+                &format!("The tabby sat on the mat.{middle} Far away, a dog sprinted.\n"),
+            )
         })
         .await
         .unwrap();
@@ -673,21 +683,43 @@ async fn a_decision_follows_its_hunk_when_the_base_moves() {
         decided: Vec::new(),
         carried: Vec::new(),
     };
-    room.command(&deployment.authority, &mut command).await.unwrap();
+    room.command(&deployment.authority, &mut command)
+        .await
+        .unwrap();
 
     let decided = room.catalog().decisions(stored.id).await.unwrap();
     assert_eq!(
-        decided.iter().map(|d| (d.hunk_index, d.accepted)).collect::<Vec<_>>(),
+        decided
+            .iter()
+            .map(|d| (d.hunk_index, d.accepted))
+            .collect::<Vec<_>>(),
         vec![(0, true)],
         "the accepted hunk keeps its answer under the new numbering"
     );
 
-    let last = decide(&room, &deployment.authority, stored.id, 1, false, &new_tip, 7)
-        .await
-        .unwrap();
+    let last = decide(
+        &room,
+        &deployment.authority,
+        stored.id,
+        1,
+        false,
+        &new_tip,
+        7,
+    )
+    .await
+    .unwrap();
     assert!(last.resolved, "the second answer completes the review");
     let body = text(&room, path).await;
-    assert!(body.contains("tabby"), "the accepted change landed, got {body:?}");
-    assert!(body.contains("sleepy"), "the coauthor's word is kept, got {body:?}");
-    assert!(body.contains("dog ran."), "the declined change did not land, got {body:?}");
+    assert!(
+        body.contains("tabby"),
+        "the accepted change landed, got {body:?}"
+    );
+    assert!(
+        body.contains("sleepy"),
+        "the coauthor's word is kept, got {body:?}"
+    );
+    assert!(
+        body.contains("dog ran."),
+        "the declined change did not land, got {body:?}"
+    );
 }

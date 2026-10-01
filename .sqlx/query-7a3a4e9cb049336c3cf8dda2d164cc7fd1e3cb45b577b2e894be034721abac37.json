@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO documents\n             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path,settings)\n             VALUES($1,$2,$3,$4,$5,'active',$6,$7,$8)\n             RETURNING id,slug,owner_id,ownership_mode,title,status,source_format,\n                       main_path,update_sequence,\n                       settings,created_at,updated_at,deleted_at",
+  "query": "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,\n                    main_path,update_sequence,\n                       created_at,updated_at,deleted_at\n             FROM documents\n             WHERE status='active'\n               AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),\n                                      COALESCE($2::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))\n             ORDER BY updated_at DESC,id DESC LIMIT $3",
   "describe": {
     "columns": [
       {
@@ -50,35 +50,25 @@
       },
       {
         "ordinal": 9,
-        "name": "settings",
-        "type_info": "Jsonb"
-      },
-      {
-        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "deleted_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Timestamptz",
         "Uuid",
-        "Text",
-        "Uuid",
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Jsonb"
+        "Int8"
       ]
     },
     "nullable": [
@@ -93,9 +83,8 @@
       false,
       false,
       false,
-      false,
       true
     ]
   },
-  "hash": "acadcb8e251a004bb7332fea6255f12f86373b0f70135a5fde916128dd2a26d0"
+  "hash": "7a3a4e9cb049336c3cf8dda2d164cc7fd1e3cb45b577b2e894be034721abac37"
 }

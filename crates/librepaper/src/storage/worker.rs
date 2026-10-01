@@ -963,11 +963,8 @@ impl Worker {
         // Serialize adoption with the orphan sweep. The lock is session-owned
         // on a direct connection, so neither cancellation nor a small pool
         // can leave a pooled connection holding it indefinitely.
-        let key_lock = super::maintenance::ObjectKeyLock::acquire(
-            self.catalog.as_ref(),
-            &key,
-        )
-        .await?;
+        let key_lock =
+            super::maintenance::ObjectKeyLock::acquire(self.catalog.as_ref(), &key).await?;
         let object = if let Some(existing) = self
             .catalog
             .archive_object(label.document_id, &key)
@@ -992,7 +989,9 @@ impl Worker {
             .await
             .map_err(|error| error.to_string())?
         {
-            ArchiveAttach::Attached | ArchiveAttach::AlreadyAttached | ArchiveAttach::RefusedQuota => {}
+            ArchiveAttach::Attached
+            | ArchiveAttach::AlreadyAttached
+            | ArchiveAttach::RefusedQuota => {}
         }
         key_lock.release(&key).await?;
         Ok(())
@@ -1209,10 +1208,7 @@ async fn put_or_adopt_archive(
 ) -> Result<ArchiveObject, String> {
     let content_digest = encoded.digest;
     let byte_length = encoded.bytes.len() as i64;
-    match blobs
-        .put_new(key, encoded.bytes, "application/zstd")
-        .await
-    {
+    match blobs.put_new(key, encoded.bytes, "application/zstd").await {
         Ok(()) => Ok(ArchiveObject {
             document_id,
             storage_key: key.to_string(),
@@ -1334,15 +1330,9 @@ mod tests {
             bytes: new_bytes,
         };
 
-        let adopted = put_or_adopt_archive(
-            &blobs,
-            Uuid::new_v4(),
-            key,
-            [7; 32],
-            encoded,
-        )
-        .await
-        .expect("adopt existing immutable bytes");
+        let adopted = put_or_adopt_archive(&blobs, Uuid::new_v4(), key, [7; 32], encoded)
+            .await
+            .expect("adopt existing immutable bytes");
         let expected_digest = Sha256::digest(&old_bytes).to_vec();
 
         assert_eq!(adopted.byte_length, old_bytes.len() as i64);
@@ -1381,10 +1371,7 @@ mod tests {
         enqueue_overflow_scan(&handle, &mut local, &mut deadlines, None, now);
         assert_eq!(
             local,
-            VecDeque::from([
-                Task::SweepOrphans,
-                Task::Scan(PendingWorkCursor::default())
-            ])
+            VecDeque::from([Task::SweepOrphans, Task::Scan(PendingWorkCursor::default())])
         );
         assert!(!handle.rescan.load(Ordering::Acquire));
     }
@@ -1450,10 +1437,7 @@ mod tests {
         enqueue_due_rescan(&handle, &mut local, &mut deadlines, None, now, true);
         assert_eq!(
             local,
-            VecDeque::from([
-                Task::SweepOrphans,
-                Task::Scan(PendingWorkCursor::default())
-            ])
+            VecDeque::from([Task::SweepOrphans, Task::Scan(PendingWorkCursor::default())])
         );
         assert!(!handle.rescan.load(Ordering::Acquire));
 

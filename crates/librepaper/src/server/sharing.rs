@@ -455,8 +455,12 @@ impl Server {
             Ok(entry) => entry,
             Err(ModifyError::NotFound) => return write_json(404, &json!({"error": "not found"})),
             Err(ModifyError::Refused(message)) => {
-                let status = if message == "ownership changed" { 409 } else { 400 };
-                return write_json(status, &json!({"error": message}))
+                let status = if message == "ownership changed" {
+                    409
+                } else {
+                    400
+                };
+                return write_json(status, &json!({"error": message}));
             }
             Err(ModifyError::Storage(err)) => {
                 eprintln!("could not record the sharing of {slug}: {err}");
@@ -707,8 +711,8 @@ impl Server {
                     return write_json(404, &json!({"error":"not found"}))
                 }
                 Err(error) => {
-                eprintln!("could not transfer {slug}: {error}");
-                return write_json(500, &json!({"error":"could not record the change"}));
+                    eprintln!("could not transfer {slug}: {error}");
+                    return write_json(500, &json!({"error":"could not record the change"}));
                 }
             }
         }

@@ -145,7 +145,6 @@ async fn seed_document(catalog: &PostgresCatalog, owner_id: Uuid, slug: &str) {
             title: "A Paper".into(),
             source_format: "markdown".into(),
             main_path: "paper.md".into(),
-            settings: json!({"version": 1}),
         })
         .await
         .expect("create document");
@@ -1371,13 +1370,11 @@ mod revocation {
         );
 
         // Revoke without going through the route, so no sweep runs.
-        sqlx::query(
-            "UPDATE share_links SET revoked_at=now(),generation=generation+1 WHERE document_id=$1",
-        )
-        .bind(document_id)
-        .execute(catalog.pool())
-        .await
-        .expect("revoke the edit link in the catalogue");
+        sqlx::query("UPDATE share_links SET revoked_at=now() WHERE document_id=$1")
+            .bind(document_id)
+            .execute(catalog.pool())
+            .await
+            .expect("revoke the edit link in the catalogue");
 
         // `reauthorize_connection` short-circuits on an `authorized_at` no
         // more than a second old, so the frame that triggers the real,
@@ -1471,13 +1468,11 @@ mod revocation {
         wait_for_type(&mut owner_ws, "doc-update", Duration::from_secs(5)).await;
         assert_eq!(document_update_rows(&catalog, document_id).await, 0);
 
-        sqlx::query(
-            "UPDATE share_links SET revoked_at=now(),generation=generation+1 WHERE document_id=$1",
-        )
-        .bind(document_id)
-        .execute(catalog.pool())
-        .await
-        .expect("revoke the edit link without running the all-socket sweep");
+        sqlx::query("UPDATE share_links SET revoked_at=now() WHERE document_id=$1")
+            .bind(document_id)
+            .execute(catalog.pool())
+            .await
+            .expect("revoke the edit link without running the all-socket sweep");
         tokio::time::sleep(Duration::from_millis(1100)).await;
 
         inject_update_insert_failure(&catalog, document_id).await;
@@ -1634,9 +1629,11 @@ mod comment_traversal {
         let actor = MutationAuthorization {
             principal_key: owner_id.to_string(),
             account_id: Some(owner_id),
-            session_generation: None,
+            session_generation: Some(owner.session_generation),
             token_hash: None,
-            policy_editor: true,
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
         };
         let mut written: Vec<Uuid> = Vec::new();
         {

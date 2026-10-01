@@ -542,7 +542,7 @@ impl Server {
                 };
             }
             let mut response = write_json(
-                if label.archive_key.is_some() {
+                if label.archive_key.is_some() || label.archive_error.is_some() {
                     200
                 } else {
                     202

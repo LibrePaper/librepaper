@@ -341,7 +341,6 @@ async fn scenario(
                 title: format!("Writer socket benchmark ({documents})"),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: json!({"version": 1}),
             })
             .await
             .expect("create benchmark document");

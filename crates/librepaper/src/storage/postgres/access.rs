@@ -50,7 +50,6 @@ pub struct ShareLinkRecord {
     pub sealed_token: Vec<u8>,
     pub label: String,
     pub comment_budget: Option<i64>,
-    pub generation: i64,
     pub created_at: OffsetDateTime,
     pub expires_at: Option<OffsetDateTime>,
     pub revoked_at: Option<OffsetDateTime>,
@@ -82,9 +81,8 @@ impl PostgresCatalog {
     /// Makes this document's live links exactly `links`.
     ///
     /// A link *is* its token, so a link whose token is in the wanted set is
-    /// the same link and keeps its row: its id, the day it was created, and
-    /// the generation count that says how many times it has been rotated. Only
-    /// what the owner actually changed is written.
+    /// the same link and keeps its row: its id and the day it was created.
+    /// Only what the owner actually changed is written.
     ///
     /// It used to revoke every live row and write the whole set back, which
     /// was wrong twice over. A revoked row is a tombstone that stays on
@@ -142,7 +140,7 @@ impl PostgresCatalog {
         // deleted so a guest admitted through it is still recognisable as
         // having come in that way.
         sqlx::query!(
-            "UPDATE share_links SET revoked_at=now(),generation=generation+1
+            "UPDATE share_links SET revoked_at=now()
              WHERE document_id=$1 AND revoked_at IS NULL AND NOT (token_hash=ANY($2))",
             document_id,
             &wanted,
@@ -354,7 +352,7 @@ impl PostgresCatalog {
             ShareLinkRecord,
             "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)
              VALUES($1,$2,$3,$4,$5,$6,$7)
-             RETURNING id,document_id,role,token_hash,sealed_token,label,comment_budget,generation,
+             RETURNING id,document_id,role,token_hash,sealed_token,label,comment_budget,
                        created_at,expires_at,revoked_at",
             new_id(),
             document_id,
@@ -381,7 +379,7 @@ impl PostgresCatalog {
         }
         sqlx::query_as!(
             ShareLinkRecord,
-            "SELECT id,document_id,role,token_hash,sealed_token,label,comment_budget,generation,
+            "SELECT id,document_id,role,token_hash,sealed_token,label,comment_budget,
                     created_at,expires_at,revoked_at
              FROM share_links WHERE document_id=ANY($1) AND revoked_at IS NULL
              ORDER BY document_id,created_at,id",
@@ -395,7 +393,7 @@ impl PostgresCatalog {
     pub async fn share_links(&self, document_id: Uuid) -> Result<Vec<ShareLinkRecord>> {
         sqlx::query_as!(
             ShareLinkRecord,
-            "SELECT id,document_id,role,token_hash,sealed_token,label,comment_budget,generation,
+            "SELECT id,document_id,role,token_hash,sealed_token,label,comment_budget,
                     created_at,expires_at,revoked_at
              FROM share_links WHERE document_id=$1 AND revoked_at IS NULL ORDER BY created_at,id",
             document_id,
@@ -408,7 +406,7 @@ impl PostgresCatalog {
     pub async fn revoke_share_link(&self, document_id: Uuid, id: Uuid) -> Result<bool> {
         let mut tx = self.begin_document_admin(document_id).await?;
         let changed = sqlx::query!(
-            "UPDATE share_links SET revoked_at=now(),generation=generation+1
+            "UPDATE share_links SET revoked_at=now()
              WHERE document_id=$1 AND id=$2 AND revoked_at IS NULL",
             document_id,
             id,

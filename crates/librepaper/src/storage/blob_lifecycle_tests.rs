@@ -36,10 +36,7 @@ async fn backup_barrier_survives_commit_and_drop_releases_shared_guard() {
             .is_none(),
         "shared cleanup must defer while the backup's session lock survives COMMIT"
     );
-    backup
-        .release_backup()
-        .await
-        .expect("release backup lock");
+    backup.release_backup().await.expect("release backup lock");
 
     let shared = BlobLifecycleLock::try_delete(&catalog)
         .await
@@ -50,7 +47,10 @@ async fn backup_barrier_survives_commit_and_drop_releases_shared_guard() {
         .fetch_one(&mut *observer)
         .await
         .expect("observe shared lock");
-    assert!(!exclusive, "a shared cleanup guard must block backup locking");
+    assert!(
+        !exclusive,
+        "a shared cleanup guard must block backup locking"
+    );
 
     // Dropping an unreleased guard must close its session. Poll the independent
     // observer because PostgreSQL notices EOF asynchronously.
@@ -93,10 +93,7 @@ async fn cleanup_runs_with_two_pool_connections_and_the_writer_lease_held() {
     catalog.migrate().await.expect("apply current schema");
     let _writer = catalog.claim_writer().await.expect("claim writer lease");
     let objects = tempfile::tempdir().expect("temporary object directory");
-    let blobs = std::sync::Arc::new(crate::storage::blob::FsStore::new(
-        objects.path(),
-        false,
-    ));
+    let blobs = std::sync::Arc::new(crate::storage::blob::FsStore::new(objects.path(), false));
     let maintenance = super::Maintenance::new(catalog.clone(), blobs);
 
     maintenance
@@ -126,7 +123,10 @@ async fn archive_adoption_excludes_orphan_deletion_for_the_same_key() {
         .await
         .expect("sweeper tries the object lock")
         .is_none());
-    adopter.release(key).await.expect("adopter releases the key");
+    adopter
+        .release(key)
+        .await
+        .expect("adopter releases the key");
     let sweep = ObjectKeyLock::try_acquire(&catalog, key)
         .await
         .expect("sweeper retries the object lock")

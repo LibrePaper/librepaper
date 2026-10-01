@@ -15,7 +15,7 @@ identities and presence in the clear. Backups are unencrypted.
 ## What a deployment stores
 
 - **Accounts:** provider, identifier, handle, display name, email (Google only),
-  preferences, created and last-seen times
+  created and last-seen times
 - **Documents:** title, format, owner, timestamps, and every file
 - **Annotations:** comments, highlights and suggestions with author and passage
 - **Checkpoints:** collaborative editing state

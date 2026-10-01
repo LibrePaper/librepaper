@@ -1,4 +1,3 @@
-use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -29,7 +28,6 @@ pub struct AccountRecord {
     pub email: Option<String>,
     pub status: String,
     pub session_generation: i64,
-    pub preferences: Value,
     pub created_at: OffsetDateTime,
     pub last_seen_at: OffsetDateTime,
 }
@@ -46,7 +44,6 @@ pub struct NewDocument {
     pub title: String,
     pub source_format: String,
     pub main_path: String,
-    pub settings: Value,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -60,7 +57,6 @@ pub struct DocumentRecord {
     pub source_format: String,
     pub main_path: String,
     pub update_sequence: i64,
-    pub settings: Value,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
     pub deleted_at: Option<OffsetDateTime>,
@@ -365,7 +361,7 @@ impl PostgresCatalog {
              (id,kind,provider,provider_subject,handle,display_name,email,status)
              VALUES($1,$2,$3,$4,$5,$6,$7,'active')
              RETURNING id,kind,provider,provider_subject,handle,display_name,email,status,
-                       session_generation,preferences,created_at,last_seen_at",
+                       session_generation,created_at,last_seen_at",
             id,
             input.kind,
             input.provider,
@@ -395,7 +391,7 @@ impl PostgresCatalog {
              WHERE accounts.status='active'
              RETURNING accounts.id,accounts.kind,accounts.provider,accounts.provider_subject,
                        accounts.handle,accounts.display_name,accounts.email,accounts.status,
-                       accounts.session_generation,accounts.preferences,accounts.created_at,
+                       accounts.session_generation,accounts.created_at,
                        accounts.last_seen_at",
             new_id(),
             input.provider,
@@ -420,7 +416,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             AccountRecord,
             "SELECT id,kind,provider,provider_subject,handle,display_name,email,status,
-                    session_generation,preferences,created_at,last_seen_at
+                    session_generation,created_at,last_seen_at
              FROM accounts WHERE id=ANY($1)",
             ids,
         )
@@ -433,7 +429,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             AccountRecord,
             "SELECT id,kind,provider,provider_subject,handle,display_name,email,status,
-                    session_generation,preferences,created_at,last_seen_at
+                    session_generation,created_at,last_seen_at
              FROM accounts WHERE id=$1",
             id,
         )
@@ -469,14 +465,14 @@ impl PostgresCatalog {
         let id = new_id();
         sqlx::query_as::<_, DocumentRecord>(
             "INSERT INTO documents
-             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path,settings)
-             SELECT $1,$2,a.id,$4,$5,'active',$6,$7,$8
+             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
+             SELECT $1,$2,a.id,$4,$5,'active',$6,$7
              FROM accounts a
              WHERE a.id=$3 AND a.status='active'
-               AND ($9::bigint IS NULL OR a.session_generation=$9)
+               AND ($8::bigint IS NULL OR a.session_generation=$8)
              FOR SHARE
              RETURNING id,slug,owner_id,ownership_mode,title,status,source_format,
-                       main_path,update_sequence,settings,created_at,updated_at,deleted_at",
+                       main_path,update_sequence,created_at,updated_at,deleted_at",
         )
         .bind(id)
         .bind(input.slug)
@@ -485,7 +481,6 @@ impl PostgresCatalog {
         .bind(input.title)
         .bind(input.source_format)
         .bind(input.main_path)
-        .bind(input.settings)
         .bind(input.owner_session_generation)
         .fetch_optional(&self.pool)
         .await
@@ -498,7 +493,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,
-                       settings,created_at,updated_at,deleted_at
+                       created_at,updated_at,deleted_at
              FROM documents WHERE slug=$1",
             slug,
         )
@@ -512,7 +507,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,
-                       settings,created_at,updated_at,deleted_at
+                       created_at,updated_at,deleted_at
              FROM documents WHERE id=$1",
             id,
         )
@@ -533,7 +528,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,
-                       settings,created_at,updated_at,deleted_at
+                       created_at,updated_at,deleted_at
              FROM documents
              WHERE status='active'
                AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),
@@ -591,7 +586,7 @@ impl PostgresCatalog {
              )
              SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
                     d.source_format,d.main_path,d.update_sequence,
-                    d.settings,d.created_at,
+                    d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d
              JOIN candidates c ON c.id=d.id
@@ -652,6 +647,27 @@ impl PostgresCatalog {
         inputs: Vec<NewAsset>,
         actor: Option<&super::MutationAuthorization>,
     ) -> Result<Vec<(AssetRecord, bool)>> {
+        let document_id = inputs.first().map(|input| input.document_id);
+        let mut tx = self.begin_writer_transaction().await?;
+        if let (Some(document_id), Some(actor)) = (document_id, actor) {
+            super::annotations::authorize_mutation(&mut tx, document_id, actor, true).await?;
+        }
+        let completed = self
+            .complete_assets_in_transaction(&mut tx, &inputs)
+            .await?;
+        tx.commit().await?;
+        Ok(completed)
+    }
+
+    /// Completes staged asset references in the caller's transaction. The
+    /// caller must already have performed semantic authorization; this helper
+    /// retains the document-then-storage_usage lock order and the existing
+    /// duplicate and quota accounting.
+    pub(crate) async fn complete_assets_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        inputs: &[NewAsset],
+    ) -> Result<Vec<(AssetRecord, bool)>> {
         if inputs.is_empty() || inputs.len() > 4096 {
             return Err(Error::Invalid("invalid completed asset batch".into()));
         }
@@ -671,11 +687,6 @@ impl PostgresCatalog {
         if unique.len() != inputs.len() {
             return Err(Error::Invalid("duplicate asset in completion batch".into()));
         }
-        let mut tx = self.begin_writer_transaction().await?;
-        if let Some(actor) = actor {
-            super::annotations::authorize_mutation(&mut tx, document_id, actor, true)
-                .await?;
-        }
         // The owner is read under the same lock that guards the document's
         // status, so the quota below is measured against the owner this
         // document still has when the assets are written.
@@ -683,7 +694,7 @@ impl PostgresCatalog {
             "SELECT status,owner_id FROM documents WHERE id=$1 FOR UPDATE",
             document_id,
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         let document = document.ok_or(Error::NotFound)?;
         match document.status.as_str() {
@@ -699,7 +710,7 @@ impl PostgresCatalog {
             document_id,
             &digests,
         )
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
         let existing_keys: std::collections::HashSet<_> = existing
             .iter()
@@ -710,9 +721,8 @@ impl PostgresCatalog {
             .filter(|input| !existing_keys.contains(&(input.digest.to_vec(), input.byte_length)))
             .collect();
         if new_inputs.is_empty() {
-            tx.commit().await?;
             return Ok(inputs
-                .into_iter()
+                .iter()
                 .map(|input| {
                     let row = existing
                         .iter()
@@ -731,7 +741,7 @@ impl PostgresCatalog {
         // protects the per-owner count and byte total across documents.
         let _lock =
             sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?;
         let uploads = sqlx::query_scalar!(
             r#"SELECT count(*) AS "count!" FROM document_assets a
@@ -739,7 +749,7 @@ impl PostgresCatalog {
                WHERE d.owner_id=$1 AND a.created_at>=now()-interval '1 hour'"#,
             document.owner_id,
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         if uploads.saturating_add(new_inputs.len() as i64) > self.policy.asset_uploads_per_hour {
             return Err(Error::Conflict("account asset upload rate exceeded".into()));
@@ -747,13 +757,13 @@ impl PostgresCatalog {
         let incoming_bytes = new_inputs.iter().fold(0_i64, |total, input| {
             total.saturating_add(input.byte_length)
         });
-        let owner_usage = owner_usage_bytes(&mut *tx, document.owner_id).await?;
+        let owner_usage = owner_usage_bytes(&mut **tx, document.owner_id).await?;
         // The deployment total is blob bytes plus every current base plus
         // every document's uncompacted rows.
         let log_usage = sqlx::query_scalar!(
             r#"SELECT (COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0))::bigint AS "total!""#
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         let deployment_usage = _lock.saturating_add(log_usage);
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
@@ -800,7 +810,7 @@ impl PostgresCatalog {
             &media_types,
             &names as &[Option<String>],
         )
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
         let inserted_keys: std::collections::HashSet<_> = inserted
             .iter()
@@ -814,11 +824,10 @@ impl PostgresCatalog {
             document_id,
             &digests,
         )
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
-        tx.commit().await?;
         Ok(inputs
-            .into_iter()
+            .iter()
             .map(|input| {
                 let row = all
                     .iter()
@@ -925,7 +934,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
                     d.source_format,d.main_path,d.update_sequence,
-                    d.settings,d.created_at,
+                    d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d
              WHERE d.owner_id=$1 AND d.status='deleting'
