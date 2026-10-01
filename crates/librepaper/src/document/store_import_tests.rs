@@ -7,7 +7,7 @@ use super::{DocumentInput, MutationActor, PutError, Store};
 use crate::config::Configuration;
 use crate::log::Registry;
 use crate::storage::blob::{BlobStore, FsStore};
-use crate::storage::postgres::{NewAccount, NewDocument, PostgresCatalog};
+use crate::storage::postgres::{NewAccount, NewDocument};
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
@@ -41,7 +41,12 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
     let objects = tempfile::tempdir().expect("blob directory");
     let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
-    let registry = Registry::new(catalog.clone(), blobs.clone(), config.clone(), "test".into());
+    let registry = Registry::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        "test".into(),
+    );
     let store = Store::open_with_catalog(blobs.clone(), config, catalog.clone(), registry);
     let actor = MutationActor {
         account_id: owner.id.to_string(),
@@ -74,15 +79,16 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
             actor.clone(),
         )
         .await;
-    assert!(matches!(refused, Err(PutError::Authorization { .. })));
+    assert!(
+        matches!(refused, Err(PutError::Authorization { .. })),
+        "{refused:?}"
+    );
 
-    let rows: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM document_assets WHERE document_id=$1",
-    )
-    .bind(document.id)
-    .fetch_one(catalog.pool())
-    .await
-    .expect("count asset references after refusal");
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM document_assets WHERE document_id=$1")
+        .bind(document.id)
+        .fetch_one(catalog.pool())
+        .await
+        .expect("count asset references after refusal");
     assert_eq!(rows, 0, "a refused replacement must leave no asset rows");
     let staged = blobs
         .list(&format!("documents/{}/assets", document.id))
@@ -90,13 +96,12 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
         .expect("list staged asset blobs");
     assert_eq!(staged.len(), 1, "the refused blob remains sweepable");
 
-    let current_generation: i64 = sqlx::query_scalar(
-        "SELECT session_generation FROM accounts WHERE id=$1",
-    )
-    .bind(owner.id)
-    .fetch_one(catalog.pool())
-    .await
-    .expect("read current session generation");
+    let current_generation: i64 =
+        sqlx::query_scalar("SELECT session_generation FROM accounts WHERE id=$1")
+            .bind(owner.id)
+            .fetch_one(catalog.pool())
+            .await
+            .expect("read current session generation");
     let mut current_actor = actor;
     current_actor.session_generation = current_generation.to_string();
     store

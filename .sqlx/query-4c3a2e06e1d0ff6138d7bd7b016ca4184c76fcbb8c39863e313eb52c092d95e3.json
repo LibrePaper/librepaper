@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,kind,provider,provider_subject,handle,display_name,email,status,\n                    session_generation,preferences,created_at,last_seen_at\n             FROM accounts WHERE id=$1",
+  "query": "SELECT id,kind,provider,provider_subject,handle,display_name,email,status,\n                    session_generation,created_at,last_seen_at\n             FROM accounts WHERE id=$1",
   "describe": {
     "columns": [
       {
@@ -50,16 +50,11 @@
       },
       {
         "ordinal": 9,
-        "name": "preferences",
-        "type_info": "Jsonb"
-      },
-      {
-        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "last_seen_at",
         "type_info": "Timestamptz"
       }
@@ -80,9 +75,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "7f8f70844cd54d3dfae7a000ab622383d17d82efdb6cf8932003f6770dcde71c"
+  "hash": "4c3a2e06e1d0ff6138d7bd7b016ca4184c76fcbb8c39863e313eb52c092d95e3"
 }

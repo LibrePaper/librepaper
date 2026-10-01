@@ -1,7 +1,6 @@
 //! Regressions for account erasure racing document admission and metadata
 //! writes that must not replay stale owner identity.
 
-use serde_json::json;
 use time::Duration;
 use uuid::Uuid;
 

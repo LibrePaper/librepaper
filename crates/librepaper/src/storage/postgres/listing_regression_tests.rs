@@ -1,6 +1,5 @@
 //! PostgreSQL regressions for schema invariants, marks, and listing access.
 
-use serde_json::json;
 use uuid::Uuid;
 
 use super::super::{AccessRole, NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
@@ -239,7 +238,10 @@ async fn concurrent_archive_references_charge_one_object_once() {
     let before = catalog.usage_bytes(None).await.unwrap();
     let key = format!("archive-concurrency-{document}");
     for label in labels {
-        assert!(catalog.request_label_archive(document, label).await.unwrap());
+        assert!(catalog
+            .request_label_archive(document, label)
+            .await
+            .unwrap());
     }
     let object = crate::storage::postgres::ArchiveObject {
         document_id: document,

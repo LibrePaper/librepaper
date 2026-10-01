@@ -123,7 +123,10 @@ async fn archive_adoption_excludes_orphan_deletion_for_the_same_key() {
         .await
         .expect("sweeper tries the object lock")
         .is_none());
-    adopter.release(key).await.expect("adopter releases the key");
+    adopter
+        .release(key)
+        .await
+        .expect("adopter releases the key");
     let sweep = ObjectKeyLock::try_acquire(&catalog, key)
         .await
         .expect("sweeper retries the object lock")

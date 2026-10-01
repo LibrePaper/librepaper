@@ -259,8 +259,15 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
         .activate_log_base(document.id, 3, &snapshots[2].3, snapshot(1), grace, false)
         .await
         .is_err());
-    assert_eq!(catalog.log_base(document.id).await.unwrap().unwrap().snapshot_key,
-        second.base.snapshot_key);
+    assert_eq!(
+        catalog
+            .log_base(document.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .snapshot_key,
+        second.base.snapshot_key
+    );
     assert_eq!(
         catalog.log_rows(document.id, 0, None).await.unwrap().len(),
         1
@@ -320,8 +327,15 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
         catalog.superseded_base_keys(document.id).await.unwrap(),
         vec![snapshots[1].0.clone()]
     );
-    assert_eq!(catalog.log_base(document.id).await.unwrap().unwrap().snapshot_key,
-        third.base.snapshot_key);
+    assert_eq!(
+        catalog
+            .log_base(document.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .snapshot_key,
+        third.base.snapshot_key
+    );
     sqlx::query("DELETE FROM documents WHERE id=$1")
         .bind(document.id)
         .execute(catalog.pool())

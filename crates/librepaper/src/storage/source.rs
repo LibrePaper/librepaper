@@ -73,25 +73,6 @@ impl SourceStorage {
         Self { catalog, blobs }
     }
 
-    pub async fn write_assets<'a>(
-        &self,
-        document_id: Uuid,
-        files: impl Iterator<Item = &'a ProjectFile>,
-    ) -> Result<HashMap<([u8; 32], i64), AssetRecord>, Error> {
-        let (mut records, pending) = self.stage_assets(document_id, files).await?;
-        if !pending.is_empty() {
-            for (asset, _) in self.catalog.complete_assets(pending).await? {
-                let digest: [u8; 32] = asset
-                    .digest
-                    .as_slice()
-                    .try_into()
-                    .expect("asset digests are constrained to 32 bytes");
-                records.insert((digest, asset.byte_length), asset);
-            }
-        }
-        Ok(records)
-    }
-
     /// Writes any new asset bytes under immutable blob keys without adding
     /// catalogue rows. Callers that need authorization to cover the asset
     /// references can pass the returned inputs to

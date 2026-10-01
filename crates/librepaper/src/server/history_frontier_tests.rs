@@ -322,7 +322,13 @@ async fn archive_poll_preserves_terminal_failure_until_explicit_retry() {
         automation: false,
     };
     let label = room
-        .take_label("named", Some("retry test".into()), "Owner", &authority, None)
+        .take_label(
+            "named",
+            Some("retry test".into()),
+            "Owner",
+            &authority,
+            None,
+        )
         .await
         .unwrap();
     sqlx::query(
@@ -382,7 +388,10 @@ async fn archive_poll_preserves_terminal_failure_until_explicit_retry() {
         .await
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_ne!(body["archive_status"], "failed", "retry response must be refreshed after admission");
+    assert_ne!(
+        body["archive_status"], "failed",
+        "retry response must be refreshed after admission"
+    );
     let refreshed = deployment
         .catalog
         .label(room.document_id, label.id)

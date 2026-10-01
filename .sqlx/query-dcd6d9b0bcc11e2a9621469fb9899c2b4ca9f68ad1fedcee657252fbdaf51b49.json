@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,\n                    main_path,update_sequence,\n                       settings,created_at,updated_at,deleted_at\n             FROM documents WHERE slug=$1",
+  "query": "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,\n                    main_path,update_sequence,\n                       created_at,updated_at,deleted_at\n             FROM documents WHERE id=$1",
   "describe": {
     "columns": [
       {
@@ -50,28 +50,23 @@
       },
       {
         "ordinal": 9,
-        "name": "settings",
-        "type_info": "Jsonb"
-      },
-      {
-        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "deleted_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -86,9 +81,8 @@
       false,
       false,
       false,
-      false,
       true
     ]
   },
-  "hash": "65cd4ccb6e5d0063d5685bed2da1c80b9c9146e9765a91ab7c57eeb93ed4ba3e"
+  "hash": "dcd6d9b0bcc11e2a9621469fb9899c2b4ca9f68ad1fedcee657252fbdaf51b49"
 }

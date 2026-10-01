@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,kind,provider,provider_subject,handle,display_name,email,status,\n                    session_generation,preferences,created_at,last_seen_at\n             FROM accounts WHERE id=ANY($1)",
+  "query": "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status)\n             VALUES($1,'registered',$2,$3,$4,$5,$6,'active')\n             ON CONFLICT(provider,provider_subject) WHERE kind='registered' DO UPDATE SET\n               handle=excluded.handle,display_name=excluded.display_name,email=excluded.email,last_seen_at=now()\n             WHERE accounts.status='active'\n             RETURNING accounts.id,accounts.kind,accounts.provider,accounts.provider_subject,\n                       accounts.handle,accounts.display_name,accounts.email,accounts.status,\n                       accounts.session_generation,accounts.created_at,\n                       accounts.last_seen_at",
   "describe": {
     "columns": [
       {
@@ -50,23 +50,23 @@
       },
       {
         "ordinal": 9,
-        "name": "preferences",
-        "type_info": "Jsonb"
-      },
-      {
-        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "last_seen_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "UuidArray"
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
@@ -80,9 +80,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "2e21c22df938756e23f720d6cc2e60300a7c7ca5ea24bbae6dabc397c0d5d0d3"
+  "hash": "219ba87d83d522ceae213519e282f3d3bdc4d3c8a652d13afbdb9a5068b738d8"
 }

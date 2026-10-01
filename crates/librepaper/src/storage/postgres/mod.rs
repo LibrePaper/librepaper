@@ -394,10 +394,12 @@ mod tests {
         .await
         .unwrap();
 
-        sqlx::raw_sql(include_str!("../../../migrations/postgres/0010_document_archives.sql"))
-            .execute(&mut *tx)
-            .await
-            .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../../migrations/postgres/0010_document_archives.sql"
+        ))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
         sqlx::raw_sql(
             "DO $$ BEGIN
                IF (SELECT count(*) FROM document_archives WHERE storage_key='archives/legacy'
@@ -1737,7 +1739,7 @@ mod tests {
     async fn two_labels_naming_the_same_archive_are_charged_once() {
         let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
             .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
-        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+        let mut catalog = PostgresCatalog::connect(PostgresOptions::new(url))
             .await
             .unwrap();
         catalog.migrate().await.unwrap();
@@ -1780,7 +1782,10 @@ mod tests {
             .request_label_archive(document.id, one.id)
             .await
             .unwrap());
-        assert_eq!(catalog.attach_label_archive(one.id, &object).await.unwrap(), ArchiveAttach::Attached);
+        assert_eq!(
+            catalog.attach_label_archive(one.id, &object).await.unwrap(),
+            ArchiveAttach::Attached
+        );
         assert_eq!(
             catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
             500,
@@ -1801,13 +1806,23 @@ mod tests {
             byte_length: 700,
             ..object.clone()
         };
-        assert_eq!(catalog.attach_label_archive(two.id, &newer_encoding).await.unwrap(), ArchiveAttach::Attached);
+        assert_eq!(
+            catalog
+                .attach_label_archive(two.id, &newer_encoding)
+                .await
+                .unwrap(),
+            ArchiveAttach::Attached
+        );
         assert_eq!(
             catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
             500,
             "a second label naming the same key adds no bytes"
         );
-        let stored = catalog.archive_object(document.id, &key).await.unwrap().unwrap();
+        let stored = catalog
+            .archive_object(document.id, &key)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.byte_length, 500);
         assert_eq!(stored.content_digest.as_deref(), Some(&[2; 32][..]));
         assert_eq!(
@@ -1827,13 +1842,19 @@ mod tests {
             .execute(catalog.pool())
             .await
             .unwrap();
-        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap() - before, 500);
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
+            500
+        );
 
         sqlx::query!("DELETE FROM document_labels WHERE id=$1", two.id)
             .execute(catalog.pool())
             .await
             .unwrap();
-        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap() - before, 500);
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
+            500
+        );
         sqlx::query!("DELETE FROM documents WHERE id=$1", document.id)
             .execute(catalog.pool())
             .await
@@ -1850,7 +1871,7 @@ mod tests {
             .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
         let mut options = PostgresOptions::new(url);
         options.policy.owner_bytes = 100;
-        let mut catalog = PostgresCatalog::connect(options).await.unwrap();
+        let catalog = PostgresCatalog::connect(options).await.unwrap();
         catalog.migrate().await.unwrap();
         let _writer = catalog.claim_writer().await.unwrap();
         let tag = new_id().simple().to_string();
@@ -1876,8 +1897,14 @@ mod tests {
             tx.commit().await.unwrap();
             (one, two)
         };
-        assert!(catalog.request_label_archive(document.id, one.id).await.unwrap());
-        assert!(catalog.request_label_archive(document.id, two.id).await.unwrap());
+        assert!(catalog
+            .request_label_archive(document.id, one.id)
+            .await
+            .unwrap());
+        assert!(catalog
+            .request_label_archive(document.id, two.id)
+            .await
+            .unwrap());
         let object = |label: &LabelRecord| ArchiveObject {
             document_id: document.id,
             storage_key: format!("documents/{}/labels/{}.tar.zst", document.id, label.id),
@@ -1893,8 +1920,14 @@ mod tests {
         );
         let one_result = one_result.unwrap();
         let two_result = two_result.unwrap();
-        assert_ne!(one_result == ArchiveAttach::Attached, two_result == ArchiveAttach::Attached);
-        assert_ne!(one_result == ArchiveAttach::RefusedQuota, two_result == ArchiveAttach::RefusedQuota);
+        assert_ne!(
+            one_result == ArchiveAttach::Attached,
+            two_result == ArchiveAttach::Attached
+        );
+        assert_ne!(
+            one_result == ArchiveAttach::RefusedQuota,
+            two_result == ArchiveAttach::RefusedQuota
+        );
         assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), 60);
 
         let (refused, attached) = if one_result == ArchiveAttach::RefusedQuota {
@@ -1902,23 +1935,43 @@ mod tests {
         } else {
             (&two, &one)
         };
-        let refused_record = catalog.label(document.id, refused.id).await.unwrap().unwrap();
+        let refused_record = catalog
+            .label(document.id, refused.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(refused_record.archive_requested_at.is_none());
-        assert_eq!(refused_record.archive_error.as_deref(), Some("storage quota exceeded"));
+        assert_eq!(
+            refused_record.archive_error.as_deref(),
+            Some("storage quota exceeded")
+        );
 
         // Free the successful object's quota. The refused request is terminal
         // until the client explicitly retries; that retry clears the error.
         sqlx::query("DELETE FROM document_archives WHERE storage_key=$1")
-            .bind(format!("documents/{}/labels/{}.tar.zst", document.id, attached.id))
+            .bind(format!(
+                "documents/{}/labels/{}.tar.zst",
+                document.id, attached.id
+            ))
             .execute(catalog.pool())
             .await
             .unwrap();
-        assert!(catalog.request_label_archive(document.id, refused.id).await.unwrap());
-        let retried = catalog.label(document.id, refused.id).await.unwrap().unwrap();
+        assert!(catalog
+            .request_label_archive(document.id, refused.id)
+            .await
+            .unwrap());
+        let retried = catalog
+            .label(document.id, refused.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(retried.archive_requested_at.is_some());
         assert!(retried.archive_error.is_none());
         assert_eq!(
-            catalog.attach_label_archive(refused.id, &object(refused)).await.unwrap(),
+            catalog
+                .attach_label_archive(refused.id, &object(refused))
+                .await
+                .unwrap(),
             ArchiveAttach::Attached
         );
         assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), 60);
@@ -2011,7 +2064,10 @@ mod tests {
             .find(|row| row.token_hash == reader.to_vec())
             .expect("the reader's link");
         assert_eq!(kept.id, original.id, "an untouched link keeps its row");
-        assert_eq!(kept.created_at, original.created_at, "an untouched link keeps its age");
+        assert_eq!(
+            kept.created_at, original.created_at,
+            "an untouched link keeps its age"
+        );
 
         catalog
             .replace_share_links(document.id, &[link("commenter", commenter)])

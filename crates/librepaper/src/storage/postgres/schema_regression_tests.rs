@@ -27,7 +27,10 @@ async fn seed_documents(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> (Uuid
     .execute(&mut **tx)
     .await
     .unwrap();
-    for (id, slug) in [(first, format!("schema-{first}")), (second, format!("schema-{second}"))] {
+    for (id, slug) in [
+        (first, format!("schema-{first}")),
+        (second, format!("schema-{second}")),
+    ] {
         sqlx::query(
             "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
              VALUES($1,$2,$3,'owned','Schema test','active','markdown','main.md')",
