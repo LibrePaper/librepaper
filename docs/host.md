@@ -129,9 +129,14 @@ librepaper admin serve --publishers alice,anne@example.org --commenters @example
 | `alice@example.org` | Google account with verified email |
 | `@example.org` | any Google account on that domain (exact match after `@`) |
 | `any` | any signed-in account |
-| `anyone` | unsigned-in commenting (publishing rejected) |
+| `anyone` | any signed-in account |
 
-`--publishers` has no default. `--commenters` defaults to `anyone`. Both are ceilings.
+`--publishers` has no default. `--commenters` defaults to `anyone`. Both are
+ceilings on signed-in accounts, and read, comment, and edit share links require
+sign-in. The official public service allows any signed-in GitHub or Google
+account to publish, with 50 MiB storage and 30 project creation, fork, or figure
+asset uploads per account per rolling hour. Self-hosted deployments can set
+their own publisher and quota policies.
 
 A domain matches exactly: `@example.org` admits `alice@example.org`, not `alice@mail.example.org`.
 

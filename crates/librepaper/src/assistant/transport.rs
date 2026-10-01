@@ -46,15 +46,26 @@ async fn send(socket: &mut Socket, value: &Value) -> bool {
     )
 }
 impl Transport {
-    pub fn start(request: Request<()>, token: String, binding_nonce: String) -> Self {
+    pub fn start(
+        request: impl Fn() -> Result<Request<()>, String> + Send + 'static,
+        token: String,
+        binding_nonce: String,
+    ) -> Self {
         let (outgoing, mut output) = mpsc::channel::<Value>(128);
         let (input, incoming) = mpsc::channel::<Event>(128);
         let task = tokio::spawn(async move {
             let mut attempt = 0u32;
             loop {
+                let request = match request() {
+                    Ok(request) => request,
+                    Err(error) => {
+                        let _ = input.send(Event::Fatal(error)).await;
+                        return;
+                    }
+                };
                 let connect = tokio::time::timeout(
                     Duration::from_secs(15),
-                    tokio_tungstenite::connect_async(request.clone()),
+                    tokio_tungstenite::connect_async(request),
                 )
                 .await;
                 let mut socket = match connect {

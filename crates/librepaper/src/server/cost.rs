@@ -313,6 +313,17 @@ async fn middleware_inner(
         .authenticated_identity(request.headers(), &arrival)
         .await;
     let identity = authentication.clone().unwrap_or_default();
+    let authorization = origins::header(request.headers(), "authorization");
+    let delegated_agent = authorization
+        .as_deref()
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|token| token.starts_with(crate::auth::AGENT_GRANT_PREFIX));
+    if delegated_agent && authentication.is_ok() && !agent_document_path(&server, &path) {
+        return write_json(
+            403,
+            &json!({"error": "agent token is limited to its document"}),
+        );
+    }
     if !server.cost.admit_request(&network, &identity.id) {
         server.metrics.record_refusal("request_budget");
         let scope = if identity.id.is_empty() {
@@ -373,6 +384,18 @@ async fn middleware_inner(
         }
         None => response,
     }
+}
+
+fn agent_document_path(server: &Server, path: &str) -> bool {
+    agent_document_slug(path).is_some_and(|slug| server.valid_slug(slug))
+}
+
+fn agent_document_slug(path: &str) -> Option<&str> {
+    let slug = path
+        .strip_prefix("/api/documents/")
+        .or_else(|| path.strip_prefix("/ws/"))
+        .and_then(|rest| rest.split('/').next())?;
+    (!slug.is_empty()).then_some(slug)
 }
 
 /// Metadata and range selection precede reading. Range and conditional
@@ -530,5 +553,23 @@ mod blob_response_tests {
                 assert_eq!(response.headers()[name], value, "{status}: {name}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod agent_scope_tests {
+    use super::agent_document_slug;
+
+    #[test]
+    fn delegated_credentials_are_confined_to_document_and_socket_routes() {
+        assert_eq!(
+            agent_document_slug("/api/documents/paper/tools"),
+            Some("paper")
+        );
+        assert_eq!(agent_document_slug("/ws/paper"), Some("paper"));
+        assert_eq!(agent_document_slug("/api/list"), None);
+        assert_eq!(agent_document_slug("/api/account/erase"), None);
+        assert_eq!(agent_document_slug("/api/documents"), None);
+        assert_eq!(agent_document_slug("/api/documents/"), None);
     }
 }

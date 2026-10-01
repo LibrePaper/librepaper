@@ -303,6 +303,9 @@ impl Server {
         if who.auth_failed {
             return plain(401, "authentication expired or was revoked");
         }
+        if self.needs_sign_in(&entry, &who) {
+            return plain(401, "sign in to read this shared document");
+        }
         // A private document answers a stranger exactly as a missing one does,
         // here as everywhere else.
         if !self.may_read(&entry, &who) {

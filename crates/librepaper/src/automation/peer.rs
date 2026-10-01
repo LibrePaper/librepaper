@@ -6,6 +6,7 @@
 //! the link.
 
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -203,7 +204,7 @@ fn auth_headers(token: &str, key: &str) -> Vec<(&'static str, String)> {
 #[derive(Clone)]
 pub struct AutomationPeer {
     link: DocumentLink,
-    token: String,
+    token: Arc<RwLock<String>>,
     client: reqwest::Client,
 }
 
@@ -235,6 +236,21 @@ impl AutomationPeer {
             configured_server,
             token,
         );
+        Self::open_with_token(link, token).await
+    }
+
+    /// Open the sidebar peer with the short-lived capability the signed-in
+    /// browser delegated to the companion. This path never consults cached
+    /// device credentials, which could otherwise widen its authority.
+    pub(crate) async fn open_scoped(link: DocumentLink, token: String) -> Result<Self, String> {
+        if !token.starts_with(crate::auth::AGENT_GRANT_PREFIX) {
+            return Err("the browser did not provide a scoped assistant authorization".into());
+        }
+        Self::open_with_token(link, token).await
+    }
+
+    async fn open_with_token(link: DocumentLink, token: String) -> Result<Self, String> {
+        let scoped = token.starts_with(crate::auth::AGENT_GRANT_PREFIX);
         let client = new_client()?;
         let mut request = client.get(format!("{}/api/documents/{}", link.server(), link.slug()));
         for (name, value) in auth_headers(&token, &link.key) {
@@ -262,17 +278,29 @@ impl AutomationPeer {
         let document: Value = serde_json::from_slice(&raw)
             .unwrap_or_else(|_| json!({"error": String::from_utf8_lossy(&raw)}));
         if status != 200 {
-            return Err(format!(
-                "could not open document ({}): {}",
-                status,
+            let detail = if scoped {
+                "the delegated document access is invalid, expired, revoked, or scoped to a different link".to_string()
+            } else {
                 detail_of(&document)
-            ));
+            };
+            return Err(format!("could not open document ({}): {}", status, detail));
         }
         Ok(Self {
             link,
-            token,
+            token: Arc::new(RwLock::new(token)),
             client,
         })
+    }
+
+    pub(crate) fn token_source(&self) -> Arc<RwLock<String>> {
+        Arc::clone(&self.token)
+    }
+
+    fn current_token(&self) -> String {
+        self.token
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     pub fn link(&self) -> &DocumentLink {
@@ -297,7 +325,7 @@ impl AutomationPeer {
             self.link.slug()
         );
         let mut request = url.into_client_request().map_err(|err| err.to_string())?;
-        for (name, value) in auth_headers(&self.token, &self.link.key) {
+        for (name, value) in auth_headers(&self.current_token(), &self.link.key) {
             request.headers_mut().insert(
                 name,
                 value.parse().map_err(|_| "invalid credential header")?,
@@ -324,7 +352,7 @@ impl AutomationPeer {
             self.link.slug()
         );
         let mut request = self.client.request(method, endpoint);
-        for (name, value) in auth_headers(&self.token, &self.link.key) {
+        for (name, value) in auth_headers(&self.current_token(), &self.link.key) {
             request = request.header(name, value);
         }
         let session = std::env::var_os("LIBREPAPER_RUNNER_SESSION")
@@ -493,12 +521,33 @@ mod tests {
         let peer = AutomationPeer {
             link: DocumentLink::parse("https://docs.example/docs/paper#k=share-key", "")
                 .expect("link"),
-            token: "bearer-that-must-not-leak".into(),
+            token: Arc::new(RwLock::new("bearer-that-must-not-leak".into())),
             client: new_client().expect("client"),
         };
         let debug = format!("{peer:?}");
         assert!(debug.contains("[redacted]"));
         assert!(!debug.contains("bearer-that-must-not-leak"));
+    }
+
+    #[test]
+    fn websocket_reconnect_uses_the_latest_scoped_grant() {
+        let peer = AutomationPeer {
+            link: DocumentLink::parse("https://docs.example/docs/paper#k=share-key", "")
+                .expect("link"),
+            token: Arc::new(RwLock::new("lpa_first".into())),
+            client: new_client().expect("client"),
+        };
+        let first = peer.chat_socket_request("conversation").expect("request");
+        assert_eq!(
+            first.headers()["authorization"].to_str().unwrap(),
+            "Bearer lpa_first"
+        );
+        *peer.token.write().expect("token lock") = "lpa_renewed".into();
+        let reconnected = peer.chat_socket_request("conversation").expect("request");
+        assert_eq!(
+            reconnected.headers()["authorization"].to_str().unwrap(),
+            "Bearer lpa_renewed"
+        );
     }
     #[test]
     fn runner_provenance_is_only_claimed_with_a_lease_to_prove_it() {

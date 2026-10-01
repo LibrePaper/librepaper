@@ -36,13 +36,18 @@ export function createReaderBoot({
       if (!disposed && !stale()) onDocument(document_);
     } catch (error) {
       if (error?.name === "AbortError" || disposed || stale()) return;
-      try {
-        const cached = await findLocal({ server: globalThis.location?.origin, slug });
-        if (cached && !disposed && !stale()) {
-          onDocument({ ...cached.document, offline_prepared: true });
-          return;
-        }
-      } catch { /* unavailable local storage falls through to the normal error */ }
+      // A cached copy can bridge a network outage, but it must not turn an
+      // explicit server refusal (especially a sign-in requirement) into
+      // access to a document the current account cannot open.
+      if (!error?.status) {
+        try {
+          const cached = await findLocal({ server: globalThis.location?.origin, slug });
+          if (cached && !disposed && !stale()) {
+            onDocument({ ...cached.document, offline_prepared: true });
+            return;
+          }
+        } catch { /* unavailable local storage falls through to the normal error */ }
+      }
       if (!disposed && !stale()) onError(error);
     } finally {
       controllers.delete(controller);

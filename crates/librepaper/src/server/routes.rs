@@ -17,6 +17,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents", post(upload))
         .route("/api/documents/{slug}", any(document_detail))
         .route("/api/documents/{slug}/tools", any(tools_list))
+        .route("/api/documents/{slug}/agent-token", post(agent_auth::issue))
         .route("/api/documents/{slug}/tools/{name}", any(tool_call))
         .route("/api/documents/{slug}/delete", post(delete_document))
         .route("/api/documents/{slug}/state", get(document_state))
@@ -1319,6 +1320,9 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         // A private document is not somebody else's to know exists, so a
         // stranger gets what a missing document gets. The reader page
         // turns that into "sign in, if this was shared with you".

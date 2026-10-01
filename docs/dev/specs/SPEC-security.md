@@ -115,8 +115,10 @@ to `crates/librepaper/src/` unless stated otherwise.
 
 ## Sharing, privacy and agents
 
-- **Observed:** `LINK_DEFAULT_SECONDS` is 180 days; UI offers 7 days, 30 days,
-  6 months or Never. Expiry updates do not replace the key; rotation is separate.
+- **Observed:** `LINK_DEFAULT_SECONDS` is seven days; UI offers 7 days, 30 days,
+  6 months or Never. Expiry updates do not replace the key; a settings change or
+  rotation without an explicit expiry keeps the current one. Rotation is
+  separate.
   Readers/commenters use annotation sockets, not source collaboration
   (`web/src/lib/reader/collaboration.js`, `web/src/components/Reader.svelte`);
   `doc-presence` is editor-only (`server/socket.rs`). Operator sees requests;

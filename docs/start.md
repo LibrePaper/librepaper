@@ -9,8 +9,8 @@ comments and highlights in real time.
 - Multiple people can annotate simultaneously, with live updates
 - Publish, review and manage documents in the browser
 - Trivial to deploy: one static binary, on your laptop or on a small server
-- Free public sandbox for small, short-lived notebooks
-- Allow anonymous comments or require GitHub authentication
+- Free public service for publishing and collaboration
+- Share documents with signed-in GitHub and Google users
 - Export a complete, independent copy of any project from the CLI
 
 ![The annotation window, with highlights and threaded comments.](../images/commenting.png)
@@ -48,26 +48,33 @@ add a desktop shortcut or register the `librepaper://` link handler.
 
 ## The sandbox
 
-The LibrePaper sandbox is a free website where anyone can upload small (<4MB) short-lived (<24hrs) HTML or Markdown files. To upload a document, you will need to log with your Github username:
+The public LibrePaper service is free to use. Any signed-in GitHub or Google
+account can publish. Each account has 50 MiB of storage and can create or fork
+projects and upload figure assets 30 times per rolling hour.
 
-[LibrePaper sandbox](https://librepaper.arelbundock.com)
+[LibrePaper](https://app.librepaper.org)
 
 Sign in to receive private, editable tutorials for Markdown, Typst, HTML, LaTeX, and Quarto. Each tutorial contains the same LibrePaper walkthrough in that format.
 
 A published document lives at `/docs/<title>-<suffix>`, where the suffix is
-random so the link cannot be guessed from the title. A link that resolves to nothing gets a 404 page saying so.
+random so the link cannot be guessed from the title. Read, comment, and edit
+links require sign-in and expire after 7 days by default. A bare document URL
+does not grant access.
 
-> **Warning:** Do not publish confidential information on the LibrePaper sandbox. Normally, documents are only visible to the person who uploaded them, or to people holding a share link they minted. But if you are gathering comments on documents about national security, you should probably [host your own instance](host.html) or find another solution.
+> **Warning:** Do not publish confidential information on the public service.
+> The service operator can read all documents, and anyone you share a live link
+> with can access its role. For sensitive work, [host your own instance](host.html).
 
 The standard web-based workflow is:
 
 1. Open a LibrePaper server in a browser,
-2. Sign in with GitHub (if the manager requires it),
+2. Sign in with GitHub or Google,
 3. Upload an `.html` or `.md` file,
-4. Send the read link to your readers, or mint a comment link and send that.
+4. Send a read link to readers, or mint a comment link for reviewers. Recipients
+   sign in before opening the link.
 
-Only somebody holding a live link can open the document; its bare URL opens
-for you alone. The LibrePaper console lists only the documents you own or have
-been let into.
+Only somebody signed in and holding a live link can open the document; its bare
+URL opens for you alone as the owner. The LibrePaper console lists only the
+documents you own or have been let into.
 
 Click on the thumbnails near to top of this page for screenshots of the LibrePaper management console and annotation page.

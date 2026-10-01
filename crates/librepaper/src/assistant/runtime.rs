@@ -638,8 +638,10 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // update and cleared when the session is replaced.
     let mut commands: Vec<String> = Vec::new();
     let binding_nonce = lease.binding_nonce()?;
+    let socket_peer = peer.clone();
+    let socket_conversation = config.conversation.clone();
     let mut transport = Transport::start(
-        peer.chat_socket_request(&config.conversation)?,
+        move || socket_peer.chat_socket_request(&socket_conversation),
         config.token.clone(),
         binding_nonce,
     );

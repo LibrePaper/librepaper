@@ -2,7 +2,14 @@
 
 LibrePaper limits logical admission; it does not keep a billing-grade count of physical copies. Use provider metrics for actual database, disk, bucket, and backup use, and configure provider alerts and spending caps.
 
-## Defaults
+## Public service limits
+
+The official public service accepts publishing from any signed-in GitHub or
+Google account. Each account has 50 MiB of storage and may create or fork
+projects and upload figure assets 30 times per rolling hour. These are admission
+limits for the public service; self-hosted operators can choose their own values.
+
+## Self-hosted defaults
 
 | Resource | Default | Set with |
 |---|---|---|
