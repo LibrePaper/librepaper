@@ -119,6 +119,17 @@ deploy() {
 	curl -fsIL -o /dev/null "https://github.com/LibrePaper/librepaper/releases/download/$version/$ASSET" || die "release $version has no $ASSET"
 	ok "found $ASSET"
 
+	# Caddy needs every name in place before it can get their certificates.
+	step "DNS: every name -> the address of $SITE"
+	local ip name names=0
+	ip=$(dig +short "$SITE" | tail -n 1)
+	[ -n "$ip" ] || die "$SITE does not resolve"
+	for name in "$SITE" "$APP" "$DOCS" ${REDIRECTS//,/}; do
+		[ "$(dig +short "$name" | tail -n 1)" = "$ip" ] || die "$name does not resolve to $ip yet: add its A record at Hover"
+		names=$((names + 1))
+	done
+	ok "$names names -> $ip"
+
 	step "Secrets from tools/deploy-keys.yaml"
 	local acme postgres github_id github_secret
 	acme=$(key PRODUCTION_ACME_EMAIL)
