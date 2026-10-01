@@ -237,7 +237,7 @@ fn rebuild(
     if branch.state_frontiers() != proposal.tip {
         return Err(ProposalError::Stale);
     }
-    validate_proposed_changes(&branch, doc, &proposal.base, &proposal.tip)?;
+    validate_proposed_changes(&branch, &proposal.base, &proposal.tip)?;
     Ok(branch)
 }
 
@@ -246,7 +246,6 @@ fn rebuild(
 /// or any other container are not part of a text suggestion and are refused.
 fn validate_proposed_changes(
     branch: &LoroDoc,
-    current: &LoroDoc,
     base: &Frontiers,
     tip: &Frontiers,
 ) -> Result<(), ProposalError> {
@@ -278,12 +277,7 @@ fn validate_proposed_changes(
     );
     let base_files = at_base.get_map(session::FILES);
     let base_paths = at_base.get_map(session::PATHS);
-    let current_files = current.get_map(session::FILES);
-    let current_paths = current.get_map(session::PATHS);
-    let existing_paths: HashSet<String> = session::paths_of(&at_base)
-        .into_values()
-        .chain(session::paths_of(current).into_values())
-        .collect();
+    let existing_paths: HashSet<String> = session::paths_of(&at_base).into_values().collect();
     let mut inserted_files = HashSet::new();
     let mut inserted_paths: HashMap<String, String> = HashMap::new();
     let mut deleted_files = HashSet::new();
@@ -300,7 +294,6 @@ fn validate_proposed_changes(
                 match map_op {
                     JsonMapOp::Insert { key, value } => {
                         if base_files.get(key).is_some()
-                            || current_files.get(key).is_some()
                             || !inserted_files.insert(key.clone())
                         {
                             return Err(ProposalError::Failed(
@@ -321,7 +314,6 @@ fn validate_proposed_changes(
                     }
                     JsonMapOp::Delete { key } => {
                         if base_files.get(key).is_some()
-                            || current_files.get(key).is_some()
                             || !deleted_files.insert(key.clone())
                         {
                             return Err(ProposalError::Failed(
@@ -338,9 +330,7 @@ fn validate_proposed_changes(
                 };
                 match map_op {
                     JsonMapOp::Insert { key, value } => {
-                        if base_paths.get(key).is_some()
-                            || current_paths.get(key).is_some()
-                        {
+                        if base_paths.get(key).is_some() {
                             return Err(ProposalError::Failed(
                                 "a proposal may only add a new text file".into(),
                             ));
@@ -363,7 +353,6 @@ fn validate_proposed_changes(
                     }
                     JsonMapOp::Delete { key } => {
                         if base_paths.get(key).is_some()
-                            || current_paths.get(key).is_some()
                             || !deleted_paths.insert(key.clone())
                         {
                             return Err(ProposalError::Failed(
@@ -2401,10 +2390,11 @@ mod tests {
             resolve(&room, &proposal, &bytes, &HashSet::new(), &proposal.tip),
             Err(ProposalError::Failed(_))
         ));
-        assert_eq!(
+        assert!(matches!(
             room.get_map(session::META).get("engine"),
-            Some("current".into())
-        );
+            Some(ValueOrContainer::Value(LoroValue::String(value)))
+                if value.to_string() == "current"
+        ));
         assert_eq!(text_at(&room, "main.md"), "The cat sat.");
     }
 
@@ -2442,6 +2432,116 @@ mod tests {
         assert_eq!(text_at(&room, "main.md"), "The cat sat.");
         let current_paths = session::paths_of(&room);
         assert_eq!(current_paths.get(&id).map(String::as_str), Some("main.md"));
+    }
+
+    #[test]
+    fn a_canceled_new_file_keeps_the_other_text_edit_acceptable() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.commit();
+        let base = room.state_frontiers();
+        let vector = session::encode_vector(&room);
+
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        session::put_text(&branch, "main.md", "The tabby sat.");
+        session::put_text(&branch, "temporary.md", "Temporary text.");
+        branch.commit();
+        assert!(session::remove_path(&branch, "temporary.md"));
+        branch.commit();
+        let proposal = Proposal {
+            base,
+            tip: branch.state_frontiers(),
+        };
+        let bytes = session::encode_diff(&branch, &vector).unwrap();
+
+        let reviewed = hunks(&room, &proposal, &bytes).unwrap();
+        assert_eq!(reviewed.len(), 1);
+        resolve(&room, &proposal, &bytes, &HashSet::new(), &proposal.tip).unwrap();
+        assert_eq!(text_at(&room, "main.md"), "The tabby sat.");
+        assert!(!session::paths_of(&room)
+            .values()
+            .any(|path| path == "temporary.md"));
+    }
+
+    #[test]
+    fn a_new_file_key_already_used_in_the_current_room_is_refused() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.commit();
+        let base = room.state_frontiers();
+        let vector = session::encode_vector(&room);
+
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        add_raw_path_text(&branch, "new-file-id", "proposal.md", "Proposal text.");
+        branch.commit();
+        let proposal = Proposal {
+            base,
+            tip: branch.state_frontiers(),
+        };
+        let bytes = session::encode_diff(&branch, &vector).unwrap();
+
+        room.set_peer_id(REVIEWER).unwrap();
+        add_raw_path_text(&room, "new-file-id", "current.md", "Current text.");
+        room.commit();
+
+        let reviewed = hunks(&room, &proposal, &bytes).unwrap();
+        assert_eq!(reviewed.len(), 1);
+        resolve(
+            &room,
+            &proposal,
+            &bytes,
+            &HashSet::from([reviewed[0].index]),
+            &proposal.tip,
+        )
+        .unwrap();
+        assert!(matches!(
+            resolve(&room, &proposal, &bytes, &HashSet::new(), &proposal.tip),
+            Err(ProposalError::Stale)
+        ));
+        assert_eq!(text_at(&room, "current.md"), "Current text.");
+        assert!(!session::paths_of(&room)
+            .values()
+            .any(|path| path == "proposal.md"));
+    }
+
+    #[test]
+    fn reverted_unknown_text_and_nested_map_operations_are_refused() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.commit();
+        let base = room.state_frontiers();
+        let vector = session::encode_vector(&room);
+        let id = supported_text_file_ids(&room).remove(0);
+
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        set_text_by_id(&branch, &id, "The tabby sat.");
+        let hidden_text = branch.get_text("unregistered-text");
+        hidden_text.insert_utf16(0, "hidden").unwrap();
+        branch.commit();
+        hidden_text.delete_utf16(0, hidden_text.len_utf16()).unwrap();
+        let hidden_map = branch
+            .get_map("unregistered-map")
+            .insert_container("nested", loro::LoroMap::new())
+            .unwrap();
+        hidden_map.insert("key", "hidden").unwrap();
+        branch.commit();
+        let proposal = Proposal {
+            base,
+            tip: branch.state_frontiers(),
+        };
+        let bytes = session::encode_diff(&branch, &vector).unwrap();
+
+        assert!(matches!(
+            hunks(&room, &proposal, &bytes),
+            Err(ProposalError::Failed(_))
+        ));
+        assert_eq!(text_at(&room, "main.md"), "The cat sat.");
     }
 
     #[test]
