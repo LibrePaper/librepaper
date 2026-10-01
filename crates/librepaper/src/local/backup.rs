@@ -23,6 +23,18 @@ const MAX_FILE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_PROJECT_BYTES: usize = 512 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 160 * 1024 * 1024;
 
+#[cfg(test)]
+struct BackupWriterPause {
+    root: PathBuf,
+    entered: tokio::sync::oneshot::Sender<()>,
+    resume: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    finished: tokio::sync::oneshot::Sender<()>,
+}
+
+#[cfg(test)]
+static BACKUP_WRITER_PAUSE: std::sync::OnceLock<std::sync::Mutex<Option<BackupWriterPause>>> =
+    std::sync::OnceLock::new();
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct BackupReport {
     pub projects: usize,
@@ -207,8 +219,17 @@ pub(crate) async fn run_backup(
             let archive_name = filename.clone();
             let writer_lock = Arc::clone(&namespace_lock);
             tokio::task::spawn_blocking(move || {
-                let _keep_lock = writer_lock;
-                write_archive(&archive_root, &archive_name, &archive_slug, &entries)
+                #[cfg(test)]
+                let finished = pause_backup_writer(&archive_root);
+                let result = {
+                    let _keep_lock = writer_lock;
+                    write_archive(&archive_root, &archive_name, &archive_slug, &entries)
+                };
+                #[cfg(test)]
+                if let Some(finished) = finished {
+                    let _ = finished.send(());
+                }
+                result
             })
             .await
             .map_err(|error| format!("backup archive writer failed: {error}"))??;
@@ -794,6 +815,34 @@ fn sync_directory(_path: &Path, _what: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+fn pause_backup_writer(root: &Path) -> Option<tokio::sync::oneshot::Sender<()>> {
+    let hook = {
+        let mut configured = BACKUP_WRITER_PAUSE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap();
+        if configured.as_ref().is_some_and(|hook| hook.root == root) {
+            configured.take()
+        } else {
+            None
+        }
+    }?;
+    let BackupWriterPause {
+        root: _,
+        entered,
+        resume,
+        finished,
+    } = hook;
+    let _ = entered.send(());
+    let (released, wake) = &*resume;
+    let mut released = released.lock().unwrap();
+    while !*released {
+        released = wake.wait(released).unwrap();
+    }
+    Some(finished)
+}
+
 fn acquire_backup_lock(path: &Path) -> Result<File, String> {
     let mut create = OpenOptions::new();
     create.read(true).write(true).create_new(true);
@@ -954,7 +1003,7 @@ mod tests {
     use axum::routing::get;
     use axum::{Json, Router};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::{Arc, Barrier, Mutex};
+    use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     struct Fixture {
@@ -1296,30 +1345,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blocking_backup_task_keeps_lock_after_async_owner_is_dropped() {
+    async fn cancelled_backup_keeps_lock_until_its_writer_finishes() {
+        let (server, state, server_task) = start_fixture().await;
         let output = tempfile::tempdir().unwrap();
-        let root = output.path().join("namespace");
-        fs::create_dir(&root).unwrap();
-        let lock_path = root.join(".backup.lock");
-        let lock = Arc::new(acquire_backup_lock(&lock_path).unwrap());
-        let entered = Arc::new(Barrier::new(2));
-        let resume = Arc::new(Barrier::new(2));
-        let task_lock = Arc::clone(&lock);
-        let task_entered = Arc::clone(&entered);
-        let task_resume = Arc::clone(&resume);
-        let task = tokio::task::spawn_blocking(move || {
-            let _keep_lock = task_lock;
-            task_entered.wait();
-            task_resume.wait();
-        });
-        entered.wait();
-        drop(lock);
+        run_backup(&server, "token", "account-one", output.path()).await.unwrap();
+        let root = namespace(output.path());
+        let paper = root.join(archive_name("Paper", "paper-a1"));
+        let original_archive = fs::read(&paper).unwrap();
+        state.revision.store(1, Ordering::SeqCst);
 
-        assert!(acquire_backup_lock(&lock_path)
-            .unwrap_err()
-            .contains("backup already running"));
-        resume.wait();
-        task.await.unwrap();
-        assert!(acquire_backup_lock(&lock_path).is_ok());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let resume = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        *BACKUP_WRITER_PAUSE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap() = Some(BackupWriterPause {
+            root: root.clone(),
+            entered: entered_tx,
+            resume: Arc::clone(&resume),
+            finished: finished_tx,
+        });
+
+        let first_server = server.clone();
+        let first_destination = output.path().to_path_buf();
+        let first = tokio::spawn(async move {
+            run_backup(&first_server, "token", "account-one", &first_destination).await
+        });
+        let entered = tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx).await;
+        first.abort();
+        let _ = first.await;
+
+        // A contender must fail while the first call's blocking ZIP writer is
+        // paused, even though its async owner has already been cancelled.
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_backup(&server, "token", "account-one", output.path()),
+        )
+        .await;
+        let archive_while_paused = fs::read(&paper).ok();
+
+        // Always release the blocking worker before asserting so a failed
+        // expectation cannot strand it in the test runtime.
+        {
+            let (released, wake) = &*resume;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+        }
+        let writer_finished =
+            tokio::time::timeout(std::time::Duration::from_secs(5), finished_rx).await;
+
+        assert!(entered.is_ok(), "the actual run_backup writer did not pause");
+        assert!(matches!(
+            second,
+            Ok(Err(ref error)) if error.contains("backup already running")
+        ));
+        assert_eq!(archive_while_paused, Some(original_archive));
+        assert!(writer_finished.is_ok(), "the cancelled run's writer did not finish");
+
+        let recovered = run_backup(&server, "token", "account-one", output.path()).await;
+        assert!(recovered.is_ok(), "a new run can acquire the lock after writer completion");
+        server_task.abort();
     }
 }
