@@ -12,6 +12,13 @@ title: "Architecture"
 
 Typesetting runs in WebAssembly modules in the browser. The deployment never compiles documents or stores compilers. LaTeX engines and TeX Live packages are fetched from an HTTPS mirror (configurable). Authority is decided server-side on every request, never inferred from the browser. The optional companion app (`librepaper local start`) handles Quarto (code execution) and Typst to self-contained HTML; it reaches Zotero read-only and never runs TeX.
 
+When account backups are enabled, the companion authenticates to the selected
+server with the CLI login, fetches every project owned by that account, and
+writes ZIP snapshots to a folder selected through the native picker. It runs
+the schedule while the browser is closed. The browser shows status and controls
+the schedule through the existing paired companion connection. See
+[local backups](backups.html).
+
 ## Records and caches
 
 Records describe what somebody did at a moment and cannot be edited afterwards. Caches describe where something is now and are recomputed on every document change. A comment that loses its place reports that rather than being re-pointed.

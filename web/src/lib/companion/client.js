@@ -1480,6 +1480,45 @@ export async function quit() {
   await send("POST", "quit", { token: pairing.token });
 }
 
+/** Read account-wide backup state from the paired companion. The account id
+ * is the signed-in server account, never the currently open project. */
+export async function backups(accountId) {
+  const pairing = requirePairing();
+  const query = new URLSearchParams({ account: String(accountId || "") });
+  const response = await send("GET", `backups?${query}`, { token: pairing.token });
+  return response.json();
+}
+
+/** Ask the companion to choose and retain a native backup destination. */
+export async function chooseBackupFolder(accountId) {
+  const pairing = requirePairing();
+  const response = await send("POST", "backups/folder", {
+    token: pairing.token,
+    jsonBody: { account_id: String(accountId || "") },
+  });
+  return response.json();
+}
+
+/** Update account-wide backup scheduling. */
+export async function updateBackups(accountId, { enabled, frequency_minutes }) {
+  const pairing = requirePairing();
+  const response = await send("PUT", "backups", {
+    token: pairing.token,
+    jsonBody: { account_id: String(accountId || ""), enabled: Boolean(enabled), frequency_minutes },
+  });
+  return response.json();
+}
+
+/** Run an account-wide backup immediately. */
+export async function runBackups(accountId) {
+  const pairing = requirePairing();
+  const response = await send("POST", "backups/run", {
+    token: pairing.token,
+    jsonBody: { account_id: String(accountId || "") },
+  });
+  return response.json();
+}
+
 /* --------------------------------------------------- Connecting an agent */
 
 /** One pairing-scoped call to the local app's assistant surface, JSON in and

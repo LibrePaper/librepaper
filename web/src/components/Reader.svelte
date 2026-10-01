@@ -20,6 +20,7 @@
   import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
   import * as localQuarto from "../lib/companion/client.js";
   import { companion } from "../lib/companion/status.svelte.js";
+  import { backups as backupStatusStore } from "../lib/companion/backups.svelte.js";
   import { basename } from "../lib/file-manager.js";
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
   import { createReaderBoot } from "../lib/reader/boot.js";
@@ -137,6 +138,22 @@
   let offlinePrepared = $state(false);
   let preparingOffline = $state(false);
   let me = $state({});
+  const backupStatus = $derived(backupStatusStore.status);
+  const backupPillGood = $derived(Boolean(
+    backupStatus.paired && backupStatus.data?.enabled && backupStatus.data?.destination
+    && !backupStatus.data?.error && !backupStatus.data?.needs_login && !backupStatus.error,
+  ));
+  const backupPillLabel = $derived(!me?.id
+    ? "Backups unavailable: sign in to an account"
+    : !backupStatus.paired
+      ? "Backups unavailable: connect LibrePaper Companion"
+      : backupStatus.error
+        ? `Backup status unavailable: ${backupStatus.error}`
+        : backupStatus.data?.needs_login
+          ? "Backups unavailable: sign in with the CLI"
+          : backupStatus.data?.error
+            ? `Backup error: ${backupStatus.data.error}`
+            : backupPillGood ? "Account backups enabled" : backupStatus.data ? "Account backups disabled" : "Backup status unavailable");
   // The displayed name, since this is what goes on a comment and what the
   // reader is shown commenting as. A Google account's handle is its email and
   // belongs on neither.
@@ -3475,6 +3492,11 @@
     };
   });
 
+  // Account scope and companion pairing are the only triggers for reading
+  // backup status. A signed-out or unpaired page never makes a new probe.
+  $effect(() => backupStatusStore.setScope(me?.id, companion.status.state === "connected"));
+  $effect(() => () => backupStatusStore.reset());
+
   // Ctrl-S reports the durability the server has confirmed for local work.
   // Typing is saved automatically, but a buffered edit is not durable yet.
   //
@@ -3828,6 +3850,12 @@
               title={connected ? `${peers} people connected. Open remote settings` : `${connectionNote}. Open remote settings`}>
         <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
         <span>Remote</span>
+      </button>
+      <button class="connection-pill backup-pill" type="button" onclick={() => openSettings("backups")}
+              aria-label={`${backupPillLabel}; open backup settings`}
+              title={`${backupPillLabel}. Open backup settings`}>
+        <span class="connection-dot" class:offline={!backupPillGood} aria-hidden="true"></span>
+        <span>Backup</span>
       </button>
     </div>
     <div class="presence" role="group" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>

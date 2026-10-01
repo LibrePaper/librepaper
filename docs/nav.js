@@ -34,6 +34,7 @@ export const nav = [
   },
   { path: "agents", label: "Agents" },
   { path: "cli", label: "CLI" },
+  { path: "backups", label: "Local backups" },
   { path: "host", label: "Running a server" },
   { path: "architecture", label: "Architecture" },
   { path: "privacy", label: "Privacy" },

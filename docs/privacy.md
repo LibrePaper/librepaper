@@ -80,8 +80,17 @@ Pseudonymous comments hide identity from other readers, not the operator.
 - **Local companion:** The writing assistant runs on your computer; the server relays
   messages. When you start an agent from an open document page, the browser silently
   renews a document- and link-scoped five-minute token; the headless CLI uses the
-  separate `librepaper login` flow. The browser contacts the companion only when you initiate: turning on local execution,
-  choosing a local build tool, Zotero lookup, or opening Local app settings.
+  separate `librepaper login` flow. Other companion requests begin when you use
+  local execution, choose a local build tool, look up Zotero items, open Local
+  settings, or enable account backups. While already paired and signed in, the
+  page also polls the companion for backup status; it does not probe for a
+  companion on first visit just for backups.
+- **Local backups:** When paired and signed in, the browser polls the companion for
+  account-wide backup status and sends the account ID with backup settings and run
+  requests. The companion uses its CLI login to fetch the account's owned projects
+  and writes ZIPs into the folder you chose with its native picker. The browser
+  never receives that folder's absolute path. ZIP files remain on your computer
+  when backups are disabled or a project is deleted. See [local backups](backups.html).
 - **Embedded resources:** Published documents fetch images and data from any host
   named, which learns your address, browser and open time. To avoid requests to
   those hosts, use PDFs or `embed-resources: true` in Quarto.

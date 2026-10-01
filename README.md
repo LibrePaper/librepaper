@@ -42,6 +42,9 @@ The ordinary CLI covers `login`, `logout`, `list`, and one-shot `export`.
 `admin` operates a deployment, `local` operates the companion on your own
 computer, and `mcp` serves a document's tools to an agent.
 
+LibrePaper Companion can also keep scheduled ZIP copies of every project in
+your signed-in account. See the [local backups guide](docs/backups.md).
+
 ```sh
 librepaper export DOCUMENT ./paper-copy
 ```

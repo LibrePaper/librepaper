@@ -17,6 +17,7 @@
   import LocalAppSettings from "./LocalAppSettings.svelte";
   import AccountSettings from "./AccountSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
+  import BackupsSettings from "./BackupsSettings.svelte";
 
   let {
     open = $bindable(false),
@@ -128,6 +129,8 @@
           </section>
         {:else if shown.id === "remote"}
           <RemoteSettings {remoteConnected} {remoteNote} />
+        {:else if shown.id === "backups"}
+          <BackupsSettings {account} />
         {:else if shown.id === "account"}
           <AccountSettings {account} />
         {/if}

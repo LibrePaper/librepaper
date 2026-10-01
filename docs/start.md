@@ -12,6 +12,7 @@ comments and highlights in real time.
 - Free public service for publishing and collaboration
 - Share documents with signed-in GitHub and Google users
 - Export a complete, independent copy of any project from the CLI
+- Back up every project in an account to local ZIP files with the companion
 
 ![The annotation window, with highlights and threaded comments.](../images/commenting.png)
 
@@ -28,6 +29,9 @@ Open one and drag across a sentence: a comment box opens where you released.
 That is the whole of the idea; everything else in this manual is a detail of
 it. The tutorial invites you to edit it, so edit it: change a sentence and
 watch the preview keep up.
+
+To keep local copies of all your projects, connect LibrePaper Companion and
+set up [local backups](backups.html).
 
 ## Install
 
