@@ -47,12 +47,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use loro::LoroDoc;
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::blob::BlobStore;
 use super::collaboration::CollaborationStorage;
-use super::postgres::{PendingWorkCursor, PostgresCatalog};
+use super::postgres::{ArchiveAttach, ArchiveObject, PendingWorkCursor, PostgresCatalog};
 use super::schedule::Deadlines;
 use crate::log::{FlushReason, Registry};
 
@@ -854,7 +855,7 @@ impl Worker {
         else {
             return Ok(());
         };
-        if label.archive_key.is_some() {
+        if label.archive_key.is_some() || label.archive_requested_at.is_none() {
             return Ok(());
         }
         let document = self
@@ -959,15 +960,41 @@ impl Worker {
             label.document_id,
             projected.projection.digest()
         );
-        let bytes = encoded.bytes.len() as i64;
-        self.blobs
-            .put_new(&key, encoded.bytes, "application/zstd")
+        // Serialize adoption with the orphan sweep. The lock is session-owned
+        // on a direct connection, so neither cancellation nor a small pool
+        // can leave a pooled connection holding it indefinitely.
+        let key_lock = super::maintenance::ObjectKeyLock::acquire(
+            self.catalog.as_ref(),
+            &key,
+        )
+        .await?;
+        let object = if let Some(existing) = self
+            .catalog
+            .archive_object(label.document_id, &key)
             .await
-            .map_err(|error| error.to_string())?;
-        self.catalog
-            .attach_label_archive(label_id, &key, bytes)
+            .map_err(|error| error.to_string())?
+        {
+            // The catalog row is authoritative across encoder upgrades.
+            existing
+        } else {
+            put_or_adopt_archive(
+                self.blobs.as_ref(),
+                label.document_id,
+                &key,
+                projected.projection.digest(),
+                encoded,
+            )
+            .await?
+        };
+        match self
+            .catalog
+            .attach_label_archive(label_id, &object)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+        {
+            ArchiveAttach::Attached | ArchiveAttach::AlreadyAttached | ArchiveAttach::RefusedQuota => {}
+        }
+        key_lock.release(&key).await?;
         Ok(())
     }
 
@@ -1037,6 +1064,12 @@ impl Worker {
         {
             keys.insert(asset);
         }
+        keys.extend(
+            self.catalog
+                .document_archive_keys(document_id)
+                .await
+                .map_err(|error| error.to_string())?,
+        );
         if let Some(base) = self
             .catalog
             .log_base(document_id)
@@ -1164,6 +1197,46 @@ impl Worker {
     }
 }
 
+/// Write a new immutable archive or adopt bytes left by a worker that crashed
+/// after its object put and before its catalogue transaction committed. The
+/// caller holds the per-key lock across this operation and label attachment.
+async fn put_or_adopt_archive(
+    blobs: &dyn BlobStore,
+    document_id: Uuid,
+    key: &str,
+    tree_digest: [u8; 32],
+    encoded: super::source_archive::EncodedArchive,
+) -> Result<ArchiveObject, String> {
+    let content_digest = encoded.digest;
+    let byte_length = encoded.bytes.len() as i64;
+    match blobs
+        .put_new(key, encoded.bytes, "application/zstd")
+        .await
+    {
+        Ok(()) => Ok(ArchiveObject {
+            document_id,
+            storage_key: key.to_string(),
+            tree_digest: Some(tree_digest.to_vec()),
+            content_digest: Some(content_digest.to_vec()),
+            byte_length,
+        }),
+        Err(super::blob::BlobError::Conflict) => {
+            // Never overwrite an immutable object with a newer encoder's
+            // bytes. The existing object itself supplies the recovery digest.
+            let existing = blobs.get(key).await.map_err(|error| error.to_string())?;
+            let digest = Sha256::digest(&existing);
+            Ok(ArchiveObject {
+                document_id,
+                storage_key: key.to_string(),
+                tree_digest: Some(tree_digest.to_vec()),
+                content_digest: Some(digest.to_vec()),
+                byte_length: existing.len() as i64,
+            })
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// §8.4 step 4. The snapshot must cover exactly what the log covers -- not
 /// more, not less -- before a single row is deleted.
 ///
@@ -1216,6 +1289,7 @@ pub(crate) fn prove_coverage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::blob::FsStore;
 
     #[tokio::test]
     async fn a_full_queue_keeps_one_rescan_bit_without_waiting_senders() {
@@ -1241,6 +1315,46 @@ mod tests {
         assert!(rx.try_recv().is_err());
         assert!(handle.take_rescan());
         assert!(!handle.take_rescan());
+    }
+
+    #[tokio::test]
+    async fn archive_put_conflict_adopts_and_hashes_the_existing_immutable_bytes() {
+        let root = tempfile::tempdir().expect("temporary blob directory");
+        let blobs = FsStore::new(root.path(), false);
+        let key = "documents/test/labels/tree.tar.zst";
+        let old_bytes = b"object written before a worker crash".to_vec();
+        blobs
+            .put_new(key, old_bytes.clone(), "application/zstd")
+            .await
+            .expect("seed the object left by the crashed worker");
+        let new_bytes = b"bytes from a newer encoder".to_vec();
+        let encoded = super::super::source_archive::EncodedArchive {
+            digest: Sha256::digest(&new_bytes).into(),
+            logical_bytes: new_bytes.len() as u64,
+            bytes: new_bytes,
+        };
+
+        let adopted = put_or_adopt_archive(
+            &blobs,
+            Uuid::new_v4(),
+            key,
+            [7; 32],
+            encoded,
+        )
+        .await
+        .expect("adopt existing immutable bytes");
+        let expected_digest = Sha256::digest(&old_bytes).to_vec();
+
+        assert_eq!(adopted.byte_length, old_bytes.len() as i64);
+        assert_eq!(
+            adopted.content_digest.as_deref(),
+            Some(expected_digest.as_slice())
+        );
+        assert_eq!(
+            blobs.get(key).await.expect("read original object"),
+            old_bytes,
+            "put conflict must never overwrite the previous bytes"
+        );
     }
 
     #[test]
@@ -1573,7 +1687,6 @@ mod tests {
                 title: "Erase me".into(),
                 source_format: "markdown".into(),
                 main_path: "document.md".into(),
-                settings: serde_json::json!({"version": 1}),
             })
             .await
             .unwrap();

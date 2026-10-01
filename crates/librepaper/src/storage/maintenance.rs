@@ -12,6 +12,7 @@ use super::postgres::PostgresCatalog;
 /// Backups hold it exclusively; cleanup holds it shared from its reference
 /// scan through the blob deletion and the corresponding catalogue update.
 const BLOB_LIFECYCLE_LOCK: i64 = 0x4c_50_42_4c_4f_42_31; // "LPBLOB1"
+const OBJECT_KEY_LOCK_NAMESPACE: i32 = 0x4c_50_4f; // "LPO"
 
 /// This direct connection never enters the application pool. In particular,
 /// a cancelled advisory-lock query may have acquired the server-side lock
@@ -113,6 +114,89 @@ impl Drop for BlobLifecycleLock {
             // This connection is never pooled. Dropping it closes its
             // PostgreSQL session and releases the session lock on errors,
             // cancellation, failed explicit unlock, or ordinary scope exit.
+            drop(connection);
+        }
+    }
+}
+
+/// Per-object session lock shared by archive adoption and the orphan sweep.
+/// It uses a second advisory-lock namespace and a direct connection so a
+/// held writer lease or a small application pool cannot starve cleanup.
+pub(crate) struct ObjectKeyLock {
+    connection: Option<PgConnection>,
+}
+
+impl ObjectKeyLock {
+    pub(crate) async fn acquire(
+        catalog: &PostgresCatalog,
+        key: &str,
+    ) -> Result<Self, String> {
+        let options = catalog.pool().connect_options();
+        let connection = PgConnection::connect_with(&options)
+            .await
+            .map_err(|error| format!("could not connect for object lock: {error}"))?;
+        let mut guard = Self {
+            connection: Some(connection),
+        };
+        sqlx::query("SELECT pg_advisory_lock($1,hashtext($2))")
+            .bind(OBJECT_KEY_LOCK_NAMESPACE)
+            .bind(key)
+            .execute(guard.connection_mut())
+            .await
+            .map_err(|error| format!("could not acquire object lock: {error}"))?;
+        Ok(guard)
+    }
+
+    /// The orphan sweep does not wait behind an active adopter. `None` means
+    /// leave this key for the next bounded pass.
+    pub(crate) async fn try_acquire(
+        catalog: &PostgresCatalog,
+        key: &str,
+    ) -> Result<Option<Self>, String> {
+        let options = catalog.pool().connect_options();
+        let connection = PgConnection::connect_with(&options)
+            .await
+            .map_err(|error| format!("could not connect for object lock: {error}"))?;
+        let mut guard = Self {
+            connection: Some(connection),
+        };
+        let acquired: bool = sqlx::query_scalar(
+            "SELECT pg_try_advisory_lock($1,hashtext($2))",
+        )
+        .bind(OBJECT_KEY_LOCK_NAMESPACE)
+        .bind(key)
+        .fetch_one(guard.connection_mut())
+        .await
+        .map_err(|error| format!("could not try object lock: {error}"))?;
+        Ok(acquired.then_some(guard))
+    }
+
+    pub(crate) fn connection_mut(&mut self) -> &mut PgConnection {
+        self.connection
+            .as_mut()
+            .expect("object-key lock owns its connection")
+    }
+
+    pub(crate) async fn release(mut self, key: &str) -> Result<(), String> {
+        let released: bool = sqlx::query_scalar(
+            "SELECT pg_advisory_unlock($1,hashtext($2))",
+        )
+        .bind(OBJECT_KEY_LOCK_NAMESPACE)
+        .bind(key)
+        .fetch_one(self.connection_mut())
+        .await
+        .map_err(|error| format!("could not release object lock: {error}"))?;
+        if !released {
+            return Err("object lock was not held by its PostgreSQL session".into());
+        }
+        drop(self.connection.take());
+        Ok(())
+    }
+}
+
+impl Drop for ObjectKeyLock {
+    fn drop(&mut self) {
+        if let Some(connection) = self.connection.take() {
             drop(connection);
         }
     }
@@ -228,26 +312,42 @@ impl Maintenance {
                 .await
                 .map_err(|error| error.to_string())?;
             let keys: Vec<String> = page.iter().map(|item| item.key.clone()).collect();
-            let referenced = if prefix == "documents/" {
-                referenced_keys(self.catalog.as_ref(), &keys).await?
-            } else {
-                HashSet::new()
-            };
             let cutoff = std::time::SystemTime::now()
                 .checked_sub(retention.unsigned_abs())
                 .ok_or("orphan cleanup grace is outside the system clock range")?;
-            let doomed: Vec<String> = page
+            let candidates: Vec<String> = page
                 .iter()
-                .filter(|item| !referenced.contains(&item.key))
                 .filter(|item| item.modified_at.is_some_and(|created| created <= cutoff))
                 .map(|item| item.key.clone())
                 .collect();
-            if !doomed.is_empty() {
+            for key in candidates {
+                let key_lock = if prefix == "documents/" {
+                    let Some(lock) = ObjectKeyLock::try_acquire(self.catalog.as_ref(), &key).await?
+                    else {
+                        continue;
+                    };
+                    Some(lock)
+                } else {
+                    None
+                };
+                if prefix == "documents/"
+                    && !referenced_keys(self.catalog.as_ref(), std::slice::from_ref(&key))
+                        .await?
+                        .is_empty()
+                {
+                    if let Some(lock) = key_lock {
+                        lock.release(&key).await?;
+                    }
+                    continue;
+                }
                 self.blobs
-                    .delete(&doomed)
+                    .delete(std::slice::from_ref(&key))
                     .await
                     .map_err(|error| error.to_string())?;
-                removed += doomed.len();
+                removed += 1;
+                if let Some(lock) = key_lock {
+                    lock.release(&key).await?;
+                }
             }
             let next = if page.len() < batch {
                 None
@@ -277,7 +377,7 @@ async fn referenced_keys(
     if keys.is_empty() {
         return Ok(HashSet::new());
     }
-    // Three tables name a blob now: assets, label archives, and document
+    // Three tables name a blob now: assets, document archives, and document
     // snapshots. The snapshot table contains both the current compaction
     // base and every retired base still inside its seven-day grace. The
     // retired rows are not optional: they are still being read, so a sweep
@@ -286,7 +386,7 @@ async fn referenced_keys(
     // two are changed together (§8.5).
     let found = sqlx::query_scalar!(
         r#"SELECT storage_key AS "key!" FROM document_assets WHERE storage_key=ANY($1)
-           UNION SELECT archive_key FROM document_labels WHERE archive_key=ANY($1)
+           UNION SELECT storage_key FROM document_archives WHERE storage_key=ANY($1)
            UNION SELECT snapshot_key FROM document_snapshots WHERE snapshot_key=ANY($1)"#,
         keys,
     )

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::{BlobLifecycleLock, BLOB_LIFECYCLE_LOCK};
+use super::{BlobLifecycleLock, ObjectKeyLock, BLOB_LIFECYCLE_LOCK};
 use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
 
 /// The lock must outlive the snapshot transaction, reject destructive work
@@ -102,5 +102,32 @@ async fn cleanup_runs_with_two_pool_connections_and_the_writer_lease_held() {
         .expect("cleanup has a pooled connection while the barrier uses a direct one");
 
     drop(_writer);
+    catalog.close().await;
+}
+
+/// Archive adoption and the orphan sweeper use one per-key session lock. A
+/// sweeper that encounters an adopter leaves the object for its next pass;
+/// after adoption releases, the sweep can recheck the catalogue and proceed.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn archive_adoption_excludes_orphan_deletion_for_the_same_key() {
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").expect("test PostgreSQL URL");
+    let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+        .await
+        .expect("connect");
+    let key = "documents/test/labels/immutable.tar.zst";
+    let adopter = ObjectKeyLock::acquire(&catalog, key)
+        .await
+        .expect("adopter acquires the object lock");
+    assert!(ObjectKeyLock::try_acquire(&catalog, key)
+        .await
+        .expect("sweeper tries the object lock")
+        .is_none());
+    adopter.release(key).await.expect("adopter releases the key");
+    let sweep = ObjectKeyLock::try_acquire(&catalog, key)
+        .await
+        .expect("sweeper retries the object lock")
+        .expect("released object lock is available");
+    sweep.release(key).await.expect("sweeper releases the key");
     catalog.close().await;
 }

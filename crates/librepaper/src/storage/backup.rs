@@ -72,7 +72,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
     .await
     .map_err(|e| e.to_string())?;
     // §8.5: the backup set is PostgreSQL plus the blobs these tables name --
-    // an asset, a current or retired document snapshot, or a label's
+    // an asset, a current or retired document snapshot, or a retained
     // on-demand plain-source archive. Retired snapshots are in because the
     // database half of a backup names them: restore it and the sweeper's
     // rows point at blobs that were never copied, so the sweep either fails
@@ -80,10 +80,10 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
     // missing what it is still referencing.
     // This list has to agree with `maintenance.rs::referenced_keys`, which
     // the orphan sweeper reads to decide what is safe to delete; the two are
-    // changed together. A label archive stores no digest (only its key and
-    // byte count). Retired snapshots created after this migration retain
-    // their metadata; legacy retired rows may have NULL metadata, so their
-    // branch uses zero bytes and an empty digest as a fallback.
+    // changed together. Archive metadata lives once on the retained object
+    // row. Legacy archive and retired-snapshot rows can have no digest or
+    // length; copying fills those values into the backup manifest from the
+    // verified bytes without changing the source catalog.
     let rows = sqlx::query!(
         r#"SELECT storage_key AS "key!",byte_length AS "bytes!",
                   encode(digest,'hex') AS "digest!"
@@ -91,8 +91,8 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
            UNION ALL SELECT snapshot_key,COALESCE(snapshot_bytes,0),
                             COALESCE(encode(snapshot_digest,'hex'),'')
              FROM document_snapshots
-           UNION ALL SELECT archive_key,COALESCE(archive_bytes,0),'' FROM document_labels
-             WHERE archive_key IS NOT NULL"#
+           UNION ALL SELECT storage_key,byte_length,COALESCE(encode(content_digest,'hex'),'')
+             FROM document_archives"#
     )
     .fetch_all(lifecycle_lock.connection_mut())
     .await
@@ -135,7 +135,8 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         .map_err(|e| e.to_string())?;
     let blobs = super::open_storage(options).await?;
     let object_root = destination.join("objects");
-    for reference in &references {
+    let mut verified_references = Vec::with_capacity(references.len());
+    for reference in references {
         let body = blobs
             .get(&reference.key)
             .await
@@ -143,7 +144,8 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         if reference.bytes != 0 && reference.bytes != body.len() as i64 {
             return Err(format!("backup object length mismatch: {}", reference.key));
         }
-        if !reference.sha256.is_empty() && reference.sha256 != hex::encode(Sha256::digest(&body)) {
+        let digest = hex::encode(Sha256::digest(&body));
+        if !reference.sha256.is_empty() && reference.sha256 != digest {
             return Err(format!("backup object digest mismatch: {}", reference.key));
         }
         let target = safe_target(&object_root, &reference.key)?;
@@ -151,6 +153,11 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
             super::create_private_dir(parent, "backup object directory")?;
         }
         write_private_file(&target, &body)?;
+        verified_references.push(Reference {
+            key: reference.key,
+            bytes: body.len() as i64,
+            sha256: digest,
+        });
     }
     lifecycle_lock.release_backup().await?;
     let dump_bytes = std::fs::read(&dump).map_err(|e| e.to_string())?;
@@ -167,7 +174,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         database: "database.dump".into(),
         database_sha256: hex::encode(Sha256::digest(dump_bytes)),
         objects: "objects".into(),
-        references,
+        references: verified_references,
         verified: true,
     };
     write_private_file(

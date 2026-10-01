@@ -225,7 +225,7 @@ async fn archive_accounting_counts_objects_across_bulk_changes_and_cascades() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn concurrent_archive_references_charge_once_after_waiting_for_the_counter() {
+async fn concurrent_archive_references_charge_one_object_once() {
     let catalog = test_catalog().await;
     let writer = catalog.claim_writer().await.unwrap();
     let owner = account(&catalog).await;
@@ -238,52 +238,22 @@ async fn concurrent_archive_references_charge_once_after_waiting_for_the_counter
     }
     let before = catalog.usage_bytes(None).await.unwrap();
     let key = format!("archive-concurrency-{document}");
-    let mut first = catalog.pool().begin().await.unwrap();
-    sqlx::query("UPDATE document_labels SET archive_key=$2,archive_bytes=500 WHERE id=$1")
-        .bind(labels[0])
-        .bind(&key)
-        .execute(&mut *first)
-        .await
-        .unwrap();
-
-    let mut second = catalog.pool().begin().await.unwrap();
-    let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-        .fetch_one(&mut *second)
-        .await
-        .unwrap();
-    let pending = tokio::spawn(async move {
-        sqlx::query("UPDATE document_labels SET archive_key=$2,archive_bytes=500 WHERE id=$1")
-            .bind(labels[1])
-            .bind(key)
-            .execute(&mut *second)
-            .await
-            .unwrap();
-        second.commit().await.unwrap();
-    });
-    // Wait for an actual PostgreSQL lock wait, rather than assuming scheduling
-    // two futures makes the statements overlap. The waiter must re-read the
-    // shared key after the first transaction becomes visible.
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let blocked: bool = sqlx::query_scalar("SELECT cardinality(pg_blocking_pids($1)) > 0")
-                .bind(backend)
-                .fetch_one(catalog.pool())
-                .await
-                .unwrap();
-            if blocked {
-                break;
-            }
-            assert!(
-                !pending.is_finished(),
-                "second archive attachment did not wait for accounting"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("second archive attachment reaches the accounting lock");
-    first.commit().await.unwrap();
-    pending.await.unwrap();
+    for label in labels {
+        assert!(catalog.request_label_archive(document, label).await.unwrap());
+    }
+    let object = crate::storage::postgres::ArchiveObject {
+        document_id: document,
+        storage_key: key,
+        tree_digest: Some(vec![1; 32]),
+        content_digest: Some(vec![2; 32]),
+        byte_length: 500,
+    };
+    let (first, second) = tokio::join!(
+        catalog.attach_label_archive(labels[0], &object),
+        catalog.attach_label_archive(labels[1], &object),
+    );
+    assert!(first.is_ok());
+    assert!(second.is_ok());
     assert_eq!(catalog.usage_bytes(None).await.unwrap(), before + 500);
     sqlx::query("DELETE FROM documents WHERE id=$1")
         .bind(document)

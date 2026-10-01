@@ -1102,7 +1102,7 @@ fn validate_document(input: &NewDocument) -> Result<()> {
     Ok(())
 }
 
-/// Every byte an account is charged for: label archives, document assets,
+/// Every byte an account is charged for: retained archive objects, assets,
 /// and each document's editing log (base snapshot plus uncompacted rows).
 /// This is the single definition of what counts toward the owner quota -- it
 /// was copied into three call sites before, keyed two different ways, so a
@@ -1116,15 +1116,10 @@ pub(super) async fn owner_usage_bytes<'e, E>(executor: E, account_id: Uuid) -> R
 where
     E: sqlx::Executor<'e, Database = sqlx::Postgres>,
 {
-    sqlx::query_scalar!(
-        r#"SELECT COALESCE(sum(bytes),0)::bigint AS "total!" FROM (
-             SELECT l.archive_bytes AS bytes FROM (
-               SELECT DISTINCT ON (l.archive_key) l.archive_key, l.archive_bytes
-               FROM document_labels l
-               JOIN documents d ON d.id=l.document_id
-               WHERE d.owner_id=$1 AND l.archive_key IS NOT NULL
-               ORDER BY l.archive_key, l.id
-             ) l
+    sqlx::query_scalar(
+        r#"SELECT COALESCE(sum(bytes),0)::bigint FROM (
+             SELECT a.byte_length AS bytes FROM document_archives a
+               JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
              UNION ALL SELECT a.byte_length FROM document_assets a
                JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
              UNION ALL SELECT s.snapshot_bytes FROM document_snapshots s
@@ -1133,8 +1128,8 @@ where
              UNION ALL SELECT d.uncompacted_update_bytes FROM documents d
                WHERE d.owner_id=$1
            ) usage"#,
-        account_id,
     )
+    .bind(account_id)
     .fetch_one(executor)
     .await
     .map_err(Error::from)
@@ -1152,6 +1147,17 @@ impl PostgresCatalog {
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
+    }
+
+    /// Archive keys are retained as document-owned objects, even after every
+    /// label referencing them is removed. Purge must therefore enumerate the
+    /// object table rather than label rows.
+    pub async fn document_archive_keys(&self, document_id: Uuid) -> Result<Vec<String>> {
+        sqlx::query_scalar("SELECT storage_key FROM document_archives WHERE document_id=$1")
+            .bind(document_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Error::from)
     }
 }
 
@@ -1175,12 +1181,8 @@ impl PostgresCatalog {
                  d.title,
                  COALESCE(SUM(a.byte_length), 0)::bigint AS "figure_bytes!",
                  COALESCE((
-                   SELECT COALESCE(SUM(archive_bytes), 0)::bigint
-                   FROM (
-                     SELECT DISTINCT ON (archive_key) archive_bytes
-                     FROM document_labels
-                     WHERE document_id = d.id AND archive_key IS NOT NULL
-                   ) DISTINCT_labels
+                   SELECT COALESCE(SUM(byte_length), 0)::bigint
+                   FROM document_archives WHERE document_id = d.id
                  ), 0)::bigint AS "archive_bytes!",
                  (COALESCE(
                    (SELECT snapshot_bytes FROM document_snapshots WHERE document_id = d.id AND delete_after IS NULL),
@@ -1193,12 +1195,8 @@ impl PostgresCatalog {
                ORDER BY (
                  COALESCE(SUM(a.byte_length), 0) +
                  COALESCE((
-                   SELECT COALESCE(SUM(archive_bytes), 0)
-                   FROM (
-                     SELECT DISTINCT ON (archive_key) archive_bytes
-                     FROM document_labels
-                     WHERE document_id = d.id AND archive_key IS NOT NULL
-                   ) DISTINCT_labels
+                   SELECT COALESCE(SUM(byte_length), 0)
+                   FROM document_archives WHERE document_id = d.id
                  ), 0) +
                  COALESCE((SELECT snapshot_bytes FROM document_snapshots WHERE document_id = d.id AND delete_after IS NULL), 0) +
                  d.uncompacted_update_bytes
