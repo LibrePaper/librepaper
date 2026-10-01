@@ -536,7 +536,7 @@
   /// about the main file, and is why the line is checked first.
   function fileOf(diagnostic) {
     const doc = boundDoc();
-    if (!diagnostic.file) return doc?.getMap("meta")?.get("main") || "";
+    if (!diagnostic.file) return doc ? projectDirectory(doc, rules ?? null).mainId : "";
     return textIdForPath(doc, diagnostic.file);
   }
 
@@ -1145,7 +1145,7 @@
     // must not recreate the editor when a pane or diagnostic changes.
     return untrack(() => {
       const initial = untrack(() => {
-        const first = file || boundDoc()?.getMap("meta")?.get("main") || "";
+        const first = file || projectDirectory(boundDoc(), rules ?? null).mainId || "";
         showing = first;
         const documentStates = stateMap(boundDoc());
         if (first && !documentStates.has(first)) documentStates.set(first, stateFor(first));
