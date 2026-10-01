@@ -554,6 +554,8 @@ impl PostgresCatalog {
         let compaction = if after.compaction_done {
             Vec::new()
         } else {
+            // Keep these literals aligned with COMPACTION_* in postgres/mod.rs;
+            // the counters themselves were introduced by migration 0001_catalog.sql.
             sqlx::query_scalar::<_, Uuid>(
                 "SELECT id FROM documents WHERE status='active'
                AND (uncompacted_update_count >= 100 OR uncompacted_update_bytes >= 16777216)
