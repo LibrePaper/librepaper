@@ -1743,7 +1743,7 @@ mod tests {
             .await
             .unwrap();
         catalog.migrate().await.unwrap();
-        let _writer = catalog.claim_writer().await.unwrap();
+        let writer = catalog.claim_writer().await.unwrap();
         let tag = new_id().simple().to_string();
         let account = seed_account(&catalog, &format!("archive-{tag}")).await;
         let document = seed_document(&catalog, account.id, &format!("archive-{tag}")).await;
@@ -1761,12 +1761,13 @@ mod tests {
             author_account_id: Some(account.id),
             author_label: "Owner".into(),
         };
-        let (one, two) = {
+        let (one, two, three) = {
             let mut tx = catalog.pool().begin().await.unwrap();
             let one = catalog.insert_label(&mut tx, &label(1)).await.unwrap();
             let two = catalog.insert_label(&mut tx, &label(2)).await.unwrap();
+            let three = catalog.insert_label(&mut tx, &label(3)).await.unwrap();
             tx.commit().await.unwrap();
-            (one, two)
+            (one, two, three)
         };
 
         let before = catalog.usage_bytes(Some(account.id)).await.unwrap();
@@ -1791,16 +1792,22 @@ mod tests {
             500,
             "the first label to name an object is charged for it"
         );
+        // Fill both quotas with this retained object. The NULL digest on the
+        // next label leaves its eventual key unknown during early admission,
+        // so the worker must be allowed to reach the serialized delta check.
+        catalog.policy.owner_bytes = catalog.usage_bytes(Some(account.id)).await.unwrap();
+        catalog.policy.deployment_bytes = catalog.usage_bytes(None).await.unwrap();
+        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), catalog.policy.owner_bytes);
+        assert_eq!(catalog.usage_bytes(None).await.unwrap(), catalog.policy.deployment_bytes);
         assert!(catalog
             .request_label_archive(document.id, two.id)
             .await
             .unwrap());
+        let pending = catalog.label(document.id, two.id).await.unwrap().unwrap();
+        assert!(pending.archive_requested_at.is_some());
+        assert!(pending.archive_error.is_none());
         // A later encoder version may produce different bytes under the same
         // projection key. The first catalog row remains authoritative.
-        // The owner is already over this lowered quota, but reusing the
-        // catalogued object adds no bytes and must remain admissible.
-        catalog.policy.owner_bytes = before.saturating_add(100);
-        assert!(catalog.usage_bytes(Some(account.id)).await.unwrap() > catalog.policy.owner_bytes);
         let newer_encoding = ArchiveObject {
             content_digest: Some(vec![3; 32]),
             byte_length: 700,
@@ -1825,6 +1832,33 @@ mod tests {
             .unwrap();
         assert_eq!(stored.byte_length, 500);
         assert_eq!(stored.content_digest.as_deref(), Some(&[2; 32][..]));
+
+        // The same unknown-identity admission must still reach the final
+        // quota gate for a genuinely new object; its positive delta is
+        // refused and leaves a terminal error for an explicit retry.
+        assert!(catalog
+            .request_label_archive(document.id, three.id)
+            .await
+            .unwrap());
+        let new_object = ArchiveObject {
+            document_id: document.id,
+            storage_key: format!("documents/{}/labels/new-object.tar.zst", document.id),
+            tree_digest: Some(vec![4; 32]),
+            content_digest: Some(vec![5; 32]),
+            byte_length: 1,
+        };
+        assert_eq!(
+            catalog
+                .attach_label_archive(three.id, &new_object)
+                .await
+                .unwrap(),
+            ArchiveAttach::RefusedQuota
+        );
+        let refused = catalog.label(document.id, three.id).await.unwrap().unwrap();
+        assert!(refused.archive_requested_at.is_none());
+        assert_eq!(refused.archive_error.as_deref(), Some("storage quota exceeded"));
+        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), catalog.policy.owner_bytes);
+        assert_eq!(catalog.usage_bytes(None).await.unwrap(), catalog.policy.deployment_bytes);
         assert_eq!(
             catalog
                 .label_archive_keys(None, 100)
@@ -1861,6 +1895,7 @@ mod tests {
             .unwrap();
         assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), before);
 
+        drop(writer);
         catalog.close().await;
     }
 

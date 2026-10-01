@@ -239,6 +239,11 @@ impl PostgresCatalog {
             tx.commit().await?;
             return Ok(false);
         };
+        // A legacy NULL digest leaves the projection key unknown until the
+        // worker reads the label. Defer quota admission in that case: the
+        // serialized attachment check can still determine whether the
+        // encoded archive reuses an existing object or adds bytes.
+        let identity_known = tree_digest.is_some();
         let has_existing_object = if let Some(tree_digest) = tree_digest.as_deref() {
             let storage_key = format!(
                 "documents/{document_id}/labels/{}.tar.zst",
@@ -267,7 +272,8 @@ impl PostgresCatalog {
         )
         .fetch_one(&mut *tx)
         .await?;
-        let refused = !has_existing_object
+        let refused = identity_known
+            && !has_existing_object
             && (owner_usage >= self.policy.owner_bytes
                 || usage_lock.saturating_add(log_usage) >= self.policy.deployment_bytes);
         let changed = if refused {
