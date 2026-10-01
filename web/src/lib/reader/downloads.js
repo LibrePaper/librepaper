@@ -10,6 +10,7 @@
 // decides.
 
 import { basename, inside } from "../file-manager.js";
+import { toBase64 } from "../figures.js";
 
 /// Which rendering downloads the File menu can honour right now.
 ///
@@ -57,14 +58,6 @@ export async function inlineBlobUrls(html, fetcher = fetch) {
     out = out.split(url).join(data);
   }
   return out;
-}
-
-function toBase64(bytes) {
-  if (typeof Buffer !== "undefined") return Buffer.from(bytes).toString("base64");
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  return btoa(binary);
 }
 
 /// Hand the browser a file to save. The object URL is revoked on a later
