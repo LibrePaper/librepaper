@@ -9,7 +9,8 @@ The official instance at librepaper.org runs `tools/deploy-docker` on an OVHclou
 - Shell: in zsh, run `setopt interactivecomments` first, or the `#` lines in these blocks fail as commands
 - Secrets: `tools/deploy-keys.yaml` (SOPS)
   - `PRODUCTION_POSTGRES_PASSWORD`, `PRODUCTION_POSTGRES_EXPORTER_PASSWORD`, `PRODUCTION_ACME_EMAIL`
-  - `PRODUCTION_GITHUB_CLIENT_ID`, `PRODUCTION_GITHUB_CLIENT_SECRET`, `PRODUCTION_ADMIN_PASSWORD`
+  - `PRODUCTION_GITHUB_CLIENT_ID`, `PRODUCTION_GITHUB_CLIENT_SECRET`
+  - `PRODUCTION_GOOGLE_CLIENT_ID`, `PRODUCTION_GOOGLE_CLIENT_SECRET`, `PRODUCTION_ADMIN_PASSWORD`
 
 ## Release
 
@@ -104,13 +105,21 @@ LibrePaper org, Settings, Developer settings, OAuth Apps.
 - Device flow: off (`librepaper login` uses the server's own device flow, not GitHub's)
 - Client ID and secret go in SOPS
 
+## Google OAuth client
+
+In Google Auth Platform, open **Clients**, create a **Web application** client, and add this exact Authorized redirect URI:
+
+`https://app.librepaper.org/auth/callback/google`
+
+Store the client ID and secret in SOPS as `PRODUCTION_GOOGLE_CLIENT_ID` and `PRODUCTION_GOOGLE_CLIENT_SECRET`. Both `deploy` and `deploy-local` map these to `LIBREPAPER_GOOGLE_CLIENT_ID` and `LIBREPAPER_GOOGLE_CLIENT_SECRET`; `verify` checks the authorization redirects for both Google and GitHub. See Google's [OAuth 2.0 guide for web server applications](https://developers.google.com/identity/protocols/oauth2/web-server).
+
 ## Secrets
 
 ```sh
 # Generate each database, exporter, and Grafana password this way. Production
 # passwords must use letters, digits, underscores, or hyphens only for .env safety.
 openssl rand -hex 24          # without openssl: nix shell nixpkgs#openssl -c openssl rand -hex 24
-sops tools/deploy-keys.yaml   # add the six PRODUCTION_* keys
+sops tools/deploy-keys.yaml   # add the eight PRODUCTION_* keys
 git add tools/deploy-keys.yaml && git commit -m "Add production secrets"   # values stay encrypted
 ```
 
@@ -162,7 +171,7 @@ LIBREPAPER_TEST_SLOW_DEPLOY=1 node --test --test-name-pattern='persistent Grafan
 ## Verify
 
 ```sh
-tools/deploy-production verify    # app and monitoring health, the site, the documents host, redirects, logs
+tools/deploy-production verify    # app and OAuth redirects, monitoring, the site, documents, redirects, logs
 tools/deploy-production logs      # follow
 LIBREPAPER_SERVER=https://app.librepaper.org librepaper login
 ```

@@ -22,6 +22,16 @@ note() { printf '    %s%s%s\n' "$dim" "$*" "$reset"; }
 
 die() { printf '%sdeploy-production: %s%s\n' "$red" "$*" "$reset" >&2; exit 1; }
 key() { sops --decrypt --extract "[\"$1\"]" tools/deploy-keys.yaml; }
+required_key() {
+	local name="$1" value
+	if ! value=$(key "$name" 2>/dev/null); then
+		die "could not decrypt required key $name in tools/deploy-keys.yaml"
+	fi
+	if [[ ! "$value" =~ [^[:space:]] ]] || [[ "${value,,}" =~ ^[[:space:]]*(null|~)[[:space:]]*$ ]]; then
+		die "required key $name in tools/deploy-keys.yaml is empty or null"
+	fi
+	printf '%s' "$value"
+}
 
 validate_env_passwords() {
 	local secret
@@ -49,9 +59,10 @@ cleanup_verify_tmp() {
 }
 
 write_env() {
-	local version="$1" acme="$2" postgres="$3" exporter_password="$4" github_id="$5" github_secret="$6" admin_password="$7"
+	local version="$1" acme="$2" postgres="$3" exporter_password="$4" github_id="$5" github_secret="$6" google_id="$7" google_secret="$8" admin_password="$9"
 	# The values are written only to a mode-600 file on the VPS. The temporary
 	# file and rename make a failed transfer leave the previous environment intact.
+	# shellcheck disable=SC2087 # expand local credentials and send them over stdin
 	ssh "$HOST" 'umask 077; cat > librepaper/.env.tmp && chmod 600 librepaper/.env.tmp && mv -f librepaper/.env.tmp librepaper/.env' <<EOF
 LIBREPAPER_VERSION=$version
 DOMAIN=$APP
@@ -63,6 +74,8 @@ LIBREPAPER_PUBLISHERS=$PUBLISHERS
 LIBREPAPER_COMMENTERS=$COMMENTERS
 LIBREPAPER_GITHUB_CLIENT_ID=$github_id
 LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret
+LIBREPAPER_GOOGLE_CLIENT_ID=$google_id
+LIBREPAPER_GOOGLE_CLIENT_SECRET=$google_secret
 LIBREPAPER_ADMIN_PASSWORD=$admin_password
 EOF
 }
@@ -132,8 +145,7 @@ USAGE
 monitoring_verify() {
 	step "Monitoring: authenticated Grafana dashboard $MONITORING"
 	local password config body headers api_code uid
-	password=$(key PRODUCTION_ADMIN_PASSWORD)
-	[ -n "$password" ] || die "PRODUCTION_ADMIN_PASSWORD in tools/deploy-keys.yaml is empty"
+	password=$(required_key PRODUCTION_ADMIN_PASSWORD)
 	config=$(mktemp)
 	body=$(mktemp)
 	headers=$(mktemp)
@@ -277,6 +289,8 @@ verify() {
 		printf '\n'
 	fi
 	ok "answers"
+	verify_oauth_redirect github 'https://github.com/login/oauth/authorize?'
+	verify_oauth_redirect google 'https://accounts.google.com/o/oauth2/v2/auth?'
 	monitoring_verify
 
 	step "Site: https://$SITE"
@@ -307,6 +321,18 @@ verify() {
 	ssh "$HOST" 'cd librepaper && docker compose logs --tail 50'
 }
 
+verify_oauth_redirect() {
+	local provider="$1" expected="$2" result code location
+	if ! result=$(curl -s -o /dev/null -w '%{http_code}\t%{redirect_url}' --max-time 15 "https://$APP/auth/login/$provider"); then
+		die "could not check the $provider OAuth redirect at https://$APP/auth/login/$provider"
+	fi
+	IFS=$'\t' read -r code location <<< "$result"
+	if [ "$code" != "302" ] || [[ "$location" != "$expected"* ]]; then
+		die "$provider OAuth route did not redirect to its expected authorization endpoint (HTTP $code)"
+	fi
+	ok "$provider OAuth redirect answers"
+}
+
 deploy() {
 	local version="${1:-v$(sed -n 's/^version = "\(.*\)"/\1/p' crates/librepaper/Cargo.toml | head -n 1)}"
 	validate_release_version "$version"
@@ -329,19 +355,17 @@ deploy() {
 	ok "$names names -> $ip"
 
 	step "Secrets from tools/deploy-keys.yaml"
-	local acme postgres exporter_password github_id github_secret admin_password
-	acme=$(key PRODUCTION_ACME_EMAIL)
-	postgres=$(key PRODUCTION_POSTGRES_PASSWORD)
-	exporter_password=$(key PRODUCTION_POSTGRES_EXPORTER_PASSWORD)
-	github_id=$(key PRODUCTION_GITHUB_CLIENT_ID)
-	github_secret=$(key PRODUCTION_GITHUB_CLIENT_SECRET)
-	admin_password=$(key PRODUCTION_ADMIN_PASSWORD)
-
-	if [ -z "$acme" ] || [ -z "$postgres" ] || [ -z "$exporter_password" ] || [ -z "$github_id" ] || [ -z "$github_secret" ] || [ -z "$admin_password" ]; then
-		die "a PRODUCTION_* key in tools/deploy-keys.yaml is empty"
-	fi
+	local acme postgres exporter_password github_id github_secret google_id google_secret admin_password
+	acme=$(required_key PRODUCTION_ACME_EMAIL)
+	postgres=$(required_key PRODUCTION_POSTGRES_PASSWORD)
+	exporter_password=$(required_key PRODUCTION_POSTGRES_EXPORTER_PASSWORD)
+	github_id=$(required_key PRODUCTION_GITHUB_CLIENT_ID)
+	github_secret=$(required_key PRODUCTION_GITHUB_CLIENT_SECRET)
+	google_id=$(required_key PRODUCTION_GOOGLE_CLIENT_ID)
+	google_secret=$(required_key PRODUCTION_GOOGLE_CLIENT_SECRET)
+	admin_password=$(required_key PRODUCTION_ADMIN_PASSWORD)
 	validate_env_passwords "$postgres" "$exporter_password" "$admin_password"
-	ok "6 keys decrypted (values not shown)"
+	ok "8 keys decrypted (values not shown)"
 
 	site_build
 
@@ -357,9 +381,9 @@ deploy() {
 	ok "$SITE serves docs/_site; $REDIRECTS -> https://$SITE"
 
 	step ".env on the VPS"
-	write_env "$version" "$acme" "$postgres" "$exporter_password" "$github_id" "$github_secret" "$admin_password"
-	unset admin_password github_secret postgres exporter_password
-	ok "wrote librepaper/.env atomically (mode 600, 11 settings)"
+	write_env "$version" "$acme" "$postgres" "$exporter_password" "$github_id" "$github_secret" "$google_id" "$google_secret" "$admin_password"
+	unset admin_password github_secret google_secret postgres exporter_password
+	ok "wrote librepaper/.env atomically (mode 600, 13 settings)"
 	bootstrap_monitoring_role
 
 	step "Containers: build and start"
@@ -381,7 +405,7 @@ deploy_local() {
 	local binary="$1"
 	[ -n "$binary" ] || die "usage: tools/deploy-production deploy-local BINARY"
 	[ -f "$binary" ] && [ -x "$binary" ] || die "BINARY must be an existing executable file"
-	local checksum remote_checksum version acme postgres exporter_password github_id github_secret admin_password
+	local checksum remote_checksum version acme postgres exporter_password github_id github_secret google_id google_secret admin_password
 	checksum=$(sha256sum "$binary" | awk '{print $1}')
 	version="local-${checksum:0:12}"
 	printf '%sDeploying local binary %s to %s%s\n' "$bold" "$checksum" "$HOST" "$reset"
@@ -398,17 +422,16 @@ deploy_local() {
 	ok "$names names -> $ip"
 
 	step "Secrets from tools/deploy-keys.yaml"
-	acme=$(key PRODUCTION_ACME_EMAIL)
-	postgres=$(key PRODUCTION_POSTGRES_PASSWORD)
-	exporter_password=$(key PRODUCTION_POSTGRES_EXPORTER_PASSWORD)
-	github_id=$(key PRODUCTION_GITHUB_CLIENT_ID)
-	github_secret=$(key PRODUCTION_GITHUB_CLIENT_SECRET)
-	admin_password=$(key PRODUCTION_ADMIN_PASSWORD)
-	if [ -z "$acme" ] || [ -z "$postgres" ] || [ -z "$exporter_password" ] || [ -z "$github_id" ] || [ -z "$github_secret" ] || [ -z "$admin_password" ]; then
-		die "a PRODUCTION_* key in tools/deploy-keys.yaml is empty"
-	fi
+	acme=$(required_key PRODUCTION_ACME_EMAIL)
+	postgres=$(required_key PRODUCTION_POSTGRES_PASSWORD)
+	exporter_password=$(required_key PRODUCTION_POSTGRES_EXPORTER_PASSWORD)
+	github_id=$(required_key PRODUCTION_GITHUB_CLIENT_ID)
+	github_secret=$(required_key PRODUCTION_GITHUB_CLIENT_SECRET)
+	google_id=$(required_key PRODUCTION_GOOGLE_CLIENT_ID)
+	google_secret=$(required_key PRODUCTION_GOOGLE_CLIENT_SECRET)
+	admin_password=$(required_key PRODUCTION_ADMIN_PASSWORD)
 	validate_env_passwords "$postgres" "$exporter_password" "$admin_password"
-	ok "6 keys decrypted (values not shown)"
+	ok "8 keys decrypted (values not shown)"
 
 	site_build
 	step "Kit: tools/deploy-docker/ -> $HOST:librepaper/"
@@ -417,9 +440,9 @@ deploy_local() {
 	site_sync
 	printf '\n%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE" | ssh "$HOST" 'cat >> librepaper/Caddyfile'
 	write_compose_override true
-	write_env "$version" "$acme" "$postgres" "$exporter_password" "$github_id" "$github_secret" "$admin_password"
-	unset admin_password github_secret postgres exporter_password
-	ok "wrote librepaper/.env atomically (mode 600, 11 settings)"
+	write_env "$version" "$acme" "$postgres" "$exporter_password" "$github_id" "$github_secret" "$google_id" "$google_secret" "$admin_password"
+	unset admin_password github_secret google_secret postgres exporter_password
+	ok "wrote librepaper/.env atomically (mode 600, 13 settings)"
 	bootstrap_monitoring_role
 
 	step "Binary: transfer and verify SHA-256 before replacement"

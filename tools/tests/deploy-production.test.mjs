@@ -25,6 +25,13 @@ function fixture({
   pgUpHealthy = true,
   prometheusTransientFailures = 0,
   realSleep = false,
+  googleClientId = 'google-id',
+  googleClientSecret = 'google-secret',
+  googleClientIdPresent = true,
+  googleClientSecretPresent = true,
+  googleHttpStatus = '302',
+  googleLocation = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
+  sopsFailureKey = '',
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
   const bin = path.join(root, 'bin');
@@ -37,10 +44,12 @@ function fixture({
   const exporterPasswordFile = path.join(root, 'exporter-password');
   const grafanaCountFile = path.join(root, 'grafana-count');
   const prometheusCountFile = path.join(root, 'prometheus-count');
+  const makeCalledFile = path.join(root, 'make-called');
+  const oauthCallsFile = path.join(root, 'oauth-calls');
   writeFileSync(adminPasswordFile, adminPassword);
   writeFileSync(exporterPasswordFile, exporterPassword);
 
-  mockCommand(bin, 'make', 'exit 0');
+  mockCommand(bin, 'make', 'printf called >> "$MAKE_CALLED_FILE"; exit 0');
   mockCommand(bin, 'dig', 'printf "192.0.2.7\\n"');
   mockCommand(bin, 'sops', `
 for arg do
@@ -50,6 +59,18 @@ for arg do
     *PRODUCTION_POSTGRES_EXPORTER_PASSWORD*) cat "$EXPORTER_PASSWORD_FILE"; exit ;;
     *PRODUCTION_GITHUB_CLIENT_ID*) printf 'github-id\\n'; exit ;;
     *PRODUCTION_GITHUB_CLIENT_SECRET*) printf 'github-secret\\n'; exit ;;
+    *PRODUCTION_GOOGLE_CLIENT_ID*)
+      if [ "$SOPS_FAILURE_KEY" = PRODUCTION_GOOGLE_CLIENT_ID ]; then printf 'private SOPS diagnostic\\n' >&2; exit 1; fi
+      [ "$GOOGLE_CLIENT_ID_PRESENT" = 1 ] || exit 0
+      printf '%s' "$GOOGLE_CLIENT_ID"
+      exit
+      ;;
+    *PRODUCTION_GOOGLE_CLIENT_SECRET*)
+      if [ "$SOPS_FAILURE_KEY" = PRODUCTION_GOOGLE_CLIENT_SECRET ]; then printf 'private SOPS diagnostic\\n' >&2; exit 1; fi
+      [ "$GOOGLE_CLIENT_SECRET_PRESENT" = 1 ] || exit 0
+      printf '%s' "$GOOGLE_CLIENT_SECRET"
+      exit
+      ;;
     *PRODUCTION_ADMIN_PASSWORD*) cat "$ADMIN_PASSWORD_FILE"; exit ;;
   esac
 done
@@ -76,7 +97,7 @@ esac`);
 mockCommand(bin, 'ssh', `
 set -eu
 command="$2"
-case "$*" in *admin-secret*|*exporter-secret*|*pg-secret*|*github-secret*) exit 91 ;; esac
+case "$*" in *admin-secret*|*exporter-secret*|*pg-secret*|*github-secret*|*google-id*|*google-secret*) exit 91 ;; esac
 case "$command" in
   *'.env.tmp'*)
     cat > "$REMOTE_ROOT/.env.tmp"
@@ -107,8 +128,8 @@ case "$command" in
 esac`);
 mockCommand(bin, 'curl', `
 set -eu
-out= headers= format= url= config=
-for arg do case "$arg" in *admin-secret*|*exporter-secret*|*pg-secret*|*github-secret*) exit 92 ;; esac; done
+out= headers= format= url= config= followed=no
+for arg do case "$arg" in *admin-secret*|*exporter-secret*|*pg-secret*|*github-secret*|*google-id*|*google-secret*) exit 92 ;; esac; done
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --config) config="$2"; shift 2 ;;
@@ -116,6 +137,7 @@ while [ "$#" -gt 0 ]; do
     -o) out="$2"; shift 2 ;;
     -D) headers="$2"; shift 2 ;;
     -w) format="$2"; shift 2 ;;
+    -L|--location) followed=yes; shift ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
@@ -124,7 +146,7 @@ if [ -n "$config" ]; then
   [ "$(stat -c %a "$config")" = 600 ]
   grep -q 'user = "admin:admin-secret"' "$config"
 fi
-code=200 body=''
+code=200 body='' location= provider=
 case "$url" in
   */admin/monitoring/api/search*)
     if [ -n "$config" ]; then
@@ -144,11 +166,27 @@ case "$url" in
     ;;
   https://app.librepaper.org/api/status) code=403 ;;
   https://app.librepaper.org/metrics|https://app.librepaper.org/api/v1/*) code=404 ;;
+  https://app.librepaper.org/auth/login/github)
+    code=302
+    location=https://github.com/login/oauth/authorize?client_id=test
+    provider=github
+    ;;
+  https://app.librepaper.org/auth/login/google)
+    code="$GOOGLE_HTTP_STATUS"
+    location="$GOOGLE_LOCATION"
+    provider=google
+    ;;
   https://docs.librepaper.org/) code=200 ;;
   https://librepaper.com) printf 'HTTP/2 301\\r\\nlocation: https://librepaper.org/\\r\\n\\r\\n'; exit 0 ;;
 esac
 if [ -n "$out" ] && [ "$out" != /dev/null ]; then printf '%s' "$body" > "$out"; fi
-  if [ -n "$format" ]; then printf '%s' "$code"; fi`);
+if [ -n "$provider" ]; then printf '%s\\t%s\\n' "$provider" "$followed" >> "$OAUTH_CALLS_FILE"; fi
+if [ -n "$format" ]; then
+  case "$format" in
+    *'%{redirect_url}'*) printf '%s\\t%s' "$code" "$location" ;;
+    *) printf '%s' "$code" ;;
+  esac
+fi`);
   mockCommand(bin, 'sleep', `
 if [ "$REAL_SLEEP" = 1 ]; then
   exec "$NODE_EXECUTABLE" -e 'setTimeout(() => process.exit(0), Number(process.argv[1]) * 1000)' "$1"
@@ -178,10 +216,115 @@ exit 0`);
       GRAFANA_PERSISTENT_STATUS: String(grafanaPersistentStatus),
       GRAFANA_AUTH_STATUS: String(grafanaAuthStatus),
       PROMETHEUS_TRANSIENT_FAILURES: String(prometheusTransientFailures),
+      MAKE_CALLED_FILE: makeCalledFile,
+      OAUTH_CALLS_FILE: oauthCallsFile,
+      GOOGLE_CLIENT_ID: String(googleClientId ?? ''),
+      GOOGLE_CLIENT_SECRET: String(googleClientSecret ?? ''),
+      GOOGLE_CLIENT_ID_PRESENT: googleClientIdPresent ? '1' : '0',
+      GOOGLE_CLIENT_SECRET_PRESENT: googleClientSecretPresent ? '1' : '0',
+      GOOGLE_HTTP_STATUS: String(googleHttpStatus),
+      GOOGLE_LOCATION: googleLocation,
+      SOPS_FAILURE_KEY: sopsFailureKey,
     },
+    makeCalledFile,
+    oauthCallsFile,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
+
+function runProduction(f, command, version = 'v0.0.9') {
+  const args = command === 'deploy-local' ? ['deploy-local', f.executable] : [command, version];
+  return spawnSync(deploy, args, { cwd: repo, env: f.env, encoding: 'utf8' });
+}
+
+test('deploy writes Google OAuth credentials to .env and keeps them out of output', () => {
+  const f = fixture();
+  try {
+    const result = runProduction(f, 'deploy');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /8 keys decrypted/);
+    assert.match(result.stdout, /13 settings/);
+    const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
+    assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
+    assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy-local writes Google OAuth credentials to .env and keeps them out of output', () => {
+  const f = fixture();
+  try {
+    const result = runProduction(f, 'deploy-local');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /8 keys decrypted/);
+    assert.match(result.stdout, /13 settings/);
+    const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
+    assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
+    assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('invalid or undecryptable Google credentials stop both deployment paths before build or remote mutation', () => {
+  const badCredentials = [
+    { name: 'missing Google client ID', options: { googleClientIdPresent: false }, key: 'PRODUCTION_GOOGLE_CLIENT_ID' },
+    { name: 'null Google client secret', options: { googleClientSecret: 'null' }, key: 'PRODUCTION_GOOGLE_CLIENT_SECRET' },
+    { name: 'empty Google client ID', options: { googleClientId: '' }, key: 'PRODUCTION_GOOGLE_CLIENT_ID' },
+    { name: 'whitespace-only Google client secret', options: { googleClientSecret: '  \t' }, key: 'PRODUCTION_GOOGLE_CLIENT_SECRET' },
+    { name: 'Google client secret decryption failure', options: { sopsFailureKey: 'PRODUCTION_GOOGLE_CLIENT_SECRET' }, key: 'PRODUCTION_GOOGLE_CLIENT_SECRET' },
+  ];
+  for (const command of ['deploy', 'deploy-local']) {
+    for (const scenario of badCredentials) {
+      const f = fixture(scenario.options);
+      try {
+        const result = runProduction(f, command);
+        assert.notEqual(result.status, 0, `${command}: ${scenario.name} unexpectedly succeeded`);
+        assert.match(result.stderr, new RegExp(scenario.key));
+        assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret|private SOPS diagnostic/);
+        assert.equal(existsSync(f.makeCalledFile), false, `${command}: ran make for ${scenario.name}`);
+        assert.deepEqual(readdirSync(f.remote), [], `${command}: mutated remote for ${scenario.name}`);
+      } finally {
+        f.cleanup();
+      }
+    }
+  }
+});
+
+test('verify checks both OAuth providers with unfollowed matching authorization redirects', () => {
+  const f = fixture();
+  try {
+    const result = spawnSync(deploy, ['verify'], { cwd: repo, env: f.env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /github OAuth redirect answers/i);
+    assert.match(result.stdout, /google OAuth redirect answers/i);
+    const calls = readFileSync(f.oauthCallsFile, 'utf8').trim().split('\n');
+    assert.deepEqual(calls, ['github\tno', 'google\tno']);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('verify rejects Google 200, 404, and wrong-provider redirects without revealing the URL', () => {
+  for (const scenario of [
+    { name: '200 without redirect', googleHttpStatus: '200', googleLocation: '' },
+    { name: '404 without Location', googleHttpStatus: '404', googleLocation: '' },
+    { name: 'redirect to GitHub', googleHttpStatus: '302', googleLocation: 'https://github.com/login/oauth/authorize?client_id=test' },
+  ]) {
+    const f = fixture(scenario);
+    try {
+      const result = spawnSync(deploy, ['verify'], { cwd: repo, env: f.env, encoding: 'utf8' });
+      assert.notEqual(result.status, 0, `${scenario.name} unexpectedly passed`);
+      assert.match(result.stderr, /google OAuth/i);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /accounts\.google\.com|github\.com/);
+    } finally {
+      f.cleanup();
+    }
+  }
+});
 
 test('deploy-local verifies the copied binary before replacing it and keeps secrets out of output', () => {
   const f = fixture();
