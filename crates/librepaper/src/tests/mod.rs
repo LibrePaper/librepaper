@@ -24,7 +24,7 @@ use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
 const SCHEMA_TABLES: &str =
     "operation_outcomes,document_proposal_outcomes,document_proposal_hunks,document_proposals,document_labels,\
      document_updates,document_snapshots,document_assets,replies,annotations,\
-     document_marks,share_links,grants,documents,accounts";
+     document_marks,share_links,grants,account_upload_admissions,documents,accounts";
 
 /// Empties the catalogue this process is pointed at.
 ///

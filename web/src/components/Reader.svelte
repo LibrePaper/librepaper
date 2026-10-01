@@ -101,6 +101,10 @@
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
 
   const SLUG = location.pathname.split("/").pop();
+  // Preserve the whole shared URL before `takeKeyFromFragment` removes its
+  // secret fragment from the address bar. The OAuth round trip returns to the
+  // same document, and the key remains available in this browser's storage.
+  const DOCUMENT_URL = location.pathname + location.search + location.hash;
 
   // The key a reader arrived with, taken out of the fragment before anything
   // asks the server a question. A fragment never leaves the browser, so this
@@ -111,6 +115,7 @@
   /* ------------------------------------------------------------ the document */
 
   let doc = $state({});
+  let documentNeedsSignIn = $state(false);
   let readerDisposed = false;
   let docsOrigin = $state(null);
   let frameSrc = $state(null);
@@ -3398,10 +3403,13 @@
       // A document answers a stranger exactly as a missing one does, which
       // tells a stranger nothing -- and tells an owner who has not signed in
       // nothing either. That is what this line is for: the page was opened
-      // at a real URL, so the honest thing to say is both. Only a 404 is that answer: a
-      // stopped server or a failing one is not a missing document.
+      // at a real URL, so the honest thing to say is both. A stopped server or
+      // a failing one is not a missing document.
       onError: (error) => {
-        if (error?.status === 404) {
+        if (error?.status === 401) {
+          documentNeedsSignIn = true;
+          doc = { title: "Sign in required" };
+        } else if (error?.status === 404) {
           doc = { title: "Document not found" };
           say(
             me.providers?.length && !identity
@@ -4054,7 +4062,19 @@
        the engine on its own, automatically, and the Preview header carries
        loading and failure states. Every paged format
        renders from source on demand; generated output remains transient. -->
-  {#if shown.document && projectUnreadable}
+  {#if documentNeedsSignIn}
+    <section class="latexpane">
+      <div class="notyet">
+        <h2 class="h4">Sign in to open this document</h2>
+        <p class="lp-text-secondary text-sm">
+          Readers, commenters, and editors need to sign in before they can open a shared document.
+        </p>
+        <div class="notyet-actions">
+          <a class="btn btn-sm lp-control-brand" href={signInHref(DOCUMENT_URL)}>Sign in</a>
+        </div>
+      </div>
+    </section>
+  {:else if shown.document && projectUnreadable}
     <!-- No projection ever arrived, so there is no tree to compile and no
          renderer card below has anything to say. This is the one state that
          is not "not yet" -- the server itself has nothing to hand this
@@ -4143,7 +4163,7 @@
   {/snippet}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
-           away={!shown.document || unrendered || failedBeforeRender || projectUnreadable} />
+           away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || projectUnreadable} />
 
   <!-- The panels, and only the panels. Which face the main area wears -- the
        document or its source -- is not a panel, and it rode in this row for

@@ -95,7 +95,7 @@
   }
 
   function startCreate(role) {
-    draft = { until: "180d", budget: "" };
+    draft = { until: "7d", budget: "" };
     editing = { role, mode: "create" };
   }
 

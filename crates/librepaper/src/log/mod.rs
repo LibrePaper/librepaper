@@ -192,6 +192,31 @@ impl Registry {
         self.resident.lock().await.get(&document_id).cloned()
     }
 
+    /// Retires a newly admitted, empty document after its first write was
+    /// refused and its catalogue row was discarded. A sequencer with a live
+    /// subscriber, buffered update, or another strong reference stays in the
+    /// registry; the regular idle sweep will retire it when safe.
+    pub async fn retire_empty(&self, document_id: Uuid) -> bool {
+        let Some(candidate) = self.resident(document_id).await else {
+            return true;
+        };
+        let state = candidate.log_state().await;
+        if state.subscribers != 0 || state.buffered != 0 {
+            return false;
+        }
+        let mut resident = self.resident.lock().await;
+        let Some(current) = resident.get(&document_id) else {
+            return true;
+        };
+        if !Arc::ptr_eq(current, &candidate) || Arc::strong_count(current) != 2 {
+            // `candidate` is our second strong reference. Any other one may
+            // still be using this sequencer, so leave it for housekeeping.
+            return false;
+        }
+        resident.remove(&document_id);
+        true
+    }
+
     pub async fn all(&self) -> Vec<Arc<Sequencer>> {
         self.resident.lock().await.values().cloned().collect()
     }

@@ -20,7 +20,9 @@ use axum::http::{HeaderMap, HeaderValue};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
+use crate::auth::{
+    sign_agent_grant, sign_device, AgentGrant, GithubApp, Identity, Policy, PROVIDER_GITHUB,
+};
 use crate::config::Configuration;
 use crate::document::store::{DocumentInput, MutationActor, Role, Store};
 use crate::log::Registry;
@@ -161,6 +163,7 @@ fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) 
         comment_budget: None,
         role,
         automation: false,
+        bearer: false,
         auth_failed: false,
     }
 }
@@ -296,6 +299,60 @@ async fn a_comments_own_frontier_reads_back_through_the_history_route() {
         "a live moment has no archive to request"
     );
 
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+async fn delegated_agent_bearer_stops_working_after_session_revocation() {
+    let Some(deployment) = deployment("agent-session-revocation").await else {
+        return;
+    };
+    let identity = Identity {
+        provider: PROVIDER_GITHUB.into(),
+        id: deployment.owner_id.to_string(),
+        handle: "owner".into(),
+        name: "Owner".into(),
+        picture: String::new(),
+        session_generation: deployment.owner_session_generation.clone(),
+    };
+    let grant = AgentGrant {
+        identity,
+        slug: deployment.slug.clone(),
+        link_hash: "ab".repeat(32),
+        role: 1,
+        expires_at: crate::util::now_unix() + 60,
+    };
+    let token = sign_agent_grant(&deployment.server.key, &grant).unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+    );
+    assert!(
+        Server::is_automation(&headers),
+        "the bearer marks automation without its header"
+    );
+    let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+    assert!(deployment
+        .server
+        .authenticated_identity(&headers, &arrival)
+        .await
+        .is_ok());
+
+    sqlx::query("UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1")
+        .bind(deployment.owner_id)
+        .execute(deployment.catalog.pool())
+        .await
+        .unwrap();
+    assert!(matches!(
+        deployment
+            .server
+            .authenticated_identity(&headers, &arrival)
+            .await,
+        Err(super::AuthenticationFailure::Invalid)
+    ));
+
+    drop(deployment._writer);
     deployment.catalog.close().await;
 }
 

@@ -53,6 +53,12 @@ impl AsLink for protocol::AssistantQuery {
     }
 }
 
+impl AsLink for protocol::AssistantRenewal {
+    fn link(&self) -> &str {
+        &self.link
+    }
+}
+
 /// Start the sidebar assistant, driving whichever installed agent the user
 /// picked.
 pub(super) async fn handle_assistant_start(
@@ -66,6 +72,15 @@ pub(super) async fn handle_assistant_start(
             Ok(accepted) => accepted,
             Err(response) => return *response,
         };
+    if !body
+        .agent_token
+        .starts_with(crate::auth::AGENT_GRANT_PREFIX)
+    {
+        return write_json(
+            401,
+            &json!({"error": "sign in to authorize the local assistant"}),
+        );
+    }
     // An agent that cannot be driven is reported as such rather than silently
     // replaced by a different one. Which model runs is the user's choice, and
     // substituting it quietly would be the opposite of bringing your own.
@@ -91,6 +106,7 @@ pub(super) async fn handle_assistant_start(
             &parsed_link,
             &body.conversation,
             &body.chat_token,
+            &body.agent_token,
             &command,
             &environment,
         )
@@ -98,6 +114,39 @@ pub(super) async fn handle_assistant_start(
     {
         Ok(()) => write_json(200, &json!({"running": true})),
         Err(error) => write_json(409, &json!({"error": error})),
+    }
+}
+
+/// Replace the scoped server credential for a live runner. The browser's
+/// signed-in session mints the replacement and transfers only this bearer
+/// over the existing paired loopback channel.
+pub(super) async fn handle_assistant_renew(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    let (body, link, _origin) =
+        match accept::<protocol::AssistantRenewal>(inner, headers, origin, request).await {
+            Ok(accepted) => accepted,
+            Err(response) => return *response,
+        };
+    if !body
+        .agent_token
+        .starts_with(crate::auth::AGENT_GRANT_PREFIX)
+    {
+        return write_json(
+            401,
+            &json!({"error": "sign in again to renew assistant access"}),
+        );
+    }
+    match inner
+        .assistant_sessions
+        .renew_agent_token(&link, &body.conversation, &body.agent_token)
+        .await
+    {
+        Ok(()) => write_json(200, &json!({"renewed": true})),
+        Err(error) => write_json(409, &json!({"renewed": false, "error": error})),
     }
 }
 

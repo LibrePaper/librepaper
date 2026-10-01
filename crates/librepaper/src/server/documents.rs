@@ -284,6 +284,9 @@ impl Server {
                         &json!({"error": "authentication expired or was revoked"}),
                     );
                 }
+                if self.needs_sign_in(&current_entry, &current_who) {
+                    return sign_in_to_read();
+                }
                 if !self.may_read(&current_entry, &current_who)
                     || (who.at_least(Role::Commenter) && !current_who.at_least(Role::Commenter))
                 {
@@ -354,6 +357,26 @@ impl Server {
             Ok(who) => who,
             Err(response) => return response,
         };
+        let account_id = match uuid::Uuid::parse_str(&who.id) {
+            Ok(id) => id,
+            Err(_) => return write_json(401, &json!({"error": "sign in to publish"})),
+        };
+        if let Err(error) = self.store.catalog.admit_account_upload(account_id).await {
+            return match error {
+                crate::storage::postgres::Error::Conflict(message)
+                    if message == "account upload rate exceeded" =>
+                {
+                    write_json(
+                        429,
+                        &json!({"error": "too many uploads this hour; try later"}),
+                    )
+                }
+                _ => write_json(
+                    503,
+                    &json!({"error": "could not check the upload limit", "retryable": true}),
+                ),
+            };
+        }
         let parsed = match self.read_upload(request).await {
             Ok(parsed) => parsed,
             Err(response) => return response,
@@ -908,6 +931,9 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
@@ -958,6 +984,9 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
@@ -1026,6 +1055,9 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
@@ -1256,6 +1288,9 @@ impl Server {
         let viewer = self
             .viewer(&entry, &headers, arrival, query.as_deref())
             .await;
+        if self.needs_sign_in(&entry, &viewer) {
+            return sign_in_to_read();
+        }
         if !self.may_read(&entry, &viewer) {
             return write_json(404, &json!({"error": "not found"}));
         }
@@ -1267,6 +1302,26 @@ impl Server {
         };
         if who.id.is_empty() {
             return write_json(401, &json!({"error": "sign in to keep a copy"}));
+        }
+        let account_id = match uuid::Uuid::parse_str(&who.id) {
+            Ok(id) => id,
+            Err(_) => return write_json(401, &json!({"error": "sign in to keep a copy"})),
+        };
+        if let Err(error) = self.store.catalog.admit_account_upload(account_id).await {
+            return match error {
+                crate::storage::postgres::Error::Conflict(message)
+                    if message == "account upload rate exceeded" =>
+                {
+                    write_json(
+                        429,
+                        &json!({"error": "too many uploads this hour; try later"}),
+                    )
+                }
+                _ => write_json(
+                    503,
+                    &json!({"error": "could not check the upload limit", "retryable": true}),
+                ),
+            };
         }
         let files = match self.store.project_files(slug).await {
             Ok(Some(files)) => files,
@@ -1484,6 +1539,9 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, query).await;
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
