@@ -1011,6 +1011,9 @@ async fn dispatch(
         ["assistant"] if *method == Method::POST => {
             super::assistant::handle_assistant_start(inner, headers, origin, request).await
         }
+        ["assistant", "renew"] if *method == Method::POST => {
+            super::assistant::handle_assistant_renew(inner, headers, origin, request).await
+        }
         ["assistant", "status"] if *method == Method::POST => {
             super::assistant::handle_assistant_status(inner, headers, origin, request).await
         }

@@ -1063,6 +1063,15 @@ pub struct AssistantQuery {
     pub conversation: String,
 }
 
+/// Renew the server grant for an already-running assistant. This value is
+/// received only from a paired browser origin and contains no browser cookie.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AssistantRenewal {
+    pub link: String,
+    pub conversation: String,
+    pub agent_token: String,
+}
+
 /// Start, inspect or stop the sidebar assistant for one conversation.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AssistantRequest {
@@ -1073,6 +1082,10 @@ pub struct AssistantRequest {
     /// The conversation credential. It never leaves loopback and is stored
     /// only in the private connection record.
     pub chat_token: String,
+    /// Five-minute document-scoped bearer minted by the signed-in browser.
+    /// It is never the browser's session cookie.
+    #[serde(default)]
+    pub agent_token: String,
     /// Which detected agent to drive. It must advertise ACP support.
     pub agent: String,
 }

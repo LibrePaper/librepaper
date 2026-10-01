@@ -1,13 +1,13 @@
 <script>
   import { onMount } from "svelte";
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
-  import { getPrivate, post } from "../../lib/api.js";
+  import { getPrivate, post, SHELL_HEADERS, keyHeaders } from "../../lib/api.js";
   import PanelHeader from "../PanelHeader.svelte";
   import PanelTabs from "../PanelTabs.svelte";
   import IconButton from "../IconButton.svelte";
   import ChatTranscript from "../ChatTranscript.svelte";
   import ChatComposer from "../ChatComposer.svelte";
-  import { createAgentClient } from "../../lib/agent-client.svelte.js";
+  import { createAgentClient, documentKey } from "../../lib/agent-client.svelte.js";
   import * as local from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import {
@@ -83,8 +83,22 @@
   const LAST_ACCESS = "librepaper.agent.access";
   // How long a just-started agent may take to join before the send gives up.
   const RUNNER_JOIN_MS = 60_000;
+  const AGENT_GRANT_RENEW_MS = 2 * 60_000;
   function lastUsed(key) { try { return localStorage.getItem(key) || ""; } catch { return ""; } }
   function rememberLastUsed(key, value) { try { localStorage.setItem(key, value); } catch { /* private window */ } }
+
+  async function mintAgentGrant(documentLink) {
+    const response = await fetch(`/api/documents/${encodeURIComponent(slug)}/agent-token`, {
+      method: "POST",
+      headers: { ...SHELL_HEADERS, ...keyHeaders(documentKey(documentLink)) },
+      credentials: "same-origin", cache: "no-store",
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || typeof body.token !== "string" || !body.token.startsWith("lpa_")) {
+      throw new Error(body.error || "Sign in again to authorize the local assistant.");
+    }
+    return body.token;
+  }
   let access = $state(roles.some((entry) => entry.id === lastUsed(LAST_ACCESS)) ? lastUsed(LAST_ACCESS) : "commenter");
   const runningLabel = $derived(installed.find((entry) => entry.id === assistant.agent)?.label || "assistant");
   let tab = $state("chat");
@@ -219,6 +233,21 @@
   }
   $effect(() => { if (paired) void act(refreshAgents); });
   $effect(() => { if (paired && connection.id) void restoreAssistant(); });
+  $effect(() => {
+    if (!paired || !assistant.running || !connection.id) return;
+    let stopped = false;
+    const renew = async () => {
+      try {
+        const target = agentLink || link;
+        const agentToken = await mintAgentGrant(target);
+        if (!stopped) await local.renewAssistant({ link: target, conversation: connection.id, agentToken });
+      } catch (error) {
+        if (!stopped) problem = error?.message || String(error);
+      }
+    };
+    const timer = setInterval(() => void renew(), AGENT_GRANT_RENEW_MS);
+    return () => { stopped = true; clearInterval(timer); };
+  });
 
   /// The explicit Connect action refreshes status first: restoring a saved
   /// Agent panel is not a request to contact the companion. Only start pairing
@@ -249,9 +278,10 @@
       assistant = { running: false, agent: "", access: "" };
     }
     await prepareAccessLink(mode);
+    const agentToken = await mintAgentGrant(agentLink || link);
     const answer = await local.startAssistant({
       link: agentLink || link, conversation: connection.id,
-      chatToken: connection.token, agent: chosenAgent,
+      chatToken: connection.token, agentToken, agent: chosenAgent,
     });
     if (!answer?.running) throw new Error(answer?.error || "The assistant did not start.");
     assistant = { running: true, agent: chosenAgent, access: mode };

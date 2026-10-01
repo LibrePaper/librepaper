@@ -28,6 +28,8 @@ enum Entry {
         status: StatusHandle,
         stop: StopSignal,
         handle: tokio::task::JoinHandle<Result<(), String>>,
+        /// Rotated by the paired browser while its session remains active.
+        grant: Option<std::sync::Arc<std::sync::RwLock<String>>>,
     },
     /// The task has exited (normally, with an error, or by panicking) and no
     /// task handle is left to hold. Kept only so one subsequent status poll
@@ -123,6 +125,7 @@ impl SessionRegistry {
         link: &DocumentLink,
         conversation: &str,
         chat_token: &str,
+        agent_token: &str,
         agent: &[String],
         agent_environment: &[(String, String)],
     ) -> Result<(), String> {
@@ -143,7 +146,8 @@ impl SessionRegistry {
                     .await
                     .map_err(|error| error.to_string())?;
             }
-            let peer = AutomationPeer::open(link.clone(), None, None).await?;
+            let peer = AutomationPeer::open_scoped(link.clone(), agent_token.to_string()).await?;
+            let grant = Some(peer.token_source());
             let config = runtime::config(
                 conversation.to_string(),
                 Some(chat_token.to_string()),
@@ -151,9 +155,11 @@ impl SessionRegistry {
                 self.state_home.clone(),
                 agent_environment.to_vec(),
             )?;
-            self.spawn_running(&key, &wanted, move |status, stop| async move {
+            self.spawn_running(&key, &wanted, grant, move |status, stop| async move {
                 runtime::run(&peer, config, status, stop).await
             });
+        } else {
+            self.renew_agent_token(link, conversation, agent_token).await?;
         }
         drop(gate);
         self.wait_until_settled(&key).await
@@ -166,7 +172,13 @@ impl SessionRegistry {
     /// registry's own mechanics -- idempotent replace, two sessions running
     /// side by side, a hard stop, a panicking task -- are exercised without
     /// an ACP agent or network access.
-    fn spawn_running<F, Fut>(&self, key: &str, config_hash: &str, body: F)
+    fn spawn_running<F, Fut>(
+        &self,
+        key: &str,
+        config_hash: &str,
+        grant: Option<std::sync::Arc<std::sync::RwLock<String>>>,
+        body: F,
+    )
     where
         F: FnOnce(StatusHandle, StopSignal) -> Fut,
         Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
@@ -190,8 +202,34 @@ impl SessionRegistry {
                 status,
                 stop,
                 handle,
+                grant,
             },
         );
+    }
+
+    /// Replace the active runner's scoped server credential after a paired
+    /// browser has renewed it. The peer reads this shared value on each HTTP
+    /// request and websocket reconnect.
+    pub(crate) async fn renew_agent_token(
+        &self,
+        link: &DocumentLink,
+        conversation: &str,
+        token: &str,
+    ) -> Result<(), String> {
+        if !token.starts_with(crate::auth::AGENT_GRANT_PREFIX) {
+            return Err("the renewed assistant authorization is invalid".into());
+        }
+        // Validate with the document server before replacing a working grant;
+        // this rejects malformed, expired, revoked, wrong-document and wrong-
+        // link credentials while preserving the active value on failure.
+        AutomationPeer::open_scoped(link.clone(), token.to_string()).await?;
+        let key = lifecycle::session_key(link, conversation)?;
+        let sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(Entry::Running { grant: Some(grant), .. }) = sessions.get(&key) else {
+            return Err("the assistant is not running; start it again from the document".into());
+        };
+        *grant.write().unwrap_or_else(|error| error.into_inner()) = token.to_string();
+        Ok(())
     }
 
     async fn wait_until_settled(&self, key: &str) -> Result<(), String> {
@@ -327,14 +365,14 @@ mod tests {
     #[tokio::test]
     async fn stopping_one_session_leaves_a_concurrent_one_running() {
         let registry = SessionRegistry::new(PathBuf::from("/tmp/registry-test"));
-        registry.spawn_running("one", "hash-1", |_status, _stop| async move {
+        registry.spawn_running("one", "hash-1", None, |_status, _stop| async move {
             // Wedged mid-await, exactly like an agent handshake that never
             // returns: this task never checks `stop`, so only a hard abort
             // (never a cooperative signal) can end it.
             std::future::pending::<()>().await;
             Ok(())
         });
-        registry.spawn_running("two", "hash-2", |status, stop| async move {
+        registry.spawn_running("two", "hash-2", None, |status, stop| async move {
             status.set(RunnerState::Ready, None, None);
             while !stop.requested() {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -356,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn a_panicking_session_reports_failed_and_the_registry_keeps_serving() {
         let registry = SessionRegistry::new(PathBuf::from("/tmp/registry-test"));
-        registry.spawn_running("panics", "hash-1", |_status, _stop| async move {
+        registry.spawn_running("panics", "hash-1", None, |_status, _stop| async move {
             panic!("session task panicked")
         });
         for _ in 0..100 {
@@ -372,7 +410,7 @@ mod tests {
 
         // The registry itself is unharmed: a second, healthy session still
         // starts and reports normally.
-        registry.spawn_running("healthy", "hash-1", |status, _stop| async move {
+        registry.spawn_running("healthy", "hash-1", None, |status, _stop| async move {
             status.set(RunnerState::Ready, None, None);
             std::future::pending::<()>().await;
             Ok(())
