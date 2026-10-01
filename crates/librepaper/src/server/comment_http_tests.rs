@@ -798,3 +798,60 @@ async fn listing_publisher_uses_cached_authentication_and_keeps_its_gates() {
     assert_eq!(response.status(), 403);
     deployment.catalog.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn backup_listing_includes_shared_reader_without_granting_publishing_access() {
+    let Some(mut deployment) = deployment("http-backup-shared-reader").await else {
+        return;
+    };
+    deployment.server.app.client_id = "test-client".into();
+    let arrival = super::origins::Origins::loopback_only()
+        .resolve("127.0.0.1:8080")
+        .unwrap();
+    let context = crate::server::RequestContext {
+        arrival,
+        peer: "127.0.0.1:4321".parse().unwrap(),
+        authentication: Ok(Identity {
+            provider: "github".into(),
+            id: deployment.commenter_id.to_string(),
+            handle: "commenter".into(),
+            name: "Commenter".into(),
+            picture: String::new(),
+            session_generation: deployment.commenter_session_generation.clone(),
+        }),
+    };
+    let headers = axum::http::HeaderMap::new();
+
+    let ordinary_listing = deployment
+        .server
+        .handle_list(&headers, &context, None)
+        .await;
+    assert_eq!(ordinary_listing.status(), 403);
+
+    let backup_listing = deployment
+        .server
+        .handle_backup_projects(&headers, &context, None)
+        .await;
+    assert_eq!(backup_listing.status(), 200);
+    let bytes = axum::body::to_bytes(backup_listing.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(payload["documents"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["documents"][0]["slug"], deployment.slug);
+    assert_eq!(payload["documents"][0]["title"], "A Paper");
+    assert!(payload.get("next_cursor").is_none());
+
+    let anonymous_context = crate::server::RequestContext {
+        arrival: context.arrival.clone(),
+        peer: context.peer,
+        authentication: Ok(Identity::default()),
+    };
+    let anonymous = deployment
+        .server
+        .handle_backup_projects(&headers, &anonymous_context, None)
+        .await;
+    assert_eq!(anonymous.status(), 401);
+    deployment.catalog.close().await;
+}

@@ -14,6 +14,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/account/storage", get(quota_storage))
         .route("/api/account/erase", any(account_erase))
         .route("/api/list", any(list))
+        .route("/api/backup/projects", get(backup_projects))
         .route("/api/documents", post(upload))
         .route("/api/documents/{slug}", any(document_detail))
         .route("/api/documents/{slug}/tools", any(tools_list))
@@ -149,6 +150,16 @@ async fn list(
     }
     server
         .handle_list(request.headers(), &ctx, request.uri().query())
+        .await
+}
+
+async fn backup_projects(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_backup_projects(request.headers(), &ctx, request.uri().query())
         .await
 }
 
@@ -1298,6 +1309,75 @@ impl Server {
                 row["open_comments"] = json!(open);
                 row["files"] = json!(files);
                 row
+            })
+            .collect();
+        let mut body = json!({"documents": documents});
+        if entries.len() == listing_limit as usize {
+            if let Some(last) = entries.last() {
+                body["next_cursor"] = json!({
+                    "after_updated": last.updated_at,
+                    "after_slug": last.slug,
+                });
+            }
+        }
+        write_json(200, &body)
+    }
+
+    /// `GET /api/backup/projects`: every project this signed-in account can
+    /// read, independent of whether its account may publish new projects.
+    /// The native companion uses this listing for account-scoped backups.
+    pub(super) async fn handle_backup_projects(
+        &self,
+        headers: &HeaderMap,
+        context: &RequestContext,
+        query: Option<&str>,
+    ) -> Reply {
+        let arrival = &context.arrival;
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let identity = context.identity();
+        let account_id = match uuid::Uuid::parse_str(&identity.id) {
+            Ok(account_id) => account_id.to_string(),
+            Err(_) => {
+                return write_json(401, &json!({"error": "sign in to list backup projects"}));
+            }
+        };
+        let listing_query: HashMap<String, String> = query
+            .map(|raw| {
+                url::form_urlencoded::parse(raw.as_bytes())
+                    .into_owned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let listing_limit = listing_query
+            .get("limit")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(200)
+            .clamp(1, 200);
+        let listing_cursor = listing_query
+            .get("after_updated")
+            .zip(listing_query.get("after_slug"))
+            .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
+        let entries = match self
+            .store
+            .visible_page_with_options(Some(&account_id), None, listing_cursor, listing_limit)
+            .await
+        {
+            Ok(entries) => entries,
+            Err(error) => {
+                eprintln!("could not query backup project listing: {error}");
+                return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
+            }
+        };
+        let documents: Vec<Value> = entries
+            .iter()
+            .map(|entry| {
+                json!({
+                    "slug": entry.slug,
+                    "title": entry.title,
+                    "updated_at": entry.updated_at,
+                })
             })
             .collect();
         let mut body = json!({"documents": documents});

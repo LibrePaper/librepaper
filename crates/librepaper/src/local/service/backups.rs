@@ -725,7 +725,7 @@ fn unix_now() -> u64 {
 mod tests {
     use super::*;
     use axum::extract::{Path as AxumPath, State};
-    use axum::routing::{get, post};
+    use axum::routing::get;
     use axum::{Json, Router};
     use sha2::Digest as _;
     use std::io::Read;
@@ -884,7 +884,7 @@ mod tests {
         });
         let app = Router::new()
             .route("/api/me", get(fixture_me))
-            .route("/api/list", post(fixture_list))
+            .route("/api/backup/projects", get(fixture_list))
             .route("/api/documents/{slug}/project", get(fixture_project))
             .with_state(fixture);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
