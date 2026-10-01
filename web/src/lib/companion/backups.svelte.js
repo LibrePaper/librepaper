@@ -78,7 +78,6 @@ export function createBackupStatus(bridge = client) {
     if (!nextPaired) return;
     void refresh();
     timer = setInterval(() => void refresh(), 30_000);
-    timer.unref?.();
   }
 
   return {

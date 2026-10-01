@@ -137,7 +137,7 @@
   const previewCacheKey = () => `${SLUG}:${doc?.created_at || "unknown"}`;
   let offlinePrepared = $state(false);
   let preparingOffline = $state(false);
-  let me = $state({});
+  let me = $state({ id: "" });
   const backupStatus = $derived(backupStatusStore.status);
   const backupPillGood = $derived(Boolean(
     backupStatus.paired && backupStatus.data?.enabled && backupStatus.data?.destination

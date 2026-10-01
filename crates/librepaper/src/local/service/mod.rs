@@ -50,8 +50,8 @@ use crate::local::protocol::{
 const PREVIEW_LOG_TAIL_BYTES: usize = 4 * 1024;
 use crate::local::quarto::{sync_hosted_workspace, BindingStore, HOSTED_BINDING};
 
-mod consent;
 mod backups;
+mod consent;
 mod jobs;
 
 pub(super) type Reply = Response<Body>;

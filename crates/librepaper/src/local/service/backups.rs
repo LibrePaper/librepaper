@@ -72,7 +72,10 @@ struct BackupConfig {
 
 impl BackupConfig {
     fn key(origin: &str, account_id: &str) -> String {
-        format!("{}\0{account_id}", crate::local::credentials::origin(origin))
+        format!(
+            "{}\0{account_id}",
+            crate::local::credentials::origin(origin)
+        )
     }
 
     fn new(origin: &str, account_id: &str) -> Self {
@@ -225,6 +228,7 @@ impl BackupManager {
         true
     }
 
+    #[allow(clippy::result_large_err)] // The error is an HTTP response, as in the other service handlers.
     async fn choose_destination(
         &self,
         inner: &Inner,
@@ -233,25 +237,47 @@ impl BackupManager {
         account_id: &str,
     ) -> Result<(), Reply> {
         let Ok(_dialog) = inner.folder_dialog.try_lock() else {
-            return Err(write_json(409, &json!({"error":"A folder chooser is already open on this computer."})));
+            return Err(write_json(
+                409,
+                &json!({"error":"A folder chooser is already open on this computer."}),
+            ));
         };
         let destination = super::super::folder::choose_directory(origin, "backup destination")
             .await
             .map_err(|error| write_json(400, &json!({"error": error})))?;
         let destination = tokio::task::spawn_blocking(move || destination.canonicalize())
             .await
-            .map_err(|error| write_json(500, &json!({"error": format!("could not resolve selected folder: {error}")})))?
-            .map_err(|error| write_json(400, &json!({"error": format!("could not resolve selected folder: {error}")})))?;
+            .map_err(|error| {
+                write_json(
+                    500,
+                    &json!({"error": format!("could not resolve selected folder: {error}")}),
+                )
+            })?
+            .map_err(|error| {
+                write_json(
+                    400,
+                    &json!({"error": format!("could not resolve selected folder: {error}")}),
+                )
+            })?;
         if !destination.is_dir() {
-            return Err(write_json(400, &json!({"error":"Select an existing backup destination."})));
+            return Err(write_json(
+                400,
+                &json!({"error":"Select an existing backup destination."}),
+            ));
         }
         if authenticate(inner, headers, Some(origin)).is_err() {
-            return Err(write_json(401, &json!({"error":"This site is no longer connected."})));
+            return Err(write_json(
+                401,
+                &json!({"error":"This site is no longer connected."}),
+            ));
         }
         let key = BackupConfig::key(origin, account_id);
         let mut state = self.state.lock().await;
         if state.in_flight.contains(&key) {
-            return Err(write_json(409, &json!({"error":"A backup is running; choose a new destination when it finishes."})));
+            return Err(write_json(
+                409,
+                &json!({"error":"A backup is running; choose a new destination when it finishes."}),
+            ));
         }
         let previous = state.configs.get(&key).cloned();
         let config = state
@@ -268,7 +294,9 @@ impl BackupManager {
         config.revision = config.revision.wrapping_add(1);
         if let Err(error) = self.persist(&state).await {
             match previous {
-                Some(previous) => { state.configs.insert(key.clone(), previous); }
+                Some(previous) => {
+                    state.configs.insert(key.clone(), previous);
+                }
                 None => {
                     state.configs.remove(&key);
                     let mut config = BackupConfig::new(origin, account_id);
@@ -298,7 +326,12 @@ impl BackupManager {
         }
         let key = BackupConfig::key(origin, account_id);
         let state = self.state.lock().await;
-        if enabled && !state.configs.get(&key).is_some_and(|config| config.destination.is_dir()) {
+        if enabled
+            && !state
+                .configs
+                .get(&key)
+                .is_some_and(|config| config.destination.is_dir())
+        {
             return Err("Choose a backup destination before enabling backups.".into());
         }
         // Never hold the status/config lock over a network request. Apart
@@ -309,17 +342,21 @@ impl BackupManager {
         if enabled {
             if let Err(error) = verify_account(inner, origin, account_id).await {
                 let mut state = self.state.lock().await;
-                if state.configs.get(&key).map_or(0, |config| config.revision)
-                    != expected_revision
+                if state.configs.get(&key).map_or(0, |config| config.revision) != expected_revision
                 {
-                    return Err("backup settings changed during account verification; retry the request".into());
+                    return Err(
+                        "backup settings changed during account verification; retry the request"
+                            .into(),
+                    );
                 }
                 let config = state
                     .configs
                     .entry(key.clone())
                     .or_insert_with(|| BackupConfig::new(origin, account_id));
                 config.error = Some(error.clone());
-                if identity_error_disables_schedule(&error) || !inner.pairing.has_live_pairing(origin) {
+                if identity_error_disables_schedule(&error)
+                    || !inner.pairing.has_live_pairing(origin)
+                {
                     if config.enabled {
                         config.revision = config.revision.wrapping_add(1);
                         config.run_generation = config.run_generation.wrapping_add(1);
@@ -328,7 +365,9 @@ impl BackupManager {
                 }
                 let error = match self.persist(&state).await {
                     Ok(()) => error,
-                    Err(persist_error) => format!("{error}; could not save backup settings: {persist_error}"),
+                    Err(persist_error) => {
+                        format!("{error}; could not save backup settings: {persist_error}")
+                    }
                 };
                 if let Some(config) = state.configs.get_mut(&key) {
                     config.error = Some(error.clone());
@@ -338,9 +377,16 @@ impl BackupManager {
         }
         let mut state = self.state.lock().await;
         if state.configs.get(&key).map_or(0, |config| config.revision) != expected_revision {
-            return Err("backup settings changed during account verification; retry the request".into());
+            return Err(
+                "backup settings changed during account verification; retry the request".into(),
+            );
         }
-        if enabled && !state.configs.get(&key).is_some_and(|config| config.destination.is_dir()) {
+        if enabled
+            && !state
+                .configs
+                .get(&key)
+                .is_some_and(|config| config.destination.is_dir())
+        {
             return Err("Choose a backup destination before enabling backups.".into());
         }
         let previous = state.configs.get(&key).cloned();
@@ -365,7 +411,9 @@ impl BackupManager {
         }
         if let Err(error) = self.persist(&state).await {
             match previous {
-                Some(previous) => { state.configs.insert(key.clone(), previous); }
+                Some(previous) => {
+                    state.configs.insert(key.clone(), previous);
+                }
                 None => {
                     state.configs.remove(&key);
                     let mut config = BackupConfig::new(origin, account_id);
@@ -426,28 +474,33 @@ impl BackupManager {
         state.in_flight.remove(&key);
         if let Some(current) = state.configs.get_mut(&key) {
             current.running = false;
-            if run_result_is_current(current, &config) { match result {
-                Ok(report) => {
-                    current.last_success = Some(unix_now());
-                    current.projects = report.projects;
-                    current.updated = report.updated;
-                    current.error = None;
-                }
-                Err(error) => {
-                    current.error = Some(error);
-                    // Identity mismatch or revoked pairing permanently stops
-                    // scheduled runs until the user explicitly enables again.
-                    if !inner.pairing.has_live_pairing(&current.origin)
-                        || current.error.as_deref().is_some_and(identity_error_disables_schedule)
-                    {
-                        if current.enabled {
-                            current.revision = current.revision.wrapping_add(1);
-                            current.run_generation = current.run_generation.wrapping_add(1);
+            if run_result_is_current(current, &config) {
+                match result {
+                    Ok(report) => {
+                        current.last_success = Some(unix_now());
+                        current.projects = report.projects;
+                        current.updated = report.updated;
+                        current.error = None;
+                    }
+                    Err(error) => {
+                        current.error = Some(error);
+                        // Identity mismatch or revoked pairing permanently stops
+                        // scheduled runs until the user explicitly enables again.
+                        if !inner.pairing.has_live_pairing(&current.origin)
+                            || current
+                                .error
+                                .as_deref()
+                                .is_some_and(identity_error_disables_schedule)
+                        {
+                            if current.enabled {
+                                current.revision = current.revision.wrapping_add(1);
+                                current.run_generation = current.run_generation.wrapping_add(1);
+                            }
+                            current.enabled = false;
                         }
-                        current.enabled = false;
                     }
                 }
-            }}
+            }
         }
         if let Err(error) = self.persist(&state).await {
             if let Some(current) = state.configs.get_mut(&key) {
@@ -511,7 +564,10 @@ pub(super) async fn handle_get(
         return write_json(400, &json!({"error":"backups needs a valid account query"}));
     };
     let Some(origin) = origin else {
-        return write_json(403, &json!({"error":"backups require a paired site origin"}));
+        return write_json(
+            403,
+            &json!({"error":"backups require a paired site origin"}),
+        );
     };
     write_json(200, &inner.backups.status(inner, origin, &account_id).await)
 }
@@ -526,7 +582,10 @@ pub(super) async fn handle_folder(
         return response;
     }
     let Some(origin) = origin else {
-        return write_json(403, &json!({"error":"backups require a paired site origin"}));
+        return write_json(
+            403,
+            &json!({"error":"backups require a paired site origin"}),
+        );
     };
     let body = match read_json_body::<AccountBody>(request).await {
         Ok(body) => body,
@@ -535,8 +594,15 @@ pub(super) async fn handle_folder(
     if !account_id(&body.account_id) {
         return write_json(400, &json!({"error":"backups need a valid account id"}));
     }
-    match inner.backups.choose_destination(inner, headers, origin, &body.account_id).await {
-        Ok(()) => write_json(200, &inner.backups.status(inner, origin, &body.account_id).await),
+    match inner
+        .backups
+        .choose_destination(inner, headers, origin, &body.account_id)
+        .await
+    {
+        Ok(()) => write_json(
+            200,
+            &inner.backups.status(inner, origin, &body.account_id).await,
+        ),
         Err(response) => response,
     }
 }
@@ -551,7 +617,10 @@ pub(super) async fn handle_put(
         return response;
     }
     let Some(origin) = origin else {
-        return write_json(403, &json!({"error":"backups require a paired site origin"}));
+        return write_json(
+            403,
+            &json!({"error":"backups require a paired site origin"}),
+        );
     };
     let body = match read_json_body::<ConfigureBody>(request).await {
         Ok(body) => body,
@@ -560,8 +629,21 @@ pub(super) async fn handle_put(
     if !account_id(&body.account_id) {
         return write_json(400, &json!({"error":"backups need a valid account id"}));
     }
-    match inner.backups.configure(inner, origin, &body.account_id, body.enabled, body.frequency_minutes).await {
-        Ok(()) => write_json(200, &inner.backups.status(inner, origin, &body.account_id).await),
+    match inner
+        .backups
+        .configure(
+            inner,
+            origin,
+            &body.account_id,
+            body.enabled,
+            body.frequency_minutes,
+        )
+        .await
+    {
+        Ok(()) => write_json(
+            200,
+            &inner.backups.status(inner, origin, &body.account_id).await,
+        ),
         Err(error) => {
             let needs_login = error.contains("not signed in")
                 || error.contains("could not verify account")
@@ -581,7 +663,10 @@ pub(super) async fn handle_run(
         return response;
     }
     let Some(origin) = origin else {
-        return write_json(403, &json!({"error":"backups require a paired site origin"}));
+        return write_json(
+            403,
+            &json!({"error":"backups require a paired site origin"}),
+        );
     };
     let body = match read_json_body::<AccountBody>(request).await {
         Ok(body) => body,
@@ -591,7 +676,10 @@ pub(super) async fn handle_run(
         return write_json(400, &json!({"error":"backups need a valid account id"}));
     }
     match inner.backups.run_now(inner, origin, &body.account_id).await {
-        Ok(()) => write_json(200, &inner.backups.status(inner, origin, &body.account_id).await),
+        Ok(()) => write_json(
+            200,
+            &inner.backups.status(inner, origin, &body.account_id).await,
+        ),
         Err(error) => write_json(409, &json!({"error": error})),
     }
 }
@@ -602,7 +690,9 @@ async fn verify_account(inner: &Inner, origin: &str, account_id: &str) -> Result
     }
     let token = crate::cli::stored_token_at(&inner.state_home, origin);
     if token.is_empty() {
-        return Err(format!("not signed in. Run: librepaper login --server {origin}"));
+        return Err(format!(
+            "not signed in. Run: librepaper login --server {origin}"
+        ));
     }
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -635,7 +725,10 @@ async fn verify_account(inner: &Inner, origin: &str, account_id: &str) -> Result
     Ok(token)
 }
 
-async fn run_backup(inner: &Inner, config: &BackupConfig) -> Result<crate::local::backup::BackupReport, String> {
+async fn run_backup(
+    inner: &Inner,
+    config: &BackupConfig,
+) -> Result<crate::local::backup::BackupReport, String> {
     let token = verify_account(inner, &config.origin, &config.account_id).await?;
     if !inner.pairing.has_live_pairing(&config.origin) {
         return Err("This site is no longer connected.".into());
@@ -672,19 +765,21 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                             current.run_generation = current.run_generation.wrapping_add(1);
                             changed = true;
                         }
-                    } else if !state.in_flight.contains(&key)
-                        && is_due(&config, now)
-                    {
+                    } else if !state.in_flight.contains(&key) && is_due(&config, now) {
                         if !config.destination.is_dir() {
                             if let Some(current) = state.configs.get_mut(&key) {
                                 current.last_attempt = Some(now);
-                                current.error = Some("The selected backup destination is unavailable.".into());
+                                current.error =
+                                    Some("The selected backup destination is unavailable.".into());
                             }
                             changed = true;
                             continue;
                         }
                         state.in_flight.insert(key);
-                        if let Some(current) = state.configs.get_mut(&BackupConfig::key(&config.origin, &config.account_id)) {
+                        if let Some(current) = state
+                            .configs
+                            .get_mut(&BackupConfig::key(&config.origin, &config.account_id))
+                        {
                             current.running = true;
                             current.last_attempt = Some(now);
                         }
@@ -694,17 +789,15 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                 }
                 if changed {
                     if let Err(error) = inner.backups.persist(&state).await {
-                    for config in state.configs.values_mut().filter(|config| config.running) {
-                        config.error = Some(error.clone());
-                    }
+                        for config in state.configs.values_mut().filter(|config| config.running) {
+                            config.error = Some(error.clone());
+                        }
                     }
                 }
                 due
             };
             for config in due {
-                inner
-                    .backups
-                    .start_run(inner.clone(), config);
+                inner.backups.start_run(inner.clone(), config);
             }
             tokio::select! {
                 _ = tokio::time::sleep(SCHEDULER_POLL) => {},
@@ -727,7 +820,6 @@ mod tests {
     use axum::extract::{Path as AxumPath, State};
     use axum::routing::{get, post};
     use axum::{Json, Router};
-    use sha2::Digest as _;
     use std::io::Read;
     use std::sync::Arc;
 
@@ -740,10 +832,15 @@ mod tests {
         assert!(identity_error(&json!({"handle": "alice"}), &account)
             .unwrap()
             .contains("no longer valid"));
-        assert!(identity_error(&json!({"id": uuid::Uuid::now_v7().to_string()}), &account)
-            .unwrap()
-            .contains("does not match"));
-        assert_eq!(identity_error(&json!({"id": account.clone()}), &account), None);
+        assert!(
+            identity_error(&json!({"id": uuid::Uuid::now_v7().to_string()}), &account)
+                .unwrap()
+                .contains("does not match")
+        );
+        assert_eq!(
+            identity_error(&json!({"id": account.clone()}), &account),
+            None
+        );
         assert!(!identity_error_disables_schedule(
             identity_error(&json!({"id": ""}), &account).unwrap()
         ));
@@ -803,7 +900,10 @@ mod tests {
     #[test]
     fn browser_requests_cannot_supply_a_destination_path() {
         let account = uuid::Uuid::now_v7().to_string();
-        assert!(serde_json::from_value::<AccountBody>(json!({"account_id": account, "destination": "/tmp"})).is_err());
+        assert!(serde_json::from_value::<AccountBody>(
+            json!({"account_id": account, "destination": "/tmp"})
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -927,7 +1027,10 @@ mod tests {
         destination: &Path,
     ) {
         crate::cli::store_token_at(&inner.state_home, origin, "backup-test-token").unwrap();
-        inner.pairing.issue(origin, "backup integration fixture").unwrap();
+        inner
+            .pairing
+            .issue(origin, "backup integration fixture")
+            .unwrap();
         let config = BackupConfig {
             enabled: true,
             destination: destination.to_path_buf(),
@@ -968,7 +1071,12 @@ mod tests {
         .expect("the scheduler completes the first backup");
 
         let namespace = hex::encode(sha2::Sha256::digest(
-            format!("{}\0{}", crate::local::credentials::origin(&server), account_id).as_bytes(),
+            format!(
+                "{}\0{}",
+                crate::local::credentials::origin(&server),
+                account_id
+            )
+            .as_bytes(),
         ));
         let backup_dir = destination
             .path()
@@ -1010,12 +1118,16 @@ mod tests {
             Some(&server),
             Request::post(format!("{BASE_PATH}/backups/run"))
                 .header("content-type", "application/json")
-                .body(Body::from(json!({"account_id": account_id.clone()}).to_string()))
+                .body(Body::from(
+                    json!({"account_id": account_id.clone()}).to_string(),
+                ))
                 .unwrap(),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), MAX_JSON_BYTES).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), MAX_JSON_BYTES)
+            .await
+            .unwrap();
         let status: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(status["running"], true);
         inner
@@ -1066,7 +1178,10 @@ mod tests {
             .unwrap();
         let result = enabling.await.unwrap();
         assert!(result.unwrap_err().contains("settings changed"));
-        assert_eq!(inner.backups.status(&inner, &server, &account_id).await["enabled"], false);
+        assert_eq!(
+            inner.backups.status(&inner, &server, &account_id).await["enabled"],
+            false
+        );
         fixture_task.abort();
     }
 
@@ -1114,19 +1229,27 @@ mod tests {
             Some(&server),
             Request::put(format!("{BASE_PATH}/backups"))
                 .header("content-type", "application/json")
-                .body(Body::from(json!({
-                    "account_id": other_account,
-                    "enabled": true,
-                    "frequency_minutes": 5,
-                }).to_string()))
+                .body(Body::from(
+                    json!({
+                        "account_id": other_account,
+                        "enabled": true,
+                        "frequency_minutes": 5,
+                    })
+                    .to_string(),
+                ))
                 .unwrap(),
         )
         .await;
         assert_eq!(mismatch.status(), StatusCode::BAD_REQUEST);
-        let response = axum::body::to_bytes(mismatch.into_body(), MAX_JSON_BYTES).await.unwrap();
+        let response = axum::body::to_bytes(mismatch.into_body(), MAX_JSON_BYTES)
+            .await
+            .unwrap();
         let value: Value = serde_json::from_slice(&response).unwrap();
         assert_eq!(value["needs_login"], true);
-        assert!(value["error"].as_str().unwrap().contains("account does not match"));
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("account does not match"));
         fixture_task.abort();
     }
 
@@ -1160,7 +1283,10 @@ mod tests {
             .configure(&inner, &server, &account_id, true, 5)
             .await
             .unwrap();
-        assert_eq!(inner.backups.status(&inner, &server, &account_id).await["enabled"], true);
+        assert_eq!(
+            inner.backups.status(&inner, &server, &account_id).await["enabled"],
+            true
+        );
         fixture_task.abort();
     }
 
