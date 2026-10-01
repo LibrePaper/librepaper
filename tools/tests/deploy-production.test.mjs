@@ -22,6 +22,7 @@ function fixture({
   grafanaTransientFailures = 0,
   grafanaAuthStatus = 200,
   pgUpHealthy = true,
+  prometheusTransientFailures = 0,
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
   const bin = path.join(root, 'bin');
@@ -31,6 +32,7 @@ function fixture({
   const adminPasswordFile = path.join(root, 'admin-password');
   const exporterPasswordFile = path.join(root, 'exporter-password');
   const grafanaCountFile = path.join(root, 'grafana-count');
+  const prometheusCountFile = path.join(root, 'prometheus-count');
   writeFileSync(adminPasswordFile, adminPassword);
   writeFileSync(exporterPasswordFile, exporterPassword);
 
@@ -86,6 +88,10 @@ case "$command" in
   *'sha256sum librepaper.tmp'*) sha256sum "$REMOTE_ROOT/librepaper.tmp" | cut -d ' ' -f1 ;;
   *'chmod 755 librepaper.tmp'*) mv "$REMOTE_ROOT/librepaper.tmp" "$REMOTE_ROOT/librepaper" ;;
   *'prometheus sh -s'*)
+    count=$(cat "$PROMETHEUS_COUNT_FILE" 2>/dev/null || printf '0')
+    count=$((count + 1))
+    printf '%s' "$count" > "$PROMETHEUS_COUNT_FILE"
+    if [ "$count" -le "$PROMETHEUS_TRANSIENT_FAILURES" ]; then exit 1; fi
     script=$(cat)
     case "$script" in *pg_up*) ;; *) exit 93 ;; esac
     printf '%s\\n---LIBREPAPER-METRICS---\\n%s\\n---LIBREPAPER-METRICS---\\n%s\\n' \\
@@ -155,8 +161,10 @@ if [ -n "$out" ] && [ "$out" != /dev/null ]; then printf '%s' "$body" > "$out"; 
       ADMIN_PASSWORD_FILE: adminPasswordFile,
       EXPORTER_PASSWORD_FILE: exporterPasswordFile,
       GRAFANA_COUNT_FILE: grafanaCountFile,
+      PROMETHEUS_COUNT_FILE: prometheusCountFile,
       GRAFANA_TRANSIENT_FAILURES: String(grafanaTransientFailures),
       GRAFANA_AUTH_STATUS: String(grafanaAuthStatus),
+      PROMETHEUS_TRANSIENT_FAILURES: String(prometheusTransientFailures),
     },
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
@@ -241,7 +249,31 @@ test('deploy-local refuses monitoring readiness without PostgreSQL exporter heal
   try {
     const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Prometheus targets, LibrePaper sample history, or snapshot freshness are unhealthy/);
+    assert.match(result.stderr, /Prometheus APIs, targets, LibrePaper sample history, snapshot, or pg_up are unhealthy/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy refuses an uninstrumented v0.0.8 release before writing remotely', () => {
+  const f = fixture();
+  try {
+    const result = spawnSync(deploy, ['deploy', 'v0.0.8'], { cwd: repo, env: f.env, encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /v0.0.8 lacks metrics.*Use deploy-local/);
+    assert.deepEqual(readdirSync(f.remote), []);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy-local retries a temporary Prometheus API failure and continues when it recovers', () => {
+  const f = fixture({ prometheusTransientFailures: 1 });
+  try {
+    const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /waiting for Prometheus APIs/);
+    assert.equal(readFileSync(path.join(f.root, 'prometheus-count'), 'utf8'), '2');
   } finally {
     f.cleanup();
   }
