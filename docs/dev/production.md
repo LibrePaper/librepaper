@@ -146,7 +146,7 @@ The deploy command bootstraps or updates the `librepaper_metrics` PostgreSQL rol
 
 To rotate the Grafana password, change it from the Grafana account page, update `PRODUCTION_ADMIN_PASSWORD` in SOPS to the same new value, then deploy. Changing only the SOPS value does not alter an existing Grafana account because `GF_SECURITY_ADMIN_PASSWORD` is an initialization setting.
 
-The deploy verifier checks the login page and authenticated Grafana API, confirms anonymous API access is denied, ensures `/metrics`, `/api/status`, and Prometheus APIs are not public, checks that all Prometheus scrape targets are up, and waits for recent LibrePaper samples and a fresh successful snapshot. It also validates that the provisioned dashboard has panels.
+Compose waits for service health during deployment, and the verifier allows Grafana up to a minute to finish its startup before checking the authenticated API. It confirms anonymous API access is denied, ensures `/metrics`, `/api/status`, and Prometheus APIs are not public, checks that all Prometheus scrape targets are up, and waits for recent LibrePaper samples and a fresh successful snapshot. It also validates that the provisioned dashboard has panels.
 
 ## Verify
 

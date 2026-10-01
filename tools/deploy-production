@@ -126,7 +126,18 @@ monitoring_verify() {
 	escaped_password=$(printf '%s' "$password" | sed 's/\\/\\\\/g; s/"/\\"/g')
 	printf 'user = "admin:%s"\n' "$escaped_password" > "$config"
 	unset password escaped_password
-	api_code=$(curl --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
+	local api_tries=0
+	while [ "$api_tries" -lt 30 ]; do
+		api_code=$(curl --connect-timeout 3 --max-time 5 --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
+		[ "$api_code" = 200 ] && break
+		case "$api_code" in
+			000|502|503) ;;
+			*) die "authenticated Grafana dashboard API returned HTTP $api_code" ;;
+		esac
+		api_tries=$((api_tries + 1))
+		if [ "$api_tries" -eq 1 ]; then note "waiting for Grafana to finish starting (up to 60 seconds)"; fi
+		sleep 2
+	done
 	[ "$api_code" = 200 ] || die "authenticated Grafana dashboard API returned HTTP $api_code"
 	DASHBOARDS_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARDS_JSON);process.exit(d.some(x=>x.type==="dash-db"&&x.uid)?0:1)' || die "Grafana has no provisioned dashboard"
 	uid=$(DASHBOARDS_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARDS_JSON);process.stdout.write(d.find(x=>x.type==="dash-db").uid)')
@@ -310,7 +321,7 @@ deploy() {
 
 	step "Containers: build and start"
 	note "docker compose up -d --build"
-	ssh "$HOST" 'cd librepaper && docker compose up -d --build'
+	ssh "$HOST" 'cd librepaper && docker compose up -d --build --wait --wait-timeout 180'
 	ok "running"
 
 	step "Cleanup"
@@ -374,7 +385,7 @@ deploy_local() {
 	ok "verified SHA-256 $checksum and replaced the kit executable"
 
 	step "Containers: build and start local source"
-	ssh "$HOST" 'cd librepaper && docker compose up -d --build'
+	ssh "$HOST" 'cd librepaper && docker compose up -d --build --wait --wait-timeout 180'
 	verify
 	printf '\n%sDone: local binary %s is live at https://%s (%ss)%s\n' "$green$bold" "$checksum" "$APP" "$SECONDS" "$reset"
 }

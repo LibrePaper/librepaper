@@ -89,6 +89,7 @@ for arg do case "$arg" in *admin-secret*|*exporter-secret*|*pg-secret*|*github-s
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --config) config="$2"; shift 2 ;;
+    --connect-timeout|--max-time) shift 2 ;;
     -o) out="$2"; shift 2 ;;
     -D) headers="$2"; shift 2 ;;
     -w) format="$2"; shift 2 ;;
