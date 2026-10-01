@@ -42,9 +42,23 @@ Once the VPS has its IP, for each of librepaper.org and librepaper.com.
 - Leave Hover's domain forwarding off: it cannot serve HTTPS, so Caddy does the redirects
 - Sign in at hover.com, click the domain, open the DNS tab
 - Delete the parking records `A @` and `A *` (value `216.40.34.41`): tick them, Bulk edit, Delete; the wildcard swallows `docs`. Keep `MX` and `mail` if Hover email is in use
-- Add a record, type A, IP address = the VPS IPv4, one per hostname:
-  - librepaper.org: `@`, `docs`, `www`
-  - librepaper.com: `@`, `www`
+- Add a record for each row below: Hover appends the domain to the hostname, and `@` is the bare domain; leave TTL at the default
+
+librepaper.org:
+
+| Type | Hostname | IP address | Name |
+|---|---|---|---|
+| A | `@` | `VPS_IP` | `librepaper.org` |
+| A | `docs` | `VPS_IP` | `docs.librepaper.org` |
+| A | `www` | `VPS_IP` | `www.librepaper.org` |
+
+librepaper.com:
+
+| Type | Hostname | IP address | Name |
+|---|---|---|---|
+| A | `@` | `VPS_IP` | `librepaper.com` |
+| A | `www` | `VPS_IP` | `www.librepaper.com` |
+
 - No `AAAA` until `curl -6 https://example.com` works on the VPS (Let's Encrypt prefers IPv6)
 - New records usually resolve within minutes; Hover quotes up to 48 hours
 
