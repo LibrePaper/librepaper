@@ -77,8 +77,9 @@ pub fn set_main(doc: &LoroDoc, id: &str) {
     meta.insert(MAIN, id).ok();
 }
 
-/// Every text in the document, by path. What a renderer is given and what a
-/// label is made of.
+/// Raw text by path for fixtures. Production reads use stable file identities
+/// or the directory projection, which preserves colliding raw paths.
+#[cfg(test)]
 pub fn texts_of(doc: &LoroDoc) -> BTreeMap<String, String> {
     let files = doc.get_map(FILES);
     let path_map = doc.get_map(PATHS);

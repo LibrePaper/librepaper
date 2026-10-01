@@ -271,10 +271,8 @@ fn validate_proposed_changes(
             },
         })
         .collect();
-    let history = branch.export_json_updates_without_peer_compression(
-        &at_base.oplog_vv(),
-        &at_tip.oplog_vv(),
-    );
+    let history = branch
+        .export_json_updates_without_peer_compression(&at_base.oplog_vv(), &at_tip.oplog_vv());
     let base_files = at_base.get_map(session::FILES);
     let base_paths = at_base.get_map(session::PATHS);
     let existing_paths: HashSet<String> = session::paths_of(&at_base).into_values().collect();
@@ -293,9 +291,7 @@ fn validate_proposed_changes(
                 };
                 match map_op {
                     JsonMapOp::Insert { key, value } => {
-                        if base_files.get(key).is_some()
-                            || !inserted_files.insert(key.clone())
-                        {
+                        if base_files.get(key).is_some() || !inserted_files.insert(key.clone()) {
                             return Err(ProposalError::Failed(
                                 "a proposal may only add a new text file".into(),
                             ));
@@ -313,9 +309,7 @@ fn validate_proposed_changes(
                         valid_texts.insert(id.clone());
                     }
                     JsonMapOp::Delete { key } => {
-                        if base_files.get(key).is_some()
-                            || !deleted_files.insert(key.clone())
-                        {
+                        if base_files.get(key).is_some() || !deleted_files.insert(key.clone()) {
                             return Err(ProposalError::Failed(
                                 "a proposal may only add a new text file".into(),
                             ));
@@ -352,9 +346,7 @@ fn validate_proposed_changes(
                         }
                     }
                     JsonMapOp::Delete { key } => {
-                        if base_paths.get(key).is_some()
-                            || !deleted_paths.insert(key.clone())
-                        {
+                        if base_paths.get(key).is_some() || !deleted_paths.insert(key.clone()) {
                             return Err(ProposalError::Failed(
                                 "a proposal may only add a new text file".into(),
                             ));
@@ -397,9 +389,7 @@ fn validate_proposed_changes(
             if op.container == file_map_id || op.container == path_map_id {
                 continue;
             }
-            if valid_texts.contains(&op.container)
-                && matches!(op.content, JsonOpContent::Text(_))
-            {
+            if valid_texts.contains(&op.container) && matches!(op.content, JsonOpContent::Text(_)) {
                 continue;
             }
             return Err(ProposalError::Failed(
@@ -865,10 +855,8 @@ fn validate_new_file_keys_available(
     let paths_id = at_base.get_map(session::PATHS).id();
     let current_files = current.get_map(session::FILES);
     let current_paths = current.get_map(session::PATHS);
-    let history = branch.export_json_updates_without_peer_compression(
-        &at_base.oplog_vv(),
-        &at_tip.oplog_vv(),
-    );
+    let history = branch
+        .export_json_updates_without_peer_compression(&at_base.oplog_vv(), &at_tip.oplog_vv());
 
     for change in &history.changes {
         for op in &change.ops {
@@ -2413,7 +2401,9 @@ mod tests {
         let room = session::new_doc();
         room.set_peer_id(OWNER).unwrap();
         session::put_text(&room, "main.md", "The cat sat.");
-        room.get_map(session::META).insert("engine", "base").unwrap();
+        room.get_map(session::META)
+            .insert("engine", "base")
+            .unwrap();
         room.commit();
         let base = room.state_frontiers();
         let vector = session::encode_vector(&room);
@@ -2423,16 +2413,24 @@ mod tests {
         let branch = room.fork();
         branch.set_peer_id(AUTHOR).unwrap();
         set_text_by_id(&branch, &ids[0], "The tabby sat.");
-        branch.get_map(session::META).insert("engine", "hidden").unwrap();
+        branch
+            .get_map(session::META)
+            .insert("engine", "hidden")
+            .unwrap();
         branch.commit();
-        branch.get_map(session::META).insert("engine", "base").unwrap();
+        branch
+            .get_map(session::META)
+            .insert("engine", "base")
+            .unwrap();
         branch.commit();
         let tip = branch.state_frontiers();
         let bytes = session::encode_diff(&branch, &vector).unwrap();
         let proposal = Proposal { base, tip };
 
         room.set_peer_id(REVIEWER).unwrap();
-        room.get_map(session::META).insert("engine", "current").unwrap();
+        room.get_map(session::META)
+            .insert("engine", "current")
+            .unwrap();
         room.commit();
 
         assert!(matches!(
@@ -2468,9 +2466,15 @@ mod tests {
         let branch = room.fork();
         branch.set_peer_id(AUTHOR).unwrap();
         set_text_by_id(&branch, &id, "The tabby sat.");
-        branch.get_map(session::PATHS).insert(&id, "moved.md").unwrap();
+        branch
+            .get_map(session::PATHS)
+            .insert(&id, "moved.md")
+            .unwrap();
         branch.commit();
-        branch.get_map(session::PATHS).insert(&id, "main.md").unwrap();
+        branch
+            .get_map(session::PATHS)
+            .insert(&id, "main.md")
+            .unwrap();
         branch.commit();
         let proposal = Proposal {
             base,
@@ -2626,7 +2630,9 @@ mod tests {
         let hidden_text = branch.get_text("unregistered-text");
         hidden_text.insert_utf16(0, "hidden").unwrap();
         branch.commit();
-        hidden_text.delete_utf16(0, hidden_text.len_utf16()).unwrap();
+        hidden_text
+            .delete_utf16(0, hidden_text.len_utf16())
+            .unwrap();
         let hidden_map = branch
             .get_map("unregistered-map")
             .insert_container("nested", loro::LoroMap::new())
