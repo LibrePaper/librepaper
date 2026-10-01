@@ -149,7 +149,12 @@ jobs:
           mold bubblewrap texlive-latex-base texlive-latex-recommended
       - run: make pins web/dist/index.html
       - run: python -m pip install jupyter ipython nbformat
-      - run: tools/suite external
+      # The PDF preview test repeatedly terminates this runner; it remains in
+      # `tools/suite external` for manual full-suite coverage.
+      - run: >-
+          cargo test -p librepaper --lib
+          real_quarto_render_reports_success_and_retains_a_failure_log
+          -- --ignored --test-threads=1
 
   # The components, in a real browser. Its own job because it is minutes rather
   # than seconds, and because nothing else covers this: a substrate change once
