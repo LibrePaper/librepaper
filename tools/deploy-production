@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Deploy the official instance at librepaper.org: static site (make site), the app, and
-# published documents with tools/deploy-docker; runbook in docs/dev/production.md;
-# secrets from tools/deploy-keys.yaml (SOPS).
+# Deploy the official instance at librepaper.org. Secrets come from
+# tools/deploy-keys.yaml (SOPS); runbook in docs/dev/production.md.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -14,6 +13,7 @@ REDIRECTS='www.librepaper.org, librepaper.com, www.librepaper.com'
 PUBLISHERS=vincentarelbundock
 COMMENTERS=anyone
 ASSET=librepaper-x86_64-unknown-linux-musl.tar.xz
+MONITORING=https://$APP/admin/monitoring/
 
 if [ -t 1 ]; then bold=$'\e[1m' green=$'\e[32m' red=$'\e[31m' dim=$'\e[2m' reset=$'\e[0m'; else bold='' green='' red='' dim='' reset=''; fi
 step() { printf '\n%s==> %s%s\n' "$bold" "$*" "$reset"; }
@@ -22,6 +22,63 @@ note() { printf '    %s%s%s\n' "$dim" "$*" "$reset"; }
 
 die() { printf '%sdeploy-production: %s%s\n' "$red" "$*" "$reset" >&2; exit 1; }
 key() { sops --decrypt --extract "[\"$1\"]" tools/deploy-keys.yaml; }
+
+VERIFY_TMP_FILES=()
+cleanup_verify_tmp() {
+	if [ "${#VERIFY_TMP_FILES[@]}" -gt 0 ]; then rm -f -- "${VERIFY_TMP_FILES[@]}"; fi
+}
+
+write_env() {
+	local version="$1" acme="$2" postgres="$3" exporter_password="$4" github_id="$5" github_secret="$6" admin_password="$7"
+	# The values are written only to a mode-600 file on the VPS. The temporary
+	# file and rename make a failed transfer leave the previous environment intact.
+	ssh "$HOST" 'umask 077; cat > librepaper/.env.tmp && chmod 600 librepaper/.env.tmp && mv -f librepaper/.env.tmp librepaper/.env' <<EOF
+LIBREPAPER_VERSION=$version
+DOMAIN=$APP
+DOCS_DOMAIN=$DOCS
+ACME_EMAIL=$acme
+POSTGRES_PASSWORD=$postgres
+POSTGRES_EXPORTER_PASSWORD=$exporter_password
+LIBREPAPER_PUBLISHERS=$PUBLISHERS
+LIBREPAPER_COMMENTERS=$COMMENTERS
+LIBREPAPER_GITHUB_CLIENT_ID=$github_id
+LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret
+LIBREPAPER_ADMIN_PASSWORD=$admin_password
+EOF
+}
+
+write_compose_override() {
+	local local_image="${1:-false}"
+	if [ "$local_image" = true ]; then
+		ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'EOF'
+# Written by tools/deploy-production. Keep Caddy serving the static site.
+services:
+  caddy:
+    volumes:
+      - ./site:/srv/site:ro
+  librepaper:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      args: !reset {}
+EOF
+	else
+		ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'EOF'
+# Written by tools/deploy-production. Keep Caddy serving the static site.
+services:
+  caddy:
+    volumes:
+      - ./site:/srv/site:ro
+EOF
+	fi
+}
+
+bootstrap_monitoring_role() {
+	step "PostgreSQL: ensure the monitoring exporter role exists"
+	ssh "$HOST" 'cd librepaper && docker compose up -d --wait postgres'
+	ssh "$HOST" 'cd librepaper && docker compose exec -T postgres sh -s' < tools/deploy-docker/monitoring-user.sh
+	ok "ensured least-privilege librepaper_metrics role"
+}
 
 site_build() {
 	step "Site: make site (app links point at https://$APP)"
@@ -41,14 +98,101 @@ usage: tools/deploy-production <command>
 
   deploy [VERSION]   build the site, copy the kit, write .env from SOPS, build and start, then verify
                      (VERSION defaults to v + the version in crates/librepaper/Cargo.toml)
+  deploy-local BINARY deploy a previously-built Linux musl executable instead of a release image
   site               rebuild and upload the landing page and manual only (no release, no restart)
-  verify             app health, the site, the documents host, the librepaper.com redirect, the last 50 log lines
+  verify             app, monitoring, site, documents, redirect, and logs
   logs               follow the container logs
   help, -h, --help   show this message
 
 Environment:
   HOST=ubuntu@librepaper.org   ssh target (use the IP before DNS resolves)
 USAGE
+}
+
+monitoring_verify() {
+	step "Monitoring: authenticated Grafana dashboard $MONITORING"
+	local password config body headers api_code uid
+	password=$(key PRODUCTION_ADMIN_PASSWORD)
+	[ -n "$password" ] || die "PRODUCTION_ADMIN_PASSWORD in tools/deploy-keys.yaml is empty"
+	config=$(mktemp)
+	body=$(mktemp)
+	headers=$(mktemp)
+	VERIFY_TMP_FILES=("$config" "$body" "$headers")
+	trap cleanup_verify_tmp EXIT
+	chmod 600 "$config" "$body"
+	# Curl config keeps the credential out of argv and shell history. Escape
+	# characters with meaning in curl's quoted config syntax.
+	local escaped_password
+	escaped_password=$(printf '%s' "$password" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	printf 'user = "admin:%s"\n' "$escaped_password" > "$config"
+	unset password escaped_password
+	api_code=$(curl --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
+	[ "$api_code" = 200 ] || die "authenticated Grafana dashboard API returned HTTP $api_code"
+	DASHBOARDS_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARDS_JSON);process.exit(d.some(x=>x.type==="dash-db"&&x.uid)?0:1)' || die "Grafana has no provisioned dashboard"
+	uid=$(DASHBOARDS_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARDS_JSON);process.stdout.write(d.find(x=>x.type==="dash-db").uid)')
+	ok "configured credentials can read the provisioned dashboard"
+
+	local anonymous_code anonymous_location
+	anonymous_code=$(curl -sS -D "$headers" -o /dev/null -w '%{http_code}' "${MONITORING}d/$uid" || true)
+	[ "$anonymous_code" = 302 ] || [ "$anonymous_code" = 303 ] || die "unauthenticated Grafana dashboard returned HTTP $anonymous_code, expected a login redirect"
+	anonymous_location=$(tr -d '\r' < "$headers" | awk 'tolower($1)=="location:" {print $2}')
+	case "$anonymous_location" in *login*) ;; *) die "Grafana unauthenticated redirect did not lead to login" ;; esac
+	api_code=$(curl -sS -o /dev/null -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
+	[ "$api_code" = 401 ] || [ "$api_code" = 403 ] || die "unauthenticated Grafana API returned HTTP $api_code"
+	ok "unauthenticated dashboard redirects to login and API access is denied"
+
+	step "Monitoring: private endpoints and Prometheus history"
+	for path in /metrics /api/status /api/v1/status/config /api/v1/targets; do
+		local private_code
+		private_code=$(curl -sS -o /dev/null -w '%{http_code}' "https://$APP$path" || true)
+		if [ "$path" = /api/status ]; then
+			[ "$private_code" = 403 ] || die "https://$APP$path returned HTTP $private_code, expected 403"
+		else
+			case "$private_code" in 404|421) ;; *) die "https://$APP$path is public (HTTP $private_code)" ;; esac
+		fi
+	done
+	local attempts=0 targets history snapshot now start
+	local prometheus_ok=false
+	while [ "$attempts" -lt 30 ]; do
+		now=$(date +%s)
+		start=$((now - 90))
+		# Prometheus is internal-only. Run its API from inside the container and
+		# return only JSON metadata to the local Node parser.
+		local response
+		response=$(ssh "$HOST" 'cd librepaper && docker compose exec -T prometheus sh -s' <<PROMETHEUS_API_EOF
+targets=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/targets?state=active') || exit 1
+history=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query_range?query=up%7Bjob%3D%22librepaper%22%7D&start=$start&end=$now&step=15s') || exit 1
+snapshot=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=librepaper_metrics_snapshot_success%3D%3D1%20and%20time%28%29-librepaper_metrics_snapshot_timestamp_seconds%3C60') || exit 1
+printf '%s\n---LIBREPAPER-METRICS---\n%s\n---LIBREPAPER-METRICS---\n%s\n' "\$targets" "\$history" "\$snapshot"
+PROMETHEUS_API_EOF
+) || die "could not query internal Prometheus APIs"
+		targets=${response%%$'\n---LIBREPAPER-METRICS---\n'*}
+		remainder=${response#*$'\n---LIBREPAPER-METRICS---\n'}
+		history=${remainder%%$'\n---LIBREPAPER-METRICS---\n'*}
+		snapshot=${remainder#*$'\n---LIBREPAPER-METRICS---\n'}
+		if TARGETS_JSON="$targets" HISTORY_JSON="$history" SNAPSHOT_JSON="$snapshot" node -e 'const t=JSON.parse(process.env.TARGETS_JSON).data.activeTargets;const h=JSON.parse(process.env.HISTORY_JSON).data.result;const s=JSON.parse(process.env.SNAPSHOT_JSON).data.result;const healthy=t.length>0&&t.every(x=>x.health==="up");const samples=h.some(x=>{const v=x.values||[];return v.length>=2&&v.slice(-2).every(y=>y[1]==="1")});process.exit(healthy&&samples&&s.length>0?0:1)' 2>/dev/null; then
+			prometheus_ok=true
+			break
+		fi
+		attempts=$((attempts + 1))
+		if [ "$attempts" -eq 1 ]; then note "waiting for all scrape targets, two good samples, and a fresh successful snapshot (up to 60 seconds)"; fi
+		sleep 2
+	done
+	[ "$prometheus_ok" = true ] || die "Prometheus targets, LibrePaper sample history, or snapshot freshness are unhealthy"
+	ok "all Prometheus targets are up; LibrePaper has two good samples and a fresh successful snapshot"
+
+	step "Monitoring: provisioned dashboards"
+	api_code=$(curl --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
+	[ "$api_code" = 200 ] || die "authenticated Grafana dashboard API returned HTTP $api_code"
+	DASHBOARDS_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARDS_JSON);process.exit(d.some(x=>x.type==="dash-db"&&x.uid)?0:1)' || die "Grafana has no provisioned dashboard"
+	uid=$(DASHBOARDS_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARDS_JSON);process.stdout.write(d.find(x=>x.type==="dash-db").uid)')
+	api_code=$(curl --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/dashboards/uid/$uid" || true)
+	[ "$api_code" = 200 ] || die "Grafana dashboard API returned HTTP $api_code for $uid"
+	DASHBOARD_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARD_JSON).dashboard;const p=d.panels||[];function valid(xs){return xs.every(x=>x.type&&x.title&&(!x.panels||valid(x.panels)))}process.exit(p.length&&valid(p)?0:1)' || die "provisioned Grafana dashboard has missing or invalid panels"
+	ok "provisioned dashboard and panels are valid"
+	cleanup_verify_tmp
+	VERIFY_TMP_FILES=()
+	trap - EXIT
 }
 
 verify() {
@@ -81,6 +225,7 @@ verify() {
 		printf '\n'
 	fi
 	ok "answers"
+	monitoring_verify
 
 	step "Site: https://$SITE"
 	curl -fs -o /dev/null "https://$SITE/start.html" || die "https://$SITE/start.html did not answer: is the site uploaded?"
@@ -131,16 +276,18 @@ deploy() {
 	ok "$names names -> $ip"
 
 	step "Secrets from tools/deploy-keys.yaml"
-	local acme postgres github_id github_secret
+	local acme postgres exporter_password github_id github_secret admin_password
 	acme=$(key PRODUCTION_ACME_EMAIL)
 	postgres=$(key PRODUCTION_POSTGRES_PASSWORD)
+	exporter_password=$(key PRODUCTION_POSTGRES_EXPORTER_PASSWORD)
 	github_id=$(key PRODUCTION_GITHUB_CLIENT_ID)
 	github_secret=$(key PRODUCTION_GITHUB_CLIENT_SECRET)
+	admin_password=$(key PRODUCTION_ADMIN_PASSWORD)
 
-	if [ -z "$acme" ] || [ -z "$postgres" ] || [ -z "$github_id" ] || [ -z "$github_secret" ]; then
+	if [ -z "$acme" ] || [ -z "$postgres" ] || [ -z "$exporter_password" ] || [ -z "$github_id" ] || [ -z "$github_secret" ] || [ -z "$admin_password" ]; then
 		die "a PRODUCTION_* key in tools/deploy-keys.yaml is empty"
 	fi
-	ok "4 keys decrypted (values not shown)"
+	ok "6 keys decrypted (values not shown)"
 
 	site_build
 
@@ -152,23 +299,14 @@ deploy() {
 
 	step "Caddy: the site, the redirects, and the site volume"
 	printf '\n%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE" | ssh "$HOST" 'cat >> librepaper/Caddyfile'
-	printf '# Written by tools/deploy-production: the static site for Caddy.\nservices:\n  caddy:\n    volumes:\n      - ./site:/srv/site:ro\n' | ssh "$HOST" 'cat > librepaper/compose.override.yaml'
+	write_compose_override false
 	ok "$SITE serves docs/_site; $REDIRECTS -> https://$SITE"
 
 	step ".env on the VPS"
-	# shellcheck disable=SC2087 # expanded here on purpose: the secrets exist only on this side
-	ssh "$HOST" 'umask 077; cat > librepaper/.env' <<EOF
-LIBREPAPER_VERSION=$version
-DOMAIN=$APP
-DOCS_DOMAIN=$DOCS
-ACME_EMAIL=$acme
-POSTGRES_PASSWORD=$postgres
-LIBREPAPER_PUBLISHERS=$PUBLISHERS
-LIBREPAPER_COMMENTERS=$COMMENTERS
-LIBREPAPER_GITHUB_CLIENT_ID=$github_id
-LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret
-EOF
-	ok "wrote librepaper/.env (mode 600, 9 settings)"
+	write_env "$version" "$acme" "$postgres" "$exporter_password" "$github_id" "$github_secret" "$admin_password"
+	unset admin_password github_secret postgres exporter_password
+	ok "wrote librepaper/.env atomically (mode 600, 11 settings)"
+	bootstrap_monitoring_role
 
 	step "Containers: build and start"
 	note "docker compose up -d --build"
@@ -184,9 +322,69 @@ EOF
 	printf '\n%sDone: %s is live. Site https://%s, app https://%s (%ss)%s\n' "$green$bold" "$version" "$SITE" "$APP" "$SECONDS" "$reset"
 }
 
+deploy_local() {
+	local binary="$1"
+	[ -n "$binary" ] || die "usage: tools/deploy-production deploy-local BINARY"
+	[ -f "$binary" ] && [ -x "$binary" ] || die "BINARY must be an existing executable file"
+	local checksum remote_checksum version acme postgres exporter_password github_id github_secret admin_password
+	checksum=$(sha256sum "$binary" | awk '{print $1}')
+	version="local-${checksum:0:12}"
+	printf '%sDeploying local binary %s to %s%s\n' "$bold" "$checksum" "$HOST" "$reset"
+
+	# Caddy needs every name in place before it can get their certificates.
+	step "DNS: every name -> the address of $SITE"
+	local ip name names=0
+	ip=$(dig +short "$SITE" | tail -n 1)
+	[ -n "$ip" ] || die "$SITE does not resolve"
+	for name in "$SITE" "$APP" "$DOCS" ${REDIRECTS//,/}; do
+		[ "$(dig +short "$name" | tail -n 1)" = "$ip" ] || die "$name does not resolve to $ip yet: add its A record at Hover"
+		names=$((names + 1))
+	done
+	ok "$names names -> $ip"
+
+	step "Secrets from tools/deploy-keys.yaml"
+	acme=$(key PRODUCTION_ACME_EMAIL)
+	postgres=$(key PRODUCTION_POSTGRES_PASSWORD)
+	exporter_password=$(key PRODUCTION_POSTGRES_EXPORTER_PASSWORD)
+	github_id=$(key PRODUCTION_GITHUB_CLIENT_ID)
+	github_secret=$(key PRODUCTION_GITHUB_CLIENT_SECRET)
+	admin_password=$(key PRODUCTION_ADMIN_PASSWORD)
+	if [ -z "$acme" ] || [ -z "$postgres" ] || [ -z "$exporter_password" ] || [ -z "$github_id" ] || [ -z "$github_secret" ] || [ -z "$admin_password" ]; then
+		die "a PRODUCTION_* key in tools/deploy-keys.yaml is empty"
+	fi
+	ok "6 keys decrypted (values not shown)"
+
+	site_build
+	step "Kit: tools/deploy-docker/ -> $HOST:librepaper/"
+	rsync -a --out-format='    %n' tools/deploy-docker/ "$HOST:librepaper/"
+	ok "synced"
+	site_sync
+	printf '\n%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE" | ssh "$HOST" 'cat >> librepaper/Caddyfile'
+	write_compose_override true
+	write_env "$version" "$acme" "$postgres" "$exporter_password" "$github_id" "$github_secret" "$admin_password"
+	unset admin_password github_secret postgres exporter_password
+	ok "wrote librepaper/.env atomically (mode 600, 11 settings)"
+	bootstrap_monitoring_role
+
+	step "Binary: transfer and verify SHA-256 before replacement"
+	rsync -a --chmod=F755 --out-format='    %n' "$binary" "$HOST:librepaper/librepaper.tmp"
+	remote_checksum=$(ssh "$HOST" 'cd librepaper && sha256sum librepaper.tmp | cut -d " " -f1')
+	[ "$remote_checksum" = "$checksum" ] || die "remote binary checksum mismatch; existing executable was kept"
+	ssh "$HOST" 'cd librepaper && chmod 755 librepaper.tmp && mv -f librepaper.tmp librepaper'
+	ok "verified SHA-256 $checksum and replaced the kit executable"
+
+	step "Containers: build and start local source"
+	ssh "$HOST" 'cd librepaper && docker compose up -d --build'
+	verify
+	printf '\n%sDone: local binary %s is live at https://%s (%ss)%s\n' "$green$bold" "$checksum" "$APP" "$SECONDS" "$reset"
+}
+
 case "${1:-help}" in
 	deploy)
 		deploy "${2:-}"
+		;;
+	deploy-local)
+		deploy_local "${2:-}"
 		;;
 	site)
 		site_build

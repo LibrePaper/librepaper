@@ -8,8 +8,8 @@ The official instance at librepaper.org runs `tools/deploy-docker` on an OVHclou
 - Host: OVHcloud VPS, Ubuntu 24.04, BHS, user `ubuntu`, kit in `~/librepaper`
 - Shell: in zsh, run `setopt interactivecomments` first, or the `#` lines in these blocks fail as commands
 - Secrets: `tools/deploy-keys.yaml` (SOPS)
-  - `PRODUCTION_POSTGRES_PASSWORD`, `PRODUCTION_ACME_EMAIL`
-  - `PRODUCTION_GITHUB_CLIENT_ID`, `PRODUCTION_GITHUB_CLIENT_SECRET`
+  - `PRODUCTION_POSTGRES_PASSWORD`, `PRODUCTION_POSTGRES_EXPORTER_PASSWORD`, `PRODUCTION_ACME_EMAIL`
+  - `PRODUCTION_GITHUB_CLIENT_ID`, `PRODUCTION_GITHUB_CLIENT_SECRET`, `PRODUCTION_ADMIN_PASSWORD`
 
 ## Release
 
@@ -107,11 +107,13 @@ LibrePaper org, Settings, Developer settings, OAuth Apps.
 ```sh
 # PRODUCTION_POSTGRES_PASSWORD: hex, since it sits inside a postgresql:// URL
 openssl rand -hex 24          # without openssl: nix shell nixpkgs#openssl -c openssl rand -hex 24
-sops tools/deploy-keys.yaml   # add the four PRODUCTION_* keys
+sops tools/deploy-keys.yaml   # add the six PRODUCTION_* keys
 git add tools/deploy-keys.yaml && git commit -m "Add production secrets"   # values stay encrypted
 ```
 
 - The Postgres password is fixed at first start; changing it later needs an `ALTER ROLE`
+- The exporter password is installed into the least-privilege `librepaper_metrics` role during deploy; the command is idempotent for existing database volumes
+- Grafana uses `PRODUCTION_ADMIN_PASSWORD` for its initial admin account. Grafana reads that setting only when its data volume is empty; later password changes must be made in Grafana and then saved back to SOPS
 
 ## Deploy and upgrade
 
@@ -121,17 +123,35 @@ From the repository root; rerun to upgrade after a release.
 # builds the site, checks the release, copies the kit, writes .env from SOPS, builds, starts, then verifies
 tools/deploy-production deploy                               # the Cargo.toml version, or: deploy v0.0.8
 HOST=ubuntu@VPS_IP tools/deploy-production deploy            # before DNS resolves
+tools/deploy-production deploy-local target/x86_64-unknown-linux-musl/release/librepaper
 tools/deploy-production site                                 # landing page and manual only: no release, no restart
 ```
 
 - `make site` needs bun; the site is served from `~/librepaper/site` through `compose.override.yaml`
+- `deploy-local BINARY` accepts a previously built Linux musl executable. It uploads the file to a temporary name, compares SHA-256 checksums, then atomically replaces the kit binary and builds `Dockerfile.local`. Supported targets are x86_64 and aarch64. A normal release deployment resets this local-build override.
 - Domain, redirects, publishers and commenters are constants at the top of `tools/deploy-production`
 - The VPS keeps the kit and `.env` (mode 600) in `~/librepaper`
+
+## Monitoring
+
+Grafana is at `https://app.librepaper.org/admin/monitoring/`, with username `admin` and the secret in SOPS. To copy the password to a Wayland clipboard without putting it in terminal output, shell history, or process arguments:
+
+```sh
+sops --decrypt --extract '["PRODUCTION_ADMIN_PASSWORD"]' tools/deploy-keys.yaml | wl-copy
+```
+
+Paste it into Grafana's login form and clear the clipboard afterward. `wl-copy` receives the secret through a pipe; if unavailable, use an equivalent clipboard tool for your desktop. The dashboard is protected by Grafana's built-in login and is routed only on the app hostname. Prometheus, PostgreSQL exporter, and Node Exporter ports stay on the Docker internal network.
+
+The deploy command bootstraps or updates the `librepaper_metrics` PostgreSQL role before starting the monitoring containers. It can repair an existing database volume as well as prepare a new one. The role receives `pg_monitor` only, and its password is kept in `.env` with mode 600.
+
+To rotate the Grafana password, change it from the Grafana account page, update `PRODUCTION_ADMIN_PASSWORD` in SOPS to the same new value, then deploy. Changing only the SOPS value does not alter an existing Grafana account because `GF_SECURITY_ADMIN_PASSWORD` is an initialization setting.
+
+The deploy verifier checks the login page and authenticated Grafana API, confirms anonymous API access is denied, ensures `/metrics`, `/api/status`, and Prometheus APIs are not public, checks that all Prometheus scrape targets are up, and waits for recent LibrePaper samples and a fresh successful snapshot. It also validates that the provisioned dashboard has panels.
 
 ## Verify
 
 ```sh
-tools/deploy-production verify    # app health, the site, the documents host, the librepaper.com redirect, the last 50 log lines
+tools/deploy-production verify    # app and monitoring health, the site, the documents host, redirects, logs
 tools/deploy-production logs      # follow
 LIBREPAPER_SERVER=https://app.librepaper.org librepaper login
 ```
