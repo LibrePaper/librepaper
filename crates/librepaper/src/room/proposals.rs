@@ -1072,8 +1072,7 @@ pub struct DiscardProposal {
 
 #[derive(Debug)]
 pub struct ProposalDiscarded {
-    pub resolved_base: Option<Vec<u8>>,
-    pub resolved_tip: Option<Vec<u8>>,
+    pub applied: bool,
     pub removed_comments: Vec<Uuid>,
 }
 
@@ -1100,14 +1099,12 @@ impl Command for DiscardProposal {
                 .await
                 .map_err(CommandError::from)?;
             Ok(match discarded {
-                Some((base, tip, removed_comments)) => ProposalDiscarded {
-                    resolved_base: Some(base),
-                    resolved_tip: Some(tip),
+                Some((_base, _tip, removed_comments)) => ProposalDiscarded {
+                    applied: true,
                     removed_comments,
                 },
                 None => ProposalDiscarded {
-                    resolved_base: None,
-                    resolved_tip: None,
+                    applied: false,
                     removed_comments: Vec::new(),
                 },
             })

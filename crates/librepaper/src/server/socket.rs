@@ -1477,7 +1477,7 @@ impl Server {
                                                 .await
                                             {
                                                 Ok(Some(outcome)) => {
-                                                    let discarded_here = discarded.resolved_base.is_some();
+                                                    let discarded_here = discarded.applied;
                                                     let mut response = proposal_outcome_json(
                                                         &outcome,
                                                         incoming.request_id(),
