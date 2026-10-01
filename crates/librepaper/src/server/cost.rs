@@ -240,12 +240,9 @@ pub(super) async fn middleware(
         next,
     )
     .await;
-    server.metrics.record_middleware_result(
-        route,
-        &method,
-        response.status().as_u16(),
-        started,
-    );
+    server
+        .metrics
+        .record_middleware_result(route, &method, response.status().as_u16(), started);
     response
 }
 

@@ -56,8 +56,8 @@ mod history;
 #[cfg(test)]
 mod history_frontier_tests;
 mod host_metrics;
-mod metrics;
 pub(crate) mod mcp;
+mod metrics;
 mod onboarding;
 pub mod origins;
 mod quarto_checkpoint;
