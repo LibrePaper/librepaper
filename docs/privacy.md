@@ -51,6 +51,7 @@ handles are verified emails, shown to no one else.
 Three cookies:
 - `librepaper_session` - signed, 30 days, HttpOnly, SameSite, Secure (over HTTPS only), __Host- prefix (over HTTPS only)
 - `librepaper_state` - ties sign-in to the browser that started it
+- `librepaper_visitor` - signed visitor credential that keeps legacy visitor activity tied to the same browser
 
 Browser storage (never sent to server):
 - `librepaper-viewed`, `librepaper-favorites` - documents
@@ -82,8 +83,8 @@ Pseudonymous comments hide identity from other readers, not the operator.
   separate `librepaper login` flow. The browser contacts the companion only when you initiate: turning on local execution,
   choosing a local build tool, Zotero lookup, or opening Local app settings.
 - **Embedded resources:** Published documents fetch images and data from any host
-  named, which learns your address, browser and open time. For anonymous review,
-  use PDFs or `embed-resources: true` in Quarto.
+  named, which learns your address, browser and open time. To avoid requests to
+  those hosts, use PDFs or `embed-resources: true` in Quarto.
 
 Hosting, database and object-storage providers see what they store.
 

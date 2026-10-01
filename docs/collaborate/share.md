@@ -35,9 +35,9 @@ the link is revoked. These controls are beside each role in the browser's
 A read, comment, or edit link requires the holder to sign in. A link grants its
 named role only after sign-in; deployment policy can still restrict which
 signed-in accounts may publish or comment. On the public LibrePaper service,
-any signed-in GitHub or Google account may publish. Comments are attributed to
-the account, and pseudonymous labels are shown in place of account handles to
-other readers.
+any signed-in GitHub or Google account may publish. Comments from signed-in
+users show the account's display name, or its handle when no display name is
+available. Visitor-authored legacy comments use a per-document pseudonym.
 
 A stranger -- anyone with the URL and no live link -- is answered exactly as
 a deleted document answers. The reading frame is served from a separate
