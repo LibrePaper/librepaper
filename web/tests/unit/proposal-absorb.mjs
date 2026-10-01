@@ -902,7 +902,7 @@ for (const localChange of ["restore", "clean", "tail"]) {
     }
   }
   resolved.setPeerId(4n);
-  resolved.applyDiff(new Map([[containerId, { ...inverseEntry, diff: declinedInverse }]]));
+  resolved.applyDiff([[containerId, { ...inverseEntry, diff: declinedInverse }]]);
   resolved.commit();
   room.import(resolved.export({ mode: "update", from: room.oplogVersion() }));
   resolved.destroy?.();
