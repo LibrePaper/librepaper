@@ -220,14 +220,15 @@
   $effect(() => { if (paired) void act(refreshAgents); });
   $effect(() => { if (paired && connection.id) void restoreAssistant(); });
 
-  /// The primary route: sends a pair/request to show a native consent dialog
-  /// on the companion and claims the token once the person allows it. Falls
-  /// back to the librepaper://connect link when the request fails.
+  /// The explicit Connect action refreshes status first: restoring a saved
+  /// Agent panel is not a request to contact the companion. Only start pairing
+  /// if this click finds it is not already connected.
   async function connectToApp() {
     pairProblem = "";
     busy = true;
     try {
-      await local.connectApp();
+      const status = await local.retry();
+      if (status.state !== "connected") await local.connectApp();
       await refreshAgents();
     } catch (error) {
       pairProblem = error?.message || String(error);
