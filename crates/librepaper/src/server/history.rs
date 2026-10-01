@@ -259,7 +259,7 @@ impl crate::log::Command for Restore {
                 .catalog
                 .label_exists_in_transaction(tx, self.document_id, self.label_id)
                 .await
-                .map_err(|error| crate::log::CommandError::Storage(error.into()))?
+                .map_err(crate::log::CommandError::Storage)?
             {
                 return Err(crate::log::CommandError::Conflict(
                     "that version was deleted by a history trim".to_string(),
@@ -275,7 +275,7 @@ impl crate::log::Command for Restore {
                     .catalog
                     .missing_assets_in_transaction(tx, self.document_id, &digests)
                     .await
-                    .map_err(|error| crate::log::CommandError::Storage(error.into()))?
+                    .map_err(crate::log::CommandError::Storage)?
                     > 0
             {
                 return Err(crate::log::CommandError::Conflict(

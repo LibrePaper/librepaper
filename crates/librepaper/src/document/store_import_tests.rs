@@ -178,8 +178,6 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
     let bytes_a = b"figure A bytes".to_vec();
     let bytes_b = b"figure B bytes".to_vec();
     let digest_a_raw = Sha256::digest(&bytes_a).to_vec();
-    let digest_a_hex = hex::encode(&digest_a_raw);
-    let digest_b_hex = hex::encode(Sha256::digest(&bytes_b));
 
     // Step 1: Create a document with figures A and B
     store
