@@ -1,13 +1,18 @@
 # A deployment in containers
 
-The stack runs PostgreSQL, LibrePaper, Caddy, Prometheus, Grafana, and small
-host and PostgreSQL exporters. Prometheus and Grafana keep their data in named
-volumes, and the monitoring UI is served only on the application hostname.
+The stack runs PostgreSQL, LibrePaper, Caddy, Prometheus, Grafana, and host and
+PostgreSQL exporters. The currently published v0.0.8 binary does not include
+the native metrics listener, so start with a local static musl binary until a
+metrics-capable v0.0.9 or later release is published.
 
 ```sh
+# From the repository root, after building a static binary for this host.
+cp target/x86_64-unknown-linux-musl/release/librepaper tools/deploy-docker/librepaper
 cd tools/deploy-docker
-cp .env.example .env     # and fill it in
-docker compose up -d
+cp .env.example .env
+# Set DOMAIN, ACME_EMAIL, LIBREPAPER_PUBLISHERS, all three passwords described
+# below, and both client ID and client secret for GitHub or Google OAuth.
+docker compose -f compose.yaml -f compose.local.yaml up -d --build
 ```
 
 ## Before the first start
@@ -22,8 +27,10 @@ other `Host` with 421.
 
 **Say who may publish.** `LIBREPAPER_PUBLISHERS` has no default and the server
 will not start without it. Publishing requires GitHub or Google, so a
-deployment that admits publishers also needs an OAuth client, with its two
-URLs pointing at `https://$DOMAIN` and `https://$DOMAIN/auth/callback`.
+deployment that admits publishers also needs both the client ID and client
+secret for at least one OAuth provider. For GitHub, the callback is
+`https://$DOMAIN/auth/callback`; Google's is
+`https://$DOMAIN/auth/callback/google`.
 
 **Decide about retention.** Off by default, which is right for a server whose
 publishers you know and wrong for one strangers may publish to: that is
@@ -75,8 +82,9 @@ exports aggregate built-in statistics and not SQL text.
 
 ### Passwords and upgrades
 
-Set `POSTGRES_EXPORTER_PASSWORD` and `LIBREPAPER_ADMIN_PASSWORD` in `.env` to
-long random values (`openssl rand -hex 32` is suitable). The metrics role is
+Set all three `POSTGRES_PASSWORD`, `POSTGRES_EXPORTER_PASSWORD`, and
+`LIBREPAPER_ADMIN_PASSWORD` values in `.env` to independent random values
+(`openssl rand -hex 32` is suitable for each). The metrics role is
 created by the PostgreSQL initialization hook on a new volume. If PostgreSQL
 was already initialized before adding monitoring, run the included idempotent
 helper once against the running database:
@@ -106,9 +114,10 @@ volume.
 
 ### Building a locally built binary
 
-The normal `Dockerfile` still downloads a tagged release and verifies its
-checksum. For a locally built static musl binary, copy it to this directory as
-`librepaper` and use the alternate Dockerfile:
+The normal `Dockerfile` downloads a tagged release and verifies its checksum.
+Use that path only with a metrics-capable v0.0.9 or later release. For a
+locally built static musl binary, copy it to this directory as `librepaper`
+and use the alternate Dockerfile:
 
 ```sh
 docker build -f Dockerfile.local -t librepaper:local .
@@ -120,8 +129,8 @@ host; supported targets are `x86_64-unknown-linux-musl` and
 `aarch64-unknown-linux-musl`.
 
 For the full stack, use `docker compose -f compose.yaml -f compose.local.yaml
-up -d --build` from this directory. This local binary path is required until a
-published LibrePaper release includes the optional native metrics listener.
+up -d --build` from this directory. The local binary path is required until a
+published v0.0.9 or later release includes the native metrics listener.
 
 ## Backups
 
@@ -139,11 +148,11 @@ guess.
 
 ## Upgrading
 
-Set `LIBREPAPER_VERSION` to the new tag and `docker compose up -d --build`.
-The image is built from the published release archive and checked against the
-release checksums, so an upgrade either gets the binary that was released or
-fails. To run a fork instead, build it with `make build` and replace the fetch
-in the `Dockerfile` with a `COPY`.
+Once an instrumented v0.0.9 or later release is published, set
+`LIBREPAPER_VERSION` to that exact tag and run `docker compose up -d --build`.
+The image is built from the published release archive and checked against its
+checksums. Until then, keep using the local binary overlay. To run a fork,
+build a static musl binary and use `Dockerfile.local`.
 
 ## S3 instead of local objects
 

@@ -163,18 +163,20 @@ Set lifetime for public deployments: `--document-expire-after 24h`. Use `--docum
 
 ## Containers
 
-`tools/deploy-docker` provides Compose for PostgreSQL, LibrePaper, and HTTPS proxy. Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 certificates. Other names, such as `www`, get a 421 from the server: redirect them in the `Caddyfile` (example at its end).
+`tools/deploy-docker` provides Compose for PostgreSQL, LibrePaper, HTTPS proxy, and internal monitoring. The current v0.0.8 release has no metrics endpoint, so start with a local static musl binary until a metrics-capable v0.0.9 or later release is published. Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 certificates. Other names, such as `www`, get a 421 from the server: redirect them in the `Caddyfile` (example at its end).
 
 ```sh
+# From the repository root, after building a static binary for this host.
+cp target/x86_64-unknown-linux-musl/release/librepaper tools/deploy-docker/librepaper
 cd tools/deploy-docker
 cp .env.example .env
-# Edit .env: set LIBREPAPER_VERSION (v0.0.8 or later), DOMAIN, ACME_EMAIL,
-# POSTGRES_PASSWORD, LIBREPAPER_PUBLISHERS, and at least one of
-# LIBREPAPER_GITHUB_CLIENT_ID or LIBREPAPER_GOOGLE_CLIENT_ID
-docker compose up -d
+# Set DOMAIN, ACME_EMAIL, LIBREPAPER_PUBLISHERS, and independent random values
+# for POSTGRES_PASSWORD, POSTGRES_EXPORTER_PASSWORD, LIBREPAPER_ADMIN_PASSWORD.
+# Set both client ID and client secret for GitHub or Google OAuth.
+docker compose -f compose.yaml -f compose.local.yaml up -d --build
 ```
 
-Container uses `--no-local`. See `tools/deploy-docker/README.md` for backup and upgrade.
+`DOCS_DOMAIN` defaults to `docs.$DOMAIN`; both names must resolve to this host. The container uses `--no-local`. See [the Docker deployment guide](../tools/deploy-docker/README.md) for password rotation, backup, and release upgrades.
 
 The official instance also runs free, open-source Prometheus, Grafana, PostgreSQL exporter, and Node Exporter containers. Grafana is available at `/admin/monitoring/` on the app hostname and requires its built-in admin login. Prometheus and the exporters have no public ports; Caddy exposes only the Grafana path on the app hostname. The metrics listener binds inside the app container and reports aggregate counts and health, without user or document identifiers. See [production operations](dev/production.html#monitoring) for deployment, password retrieval, and rotation.
 
