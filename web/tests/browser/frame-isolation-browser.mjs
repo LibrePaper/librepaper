@@ -214,6 +214,10 @@ try {
   await page.frameEvaluate("location.reload(); true");
   await until("same docs document reloaded", () => page.frameEvaluate("window.reloadCount >= 3"), 5000);
   await until("reloaded docs frame load handler ran", () => page.evaluate("window.previewFrameLoads >= 4"), 5000);
+  // Do not send a replacement repaint until the old 16-unit payload would
+  // have become eligible. Otherwise coalescing could hide missing load-time
+  // cancellation even if Preview stopped calling frameLoaded().
+  await new Promise((resolve) => setTimeout(resolve, 8500));
   assert.ok(!String(await page.evaluate("JSON.stringify(window.messages)")).includes("stale-ready-before-reload"));
 
   // `frameLoaded()` drops queued messages while retaining the depleted token
