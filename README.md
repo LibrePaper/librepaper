@@ -24,14 +24,9 @@ released.
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
 ```
 
-On Windows, run this in PowerShell:
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1 | iex"
-```
-
-To pin a version, replace `releases/latest/download/` in either URL with
-`releases/download/<tag>/`.
+This installer supports Linux and macOS on x86_64 and aarch64. Windows
+installers are not published for v0.0.9. To pin a version, replace
+`releases/latest/download/` with `releases/download/<tag>/`.
 
 The installer puts the executable on your PATH. In a new terminal, run
 `librepaper local start` to start the companion, then connect it from *Settings*, *Local app* in LibrePaper. The installer

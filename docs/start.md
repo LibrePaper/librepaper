@@ -39,14 +39,9 @@ browser, to export a project, or to host your own deployment.
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
 ```
 
-On Windows, run this in PowerShell:
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1 | iex"
-```
-
-To pin a version, replace `releases/latest/download/` in either URL with
-`releases/download/<tag>/`.
+This installer supports Linux and macOS on x86_64 and aarch64. Windows
+installers are not published for v0.0.9. To pin a version, replace
+`releases/latest/download/` with `releases/download/<tag>/`.
 
 The installer puts the executable on your PATH. It does not
 add a desktop shortcut or register the `librepaper://` link handler.
