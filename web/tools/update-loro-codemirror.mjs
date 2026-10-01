@@ -10,8 +10,9 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("../..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("../..", import.meta.url));
 const lock = join(root, "loro-codemirror.lock");
 
 const commit = process.argv[2];

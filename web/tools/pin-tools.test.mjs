@@ -4,8 +4,9 @@ import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-const here = new URL(".", import.meta.url).pathname;
+const here = fileURLToPath(new URL(".", import.meta.url));
 const update = join(here, "update-module-pin.mjs");
 const updateLatex = join(here, "update-latex-pin.mjs");
 const sha = "a".repeat(64);

@@ -10,8 +10,9 @@
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const HERE = dirname(new URL(import.meta.url).pathname);
+const HERE = dirname(fileURLToPath(import.meta.url));
 // This file is tools/latex/tools/mirror.mjs, so the repository is three directories up.
 const REPO = dirname(dirname(dirname(HERE)));
 const OUT = join(REPO, "tools", "latex", "mirror");

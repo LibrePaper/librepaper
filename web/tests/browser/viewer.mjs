@@ -21,8 +21,9 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, extname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const HERE = dirname(new URL(import.meta.url).pathname);
+const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
 const SHELL = join(REPO, "web", "dist");
 const CORPUS = join(REPO, "tools", "latex", "corpus");

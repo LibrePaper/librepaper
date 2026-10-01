@@ -7,9 +7,10 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { call, handOver } from "../../src/lib/renderer-wasm.js";
 
-const HERE = dirname(new URL(import.meta.url).pathname);
+const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
 const SHELL = join(REPO, "web", "dist");
 const CORPUS = join(dirname(HERE), "fixtures", "typst-corpus");

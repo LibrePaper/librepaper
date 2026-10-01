@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { awsFailureMessage, metadataFor, parseArgs, preflightMirror, publish } from "../publish-mirror.mjs";
 
-const script = new URL("../publish-mirror.mjs", import.meta.url).pathname;
+const script = fileURLToPath(new URL("../publish-mirror.mjs", import.meta.url));
 const secret = "do-not-print-this-secret";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 

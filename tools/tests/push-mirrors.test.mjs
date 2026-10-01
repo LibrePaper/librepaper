@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { bucketFromArn, mappedEnvironment, selectedOvhFields, stageWasmMirror } from "../push-mirrors.mjs";
 
-const script = new URL("../push-mirrors.mjs", import.meta.url).pathname;
+const script = fileURLToPath(new URL("../push-mirrors.mjs", import.meta.url));
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 async function makeMirrors(root, wasmName = "wasm dir", latexName = "latex mirror") {

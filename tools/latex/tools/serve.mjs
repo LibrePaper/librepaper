@@ -18,8 +18,9 @@
 import { createServer } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const HERE = dirname(new URL(import.meta.url).pathname);
+const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
 
 const argv = process.argv.slice(2);

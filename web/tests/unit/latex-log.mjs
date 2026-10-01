@@ -13,9 +13,10 @@
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse, rerun, needsBibtex } from "../../src/lib/latex/log.js";
 
-const HERE = dirname(new URL(import.meta.url).pathname);
+const HERE = dirname(fileURLToPath(import.meta.url));
 const CORPUS = join(dirname(dirname(dirname(HERE))), "tools", "latex", "corpus");
 
 let failures = 0;

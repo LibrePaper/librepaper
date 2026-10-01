@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { Transform } from "node:stream";
 import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
+import { fileURLToPath } from "node:url";
 
 const runFile = promisify(execFile);
 const HASH = /(?:^|[./_-])[a-f0-9]{64}(?=$|[./_-])/i;
@@ -473,7 +474,7 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
   }
 }
 
-const invoked = process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname);
+const invoked = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 if (invoked) {
   try {
     const options = parseArgs(process.argv.slice(2));

@@ -19,8 +19,9 @@ import { execFileSync } from "node:child_process";
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 
-const HERE = dirname(new URL(import.meta.url).pathname);
+const HERE = dirname(fileURLToPath(import.meta.url));
 const CORPUS = join(dirname(HERE), "corpus");
 
 /// Which engine each example wants, and what it is for. The `xetex` example
