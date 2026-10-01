@@ -106,19 +106,26 @@ services:
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=30d
       - --storage.tsdb.retention.size=8GB
-      - --web.enable-lifecycle=false
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus:/prometheus
     networks: [internal]
     # No host port: only Grafana and the app can reach this service.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
 
   grafana:
     image: grafana/grafana:13.2.3
     restart: unless-stopped
     logging: *bounded-logs
-    depends_on: [prometheus]
+    depends_on:
+      prometheus:
+        condition: service_healthy
     environment:
       GF_SERVER_ROOT_URL: https://${DOMAIN}/admin/monitoring/
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
