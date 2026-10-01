@@ -70,12 +70,120 @@ fn destination_label(destination: &std::path::Path) -> String {
         .unwrap_or_else(|| "Selected folder".into())
 }
 
+#[cfg(unix)]
+mod path_serde {
+    use serde::de::Error as _;
+    use serde::ser::SerializeMap;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::ffi::OsString;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::path::PathBuf;
+
+    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Some(path) = path.to_str() {
+            return serializer.serialize_str(path);
+        }
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("unix_path_bytes", path.as_os_str().as_bytes())?;
+        map.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(path) => Ok(PathBuf::from(path)),
+            serde_json::Value::Object(mut fields) => {
+                let bytes = fields
+                    .remove("unix_path_bytes")
+                    .ok_or_else(|| D::Error::custom("missing unix_path_bytes"))?;
+                let bytes: Vec<u8> = serde_json::from_value(bytes).map_err(D::Error::custom)?;
+                Ok(PathBuf::from(OsString::from_vec(bytes)))
+            }
+            _ => Err(D::Error::custom("invalid backup destination path")),
+        }
+    }
+}
+
+#[cfg(windows)]
+mod path_serde {
+    use serde::de::Error as _;
+    use serde::ser::SerializeMap;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::path::PathBuf;
+
+    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Some(path) = path.to_str() {
+            return serializer.serialize_str(path);
+        }
+        let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("windows_path_wide", &wide)?;
+        map.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(path) => Ok(PathBuf::from(path)),
+            serde_json::Value::Object(mut fields) => {
+                let wide = fields
+                    .remove("windows_path_wide")
+                    .ok_or_else(|| D::Error::custom("missing windows_path_wide"))?;
+                let wide: Vec<u16> = serde_json::from_value(wide).map_err(D::Error::custom)?;
+                Ok(PathBuf::from(OsString::from_wide(&wide)))
+            }
+            _ => Err(D::Error::custom("invalid backup destination path")),
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+mod path_serde {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::path::PathBuf;
+
+    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match path.to_str() {
+            Some(path) => serializer.serialize_str(path),
+            None => Err(serde::ser::Error::custom("unsupported non-UTF-8 backup path")),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)
+            .map(PathBuf::from)
+            .map_err(D::Error::custom)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct BackupConfig {
     origin: String,
     account_id: String,
     enabled: bool,
     frequency_minutes: u64,
+    #[serde(with = "path_serde")]
     destination: PathBuf,
     last_attempt: Option<u64>,
     last_success: Option<u64>,
@@ -310,7 +418,9 @@ impl BackupManager {
         config.last_success = None;
         config.projects = 0;
         config.updated = 0;
-        config.error = None;
+        if enabled && config.error.as_deref().is_some_and(is_identity_error) {
+            config.error = None;
+        }
         config.revision = config.revision.wrapping_add(1);
         if let Err(error) = self.persist(&state).await {
             match previous {
@@ -941,6 +1051,34 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn non_utf8_destination_survives_persist_and_reload() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let account = uuid::Uuid::now_v7().to_string();
+        let destination = home
+            .path()
+            .join(std::ffi::OsString::from_vec(vec![b'b', b'a', b'c', b'k', 0xff]));
+        std::fs::create_dir(&destination).unwrap();
+        let manager = BackupManager::new(home.path());
+        let key = BackupConfig::key("https://paper.example", &account);
+        let mut state = manager.state.lock().await;
+        let config = BackupConfig {
+            destination: destination.clone(),
+            ..BackupConfig::new("https://paper.example", &account)
+        };
+        state.configs.insert(key, config);
+        manager.persist(&state).await.unwrap();
+        drop(state);
+
+        let reloaded = BackupManager::new(home.path());
+        let config = reloaded.config("https://paper.example", &account).await;
+        assert_eq!(config.destination, destination);
+        assert!(config.destination.is_dir());
+    }
+
     #[tokio::test]
     async fn identity_server_outage_is_not_a_login_error_and_recovers() {
         let account_id = uuid::Uuid::now_v7().to_string();
@@ -1044,6 +1182,34 @@ mod tests {
         assert_eq!(status["needs_login"], false);
         assert_eq!(status["error"], Value::Null);
         server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn changing_frequency_preserves_a_backup_run_error() {
+        let account_id = uuid::Uuid::now_v7().to_string();
+        let (origin, fixture_task) = start_backup_fixture(account_id.clone()).await;
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path(), cache_home.path()).await;
+        configure_scheduled_backup(&inner, &origin, &account_id, destination.path()).await;
+        let run_error = "backup completed with 1 project failure(s): project: snapshot unavailable";
+        {
+            let key = BackupConfig::key(&origin, &account_id);
+            let mut state = inner.backups.state.lock().await;
+            state.configs.get_mut(&key).unwrap().error = Some(run_error.into());
+            inner.backups.persist(&state).await.unwrap();
+        }
+
+        inner
+            .backups
+            .configure(&inner, &origin, &account_id, true, 15)
+            .await
+            .unwrap();
+        let status = inner.backups.status(&inner, &origin, &account_id).await;
+        assert_eq!(status["frequency_minutes"], 15);
+        assert_eq!(status["error"], run_error);
+        fixture_task.abort();
     }
 
     #[test]
