@@ -377,6 +377,12 @@ async fn middleware_inner(
 
 /// Metadata and range selection precede reading. Range and conditional
 /// requests never fetch the bytes that will not be sent to this caller.
+///
+/// The bytes are whatever someone uploaded, so this response is never a page:
+/// it is served as `application/octet-stream` with no content sniffing, as a
+/// download if navigated to, and sandboxed if a browser renders it anyway.
+/// A `fetch` read will still read the body unaffected, which is how the reader
+/// loads figures.
 pub(super) async fn blob_response(
     blobs: Arc<dyn crate::storage::blob::BlobStore>,
     key: String,
@@ -453,6 +459,9 @@ pub(super) async fn blob_response(
         StatusCode::OK
     };
     set(&mut response, "content-type", "application/octet-stream");
+    set(&mut response, "x-content-type-options", "nosniff");
+    set(&mut response, "content-disposition", "attachment");
+    set(&mut response, "content-security-policy", "sandbox");
     set(&mut response, "content-length", &(end - start).to_string());
     set(&mut response, "accept-ranges", "bytes");
     set(&mut response, "etag", &etag);
@@ -483,4 +492,90 @@ fn byte_range(value: &str, length: u64) -> Option<(u64, u64)> {
         end.parse::<u64>().ok()?.saturating_add(1).min(length)
     };
     (start < end && start < length).then_some((start, end))
+}
+
+#[cfg(test)]
+mod blob_response_tests {
+    use super::*;
+    use axum::http::header;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_blob_response_security_headers() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::storage::blob::FsStore::new(temp_dir.path(), false));
+
+        // Store a test blob.
+        let test_bytes = b"<svg><script>alert(1)</script></svg>";
+        store
+            .put_new("test-key", test_bytes.to_vec(), "application/octet-stream")
+            .await
+            .unwrap();
+
+        // Request without Range header.
+        let headers = HeaderMap::new();
+        let response = blob_response(store.clone(), "test-key".to_string(), "abc", &headers, false)
+            .await;
+
+        // Check status 200.
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Check security headers.
+        assert_eq!(
+            response.headers().get("content-type").and_then(|h| h.to_str().ok()),
+            Some("application/octet-stream")
+        );
+        assert_eq!(
+            response.headers().get("x-content-type-options").and_then(|h| h.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            response.headers().get("content-disposition").and_then(|h| h.to_str().ok()),
+            Some("attachment")
+        );
+        assert_eq!(
+            response.headers().get("content-security-policy").and_then(|h| h.to_str().ok()),
+            Some("sandbox")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_blob_response_range_headers() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::storage::blob::FsStore::new(temp_dir.path(), false));
+
+        // Store a test blob.
+        let test_bytes = b"0123456789";
+        store
+            .put_new("range-key", test_bytes.to_vec(), "application/octet-stream")
+            .await
+            .unwrap();
+
+        // Request with Range header.
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, "bytes=0-3".parse().unwrap());
+        let response = blob_response(store.clone(), "range-key".to_string(), "def", &headers, false)
+            .await;
+
+        // Check status 206 (Partial Content).
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+
+        // Check security headers are still present.
+        assert_eq!(
+            response.headers().get("content-type").and_then(|h| h.to_str().ok()),
+            Some("application/octet-stream")
+        );
+        assert_eq!(
+            response.headers().get("x-content-type-options").and_then(|h| h.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            response.headers().get("content-disposition").and_then(|h| h.to_str().ok()),
+            Some("attachment")
+        );
+        assert_eq!(
+            response.headers().get("content-security-policy").and_then(|h| h.to_str().ok()),
+            Some("sandbox")
+        );
+    }
 }
