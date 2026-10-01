@@ -42,7 +42,7 @@ window.sockets = [];
 window.localCalls = [];
 window.launchCalls = [];
 localBridge._testing.inject({launchLink:url=>window.launchCalls.push(url)});
-window.activeRunner = null;
+window.activeRunner = JSON.parse(localStorage.getItem('librepaper-test-active-runner') || 'null');
 window.delayedAssistantStatuses = [];
 window.localAgents = [
   {id:'claude',label:'Claude Code',path:'/usr/bin/claude',configurable:true,assistant:true,assistant_fetches:false,assistant_blocked:'',assistant_note:'',restart:'Restart Claude Code'},
@@ -87,6 +87,7 @@ window.fetch = async (url, init) => {
       // agent into a stopped one and its pre-start notes stay on screen.
       if (body.agent==='pi') return Response.json({running:false,error:'adapter download refused'});
       window.activeRunner={link:body.link,conversation:body.conversation,agent:body.agent};
+      localStorage.setItem('librepaper-test-active-runner', JSON.stringify(window.activeRunner));
       return Response.json({running:true});
     }
     if (route === 'assistant/renew') {
@@ -94,6 +95,10 @@ window.fetch = async (url, init) => {
       return Response.json({renewed:true});
     }
     if (route === 'assistant/status') {
+      if (localStorage.getItem('librepaper-test-fail-next-status') === '1') {
+        localStorage.removeItem('librepaper-test-fail-next-status');
+        return Response.json({error:'temporary assistant status failure'}, {status:503});
+      }
       if (window.delayAssistantStatus) {
         window.delayAssistantStatus=false;
         return new Promise(resolve=>window.delayedAssistantStatuses.push({body,resolve}));
@@ -103,7 +108,11 @@ window.fetch = async (url, init) => {
         ? {running:true,state:'ready'}
         : {running:false});
     }
-    if (route === 'assistant/stop') { window.activeRunner=null; return Response.json({stopped:true}); }
+    if (route === 'assistant/stop') {
+      window.activeRunner=null;
+      localStorage.removeItem('librepaper-test-active-runner');
+      return Response.json({stopped:true});
+    }
     throw new Error('unexpected local app request: ' + route);
   }
   if (pathname === '/api/documents/paper/agent-token') {
@@ -126,7 +135,7 @@ window.fetch = async (url, init) => {
     return Response.json({links:Object.fromEntries(['reader','commenter','editor'].map(role=>[role,{key:role,url:'/docs/paper#k='+role}]))});
   }
   if (new URL(url, location.href).pathname.endsWith('/assistant/capabilities')) {
-    if(window.delayedCapabilities) return new Promise(resolve=>window.delayedCapabilities.push({key:init.headers['X-LibrePaper-Key'],resolve:value=>resolve(Response.json(value))}));
+    if(window.capabilityFailure) return Response.json({error:'The access link has expired.'},{status:403});
     const key=init.headers['X-LibrePaper-Key'];
     return Response.json({can_read:true,can_comment:key!=='reader',can_edit:key==='editor',can_suggest:key==='editor',can_reply:key!=='reader'});
   }
@@ -584,8 +593,10 @@ try {
     // selects alone are the whole path; with nothing running, sending starts it.
     if (await page.evaluate(`document.querySelector("select[aria-label=Access]").value`) === role) {
       await choose("Access", role === "editor" ? "commenter" : "editor");
+      await until("temporary access change settled", () => page.evaluate("document.querySelector(\"select[aria-label=Access]\").disabled === false"), 2000);
     }
     await choose("Agent", "claude");
+    await until("agent selection settled", () => page.evaluate("document.querySelector(\"select[aria-label=Agent]\").disabled === false"), 2000);
     const running = await page.evaluate(`window.activeRunner !== null`);
     await page.evaluate("window.localCalls=[]");
     await choose("Access", role);
@@ -594,6 +605,7 @@ try {
       await page.evaluate(`document.querySelector('.chat-form button[type=submit]').click()`);
     }
     await until(role + " started", () => page.evaluate("window.localCalls.some(call=>call.route==='assistant')"), 2000);
+    await until(role + " setup settled", () => page.evaluate("document.querySelector(\"select[aria-label=Access]\").disabled === false"), 2000);
   };
   // No read-only level is offered: the document's MCP surface admits a
   // commenter at minimum, so an assistant on a read link gets no tools at all.
@@ -606,6 +618,17 @@ try {
     await connectAs(role);
     assert.equal(await linkFor(role), true, `the ${role} connection carries the ${role} key`);
   }
+  // A failed capability probe should show the server's useful error and must
+  // not be collapsed into an incorrect claim that the requested role is
+  // unavailable or start an assistant with unverified access.
+  await page.evaluate("window.capabilityFailure=true; window.localCalls=[]");
+  await choose("Access", "commenter");
+  await until("capability error shown", () => page.evaluate("Array.from(document.querySelectorAll('.agent-panel [role=alert]')).some(node=>node.textContent.includes('The access link has expired.'))"), 2000);
+  assert.equal(await page.evaluate("Array.from(document.querySelectorAll('.agent-panel [role=alert]')).some(node=>node.textContent.includes('This access level is unavailable'))"), false);
+  assert.equal(await page.evaluate("window.localCalls.some(call=>call.route==='assistant')"), false,
+    "a failed capability probe does not start the assistant");
+  await page.evaluate("window.capabilityFailure=false");
+  await connectAs("editor");
   // A level with no existing share link mints one rather than failing.
   // Leave Edit first: every change of access restarts, and so mints.
   await page.evaluate("window.localCalls=[]");
@@ -727,21 +750,39 @@ try {
     "the chosen agent is what the control shows",
   );
 
-  // A remounted panel reads the local status for its saved connection and
-  // restores the agent and access that are actually running.
+  // Reloading the page preserves both the browser's saved assistant record
+  // and the companion's running assistant, just as it would outside this
+  // harness. The first status request fails transiently; the same mounted
+  // panel must retry, restore the saved configuration and attach renewal.
   await choose("Access", "commenter");
   // Nothing is attached yet, so sending is what starts the assistant.
   await page.evaluate("window.sockets.at(-1).emit({type:'presence',browser:true,agent:false})");
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='test';input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await page.evaluate(`document.querySelector('.chat-form button[type=submit]').click()`);
   await until("restoration test assistant started", () => page.evaluate("window.activeRunner !== null"), 2000);
-  await page.evaluate("window.remount()");
-  // The agent settings stay visible at all times. A remounted panel asks the
-  // local app whether its assistant is running, and the selects show the
-  // configuration that was running.
+  await until("assistant choice saved before reload", () => page.evaluate(`JSON.parse(localStorage.getItem('librepaper.agent.session.'+location.origin+':paper')||'{}').assistantAccess==='commenter'`), 2000);
+  await page.evaluate("localStorage.setItem('librepaper-test-fail-next-status','1')");
+  await page.navigate(appUrl);
+  await until("reloaded panel asks to reconnect companion", () => page.evaluate(
+    `Boolean(document.querySelector('.agent-panel')) && Array.from(document.querySelectorAll('button')).some(button=>button.textContent.trim()==='Connect')`), 10000);
+  await page.evaluate(`Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='Connect').click()`);
+  await until("reloaded panel reconnects to companion", () => page.evaluate(
+    `window.localCalls.some(call=>call.route==='assistant/status')`), 10000);
+  assert.equal(await page.evaluate("window.localCalls.filter(call=>call.route==='assistant/status').length"), 1,
+    "the first restore attempt reaches the running assistant");
+  await until("assistant restore retries after transient status failure", () => page.evaluate(
+    `window.localCalls.filter(call=>call.route==='assistant/status').length >= 2`), 8000);
   assert.ok(await page.evaluate(`Boolean(document.querySelector(".agent-settings"))`),
     "the agent settings stay visible when an assistant is restored");
   await until("running configuration restored", () => page.evaluate(`document.querySelector('select[aria-label=Agent]')?.value==='claude' && document.querySelector('select[aria-label=Access]')?.value==='commenter'`), 3000);
+  assert.equal(await page.evaluate("window.activeRunner !== null"), true,
+    "the companion's assistant remains running across the browser reload");
+  await page.evaluate("window.renewAgentGrant()");
+  await until("restored assistant grant renewed", () => page.evaluate("window.localCalls.some(call=>call.route==='assistant/renew')"), 2000);
+  const restoredRenewal = await page.evaluate("window.localCalls.find(call=>call.route==='assistant/renew')");
+  assert.equal(restoredRenewal.body.conversation, await page.evaluate("window.activeRunner.conversation"));
+  assert.match(restoredRenewal.body.agent_token, /^lpa_test_\d+$/,
+    "a successful retry attaches the grant renewal loop to the restored assistant");
 
   // A delayed status response from the old conversation must not overwrite a
   // newer conversation after its component has remounted again.

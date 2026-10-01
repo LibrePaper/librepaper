@@ -19,6 +19,26 @@ fn assistant_capabilities(role: Role) -> Value {
     })
 }
 
+/// The browser asks what authority an assistant would receive on its selected
+/// link. A browser cookie is enough to authenticate this probe, but it must
+/// not widen the answer beyond that link. A request already using an agent
+/// grant has had the same bound applied by `viewer_as`, including the grant's
+/// role ceiling.
+fn assistant_link_role(
+    entry: &IndexEntry,
+    who: &Viewer,
+    ceiling: crate::document::store::Ceiling,
+    link_hash: &str,
+    now: i64,
+) -> Option<Role> {
+    entry.link_role(link_hash, now)?;
+    Some(if who.automation {
+        who.role
+    } else {
+        automation_role(entry, link_hash, ceiling, now)
+    })
+}
+
 #[derive(Deserialize)]
 pub(super) struct BatchRequest {
     /// The `tree_digest` the caller read the document at -- the projection
@@ -261,16 +281,25 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error":"not found"})),
             Err(response) => return response,
         };
-        // Force the ordinary viewer resolver into link-bounded automation
-        // mode. A browser session may establish deployment policy, but it
-        // cannot turn a selected read/comment link into an owner/editor link.
-        let mut bounded = headers.clone();
-        bounded.insert(AUTOMATION_HEADER, HeaderValue::from_static("1"));
-        let who = self.viewer(&entry, &bounded, arrival, None).await;
+        // Authenticate the browser normally, then report only the authority
+        // an assistant would receive through the selected live link. Forcing
+        // automation mode here would also require an agent bearer, which the
+        // browser must not have before it starts the companion.
+        let who = self.viewer(&entry, headers, arrival, None).await;
         if let Err(response) = self.check_readable(&entry, &who) {
             return response;
         }
-        write_json(200, &assistant_capabilities(who.role))
+        let link_hash = self.link_hash(headers, None);
+        let Some(role) = assistant_link_role(
+            &entry,
+            &who,
+            self.ceiling_for(&who.id),
+            &link_hash,
+            crate::util::now_unix(),
+        ) else {
+            return no_such_document();
+        };
+        write_json(200, &assistant_capabilities(role))
     }
 }
 
@@ -292,5 +321,51 @@ mod capability_tests {
             assert_eq!(capabilities["can_label"], can_edit, "{role:?}");
             assert_eq!(capabilities["can_comment"], can_suggest, "{role:?}");
         }
+    }
+
+    #[test]
+    fn browser_capability_probe_uses_selected_link_without_agent_bearer() {
+        let now = crate::util::now_unix();
+        let entry = IndexEntry {
+            slug: "paper".into(),
+            publisher: "owner".into(),
+            publisher_id: "github:owner".into(),
+            links: vec![LinkGrant {
+                hash: "commenter-hash".into(),
+                role: Role::Commenter.as_str().into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let owner = Identity {
+            id: "github:owner".into(),
+            handle: "owner".into(),
+            provider: crate::auth::PROVIDER_GITHUB.into(),
+            session_generation: "generation".into(),
+            ..Default::default()
+        };
+        let browser = Viewer {
+            id: owner,
+            key: String::new(),
+            link: "commenter-hash".into(),
+            comment_budget: None,
+            role: Role::Owner,
+            automation: false,
+            bearer: false,
+            auth_failed: false,
+        };
+        let ceiling = crate::document::store::Ceiling {
+            comment: true,
+            edit: true,
+        };
+
+        assert_eq!(
+            assistant_link_role(&entry, &browser, ceiling, "commenter-hash", now),
+            Some(Role::Commenter)
+        );
+        assert_eq!(
+            assistant_link_role(&entry, &browser, ceiling, "missing-hash", now),
+            None
+        );
     }
 }

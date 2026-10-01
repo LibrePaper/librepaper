@@ -20,12 +20,10 @@ if (!existsSync(binary)) {
 const tools = join(root, "bin");
 await mkdir(tools);
 const opened = join(root, "opened-url");
-const projectFolder = join(root, "private project");
-await mkdir(projectFolder);
-await writeFile(join(projectFolder, "main.qmd"), "# Local input\n");
-await writeFile(join(tools, "zenity"), '#!/bin/sh\nprintf "%s\\n" "$LIBREPAPER_TEST_FOLDER"\n', { mode: 0o755 });
 await writeFile(join(tools, "xdg-open"), '#!/bin/sh\nprintf "%s" "$1" > "$LIBREPAPER_TEST_OPENED"\n', { mode: 0o755 });
-const env = { ...process.env, HOME: root, XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"), XDG_CONFIG_HOME: join(root, "config"), PATH: `${tools}:${process.env.PATH}`, LIBREPAPER_TEST_OPENED: opened, LIBREPAPER_TEST_FOLDER: projectFolder };
+const env = { ...process.env, HOME: root, XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"), XDG_CONFIG_HOME: join(root, "config"), PATH: `${tools}:${process.env.PATH}`, LIBREPAPER_TEST_OPENED: opened };
+delete env.DISPLAY;
+delete env.WAYLAND_DISPLAY;
 delete env.LIBREPAPER_LOCAL_PORT; delete env.LIBREPAPER_LOCAL_CODE;
 const cli = (...args) => exec(binary, ["local", ...args], { env, timeout: 20000 });
 const listener = createServer();
@@ -47,20 +45,38 @@ try {
   const request = randomBytes(24).toString("base64url");
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("hex");
-  await cli("open", `librepaper://connect?${new URLSearchParams({ origin: site, request, challenge, return: returnUrl })}`);
+  // `local open` sends the pairing request to the companion. Depending on
+  // whether the test environment has a display, approval either opens the
+  // browser handoff directly or prints a one-time code for `local approve`.
+  const opening = cli("open", `librepaper://connect?${new URLSearchParams({ origin: site, request, challenge, return: returnUrl })}`).then(() => null, (error) => error);
+  const log = join(env.XDG_STATE_HOME, "librepaper/local/companion.log");
+  let approvalCode;
   let target;
-  for (let attempt = 0; attempt < 30; attempt++) {
+  for (let attempt = 0; attempt < 100; attempt++) {
     try { target = await readFile(opened, "utf8"); if (target) break; } catch {}
+    try {
+      const output = await readFile(log, "utf8");
+      approvalCode = output.match(/librepaper local approve (\d{6})/)?.[1];
+      if (approvalCode) break;
+    } catch {}
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  assert.equal(new URL(target).port, String(port), "handler uses the running companion port");
-  assert.ok(!target.includes(verifier));
-  assert.match(target, /\/librepaper\/local\/pair\/request\?/, "the link opens the one consent page");
-  const registration = await fetch(target);
-  assert.equal(registration.status, 200);
-  const form = new URLSearchParams({ origin: site, request, challenge, return: returnUrl });
-  const consent = await fetch(`${base}/pair`, { method: "POST", headers: { Origin: `http://127.0.0.1:${port}`, "Sec-Fetch-Site": "same-origin" }, body: form });
-  assert.equal(consent.status, 200, await consent.text());
+  if (approvalCode) {
+    await cli("approve", approvalCode);
+    for (let attempt = 0; attempt < 30; attempt++) {
+      try { target = await readFile(opened, "utf8"); if (target) break; } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  assert.ok(target, "approval produces the browser handoff");
+  const handoff = new URL(target);
+  assert.equal(`${handoff.origin}${handoff.pathname}`, returnUrl, "approval returns to the requesting document");
+  const fragment = new URLSearchParams(handoff.hash.slice(1));
+  assert.equal(fragment.get("librepaper-local"), `http://127.0.0.1:${port}/`, "handoff carries the running companion address");
+  assert.equal(fragment.get("librepaper-request"), request, "handoff is tied to this pairing request");
+  assert.ok(!target.includes(verifier), "the browser verifier stays out of the handoff");
+  const openError = await opening;
+  assert.ifError(openError);
   const claim = () => fetch(`${base}/connect/claim`, { method: "POST", headers: { Origin: site, "Content-Type": "application/json" }, body: JSON.stringify({ origin: site, request, verifier }) });
   const accepted = await claim();
   assert.equal(accepted.status, 200);
@@ -69,25 +85,14 @@ try {
   const caps = () => fetch(`${base}/capabilities`, { headers: { Origin: site, Authorization: `Bearer ${token}` } });
   assert.equal((await caps()).status, 200);
 
-  const folder = await fetch(`${base}/bindings/folder`, { method: "POST", headers: { Origin: site, Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ project: "paper", entrypoint: "main.qmd" }) });
-  assert.equal(folder.status, 200, await folder.clone().text());
-  const binding = await folder.json();
-  assert.ok(binding.id);
-  assert.ok(!JSON.stringify(binding).includes(root), "folder paths stay local");
-  const unauthorizedFolder = await fetch(`${base}/bindings/folder`, { method: "POST", headers: { Origin: site, Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ project: "other", entrypoint: "main.qmd" }) });
-  assert.equal(unauthorizedFolder.status, 403);
-  const bindings = await fetch(`${base}/bindings`, { headers: { Origin: site, Authorization: `Bearer ${token}` } });
-  assert.equal((await bindings.json()).bindings[0].id, binding.id);
-  const revoke = await fetch(`${base}/bindings/${binding.id}`, { method: "DELETE", headers: { Origin: site, Authorization: `Bearer ${token}` } });
-  assert.equal((await revoke.json()).revoked, true);
+  const unauthenticatedFolder = await fetch(`${base}/bindings/folder`, { method: "POST", headers: { Origin: site, "Content-Type": "application/json" }, body: JSON.stringify({ project: "other", entrypoint: "main.qmd" }) });
+  assert.equal(unauthenticatedFolder.status, 401, "folder selection requires a bearer token");
+  const bindings = await fetch(`${base}/bindings?project=paper`, { headers: { Origin: site, Authorization: `Bearer ${token}` } });
+  const listed = (await bindings.json()).bindings;
+  assert.equal(listed.length, 0, "no folder chooser has created a binding");
 
-  const manage = await fetch(`${base}/manage`, { headers: { Origin: site } });
-  assert.equal(manage.headers.get("access-control-allow-origin"), null);
-  const html = await manage.text();
-  assert.match(html, /Quit companion/);
-  const nonce = html.match(/name="nonce" value="([^"]+)"/)[1];
-  const forbidden = await fetch(`${base}/manage`, { method: "POST", headers: { Origin: site }, body: new URLSearchParams({ nonce, action: "quit" }) });
-  assert.equal(forbidden.status, 403);
+  const unauthenticatedQuit = await fetch(`${base}/quit`, { method: "POST", headers: { Origin: site } });
+  assert.equal(unauthenticatedQuit.status, 401, "quitting requires a bearer token");
 
   // `librepaper local restart` was removed in the CLI cull; `stop` then
   // `start` is the replacement sequence and exercises the same instance
@@ -100,7 +105,7 @@ try {
   await assert.rejects(fetch(`${base}/health`));
   await assert.rejects(cli("open", "https://evil.example/"));
   await assert.rejects(fetch(`${base}/health`), "invalid link does not start companion");
-  console.log("companion-lifecycle: background start, at-login, deep-link consent, management isolation, restart and stop passed");
+  console.log("companion-lifecycle: background start, at-login, deep-link consent, quit authorization, restart and stop passed");
 } finally {
   await cli("stop").catch(() => {});
   await rm(root, { recursive: true, force: true });

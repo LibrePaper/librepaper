@@ -28,9 +28,13 @@
     runnerConnected: false, status: "idle", error: "", capabilities: null,
     assistantAgent: "", assistantAccess: "" };
   const connection = $derived(client?.current ?? EMPTY_CONNECTION);
+  const connectionId = $derived(connection.id);
+  const savedAssistantAgent = $derived(connection.assistantAgent || "");
+  const savedAssistantAccess = $derived(connection.assistantAccess || "");
   let busy = $state(false);
   let starting = $state(true);
   let problem = $state("");
+  let restoreProblem = $state("");
   let attachment = $state(null);
   let suggestion = $state(null);
   $effect(() => { if (suggestion === null && initialSuggestion) suggestion = initialSuggestion; });
@@ -220,8 +224,11 @@
       agentLink = new URL(accessLink.url, location.origin).href;
     }
     if (!validDocumentLink()) throw new Error("The access link must point to this document.");
-    await checkCapabilities(agentLink);
-    if (currentRole !== mode) throw new Error("This access level is unavailable. Ask the document owner for an access link.");
+    await checkCapabilities(agentLink, { strict: true });
+    if (currentRole !== mode) {
+      const roleName = mode === "editor" ? "edit" : mode === "commenter" ? "comment" : "read";
+      throw new Error(`This access link does not grant ${roleName} access.`);
+    }
   }
 
   async function refreshAgents() {
@@ -232,15 +239,37 @@
       || installed.find((entry) => entry.assistant)?.id || installed[0]?.id || "";
   }
   $effect(() => { if (paired) void act(refreshAgents); });
-  $effect(() => { if (paired && connection.id) void restoreAssistant(); });
   $effect(() => {
-    if (!paired || !assistant.running || !connection.id) return;
+    if (!paired || !connectionId) {
+      restoreProblem = "";
+      return;
+    }
+    restoreProblem = "";
+    const conversationId = connectionId;
+    const agent = savedAssistantAgent;
+    const savedAccess = savedAssistantAccess;
+    let stopped = false;
+    let timer;
+    let retryDelay = 5_000;
+    const restore = async () => {
+      const restored = await restoreAssistant(conversationId, agent, savedAccess, () =>
+        !stopped && paired && connectionId === conversationId);
+      if (restored || stopped || connectionId !== conversationId || !paired) return;
+      timer = setTimeout(() => void restore(), retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 30_000);
+    };
+    void restore();
+    return () => { stopped = true; clearTimeout(timer); };
+  });
+  $effect(() => {
+    if (!paired || !assistant.running || !connectionId) return;
+    const conversationId = connectionId;
+    const target = agentLink || link;
     let stopped = false;
     const renew = async () => {
       try {
-        const target = agentLink || link;
         const agentToken = await mintAgentGrant(target);
-        if (!stopped) await local.renewAssistant({ link: target, conversation: connection.id, agentToken });
+        if (!stopped) await local.renewAssistant({ link: target, conversation: conversationId, agentToken });
       } catch (error) {
         if (!stopped) problem = error?.message || String(error);
       }
@@ -310,24 +339,41 @@
   /// The local app's status call reports only whether an assistant is
   /// running; which agent and access level that is comes back from the
   /// per-conversation record this browser already remembered.
-  async function restoreAssistant() {
-    if (!paired || !connection.id || restoredConversation === connection.id) return;
-    const conversationId = connection.id;
-    restoredConversation = conversationId;
-    const agent = connection.assistantAgent || "";
-    const savedAccess = connection.assistantAccess || "";
-    if (!agent && !savedAccess) return;
+  async function restoreAssistant(conversationId, agent, savedAccess, isCurrent) {
+    if (restoredConversation === conversationId) return true;
+    if (!agent && !savedAccess) {
+      restoredConversation = conversationId;
+      restoreProblem = "";
+      return true;
+    }
     try {
       // Re-fetch the same named link the runner was started with. This keeps
       // the browser able to renew that runner's grant after a reload, without
       // persisting the link key in its agent-session record.
       if (savedAccess) await prepareAccessLink(savedAccess);
+      if (!isCurrent()) return true;
       const answer = await local.assistantStatus({ link: agentLink || link, conversation: conversationId });
-      if (connection.id !== conversationId || restoredConversation !== conversationId || !answer?.running) return;
+      if (!isCurrent()) return true;
+      // A successful status response saying the runner is stopped is terminal
+      // for this restore. Network or server errors below remain retryable.
+      if (!answer?.running) {
+        restoredConversation = conversationId;
+        restoreProblem = "";
+        return true;
+      }
       assistant = { running: true, agent, access: savedAccess };
       if (savedAccess) access = savedAccess;
       if (agent) chosenAgent = agent;
-    } catch { /* the saved assistant may have been revoked or removed */ }
+      restoredConversation = conversationId;
+      restoreProblem = "";
+      return true;
+    } catch (error) {
+      // A one-off companion or server failure must not disable renewal for a
+      // runner that is still active. The effect retries with bounded backoff.
+      if (!isCurrent()) return true;
+      restoreProblem = error?.message || String(error);
+      return false;
+    }
   }
 
   async function act(operation) {
@@ -518,16 +564,21 @@
     }
   });
   $effect(() => requestArrived(request));
-  async function checkCapabilities(nextLink = agentLink) {
+  async function checkCapabilities(nextLink = agentLink, { strict = false } = {}) {
     const generation = ++capabilityGeneration;
     verifiedCapabilities = null;
     // The browser keeps its own access link; the setup prompt grants the agent a separate role.
     try {
       const result = await client?.capabilities(nextLink);
-      if (generation === capabilityGeneration) verifiedCapabilities = result;
-    } catch {
-      if (generation === capabilityGeneration) verifiedCapabilities = null;
+      if (generation !== capabilityGeneration) return null;
+      verifiedCapabilities = result;
+      return result;
+    } catch (error) {
+      if (generation !== capabilityGeneration) return null;
+      verifiedCapabilities = null;
+      if (strict) throw error;
     }
+    return null;
   }
 
   onMount(() => {
@@ -801,7 +852,7 @@
   {/if}
   </Tabs.Content>
   </PanelTabs>
-  {#if problem || connection.error}<p class="panel-muted" role="alert">{problem || connection.error}</p>{/if}
+  {#if problem || restoreProblem || connection.error}<p class="panel-muted" role="alert">{problem || restoreProblem || connection.error}</p>{/if}
 </section>
 
 <style>
