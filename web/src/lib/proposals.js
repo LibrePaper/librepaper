@@ -249,6 +249,7 @@ export function hunksOfProposal(doc, proposalData) {
         hunk.index = index++;
         hunk.file = fileOf.get(String(cid)) ?? null;
         hunk.path = hunk.file ? pathOf.get(hunk.file) ?? null : null;
+        hunk.new_file = Boolean(hunk.file && !atBase.getMap("files").get(hunk.file));
         hunks.push(hunk);
       }
     }
@@ -1226,10 +1227,13 @@ function decodeBase64(encoded) {
 /// -- they are two answers, and the useful presentation is side by side with
 /// one choice to make (SPEC-loro.md §5.3). This finds them.
 ///
-/// The test is: same file, different proposals, conflicting extents. A row's
+/// The test is: same file identity, or two new files with the same destination
+/// path; different proposals; and conflicting extents. A row's
 /// extent is `[position, position + before.length)`, which is the same basis
 /// `proposal-marks.js` draws in, so two rows contend here exactly when they
-/// would be drawn over each other there.
+/// would be drawn over each other there. New-file rows carry an explicit
+/// marker from the base document, so equal paths do not merge existing files
+/// whose raw names happen to collide.
 ///
 /// Touching ends do not overlap. An insertion strictly inside a replacement
 /// conflicts with it, but an insertion at either boundary is adjacent. Two
@@ -1261,7 +1265,9 @@ export function markContention(rows) {
       const a = live[i];
       const b = live[j];
       if (a.proposal === b.proposal) continue;
-      if (a.file_id !== b.file_id) continue;
+      const sameTarget = a.file_id === b.file_id ||
+        (a.new_file === true && b.new_file === true && a.path && a.path === b.path);
+      if (!sameTarget) continue;
       const aEnd = a.position + a.before.length;
       const bEnd = b.position + b.before.length;
       const aLength = a.before.length;

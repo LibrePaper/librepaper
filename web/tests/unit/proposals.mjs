@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { LoroDoc, LoroText } from "loro-crdt";
-import { createProposals, locateProposalHunk } from "../../src/lib/proposals.js";
+import { createProposals, locateProposalHunk, markContention } from "../../src/lib/proposals.js";
 
 // This test asserts that the browser groups hunks exactly as the server does.
 // The server's grouping is in crates/librepaper/src/document/hunks.rs.
@@ -386,6 +386,78 @@ const OWNER = 1n;
   const endMapped = locateProposalHunk(endBoundary.room, endData, endHunk);
   assert.equal(endMapped.position, 4);
   assert.equal(endMapped.stale, false, "the end cursor stays before a boundary insertion");
+}
+
+// Independently created files with the same requested destination are rival
+// answers, while existing raw-path collisions remain separate by file ID.
+{
+  const proposalRows = (room, from, base, peer, proposal, mutate) => {
+    const branch = room.fork();
+    branch.setPeerId(peer);
+    mutate(branch);
+    branch.commit();
+    const hunks = createProposals({ session: { doc: room }, send: () => {}, mayEdit: true }).hunksOf({
+      base, tip: branch.frontiers(), bytes: branch.export({ mode: "update", from }),
+    });
+    return hunks.map((hunk) => ({
+      id: `${proposal}#${hunk.index}`, proposal, file_id: hunk.file, path: hunk.path,
+      position: hunk.start, before: hunk.before, new_file: hunk.new_file,
+    }));
+  };
+
+  const room = new LoroDoc();
+  room.setPeerId(OWNER);
+  const from = room.oplogVersion();
+  const main = room.getMap("files").setContainer("main", new LoroText());
+  room.getMap("paths").set("main", "paper.md");
+  main.insert(0, "Paper");
+  room.commit();
+  const base = room.frontiers();
+  const create = (peer, id, content) => proposalRows(room, from, base, peer, id, (branch) => {
+    const bib = branch.getMap("files").setContainer(id, new LoroText());
+    branch.getMap("paths").set(id, "references.bib");
+    bib.insert(0, content);
+  });
+  const rivals = markContention([
+    ...create(AUTHOR, "bib-alice", "@article{alice}"),
+    ...create(AUTHOR + 1n, "bib-bob", "@article{bob}"),
+  ]);
+  assert.equal(rivals.length, 2, "each independent file creation yields a proposal row");
+  assert.notEqual(rivals[0].file_id, rivals[1].file_id, "independent creations retain their own file identities");
+  assert.equal(rivals[0].new_file, true);
+  assert.equal(rivals[1].new_file, true);
+  assert.equal(rivals[0].path, "references.bib");
+  assert.equal(rivals[1].path, "references.bib");
+  assert.notEqual(rivals[0].contested, "", "same-path new files are marked as rivals");
+  assert.equal(rivals[0].contested, rivals[1].contested);
+
+  const collisionRoom = new LoroDoc();
+  collisionRoom.setPeerId(OWNER);
+  const collisionFrom = collisionRoom.oplogVersion();
+  for (const id of ["existing-a", "existing-b"]) {
+    const text = collisionRoom.getMap("files").setContainer(id, new LoroText());
+    collisionRoom.getMap("paths").set(id, "references.bib");
+    text.insert(0, "cat");
+  }
+  collisionRoom.commit();
+  const collisionBase = collisionRoom.frontiers();
+  const separate = markContention([
+    ...proposalRows(collisionRoom, collisionFrom, collisionBase, AUTHOR, "edit-a", (branch) => {
+      const text = branch.getMap("files").get("existing-a");
+      text.delete(0, 3); text.insert(0, "dog");
+    }),
+    ...proposalRows(collisionRoom, collisionFrom, collisionBase, AUTHOR + 1n, "edit-b", (branch) => {
+      const text = branch.getMap("files").get("existing-b");
+      text.delete(0, 3); text.insert(0, "fox");
+    }),
+  ]);
+  assert.equal(separate.length, 2);
+  assert.equal(separate[0].path, separate[1].path);
+  assert.notEqual(separate[0].file_id, separate[1].file_id);
+  assert.equal(separate[0].new_file, false);
+  assert.equal(separate[1].new_file, false);
+  assert.equal(separate[0].contested, "", "existing raw-path collisions stay isolated by file ID");
+  assert.equal(separate[1].contested, "");
 }
 
 console.log("proposals: parity tests passed");

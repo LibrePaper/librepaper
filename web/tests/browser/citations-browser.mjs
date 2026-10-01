@@ -20,6 +20,7 @@ writeFileSync(entry, [
   "import { createClassComponent } from " + imports("web/node_modules/svelte/src/legacy/legacy-client.js") + ";",
   "import { join as joinSession } from " + imports("web/src/lib/collab.js") + ";",
   "import { projectDirectory } from " + imports("web/src/lib/projection.js") + ";",
+  "import { configure as configureCompanion, hasPairing } from " + imports("web/src/lib/companion/client.js") + ";",
   "import Editor from " + imports("web/src/components/Editor.svelte") + ";",
   "globalThis.LIBREPAPER_MODULES = { bibliography: '/bibliography.wasm' };",
   "const session = joinSession({ send: () => {}, mayEdit: true });",
@@ -42,6 +43,7 @@ writeFileSync(entry, [
     const pairingKey = "librepaper-local-connections", addressKey = "librepaper-local-address";
     const oldPairings = localStorage.getItem(pairingKey), oldAddress = localStorage.getItem(addressKey);
     const fetchBefore = globalThis.fetch;
+    const zoteroCalls = [];
     const baseMeta = [...value.doc.getMap("meta").entries()];
     const host = document.createElement("section");
     document.body.append(host);
@@ -51,9 +53,11 @@ writeFileSync(entry, [
       analyze: async () => ({ entries: [], diagnostics: [] }),
     } });
     try {
-      localStorage.setItem(pairingKey, JSON.stringify({ "": { token: "browser-fixture" } }));
+      configureCompanion({ project: "paper", origin: location.origin });
+      localStorage.setItem(pairingKey, JSON.stringify({ [location.origin]: { token: "browser-fixture", expires: Date.now() / 1000 + 3600 } }));
       globalThis.fetch = async (input, init) => {
         const url = String(input);
+        if (url.includes("/zotero/")) zoteroCalls.push({ url, authorization: init?.headers?.Authorization || "" });
         if (url.includes("/zotero/search?")) return new Response(JSON.stringify({ entries: [{
           citation_key: "Riv2024", authors: ["Jane Smith"], title: "Rivers", year: "2024", item_type: "article", zotero_item: "ITEM123",
         }] }), { status: 200, headers: { "content-type": "application/json" } });
@@ -76,7 +80,7 @@ writeFileSync(entry, [
         popup = host.querySelector(".cm-tooltip-autocomplete")?.textContent || "";
         if (popup.includes("Riv2024")) break;
       }
-      if (!popup.includes("Riv2024")) throw new Error("Zotero fixture did not appear in the citation picker");
+      if (!popup.includes("Riv2024")) throw new Error("Zotero fixture did not appear in the citation picker: " + JSON.stringify({ popup, hasPairing: hasPairing(), calls: zoteroCalls, text: view.state.doc.toString() }));
       view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
       for (let attempt = 0; attempt < 100; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 50));

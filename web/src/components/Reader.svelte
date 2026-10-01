@@ -1077,6 +1077,7 @@
           author: proposal.author,
           file_id: fileId,
           path,
+          new_file: hunk.new_file === true,
           position: hunk.start,
           before: hunk.before || "",
           after: hunk.inserted,
