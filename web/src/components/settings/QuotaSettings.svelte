@@ -69,7 +69,7 @@
   });
 
   function openTrimDialog(doc) {
-    trimTarget = { title: nameOf(doc), slug: doc.slug };
+    trimTarget = { title: nameOf(doc), slug: doc.slug, historyBytes: doc.historyBytes, archiveBytes: doc.archiveBytes };
     trimOpen = true;
   }
 
@@ -79,11 +79,15 @@
     trimPending = true;
     trimErrors = { ...trimErrors, [slug]: "" };
     try {
-      await trimHistory(slug);
+      const result = await trimHistory(slug);
       // The row and the account bar move at once; the server's own numbers
       // follow.
       const doc = snapshot?.usage?.documents?.find((d) => d.slug === slug);
-      if (doc) doc.historyBytes = 0;
+      if (doc) {
+        doc.historyBytes = 0;
+        doc.archiveBytes = 0;
+        doc.figureBytes = Math.max(0, doc.figureBytes - (result?.figureBytes ?? 0));
+      }
       void reload();
     } catch (cause) {
       if (alive) trimErrors = { ...trimErrors, [slug]: cause.message || "History could not be trimmed." };
@@ -136,7 +140,7 @@
 
 {#if documents.length > 0}
   <SettingRow id="storage-documents" stacked title="Storage by document"
-              description="Trimming keeps a document as it is now and discards its editing history. Named versions and comments stay.">
+              description="Trimming keeps a document as it is now and deletes everything before it: its editing history, its named versions, and figures it no longer uses. Comments stay.">
     <div class="storage-toolbar">
       <div class="legend" aria-hidden="true">
         <span><i class="swatch figure"></i>Figures</span>
@@ -180,11 +184,16 @@
   </SettingRow>
 {/if}
 
-<Modal bind:open={trimOpen} title="Trim editing history?"
+<Modal bind:open={trimOpen} title="Trim history?"
        confirm={{ label: trimPending ? "Trimming…" : "Trim history", tone: "error", disabled: trimPending, onclick: confirmTrim }}>
   {#if trimTarget}
-    <p>This will discard the editing history for “<strong>{trimTarget.title}</strong>”.</p>
-    <p class="lp-text-secondary text-sm">The current document, named versions, and comments will be kept.</p>
+    <p>This keeps “<strong>{trimTarget.title}</strong>” as it is now and permanently deletes everything before it:</p>
+    <ul class="trim-list">
+      <li>Its editing history ({storageBytes(trimTarget.historyBytes)})</li>
+      <li>All its named versions ({storageBytes(trimTarget.archiveBytes)})</li>
+      <li>Figures its current files no longer use</li>
+    </ul>
+    <p class="lp-text-secondary text-sm">Comments stay. This cannot be undone.</p>
   {/if}
 </Modal>
 
@@ -214,6 +223,7 @@
   .doc-total { min-width: 4.5rem; text-align: right; white-space: nowrap; font-size: 0.875rem; font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
   .trim-error { color: var(--color-error-text); font-size: 0.75rem; }
   .no-match { color: var(--color-text-secondary); font-size: 0.875rem; }
+  .trim-list { padding-left: 1.5rem; margin: calc(var(--spacing) * 2) 0; }
 
   @media (max-width: 640px) {
     .doc-bar { width: 56px; }
