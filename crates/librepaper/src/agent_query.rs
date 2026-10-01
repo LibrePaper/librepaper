@@ -1969,6 +1969,9 @@ mod tests {
     #[test]
     fn section_ignores_fenced_headings_and_rejects_duplicate_titles() {
         let mut captured = snapshot();
+        // This fixture's text differs from `snapshot()`, so it must not keep
+        // the shared snapshot digest or reuse an index built by another test.
+        captured.tree_digest = "section-ignores-fenced-headings".into();
         captured.texts_mut().insert(
             "main.md".into(),
             "# Intro\nbody\n```\n# Fake\n```\n## Child\nchild\n# Next\nnext\n".into(),
@@ -1990,7 +1993,7 @@ mod tests {
             .push_str("# Intro\nagain\n");
         // A real capture of changed text carries a new digest, which is what
         // the index cache is keyed on.
-        captured.tree_digest = "changed".into();
+        captured.tree_digest = "section-ignores-fenced-headings-mutated".into();
         assert!(read(
             &captured,
             &[json!({"kind":"section","query":"Intro"})],
