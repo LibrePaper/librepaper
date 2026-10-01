@@ -648,6 +648,7 @@ export function createProposals({ session, send, mayEdit }) {
       tipBytes,
       base: draft.base,
     };
+    draft.sentTipBytes.add(tipBytes);
     draft.error = "";
     changed();
   };
@@ -887,6 +888,7 @@ export function createProposals({ session, send, mayEdit }) {
     draft.openPending = false;
     draft.openBase = null;
     draft.inflight = null;
+    draft.sentTipBytes.clear();
     draft.discarding = false;
     draft.discardCause = null;
     draft.discardRequestId = null;
@@ -935,8 +937,8 @@ export function createProposals({ session, send, mayEdit }) {
           changed();
           return;
         }
-        const publishedTips = [draft.inflight?.tipBytes, draft.opened ? draft.ackTipBytes : null]
-          .filter(Boolean);
+        const publishedTips = [draft.inflight?.tipBytes, ...draft.sentTipBytes,
+          draft.opened ? draft.ackTipBytes : null].filter(Boolean);
         const baseline = draft.branch.forkAt(draft.openBase ?? draft.base);
         const baselineOwn = ownOps(draft, baseline.oplogVersion());
         baseline.destroy?.();
@@ -1026,6 +1028,7 @@ export function createProposals({ session, send, mayEdit }) {
         resolutionPending: null,
         appliedVersion: null,
         retryTimer: null,
+        sentTipBytes: new Set(),
         preResolutionFiles: new Map(),
         preResolutionTip: null,
       };
@@ -1185,6 +1188,7 @@ export function createProposals({ session, send, mayEdit }) {
           draft.appliedVersion = Number(message.applied_version);
         }
         draft.ackTipBytes = message.tip || encodeBase64(encodeFrontiers(draft.base));
+        if (draft.sentTipBytes.has(draft.ackTipBytes)) draft.sentTipBytes.clear();
         // An idempotent open may report a row whose update ack was lost.
         // Only treat our current branch as stored when its exact tip matches.
         const currentTip = encodeBase64(encodeFrontiers(draft.branch.frontiers()));
@@ -1207,6 +1211,7 @@ export function createProposals({ session, send, mayEdit }) {
             (message.request_id && message.request_id !== draft.inflight.requestId)) return;
         draft.ackOwn = draft.inflight.own;
         draft.ackTipBytes = draft.inflight.tipBytes;
+        draft.sentTipBytes.clear();
         if (Number.isSafeInteger(Number(message.applied_version))) {
           draft.appliedVersion = Number(message.applied_version);
         }

@@ -667,6 +667,71 @@ for (const localChange of ["restore", "clean", "tail"]) {
   }
 }
 
+// Keep the first sent tip across reconnect when its update acknowledgement was
+// lost. If the room resolves that tip before the status reply, later typing
+// stays private and the rejected restoration is exported without duplication.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "The cat sat. The dog ran.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.delete(4, 3);
+  branchText.insert(4, "tabby");
+  const dogAt = branchText.toString().indexOf("dog");
+  branchText.delete(dogAt, 3);
+  branchText.insert(dogAt, "fox");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.reconnect();
+  assert.equal(sent.at(-1).type, "proposal-open", "reconnect queries the row after the lost update ack");
+  assert.equal(sent.at(-1).resume, true, "the query resumes the existing row");
+
+  const sourceUpdate = Uint8Array.from(atob(update.update), (character) => character.charCodeAt(0));
+  const resolved = room.fork();
+  resolved.import(sourceUpdate);
+  resolved.setPeerId(4n);
+  const resolvedMain = resolved.getMap("files").get("f1");
+  resolvedMain.delete(4, 5);
+  resolvedMain.insert(4, "cat");
+  resolved.commit();
+  room.import(resolved.export({ mode: "update", from: room.oplogVersion() }));
+  resolved.destroy?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  branchText.delete(4, 5);
+  branchText.insert(4, "cat");
+  branchText.insert(branchText.toString().length, " private");
+  const expectedRecovery = branchText.toString();
+  const laterCoauthor = room.fork();
+  laterCoauthor.setPeerId(5n);
+  const laterText = laterCoauthor.getMap("files").get("f1");
+  laterText.insert(laterText.toString().length, " Coauthor.");
+  laterCoauthor.commit();
+  room.import(laterCoauthor.export({ mode: "update", from: room.oplogVersion() }));
+  laterCoauthor.destroy?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [{ hunk: 0, accepted: false }, { hunk: 1, accepted: true }],
+    resolved_tip: update.tip, resolved_base: open.base });
+  assert.equal(proposals.status().recoveryRequired, true,
+    "the missed update ack does not make a declined local restore look like server text");
+  assert.ok(proposals.recoveryTexts().some((draft) =>
+    draft.files.some((file) => file.id === "f1" && file.text === expectedRecovery)),
+  "the private restore and late typing are preserved exactly after reconnect and two room imports");
+}
+
 // Restoring text at the zero-width gap of a published deletion also conflicts.
 {
   const room = new LoroDoc();
