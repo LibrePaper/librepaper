@@ -524,6 +524,31 @@ impl PostgresCatalog {
         .ok_or_else(|| Error::Conflict("owner account is inactive or session changed".into()))
     }
 
+    /// Remove a document row created before its first source transaction when
+    /// that transaction is refused. The predicates preserve it if another
+    /// writer has made any durable progress in the meantime.
+    pub async fn discard_unwritten_document(
+        &self,
+        document_id: Uuid,
+        owner_id: Uuid,
+    ) -> Result<bool> {
+        Ok(sqlx::query(
+            r#"DELETE FROM documents d
+               WHERE d.id=$1 AND d.owner_id=$2 AND d.status='active'
+                 AND d.update_sequence=0 AND d.uncompacted_update_bytes=0
+                 AND NOT EXISTS (SELECT 1 FROM document_updates u WHERE u.document_id=d.id)
+                 AND NOT EXISTS (SELECT 1 FROM document_assets a WHERE a.document_id=d.id)
+                 AND NOT EXISTS (SELECT 1 FROM document_archives a WHERE a.document_id=d.id)
+                 AND NOT EXISTS (SELECT 1 FROM document_labels l WHERE l.document_id=d.id)
+               RETURNING d.id"#,
+        )
+        .bind(document_id)
+        .bind(owner_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some())
+    }
+
     pub async fn document_by_slug(&self, slug: &str) -> Result<Option<DocumentRecord>> {
         sqlx::query_as!(
             DocumentRecord,

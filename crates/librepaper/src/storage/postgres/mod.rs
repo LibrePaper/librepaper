@@ -1061,6 +1061,150 @@ mod tests {
             .unwrap()
     }
 
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn account_upload_and_storage_caps_cover_source_forks_and_multi_file_assets() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let mut options = PostgresOptions::new(url);
+        options.policy.owner_bytes = 16;
+        options.policy.deployment_bytes = 1024 * 1024;
+        options.policy.asset_uploads_per_hour = 2;
+        let catalog = PostgresCatalog::connect(options).await.unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        truncate(&catalog).await;
+
+        let owner = seed_account(&catalog, "upload-cap-owner").await;
+        let first = seed_document(&catalog, owner.id, "upload-cap-first").await;
+        assert_eq!(
+            catalog
+                .flush_log_row(
+                    first.id,
+                    FlushRow {
+                        expected_update_sequence: 0,
+                        update_bytes: b"1234",
+                        vector: b"v1",
+                        source_format: None,
+                        main_path: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            1
+        );
+
+        // Forking copies source bytes into a second owned document, so those
+        // bytes use the same owner budget as the original project's source.
+        let fork = seed_document(&catalog, owner.id, "upload-cap-fork").await;
+        assert_eq!(
+            catalog
+                .flush_log_row(
+                    fork.id,
+                    FlushRow {
+                        expected_update_sequence: 0,
+                        update_bytes: b"5678",
+                        vector: b"v1",
+                        source_format: None,
+                        main_path: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(catalog.usage_bytes(Some(owner.id)).await.unwrap(), 8);
+
+        // Every member of a whole-directory upload is charged. The first
+        // batch exceeds the remaining eight bytes and must write none of its
+        // assets; the second fits exactly at the account limit.
+        let asset = |index: u8, size: i64| NewAsset {
+            document_id: first.id,
+            storage_key: format!("documents/{}/assets/{index}", first.id),
+            digest: [index; 32],
+            byte_length: size,
+            media_type: "application/octet-stream".into(),
+            original_name: None,
+        };
+        assert!(matches!(
+            catalog
+                .complete_assets(vec![asset(1, 4), asset(2, 5)])
+                .await,
+            Err(Error::Conflict(message)) if message == "account storage quota exceeded"
+        ));
+        let stored: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM document_assets WHERE document_id=$1",
+        )
+        .bind(first.id)
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(stored, 0, "a refused multi-file batch is atomic");
+        catalog
+            .complete_assets(vec![asset(3, 4), asset(4, 4)])
+            .await
+            .unwrap();
+        assert_eq!(catalog.usage_bytes(Some(owner.id)).await.unwrap(), 16);
+
+        // The new source update is part of the projected owner usage, even
+        // before its document_updates row is inserted in the same transaction.
+        assert!(matches!(
+            catalog
+                .flush_log_row(
+                    first.id,
+                    FlushRow {
+                        expected_update_sequence: 1,
+                        update_bytes: b"x",
+                        vector: b"v2",
+                        source_format: None,
+                        main_path: None,
+                    },
+                )
+                .await,
+            Err(Error::Conflict(message)) if message == "account storage quota exceeded"
+        ));
+        assert_eq!(catalog.log_sequence(first.id).await.unwrap(), 1);
+        assert_eq!(catalog.usage_bytes(Some(owner.id)).await.unwrap(), 16);
+
+        // A first source over the remaining budget leaves a newly inserted
+        // shell with no log row. The upload path discards that shell, and the
+        // conditional delete cannot touch a document that has made progress.
+        let refused_project = seed_document(&catalog, owner.id, "upload-cap-refused").await;
+        assert!(matches!(
+            catalog
+                .flush_log_row(
+                    refused_project.id,
+                    FlushRow {
+                        expected_update_sequence: 0,
+                        update_bytes: b"x",
+                        vector: b"v1",
+                        source_format: None,
+                        main_path: None,
+                    },
+                )
+                .await,
+            Err(Error::Conflict(message)) if message == "account storage quota exceeded"
+        ));
+        assert!(catalog
+            .discard_unwritten_document(refused_project.id, owner.id)
+            .await
+            .unwrap());
+        assert!(catalog.document(refused_project.id).await.unwrap().is_none());
+
+        // Admissions persist per account: once the account has used two
+        // uploads, a third is refused, while another account starts fresh.
+        catalog.admit_account_upload(owner.id).await.unwrap();
+        catalog.admit_account_upload(owner.id).await.unwrap();
+        assert!(matches!(
+            catalog.admit_account_upload(owner.id).await,
+            Err(Error::Conflict(message)) if message == "account upload rate exceeded"
+        ));
+        let other = seed_account(&catalog, "upload-cap-other").await;
+        catalog.admit_account_upload(other.id).await.unwrap();
+
+        catalog.close().await;
+    }
+
     fn document_anchor(source_sequence: i64, frontier: Vec<u8>) -> OriginalAnchor {
         OriginalAnchor {
             source_sequence,

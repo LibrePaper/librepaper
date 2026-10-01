@@ -998,28 +998,31 @@ impl Store {
                     status: 401,
                     message: "bundle actor session is invalid",
                 })?;
-        let document = match catalog
+        let (document, created_here) = match catalog
             .document_by_slug(&value.slug)
             .await
             .map_err(source_put_error)?
         {
-            Some(document) => document,
-            None => catalog
-                .create_document(crate::storage::postgres::NewDocument {
-                    slug: value.slug.clone(),
-                    owner_id: account_id,
-                    owner_session_generation: Some(session_generation),
-                    ownership_mode: if actor.unowned_publisher {
-                        "open".into()
-                    } else {
-                        "owned".into()
-                    },
-                    title: value.title.clone(),
-                    source_format: value.source_format.clone(),
-                    main_path: value.main.clone(),
-                })
-                .await
-                .map_err(source_put_error)?,
+            Some(document) => (document, false),
+            None => (
+                catalog
+                    .create_document(crate::storage::postgres::NewDocument {
+                        slug: value.slug.clone(),
+                        owner_id: account_id,
+                        owner_session_generation: Some(session_generation),
+                        ownership_mode: if actor.unowned_publisher {
+                            "open".into()
+                        } else {
+                            "owned".into()
+                        },
+                        title: value.title.clone(),
+                        source_format: value.source_format.clone(),
+                        main_path: value.main.clone(),
+                    })
+                    .await
+                    .map_err(source_put_error)?,
+                true,
+            ),
         };
         if document.owner_id != account_id && !actor.policy_editor {
             return Err(PutError::Authorization {
@@ -1028,48 +1031,64 @@ impl Store {
             });
         }
 
-        // The main file is always text -- it is what a renderer runs on, and
-        // a renderer runs on source, not on an asset's bytes. Every other
-        // file is sorted and staged by `sort_and_stage_assets`.
-        let (mut texts, assets, staged_assets) =
-            self.sort_and_stage_assets(document.id, files).await?;
-        texts.insert(0, (value.main.clone(), value.source));
+        let write_project = async {
+            // The main file is always text -- it is what a renderer runs on,
+            // and a renderer runs on source, not on an asset's bytes. Every
+            // other file is sorted and staged by `sort_and_stage_assets`.
+            let (mut texts, assets, staged_assets) =
+                self.sort_and_stage_assets(document.id, files).await?;
+            texts.insert(0, (value.main.clone(), value.source));
 
-        // The name, not the id. `actor.account_id` is the catalogue uuid,
-        // and a timeline signed with it can only say "Unknown editor".
-        let author_label = match catalog.account_display_name(account_id).await {
-            name if name.is_empty() => actor.owner_key.clone(),
-            name => name,
-        };
-        let sequencer = self
-            .registry
-            .get(document.id, &value.slug)
-            .await
-            .map_err(|error| PutError::Storage(error.to_string()))?;
-        let authority = Authority {
-            principal_key: actor.owner_key.clone(),
-            account_id: Some(account_id),
-            link_hash: None,
-            session_generation: Some(session_generation),
-            policy_edit: actor.policy_editor,
-            policy_comment: actor.policy_comment,
-            automation: actor.automation,
-        };
-        let mut command = ReplaceProject {
-            request_id: Uuid::new_v4(),
-            document_id: document.id,
-            catalog: catalog.clone(),
-            texts,
-            assets,
-            staged_assets,
-            main: value.main.clone(),
-            author_account_id: Some(account_id),
-            author_label,
-        };
-        sequencer
-            .command(&authority, &mut command)
-            .await
-            .map_err(command_put_error)?;
+            // The name, not the id. `actor.account_id` is the catalogue uuid,
+            // and a timeline signed with it can only say "Unknown editor".
+            let author_label = match catalog.account_display_name(account_id).await {
+                name if name.is_empty() => actor.owner_key.clone(),
+                name => name,
+            };
+            let sequencer = self
+                .registry
+                .get(document.id, &value.slug)
+                .await
+                .map_err(|error| PutError::Storage(error.to_string()))?;
+            let authority = Authority {
+                principal_key: actor.owner_key.clone(),
+                account_id: Some(account_id),
+                link_hash: None,
+                session_generation: Some(session_generation),
+                policy_edit: actor.policy_editor,
+                policy_comment: actor.policy_comment,
+                automation: actor.automation,
+            };
+            let mut command = ReplaceProject {
+                request_id: Uuid::new_v4(),
+                document_id: document.id,
+                catalog: catalog.clone(),
+                texts,
+                assets,
+                staged_assets,
+                main: value.main.clone(),
+                author_account_id: Some(account_id),
+                author_label,
+            };
+            sequencer
+                .command(&authority, &mut command)
+                .await
+                .map_err(command_put_error)
+        }
+        .await;
+        if let Err(error) = write_project {
+            if created_here {
+                if let Err(cleanup_error) = catalog
+                    .discard_unwritten_document(document.id, account_id)
+                    .await
+                {
+                    return Err(PutError::Storage(format!(
+                        "{error}; could not remove the refused new project: {cleanup_error}"
+                    )));
+                }
+            }
+            return Err(error);
+        }
 
         self.get_result(&value.slug)
             .await
