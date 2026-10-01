@@ -1,11 +1,12 @@
 //! Incremental account backup into a private, managed directory.
 
 use std::collections::{BTreeMap, HashSet};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -71,6 +72,9 @@ pub(crate) async fn run_backup(
     create_managed_directories(destination)?;
     create_private_directory(&destination.join(MANAGED_DIR))?;
     create_private_directory(&root)?;
+    // Hold the namespace lock until every manifest/archive update and stale
+    // archive cleanup has finished. The persistent lock file is never removed.
+    let _namespace_lock = acquire_backup_lock(&root.join(".backup.lock"))?;
     ensure_namespace(&root.join(NAMESPACE_FILE), &normalized_server, account_id)?;
     let manifest_path = root.join(MANIFEST_FILE);
     let mut manifest = load_manifest(&manifest_path, &normalized_server, account_id)?;
@@ -819,6 +823,54 @@ fn sync_directory(_path: &Path, _what: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn acquire_backup_lock(path: &Path) -> Result<File, String> {
+    let mut create = OpenOptions::new();
+    create.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        create.mode(0o600);
+    }
+    let file = match create.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = fs::symlink_metadata(path)
+                .map_err(|error| format!("could not inspect backup lock: {error}"))?;
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                return Err("backup lock is not a regular file".into());
+            }
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .map_err(|error| format!("could not open backup lock: {error}"))?
+        }
+        Err(error) => return Err(format!("could not create backup lock: {error}")),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("could not inspect opened backup lock: {error}"))?;
+    let path_metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("could not inspect backup lock path: {error}"))?;
+    if !metadata.is_file() || path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        return Err("backup lock is not a regular file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("could not secure backup lock: {error}"))?;
+    }
+    FileExt::try_lock_exclusive(&file).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            "backup already running for this server and account".into()
+        } else {
+            format!("could not acquire backup lock: {error}")
+        }
+    })?;
+    Ok(file)
+}
+
 fn checked_child(root: &Path, filename: &str) -> Result<PathBuf, String> {
     if filename.is_empty()
         || filename.contains('/')
@@ -1297,5 +1349,38 @@ mod tests {
         assert!(safe_relative_path("C:\\escape.txt").is_err());
         assert!(safe_relative_path("dir\\escape.txt").is_err());
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn concurrent_backup_lock_leaves_current_archive_untouched() {
+        let output = tempfile::tempdir().unwrap();
+        let server = "https://paper.example";
+        let account = "account-one";
+        let namespace_id = hex::encode(Sha256::digest(
+            format!("{}\0{}", normalize_server(server).unwrap(), account).as_bytes(),
+        ));
+        create_managed_directories(output.path()).unwrap();
+        let managed = output.path().join(MANAGED_DIR);
+        create_private_directory(&managed).unwrap();
+        let root = managed.join(namespace_id);
+        create_private_directory(&root).unwrap();
+        let lock_path = root.join(".backup.lock");
+        let first_lock = acquire_backup_lock(&lock_path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&lock_path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let archive = root.join("Paper--paper-a1-test.zip");
+        fs::write(&archive, b"existing archive").unwrap();
+
+        let error = run_backup(server, "token", account, output.path())
+            .await
+            .unwrap_err();
+        assert!(error.contains("backup already running"));
+        assert_eq!(fs::read(&archive).unwrap(), b"existing archive");
+        assert!(lock_path.is_file(), "the lock file remains persistent");
+        drop(first_lock);
+        assert!(lock_path.is_file(), "releasing the lock does not unlink it");
     }
 }
