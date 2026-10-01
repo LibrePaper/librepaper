@@ -6,20 +6,22 @@
 // created the way the browser creates one (`annotations.comment` in
 // web/src/lib/reader/annotations.svelte.js): a `comment` message with
 // motivation "editing" and the proposed text. It is decided the way
-// `decideSuggestion` in Reader.svelte decides it: a `proposal-decide` message
-// naming hunk 0, the tip as `proposal-list` handed it out, and a UUID
-// request_id.
+// `decideSuggestion` in Reader.svelte decides it: a whole-suggestion
+// `proposal-decide` message with `all: true`, the tip as `proposal-list` handed
+// it out, and a UUID request_id.
 //
 // The contract pinned here: once a decision is acknowledged with
 // `proposal-decided`, the proposal row and its suggestion comment are both
-// gone, for an accept and for a reject, and a decision with a request_id that
-// is not a UUID is refused and removes nothing.
+// gone, for an accept and for a reject, a resumed ID replays its final
+// receipt, and a decision with a request_id that is not a UUID is refused and
+// removes nothing.
 //
 // Requires a built librepaper binary and LIBREPAPER_TEST_POSTGRES_URL. Only
 // absent optional server/database configuration is skipped; setup errors fail.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { LoroDoc, decodeFrontiers, encodeFrontiers } from "loro-crdt";
 import { psqlCommand } from "../../tools/postgres-test.mjs";
 import { startDeployment } from "../helpers/deployment.mjs";
 
@@ -108,30 +110,110 @@ async function suggest(socket, slug, exact, proposed) {
   const comment = made.comment;
   assert.ok(comment.id, "the suggestion has an id");
   assert.ok(comment.proposal, "the suggestion is backed by a proposal");
+  assert.equal(comment.proposed, proposed, "the created suggestion returns its replacement text");
   assert.equal(count("annotations", "id", comment.id), 1);
   assert.equal(count("document_proposals", "id", comment.proposal), 1);
   return comment;
 }
 
-/// The proposal's tip exactly as the server sends it, which is what the
+/// The proposal snapshot exactly as the server sends it, which is what the
 /// browser echoes back (`proposalTip` in Reader.svelte).
-async function tipOf(socket, proposal) {
+async function stateOf(socket, proposal) {
   const request_id = randomUUID();
   socket.send({ type: "proposal-list", request_id });
   const list = await socket.next("proposal-list", (frame) => frame.type === "proposal-list" && frame.request_id === request_id);
   const open = list.proposals.find((entry) => entry.id === proposal);
   assert.ok(open, "the proposal is listed as open");
   assert.ok(open.tip, "the listed proposal carries its tip");
-  return open.tip;
+  return open;
 }
 
-/// Decides hunk 0 with exactly the shape the browser sends, and returns the
-/// server's answer, an acknowledgement or an error.
+async function tipOf(socket, proposal) {
+  return (await stateOf(socket, proposal)).tip;
+}
+
+/// Decides the whole suggestion with exactly the shape the browser sends.
 async function decide(socket, comment, accepted, { request_id = randomUUID() } = {}) {
   const tip = await tipOf(socket, comment.proposal);
-  socket.send({ type: "proposal-decide", proposal_id: comment.proposal, hunk: 0, accepted, tip, request_id });
+  socket.send({ type: "proposal-decide", proposal_id: comment.proposal, all: true, accepted, tip, request_id });
   return socket.next("the answer to the decision", (frame) =>
     (frame.type === "proposal-decided" || frame.type === "error") && frame.request_id === request_id);
+}
+
+/// A previously acknowledged id must replay a final result after reload,
+/// including the original frontiers and decisions, without reopening a row.
+async function replayOutcome(socket, proposal, prior, decisions) {
+  socket.send({
+    type: "proposal-open",
+    request_id: proposal,
+    base: prior.base,
+    resume: true,
+  });
+  const answer = await socket.next("the resumed proposal outcome", (frame) =>
+    frame.request_id === proposal && frame.type === "proposal-decided");
+  assert.equal(answer.replay, true);
+  assert.equal(answer.resolved_base, prior.base);
+  assert.equal(answer.resolved_tip, prior.tip);
+  assert.deepEqual(answer.decisions, decisions);
+  assert.equal(count("document_proposals", "id", proposal), 0, "resume does not recreate the row");
+  const request_id = randomUUID();
+  socket.send({ type: "proposal-list", request_id });
+  const list = await socket.next("the list after resume", (frame) =>
+    frame.type === "proposal-list" && frame.request_id === request_id);
+  assert.equal(list.proposals.some((entry) => entry.id === proposal), false);
+}
+
+/// Replaces the single-splice suggestion branch with a realistic legacy
+/// branch containing two distant changes. Old clients could record one
+/// decision per hunk, while current suggestion decisions must answer both.
+async function installLegacyTwoHunkBranch(socket, proposal, prior) {
+  const stateFrame = socket.next("the document state", (frame) =>
+    frame.type === "doc-state" || frame.type === "doc-rows");
+  socket.send({ type: "doc-open", protocol: "librepaper.room.v3", vector: "", request_id: randomUUID() });
+  const first = await stateFrame;
+  const state = first.type === "doc-state" ? first : null;
+  const rows = first.type === "doc-rows"
+    ? first
+    : await socket.next("the document rows", (frame) => frame.type === "doc-rows");
+  const doc = new LoroDoc();
+  if (state?.base) {
+    doc.import(Buffer.from(state.base, "base64"));
+  } else if (state?.ref) {
+    const snapshot = await fetch(new URL(state.ref, deployment.base), {
+      headers: { cookie: deployment.cookie },
+    });
+    assert.equal(snapshot.status, 200, "the document snapshot reference is readable");
+    doc.import(new Uint8Array(await snapshot.arrayBuffer()));
+  }
+  for (const update of [...(state?.updates || []), ...(rows.updates || [])]) {
+    doc.import(Buffer.from(update, "base64"));
+  }
+  const base = decodeFrontiers(Buffer.from(prior.base, "base64"));
+  const atBase = doc.forkAt(base);
+  const branch = atBase.fork();
+  branch.setPeerId(BigInt(Date.now()) + 1_000_000n);
+  const paths = branch.getMap("paths");
+  const fileId = [...paths.entries()].find(([, path]) => path === "main.md")?.[0];
+  assert.ok(fileId, "the document state includes its main text file");
+  const text = branch.getMap("files").get(fileId);
+  const original = text.toString();
+  const exact = "Alpha 0123456789abcdefghij Omega";
+  const start = original.indexOf(exact);
+  assert.notEqual(start, -1, "the proposal base contains the selected words");
+  const finalWord = original.indexOf("Omega", start);
+  text.delete(finalWord, "Omega".length);
+  text.insert(finalWord, "Omicron");
+  text.delete(start, "Alpha".length);
+  text.insert(start, "Aleph");
+  branch.commit();
+  const tip = Buffer.from(encodeFrontiers(branch.frontiers())).toString("hex");
+  const bytes = Buffer.from(branch.export({ mode: "update", from: atBase.oplogVersion() })).toString("hex");
+  sql(`UPDATE document_proposals
+    SET tip_frontiers=decode('${tip}','hex'), branch_bytes=decode('${bytes}','hex'), version=version+1
+    WHERE id='${proposal}'`);
+  branch.destroy?.();
+  atBase.destroy?.();
+  doc.destroy?.();
 }
 
 function assertGone(comment) {
@@ -161,7 +243,7 @@ let socket;
 try {
   const { slug } = await deployment.publish({
     title: "Decisions",
-    source: "# Decisions\n\nAlpha is first.\n\nBeta is second.\n\nGamma is third.\n\nDelta is fourth.\n\nEpsilon is fifth.\n",
+    source: "# Decisions\n\nAlpha is first.\n\nBeta is second.\n\nGamma is third.\n\nDelta is fourth.\n\nEpsilon is fifth.\n\nZeta Alpha 0123456789abcdefghij Omega is long.\n",
     source_format: "markdown",
   });
   socket = await connect(slug);
@@ -169,11 +251,13 @@ try {
   // Case 1: a rejected suggestion is deleted, and the source is untouched.
   {
     const comment = await suggest(socket, slug, "Alpha", "Aleph");
+    const prior = await stateOf(socket, comment.proposal);
     const answer = await decide(socket, comment, false);
     assert.equal(answer.type, "proposal-decided", answer.message);
     assert.equal(answer.accepted, false);
     assertGone(comment);
     assert.ok((await sourceOf(slug)).includes("Alpha is first."), "a rejection leaves the source alone");
+    await replayOutcome(socket, comment.proposal, prior, [{ hunk: 0, accepted: false }]);
     await assertAbsentOnJoin(slug, comment);
     console.log("proposal-decisions: a rejected suggestion is deleted");
   }
@@ -181,6 +265,7 @@ try {
   // Case 2: an accepted suggestion is deleted too, and its text is in the source.
   {
     const comment = await suggest(socket, slug, "Beta", "Bravo");
+    const prior = await stateOf(socket, comment.proposal);
     const answer = await decide(socket, comment, true);
     assert.equal(answer.type, "proposal-decided", answer.message);
     assert.equal(answer.accepted, true);
@@ -188,6 +273,20 @@ try {
     const source = await sourceOf(slug);
     assert.ok(source.includes("Bravo is second."), "the accepted text is in the source");
     assert.ok(!source.includes("Beta is second."), "the replaced text is gone from the source");
+    // A discard that arrives after a final decision may find no live row.
+    // It must answer from the durable result instead of claiming a discard
+    // with missing frontiers.
+    const discardRequest = randomUUID();
+    socket.send({ type: "proposal-discard", proposal_id: comment.proposal, request_id: discardRequest });
+    const racedDiscard = await socket.next("the outcome for a late discard", (frame) =>
+      ["proposal-decided", "proposal-discarded", "error"].includes(frame.type)
+      && frame.request_id === discardRequest);
+    assert.equal(racedDiscard.type, "proposal-decided", "the final decision wins over a late discard");
+    assert.equal(racedDiscard.replay, true);
+    assert.equal(racedDiscard.resolved_base, prior.base);
+    assert.equal(racedDiscard.resolved_tip, prior.tip);
+    assert.deepEqual(racedDiscard.decisions, [{ hunk: 0, accepted: true }]);
+    await replayOutcome(socket, comment.proposal, prior, [{ hunk: 0, accepted: true }]);
     await assertAbsentOnJoin(slug, comment);
     console.log("proposal-decisions: an accepted suggestion is deleted and applied");
   }
@@ -231,7 +330,7 @@ try {
     const comment = await suggest(socket, slug, "Delta", "Dover");
     const request_id = randomUUID();
     const tip = await tipOf(socket, comment.proposal);
-    const decision = { type: "proposal-decide", proposal_id: comment.proposal, hunk: 0, accepted: true, tip, request_id };
+    const decision = { type: "proposal-decide", proposal_id: comment.proposal, all: true, accepted: true, tip, request_id };
     for (const attempt of ["first", "retry"]) {
       socket.send(decision);
       const answer = await socket.next(`the ${attempt} answer`, (frame) =>
@@ -243,6 +342,47 @@ try {
     const source = await sourceOf(slug);
     assert.equal(source.split("Dover is fourth.").length, 2, "the retry did not apply the change twice");
     console.log("proposal-decisions: a retried decision is answered, not refused");
+  }
+
+  // Case 6: a legacy partially reviewed, multi-hunk suggestion is still one
+  // decision. all:true replaces mixed old rows and applies every hunk.
+  {
+    const exact = "Alpha 0123456789abcdefghij Omega";
+    const comment = await suggest(socket, slug, exact, "Aleph 0123456789abcdefghij Omicron");
+    const original = await stateOf(socket, comment.proposal);
+    await installLegacyTwoHunkBranch(socket, comment.proposal, original);
+    const prior = await stateOf(socket, comment.proposal);
+    const tipBytes = Buffer.from(prior.tip, "base64").toString("hex");
+    sql(`INSERT INTO document_proposal_hunks
+      (proposal_id,hunk_index,accepted,decided_by,decided_against,note)
+      VALUES ('${comment.proposal}',0,false,'legacy-reviewer',decode('${tipBytes}','hex'),NULL),
+             ('${comment.proposal}',1,true,'legacy-reviewer',decode('${tipBytes}','hex'),NULL)`);
+    const answer = await decide(socket, comment, true);
+    assert.equal(answer.type, "proposal-decided", answer.message);
+    assert.deepEqual(answer.decisions, [
+      { hunk: 0, accepted: true },
+      { hunk: 1, accepted: true },
+    ], "the whole answer replaces the old mixed per-hunk choices");
+    assertGone(comment);
+    const source = await sourceOf(slug);
+    assert.ok(source.includes("Zeta Aleph 0123456789abcdefghij Omicron is long."));
+    await replayOutcome(socket, comment.proposal, prior, [
+      { hunk: 0, accepted: true },
+      { hunk: 1, accepted: true },
+    ]);
+    console.log("proposal-decisions: a legacy mixed multi-hunk suggestion resolves as one choice");
+  }
+
+  // Case 7: a syntactically valid but unknown id is not reported as a
+  // successful discard with null frontiers.
+  {
+    const request_id = randomUUID();
+    socket.send({ type: "proposal-discard", proposal_id: randomUUID(), request_id });
+    const answer = await socket.next("unknown proposal discard status", (frame) =>
+      frame.request_id === request_id && (frame.type === "error" || frame.type === "proposal-discarded"));
+    assert.equal(answer.type, "error");
+    assert.equal(answer.status_unknown, true);
+    console.log("proposal-decisions: an unknown discard is reported as status unknown");
   }
 } catch (error) {
   console.error(deployment.log);

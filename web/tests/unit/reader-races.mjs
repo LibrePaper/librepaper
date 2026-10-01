@@ -844,6 +844,126 @@ for (const invalidate of [null, "navigation", "main"]) {
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 
+// Proposal metadata is requested after source hydration on both first join and
+// reconnect. An empty doc-rows join may not emit a source-change callback, so
+// readiness, rather than a changed-text event, releases the pending request.
+{
+  const sent = [];
+  const active = { joined: false };
+  const ctx = context({
+    proposalListNeeded: true,
+    session: active,
+    connected: true,
+    collaboration: { send: (message) => sent.push(message) },
+  });
+  vm.runInContext(body("  function sendProposalListWhenReady", "  function attachProposalManager"), ctx);
+  ctx.sendProposalListWhenReady(active);
+  assert.deepEqual(sent, [], "proposal list waits until the source join is hydrated");
+  assert.equal(ctx.proposalListNeeded, true);
+  active.joined = true;
+  ctx.sendProposalListWhenReady(active);
+  assert.equal(sent.length, 1, "an unchanged reconnect join requests the proposal list once hydration completes");
+  assert.equal(sent[0].type, "proposal-list");
+  assert.equal(ctx.proposalListNeeded, false);
+}
+
+// A rejected proposal may resolve while reconnecting. A base-only doc-state
+// that advertises a head beyond the imported base leaves session.joined false;
+// hold its final event and status query until doc-rows complete that head.
+{
+  const timeline = [];
+  const active = { joined: false, source: "before reconnect" };
+  const ctx = context({
+    proposalListNeeded: true,
+    proposalReconnectNeeded: true,
+    deferredProposalOutcomes: [],
+    session: active,
+    connected: true,
+    collaboration: { send: (message) => timeline.push([message.type, active.source]) },
+    proposalManager: { reconnect: () => timeline.push(["reconnect", active.source]) },
+    receive: (event) => timeline.push([event.type, active.source, event.decisions?.[0]?.accepted]),
+  });
+  vm.runInContext(body("  function sendProposalListWhenReady", "  function attachProposalManager"), ctx);
+  const rejected = {
+    type: "proposal-decided", proposal_id: "draft", resolved: true,
+    decisions: [{ hunk: 0, accepted: false }],
+  };
+  assert.equal(ctx.deferProposalFinalization(rejected), true);
+
+  // start() completed after importing the base, but the source session keeps
+  // joined false because its advertised vector includes a coauthor row not
+  // yet dispatched by the socket. Neither the rejection nor reconnect query
+  // may run against that partial base.
+  active.source = "doc-state only";
+  ctx.finishSourceRejoin(active);
+  ctx.sendProposalListWhenReady(active);
+  assert.deepEqual(timeline, []);
+
+  active.source = "snapshot plus overlapping remote replacement";
+  active.joined = true;
+  ctx.finishSourceRejoin(active);
+  assert.deepEqual(timeline, [
+    ["proposal-decided", "snapshot plus overlapping remote replacement", false],
+    ["reconnect", "snapshot plus overlapping remote replacement"],
+    ["proposal-list", "snapshot plus overlapping remote replacement"],
+  ], "a missed rejection is finalized and queried only after all received source rows hydrate");
+}
+
+// A proposal whose branch cannot be reconstructed has no trustworthy hunk
+// index. Keep it visible for an editor to discard, but do not fabricate a
+// decision or duplicate the whole replacement already shown by its linked
+// suggestion comment.
+{
+  const proposal = { id: "unreadable", author: "writer", base: "base" };
+  const ctx = context({
+    session: { doc: {}, paths: new Map() },
+    openProposals: new Map([[proposal.id, proposal]]),
+    comments: [],
+    hunksOfProposal: () => [],
+    markContention: (rows) => rows,
+    review: [], reviewRows: [], decidedHunks: new Map(),
+  });
+  vm.runInContext(body("  function recomputeReview()", "  /// Read the paper as a chosen set of proposals"), ctx);
+  ctx.recomputeReview();
+  assert.equal(ctx.reviewRows.length, 1);
+  assert.equal(ctx.reviewRows[0].proposal, "unreadable");
+  assert.equal(ctx.reviewRows[0].hunk, undefined, "unreadable proposals have no invented hunk index");
+  assert.equal(ctx.reviewRows[0].discardOnly, true);
+  assert.match(ctx.reviewRows[0].unavailableLabel, /no readable changes/);
+
+  ctx.comments = [{ id: "remark", motivation: "editing", proposal: proposal.id }];
+  ctx.recomputeReview();
+  assert.equal(ctx.reviewRows.length, 0, "the linked suggestion row is the only visible decision for its proposal");
+}
+
+// A proposal that creates a file is not a file in the live document yet.
+// Revealing its row should leave the editor on the live file and point the
+// reviewer back to the proposed text shown in Changes rather than opening a
+// null LoroText in Editor.stateFor.
+{
+  let mobileSwitches = 0;
+  let navigations = 0;
+  const messages = [];
+  const ctx = context({
+    reviewing: null,
+    editing: true,
+    session: { textOf: () => null },
+    row: { proposal: "new-bib", hunk: 0, file_id: "proposal-only", path: "references.bib", position: 0 },
+    showMobileView: () => { mobileSwitches += 1; },
+    tick: async () => {},
+    shown: { source: true },
+    editor: { goToIn: () => { navigations += 1; } },
+    ws: { openFile: "paper.md" },
+    say: (message) => messages.push(message),
+  });
+  vm.runInContext(body("  async function revealProposal(row)", "  /// A reviewer answers one hunk"), ctx);
+  await ctx.revealProposal(ctx.row);
+  assert.equal(ctx.ws.openFile, "paper.md", "a proposal-only file never becomes the live editor's open file");
+  assert.equal(mobileSwitches, 0, "the reader stays with the visible proposal text");
+  assert.equal(navigations, 0, "Editor is never asked to build a state for a missing live file");
+  assert.match(messages[0], /proposed text in Changes/);
+}
+
 // Ctrl-S names where the work is, and reserves "saved" for the server. This
 // browser's own storage is evictable and is one device, so an offline Ctrl-S
 // says what will happen to the typing rather than calling it saved.
@@ -851,6 +971,8 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   const said = [];
   const ctx = context({
     connected: true, persistence: { pending: 1, local: true, joined: true },
+    proposalUnacknowledged: false,
+    trackedProposalStatus: null,
     say: (value) => { said.push(value); },
   });
   vm.runInContext(body("  function reportPersistence()", "  // There is no save, so a close"), ctx);
@@ -863,17 +985,27 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   ctx.persistence.joined = true;
   vm.runInContext("reportPersistence()", ctx);
   assert.deepEqual(said, ["Saved on the server."]);
+  ctx.proposalUnacknowledged = true;
+  vm.runInContext("reportPersistence()", ctx);
+  assert.match(said[1], /tracked change is still waiting/,
+    "unacknowledged tracked edits are not reported as saved after room persistence catches up");
+  ctx.proposalUnacknowledged = false;
+  ctx.trackedProposalStatus = { recoveryRequired: true, error: "manual recovery required" };
+  vm.runInContext("reportPersistence()", ctx);
+  assert.match(said[2], /preserved in this browser but needs manual recovery/,
+    "a draft requiring manual recovery is not described as a retryable pending send");
+  ctx.trackedProposalStatus = null;
   ctx.connected = false;
   vm.runInContext("reportPersistence()", ctx);
-  assert.match(said[1], /^Offline. Everything typed so far has already reached the server./);
+  assert.match(said[3], /^Offline. Everything typed so far has already reached the server./);
   ctx.persistence.pending = 2;
   vm.runInContext("reportPersistence()", ctx);
-  assert.match(said[2], /in this browser only/, "work the server has not seen is not called saved");
-  assert.doesNotMatch(said[1] + said[2], /saved/i, "the word is the server's");
+  assert.match(said[4], /in this browser only/, "work the server has not seen is not called saved");
+  assert.doesNotMatch(said[3] + said[4], /saved/i, "the word is the server's");
   // A local write that failed says so through its own failure, not here.
   ctx.persistence = { pending: 0, local: true, localError: "quota exceeded" };
   vm.runInContext("reportPersistence()", ctx);
-  assert.equal(said.length, 3);
+  assert.equal(said.length, 5);
 }
 
 // Reconnect metadata is checked before the old session can send its CRDT.

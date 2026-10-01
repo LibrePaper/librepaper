@@ -1,5 +1,5 @@
 <script>
-  import { decodeProposal, hunksOfProposal, markContention, previewTexts } from "../lib/proposals.js";
+  import { createProposals, decodeProposal, hunksOfProposal, locateProposalHunk, markContention, previewTexts } from "../lib/proposals.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
@@ -174,11 +174,11 @@
     pendingDecision.reject(error instanceof Error ? error : new Error(String(error || "Review decision failed.")));
   }
 
-  function requestDecision(message, { commentId = "", rollback = null } = {}) {
+  function requestDecision(message, { commentId = "", rollback = null, resolvedOnly = false } = {}) {
     const request_id = crypto.randomUUID();
     const promise = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => rejectDecision(request_id, new Error("The review decision was not acknowledged.")), DECISION_TIMEOUT_MS);
-      suggestionDecisions.set(request_id, { commentId, resolve, reject, rollback, timeout });
+      suggestionDecisions.set(request_id, { commentId, resolve, reject, rollback, resolvedOnly, timeout });
     });
     let sent;
     try { sent = collaboration?.send({ ...message, request_id }); }
@@ -828,21 +828,26 @@
   function decideSuggestion(comment, action) {
     suggestions.beginDeciding(comment, action);
     annotations.publish();
-    // A suggestion is a proposal with a remark attached (§1.2), so deciding one
-    // is deciding its hunk. A suggestion is one hunk by construction, which is
-    // why the index is zero, and the tip it was reviewed against travels with
-    // the decision so that a suggestion the author has refined since is refused
-    // rather than agreed to in a form nobody read.
-    return requestDecision({
-        type: "proposal-decide",
-        proposal_id: comment.proposal,
-        hunk: 0,
-        accepted: action === "accept",
-        tip: proposalTip(comment.proposal),
-      }, { commentId: comment.id, rollback: () => {
+    const tip = proposalTip(comment.proposal);
+    if (!tip) {
       suggestions.clearDeciding(comment);
       annotations.publish();
-      } });
+      return Promise.reject(new Error("That suggestion is no longer open."));
+    }
+    return requestDecision({
+      type: "proposal-decide",
+      proposal_id: comment.proposal,
+      accepted: action === "accept",
+      tip,
+      all: true,
+    }, { commentId: comment.id, resolvedOnly: true, rollback: () => {
+      suggestions.clearDeciding(comment);
+      annotations.publish();
+    } }).catch((error) => {
+      suggestions.clearDeciding(comment);
+      annotations.publish();
+      throw error;
+    });
   }
 
   /// "Reject all" declines each suggestion the same way a single Reject does:
@@ -919,6 +924,55 @@
   /* -------------------------------------------------------------------- room */
 
   let collaboration = $state(null);
+  let proposalManager = null;
+  let proposalManagerUnsubscribe = null;
+  // A proposal list is requested once per room join/reconnect, after the
+  // source snapshot has landed so its branch frontiers can be rebuilt.
+  let proposalListNeeded = false;
+  let proposalReconnectNeeded = false;
+  // A final proposal outcome may arrive on the new socket before its source
+  // snapshot. Keep it until the joined document is hydrated so the draft
+  // manager rebases against the same room state the server used.
+  let deferredProposalOutcomes = [];
+
+  function sendProposalListWhenReady(active = session) {
+    if (!proposalListNeeded || !active || active !== session || !connected || !active.joined) return;
+    proposalListNeeded = false;
+    collaboration?.send({ type: "proposal-list" });
+  }
+
+  function deferProposalFinalization(event) {
+    if (!(event?.type === "proposal-discarded" || event?.type === "proposal-decided" && event.resolved)
+        || !session || session.joined !== false) return false;
+    deferredProposalOutcomes.push({ session, event });
+    return true;
+  }
+
+  function finishSourceRejoin(active = session) {
+    if (!active || active !== session || active.joined !== true) return;
+    const outcomes = deferredProposalOutcomes.filter((item) => item.session === active);
+    deferredProposalOutcomes = deferredProposalOutcomes.filter((item) => item.session !== active);
+    for (const { event } of outcomes) receive(event);
+    if (proposalReconnectNeeded && connected) {
+      proposalReconnectNeeded = false;
+      proposalManager?.reconnect?.();
+    }
+    sendProposalListWhenReady(active);
+  }
+
+  function attachProposalManager(active) {
+    proposalManagerUnsubscribe?.();
+    proposalManagerUnsubscribe = null;
+    proposalManager = active && mayEdit ? createProposals({
+      session: active,
+      send: (message) => collaboration?.sendLive(message),
+      mayEdit,
+    }) : null;
+    proposalManagerUnsubscribe = proposalManager?.onchange?.(() => {
+      trackedProposalStatus = proposalManager.status?.() || null;
+    }) || null;
+    trackedProposalStatus = proposalManager?.status?.() || null;
+  }
 
   function sendLiveChat(text) {
     if (!collaboration || !connected || !mayChat) return Promise.resolve(false);
@@ -974,16 +1028,46 @@
     const drawn = [];
     const rows = [];
     for (const proposal of openProposals.values()) {
-      const hunks = hunksOfProposal(session.doc, proposal);
-      drawn.push({ id: proposal.id, author: proposal.author, hunks });
+      const sourceHunks = hunksOfProposal(session.doc, proposal);
+      if (!sourceHunks.length) {
+        drawn.push({ id: proposal.id, author: proposal.author, base: proposal.base, hunks: [] });
+        const linkedSuggestion = comments.some((comment) =>
+          comment.motivation === "editing" && String(comment.proposal || "") === proposal.id);
+        if (!linkedSuggestion) rows.push({
+          id: `${proposal.id}#unreadable`,
+          proposal: proposal.id,
+          author: proposal.author,
+          __from: "proposal",
+          __kind: "proposal",
+          status: "pending",
+          before: "",
+          after: undefined,
+          unavailable: true,
+          unavailableLabel: "This proposal has no readable changes.",
+          discardOnly: true,
+          file_id: "",
+          path: "",
+          position: 0,
+        });
+        continue;
+      }
+      const hunks = sourceHunks.map((hunk) => {
+        const mapped = locateProposalHunk(session.doc, proposal, hunk);
+        return {
+          ...hunk,
+          start: mapped.position ?? hunk.start,
+          file: mapped.file_id || hunk.file,
+          path: hunk.path || (mapped.file_id && session.paths?.get(mapped.file_id)) || "",
+          stale: Boolean(mapped.stale),
+        };
+      });
+      // Keep original base coordinates for the Editor overlay. It may be
+      // showing an author's private draft, whose local edits shift these
+      // positions differently from the live-document positions used below.
+      drawn.push({ id: proposal.id, author: proposal.author, base: proposal.base, hunks: sourceHunks });
       for (const hunk of hunks) {
-        const text = hunk.file ? session.textOf?.(hunk.file) : null;
-        const body = text ? text.toString() : null;
-        const end = hunk.start + hunk.deleted;
-        const fits = body !== null && hunk.start >= 0 && end <= body.length
-          && (hunk.before === undefined || body.slice(hunk.start, end) === hunk.before)
-          && (!hunk.prefix || body.slice(Math.max(0, hunk.start - hunk.prefix.length), hunk.start) === hunk.prefix)
-          && (!hunk.suffix || body.slice(end, end + hunk.suffix.length) === hunk.suffix);
+        const fileId = hunk.file || "";
+        const path = hunk.path || (fileId && session.paths?.get(fileId)) || "";
         const row = {
           // The proposal and the index within it are the decision; the joined
           // id is only so the list has something to key rows on.
@@ -991,12 +1075,13 @@
           proposal: proposal.id,
           hunk: hunk.index,
           author: proposal.author,
-          file_id: hunk.file || "",
-          path: (hunk.file && session.paths?.get(hunk.file)) || "",
+          file_id: fileId,
+          path,
+          new_file: hunk.new_file === true,
           position: hunk.start,
           before: hunk.before || "",
           after: hunk.inserted,
-          stale: fits ? "" : "The text this was written against has changed.",
+          stale: hunk.stale ? "The text this was written against has changed." : "",
         };
         // If this hunk was decided while the proposal was open, mark it with its status
         const decided = decidedHunks.get(proposal.id);
@@ -1105,7 +1190,13 @@
   async function revealProposal(row) {
     if (!row) return;
     reviewing = { proposal: row.proposal, hunk: row.hunk };
-    if (!row.file_id || !editing) return;
+    if (!Number.isInteger(row.hunk)) return;
+    if (!editing) return;
+    if (!row.file_id || session?.textOf && !session.textOf(row.file_id)) {
+      say("This proposed file cannot be opened in the current paper. Review its proposed text in Changes.",
+        { kind: "problem", id: "reader:proposal-file-preview" });
+      return;
+    }
     showMobileView("source");
     await tick();
     if (shown.source && editor) {
@@ -1129,10 +1220,20 @@
       });
   }
 
+  function discardProposal(row) {
+    if (!row?.proposal) return Promise.reject(new Error("That proposal is no longer open."));
+    return requestDecision({ type: "proposal-discard", proposal_id: row.proposal });
+  }
+
   function receive(event) {
+    if (deferProposalFinalization(event)) return;
     const proposalWaiter = event.request_id && suggestionDecisions.get(event.request_id);
+    // Let the draft manager observe every server error so it can settle open,
+    // update, and recovery state. Only proposal-scoped errors belong in the
+    // proposal branch below; unrelated request IDs must keep their handlers.
+    if (event.type === "error") proposalManager?.apply?.(event);
     if (event.type?.startsWith("proposal-")
-        || (event.type === "error" && event.stale && (event.proposal_id || (proposalWaiter && !proposalWaiter.commentId)))) {
+        || (event.type === "error" && (event.proposal_id || proposalWaiter))) {
       if (event.type === "proposal-list") {
         openProposals.clear();
         for (const open of event.proposals || []) {
@@ -1176,18 +1277,26 @@
         decidedHunks.delete(event.proposal_id);
         if (reviewing?.proposal === event.proposal_id) reviewing = null;
         recomputeReview();
+      } else if (event.type === "proposal-discarded") {
+        openProposals.delete(event.proposal_id);
+        decidedHunks.delete(event.proposal_id);
+        if (reviewing?.proposal === event.proposal_id) reviewing = null;
+        recomputeReview();
       }
       // Whoever asked for this decision is waiting on it. The reply used to be
       // an `accept` or `reject` frame; it is a decided proposal now, and a
       // refusal still arrives as an error carrying the same request.
       const waiting = event.request_id && suggestionDecisions.get(event.request_id);
       if (waiting) {
-        suggestionDecisions.delete(event.request_id);
-        clearTimeout(waiting.timeout);
-        if (event.type === "proposal-decided") waiting.resolve(event);
-        else waiting.reject(new Error(event.message || "that decision was refused"));
+        if (event.type !== "proposal-decided" || !waiting.resolvedOnly || event.resolved || event.type === "proposal-discarded") {
+          suggestionDecisions.delete(event.request_id);
+          clearTimeout(waiting.timeout);
+          if (event.type === "proposal-decided" || event.type === "proposal-discarded") waiting.resolve(event);
+          else waiting.reject(new Error(event.message || "that decision was refused"));
+        }
       }
-      editor?.receiveProposal?.(event);
+      if (event.type !== "error") proposalManager?.apply?.(event);
+      if (event.type === "proposal-discarded" || event.type === "proposal-decided" && event.resolved) annotations.refresh();
       return;
     }
 
@@ -1304,10 +1413,17 @@
     // their carets are. A reader receives all of this too -- that is how they
     // see the current text -- and sends none of it.
     if (event.type === "doc-state") {
-      session
+      const active = session;
+      active
         ?.start(event)
-        .then(() => paintPreview())
-        .catch((error) => say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" }));
+        .then(() => {
+          if (active !== session) return;
+          paintPreview();
+          finishSourceRejoin(active);
+        })
+        .catch((error) => {
+          say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" });
+        });
       peers = event.count || 1;
       return;
     }
@@ -1319,10 +1435,17 @@
       // is sequenced behind any `start` that is still mid-fetch for a
       // referenced base (project-session.js `joinGate`), so it can no longer
       // be assumed synchronous.
-      session
+      const active = session;
+      active
         ?.rows(event)
-        .then(() => paintPreview())
-        .catch((error) => say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" }));
+        .then(() => {
+          if (active !== session) return;
+          paintPreview();
+          finishSourceRejoin(active);
+        })
+        .catch((error) => {
+          say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" });
+        });
       return;
     }
     if (event.type === "doc-gap") {
@@ -1391,6 +1514,7 @@
   let Editor = $state(null);
   let MergeEditor = $state(null);
   let editor = $state(null);
+  let trackedProposalStatus = $state(null);
   // Raw on purpose: the session is a bag of Loro types and functions, and the
   // collaboration module hands the same object back in its callbacks, which
   // are compared to this by identity. A deep proxy would never be equal to it.
@@ -1428,7 +1552,10 @@
 
   // A close is only worth interrupting when the work has reached neither this
   // browser's storage nor the server.
-  const atRisk = $derived(Boolean(mayEdit && (persistence.localError || (persistence.pending && !persistence.local))));
+  const proposalUnacknowledged = $derived(Boolean(
+    trackedProposalStatus?.pending || trackedProposalStatus?.error || trackedProposalStatus?.recoveryRequired,
+  ));
+  const atRisk = $derived(Boolean(mayEdit && (proposalUnacknowledged || persistence.localError || (persistence.pending && !persistence.local))));
 
   // What the document is called, which is what the rendered page is titled.
   // The title it was published under wins; a document that never had one is
@@ -3042,6 +3169,11 @@
       onMessage: receive,
       onConnected: (up) => {
         connected = up;
+        if (up && sourceBound) {
+          proposalListNeeded = true;
+          proposalReconnectNeeded = true;
+          if (session?.joined) finishSourceRejoin(session);
+        }
         if (!up) {
           for (const request_id of [...suggestionDecisions.keys()]) rejectDecision(request_id, new Error("The review connection closed before the decision was acknowledged."));
           pendingChat?.disconnect();
@@ -3063,6 +3195,10 @@
       },
       onSession: (active) => {
         session = active;
+        deferredProposalOutcomes = deferredProposalOutcomes.filter((item) => item.session === active);
+        attachProposalManager(active);
+        proposalListNeeded = true;
+        if (connected && mayEdit) proposalReconnectNeeded = true;
         workspace.attach(active);
         refreshFiles();
         refreshPeers();
@@ -3074,7 +3210,10 @@
           if (!readerDisposed && active === session) void paintPreview();
         });
       },
-      onSource: () => sourceChanged(),
+      onSource: (active) => {
+        sourceChanged();
+        sendProposalListWhenReady(active);
+      },
       onSwap: () => { if (!readerDisposed) sourceEpoch += 1; },
       onFiles: filesChanged,
       onAwareness: () => { if (!readerDisposed) refreshPeers(); },
@@ -3314,6 +3453,8 @@
       pendingChat?.dispose();
       for (const pendingDecision of suggestionDecisions.values()) pendingDecision.reject(new Error("The review context was closed."));
       suggestionDecisions.clear();
+      proposalManagerUnsubscribe?.();
+      proposalManagerUnsubscribe = null;
       collaboration?.close();
     };
   });
@@ -3330,6 +3471,25 @@
     // A local write that failed or is still in flight is not worth
     // reassuring anybody about; the failure says so on its own.
     if (persistence.localError || persistence.localPending) return;
+    if (trackedProposalStatus?.recoveryRequired) {
+      say("A tracked change is preserved in this browser but needs manual recovery. Copy its text somewhere safe before discarding or replacing it.",
+        { kind: "problem", id: "reader:persistence" });
+      return;
+    }
+    if (trackedProposalStatus?.error) {
+      say(connected
+        ? `A tracked change needs attention: ${String(trackedProposalStatus.error?.message || trackedProposalStatus.error)}. Keep this tab open while it is handled.`
+        : `Offline. A tracked change is kept in this browser but needs attention: ${String(trackedProposalStatus.error?.message || trackedProposalStatus.error)}. Reconnect and keep this tab open.`,
+      { kind: "problem", id: "reader:persistence" });
+      return;
+    }
+    if (proposalUnacknowledged) {
+      say(connected
+        ? "A tracked change is still waiting for the server to confirm it."
+        : "Offline. A tracked change is still kept in this browser and will be sent when the connection returns.",
+      { id: "reader:persistence" });
+      return;
+    }
     if (!connected) {
       if (!persistence.local) return;
       say(
@@ -3342,6 +3502,16 @@
     }
     if (!persistence.joined || persistence.pending) return;
     say("Saved on the server.", { id: "reader:persistence" });
+  }
+
+  function downloadTrackedRecovery() {
+    const drafts = proposalManager?.recoveryTexts?.() || [];
+    if (!drafts.length) {
+      say("The preserved tracked text is no longer available for export.", { kind: "problem", id: "reader:proposal-recovery" });
+      return;
+    }
+    const contents = JSON.stringify({ document: SLUG, drafts }, null, 2);
+    saveBlob(new Blob([contents], { type: "application/json" }), `${SLUG}-tracked-draft-recovery.json`);
   }
 
   async function makeAvailableOffline() {
@@ -3750,17 +3920,15 @@
     <Changes proposals={reviewRows} {comments} {files} {identity} commentingAs={doc.commenting_as || "Anonymous"}
       {canModerate} canReview={mayEdit}
       {tracking} canTrack={mayEdit && editing} ontracking={setTracking}
-      {went} {replacements} canComment={mayChat} onreveal={revealAnnotation}
-      selected={selectedAnnotation} onresolve={resolve} ondelete={askDelete}
-      ondeletemany={askDeleteMany} onreply={reply}
+      recoveryRequired={Boolean(trackedProposalStatus?.recoveryRequired)} onrecover={downloadTrackedRecovery}
+      onreveal={revealAnnotation}
+      selected={selectedAnnotation}
       selectedProposal={reviewing ? `${reviewing.proposal}#${reviewing.hunk}` : ""}
-      onproposaldecide={decideProposal}
+      onproposaldecide={decideProposal} ondiscard={discardProposal}
       onproposalreveal={revealProposal}
       onaccept={(comment) => decideSuggestion(comment, "accept")}
       onreject={(comment) => decideSuggestion(comment, "reject")}
-      onrejectconfirmed={rejectConfirmed}
-      onproposalpreview={previewProposals}
-      onhistory={() => { void showPanel("history"); }} />
+      onproposalpreview={previewProposals} />
     {@render pendingRecovery("changes")}
   {/snippet}
 
@@ -3859,9 +4027,9 @@
         </div>
       {:else if Editor && sourceBound}
         {#key sourceEpoch}
-          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} editable={mayEdit}
+          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {rules} {tracking} editable={mayEdit}
                   send={collaboration?.sendLive} {review} {reviewing}
-                  onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
+                  onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone} onproposalstatus={(status) => { trackedProposalStatus = status; }}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; }} />
         {/key}
       {/if}

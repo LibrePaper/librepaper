@@ -98,9 +98,9 @@ async fn composite_references_reject_cross_document_provenance() {
     let (owner, first, second) = seed_documents(&mut tx).await;
     let proposal = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO document_proposals(id,document_id,author,author_peer,base_frontiers,
+        "INSERT INTO document_proposals(id,document_id,author,owner_key,base_frontiers,
                                         tip_frontiers,branch_bytes)
-         VALUES($1,$2,'author',1,'base'::bytea,'tip'::bytea,'branch'::bytea)",
+         VALUES($1,$2,'author','owner-key','base'::bytea,'tip'::bytea,'branch'::bytea)",
     )
     .bind(proposal)
     .bind(first)

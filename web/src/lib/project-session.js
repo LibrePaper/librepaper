@@ -639,18 +639,28 @@ export function createProjectSession({
     }, pressureDelay);
   }
 
-  /// What both `doc-state` and `doc-rows` do once the import they carried is
-  /// applied (§6.2 step 6): the browser is caught up with the server, so it
-  /// announces itself and, if it may edit, sends back whatever it has that
-  /// the server's vector does not cover yet.
+  /// What both `doc-state` and `doc-rows` do after applying their import
+  /// (§6.2 step 6): finish the join only when the local graph covers the
+  /// advertised server head, then announce and catch up any local work.
   function finishJoin(vector, durableVector) {
-    joined = true;
     // `vector` is the head used for catch-up. Durable coverage is a separate
     // signal and may arrive out of order with this join's asynchronous work.
     mergeDurableCoverage(durableVector);
+    const advertised = vector ? VersionVector.decode(decode(vector)) : new VersionVector(undefined);
+    const coverage = doc.oplogVersion().compare(advertised);
+    // A base-only `doc-state` can advertise the complete joined vector even
+    // though the `doc-rows` frame carrying operations after that base has not
+    // arrived yet. Stay unjoined until the local graph covers that advertised
+    // head; rows calls finishJoin again once those operations are imported.
+    if (coverage !== 0 && coverage !== 1) {
+      report();
+      return false;
+    }
+    joined = true;
     announcePresence();
     if (mayEdit) catchUp(vector);
     else report();
+    return true;
   }
 
   return {
@@ -1014,6 +1024,11 @@ export function createProjectSession({
     /// `doc-rows` frame that lands mid-fetch waits for this to finish
     /// importing before it touches `doc` itself.
     start(state) {
+      // A reconnect starts a new source hydration window. Publish that
+      // synchronously so final proposal outcomes arriving before the async
+      // import completes are held by Reader.
+      joined = false;
+      report();
       const stale = connection.mark();
       return sequenceJoin(async () => {
         // The frame may have waited behind another join step long enough for
@@ -1089,6 +1104,8 @@ export function createProjectSession({
     /// base, so the rows this frame carries are never caught up ahead of the
     /// base they build on.
     rows(frame) {
+      joined = false;
+      report();
       const stale = connection.mark();
       return sequenceJoin(async () => {
         if (!speaksForThisJoin(stale)) return;

@@ -4,16 +4,16 @@
   import Icon from "../Icon.svelte";
 
   let {
-    // One row per hunk. A decision names a proposal and an index within it
-    // (SPEC-loro.md §5.2), so the unit of the queue is a hunk and not a
-    // proposal: an agent run that touches four passages is four answers.
+    // Ordinary proposals can still be reviewed by hunk. A linked suggestion
+    // is one whole decision, including legacy proposals that contain several
+    // hunks.
     proposals = [], comments = [], files = [], tracking = false,
     canTrack = true, canReview = true, selected = "", selectedProposal = "", filters = {},
-    authors = [], sessions = [], ontracking, onfilter, onselect,
-    onaccept, onreject, onproposalreveal, onproposaldecide,
-    onprevious, onnext, onreveal, onresolve, ondelete, onreply, onhistory, onproposalpreview,
+    recoveryRequired = false, onrecover,
+    authors = [], sessions = [], ontracking, onfilter = undefined, onselect = undefined,
+    onaccept, onreject, onproposalreveal, onproposaldecide, ondiscard,
+    onreveal, onproposalpreview,
     identity = "", commentingAs = "Anonymous", canModerate = false,
-    went = {}, replacements = {},
   } = $props();
 
   let expanded = $state("");
@@ -82,10 +82,61 @@
     });
     return order;
   });
-  const allRows = $derived([
-    ...proposals.map((row) => ({ ...row, __kind: "proposal" })),
-    ...comments.filter((comment) => comment.motivation === "editing").map((comment) => ({ ...comment, __kind: "suggestion" })),
-  ]);
+  const allRows = $derived.by(() => {
+    const proposalRows = new Map();
+    for (const row of proposals) {
+      const id = String(row.proposal || row.id);
+      if (!proposalRows.has(id)) proposalRows.set(id, []);
+      proposalRows.get(id).push(row);
+    }
+    const linked = new Set();
+    const out = [];
+    for (const comment of comments.filter((candidate) => candidate.motivation === "editing")) {
+      const id = String(comment.proposal || "");
+      const hunks = proposalRows.get(id) || [];
+      if (!id || !hunks.length) {
+        out.push({
+          ...comment,
+          __kind: "suggestion",
+          // An absent replacement is not an empty replacement. Keep this
+          // explicit even when the linked proposal has no hunk rows to use
+          // for its display fallback.
+          after: comment.proposed == null ? undefined : comment.proposed,
+          unavailable: comment.proposed == null,
+          status: comment.resolved ? comment.outcome || "accepted" : "pending",
+          resolved: Boolean(comment.resolved),
+        });
+        continue;
+      }
+      linked.add(id);
+      const first = hunks[0];
+      out.push({
+        ...first, ...comment,
+        id: comment.id,
+        proposal: id,
+        __kind: "suggestion",
+        before: comment.original_anchor?.target?.exact ?? comment.exact ?? first.before ?? "",
+        // The first hunk cannot stand in for a missing whole-suggestion
+        // replacement: legacy proposals may have several unrelated hunks.
+        // Empty string is an available replacement that deletes the passage.
+        after: comment.proposed == null ? undefined : comment.proposed,
+        unavailable: comment.proposed == null,
+        unavailableLabel: undefined,
+        discardOnly: false,
+        status: comment.resolved ? comment.outcome || "accepted" : "pending",
+        resolved: Boolean(comment.resolved),
+        stale: hunks.some((row) => Boolean(row.stale)),
+        contested: hunks.find((row) => row.contested)?.contested || "",
+        replies: comment.replies || first.replies,
+        reply_total: comment.reply_total ?? first.reply_total,
+      });
+    }
+    for (const [id, rows] of proposalRows) {
+      if (linked.has(id)) continue;
+      out.push(...rows.map((row) => ({ ...row, __kind: "proposal" })));
+    }
+    return out;
+  });
   const orderOf = (item) => fileOrder.get(String(value(item, "file_id", "fileId") || pathOf(item))) ?? Number.MAX_SAFE_INTEGER;
   const orderedRows = $derived([...allRows].sort((a, b) => orderOf(a) - orderOf(b) || pathOf(a).localeCompare(pathOf(b)) || positionOf(a) - positionOf(b) || String(value(a, "created_at", "created")).localeCompare(String(value(b, "created_at", "created"))) || rowId(a).localeCompare(rowId(b))));
   const activeFilters = $derived({ ...localFilters, ...(filters || {}) });
@@ -134,12 +185,13 @@
   /// request and at least one proposal to put in it; a queue of nothing but
   /// comment suggestions has no branches to merge.
   const canPreview = $derived(
-    Boolean(onproposalpreview) && filteredRows.some((item) => item.__kind === "proposal"),
+    Boolean(onproposalpreview) && filteredRows.some((item) => !item.discardOnly && (item.__kind === "proposal" || item.proposal)),
   );
   /// Whether ticking a row leads anywhere: to a reading, or to a decision
   /// about several changes at once. Without one of those the checkbox is a
   /// control that does nothing, so it is not drawn.
-  const canPick = $derived(canPreview || (canReview && pendingRows.length > 1));
+  const pickableRows = $derived(pendingRows.filter((item) => !item.discardOnly));
+  const canPick = $derived(canPreview || (canReview && pickableRows.length > 1));
   const contestedCount = $derived(
     new Set(filteredRows.filter((item) => item.contested).map((item) => item.contested)).size,
   );
@@ -152,13 +204,14 @@
   const chosenProposals = $derived([
     ...new Set(
       selectedRows
+        .filter((item) => !item.discardOnly)
         .map((item) => String(value(item, "proposal", "proposalId", "proposal_id")))
         .filter(Boolean),
     ),
   ]);
 
   const rowFor = (id) => filteredRows.find((item) => rowId(item) === id);
-  const reviewAllowed = (item) => item?.__kind === "suggestion" ? canModerate : canReview;
+  const reviewAllowed = (item) => !item?.discardOnly && (item?.__kind === "suggestion" && !item.proposal ? canModerate : canReview);
   /// Whether a decision is in flight; the bulk verbs are disabled while one
   /// is, so a second click cannot answer for rows already being answered for.
   const busy = $derived(deciding.size > 0);
@@ -167,14 +220,18 @@
   /// proposal to a reading and this one hunk to a decision -- the two verbs
   /// say which they mean, and count what they would touch.
   const chosenChanges = $derived(
-    selectedRows.filter((item) => pending(item) && reviewAllowed(item) && !blocker(item)),
+    selectedRows.filter((item) => pending(item) && reviewAllowed(item) && (!blocker(item) || item.proposal)),
   );
+  const selectedAcceptable = $derived(chosenChanges.filter((item) => !blocker(item) && !item.contested && !item.unavailable));
+  const selectedRejectable = $derived(chosenChanges);
   const showExtraFilters = $derived(derivedAuthors.length > 1 || derivedFiles.length > 1);
   /// Everything on show that this caller could actually answer for: what the
   /// two verbs in the menu would touch, and what the count beside them says.
   const answerable = $derived(
-    pendingRows.filter((item) => reviewAllowed(item) && !blocker(item)),
+    pendingRows.filter((item) => reviewAllowed(item) && (!blocker(item) || item.proposal)),
   );
+  const acceptAllRows = $derived(answerable.filter((item) => !blocker(item) && !item.contested && !item.unavailable));
+  const rejectAllRows = $derived(answerable);
   /// Whether the filename belongs on the metadata line. One file under review
   /// names itself in every row, which is a word that tells the reviewer
   /// nothing; two or more and it is the only thing placing the change.
@@ -189,7 +246,7 @@
   const hasMenu = $derived(canPick || (canReview && answerable.length > 0));
 
   $effect(() => {
-    const valid = new Set(allRows.filter(pending).map(rowId));
+    const valid = new Set(filteredRows.filter((item) => pending(item) && !item.discardOnly).map(rowId));
     const next = new Set([...checked].filter((id) => valid.has(id)));
     if (next.size !== checked.size) checked = next;
   });
@@ -206,6 +263,8 @@
   /// nobody wrote.
   function blocker(item) {
     if (!item) return "";
+    if (item.discardOnly) return item.unavailableLabel || "This proposal has no readable changes.";
+    if (item.unavailable) return item.unavailableLabel || "The suggested replacement is unavailable.";
     if (item.stale) return typeof item.stale === "string" ? item.stale : "The text this was written against has changed.";
     if (item.conflict) return typeof item.conflict === "string" ? item.conflict : "Concurrent edits need attention.";
     return "";
@@ -236,8 +295,11 @@
 
   async function decide(item, action) {
     const id = rowId(item); const why = blocker(item);
-    if (!pending(item) || !reviewAllowed(item) || deciding.has(id)) return;
-    if (why) { feedback = `Cannot ${action} this change: ${why}`; activate(item); return; }
+    if (!pending(item) || deciding.has(id)) return;
+    if (item.discardOnly) { feedback = why; activate(item); return; }
+    if (!reviewAllowed(item)) return;
+    if (action === "accept" && item.unavailable) { feedback = blocker(item); activate(item); return; }
+    if (why && (action === "accept" || !item.proposal)) { feedback = `Cannot ${action} this change: ${why}`; activate(item); return; }
     addBusy(id); feedback = "";
     const ids = pendingRows.map(rowId); const oldIndex = ids.indexOf(id);
     try {
@@ -258,8 +320,9 @@
     // queue re-sorts as answers arrive, so this is a list and not a filter
     // that keeps being asked.
     const captured = rows.filter(pending); if (!captured.length) return;
-    const excluded = captured.filter((item) => blocker(item) || !reviewAllowed(item));
-    const eligible = captured.filter((item) => !blocker(item) && reviewAllowed(item));
+    const mayRejectWithoutMerge = (item) => action === "reject" && Boolean(item.proposal) && !item.discardOnly;
+    const excluded = captured.filter((item) => (blocker(item) && !mayRejectWithoutMerge(item)) || !reviewAllowed(item) || (action === "accept" && item.contested));
+    const eligible = captured.filter((item) => (!blocker(item) || mayRejectWithoutMerge(item)) && reviewAllowed(item) && (action !== "accept" || !item.contested));
     if (!eligible.length) { feedback = `${excluded.length} change${excluded.length === 1 ? "" : "s"} excluded because it needs attention.`; return; }
     eligible.forEach((item) => addBusy(rowId(item))); stopSelecting(); confirming = "";
     try {
@@ -303,14 +366,18 @@
   function resolve(item) {
     // Reveal focuses the editor, so take focus back to the row button via focusRow in activate.
     activate(item, { focus: true });
-    feedback = "This change was written against text that has since moved. Ask its author to offer it again.";
+    feedback = item.discardOnly
+      ? item.unavailableLabel || "This proposal has no readable changes."
+      : item.unavailable
+      ? "The suggested replacement is unavailable. Reject or discard this change."
+      : "This change was written against text that has since moved. Ask its author to offer it again.";
   }
   function keydown(event) {
     if (event.defaultPrevented || event.isComposing || event.target.closest("input,select,textarea,[contenteditable=true],details,[data-scope='menu']")) return;
     const item = rowFor(active); const key = event.key.toLowerCase();
     if (event.key === "Escape" && (selecting || confirming)) { event.preventDefault(); stopSelecting(); confirming = ""; return; }
-    if (event.key === "ArrowDown" || key === "j") { event.preventDefault(); onnext?.(active); move(1); }
-    else if (event.key === "ArrowUp" || key === "k") { event.preventDefault(); onprevious?.(active); move(-1); }
+    if (event.key === "ArrowDown" || key === "j") { event.preventDefault(); move(1); }
+    else if (event.key === "ArrowUp" || key === "k") { event.preventDefault(); move(-1); }
     else if (item && key === "a" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); void decide(item, "accept"); }
     else if (item && key === "r" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); void decide(item, "reject"); }
   }
@@ -361,14 +428,15 @@
           <ExplorerMenu>
             {#if canPick}<Menu.Item value="select" class="menuitem">Select multiple</Menu.Item>{/if}
             {#if canReview && answerable.length}
-              <Menu.Item value="accept-all" class="menuitem">Accept all pending changes</Menu.Item>
-              <Menu.Item value="reject-all" class="menuitem">Reject all pending changes</Menu.Item>
+              {#if acceptAllRows.length}<Menu.Item value="accept-all" class="menuitem">Accept all pending changes</Menu.Item>{/if}
+              {#if rejectAllRows.length}<Menu.Item value="reject-all" class="menuitem">Reject all pending changes</Menu.Item>{/if}
             {/if}
           </ExplorerMenu>
         </Menu>{/if}
       </div>
     </div>
     <div class="changes-meta" aria-live="polite">{allPending} pending{pendingRows.length !== allPending ? ` · ${pendingRows.length} shown` : ""}{contestedCount ? ` · ${contestedCount} contested` : ""}</div>
+    {#if recoveryRequired}<div class="tracking-recovery" role="alert"><span>A tracked draft needs attention. Its text is preserved here for manual recovery.</span><button type="button" class="empty-link" onclick={() => onrecover?.()}>Download preserved text</button></div>{/if}
   </header>
   <!-- One control, only visible when there are multiple authors or files to filter by. -->
   {#if showExtraFilters}<div class="filter-bar">
@@ -404,13 +472,13 @@
   {#if selecting}<div class="select-bar" role="group" aria-label="Selected changes">
     <span class="select-count">{checked.size} selected</span>
     {#if canPreview}<button type="button" class="bar-action" disabled={!chosenProposals.length} title={chosenProposals.length ? "Read the paper with these proposals applied" : "Tick changes to read the paper as they would leave it"} onclick={() => onproposalpreview?.([...chosenProposals])}>Read</button>{/if}
-    {#if canReview}<button type="button" class="bar-action reject" disabled={!chosenChanges.length || busy} onclick={() => bulk("reject")}>Reject</button>
-    <button type="button" class="bar-action accept" disabled={!chosenChanges.length || busy} onclick={() => bulk("accept")}>Accept</button>{/if}
+    {#if canReview}<button type="button" class="bar-action reject" disabled={!selectedRejectable.length || busy} onclick={() => bulk("reject")}>Reject</button>
+    <button type="button" class="bar-action accept" disabled={!selectedAcceptable.length || busy} onclick={() => bulk("accept")}>Accept</button>{/if}
     <button type="button" class="bar-action" onclick={stopSelecting}>Cancel</button>
   </div>{/if}
   {#if confirming}<div class="select-bar confirm-bar" role="group" aria-label="Confirm a decision for every pending change">
-    <span class="select-count">{confirming === "accept" ? "Accept" : "Reject"} all {answerable.length}?</span>
-    <button type="button" class="bar-action {confirming}" disabled={busy} onclick={() => bulk(confirming, pendingRows)}>{confirming === "accept" ? "Accept all" : "Reject all"}</button>
+    <span class="select-count">{confirming === "accept" ? "Accept" : "Reject"} all {confirming === "accept" ? acceptAllRows.length : rejectAllRows.length}?</span>
+    <button type="button" class="bar-action {confirming}" disabled={busy} onclick={() => bulk(confirming, confirming === "accept" ? acceptAllRows : rejectAllRows)}>{confirming === "accept" ? "Accept all" : "Reject all"}</button>
     <button type="button" class="bar-action" onclick={() => confirming = ""}>Cancel</button>
   </div>{/if}
   {#if feedback}<p class="panel-status" role="status" aria-live="polite">{feedback}</p>{/if}
@@ -425,13 +493,14 @@
     <!-- The change first and whoever wrote it after it, smaller: the proposed
          words are the thing being reviewed, and a username set above them in
          bold reads as though the author were. -->
-    <div class="row-head">{#if selecting}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Tick ${authorLabel(item)}'s change`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}<span class="row-summary">{shortDiff(item)}</span>{/if}</span><span class="row-meta"><span class="row-author">{authorLabel(item)}</span>{#if showPath}<span class="row-context">{pathOf(item)}</span>{/if}{#if why}<span class="row-warning">needs attention</span>{/if}</span></button></div>
+    <div class="row-head">{#if selecting && !item.discardOnly}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Tick ${authorLabel(item)}'s change`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-diff">{#if item.unavailable}<span class="row-summary">{item.unavailableLabel || "Suggested replacement unavailable"}</span>{:else}{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}<span class="row-summary">{shortDiff(item)}</span>{/if}{/if}</span><span class="row-meta"><span class="row-author">{authorLabel(item)}</span>{#if showPath}<span class="row-context">{pathOf(item)}</span>{/if}{#if why}<span class="row-warning">needs attention</span>{/if}</span></button></div>
     {#if isOpen && why}<div id={`change-detail-${id}`} class="change-detail" role="region" aria-label={`Details for change in ${pathOf(item)}`}>
-      <div class="conflict" role="alert"><p>{why}</p><button type="button" class="empty-link" onclick={() => resolve(item)}>Show the passage</button></div>
+      <div class="conflict" role="alert"><p>{why}</p>{#if !item.discardOnly}<button type="button" class="empty-link" onclick={() => resolve(item)}>Show the passage</button>{/if}{#if item.proposal && ondiscard}<button type="button" class="empty-link" disabled={deciding.has(id)} onclick={async () => { addBusy(id); try { await ondiscard(item); feedback = "Change discarded."; } catch (error) { feedback = error?.message || "Could not discard this change."; } finally { removeBusy(id); } }}>Discard change</button>{/if}</div>
     </div>{/if}
     <!-- Only the change being looked at offers an answer. Twenty rows of
          buttons is twenty invitations to answer something nobody has read. -->
-    {#if isOpen && !selecting && pending(item)}<div class="row-actions"><button type="button" class="row-action reject" aria-label={`Reject change in ${pathOf(item)}`} title={why || "Reject this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "reject")}>{deciding.has(id) ? "Rejecting…" : "Reject"}</button><button type="button" class="row-action accept" aria-label={`Accept change in ${pathOf(item)}`} title={why || "Accept this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "accept")}>{deciding.has(id) ? "Accepting…" : "Accept"}</button></div>{/if}
+    {#if isOpen && !selecting && pending(item)}<div class="row-actions"><button type="button" class="row-action reject" aria-label={`Reject change in ${pathOf(item)}`} title={why && item.proposal ? "Reject this proposal without applying its text" : why || "Reject this change"} disabled={!reviewAllowed(item) || (Boolean(why) && !item.proposal) || deciding.has(id)} onclick={() => void decide(item, "reject")}>{deciding.has(id) ? "Rejecting…" : "Reject"}</button><button type="button" class="row-action accept" aria-label={`Accept change in ${pathOf(item)}`} title={why || "Accept this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "accept")}>{deciding.has(id) ? "Accepting…" : "Accept"}</button></div>{/if}
+    {#if isOpen && item.__kind === "suggestion" && item.body}<div class="discussion"><p>{item.body}</p><button type="button" class="empty-link" onclick={(event) => { event.stopPropagation(); onreveal?.(item); }}>Show suggestion note</button></div>{/if}
     {#if isOpen && item.replies?.length}<details class="discussion"><summary>Discussion ({item.replies.length})</summary><ul>{#each item.replies as reply (reply.id)}<li><strong>{reply.creator || "Author"}:</strong> {reply.body}</li>{/each}</ul></details>{/if}
   {/snippet}
   <div class="changes-list" role="list" aria-label="Revision queue">
@@ -470,6 +539,7 @@
      `--panel-muted` is what every other panel means by quiet. */
   .changes-meta, .row-meta, .changes-hint { color: var(--panel-muted); font-size: var(--panel-meta-size); }
   .changes-meta { margin-top: .1rem; }
+  .tracking-recovery { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin-top: .45rem; padding: .45rem; border-left: 2px solid var(--color-warning-solid); background: var(--color-raised); color: var(--color-text); font-size: var(--panel-meta-size); }
   /* The track and thumb are `.switch` in librepaper.css, worn here and in the
      settings dialog alike; this is only where the words sit beside them. */
   .changes-panel :global(.tracking-toggle) { display: flex; align-items: center; gap: .35rem; flex: 0 0 auto; font-size: var(--panel-meta-size); white-space: nowrap; }

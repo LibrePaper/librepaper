@@ -9,10 +9,9 @@
 //! against durable. A method here that opened its own transaction could not
 //! be part of that.
 //!
-//! Retries are handled by the two mechanisms of §7.2, not by a receipt
-//! table: a create carries a client-generated UUID as primary key and is
-//! inserted with `ON CONFLICT DO NOTHING`, and a transition is conditional on
-//! the row's `version` and returns the current row on a mismatch.
+//! A create carries a client-generated UUID and is idempotent for its owner;
+//! a branch update checks `version` and accepts an exact repeat. Final rows
+//! are deleted but leave a short-lived outcome receipt for reconnect recovery.
 
 use sqlx::{FromRow, Row};
 use uuid::Uuid;
@@ -26,7 +25,8 @@ pub struct NewProposal {
     pub document_id: Uuid,
     pub id: Uuid,
     pub author: String,
-    pub author_peer: i64,
+    /// Stable authenticated identity, separate from the display name.
+    pub owner_key: String,
     pub base_frontiers: Vec<u8>,
     pub tip_frontiers: Vec<u8>,
     pub branch_bytes: Vec<u8>,
@@ -37,11 +37,10 @@ pub struct NewProposal {
 pub struct StoredProposal {
     pub id: Uuid,
     pub author: String,
-    /// The peer that wrote the branch. Loro's PeerID is u64; Postgres has no
-    /// unsigned so the bit pattern is stored as bigint and interpreted where
-    /// needed without conversion. This is what lets the sequencer tell a
-    /// proposal's operations from everyone else's without decoding the blob.
-    pub author_peer: i64,
+    /// Stable identity of the author when known. Null only for rows created
+    /// before ownership was recorded; those rows may be discarded but not
+    /// updated through the typed proposal API.
+    pub owner_key: Option<String>,
     pub base_frontiers: Vec<u8>,
     pub tip_frontiers: Vec<u8>,
     pub branch_bytes: Vec<u8>,
@@ -59,10 +58,83 @@ pub struct StoredDecision {
     pub note: Option<String>,
 }
 
-const SELECT: &str = "SELECT id,author,author_peer,base_frontiers,tip_frontiers,branch_bytes,\
+/// Final proposal state retained briefly after its live row is deleted, so a
+/// reconnecting author can recover the result of a lost resolution event.
+#[derive(Clone, Debug, FromRow)]
+pub struct StoredProposalOutcome {
+    pub proposal_id: Uuid,
+    pub base_frontiers: Vec<u8>,
+    pub tip_frontiers: Vec<u8>,
+    pub decisions: sqlx::types::Json<Vec<(i32, bool)>>,
+    pub discarded: bool,
+    pub decision_request_id: Option<Uuid>,
+}
+
+const SELECT: &str = "SELECT id,author,owner_key,base_frontiers,tip_frontiers,branch_bytes,\
      version FROM document_proposals";
 
 impl PostgresCatalog {
+    /// Retains one final result for up to 30 days. The table is keyed by the
+    /// client-chosen proposal id and is pruned for this document on every
+    /// write that creates a receipt.
+    pub async fn record_proposal_outcome(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        proposal_id: Uuid,
+        base_frontiers: &[u8],
+        tip_frontiers: &[u8],
+        decisions: &[(i32, bool)],
+        discarded: bool,
+        decision_request_id: Option<Uuid>,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM document_proposal_outcomes
+             WHERE document_id=$1 AND expires_at <= extract(epoch FROM now())::bigint",
+        )
+        .bind(document_id)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO document_proposal_outcomes
+               (document_id,proposal_id,base_frontiers,tip_frontiers,decisions,
+                discarded,decision_request_id,expires_at)
+             VALUES($1,$2,$3,$4,$5,$6,$7,extract(epoch FROM now())::bigint + 2592000)
+             ON CONFLICT(document_id,proposal_id) DO UPDATE SET
+               base_frontiers=excluded.base_frontiers,tip_frontiers=excluded.tip_frontiers,
+               decisions=excluded.decisions,discarded=excluded.discarded,
+               decision_request_id=excluded.decision_request_id,expires_at=excluded.expires_at",
+        )
+        .bind(document_id)
+        .bind(proposal_id)
+        .bind(base_frontiers)
+        .bind(tip_frontiers)
+        .bind(sqlx::types::Json(decisions))
+        .bind(discarded)
+        .bind(decision_request_id)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn proposal_outcome(
+        &self,
+        document_id: Uuid,
+        proposal_id: Uuid,
+    ) -> Result<Option<StoredProposalOutcome>> {
+        sqlx::query_as::<_, StoredProposalOutcome>(
+            "SELECT proposal_id,base_frontiers,tip_frontiers,decisions,discarded,
+                    decision_request_id
+             FROM document_proposal_outcomes
+             WHERE document_id=$1 AND proposal_id=$2
+               AND expires_at > extract(epoch FROM now())::bigint",
+        )
+        .bind(document_id)
+        .bind(proposal_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(Error::from)
+    }
+
     /// Opens a proposal. The id is the client's, so a retry after a lost
     /// response finds the row it already made rather than opening a second
     /// one (§7.2).
@@ -75,13 +147,33 @@ impl PostgresCatalog {
             document_id,
             id,
             author,
-            author_peer,
+            owner_key,
             base_frontiers,
             tip_frontiers,
             branch_bytes,
         } = new;
+        let new_owner_key = owner_key.clone();
+        // A completed id must never be resurrected by a delayed initial-open
+        // retry. The room sequencer normally orders this with resolution, but
+        // keep the invariant in the write transaction as well.
+        let has_outcome: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM document_proposal_outcomes
+                WHERE document_id=$1 AND proposal_id=$2
+                  AND expires_at > extract(epoch FROM now())::bigint
+             )",
+        )
+        .bind(document_id)
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if has_outcome {
+            return Err(Error::Conflict(
+                "proposal id has already been resolved".into(),
+            ));
+        }
         sqlx::query(
-            "INSERT INTO document_proposals(id,document_id,author,author_peer,base_frontiers,
+            "INSERT INTO document_proposals(id,document_id,author,owner_key,base_frontiers,
                                             tip_frontiers,branch_bytes)
              VALUES($1,$2,$3,$4,$5,$6,$7)
              ON CONFLICT(id) DO NOTHING",
@@ -89,22 +181,34 @@ impl PostgresCatalog {
         .bind(id)
         .bind(document_id)
         .bind(author)
-        .bind(author_peer)
-        .bind(base_frontiers)
-        .bind(tip_frontiers)
-        .bind(branch_bytes)
+        .bind(&owner_key)
+        .bind(&base_frontiers)
+        .bind(&tip_frontiers)
+        .bind(&branch_bytes)
         .execute(&mut **tx)
         .await?;
-        sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1 AND document_id=$2"))
-            .bind(id)
-            .bind(document_id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or(Error::NotFound)
+        let stored = sqlx::query_as::<_, StoredProposal>(&format!(
+            "{SELECT} WHERE id=$1 AND document_id=$2"
+        ))
+        .bind(id)
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        // The UUID is the create key. A retry after the row was rebased still
+        // names the same proposal; only its owner determines whether the key
+        // can be replayed. The submitted base is used for a newly inserted row.
+        if stored.owner_key.as_deref() != Some(new_owner_key.as_str()) {
+            return Err(Error::Conflict(
+                "proposal id belongs to another author".into(),
+            ));
+        }
+        Ok(stored)
     }
 
     /// Moves a proposal's branch to a new tip, conditional on the version the
-    /// caller read. The author typing again is what calls this.
+    /// caller read. An exact already-stored payload is a no-op success for a
+    /// resend after a lost acknowledgement.
     #[allow(clippy::too_many_arguments)]
     pub async fn update_proposal_branch(
         &self,
@@ -115,8 +219,28 @@ impl PostgresCatalog {
         tip_frontiers: Vec<u8>,
         base_frontiers: Option<Vec<u8>>,
         branch_bytes: Vec<u8>,
-    ) -> Result<StoredProposal> {
-        sqlx::query(
+    ) -> Result<(StoredProposal, bool)> {
+        let current = sqlx::query_as::<_, StoredProposal>(&format!(
+            "{SELECT} WHERE id=$1 AND document_id=$2 FOR UPDATE"
+        ))
+        .bind(id)
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        let requested_base_matches = base_frontiers
+            .as_ref()
+            .map_or(true, |base| base == &current.base_frontiers);
+        if current.tip_frontiers == tip_frontiers
+            && current.branch_bytes == branch_bytes
+            && requested_base_matches
+        {
+            return Ok((current, false));
+        }
+        if current.version != expected_version {
+            return Err(Error::Conflict("proposal changed since it was read".into()));
+        }
+        let update = sqlx::query(
             "UPDATE document_proposals
              SET tip_frontiers=$3,branch_bytes=$4,version=version+1,updated_at=now(),
                  base_frontiers=COALESCE($6, base_frontiers)
@@ -124,20 +248,64 @@ impl PostgresCatalog {
         )
         .bind(id)
         .bind(document_id)
-        .bind(tip_frontiers)
-        .bind(branch_bytes)
+        .bind(&tip_frontiers)
+        .bind(&branch_bytes)
         .bind(expected_version)
-        .bind(base_frontiers)
+        .bind(&base_frontiers)
         .execute(&mut **tx)
         .await?;
-        // Whether or not the update applied, the caller is handed the row as
-        // it now stands and compares it with what it asked for (§7.2).
-        sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1 AND document_id=$2"))
+        let applied = update.rows_affected() != 0;
+        if !applied {
+            return Err(Error::Conflict("proposal changed since it was read".into()));
+        }
+        let row = sqlx::query_as::<_, StoredProposal>(&format!(
+            "{SELECT} WHERE id=$1 AND document_id=$2"
+        ))
+        .bind(id)
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        Ok((row, applied))
+    }
+
+    /// Discards an open proposal without importing its branch into the source.
+    /// Any editor may use this to remove an empty or stale proposal.
+    pub async fn discard_proposal(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<(Vec<u8>, Vec<u8>, Vec<Uuid>)>> {
+        let Some((base, tip)) = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+            "SELECT base_frontiers,tip_frontiers FROM document_proposals
+             WHERE id=$1 AND document_id=$2 FOR UPDATE",
+        )
+        .bind(id)
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let comments: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM annotations WHERE proposal_id=$1 AND document_id=$2",
+        )
+        .bind(id)
+        .bind(document_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        let deleted = sqlx::query("DELETE FROM document_proposals WHERE id=$1 AND document_id=$2")
             .bind(id)
             .bind(document_id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or(Error::NotFound)
+            .execute(&mut **tx)
+            .await?;
+        // A repeated discard, or an id from another document, is a harmless
+        // no-op. The ID alone conveys no capability and the filter never
+        // deletes a row from a different document.
+        let _ = deleted;
+        Self::record_proposal_outcome(tx, document_id, id, &base, &tip, &[], true, None).await?;
+        Ok(Some((base, tip, comments)))
     }
 
     /// Records one hunk decision and says whether it was the last.
@@ -208,6 +376,91 @@ impl PostgresCatalog {
         Ok(decided == total_hunks)
     }
 
+    /// Resolves a comment suggestion as one decision, replacing any legacy
+    /// per-hunk answers before removing the proposal. Accepted suggestions
+    /// supply the actual hunk count from the branch diff; rejected suggestions
+    /// pass `None`, so discarding a stale suggestion never needs to rebuild its
+    /// branch. Both the tip check and deletion happen under the proposal row
+    /// lock, in the same transaction as a source update or retry receipt.
+    pub async fn resolve_suggestion(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        proposal_id: Uuid,
+        decided_against: &[u8],
+        accepted: bool,
+        total_hunks: Option<usize>,
+        decided_by: &str,
+        decision_request_id: Option<Uuid>,
+    ) -> Result<Vec<Uuid>> {
+        let proposal = sqlx::query(
+            "SELECT document_id,tip_frontiers,base_frontiers
+             FROM document_proposals WHERE id=$1 FOR UPDATE",
+        )
+        .bind(proposal_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        let proposal_document: Uuid = proposal.get(0);
+        let tip: Vec<u8> = proposal.get(1);
+        let base: Vec<u8> = proposal.get(2);
+        if proposal_document != document_id {
+            return Err(Error::Conflict("proposal is no longer open".into()));
+        }
+        if tip != decided_against {
+            return Err(Error::Conflict("proposal tip changed".into()));
+        }
+
+        let decisions = if accepted {
+            let total_hunks = total_hunks.filter(|count| *count > 0).ok_or_else(|| {
+                Error::Invalid("an accepted suggestion must contain at least one hunk".into())
+            })?;
+            let total_hunks = i32::try_from(total_hunks)
+                .map_err(|_| Error::Invalid("suggestion has too many hunks".into()))?;
+            sqlx::query("DELETE FROM document_proposal_hunks WHERE proposal_id=$1")
+                .bind(proposal_id)
+                .execute(&mut **tx)
+                .await?;
+            sqlx::query(
+                "INSERT INTO document_proposal_hunks(proposal_id,hunk_index,accepted,decided_by,
+                                                     decided_against,note)
+                 SELECT $1, hunk_index, true, $3, $4, NULL
+                 FROM generate_series(0, $2 - 1) AS indices(hunk_index)",
+            )
+            .bind(proposal_id)
+            .bind(total_hunks)
+            .bind(decided_by)
+            .bind(decided_against)
+            .execute(&mut **tx)
+            .await?;
+            (0..total_hunks)
+                .map(|index| (index, true))
+                .collect::<Vec<_>>()
+        } else {
+            // Rejection is a whole-proposal discard. No hunk enumeration is
+            // needed, especially when the branch has become stale.
+            sqlx::query("DELETE FROM document_proposal_hunks WHERE proposal_id=$1")
+                .bind(proposal_id)
+                .execute(&mut **tx)
+                .await?;
+            vec![(0, false)]
+        };
+
+        let comments = self.delete_proposal(tx, proposal_id).await?;
+        Self::record_proposal_outcome(
+            tx,
+            document_id,
+            proposal_id,
+            &base,
+            &tip,
+            &decisions,
+            false,
+            decision_request_id,
+        )
+        .await?;
+        Ok(comments)
+    }
+
     /// Deletes a resolved proposal, in the same transaction as the source its
     /// accepted hunks produced. The hunks and the suggestion comment that
     /// carries the discussion go with it (`ON DELETE CASCADE`); the ids of
@@ -241,12 +494,45 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
+    /// Fetches just the proposals attached to a page of comments in one query.
+    pub async fn proposals_by_ids(
+        &self,
+        document_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<StoredProposal>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as::<_, StoredProposal>(&format!(
+            "{SELECT} WHERE document_id=$1 AND id=ANY($2) ORDER BY created_at"
+        ))
+        .bind(document_id)
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
     pub async fn proposal(&self, id: Uuid) -> Result<Option<StoredProposal>> {
         sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1"))
             .bind(id)
             .fetch_optional(&self.pool)
             .await
             .map_err(Error::from)
+    }
+
+    /// Whether a proposal is attached to a suggestion comment. The socket's
+    /// whole-proposal decision mode is reserved for these rows; typed
+    /// proposals continue to require one answer per hunk.
+    pub async fn proposal_has_suggestion(&self, document_id: Uuid, id: Uuid) -> Result<bool> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM annotations WHERE document_id=$1 AND proposal_id=$2)",
+        )
+        .bind(document_id)
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Error::from)
     }
 
     /// What has been decided so far, ordered by hunk index. Decisions stream

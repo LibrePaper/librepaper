@@ -775,6 +775,9 @@ impl Server {
             .command_reporting_replay(&authority, &mut cmd)
             .await
             .map_err(super::comments::command_failure)?;
+        if !replay {
+            crate::server::socket::announce_proposal_outcome(&room, proposal_id, request_id).await;
+        }
         room.broadcast_comments_changed().await;
         Ok(json!({
             "operation": key,

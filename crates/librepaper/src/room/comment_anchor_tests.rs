@@ -229,6 +229,138 @@ async fn a_quotation_becomes_a_range_the_browser_never_sent() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_suggestion_keeps_its_file_id_across_a_raw_path_collision_and_refinement() {
+    let Some(deployment) = deployment("anchor-path-collision-suggestion").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let collision_id = "000000000000";
+    let (main_id, update) = room
+        .log()
+        .with_head(|doc| {
+            let main_id = session::text_ids_of(doc)
+                .get("paper.md")
+                .cloned()
+                .expect("the main file has an id");
+            assert_ne!(main_id, collision_id);
+            let vector = session::encode_vector(doc);
+            let edited = doc.fork();
+            edited.set_peer_id(9_123).unwrap();
+            let text = edited
+                .get_map(session::FILES)
+                .insert_container(collision_id, loro::LoroText::new())
+                .unwrap();
+            edited
+                .get_map(session::PATHS)
+                .insert(collision_id, "paper.md")
+                .unwrap();
+            text.insert_utf16(0, "The collider holds unique selected passage.\n")
+                .unwrap();
+            edited.commit();
+            let update = session::encode_diff(&edited, &vector).unwrap();
+            (main_id, update)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        room.ingest(9_123, "collider-writer", "collider-writer", 1, update)
+            .await,
+        crate::log::Ingested::Accepted
+    ));
+
+    let mut add = deployment.add_comment(
+        &room,
+        "unique selected passage",
+        "The collider holds ",
+        ".\n",
+        "editing",
+        Some("replacement words"),
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut add)
+        .await
+        .unwrap();
+    let source = comment.source().expect("a suggestion has a source");
+    assert_eq!(source.file_id.0, collision_id);
+
+    let served = room
+        .comment_by_id(&comment.id, true)
+        .await
+        .unwrap()
+        .expect("the suggestion is readable");
+    assert_eq!(served.proposed.as_deref(), Some("replacement words"));
+
+    let proposal_id = Uuid::parse_str(&comment.proposal).unwrap();
+    let stored = deployment
+        .catalog
+        .proposal(proposal_id)
+        .await
+        .unwrap()
+        .expect("the suggestion has a proposal");
+    let config = Configuration::default();
+    let mut refine = RefineSuggestion::new(
+        deployment.catalog.clone(),
+        room.document_id,
+        Uuid::parse_str(&comment.id).unwrap(),
+        proposal_id,
+        stored.version,
+        &deployment.writer(),
+        &config,
+        "A refined remark.",
+        &source.exact,
+        &source.prefix,
+        &source.suffix,
+        "refined words",
+        Some("replacement words"),
+    )
+    .unwrap();
+    room.command(&deployment.authority(), &mut refine)
+        .await
+        .expect("refinement reads and writes the selected stable file id");
+
+    let served = room
+        .comment_by_id(&comment.id, true)
+        .await
+        .unwrap()
+        .expect("the refined suggestion is readable");
+    assert_eq!(served.proposed.as_deref(), Some("refined words"));
+    assert_eq!(served.source().unwrap().file_id.0, collision_id);
+
+    let stored = deployment
+        .catalog
+        .proposal(proposal_id)
+        .await
+        .unwrap()
+        .expect("the refined proposal remains open");
+    let (base_main, tip_main, base_collision, tip_collision) = room
+        .log()
+        .with_head(|doc| {
+            let proposal = crate::room::proposals::Proposal {
+                base: loro::Frontiers::decode(&stored.base_frontiers).unwrap(),
+                tip: loro::Frontiers::decode(&stored.tip_frontiers).unwrap(),
+            };
+            let (base, tip) =
+                crate::room::proposals::sides(doc, &proposal, &stored.branch_bytes).unwrap();
+            (
+                super::comments::text_for_file_id(&base, &main_id).unwrap(),
+                super::comments::text_for_file_id(&tip, &main_id).unwrap(),
+                super::comments::text_for_file_id(&base, collision_id).unwrap(),
+                super::comments::text_for_file_id(&tip, collision_id).unwrap(),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(base_main, tip_main, "the main file is untouched");
+    assert_eq!(
+        base_collision,
+        "The collider holds unique selected passage.\n"
+    );
+    assert_eq!(tip_collision, "The collider holds refined words.\n");
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_remark_about_the_whole_document_needs_no_passage() {
     let Some(deployment) = deployment("anchor-whole").await else {
         return;
@@ -706,7 +838,7 @@ async fn refinement_round_trip(edit_source: bool, check_text: bool) {
         async move { catalog.proposal(id).await.unwrap().unwrap().version }
     };
 
-    let edited_source = format!("An unrelated opening.\n\n{PAPER}\nAn unrelated ending.\n");
+    let edited_source = format!("é 😀 An unrelated opening.\n\n{PAPER}\nAn unrelated ending.\n");
     if edit_source {
         edit_refinement_source(&room, &edited_source, 1).await;
     }
@@ -762,6 +894,17 @@ async fn refinement_round_trip(edit_source: bool, check_text: bool) {
         .await
         .expect("a refinement of what is actually there");
 
+    let served = room
+        .comment_by_id(&comment.id, true)
+        .await
+        .unwrap()
+        .expect("the refined suggestion remains readable");
+    assert_eq!(
+        served.proposed.as_deref(),
+        Some("*interval* covers the mean, at last"),
+        "hydration shows the replacement after refinement and Unicode source edits",
+    );
+
     let proposal = deployment
         .catalog
         .proposal(proposal_id)
@@ -783,6 +926,15 @@ async fn refinement_round_trip(edit_source: bool, check_text: bool) {
     room.command(&deployment.authority(), &mut accept)
         .await
         .expect("the refined branch can be accepted after source edits");
+    let receipt = deployment
+        .catalog
+        .proposal_outcome(room.document_id, proposal_id)
+        .await
+        .unwrap()
+        .expect("MCP acceptance uses the same durable whole-suggestion result");
+    assert!(!receipt.discarded);
+    assert!(!receipt.decisions.0.is_empty());
+    assert!(receipt.decisions.0.iter().all(|(_, accepted)| *accepted));
     assert_eq!(
         room.projection().await.unwrap().texts["paper.md"],
         final_source.replace(
@@ -853,16 +1005,18 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
         .await
         .unwrap();
 
-    // Not `created`: what MCP validates is the indexed read, and that is
-    // the shape whose projections are empty.
+    // Not `created`: MCP validates the indexed read, which now derives the
+    // proposed text from the linked branch while leaving the outcome empty.
     let served = room
         .comment_by_id(&created.id, true)
         .await
         .unwrap()
         .expect("the suggestion is readable");
     assert!(
-        served.proposed.is_none() && served.outcome.is_empty(),
-        "the served shape carries no proposal projection",
+        served.proposed.as_deref() == Some("*interval* contains the mean")
+            && served.outcome.is_empty(),
+        "the served shape derives proposed text from the branch: {:?}",
+        served.proposed,
     );
     assert!(!served.proposal.is_empty(), "it does carry a proposal id");
 
@@ -922,10 +1076,19 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
         open.id,
         open.tip_frontiers.clone(),
         &deployment.writer(),
+        Uuid::new_v4(),
     );
     room.command(&deployment.authority(), &mut cmd)
         .await
         .expect("an editor rejects it");
+    let receipt = deployment
+        .catalog
+        .proposal_outcome(room.document_id, open.id)
+        .await
+        .unwrap()
+        .expect("MCP rejection records a whole-proposal result");
+    assert!(!receipt.discarded);
+    assert_eq!(receipt.decisions.0, vec![(0, false)]);
     assert!(
         room.comment_by_id(&created.id, true)
             .await

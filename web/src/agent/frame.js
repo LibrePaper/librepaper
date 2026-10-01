@@ -314,7 +314,7 @@ import { createMathTypesetter } from "../lib/math.js";
     scan();
 
     const painted = ranges.filter((item) => item.end > item.start);
-    const pendingSuggestions = painted.filter((item) => item.motivation === "editing" && !item.resolved);
+    const pendingSuggestions = painted.filter((item) => item.motivation === "editing" && !item.resolved && typeof item.proposed === "string");
     const overlapping = new Set();
     for (const one of pendingSuggestions) for (const other of pendingSuggestions) {
       if (one !== other && one.start < other.end && other.start < one.end) overlapping.add(one.id);
@@ -370,7 +370,7 @@ import { createMathTypesetter } from "../lib/math.js";
         // segment whose own end lands on the suggestion's end offset. A
         // decided suggestion falls out of `resolved` and is painted like any
         // other resolved comment, above.
-        const suggestion = live.find((item) => item.motivation === "editing" && !overlapping.has(item.id));
+        const suggestion = live.find((item) => item.motivation === "editing" && typeof item.proposed === "string" && !overlapping.has(item.id));
         if (suggestion) {
           mark.style.textDecoration = "line-through";
           mark.style.textDecorationColor = edge(tintOf("editing"));

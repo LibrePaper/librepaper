@@ -16,7 +16,9 @@
 use super::*;
 use crate::document::session;
 use crate::document::store::{DocumentInput, MutationActor, Store};
-use crate::room::proposals::{DecideProposalHunk, OpenProposal, ProposalDecided, UpdateProposal};
+use crate::room::proposals::{
+    DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
+};
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::{Authority, PostgresCatalog, StoredProposal};
 use loro::Frontiers;
@@ -177,7 +179,10 @@ async fn open(
         catalog: room.catalog().clone(),
         id: Uuid::new_v4(),
         author: author.to_string(),
+        owner_key: authority.principal_key.clone(),
         base: base.clone(),
+        resume: false,
+        stored: None,
     };
     room.command(authority, &mut command).await.unwrap()
 }
@@ -193,6 +198,7 @@ async fn update(
         document_id: room.document_id,
         catalog: room.catalog().clone(),
         id: stored.id,
+        owner_key: authority.principal_key.clone(),
         expected_version: stored.version,
         tip: tip.clone(),
         base: None,
@@ -215,19 +221,16 @@ async fn decide(
     hunk_index: i32,
     accepted: bool,
     against: &Frontiers,
-    reviewer: loro::PeerID,
 ) -> Result<ProposalDecided, crate::log::CommandError> {
     let stored = room.catalog().proposal(proposal_id).await.unwrap().unwrap();
     let decided = room.catalog().decisions(proposal_id).await.unwrap();
     decide_with(
-        room, authority, stored, decided, hunk_index, accepted, against, reviewer,
+        room, authority, stored, decided, hunk_index, accepted, against,
     )
     .await
 }
 
-/// [`decide`], but with the pre-read snapshot handed in rather than taken
-/// here, so a test can hold two reviewers on the same snapshot.
-#[allow(clippy::too_many_arguments)]
+/// [`decide`], but with the pre-read snapshot handed in rather than taken here.
 async fn decide_with(
     room: &Room,
     authority: &Authority,
@@ -236,7 +239,6 @@ async fn decide_with(
     hunk_index: i32,
     accepted: bool,
     against: &Frontiers,
-    reviewer: loro::PeerID,
 ) -> Result<ProposalDecided, crate::log::CommandError> {
     let proposal_id = stored.id;
     let mut command = DecideProposalHunk {
@@ -247,12 +249,13 @@ async fn decide_with(
         decided,
         hunk_index,
         accepted,
+        all: false,
         decided_by: "Bob".to_string(),
         note: None,
         against: against.encode(),
-        reviewer,
         request_id: Uuid::now_v7(),
         total_hunks: 0,
+        final_decisions: Vec::new(),
     };
     room.command(authority, &mut command).await
 }
@@ -321,7 +324,10 @@ async fn a_base_the_room_has_never_seen_is_refused() {
         catalog: room.catalog().clone(),
         id: Uuid::new_v4(),
         author: "Ada".to_string(),
+        owner_key: deployment.authority.principal_key.clone(),
         base: elsewhere,
+        resume: false,
+        stored: None,
     };
     let refused = room.command(&deployment.authority, &mut command).await;
     assert!(
@@ -337,6 +343,239 @@ async fn a_base_the_room_has_never_seen_is_refused() {
             .is_empty(),
         "a refused open leaves no row behind"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn proposal_updates_require_the_owner_and_acknowledged_version_but_allow_exact_retry() {
+    let Some(deployment) = deployment("proposal-update-guards").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let base = frontier(&room).await;
+    let (first_branch, first_tip) = room
+        .log()
+        .with_fork_at(&base, |at| {
+            author_forks(at, 4242, "paper.md", "The tabby sat.\n")
+        })
+        .await
+        .unwrap();
+    let opened = open(&room, &deployment.authority, "Ada", &base).await;
+    let acknowledged = update(
+        &room,
+        &deployment.authority,
+        &opened,
+        &first_tip,
+        &first_branch,
+    )
+    .await;
+    let original_bytes = acknowledged.branch_bytes.clone();
+
+    // A resent whole snapshot is safe even if its acknowledgement was lost.
+    let mut exact_retry = UpdateProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id: opened.id,
+        owner_key: deployment.authority.principal_key.clone(),
+        expected_version: opened.version,
+        tip: first_tip.clone(),
+        base: None,
+        branch: first_branch.clone(),
+        stored: None,
+        decided: Vec::new(),
+        carried: Vec::new(),
+    };
+    let replayed = room
+        .command(&deployment.authority, &mut exact_retry)
+        .await
+        .expect("an exact retry is idempotent");
+    assert_eq!(replayed.version, acknowledged.version);
+    assert_eq!(replayed.branch_bytes, original_bytes);
+
+    let (different_branch, different_tip) = room
+        .log()
+        .with_fork_at(&base, |at| {
+            author_forks(at, 4343, "paper.md", "The tabby purred.\n")
+        })
+        .await
+        .unwrap();
+    let mut wrong_owner = UpdateProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id: opened.id,
+        owner_key: "another-author".into(),
+        expected_version: acknowledged.version,
+        tip: different_tip.clone(),
+        base: None,
+        branch: different_branch.clone(),
+        stored: None,
+        decided: Vec::new(),
+        carried: Vec::new(),
+    };
+    let refused_owner = room
+        .command(&deployment.authority, &mut wrong_owner)
+        .await
+        .expect_err("another author cannot update the branch");
+    assert!(matches!(
+        refused_owner,
+        crate::log::CommandError::Conflict(_)
+    ));
+    assert_eq!(
+        deployment
+            .catalog
+            .proposal(opened.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .branch_bytes,
+        original_bytes
+    );
+
+    let mut stale_version = UpdateProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id: opened.id,
+        owner_key: deployment.authority.principal_key.clone(),
+        expected_version: opened.version,
+        tip: different_tip,
+        base: None,
+        branch: different_branch,
+        stored: None,
+        decided: Vec::new(),
+        carried: Vec::new(),
+    };
+    let refused_stale = room
+        .command(&deployment.authority, &mut stale_version)
+        .await
+        .expect_err("an older acknowledged version cannot replace a newer branch");
+    assert!(matches!(
+        refused_stale,
+        crate::log::CommandError::Storage(crate::storage::postgres::Error::Conflict(_))
+    ));
+    let still_original = deployment
+        .catalog
+        .proposal(opened.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still_original.version, acknowledged.version);
+    assert_eq!(still_original.branch_bytes, original_bytes);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn resuming_an_unknown_proposal_id_does_not_create_a_row() {
+    let Some(deployment) = deployment("proposal-resume-unknown").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let id = Uuid::new_v4();
+    let mut command = OpenProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id,
+        author: "Ada".into(),
+        owner_key: deployment.authority.principal_key.clone(),
+        base: frontier(&room).await,
+        resume: true,
+        stored: None,
+    };
+    let unknown = room.command(&deployment.authority, &mut command).await;
+    assert!(
+        matches!(&unknown, Err(crate::log::CommandError::Conflict(message)) if message.starts_with("proposal status is unknown")),
+        "got {unknown:?}"
+    );
+    assert!(deployment.catalog.proposal(id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn whole_suggestion_resolution_replaces_legacy_mixed_hunk_answers() {
+    let Some(deployment) = deployment("suggestion-whole-resolution").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    // Two changes separated by more than the hunk bridge threshold.
+    other_writer_types(&room, "paper.md", "alpha 0123456789abcdefghij omega\n").await;
+    let base = frontier(&room).await;
+    let (branch, tip) = room
+        .log()
+        .with_fork_at(&base, |at| {
+            author_forks(at, 4242, "paper.md", "aleph 0123456789abcdefghij omicron\n")
+        })
+        .await
+        .unwrap();
+    let proposal = open(&room, &deployment.authority, "Ada", &base).await;
+    let proposal = update(&room, &deployment.authority, &proposal, &tip, &branch).await;
+
+    // Rows left by the old per-hunk browser path disagree. MCP acceptance and
+    // the socket's all:true mode both call resolve_suggestion, which must
+    // replace that set with one accepted answer for every actual hunk.
+    let mut tx = deployment.catalog.pool().begin().await.unwrap();
+    deployment
+        .catalog
+        .decide_proposal_hunk(
+            &mut tx,
+            room.document_id,
+            proposal.id,
+            0,
+            false,
+            "legacy-reviewer",
+            &proposal.tip_frontiers,
+            None,
+            2,
+        )
+        .await
+        .unwrap();
+    deployment
+        .catalog
+        .decide_proposal_hunk(
+            &mut tx,
+            room.document_id,
+            proposal.id,
+            1,
+            true,
+            "legacy-reviewer",
+            &proposal.tip_frontiers,
+            None,
+            2,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let request_id = Uuid::new_v4();
+    let mut tx = deployment.catalog.pool().begin().await.unwrap();
+    deployment
+        .catalog
+        .resolve_suggestion(
+            &mut tx,
+            room.document_id,
+            proposal.id,
+            &proposal.tip_frontiers,
+            true,
+            Some(2),
+            "Ada",
+            Some(request_id),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let receipt = deployment
+        .catalog
+        .proposal_outcome(room.document_id, proposal.id)
+        .await
+        .unwrap()
+        .expect("whole decision records its final result");
+    assert_eq!(receipt.decisions.0, vec![(0, true), (1, true)]);
+    assert!(!receipt.discarded);
+    assert!(deployment
+        .catalog
+        .proposal(proposal.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// Declining, with somebody else writing at the same time.
@@ -393,7 +632,7 @@ async fn declining_a_proposal_does_not_revert_a_concurrent_writer() {
         "the proposal is the author's one change and nothing else, got {found:?}"
     );
 
-    let outcome = decide(&room, &deployment.authority, stored.id, 0, false, &tip, 7)
+    let outcome = decide(&room, &deployment.authority, stored.id, 0, false, &tip)
         .await
         .unwrap();
     assert!(outcome.resolved, "the only hunk decided resolves it");
@@ -435,17 +674,33 @@ async fn a_proposal_goes_open_update_decide_resolve() {
     other_writer_types(&room, path, "The cat sat. It purred.\n").await;
 
     let stored = open(&room, &deployment.authority, "Ada", &base).await;
-    update(&room, &deployment.authority, &stored, &tip, &branch_bytes).await;
+    let stored = update(&room, &deployment.authority, &stored, &tip, &branch_bytes).await;
+    let mut replay_open = OpenProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id: stored.id,
+        author: "Ada".into(),
+        owner_key: deployment.authority.principal_key.clone(),
+        base: base.clone(),
+        resume: true,
+        stored: None,
+    };
+    let replayed = room
+        .command(&deployment.authority, &mut replay_open)
+        .await
+        .unwrap();
+    assert_eq!(replayed.version, stored.version);
+    assert_eq!(replayed.base_frontiers, stored.base_frontiers);
 
     // A decision against a tip the proposal has moved past is refused (§7.1).
-    let stale = decide(&room, &deployment.authority, stored.id, 0, true, &base, 7).await;
+    let stale = decide(&room, &deployment.authority, stored.id, 0, true, &base).await;
     assert!(
         matches!(stale, Err(crate::log::CommandError::Conflict(_))),
         "a decision against the wrong tip is refused, got {stale:?}"
     );
 
     // The real decision, against the tip the reviewer was shown.
-    let outcome = decide(&room, &deployment.authority, stored.id, 0, true, &tip, 7)
+    let outcome = decide(&room, &deployment.authority, stored.id, 0, true, &tip)
         .await
         .unwrap();
     assert!(
@@ -481,11 +736,66 @@ async fn a_proposal_goes_open_update_decide_resolve() {
             .is_none(),
         "a resolved proposal is deleted, not kept"
     );
+    let receipt = deployment
+        .catalog
+        .proposal_outcome(room.document_id, stored.id)
+        .await
+        .unwrap()
+        .expect("a deleted proposal retains its reconnect result");
+    assert_eq!(receipt.base_frontiers, stored.base_frontiers);
+    assert_eq!(receipt.tip_frontiers, stored.tip_frontiers);
+    assert_eq!(receipt.decisions.0, vec![(0, true)]);
+    assert!(!receipt.discarded);
+
+    let mut resumed_closed = OpenProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id: stored.id,
+        author: "Ada".into(),
+        owner_key: deployment.authority.principal_key.clone(),
+        base: tip.clone(),
+        resume: true,
+        stored: None,
+    };
+    let closed_retry = room
+        .command(&deployment.authority, &mut resumed_closed)
+        .await;
+    assert!(
+        matches!(closed_retry, Err(crate::log::CommandError::Conflict(_))),
+        "a resumed id with a retained outcome is replayed by the socket, never reopened: {closed_retry:?}"
+    );
+    assert!(deployment
+        .catalog
+        .proposal(stored.id)
+        .await
+        .unwrap()
+        .is_none());
+    let mut delayed_initial_retry = OpenProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id: stored.id,
+        author: "Ada".into(),
+        owner_key: deployment.authority.principal_key.clone(),
+        base: tip.clone(),
+        resume: false,
+        stored: None,
+    };
+    let delayed_retry = room
+        .command(&deployment.authority, &mut delayed_initial_retry)
+        .await;
+    assert!(
+        matches!(delayed_retry, Err(crate::log::CommandError::Storage(_))),
+        "a delayed initial-open retry cannot recreate an id with a receipt: {delayed_retry:?}"
+    );
+    assert!(deployment
+        .catalog
+        .proposal(stored.id)
+        .await
+        .unwrap()
+        .is_none());
 
     // A second decision is refused and changes nothing: the proposal is
-    // gone. A retry of the same request id is answered from its label by the
-    // socket handler, which `web/tests/integration/proposal-decisions.mjs`
-    // covers against a real server.
+    // gone. The socket can answer a retry from the retained proposal outcome.
     let again = decide_with(
         &room,
         &deployment.authority,
@@ -494,7 +804,6 @@ async fn a_proposal_goes_open_update_decide_resolve() {
         0,
         true,
         &tip,
-        7,
     )
     .await;
     assert!(
@@ -506,6 +815,36 @@ async fn a_proposal_goes_open_update_decide_resolve() {
         body,
         "a refused second decision must not change the text"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_discard_keeps_a_reconnect_receipt_without_rebuilding_the_branch() {
+    let Some(deployment) = deployment("discard-receipt").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let base = frontier(&room).await;
+    let stored = open(&room, &deployment.authority, "Ada", &base).await;
+    let mut command = DiscardProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id: stored.id,
+    };
+    let discarded = room
+        .command(&deployment.authority, &mut command)
+        .await
+        .unwrap();
+    assert!(discarded.applied);
+
+    let receipt = deployment
+        .catalog
+        .proposal_outcome(room.document_id, stored.id)
+        .await
+        .unwrap()
+        .expect("discarded proposals retain reconnect status");
+    assert!(receipt.discarded);
+    assert!(receipt.decisions.0.is_empty());
 }
 
 /// Two reviewers decide the last two hunks at the same time.
@@ -569,7 +908,6 @@ async fn two_reviewers_deciding_at_once_still_apply_what_they_accepted() {
         0,
         true,
         &tip,
-        7,
     )
     .await
     .unwrap();
@@ -583,7 +921,6 @@ async fn two_reviewers_deciding_at_once_still_apply_what_they_accepted() {
         1,
         true,
         &tip,
-        8,
     )
     .await
     .unwrap();
@@ -653,7 +990,7 @@ async fn a_decision_follows_its_hunk_when_the_base_moves() {
     let stored = open(&room, &deployment.authority, "Ada", &base).await;
     let stored = update(&room, &deployment.authority, &stored, &tip, &branch_bytes).await;
 
-    let first = decide(&room, &deployment.authority, stored.id, 0, true, &tip, 7)
+    let first = decide(&room, &deployment.authority, stored.id, 0, true, &tip)
         .await
         .unwrap();
     assert!(!first.resolved, "one of two hunks answered");
@@ -675,6 +1012,7 @@ async fn a_decision_follows_its_hunk_when_the_base_moves() {
         document_id: room.document_id,
         catalog: room.catalog().clone(),
         id: stored.id,
+        owner_key: deployment.authority.principal_key.clone(),
         expected_version: stored.version,
         tip: new_tip.clone(),
         base: Some(new_base),
@@ -697,17 +1035,9 @@ async fn a_decision_follows_its_hunk_when_the_base_moves() {
         "the accepted hunk keeps its answer under the new numbering"
     );
 
-    let last = decide(
-        &room,
-        &deployment.authority,
-        stored.id,
-        1,
-        false,
-        &new_tip,
-        7,
-    )
-    .await
-    .unwrap();
+    let last = decide(&room, &deployment.authority, stored.id, 1, false, &new_tip)
+        .await
+        .unwrap();
     assert!(last.resolved, "the second answer completes the review");
     let body = text(&room, path).await;
     assert!(

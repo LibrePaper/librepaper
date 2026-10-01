@@ -135,6 +135,11 @@ pub enum KnownMessage {
     ProposalOpen {
         #[serde(default)]
         base: String,
+        /// True when replaying an id the client previously acknowledged.
+        /// Unlike an initial lost-ack retry, a resume may not create a row
+        /// after both its live row and retained outcome have expired.
+        #[serde(default)]
+        resume: bool,
         #[serde(default)]
         request_id: String,
     },
@@ -150,6 +155,10 @@ pub enum KnownMessage {
         /// other people's edits into their branch. Empty leaves it alone.
         #[serde(default)]
         base: String,
+        /// Last server version acknowledged by `proposal-opened` or
+        /// `proposal-updated`; guards delayed branch writes.
+        #[serde(default)]
+        expected_version: i64,
         #[serde(default)]
         request_id: String,
     },
@@ -161,10 +170,20 @@ pub enum KnownMessage {
         hunk: usize,
         #[serde(default)]
         accepted: bool,
+        /// A whole-suggestion answer. Typed proposals keep per-hunk decisions.
+        #[serde(default)]
+        all: bool,
         #[serde(default)]
         tip: String,
         #[serde(default)]
         note: String,
+        #[serde(default)]
+        request_id: String,
+    },
+    #[serde(rename = "proposal-discard")]
+    ProposalDiscard {
+        #[serde(default)]
+        proposal_id: String,
         #[serde(default)]
         request_id: String,
     },
@@ -279,6 +298,7 @@ impl KnownMessage {
                 | "proposal-open"
                 | "proposal-update"
                 | "proposal-decide"
+                | "proposal-discard"
                 | "proposal-list"
                 | "comment"
                 | "reply"
@@ -303,6 +323,7 @@ impl KnownMessage {
             Self::ProposalOpen { .. } => "proposal-open",
             Self::ProposalUpdate { .. } => "proposal-update",
             Self::ProposalDecide { .. } => "proposal-decide",
+            Self::ProposalDiscard { .. } => "proposal-discard",
             Self::ProposalList { .. } => "proposal-list",
             Self::Comment { .. } => "comment",
             Self::Reply { .. } => "reply",
@@ -324,6 +345,7 @@ impl KnownMessage {
             | ProposalOpen
             | ProposalUpdate
             | ProposalDecide
+            | ProposalDiscard
             | ProposalList
             | Comment
             | Reply
@@ -351,8 +373,14 @@ impl KnownMessage {
     );
     string_field!(vector, vector, DocOpen);
     string_field!(protocol, protocol, DocOpen);
-    string_field!(proposal_id, proposal_id, ProposalUpdate | ProposalDecide);
+    string_field!(
+        proposal_id,
+        proposal_id,
+        ProposalUpdate | ProposalDecide | ProposalDiscard
+    );
     string_field!(base, base, ProposalOpen | ProposalUpdate);
+    value_field!(resume, resume, bool, ProposalOpen);
+    value_field!(expected_version, expected_version, i64, ProposalUpdate);
     string_field!(tip, tip, ProposalUpdate | ProposalDecide);
     string_field!(note, note, ProposalDecide);
     string_field!(why, why, DocLabel);
@@ -363,6 +391,7 @@ impl KnownMessage {
     value_field!(document, document, bool, Comment);
     value_field!(resolved, resolved, bool, Resolve);
     value_field!(accepted, accepted, bool, ProposalDecide);
+    value_field!(all, all, bool, ProposalDecide);
     value_field!(
         seq,
         seq,
@@ -457,6 +486,12 @@ impl Message {
     pub fn base(&self) -> &str {
         self.string(KnownMessage::base)
     }
+    pub fn resume(&self) -> bool {
+        self.value(KnownMessage::resume)
+    }
+    pub fn expected_version(&self) -> i64 {
+        self.value(KnownMessage::expected_version)
+    }
     pub fn tip(&self) -> &str {
         self.string(KnownMessage::tip)
     }
@@ -486,6 +521,9 @@ impl Message {
     }
     pub fn accepted(&self) -> bool {
         self.value(KnownMessage::accepted)
+    }
+    pub fn all(&self) -> bool {
+        self.value(KnownMessage::all)
     }
     pub fn seq(&self) -> i64 {
         self.value(KnownMessage::seq)
@@ -541,5 +579,32 @@ mod tests {
             r#"{"type":"doc-update-start","size":"not-a-number"}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn proposal_updates_carry_the_acknowledged_version() {
+        let message: Message =
+            serde_json::from_str(r#"{"type":"proposal-update","expected_version":7}"#).unwrap();
+        assert_eq!(message.expected_version(), 7);
+    }
+
+    #[test]
+    fn proposal_open_distinguishes_initial_retry_from_resume() {
+        let initial: Message =
+            serde_json::from_str(r#"{"type":"proposal-open","request_id":"a"}"#).unwrap();
+        let resumed: Message =
+            serde_json::from_str(r#"{"type":"proposal-open","request_id":"a","resume":true}"#)
+                .unwrap();
+        assert!(!initial.resume());
+        assert!(resumed.resume());
+    }
+
+    #[test]
+    fn proposal_decide_can_name_one_whole_suggestion() {
+        let message: Message =
+            serde_json::from_str(r#"{"type":"proposal-decide","all":true,"accepted":false}"#)
+                .unwrap();
+        assert!(message.all());
+        assert!(!message.accepted());
     }
 }
