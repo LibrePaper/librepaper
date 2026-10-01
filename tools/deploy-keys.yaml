@@ -20,9 +20,10 @@ OVH_S3_SECRET: ENC[AES256_GCM,data:y8Zkj0k06iU3le/Tx9ZscNkJyPHYihk8kYVqoeDCQeo=,
 OVH_S3_ARN: ENC[AES256_GCM,data:JZKlanybgThHkMJzR6JCoSUAbEy3WfX0opzkEvYzv7gBkg6zLBI=,iv:zC+LIF5OkAVznk6ilNZTbXL3gV2hL1OwxjWTG/ZaSsw=,tag:YtWzkbpTFyzf4e/hC9cN0A==,type:str]
 OVH_S3_REGION: ENC[AES256_GCM,data:Lhlp,iv:lzPBcQ2AbgBJKyrpAVzsyNOxzE+QK+PMViGM2Qbwrug=,tag:qUQ/TuLsiWRls93bkbszyQ==,type:str]
 PRODUCTION_ADMIN_PASSWORD: ENC[AES256_GCM,data:CRr4PZ+RbFfHZiGJ+UCVeXQgIjFkdh1mTZVXRT/vLnHpzHK/0gCIeajBO2bVXcuZauwtxXOf8Cme3YJCVmsE9w==,iv:S6MVprohmOOweWCdfpM469p8nRf2Nsy3ohhyGqJwemc=,tag:m5D6u0nyRXxgFoicUAiSmg==,type:str]
+PRODUCTION_POSTGRES_EXPORTER_PASSWORD: ENC[AES256_GCM,data:oDF4FiCfrMjsaMPhYD61CiH9SNPFov96Rck3mFdGsgWrcW0ehIT6lz+AstJeK0/6,iv:7orSRje4zi8jUlTabS6GzWOJIX6xZeaK5pm3cHtfS/U=,tag:GLreNqLcO+oxe7+Kna1Ezw==,type:str]
 sops:
-    lastmodified: "2026-10-01T04:47:50Z"
-    mac: ENC[AES256_GCM,data:uyTF13L7/fh4psIPkUqa84+OPJH+7ujNbDBjAmd20cMUwnjyPUe/+BIRm2kYTrBua7wewjrEpE2392EjyyyI1DcdnRbLbcryGx+lOtOZw5tYKRzrDxTyzAgNObpYqzfmvKUaRfcA15ii+5bmBfAMQMLTQDVmetVcu8iI5QXBdHQ=,iv:fZfKEUannTZf6Z0YSv1J4DUsQwPJ582jzlI92O2LcSU=,tag:Mova8Ah9L7NXI3ITHruMew==,type:str]
+    lastmodified: "2026-10-01T04:52:15Z"
+    mac: ENC[AES256_GCM,data:wQvVAcWIqExLp7aT28RZ3iNPJP2QM9yRGaRLlZogPgaBR5Fw8BP9AG0ieQwuUSmAzWX+wwdnnmDmn2v0PLIIwYZYRKqC1LSEjAgLr6lCnTLsmeyPc4m53oILGxj/+XkqRxi7BNZV4QFy/GIC+/eB7W2MkTP9T+zyquvRaBTftV8=,iv:p/i0GEZcd0nJEBIOe/7uCBmA6dgNHyTldDRbyXkaT50=,tag:kuaeBF/9b8pLiHXcx89XjA==,type:str]
     pgp:
         - created_at: "2026-09-03T12:08:40Z"
           enc: |-
