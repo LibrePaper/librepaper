@@ -21,7 +21,6 @@
   import Modal from "./Modal.svelte";
   import Hero from "./Hero.svelte";
   import Toasts from "./Toasts.svelte";
-  import Avatar from "./Avatar.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
   import Page from "./layout/Page.svelte";
   import Stack from "./layout/Stack.svelte";
@@ -848,27 +847,7 @@
                  a column that is blank on most rows reads as a column that
                  failed to load. -->
             {#if doc.owner}
-              <span class="owner">
-                <Avatar name={doc.owner} key={doc.owner_id || doc.owner} size={5} title="" />
-                <span class="owner-name">{mine(doc) ? "You" : doc.owner}</span>
-                {#if !mine(doc)}
-                  <span class="badge lp-tone-neutral text-xs" title="What you may do here">{doc.role}</span>
-                {/if}
-                <!-- And whoever else has been in. Three faces and a count:
-                     the question this answers is "am I working on this with
-                     anyone", which four faces answer no better than three.
-                     Only shown on your own projects, because on somebody
-                     else's it would tell you who else holds the link you came
-                     in on. -->
-                {#if doc.people?.length}
-                  <span class="people" title={doc.people.map((person) => person.name).join(", ")}>
-                    {#each doc.people.slice(0, 3) as person (person.id)}
-                      <Avatar name={person.name} key={person.id} size={5} title="" />
-                    {/each}
-                    {#if doc.people.length > 3}<span class="people-more">+{doc.people.length - 3}</span>{/if}
-                  </span>
-                {/if}
-              </span>
+              <span class="owner-name">{mine(doc) ? "You" : doc.owner}</span>
             {/if}
           {:else if column.key === "files"}
             {doc.files ?? "—"}
@@ -1099,10 +1078,7 @@
   .title-note { display: flex; gap: calc(var(--spacing) * 2); font-size: var(--text-xs); color: var(--color-text-secondary); }
   .title-note:empty { display: none; }
 
-  .owner { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); }
   .owner-name { font-size: var(--text-sm); }
-  .people { display: inline-flex; align-items: center; gap: 2px; margin-left: calc(var(--spacing)); }
-  .people-more { font-size: var(--text-xs); color: var(--color-text-secondary); }
   .trash-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing)); }
 
   /* The two columns a phone has no room for: the listing is read there to
