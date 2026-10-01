@@ -39,6 +39,7 @@ writeFileSync(entry, [
       value.doc.commit();
     }
     const base = value.doc.frontiers();
+    const baseVersion = value.doc.oplogVersion();
     const sent = [];
     const pairingKey = "librepaper-local-connections", addressKey = "librepaper-local-address";
     const oldPairings = localStorage.getItem(pairingKey), oldAddress = localStorage.getItem(addressKey);
@@ -78,9 +79,10 @@ writeFileSync(entry, [
       for (let attempt = 0; attempt < 100; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 50));
         popup = host.querySelector(".cm-tooltip-autocomplete")?.textContent || "";
-        if (popup.includes("Riv2024")) break;
+        if (popup.includes("Rivers")) break;
       }
-      if (!popup.includes("Riv2024")) throw new Error("Zotero fixture did not appear in the citation picker: " + JSON.stringify({ popup, hasPairing: hasPairing(), calls: zoteroCalls, text: view.state.doc.toString() }));
+      if (!popup.includes("Rivers")) throw new Error("Zotero fixture did not appear in the citation picker: " + JSON.stringify({ popup, hasPairing: hasPairing(), calls: zoteroCalls, text: view.state.doc.toString() }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
       view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
       for (let attempt = 0; attempt < 100; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 50));
@@ -89,13 +91,33 @@ writeFileSync(entry, [
       const open = sent.find((message) => message.type === "proposal-open");
       if (!open) throw new Error("tracked Zotero import did not open a proposal");
       editor.receiveProposal({ type: "proposal-opened", proposal_id: open.request_id, request_id: open.request_id, tip: "", applied_version: 1 });
-      const update = sent.find((message) => message.type === "proposal-update");
-      if (!update) throw new Error("tracked Zotero import did not publish a proposal update");
-      outbound = value.doc.forkAt(base);
-      outbound.import(Uint8Array.from(atob(update.update), (character) => character.charCodeAt(0)));
+      let update = null, lastAcknowledged = "", appliedVersion = 1;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const updates = sent.filter((message) => message.type === "proposal-update");
+        const latest = updates.at(-1);
+        if (latest && latest.request_id !== lastAcknowledged) {
+          lastAcknowledged = latest.request_id;
+          const candidate = value.doc.forkAt(base);
+          candidate.import(Uint8Array.from(atob(latest.update), (character) => character.charCodeAt(0)));
+          const candidateProjection = projectDirectory(candidate, null);
+          const candidateText = candidate.getMap("files").get(main)?.toString() || "";
+          const candidateBibliography = candidateProjection.texts.get("references.bib") || "";
+          if (editor.text(main)?.includes("@Riv2024") && candidateText.includes("@Riv2024") && candidateBibliography.includes("x-librepaper-zotero-item={ITEM123}")) {
+            outbound = candidate;
+            update = latest;
+            break;
+          }
+          candidate.free();
+          editor.receiveProposal({ type: "proposal-updated", proposal_id: open.request_id, request_id: latest.request_id, tip: latest.tip, applied_version: ++appliedVersion });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (!outbound || !update) throw new Error("tracked Zotero import did not publish a private branch containing both the citation and bibliography: " + JSON.stringify({ text: editor.text(main), updates: sent.filter((message) => message.type === "proposal-update").length }));
       const projection = projectDirectory(outbound, null);
       const liveProjection = projectDirectory(value.doc, null);
-      const changedContainerIds = outbound.diff(base, outbound.frontiers(), false).map(([id]) => String(id));
+      const jsonUpdates = outbound.exportJsonUpdates(baseVersion, undefined, false);
+      const metadataContainer = String(outbound.getMap("meta").id);
+      const metadataOperations = jsonUpdates.changes.flatMap((change) => change.ops || []).filter((operation) => String(operation.container) === metadataContainer);
       return {
         mainState: missingMain ? "absent" : "explicit",
         text: outbound.getMap("files").get(main).toString(),
@@ -106,7 +128,7 @@ writeFileSync(entry, [
         projectedPath: projection.main,
         bibliography: projection.texts.get("references.bib") || "",
         metadataUnchanged: JSON.stringify([...outbound.getMap("meta").entries()]) === JSON.stringify(baseMeta),
-        noMetadataOperations: !changedContainerIds.includes(String(outbound.getMap("meta").id)),
+        noMetadataOperations: metadataOperations.length === 0,
         liveText: value.textOf(main).toString(),
         liveMetaMain: value.doc.getMap("meta").get("main") ?? null,
         liveMain: liveProjection.mainId,
@@ -116,7 +138,7 @@ writeFileSync(entry, [
       globalThis.fetch = fetchBefore;
       if (oldPairings === null) localStorage.removeItem(pairingKey); else localStorage.setItem(pairingKey, oldPairings);
       if (oldAddress === null) localStorage.removeItem(addressKey); else localStorage.setItem(addressKey, oldAddress);
-      outbound?.destroy();
+      outbound?.free();
       editor.$destroy();
       host.remove();
       value.leave();
