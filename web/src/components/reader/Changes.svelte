@@ -12,9 +12,8 @@
     recoveryRequired = false, onrecover,
     authors = [], sessions = [], ontracking, onfilter, onselect,
     onaccept, onreject, onproposalreveal, onproposaldecide, ondiscard,
-    onprevious, onnext, onreveal, onresolve, ondelete, onreply, onhistory, onproposalpreview,
+    onreveal, onproposalpreview,
     identity = "", commentingAs = "Anonymous", canModerate = false,
-    went = {}, replacements = {},
   } = $props();
 
   let expanded = $state("");
@@ -184,12 +183,13 @@
   /// request and at least one proposal to put in it; a queue of nothing but
   /// comment suggestions has no branches to merge.
   const canPreview = $derived(
-    Boolean(onproposalpreview) && filteredRows.some((item) => item.__kind === "proposal" || item.proposal),
+    Boolean(onproposalpreview) && filteredRows.some((item) => !item.discardOnly && (item.__kind === "proposal" || item.proposal)),
   );
   /// Whether ticking a row leads anywhere: to a reading, or to a decision
   /// about several changes at once. Without one of those the checkbox is a
   /// control that does nothing, so it is not drawn.
-  const canPick = $derived(canPreview || (canReview && pendingRows.length > 1));
+  const pickableRows = $derived(pendingRows.filter((item) => !item.discardOnly));
+  const canPick = $derived(canPreview || (canReview && pickableRows.length > 1));
   const contestedCount = $derived(
     new Set(filteredRows.filter((item) => item.contested).map((item) => item.contested)).size,
   );
@@ -202,13 +202,14 @@
   const chosenProposals = $derived([
     ...new Set(
       selectedRows
+        .filter((item) => !item.discardOnly)
         .map((item) => String(value(item, "proposal", "proposalId", "proposal_id")))
         .filter(Boolean),
     ),
   ]);
 
   const rowFor = (id) => filteredRows.find((item) => rowId(item) === id);
-  const reviewAllowed = (item) => item?.__kind === "suggestion" && !item.proposal ? canModerate : canReview;
+  const reviewAllowed = (item) => !item?.discardOnly && (item?.__kind === "suggestion" && !item.proposal ? canModerate : canReview);
   /// Whether a decision is in flight; the bulk verbs are disabled while one
   /// is, so a second click cannot answer for rows already being answered for.
   const busy = $derived(deciding.size > 0);
@@ -243,7 +244,7 @@
   const hasMenu = $derived(canPick || (canReview && answerable.length > 0));
 
   $effect(() => {
-    const valid = new Set(allRows.filter(pending).map(rowId));
+    const valid = new Set(filteredRows.filter((item) => pending(item) && !item.discardOnly).map(rowId));
     const next = new Set([...checked].filter((id) => valid.has(id)));
     if (next.size !== checked.size) checked = next;
   });
@@ -260,7 +261,8 @@
   /// nobody wrote.
   function blocker(item) {
     if (!item) return "";
-    if (item.unavailable) return "The suggested replacement is unavailable.";
+    if (item.discardOnly) return item.unavailableLabel || "This proposal has no readable changes.";
+    if (item.unavailable) return item.unavailableLabel || "The suggested replacement is unavailable.";
     if (item.stale) return typeof item.stale === "string" ? item.stale : "The text this was written against has changed.";
     if (item.conflict) return typeof item.conflict === "string" ? item.conflict : "Concurrent edits need attention.";
     return "";
@@ -291,7 +293,9 @@
 
   async function decide(item, action) {
     const id = rowId(item); const why = blocker(item);
-    if (!pending(item) || !reviewAllowed(item) || deciding.has(id)) return;
+    if (!pending(item) || deciding.has(id)) return;
+    if (item.discardOnly) { feedback = why; activate(item); return; }
+    if (!reviewAllowed(item)) return;
     if (action === "accept" && item.unavailable) { feedback = blocker(item); activate(item); return; }
     if (why && (action === "accept" || !item.proposal)) { feedback = `Cannot ${action} this change: ${why}`; activate(item); return; }
     addBusy(id); feedback = "";
@@ -314,7 +318,7 @@
     // queue re-sorts as answers arrive, so this is a list and not a filter
     // that keeps being asked.
     const captured = rows.filter(pending); if (!captured.length) return;
-    const mayRejectWithoutMerge = (item) => action === "reject" && Boolean(item.proposal);
+    const mayRejectWithoutMerge = (item) => action === "reject" && Boolean(item.proposal) && !item.discardOnly;
     const excluded = captured.filter((item) => (blocker(item) && !mayRejectWithoutMerge(item)) || !reviewAllowed(item) || (action === "accept" && item.contested));
     const eligible = captured.filter((item) => (!blocker(item) || mayRejectWithoutMerge(item)) && reviewAllowed(item) && (action !== "accept" || !item.contested));
     if (!eligible.length) { feedback = `${excluded.length} change${excluded.length === 1 ? "" : "s"} excluded because it needs attention.`; return; }
@@ -360,7 +364,9 @@
   function resolve(item) {
     // Reveal focuses the editor, so take focus back to the row button via focusRow in activate.
     activate(item, { focus: true });
-    feedback = item.unavailable
+    feedback = item.discardOnly
+      ? item.unavailableLabel || "This proposal has no readable changes."
+      : item.unavailable
       ? "The suggested replacement is unavailable. Reject or discard this change."
       : "This change was written against text that has since moved. Ask its author to offer it again.";
   }
@@ -368,8 +374,8 @@
     if (event.defaultPrevented || event.isComposing || event.target.closest("input,select,textarea,[contenteditable=true],details,[data-scope='menu']")) return;
     const item = rowFor(active); const key = event.key.toLowerCase();
     if (event.key === "Escape" && (selecting || confirming)) { event.preventDefault(); stopSelecting(); confirming = ""; return; }
-    if (event.key === "ArrowDown" || key === "j") { event.preventDefault(); onnext?.(active); move(1); }
-    else if (event.key === "ArrowUp" || key === "k") { event.preventDefault(); onprevious?.(active); move(-1); }
+    if (event.key === "ArrowDown" || key === "j") { event.preventDefault(); move(1); }
+    else if (event.key === "ArrowUp" || key === "k") { event.preventDefault(); move(-1); }
     else if (item && key === "a" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); void decide(item, "accept"); }
     else if (item && key === "r" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); void decide(item, "reject"); }
   }
@@ -485,9 +491,9 @@
     <!-- The change first and whoever wrote it after it, smaller: the proposed
          words are the thing being reviewed, and a username set above them in
          bold reads as though the author were. -->
-    <div class="row-head">{#if selecting}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Tick ${authorLabel(item)}'s change`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-diff">{#if item.unavailable}<span class="row-summary">Suggested replacement unavailable</span>{:else}{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}<span class="row-summary">{shortDiff(item)}</span>{/if}{/if}</span><span class="row-meta"><span class="row-author">{authorLabel(item)}</span>{#if showPath}<span class="row-context">{pathOf(item)}</span>{/if}{#if why}<span class="row-warning">needs attention</span>{/if}</span></button></div>
+    <div class="row-head">{#if selecting && !item.discardOnly}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Tick ${authorLabel(item)}'s change`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-diff">{#if item.unavailable}<span class="row-summary">{item.unavailableLabel || "Suggested replacement unavailable"}</span>{:else}{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}<span class="row-summary">{shortDiff(item)}</span>{/if}{/if}</span><span class="row-meta"><span class="row-author">{authorLabel(item)}</span>{#if showPath}<span class="row-context">{pathOf(item)}</span>{/if}{#if why}<span class="row-warning">needs attention</span>{/if}</span></button></div>
     {#if isOpen && why}<div id={`change-detail-${id}`} class="change-detail" role="region" aria-label={`Details for change in ${pathOf(item)}`}>
-      <div class="conflict" role="alert"><p>{why}</p><button type="button" class="empty-link" onclick={() => resolve(item)}>Show the passage</button>{#if item.proposal && ondiscard}<button type="button" class="empty-link" disabled={deciding.has(id)} onclick={async () => { addBusy(id); try { await ondiscard(item); feedback = "Change discarded."; } catch (error) { feedback = error?.message || "Could not discard this change."; } finally { removeBusy(id); } }}>Discard change</button>{/if}</div>
+      <div class="conflict" role="alert"><p>{why}</p>{#if !item.discardOnly}<button type="button" class="empty-link" onclick={() => resolve(item)}>Show the passage</button>{/if}{#if item.proposal && ondiscard}<button type="button" class="empty-link" disabled={deciding.has(id)} onclick={async () => { addBusy(id); try { await ondiscard(item); feedback = "Change discarded."; } catch (error) { feedback = error?.message || "Could not discard this change."; } finally { removeBusy(id); } }}>Discard change</button>{/if}</div>
     </div>{/if}
     <!-- Only the change being looked at offers an answer. Twenty rows of
          buttons is twenty invitations to answer something nobody has read. -->

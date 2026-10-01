@@ -117,6 +117,19 @@ window.linkedUnavailableWithoutHunksCheck = async () => {
   await document.querySelector('.change-detail .empty-link:last-child')?.click();
   return { visible, actions, discardLabel, discarded: window.discarded };
 };
+window.unreadableProposalCheck = async () => {
+  const proposal = { id: 'unreadable#unreadable', proposal: 'unreadable', __from: 'proposal',
+    author: 'ada@example.org', before: '', after: undefined, unavailable: true,
+    unavailableLabel: 'This proposal has no readable changes.', discardOnly: true,
+    status: 'pending', file_id: '', path: '', position: 0 };
+  await window.show({ proposals: [proposal], comments: [] });
+  const visible = window.rows();
+  await window.look('unreadable#unreadable');
+  const actions = await window.actions('unreadable#unreadable');
+  const discardLabel = document.querySelector('.change-detail .empty-link:last-child')?.textContent.trim() || '';
+  await document.querySelector('.change-detail .empty-link:last-child')?.click();
+  return { visible, actions, discardLabel, discarded: window.discarded, decided: window.decided };
+};
 window.recoveryControlCheck = async () => {
   await window.show({ proposals: [], comments: [], recoveryRequired: true });
   const text = document.querySelector('.tracking-recovery')?.textContent.trim() || '';
@@ -186,6 +199,16 @@ window.menu = async (label) => {
   await settle();
   const item = openItems().find((node) => node.textContent.trim() === label);
   if (!item) throw new Error('no menu item ' + label);
+  press(item);
+  await settle();
+};
+window.filterFile = async (path) => {
+  const trigger = document.querySelector('.filter-trigger');
+  if (!trigger) throw new Error('change filters are unavailable');
+  press(trigger);
+  await settle();
+  const item = openItems().find((node) => node.textContent.trim().endsWith(path));
+  if (!item) throw new Error('no file filter ' + path);
   press(item);
   await settle();
 };
@@ -296,6 +319,14 @@ try {
     "the unavailable linked suggestion cannot be accepted but remains rejectable");
   assert.equal(unavailableWithoutHunks.discardLabel, "Discard change");
   assert.deepEqual(unavailableWithoutHunks.discarded, ["run"]);
+  const unreadable = await page.evaluate("window.unreadableProposalCheck()");
+  assert.equal(unreadable.visible.length, 1);
+  assert.equal(unreadable.visible[0].id, "unreadable#unreadable", "no hunk index is fabricated");
+  assert.equal(unreadable.visible[0].summary, "This proposal has no readable changes.");
+  assert.deepEqual(unreadable.actions, { accept: true, reject: true }, "an unreadable typed proposal offers no decision");
+  assert.equal(unreadable.discardLabel, "Discard change");
+  assert.deepEqual(unreadable.discarded, ["unreadable"]);
+  assert.deepEqual(unreadable.decided, [], "discard is the only operation sent for an unreadable proposal");
   const recovery = await page.evaluate("window.recoveryControlCheck()");
   assert.match(recovery.text, /preserved here for manual recovery/);
   assert.equal(recovery.recovered, 1, "the recovery message exposes a direct export action");
@@ -402,6 +433,17 @@ try {
   await page.evaluate('window.act("bob#0", "accept")');
   await until("rival answered", async () => (await page.evaluate("window.decided")).length > 0, 4000);
   assert.deepEqual(await page.evaluate("window.decided"), [["bob", 0, "accept"]]);
+
+  // Hiding a ticked change clears it, so the visible selection count and the
+  // eventual bulk operation continue to name the same rows.
+  await page.evaluate("window.show({ proposals: window.rivals, comments: [] })");
+  await page.evaluate("window.menu('Select multiple')");
+  await page.evaluate('window.pick("alice#0")');
+  await until("rival selected before filtering", async () => (await page.evaluate("window.selectedCount()")) === "1 selected", 4000);
+  await page.evaluate('window.filterFile("notes.md")');
+  await until("hidden selection cleared", async () => (await page.evaluate("window.selectedCount()")) === "0 selected", 4000);
+  assert.equal(await page.evaluate("window.barButton('Accept').disabled"), true,
+    "a filtered-out rival cannot remain selected for a bulk decision");
 
   // Reading a chosen set of proposals as prose (§5.3). Ticking changes selects
   // the proposals they belong to -- a proposal is a branch and a reading
