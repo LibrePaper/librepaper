@@ -145,10 +145,12 @@ function inverseChangeSpans(deltas) {
   let cursor = 0;
   let start = null;
   let deleted = 0;
+  let restores = false;
   const flush = () => {
-    if (start !== null) spans.push({ start, deleted });
+    if (start !== null) spans.push({ start, deleted, restores });
     start = null;
     deleted = 0;
+    restores = false;
   };
   for (const part of deltas) {
     if (part.retain !== undefined) {
@@ -158,8 +160,9 @@ function inverseChangeSpans(deltas) {
       if (start === null) start = cursor;
       deleted += part.delete;
       cursor += part.delete;
-    } else if (part.insert !== undefined && start === null) {
-      start = cursor;
+    } else if (part.insert !== undefined) {
+      if (start === null) start = cursor;
+      if (part.insert.length > 0) restores = true;
     }
   }
   flush();
@@ -183,12 +186,13 @@ function overlapsPostTipInverse(branch, tip, inverse) {
         oldAt += part.retain;
       } else if (part.delete !== undefined) {
         const end = oldAt + part.delete;
-        if (spans.some((span) => span.deleted > 0 && oldAt < span.start + span.deleted && span.start < end)) {
+        if (spans.some((span) => span.restores && span.deleted > 0 &&
+            oldAt < span.start + span.deleted && span.start < end)) {
           return true;
         }
         oldAt = end;
       } else if (part.insert !== undefined && spans.some((span) =>
-        span.deleted === 0 && oldAt === span.start)) {
+        span.restores && span.deleted === 0 && oldAt === span.start)) {
         return true;
       }
     }
@@ -491,22 +495,43 @@ export function createProposals({ session, send, mayEdit }) {
     changed();
   };
 
-  const sendOpen = (draft) => {
-    if (draft.opened || draft.openPending || !hasTextChanges(draft.base, draft.branch)) return;
-    draft.openBase ??= draft.base;
-    const result = sendMessage({
+  const sendOpenRequest = (draft, resume) => {
+    const message = {
       type: "proposal-open",
       request_id: draft.id,
-      base: encodeBase64(encodeFrontiers(draft.openBase)),
-    });
+      base: encodeBase64(encodeFrontiers(draft.openBase ?? draft.base)),
+    };
+    if (resume !== undefined) message.resume = resume;
+    const result = sendMessage(message);
     if (result?.ok === false) {
       draft.error = result.error?.message || "offline";
       changed();
-      return;
+      return false;
     }
     draft.openPending = true;
     draft.error = "";
     changed();
+    return true;
+  };
+
+  const sendDiscardRequest = (draft) => {
+    const requestId = draft.discardRequestId || crypto.randomUUID();
+    const result = sendMessage({ type: "proposal-discard", proposal_id: draft.id, request_id: requestId });
+    if (result?.ok === false) {
+      draft.error = result.error?.message || "offline";
+      changed();
+      return false;
+    }
+    draft.discardRequestId = requestId;
+    draft.error = "";
+    changed();
+    return true;
+  };
+
+  const sendOpen = (draft) => {
+    if (draft.opened || draft.openPending || !hasTextChanges(draft.base, draft.branch)) return;
+    draft.openBase ??= draft.base;
+    sendOpenRequest(draft);
   };
 
   const unpublishedLostFiles = (draft, resolvedTip) => {
@@ -846,6 +871,11 @@ export function createProposals({ session, send, mayEdit }) {
       draft.retryTimer = null;
       if (!allDrafts().includes(draft) || !draft.retryable) return;
       draft.retryable = false;
+      if (draft.discarding) {
+        if (draft.opened) sendDiscardRequest(draft);
+        else if (draft.openPending || draft.openBase !== null) sendOpenRequest(draft, false);
+        return;
+      }
       flushDraft(draft);
     }, 1500);
   };
@@ -918,28 +948,14 @@ export function createProposals({ session, send, mayEdit }) {
           // Query the row on reconnect even when our local branch looks clean:
           // we may have missed its final decision while disconnected. The
           // server treats this stable create key as an idempotent status query.
-          const result = sendMessage({
-            type: "proposal-open",
-            request_id: draft.id,
-            base: encodeBase64(encodeFrontiers(draft.openBase ?? draft.base)),
-            resume: true,
-          });
-          if (result?.ok !== false) draft.openPending = true;
-          else draft.error = result.error?.message || "offline";
+          sendOpenRequest(draft, true);
           continue;
         }
         if (wasOpenPending || draft.openBase !== null) {
           // This is a retry of an unacknowledged create, not a status query.
           // The immutable openBase remembers an attempted create even when a
           // synchronous socket handoff failed during a previous reconnect.
-          const result = sendMessage({
-            type: "proposal-open",
-            request_id: draft.id,
-            base: encodeBase64(encodeFrontiers(draft.openBase ?? draft.base)),
-            resume: false,
-          });
-          if (result?.ok !== false) draft.openPending = true;
-          else draft.error = result.error?.message || "offline";
+          sendOpenRequest(draft, false);
           continue;
         }
         // A create key is stable; an update is a complete branch snapshot.
@@ -969,12 +985,7 @@ export function createProposals({ session, send, mayEdit }) {
         draft.discardCause = "empty";
       }
       if (draft.opened && draft.discarding && !draft.discardRequestId) {
-        const requestId = crypto.randomUUID();
-        const result = sendMessage({ type: "proposal-discard", proposal_id: draft.id, request_id: requestId });
-        if (result?.ok !== false) {
-          draft.discarding = true;
-          draft.discardRequestId = requestId;
-        }
+        sendDiscardRequest(draft);
       }
       const needsSync = changedText === null || changedText && dirty(draft);
       if (draft.openPending || !draft.opened && (needsSync || draft.error) || draft.opened && (needsSync || draft.inflight || draft.error || draft.discarding)) {
@@ -1070,9 +1081,7 @@ export function createProposals({ session, send, mayEdit }) {
         }
         changed();
         if (draft.discarding) {
-          const requestId = draft.discardRequestId || crypto.randomUUID();
-          const result = sendMessage({ type: "proposal-discard", proposal_id: draft.id, request_id: requestId });
-          if (result?.ok !== false) draft.discardRequestId = requestId;
+          sendDiscardRequest(draft);
         } else flushDraft(draft);
         return;
       }
