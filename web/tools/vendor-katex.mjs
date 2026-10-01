@@ -16,8 +16,9 @@
 // Run after the vite builds, which empty dist/ before writing to it.
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const source = join(root, "node_modules/katex/dist");
 const version = JSON.parse(readFileSync(join(root, "node_modules/katex/package.json"), "utf8")).version;
 const target = join(root, "dist/assets", `katex-${version}`);

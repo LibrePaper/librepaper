@@ -5,10 +5,10 @@
 // is throttled, so a hundred local moves should leave as a handful of frames,
 // and somebody else's caret arriving should not echo back out at all.
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { EphemeralStore } from "loro-crdt";
 
-const root = resolve(process.argv[2] || new URL("../..", import.meta.url).pathname);
+const root = resolve(process.argv[2] || fileURLToPath(new URL("../..", import.meta.url)));
 const { join } = await import(pathToFileURL(`${root}/web/src/lib/collab.js`));
 const frames = [];
 const timers = new Map();

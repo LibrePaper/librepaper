@@ -2,6 +2,7 @@
 // discovery or "latest" lookup.
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
 const value = (name) => {
@@ -17,7 +18,7 @@ if (!["--repo", "--tag"].every((name) => args.includes(name)) || args.some((arg,
   process.exit(2);
 }
 
-const root = rootValue || new URL("../..", import.meta.url).pathname;
+const root = rootValue || fileURLToPath(new URL("../..", import.meta.url));
 const lockPath = join(root, "assets.lock");
 const lock = await readFile(lockPath, "utf8");
 const expected = new Map([["markdown.wasm", "wasm-markdown"], ["bibliography.wasm", "wasm-bibliography"], ["citations.wasm", "wasm-bibliography"], ["typst.wasm", "wasm-typst"]]);

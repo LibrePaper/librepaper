@@ -5,6 +5,7 @@
 import { readFile, writeFile, readdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
 const rootAt = args.indexOf("--root");
@@ -54,7 +55,7 @@ async function main() {
   const tag = match[1];
 
   // Read assets.lock and rewrite latex row.
-  const repoRoot = rootArg || new URL("../..", import.meta.url).pathname;
+  const repoRoot = rootArg || fileURLToPath(new URL("../..", import.meta.url));
   const lockPath = join(repoRoot, "assets.lock");
   const lock = await readFile(lockPath, "utf8");
 
