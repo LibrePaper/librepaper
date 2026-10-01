@@ -51,7 +51,6 @@ handles are verified emails, shown to no one else.
 Three cookies:
 - `librepaper_session` - signed, 30 days, HttpOnly, SameSite, Secure (over HTTPS only), __Host- prefix (over HTTPS only)
 - `librepaper_state` - ties sign-in to the browser that started it
-- `librepaper_visitor` - names anonymous browsers
 
 Browser storage (never sent to server):
 - `librepaper-viewed`, `librepaper-favorites` - documents
@@ -65,8 +64,9 @@ None profiles anybody or is shared. No consent banner needed.
 
 ## Reading and visibility
 
-Anonymous readers get signed visitor credentials so comments stay linked across
-visits. While open, the collaboration layer broadcasts presence and cursor position to other viewers of the document.
+Signed-in readers can use their account for comments and presence. While open,
+the collaboration layer broadcasts presence and cursor position to other viewers
+of the document. Read, comment, and edit links require sign-in.
 
 Pseudonymous comments hide identity from other readers, not the operator.
 
@@ -77,7 +77,9 @@ Pseudonymous comments hide identity from other readers, not the operator.
   browser address and files requested (not source). Package choices are fingerprintable.
   Operators can host their own mirror to avoid this. See [Privacy](./host.html#privacy).
 - **Local companion:** The writing assistant runs on your computer; the server relays
-  messages. The browser contacts it only when you initiate: turning on local execution,
+  messages. When you start an agent from an open document page, the browser silently
+  renews a document- and link-scoped five-minute token; the headless CLI uses the
+  separate `librepaper login` flow. The browser contacts the companion only when you initiate: turning on local execution,
   choosing a local build tool, Zotero lookup, or opening Local app settings.
 - **Embedded resources:** Published documents fetch images and data from any host
   named, which learns your address, browser and open time. For anonymous review,

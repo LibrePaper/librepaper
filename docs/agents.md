@@ -2,7 +2,7 @@
 title: "Agents"
 ---
 
-Give an agent a LibrePaper link and it can work on the document with that link's permissions. A comment link annotates and suggests; an edit link also changes source. There is no read-only assistant: the document's tool surface admits a commenter at minimum, so a read link would give an agent no tools at all. Signing in supplies attribution and satisfies the deployment's sign-in policy; it does not widen what a link grants.
+Give an agent a LibrePaper link and it can work on the document with that link's permissions. A comment link annotates and suggests; an edit link also changes source. There is no read-only assistant: the document's tool surface admits a commenter at minimum, so a read link would give an agent no tools at all. Every link requires a signed-in account, and signing in does not widen what the link grants.
 
 Connecting an agent is a click in the sidebar, not a prompt you paste. The browser cannot install software or start processes, and asking a language model to do it on the browser's behalf is exactly what a coding agent's permission system is built to refuse. So the local LibrePaper app does it instead: the browser asks the computer directly, and every step is either one command a person types or one button a person presses.
 
@@ -24,7 +24,7 @@ That is the only way an agent is connected. LibrePaper never writes another tool
 
 Bring your own model is literal here: the agent you picked is already installed and already signed in, LibrePaper never sees a model name or a credential, and no inference runs on the document server. The sidebar names the running agent, so the claim is checkable rather than asserted.
 
-The document reaches the session as an MCP server handed to the agent over ACP. The model uses `document_read`, `document_propose`, `document_apply`, `document_comment` and `document_result`; document links and tokens are never MCP tool arguments. The session hands its agent an MCP server command that names a private connection rather than a link; the agent starts that command itself, as its own separate process:
+The document reaches the session as an MCP server handed to the agent over ACP. While the browser page is open, it silently renews a five-minute token scoped to that document and link. This lets the browser-started local agent work without a second login. A headless CLI session has no browser to renew that token, so it uses `librepaper login`. The model uses `document_read`, `document_propose`, `document_apply`, `document_comment` and `document_result`; document links and tokens are never MCP tool arguments. The session hands its agent an MCP server command that names a private connection rather than a link; the agent starts that command itself, as its own separate process:
 
 ```
 librepaper mcp --connection runner-3f7a9c1b2d0e4f5a6b7c

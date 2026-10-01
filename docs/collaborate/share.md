@@ -32,15 +32,12 @@ survives a rotation unless another is supplied, and both values disappear when
 the link is revoked. These controls are beside each role in the browser's
 **Share** pane.
 
-A read link is read-only, whatever `--commenters` says: the switch is a
-ceiling on what a link may carry, not a grant to whoever reaches the document.
-An edit link authorizes, and the account attributes: editing requires an
-account wherever `--publishers` does, so on a server that names its publishers
-the holder of an edit link must sign in as one of them before the link edits,
-and until then it only comments. Under `--publishers any` it edits as an
-authenticated account. Anonymous commenters still need telling apart, so each gets a stable
-per-document pseudonym such as `AmberAgama-a3f2`, shown next to their comments
-instead of a name they typed.
+A read, comment, or edit link requires the holder to sign in. A link grants its
+named role only after sign-in; deployment policy can still restrict which
+signed-in accounts may publish or comment. On the public LibrePaper service,
+any signed-in GitHub or Google account may publish. Comments are attributed to
+the account, and pseudonymous labels are shown in place of account handles to
+other readers.
 
 A stranger -- anyone with the URL and no live link -- is answered exactly as
 a deleted document answers. The reading frame is served from a separate
