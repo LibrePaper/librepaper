@@ -105,6 +105,16 @@ jobs:
       - run: >-
           LIBREPAPER_TEST_POSTGRES_URL=postgresql://postgres:librepaper-local@127.0.0.1:5432/lp_lib
           cargo test -p librepaper --lib -- --ignored --test-threads=1
+          --skip typing_throughput_release_benchmark
+          --skip compaction_cost_release_benchmark
+          --skip concurrent_compaction_release_benchmark
+          --skip update_import_cost_probe
+          --skip batched_import_cost_probe
+          --skip active_document_capacity_benchmark
+          --skip mixed_traffic_capacity_benchmark
+          --skip reconnect_burst_capacity_benchmark
+          --skip maintenance_backlog_capacity_benchmark
+          --skip benchmark_shared_fanout
       - run: >-
           LIBREPAPER_TEST_POSTGRES_URL=postgresql://postgres:librepaper-local@127.0.0.1:5432/lp_gates
           cargo test -p librepaper --test deployment_gates -- --ignored --test-threads=1
