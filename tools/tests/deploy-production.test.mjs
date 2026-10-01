@@ -20,15 +20,19 @@ function fixture({
   adminPassword = 'admin-secret',
   exporterPassword = 'exporter-secret',
   grafanaTransientFailures = 0,
+  grafanaPersistentStatus = 0,
   grafanaAuthStatus = 200,
   pgUpHealthy = true,
   prometheusTransientFailures = 0,
+  realSleep = false,
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
   const bin = path.join(root, 'bin');
   const remote = path.join(root, 'remote');
+  const temp = path.join(root, 'tmp');
   mkdirSync(bin);
   mkdirSync(remote);
+  mkdirSync(temp);
   const adminPasswordFile = path.join(root, 'admin-password');
   const exporterPasswordFile = path.join(root, 'exporter-password');
   const grafanaCountFile = path.join(root, 'grafana-count');
@@ -127,7 +131,8 @@ case "$url" in
       count=$(cat "$GRAFANA_COUNT_FILE" 2>/dev/null || printf '0')
       count=$((count + 1))
       printf '%s' "$count" > "$GRAFANA_COUNT_FILE"
-      if [ "$count" -le "$GRAFANA_TRANSIENT_FAILURES" ]; then code=502
+      if [ "$GRAFANA_PERSISTENT_STATUS" != 0 ]; then code="$GRAFANA_PERSISTENT_STATUS"
+      elif [ "$count" -le "$GRAFANA_TRANSIENT_FAILURES" ]; then code=502
       elif [ "$GRAFANA_AUTH_STATUS" != 200 ]; then code="$GRAFANA_AUTH_STATUS"
       else body='[{"type":"dash-db","uid":"monitoring","title":"Production"}]'; fi
     else code=401; fi
@@ -144,7 +149,11 @@ case "$url" in
 esac
 if [ -n "$out" ] && [ "$out" != /dev/null ]; then printf '%s' "$body" > "$out"; fi
   if [ -n "$format" ]; then printf '%s' "$code"; fi`);
-  mockCommand(bin, 'sleep', 'exit 0');
+  mockCommand(bin, 'sleep', `
+if [ "$REAL_SLEEP" = 1 ]; then
+  exec "$NODE_EXECUTABLE" -e 'setTimeout(() => process.exit(0), Number(process.argv[1]) * 1000)' "$1"
+fi
+exit 0`);
   const executable = path.join(root, 'librepaper');
   writeFileSync(executable, '#!/bin/sh\nexit 0\n');
   chmodSync(executable, 0o755);
@@ -158,11 +167,15 @@ if [ -n "$out" ] && [ "$out" != /dev/null ]; then printf '%s' "$body" > "$out"; 
       PATH: `${bin}:${process.env.PATH}`,
       REMOTE_ROOT: remote,
       HOST: 'ubuntu@test-host',
+      TMPDIR: temp,
+      NODE_EXECUTABLE: process.execPath,
+      REAL_SLEEP: realSleep ? '1' : '0',
       ADMIN_PASSWORD_FILE: adminPasswordFile,
       EXPORTER_PASSWORD_FILE: exporterPasswordFile,
       GRAFANA_COUNT_FILE: grafanaCountFile,
       PROMETHEUS_COUNT_FILE: prometheusCountFile,
       GRAFANA_TRANSIENT_FAILURES: String(grafanaTransientFailures),
+      GRAFANA_PERSISTENT_STATUS: String(grafanaPersistentStatus),
       GRAFANA_AUTH_STATUS: String(grafanaAuthStatus),
       PROMETHEUS_TRANSIENT_FAILURES: String(prometheusTransientFailures),
     },
@@ -274,6 +287,30 @@ test('deploy-local retries a temporary Prometheus API failure and continues when
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /waiting for Prometheus APIs/);
     assert.equal(readFileSync(path.join(f.root, 'prometheus-count'), 'utf8'), '2');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('persistent Grafana API failures time out and remove credential files', {
+  skip: process.env.LIBREPAPER_TEST_SLOW_DEPLOY !== '1',
+}, () => {
+  const f = fixture({ grafanaPersistentStatus: 503, realSleep: true });
+  const started = Date.now();
+  try {
+    const result = spawnSync(deploy, ['deploy-local', f.executable], {
+      cwd: repo,
+      env: f.env,
+      encoding: 'utf8',
+      timeout: 70_000,
+    });
+    const elapsed = (Date.now() - started) / 1000;
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /authenticated Grafana dashboard API returned HTTP 503/);
+    assert.ok(elapsed >= 59 && elapsed <= 65, `expected ~60 seconds, got ${elapsed}`);
+    assert.deepEqual(readdirSync(path.join(f.root, 'tmp')), []);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|exporter-secret|pg-secret|github-secret/);
   } finally {
     f.cleanup();
   }
