@@ -429,3 +429,35 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
     let _ = stop.send(());
     deployment.catalog.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn every_response_refuses_type_sniffing() {
+    let Some(deployment) = deployment("every-response-nosniff").await else {
+        return;
+    };
+    let (base, _address, stop) = serve(deployment.server.clone()).await;
+    let client = reqwest::Client::new();
+
+    // Request a JSON API endpoint that does not set nosniff itself
+    // to verify the middleware adds it to every response.
+    let response = client
+        .get(format!("{base}/api/config"))
+        .header("host", "paper.example")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff"),
+        "every response must carry x-content-type-options: nosniff"
+    );
+
+    let _ = stop.send(());
+    deployment.catalog.close().await;
+}
