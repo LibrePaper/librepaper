@@ -98,6 +98,29 @@ impl CostMeter {
 }
 
 impl Server {
+    /// Lightweight metrics sample. Keep this separate from `/api/status`:
+    /// that operator endpoint also asks the catalogue for a storage usage
+    /// total, which is not suitable for a periodic scrape task.
+    pub(crate) async fn metrics_snapshot(&self) -> Value {
+        let mut snapshot = json!({});
+        snapshot["rooms"] = self.rooms.cost_snapshot().await;
+        snapshot["sockets"] = self.socket_budget.snapshot();
+        snapshot["memory_budget"] = self.rooms.registry().budget().snapshot();
+        snapshot["pending_budget"] = self.rooms.registry().pending().snapshot();
+        snapshot["storage_ledger"] = self.rooms.registry().ledger().snapshot();
+        snapshot["http_work"] = json!({
+            "active": self.config.cost.work_concurrency - self.cost.work.available_permits(),
+            "control_active": 16 - self.cost.control_work.available_permits(),
+            "active_artifact_transfers": self.config.cost.artifact_transfers - self.cost.transfers.available_permits(),
+        });
+        snapshot["background"] = self.background.snapshot();
+        snapshot["host"] = tokio::task::spawn_blocking(super::host_metrics::snapshot)
+            .await
+            .unwrap_or(Value::Null);
+        snapshot["database"] = self.store.catalog.pool_snapshot();
+        snapshot
+    }
+
     /// Operator-only aggregate view. No raw account, document, or network keys.
     pub async fn cost_snapshot(&self) -> Value {
         let mut snapshot = json!({});
@@ -204,6 +227,28 @@ fn direct_operator_request(peer: SocketAddr, headers: &HeaderMap) -> bool {
 pub(super) async fn middleware(
     axum::extract::State(server): axum::extract::State<Arc<Server>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request<Body>,
+    next: axum::middleware::Next,
+) -> Reply {
+    let started = std::time::Instant::now();
+    let route = super::metrics::route_class(request.uri().path());
+    let method = request.method().as_str().to_owned();
+    let response = middleware_inner(
+        axum::extract::State(server.clone()),
+        ConnectInfo(peer),
+        request,
+        next,
+    )
+    .await;
+    server
+        .metrics
+        .record_request(route, &method, response.status().as_u16(), started.elapsed());
+    response
+}
+
+async fn middleware_inner(
+    axum::extract::State(server): axum::extract::State<Arc<Server>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     mut request: Request<Body>,
     next: axum::middleware::Next,
 ) -> Reply {
@@ -235,7 +280,10 @@ pub(super) async fn middleware(
             .await
         {
             Ok(r) => Some(r),
-            Err(_) => return refusal("request_memory", "deployment"),
+            Err(_) => {
+                server.metrics.record_refusal("request_memory");
+                return refusal("request_memory", "deployment");
+            }
         }
     } else {
         None
@@ -248,7 +296,10 @@ pub(super) async fn middleware(
             .transpose()
         {
             Ok(Some(permit)) => permit,
-            _ => return refusal("work_concurrency", "deployment"),
+            _ => {
+                server.metrics.record_refusal("work_concurrency");
+                return refusal("work_concurrency", "deployment");
+            }
         },
     };
     let network = client_network(&client_address(
@@ -263,6 +314,7 @@ pub(super) async fn middleware(
         .await;
     let identity = authentication.clone().unwrap_or_default();
     if !server.cost.admit_request(&network, &identity.id) {
+        server.metrics.record_refusal("request_budget");
         let scope = if identity.id.is_empty() {
             "network"
         } else {
@@ -277,7 +329,10 @@ pub(super) async fn middleware(
     {
         match server.cost.transfers.clone().try_acquire_owned() {
             Ok(permit) => Some(permit),
-            Err(_) => return refusal("transfer_concurrency", "deployment"),
+            Err(_) => {
+                server.metrics.record_refusal("transfer_concurrency");
+                return refusal("transfer_concurrency", "deployment");
+            }
         }
     } else {
         None

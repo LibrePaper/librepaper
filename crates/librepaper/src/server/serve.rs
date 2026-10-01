@@ -315,6 +315,9 @@ pub async fn serve(options: ServeOptions) {
     // Claim the port first, so a port already in use costs nothing and the
     // advice below can name the callback URL this run would actually use.
     let listener = listen(options.bind, options.port).await;
+    let metrics_listener = super::metrics::bind_from_environment()
+        .await
+        .unwrap_or_else(|error| die(error));
     let port = listener
         .local_addr()
         .map(|a| a.port())
@@ -449,6 +452,18 @@ pub async fn serve(options: ServeOptions) {
     };
     instance.local_app = local.as_ref().map(|app| app.address.clone());
     let instance = Arc::new(instance);
+    if let Some(metrics_listener) = metrics_listener {
+        if let Ok(address) = metrics_listener.local_addr() {
+            println!("  private Prometheus metrics: http://{address}/metrics");
+        }
+        super::metrics::spawn_sampler(instance.clone());
+        let metrics_server = instance.clone();
+        tokio::spawn(async move {
+            if let Err(error) = super::metrics::serve(metrics_listener, metrics_server).await {
+                eprintln!("metrics listener stopped: {error}");
+            }
+        });
+    }
 
     match (origins.reader(), origins.docs()) {
         (Some(reader), Some(docs)) => {

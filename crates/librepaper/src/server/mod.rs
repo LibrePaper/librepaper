@@ -56,6 +56,7 @@ mod history;
 #[cfg(test)]
 mod history_frontier_tests;
 mod host_metrics;
+mod metrics;
 pub(crate) mod mcp;
 mod onboarding;
 pub mod origins;
@@ -190,6 +191,9 @@ pub struct Server {
     /// listens, meaningful only to a browser on the same host.
     pub local_app: Option<String>,
     pub cost: Arc<cost::CostMeter>,
+    /// Operational measurements exported only on the optional private listener.
+    pub metrics: Arc<metrics::Metrics>,
+    pub(crate) metrics_listener_slots: Arc<tokio::sync::Semaphore>,
     pub socket_budget: Arc<socket_budget::SocketBudget>,
     sockets: AtomicU64,
     /// How many figures each owner has uploaded this hour, and which hour that
@@ -792,6 +796,10 @@ impl Server {
             fonts: None,
             local_app: None,
             cost,
+            metrics: Arc::new(metrics::Metrics::new()),
+            metrics_listener_slots: Arc::new(tokio::sync::Semaphore::new(
+                metrics::METRIC_LISTENER_CONCURRENCY,
+            )),
             socket_budget,
             sockets: AtomicU64::new(1),
             asset_uploads: tokio::sync::Mutex::new(HashMap::new()),

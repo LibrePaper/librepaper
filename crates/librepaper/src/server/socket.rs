@@ -338,6 +338,7 @@ impl Server {
         let socket_permit = match self.socket_budget.admit(socket_id, identity) {
             Ok(permit) => permit,
             Err(reason) => {
+                self.metrics.record_refusal("socket_budget");
                 return cost::refusal("socket_budget", reason.scope());
             }
         };
