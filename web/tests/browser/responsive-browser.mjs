@@ -82,6 +82,9 @@ globalThis.fetch = async (url, init = {}) => {
   return { ok:false, json:async()=>({}) };
 };
 const { default: Reader } = await import(${JSON.stringify(join(root,"web/src/components/Reader.svelte"))});
+const companion = await import(${JSON.stringify(join(root,"web/src/lib/companion/client.js"))});
+companion.configure({ project: 'paper', origin: location.origin, active: true });
+await companion.retry();
 const { mount } = await import(${JSON.stringify(join(root,"web/node_modules/svelte/src/index-client.js"))});
 mount(Reader, {target:document.body});
 `);
