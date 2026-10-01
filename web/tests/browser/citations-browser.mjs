@@ -16,6 +16,7 @@ const imports = (path) => JSON.stringify(join(root, path));
 writeFileSync(entry, [
   "import { tick } from " + imports("web/node_modules/svelte/src/index-client.js") + ";",
   "import { EditorView } from " + imports("web/node_modules/@codemirror/view/dist/index.js") + ";",
+  "import { Transaction } from " + imports("web/node_modules/@codemirror/state/dist/index.js") + ";",
   "import { createClassComponent } from " + imports("web/node_modules/svelte/src/legacy/legacy-client.js") + ";",
   "import { join as joinSession } from " + imports("web/src/lib/collab.js") + ";",
   "import { projectDirectory } from " + imports("web/src/lib/projection.js") + ";",
@@ -29,18 +30,25 @@ writeFileSync(entry, [
   "window.citationReady = async () => { await tick(); return Boolean(document.querySelector('.cm-editor')); };",
   "window.citationPrepare = () => { const view = EditorView.findFromDOM(document.querySelector('.cm-editor')); view.dispatch({ selection: { anchor: view.state.doc.length } }); view.focus(); };",
   "window.citationState = () => { const view = EditorView.findFromDOM(document.querySelector('.cm-editor')); return { popup: Boolean(document.querySelector('.cm-tooltip-autocomplete')), popupText: document.querySelector('.cm-tooltip-autocomplete')?.textContent || '', text: view.state.doc.toString() }; };",
-  `window.zoteroFallbackCheck = async () => {
+  `window.zoteroImportMainCheck = async (missingMain) => {
     const value = joinSession({ send: () => {}, mayEdit: true });
     const main = value.addText("paper.md", "See ");
-    value.doc.getMap("meta").delete("main");
-    value.doc.commit();
+    if (missingMain) {
+      value.doc.getMap("meta").delete("main");
+      value.doc.commit();
+    }
+    const base = value.doc.frontiers();
+    const sent = [];
     const pairingKey = "librepaper-local-connections", addressKey = "librepaper-local-address";
     const oldPairings = localStorage.getItem(pairingKey), oldAddress = localStorage.getItem(addressKey);
     const fetchBefore = globalThis.fetch;
+    const baseMeta = [...value.doc.getMap("meta").entries()];
     const host = document.createElement("section");
     document.body.append(host);
+    let outbound = null;
     const editor = createClassComponent({ component: Editor, target: host, props: {
-      session: value, format: "markdown", file: main, analyze: async () => ({ entries: [], diagnostics: [] }),
+      session: value, format: "markdown", file: main, send: (message) => { sent.push(message); return { ok: true }; },
+      analyze: async () => ({ entries: [], diagnostics: [] }),
     } });
     try {
       localStorage.setItem(pairingKey, JSON.stringify({ "": { token: "browser-fixture" } }));
@@ -56,9 +64,11 @@ writeFileSync(entry, [
         return fetchBefore(input, init);
       };
       await tick();
+      editor.startTracking();
+      await tick();
       const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
       const at = view.state.doc.length;
-      view.dispatch({ changes: { from: at, insert: "@Riv" }, selection: { anchor: at + 4 } });
+      view.dispatch({ changes: { from: at, insert: "@Riv" }, selection: { anchor: at + 4 }, annotations: Transaction.userEvent.of("input.type") });
       view.focus();
       let popup = "";
       for (let attempt = 0; attempt < 100; attempt++) {
@@ -70,22 +80,39 @@ writeFileSync(entry, [
       view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
       for (let attempt = 0; attempt < 100; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 50));
-        if (value.textOf(main).toString().includes("@Riv2024") && value.list().some((file) => file.path === "references.bib")) break;
+        if (sent.some((message) => message.type === "proposal-open")) break;
       }
-      const projection = projectDirectory(value.doc, null);
+      const open = sent.find((message) => message.type === "proposal-open");
+      if (!open) throw new Error("tracked Zotero import did not open a proposal");
+      editor.receiveProposal({ type: "proposal-opened", proposal_id: open.request_id, request_id: open.request_id, tip: "", applied_version: 1 });
+      const update = sent.find((message) => message.type === "proposal-update");
+      if (!update) throw new Error("tracked Zotero import did not publish a proposal update");
+      outbound = value.doc.forkAt(base);
+      outbound.import(Uint8Array.from(atob(update.update), (character) => character.charCodeAt(0)));
+      const projection = projectDirectory(outbound, null);
+      const liveProjection = projectDirectory(value.doc, null);
+      const changedContainerIds = outbound.diff(base, outbound.frontiers(), false).map(([id]) => String(id));
       return {
-        text: value.textOf(main).toString(),
+        mainState: missingMain ? "absent" : "explicit",
+        text: outbound.getMap("files").get(main).toString(),
         mainId: main,
-        bib: value.list().find((file) => file.path === "references.bib")?.id || "",
-        metaMain: value.doc.getMap("meta").get("main") ?? null,
+        bib: [...projection.files].find(([path]) => path === "references.bib")?.[1].id || "",
+        metaMain: outbound.getMap("meta").get("main") ?? null,
         projectedMain: projection.mainId,
         projectedPath: projection.main,
         bibliography: projection.texts.get("references.bib") || "",
+        metadataUnchanged: JSON.stringify([...outbound.getMap("meta").entries()]) === JSON.stringify(baseMeta),
+        noMetadataOperations: !changedContainerIds.includes(String(outbound.getMap("meta").id)),
+        liveText: value.textOf(main).toString(),
+        liveMetaMain: value.doc.getMap("meta").get("main") ?? null,
+        liveMain: liveProjection.mainId,
+        liveHasBibliography: value.list().some((file) => file.path === "references.bib"),
       };
     } finally {
       globalThis.fetch = fetchBefore;
       if (oldPairings === null) localStorage.removeItem(pairingKey); else localStorage.setItem(pairingKey, oldPairings);
       if (oldAddress === null) localStorage.removeItem(addressKey); else localStorage.setItem(addressKey, oldAddress);
+      outbound?.destroy();
       editor.$destroy();
       host.remove();
       value.leave();
@@ -138,13 +165,20 @@ try {
   assert.equal(state.popup, false, "a space after an accepted key should not reopen the picker");
   assert.equal(state.text, "---\nbibliography: refs.bib\n---\n\nSee @smith2020 ");
   console.log("citations-browser: analyzer-backed @ Rivers picker opened, inserted Smith, and stayed closed");
-  const zotero = await evaluate("zoteroFallbackCheck()");
-  assert.match(zotero.text, /bibliography: references\.bib/);
-  assert.match(zotero.text, /@Riv2024/);
-  assert.notEqual(zotero.bib, "", "the Zotero import did not create references.bib");
-  assert.match(zotero.bibliography, /x-librepaper-zotero-item=\{ITEM123\}/);
-  assert.equal(zotero.metaMain, null, "Zotero import wrote a metadata main key into the Loro document");
-  assert.equal(zotero.projectedMain, zotero.mainId, "creating the bibliography displaced the projected paper main");
-  assert.equal(zotero.projectedPath, "paper.md");
-  console.log("citations-browser: Zotero import creates a bibliography without changing an absent main");
+  for (const missingMain of [true, false]) {
+    const zotero = await evaluate(`zoteroImportMainCheck(${missingMain})`);
+    assert.match(zotero.text, /bibliography: references\.bib/);
+    assert.match(zotero.text, /@Riv2024/);
+    assert.notEqual(zotero.bib, "", "the Zotero import did not create references.bib in its proposal");
+    assert.match(zotero.bibliography, /x-librepaper-zotero-item=\{ITEM123\}/);
+    assert.equal(zotero.projectedMain, zotero.mainId, "creating the bibliography displaced the projected paper main");
+    assert.equal(zotero.projectedPath, "paper.md");
+    assert.equal(zotero.metadataUnchanged, true, "the exported proposal changed metadata");
+    assert.equal(zotero.noMetadataOperations, true, "the exported proposal includes a metadata operation");
+    assert.equal(zotero.liveText, "See ", "tracked Zotero import changed the shared paper");
+    assert.equal(zotero.liveMetaMain, missingMain ? null : zotero.mainId);
+    assert.equal(zotero.liveMain, zotero.mainId);
+    assert.equal(zotero.liveHasBibliography, false, "tracked Zotero import changed the shared file directory");
+  }
+  console.log("citations-browser: tracked Zotero imports preserve implicit and explicit main metadata");
 } finally { socket?.close(); browser?.kill(); server?.close(); rmSync(temporary, { recursive: true, force: true }); }
