@@ -1,0 +1,25 @@
+# Runtime image for an already-built statically linked musl executable.
+# Supply the binary as ./librepaper in this build context (the Docker kit
+# directory).
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates wget \
+	&& adduser -S -D -H -u 10001 librepaper \
+	&& install -d -o librepaper -g nogroup /var/lib/librepaper /var/backups/librepaper
+
+COPY librepaper /usr/local/bin/librepaper
+RUN chmod 0755 /usr/local/bin/librepaper \
+	&& /usr/local/bin/librepaper --version
+
+VOLUME /var/lib/librepaper
+VOLUME /var/backups/librepaper
+USER librepaper
+
+EXPOSE 8080 9091
+ENV LIBREPAPER_DATA=/var/lib/librepaper
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+	CMD wget -qO- http://127.0.0.1:8080/health >/dev/null || exit 1
+
+ENTRYPOINT ["librepaper"]
+CMD ["admin", "serve", "--port", "8080"]
