@@ -136,18 +136,14 @@ archive creation. Preserve snapshot consistency and object completeness when
 exploring incremental backups. Document separately that the operator can read
 live data and that restored backups can reintroduce previously deleted data.
 
-## 4. Sharing: retain the existing lifetime and renewal behavior
+## 4. Sharing: default links to seven days and retain renewal behavior
 
-**Current.** `LINK_DEFAULT_SECONDS` in `server/sharing.rs` remains 180 days.
+**Current.** `LINK_DEFAULT_SECONDS` in `server/sharing.rs` is seven days.
 The sharing dialog offers 7 days, 30 days, 6 months and Never. Its settings path
-can update an existing link's expiry without replacing the key; the dialog uses
-that path. Rotation is a separate action. The old statement that renewal must
-mint a replacement and drop guests is obsolete.
-
-Keep the current default. No observed access problem or review-workflow evidence
-justifies shortening it; doing so would also increase unexpected expiry. The
-30-day-default proposal is removed from the backlog. Renewal needs no new
-backend operation.
+can update an existing link's expiry without replacing the key; omitting expiry
+from a settings change preserves the current expiry. Rotation is a separate
+action, and rotation without an explicit expiry preserves the existing link's
+expiry. Renewal needs no new backend operation.
 
 Preserve role scope, expiry checks and prompt revocation regardless of the
 default. Forwarding a valid link is an accepted property of bearer sharing,

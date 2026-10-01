@@ -21,7 +21,7 @@ Each link contains a key in its fragment. A fragment is never sent to a server,
 so the key lands in no access log and on no `Referer` header. Minting a role's
 link again rotates it: the old key dies and the new one takes over, which is
 how a leaked link is killed without losing the role it stood for. Links expire
-after six months by default; the browser's Share pane can set a different
+after seven days by default; the browser's Share pane can set a different
 expiry, including no expiry.
 
 A link may have a label, which is only the owner's memo about what the one

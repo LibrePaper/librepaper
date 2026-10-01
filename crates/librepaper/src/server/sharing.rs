@@ -10,10 +10,10 @@ pub const LINK_HEADER: &str = "x-librepaper-key";
 
 pub const LINK_PARAM: &str = "k";
 
-/// How long a new link lasts unless something shorter is asked for. A round of
+/// How long a new link lasts unless another expiry is asked for. A round of
 /// review has an end, and a link that lives for ever is a leak waiting for a
 /// forwarded email; the dialog offers to renew, which mints a new key.
-pub const LINK_DEFAULT_SECONDS: i64 = 180 * 24 * 3600;
+pub const LINK_DEFAULT_SECONDS: i64 = 7 * 24 * 3600;
 
 pub(super) const MAX_LINK_LABEL: usize = 80;
 
@@ -38,7 +38,7 @@ pub(super) struct ShareRequest {
 pub(super) struct LinkRequest {
     #[serde(default)]
     pub(super) role: String,
-    /// A duration such as `180d` or `24h`, `never` for a link that does not
+    /// A duration such as `7d` or `24h`, `never` for a link that does not
     /// expire, or absent: absent keeps the expiry a link already has, and is
     /// the default for a link that is new.
     #[serde(default)]
@@ -201,6 +201,9 @@ impl Server {
             role: Role::Reader.as_str().to_string(),
             sealed: seal_link_key(&self.key, &key),
             since: crate::util::timestamp(),
+            until: crate::util::format_unix(
+                crate::util::now_unix() + LINK_DEFAULT_SECONDS,
+            ),
             ..Default::default()
         };
         let actor = crate::document::store::MutationActor {
@@ -792,5 +795,20 @@ mod link_key_tests {
         let session = b"a deployment's session key".to_vec();
         let key = mint_link_key();
         assert_ne!(seal_link_key(&session, &key), seal_link_key(&session, &key));
+    }
+}
+
+#[cfg(test)]
+mod link_expiry_tests {
+    use super::*;
+
+    #[test]
+    fn an_unset_expiry_defaults_to_seven_days() {
+        let before = crate::util::now_unix();
+        let until = link_expiry("").expect("the default expiry is valid");
+        let after = crate::util::now_unix();
+        let until = crate::util::parse_timestamp(&until).expect("expiry is a timestamp");
+
+        assert!((before + 7 * 24 * 3600..=after + 7 * 24 * 3600).contains(&until));
     }
 }
