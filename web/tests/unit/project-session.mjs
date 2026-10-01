@@ -220,25 +220,85 @@ function sourceLog() {
   return { base, row1, row2, head, text };
 }
 
-// Join from an empty vector (§6.2 step 5): the client has nothing, so the
-// base arrives inline on `doc-state` and the rows that came after it arrive
-// on the `doc-rows` that follows. `start` handles the first message, `rows`
-// the second; each is a complete catch-up in its own right (§6.2 step 6), so
-// running it twice -- once too early, once for real -- costs nothing.
+// Join from an empty vector (§6.2 step 5): the base arrives inline on
+// `doc-state` and the rows that came after it arrive on the `doc-rows` that
+// follows. Both advertise the full server vector, so the base frame cannot
+// complete the join while those advertised operations are still missing.
 {
   const { base, row1, row2, head, text } = sourceLog();
   const sentA = [];
   const joiner = createProjectSession({ send: (message) => sentA.push(message), onState: () => {}, presenceId: () => "join-empty" });
   try {
     await joiner.start({ protocol: "librepaper.room.v3", vector: encode(head.encode()), base: encode(base), updates: [] });
-    assert.equal(joiner.joined, true, "doc-state is a valid join reply on its own, so this browser is announced already");
+    assert.equal(joiner.joined, false, "base-only doc-state does not complete the advertised full join vector");
+    assert.equal(sentA.filter((message) => message.type === "doc-update").length, 0,
+      "catch-up waits until the advertised rows have arrived");
     await joiner.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
     assert.equal(joiner.text_(), text, "importing the base and then both rows reproduces the source's text");
     assert.equal(joiner.joined, true);
-    assert.equal(sentA.filter((message) => message.type === "doc-update").length, 2,
-      "each of the two join frames runs its own catch-up export");
+    assert.equal(sentA.filter((message) => message.type === "doc-update").length, 1,
+      "the complete join sends one catch-up after the advertised rows are present");
   } finally {
     joiner.leave();
+  }
+}
+
+// A base-only state can advertise a coauthor replacement that overlaps a
+// local edit. Until that row arrives the join stays incomplete, so Reader
+// cannot replay a private proposal inverse against the partial source graph.
+{
+  const source = createProjectSession({ send: () => {}, onState: () => {} });
+  const coauthor = createProjectSession({ send: () => {}, onState: () => {} });
+  const sent = [];
+  const reports = [];
+  const joiner = createProjectSession({
+    send: (message) => sent.push(message),
+    onState: (state) => reports.push(state),
+    presenceId: () => "overlapping-base-join",
+  });
+  try {
+    const file = source.addText("paper.md", "alpha beta");
+    source.setMain(file);
+    source.doc.commit();
+    const base = source.doc.export({ mode: "update" });
+
+    coauthor.doc.import(base);
+    const fromBase = coauthor.doc.oplogVersion();
+    coauthor.textOf(file).delete(0, 5);
+    coauthor.textOf(file).insert(0, "remote");
+    coauthor.doc.commit();
+    const row = coauthor.doc.export({ mode: "update", from: fromBase });
+    const advertised = coauthor.doc.oplogVersion();
+
+    joiner.doc.import(base);
+    joiner.textOf(file).delete(0, 5);
+    joiner.textOf(file).insert(0, "local");
+    joiner.doc.commit();
+    assert.equal(joiner.doc.oplogVersion().compare(advertised), undefined,
+      "the local edit and advertised coauthor replacement are concurrent before rows arrive");
+    sent.length = 0;
+
+    await joiner.start({
+      protocol: "librepaper.room.v3", vector: encode(advertised.encode()), base: encode(base), updates: [],
+    });
+    assert.equal(joiner.joined, false, "the base frame cannot claim the missing overlapping coauthor row");
+    assert.equal(reports.at(-1).joined, false, "the Reader is told that source hydration is still incomplete");
+    assert.equal(sent.filter((message) => message.type === "doc-update").length, 0,
+      "catch-up and proposal resolution wait for the missing source row");
+
+    await joiner.rows({
+      protocol: "librepaper.room.v3", vector: encode(advertised.encode()), updates: [encode(row)],
+    });
+    assert.equal(joiner.doc.oplogVersion().compare(advertised), 1,
+      "the hydrated graph now covers the advertised server head and retains the local edit");
+    assert.equal(joiner.joined, true);
+    assert.equal(reports.at(-1).joined, true, "the Reader is notified after the missing row is imported");
+    assert.equal(sent.filter((message) => message.type === "doc-update").length, 1,
+      "the local edit is offered once the complete graph is available");
+  } finally {
+    joiner.leave();
+    coauthor.leave();
+    source.leave();
   }
 }
 
@@ -975,7 +1035,7 @@ const gate = () => {
 // something here it takes another keystroke -- which an editor who has
 // stopped typing will not make.
 {
-  const { base, head } = sourceLog();
+  const { base, row1, row2, head } = sourceLog();
   const sentR = [];
   const statesR = [];
   // Timers are driven by hand rather than waited on: this is about whether a
@@ -1001,6 +1061,7 @@ const gate = () => {
   };
   try {
     await pressed.start({ protocol: "librepaper.room.v3", vector: encode(head.encode()), base: encode(base), updates: [] });
+    await pressed.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
     const headVector = encode(pressed.doc.oplogVersion().encode());
     sentR.length = 0;
 
@@ -1038,6 +1099,7 @@ const gate = () => {
       const peer = createProjectSession({ send: () => {}, onState: () => {}, presenceId: () => "peer" });
       try {
         await peer.start({ protocol: "librepaper.room.v3", vector: encode(head.encode()), base: encode(base), updates: [] });
+        await peer.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
         peer.apply(resent.at(-1).update);
         assert.equal(
           peer.textOf(peer.idOf("refused.md"))?.toString() ?? "",
