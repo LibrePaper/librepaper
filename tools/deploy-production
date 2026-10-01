@@ -30,6 +30,19 @@ validate_env_passwords() {
 	done
 }
 
+validate_release_version() {
+	local version="$1" major minor patch
+	if [[ ! "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+		die "release version must be a canonical tag such as v0.0.9"
+	fi
+	major="${BASH_REMATCH[1]}"
+	minor="${BASH_REMATCH[2]}"
+	patch="${BASH_REMATCH[3]}"
+	if (( major == 0 && minor == 0 && patch < 9 )); then
+		die "production metrics require v0.0.9 or later; v0.0.8 lacks metrics. Use deploy-local with a built Linux musl binary until an instrumented release is published"
+	fi
+}
+
 VERIFY_TMP_FILES=()
 cleanup_verify_tmp() {
 	if [ "${#VERIFY_TMP_FILES[@]}" -gt 0 ]; then rm -f -- "${VERIFY_TMP_FILES[@]}"; fi
@@ -103,7 +116,7 @@ usage() {
 	cat <<'USAGE'
 usage: tools/deploy-production <command>
 
-  deploy [VERSION]   build the site, copy the kit, write .env from SOPS, build and start, then verify
+  deploy [VERSION]   deploy a published instrumented release (canonical vMAJOR.MINOR.PATCH, v0.0.9+)
                      (VERSION defaults to v + the version in crates/librepaper/Cargo.toml)
   deploy-local BINARY deploy a previously-built Linux musl executable instead of a release image
   site               rebuild and upload the landing page and manual only (no release, no restart)
@@ -175,21 +188,25 @@ monitoring_verify() {
 			case "$private_code" in 404|421) ;; *) die "https://$APP$path is public (HTTP $private_code)" ;; esac
 		fi
 	done
-	local attempts=0 targets history snapshot now start
+	local targets history snapshot now start prom_deadline=$((SECONDS + 60)) prom_remaining prom_attempts=0
 	local prometheus_ok=false
-	while [ "$attempts" -lt 30 ]; do
+	local prom_waiting_note=false
+	while [ "$prom_attempts" -lt 30 ]; do
+		prom_remaining=$((prom_deadline - SECONDS))
+		[ "$prom_remaining" -gt 0 ] || break
 		now=$(date +%s)
 		start=$((now - 90))
 		# Prometheus is internal-only. Run its API from inside the container and
 		# return only JSON metadata to the local Node parser.
 		local response
-		response=$(ssh "$HOST" 'cd librepaper && docker compose exec -T prometheus sh -s' <<PROMETHEUS_API_EOF
+		response=$(timeout "$prom_remaining" ssh "$HOST" 'cd librepaper && docker compose exec -T prometheus sh -s' 2>/dev/null <<PROMETHEUS_API_EOF
 targets=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/targets?state=active') || exit 1
 history=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query_range?query=up%7Bjob%3D%22librepaper%22%7D&start=$start&end=$now&step=15s') || exit 1
 snapshot=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=(librepaper_metrics_snapshot_success%3D%3D1%20and%20time%28%29-librepaper_metrics_snapshot_timestamp_seconds%3C60)%20and%20on%28%29%20(pg_up%3D%3D1)') || exit 1
 printf '%s\n---LIBREPAPER-METRICS---\n%s\n---LIBREPAPER-METRICS---\n%s\n' "\$targets" "\$history" "\$snapshot"
 PROMETHEUS_API_EOF
-) || die "could not query internal Prometheus APIs"
+		) || response=''
+		if [ -n "$response" ]; then
 		targets=${response%%$'\n---LIBREPAPER-METRICS---\n'*}
 		remainder=${response#*$'\n---LIBREPAPER-METRICS---\n'}
 		history=${remainder%%$'\n---LIBREPAPER-METRICS---\n'*}
@@ -198,12 +215,17 @@ PROMETHEUS_API_EOF
 			prometheus_ok=true
 			break
 		fi
-		attempts=$((attempts + 1))
-		if [ "$attempts" -eq 1 ]; then note "waiting for all scrape targets, two good samples, and a fresh successful snapshot (up to 60 seconds)"; fi
-		sleep 2
+		fi
+		if [ "$prom_waiting_note" = false ]; then
+			note "waiting for Prometheus APIs, all scrape targets, recent samples, and a fresh snapshot (up to 60 seconds)"
+			prom_waiting_note=true
+		fi
+		prom_attempts=$((prom_attempts + 1))
+		prom_remaining=$((prom_deadline - SECONDS))
+		if [ "$prom_remaining" -gt 0 ]; then sleep "$((prom_remaining < 2 ? prom_remaining : 2))"; fi
 	done
-	[ "$prometheus_ok" = true ] || die "Prometheus targets, LibrePaper sample history, or snapshot freshness are unhealthy"
-	ok "all Prometheus targets are up; LibrePaper has two good samples and a fresh successful snapshot"
+	[ "$prometheus_ok" = true ] || die "Prometheus APIs, targets, LibrePaper sample history, snapshot, or pg_up are unhealthy"
+	ok "all Prometheus targets are up; LibrePaper has two good samples, a fresh snapshot, and pg_up=1"
 
 	step "Monitoring: provisioned dashboards"
 	api_code=$(curl --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
@@ -217,6 +239,12 @@ PROMETHEUS_API_EOF
 	cleanup_verify_tmp
 	VERIFY_TMP_FILES=()
 	trap - EXIT
+}
+
+reload_prometheus() {
+	step "Prometheus: apply the current mounted configuration"
+	ssh "$HOST" 'cd librepaper && docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 prometheus'
+	ok "recreated Prometheus to load current scrape and alert rules"
 }
 
 verify() {
@@ -281,6 +309,7 @@ verify() {
 
 deploy() {
 	local version="${1:-v$(sed -n 's/^version = "\(.*\)"/\1/p' crates/librepaper/Cargo.toml | head -n 1)}"
+	validate_release_version "$version"
 
 	printf '%sDeploying %s to %s%s\n' "$bold" "$version" "$HOST" "$reset"
 
@@ -337,6 +366,7 @@ deploy() {
 	note "docker compose up -d --build"
 	ssh "$HOST" 'cd librepaper && docker compose up -d --build --wait --wait-timeout 180'
 	ok "running"
+	reload_prometheus
 
 	step "Cleanup"
 	ssh "$HOST" 'docker image prune -f'
@@ -401,6 +431,7 @@ deploy_local() {
 
 	step "Containers: build and start local source"
 	ssh "$HOST" 'cd librepaper && docker compose up -d --build --wait --wait-timeout 180'
+	reload_prometheus
 	verify
 	printf '\n%sDone: local binary %s is live at https://%s (%ss)%s\n' "$green$bold" "$checksum" "$APP" "$SECONDS" "$reset"
 }

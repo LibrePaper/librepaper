@@ -14,13 +14,15 @@ The official instance at librepaper.org runs `tools/deploy-docker` on an OVHclou
 ## Release
 
 ```sh
-VERSION=v0.0.8                                   # must match crates/librepaper/Cargo.toml
+# Monitoring requires an instrumented release v0.0.9 or later.
+VERSION=v0.0.9                                   # once this matches crates/librepaper/Cargo.toml
 git tag "$VERSION" && git push origin "$VERSION"
 gh run watch                                     # the Release workflow
 gh release view "$VERSION" --json assets -q '.assets[].name' | grep linux-musl
 ```
 
-- The image builds from v0.0.8 on: v0.0.1 to v0.0.3 are Komodoc archives, and v0.0.4 to v0.0.7 never released
+- v0.0.8 is the current historical baseline and does not include the metrics listener. Do not deploy it to the monitoring stack; use `deploy-local` until an instrumented v0.0.9+ release is published.
+- v0.0.1 to v0.0.3 are Komodoc archives, and v0.0.4 to v0.0.7 never released
 - No Windows build since v0.0.8: the PowerShell installer in the README, docs/start.md and the settings page 404s until `x86_64-pc-windows-msvc` is back in the dist targets
 
 ## VPS (OVHcloud)
@@ -118,16 +120,18 @@ git add tools/deploy-keys.yaml && git commit -m "Add production secrets"   # val
 
 ## Deploy and upgrade
 
-From the repository root; rerun to upgrade after a release.
+The currently instrumented source can be deployed before its first tagged release. Use the local binary flow now; once an instrumented `v0.0.9` or later release is published, use the normal release flow.
 
 ```sh
-# builds the site, checks the release, copies the kit, writes .env from SOPS, builds, starts, then verifies
-tools/deploy-production deploy                               # the Cargo.toml version, or: deploy v0.0.8
-HOST=ubuntu@VPS_IP tools/deploy-production deploy            # before DNS resolves
+# current source: deploy the previously built static Linux musl executable
 tools/deploy-production deploy-local target/x86_64-unknown-linux-musl/release/librepaper
+# after an instrumented tag and release: deploy v0.0.9 or a later exact tag
+tools/deploy-production deploy v0.0.9
+HOST=ubuntu@VPS_IP tools/deploy-production deploy v0.0.9    # before DNS resolves
 tools/deploy-production site                                 # landing page and manual only: no release, no restart
 ```
 
+- `deploy VERSION` accepts only canonical `vMAJOR.MINOR.PATCH` tags at `v0.0.9` or later. It refuses `v0.0.8` before any remote write because that binary has no metrics endpoint. The default version comes from Cargo.toml and is subject to the same guard.
 - `make site` needs bun; the site is served from `~/librepaper/site` through `compose.override.yaml`
 - `deploy-local BINARY` accepts a previously built Linux musl executable. It uploads the file to a temporary name, compares SHA-256 checksums, then atomically replaces the kit binary and builds `Dockerfile.local`. Supported targets are x86_64 and aarch64. A normal release deployment resets this local-build override.
 - Domain, redirects, publishers and commenters are constants at the top of `tools/deploy-production`
@@ -147,7 +151,7 @@ The deploy command bootstraps or updates the `librepaper_metrics` PostgreSQL rol
 
 To rotate the Grafana password, change it from the Grafana account page, update `PRODUCTION_ADMIN_PASSWORD` in SOPS to the same new value, then deploy. Changing only the SOPS value does not alter an existing Grafana account because `GF_SECURITY_ADMIN_PASSWORD` is an initialization setting.
 
-Compose waits for service health during deployment, and the verifier allows Grafana up to a minute to finish its startup before checking the authenticated API. It confirms anonymous API access is denied, ensures `/metrics`, `/api/status`, and Prometheus APIs are not public, checks that the LibrePaper, Node Exporter, and PostgreSQL exporter scrape targets are up, and waits for recent LibrePaper samples, a fresh successful snapshot, and `pg_up == 1`. It also validates that the provisioned dashboard has panels.
+Compose waits for service health during deployment. The deploy then recreates only Prometheus so it reads the newly copied scrape and alert configuration, and the verifier retries temporary Prometheus and Grafana startup failures for up to a minute. It confirms Grafana credentials work and anonymous API access is denied, ensures `/metrics`, `/api/status`, and Prometheus APIs are not public, checks that exactly the LibrePaper, Node Exporter, and PostgreSQL exporter scrape targets are up, and waits for recent LibrePaper samples, a fresh successful snapshot, and `pg_up == 1`. It also validates that the provisioned dashboard has panels.
 
 ## Verify
 
