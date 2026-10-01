@@ -1,13 +1,14 @@
 <script>
   import { onMount } from "svelte";
+  import { createFrameMessageReceiver } from "../lib/frame-messages.js";
   // The document, on its own origin, in a frame.
   //
   // Nothing here can touch it: the agent injected into it does the DOM work
   // and reports back. Anchoring stays on this side -- the agent sends text,
   // this sends back the offsets to paint.
   //
-  // Everything arriving from the frame is untrusted. The agent shares an
-  // origin with the document, and a hostile document can rewrite it.
+  // Everything arriving from the frame is untrusted. The injected agent
+  // shares an origin with the document, and a hostile document can rewrite it.
   //
   // `controls` is whatever the format in the frame can be asked for -- zoom
   // and a cursor tool for a PDF, nothing for flowing HTML. It is a snippet
@@ -23,8 +24,15 @@
   let viewport = $state(null);
   let heldWidth = $state(0);
   let heldHeight = $state(0);
+  let receiver;
   onMount(() => {
-    window.addEventListener("message", receive);
+    receiver = createFrameMessageReceiver({
+      getFrame: () => frame,
+      getSrc: () => src,
+      getDocsOrigin: () => docsOrigin,
+      onmessage: (message) => onmessage?.(message),
+    });
+    window.addEventListener("message", receiver.receive);
     const observer = new ResizeObserver(() => {
       if (away || !viewport) return;
       heldWidth = viewport.clientWidth;
@@ -32,7 +40,8 @@
     });
     observer.observe(viewport);
     return () => {
-      window.removeEventListener("message", receive);
+      window.removeEventListener("message", receiver.receive);
+      receiver.dispose();
       observer.disconnect();
     };
   });
@@ -43,9 +52,16 @@
   /// small and is cloned, as it always was.
   export function tell(message, transfer) {
     if (!frame?.contentWindow) return false;
-    const origin = frame.src ? new URL(frame.src).origin : docsOrigin;
-    if (!origin) return false;
-    frame.contentWindow.postMessage({ librepaper: true, ...message }, origin, transfer);
+    let target;
+    let trusted;
+    try {
+      target = new URL(src, location.href);
+      trusted = new URL(docsOrigin, location.href).origin;
+    } catch {
+      return false;
+    }
+    if (!trusted || target.origin !== trusted) return false;
+    frame.contentWindow.postMessage({ librepaper: true, ...message }, trusted, transfer);
     return true;
   }
 
@@ -56,13 +72,6 @@
     frame?.focus();
   }
 
-  function receive(event) {
-    const origin = frame?.src ? new URL(frame.src).origin : docsOrigin;
-    if (!origin || event.origin !== origin || event.source !== frame?.contentWindow) return;
-    const message = event.data;
-    if (!message || message.librepaper !== true) return;
-    onmessage(message);
-  }
 </script>
 
 <section class="viewport" class:away bind:this={viewport} inert={away}
@@ -79,6 +88,7 @@
       title="Document"
       {src}
       onload={() => {
+        receiver?.reset();
         onload?.();
         tell({ type: "reader-ready" });
       }}

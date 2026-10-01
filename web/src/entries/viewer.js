@@ -19,11 +19,18 @@ let viewer = null; // the render module, once something has needed it
 let stage = null;
 let pan = null;
 let scaleMode = "auto";
-// Where the reader is, learned from the first message it sends. The zoom and
-// the cursor tool are set from the preview header, so this frame has to
-// answer it -- and it answers only the window that spoke to it first, never
-// "*".
-let readerOrigin = null;
+// `with_frame()` injects the same configured frame.js tag into this page as
+// it does into rendered documents. Pin the parent origin from that trusted
+// tag; learning it from the first message would let an arbitrary embedder
+// claim this viewer before the real reader does.
+let readerOrigin = "";
+try {
+  const agent = [...document.scripts].find((script) => new URL(script.src, document.baseURI).pathname.endsWith("/frame.js"));
+  const configuredReader = agent && new URL(agent.src, document.baseURI).searchParams.get("reader");
+  readerOrigin = configuredReader ? new URL(configuredReader).origin : "";
+} catch {
+  readerOrigin = "";
+}
 let paintGeneration = 0;
 // The last PDF drawn, kept so a resize can redraw it. The pages are sized to
 // the width the frame has (see `pdf/render.js`), and the frame's width is not
@@ -132,10 +139,9 @@ addEventListener("resize", () => {
 });
 
 addEventListener("message", async (event) => {
-  if (event.source !== parent) return;
+  if (!readerOrigin || event.source !== parent || event.origin !== readerOrigin) return;
   const message = event.data;
   if (!message || message.librepaper !== true) return;
-  readerOrigin = event.origin;
 
   // Zoom, from the header's controls. A mode is redrawn at once, because the
   // pages on screen are the wrong size the moment it changes.

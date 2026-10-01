@@ -534,4 +534,61 @@ mod tests {
         let plain = Origins::configure("http://paper.example", None).unwrap();
         assert!(!plain.resolve("paper.example").unwrap().is_https());
     }
+
+    #[test]
+    fn a_same_site_document_request_cannot_use_the_readers_cookies() {
+        let origins = configured();
+        let reader = origins.resolve("paper.example").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "https://docs.paper.example".parse().unwrap());
+        headers.insert("sec-fetch-site", "same-site".parse().unwrap());
+        headers.insert(
+            "cookie",
+            "__Host-librepaper_session=signed-session".parse().unwrap(),
+        );
+        headers.insert("x-librepaper-client", "web".parse().unwrap());
+
+        // A same-site fetch from docs.paper.example to the reader can carry
+        // the reader's SameSite=Lax cookie. Its presence, and the
+        // browser-required custom header, do not make that request same-origin
+        // with the reader.
+        assert!(cross_site_refused(&headers, &reader));
+    }
+
+    #[test]
+    fn reader_requests_need_the_client_header_but_bearer_clients_keep_working() {
+        let reader = configured().resolve("paper.example").unwrap();
+        let mut browser = HeaderMap::new();
+        browser.insert("origin", "https://paper.example".parse().unwrap());
+        browser.insert("sec-fetch-site", "same-origin".parse().unwrap());
+        browser.insert(
+            "cookie",
+            "__Host-librepaper_session=signed-session".parse().unwrap(),
+        );
+        assert!(cross_site_refused(&browser, &reader));
+
+        browser.insert("x-librepaper-client", "web".parse().unwrap());
+        assert!(!cross_site_refused(&browser, &reader));
+
+        let mut cli = HeaderMap::new();
+        cli.insert("authorization", "Bearer lp_device-token".parse().unwrap());
+        assert!(!cross_site_refused(&cli, &reader));
+    }
+
+    #[test]
+    fn websocket_origin_must_be_the_reader_origin() {
+        let origins = configured();
+        let reader = origins.resolve("paper.example").unwrap();
+        let mut same_site_document = HeaderMap::new();
+        same_site_document.insert("origin", "https://docs.paper.example".parse().unwrap());
+        assert!(ws_origin_refused(&same_site_document, &reader));
+
+        let mut same_origin = HeaderMap::new();
+        same_origin.insert("origin", "https://paper.example".parse().unwrap());
+        assert!(!ws_origin_refused(&same_origin, &reader));
+
+        // Browserless callers do not always send Origin; preserve that
+        // compatibility while refusing a browser handshake from docs.
+        assert!(!ws_origin_refused(&HeaderMap::new(), &reader));
+    }
 }

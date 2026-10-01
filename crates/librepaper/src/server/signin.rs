@@ -633,7 +633,8 @@ fn config_body(
 
 #[cfg(test)]
 mod tests {
-    use super::config_body;
+    use super::{config_body, set_cookie};
+    use crate::auth::{cookie_name, SESSION_COOKIE};
     use crate::config::Configuration;
 
     #[test]
@@ -644,5 +645,31 @@ mod tests {
         let absent = config_body(&config, false, None, None);
         assert!(absent.get("local_app").is_none());
         assert!(absent.get("latex_local").is_none());
+    }
+
+    #[test]
+    fn https_session_cookie_is_secure_host_only_and_http_only() {
+        let name = cookie_name(true, SESSION_COOKIE);
+        let cookie = set_cookie(&name, "signed-session", 3600, true);
+
+        assert_eq!(name, "__Host-librepaper_session");
+        assert!(cookie.contains("; Path=/"), "{cookie}");
+        assert!(cookie.contains("; Secure"), "{cookie}");
+        assert!(cookie.contains("; HttpOnly"), "{cookie}");
+        assert!(cookie.contains("; SameSite=Lax"), "{cookie}");
+        assert!(!cookie.to_ascii_lowercase().contains("; domain="), "{cookie}");
+
+        // The host-only cookie belongs to the reader. SameSite does not
+        // distinguish its sibling document host, so the request guard must
+        // still reject a docs-origin request even when that cookie is sent.
+        let origins = crate::server::origins::Origins::configure(
+            "https://paper.example",
+            Some("https://docs.paper.example"),
+        )
+        .unwrap();
+        assert_ne!(
+            origins.reader().unwrap().host(),
+            origins.docs().unwrap().host()
+        );
     }
 }

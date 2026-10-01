@@ -25,18 +25,33 @@ to `crates/librepaper/src/` unless stated otherwise.
 
 ## Rendering and outbound requests
 
-- **Observed:** `server/origins.rs` rejects application and document origins on
-  one host. `Preview.svelte` checks message origin and frame window. The preview
-  iframe enables scripts, same-origin, popups and forms.
-- **Observed:** Production `serve_shell` and `serve_viewer` headers in
-  `server/routes.rs` allow `https:` in `script-src`. Route tests exercise actual
-  headers; the unused stricter helper has been removed. Remote scripts/resources
-  expose reader requests and let hosts change executable code without a source
-  revision. The old published-bundle claims do not apply.
-- **Recommend:** Disable remote scripts and use embedded or digest-pinned
-  dependencies where renderers permit. If compatibility requires remote scripts,
-  disclose mutable code and network exposure. Keep tests on actual headers and
-  align [privacy docs](../../privacy.md).
+- **Observed:** `server/origins.rs` requires different application and document
+  hosts. The document host serves the empty preview shell, PDF viewer, frame
+  agent and shell assets; API routes refuse it. `serve_shell` and `serve_viewer`
+  set `frame-ancestors` to the configured reader origin, and their CSP permits
+  scripts from `https:` for CDN compatibility. `Preview.svelte` accepts frame
+  messages only from its iframe window and configured document origin. The
+  frame agent checks messages from its parent window and configured reader
+  origin. The PDF viewer applies the same reader-origin check before accepting
+  messages or choosing a reply target. The reader-side receiver validates
+  message types, fields, size bounds and frequency. The iframe enables scripts,
+  same-origin, popups and forms.
+- **Observed:** The document CSP currently permits outbound HTTPS scripts,
+  styles, images, fonts and connections. Remote scripts can change after a
+  document revision; external resources can identify readers. The host boundary
+  keeps reader cookies inaccessible to scripts in the document origin, but
+  same-site requests to the reader can still carry those cookies, so origin
+  checks remain essential. No CORS allow-origin header is emitted by the main
+  API, so browser scripts on the document host cannot read its responses. The
+  host boundary is not a network privacy boundary. The old published-bundle
+  claims do not apply.
+- **Recommend (not implemented):** Preserve CDN compatibility as the default
+  and offer an opt-in private/offline policy that blocks remote code and, if
+  its promise is network privacy, all remote resource and connection loads.
+  State which document formats need network access and what the mode blocks.
+  Keep frame message checks tied to the configured reader origin and exercise
+  actual response headers and message validation. Align
+  [privacy docs](../../privacy.md).
 - Images/fonts also expose requests. LaTeX compiler/packages use the configured
   mirror (default project mirror); digest checks give integrity, not privacy or
   availability. See [hosting privacy notes](../../host.md#privacy).
@@ -94,12 +109,13 @@ to `crates/librepaper/src/` unless stated otherwise.
   remote resources and embed base64 payloads. Sniffing/signature checks help
   route content but do not prove safety. Do not claim scanning makes arbitrary
   HTML safe.
-- **Constrain network access:** Explain tracking, phishing and remote mutable
-  code. Block remote refs by default or require pinned/approved references where
-  practical; source upload cannot certify future bytes at remote URLs. Scanners
-  and previews must never fetch arbitrary URLs: disable network or enforce
-  strict egress and deny private/link-local/metadata destinations. Decode only
-  bounded data URLs; do not follow redirects or nested URLs.
+- **Constrain network access:** CDN scripts and external document resources are
+  permitted by default for compatibility; disclose tracking, phishing and
+  remote mutable code. An optional private/offline policy may block remote
+  references. Source upload cannot certify future bytes at remote URLs.
+  Scanners must never fetch arbitrary URLs: disable network or enforce strict
+  egress and deny private/link-local/metadata destinations. Decode only bounded
+  data URLs; do not follow redirects or nested URLs.
 - **Bound work:** Apply parser/decoder/extraction/render time and memory budgets,
   archive expansion limits and concurrency caps. ZIP import rejects traversal,
   unsafe symlinks, colliding paths and expansion bombs. Browser-side budgets are
