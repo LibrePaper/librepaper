@@ -77,6 +77,7 @@ impl PostgresCatalog {
     /// Retains one final result for up to 30 days. The table is keyed by the
     /// client-chosen proposal id and is pruned for this document on every
     /// write that creates a receipt.
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_proposal_outcome(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
@@ -230,7 +231,7 @@ impl PostgresCatalog {
         .ok_or(Error::NotFound)?;
         let requested_base_matches = base_frontiers
             .as_ref()
-            .map_or(true, |base| base == &current.base_frontiers);
+            .is_none_or(|base| base == &current.base_frontiers);
         if current.tip_frontiers == tip_frontiers
             && current.branch_bytes == branch_bytes
             && requested_base_matches
@@ -382,6 +383,7 @@ impl PostgresCatalog {
     /// pass `None`, so discarding a stale suggestion never needs to rebuild its
     /// branch. Both the tip check and deletion happen under the proposal row
     /// lock, in the same transaction as a source update or retry receipt.
+    #[allow(clippy::too_many_arguments)]
     pub async fn resolve_suggestion(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
