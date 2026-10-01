@@ -398,24 +398,6 @@ fn agent_document_slug(path: &str) -> Option<&str> {
     (!slug.is_empty()).then_some(slug)
 }
 
-#[cfg(test)]
-mod agent_scope_tests {
-    use super::agent_document_slug;
-
-    #[test]
-    fn delegated_credentials_are_confined_to_document_and_socket_routes() {
-        assert_eq!(
-            agent_document_slug("/api/documents/paper/tools"),
-            Some("paper")
-        );
-        assert_eq!(agent_document_slug("/ws/paper"), Some("paper"));
-        assert_eq!(agent_document_slug("/api/list"), None);
-        assert_eq!(agent_document_slug("/api/account/erase"), None);
-        assert_eq!(agent_document_slug("/api/documents"), None);
-        assert_eq!(agent_document_slug("/api/documents/"), None);
-    }
-}
-
 /// Metadata and range selection precede reading. Range and conditional
 /// requests never fetch the bytes that will not be sent to this caller.
 pub(super) async fn blob_response(
@@ -524,4 +506,22 @@ fn byte_range(value: &str, length: u64) -> Option<(u64, u64)> {
         end.parse::<u64>().ok()?.saturating_add(1).min(length)
     };
     (start < end && start < length).then_some((start, end))
+}
+
+#[cfg(test)]
+mod agent_scope_tests {
+    use super::agent_document_slug;
+
+    #[test]
+    fn delegated_credentials_are_confined_to_document_and_socket_routes() {
+        assert_eq!(
+            agent_document_slug("/api/documents/paper/tools"),
+            Some("paper")
+        );
+        assert_eq!(agent_document_slug("/ws/paper"), Some("paper"));
+        assert_eq!(agent_document_slug("/api/list"), None);
+        assert_eq!(agent_document_slug("/api/account/erase"), None);
+        assert_eq!(agent_document_slug("/api/documents"), None);
+        assert_eq!(agent_document_slug("/api/documents/"), None);
+    }
 }
