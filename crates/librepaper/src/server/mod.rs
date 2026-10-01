@@ -1134,7 +1134,9 @@ impl Server {
         // browser's cookies. Keep the account for attribution and policy
         // ceilings, while preventing the cached owner session from widening
         // the link's authority.
-        let grant = header_of(headers, "authorization")
+        let authorization = header_of(headers, "authorization");
+        let grant = authorization
+            .as_deref()
             .and_then(|value| value.strip_prefix("Bearer "))
             .filter(|token| token.starts_with(AGENT_GRANT_PREFIX))
             .and_then(|token| read_agent_grant(&self.key, token));

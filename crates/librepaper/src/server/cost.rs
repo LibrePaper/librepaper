@@ -313,7 +313,9 @@ async fn middleware_inner(
         .authenticated_identity(request.headers(), &arrival)
         .await;
     let identity = authentication.clone().unwrap_or_default();
-    let delegated_agent = origins::header(request.headers(), "authorization")
+    let authorization = origins::header(request.headers(), "authorization");
+    let delegated_agent = authorization
+        .as_deref()
         .and_then(|value| value.strip_prefix("Bearer "))
         .is_some_and(|token| token.starts_with(crate::auth::AGENT_GRANT_PREFIX));
     if delegated_agent && authentication.is_ok() && !agent_document_path(&server, &path) {
