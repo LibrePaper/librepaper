@@ -126,6 +126,10 @@ impl Room {
         if size == 0 {
             return Err(WriteError::Invalid("that file is empty".into()));
         }
+        // Validate the actor before writing a blob. Once `put_new` has been
+        // attempted, an error can leave an uncatalogued immutable object and
+        // callers must treat the upload admission as spent.
+        let authorization = super::catalog::mutation_authorization(actor)?;
         let sha = crate::document::store::digest_of_bytes(&body);
         let digest: [u8; 32] = Sha256::digest(&body).into();
 
@@ -180,7 +184,6 @@ impl Room {
             return Err(error);
         }
 
-        let authorization = super::catalog::mutation_authorization(actor)?;
         let authority = Authority {
             principal_key: authorization.principal_key.clone(),
             account_id: authorization.account_id,

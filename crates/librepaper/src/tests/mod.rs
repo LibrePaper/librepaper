@@ -22,7 +22,7 @@ use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
 /// cascade from `documents` and `accounts`, so this does not quietly depend
 /// on a foreign key's `ON DELETE` staying what it is.
 const SCHEMA_TABLES: &str =
-    "moderation_audit,moderated_projects,operation_outcomes,document_proposal_outcomes,document_proposal_hunks,document_proposals,document_labels,\
+    "moderation_audit,moderated_projects,pending_log_reservations,operation_outcomes,document_proposal_outcomes,document_proposal_hunks,document_proposals,document_labels,\
      document_updates,document_snapshots,document_assets,replies,annotations,\
      document_marks,share_links,grants,documents,accounts";
 

@@ -1,8 +1,7 @@
 //! Soft admission control for the per-owner storage quota.
 //!
-//! Coarse at ingest, rebuilt from the catalogue at each admission, moved by
-//! every flush and compaction. Two documents of one owner flushing at once can
-//! overshoot by a buffer, which is accepted.
+//! A durable-only early estimate at ingest. PostgreSQL reserves pending edit
+//! bytes before acceptance and enforces the final owner and deployment quotas.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -24,20 +23,19 @@ impl StorageLedger {
         })
     }
 
-    /// Loads the owner's charged bytes from the catalog, overwriting whatever
-    /// was held, and the deployment total from the catalog if it has not been
-    /// loaded yet.
+    /// Loads durable charged bytes from the catalog, excluding pending source
+    /// reservations that will be replaced by the durable row charge on flush.
     pub async fn refresh(
         &self,
         catalog: &crate::storage::postgres::PostgresCatalog,
         owner: Uuid,
     ) -> Result<(), crate::storage::postgres::Error> {
-        let owner_bytes = catalog.usage_bytes(Some(owner)).await?;
+        let owner_bytes = catalog.durable_usage_bytes(Some(owner)).await?;
         self.owners.lock().unwrap().insert(owner, owner_bytes);
 
         let needs_deployment = self.deployment.lock().unwrap().is_none();
         if needs_deployment {
-            let total = catalog.usage_bytes(None).await?;
+            let total = catalog.durable_usage_bytes(None).await?;
             self.deployment.lock().unwrap().get_or_insert(total);
         }
 

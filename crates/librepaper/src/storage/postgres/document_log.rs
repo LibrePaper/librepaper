@@ -14,6 +14,9 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[cfg(test)]
+#[path = "pending_log_reservation_tests.rs"]
+mod pending_log_reservation_tests;
+#[cfg(test)]
 #[path = "snapshot_regression_tests.rs"]
 mod snapshot_regression_tests;
 
@@ -327,13 +330,16 @@ impl PostgresCatalog {
         &self,
         document_id: Uuid,
         row: FlushRow<'_>,
+        reserved_bytes: i64,
         scratch: crate::log::pending::Reservation,
     ) -> Result<i64> {
         let mut connection = self.persistence_connection(scratch).await?;
         let mut tx = connection.begin().await?;
         self.check_fenced_flush(&mut tx, document_id, row.expected_update_sequence)
             .await?;
-        let sequence = self.insert_log_row(&mut tx, document_id, row).await?;
+        let sequence = self
+            .insert_log_row_reserved(&mut tx, document_id, row, reserved_bytes)
+            .await?;
         tx.commit().await?;
         connection.complete();
         Ok(sequence)
@@ -351,6 +357,16 @@ impl PostgresCatalog {
         document_id: Uuid,
         row: FlushRow<'_>,
     ) -> Result<i64> {
+        self.insert_log_row_reserved(tx, document_id, row, 0).await
+    }
+
+    pub(crate) async fn insert_log_row_reserved(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        row: FlushRow<'_>,
+        reserved_bytes: i64,
+    ) -> Result<i64> {
         if row.update_bytes.is_empty() {
             return Err(Error::Invalid("a flush row holds no batches".into()));
         }
@@ -360,35 +376,61 @@ impl PostgresCatalog {
         {
             return Err(Error::Invalid("source identity is invalid".into()));
         }
-        // The sequencer's in-memory ledger is an early admission check, but
-        // another document can be edited while this row is buffered. Recheck
-        // under the deployment storage lock at the durable boundary so two
-        // concurrent flushes cannot both spend the same remaining quota.
-        // This is the same document-then-storage_usage lock order used by
-        // asset and archive admission.
+        if reserved_bytes < 0 {
+            return Err(Error::Invalid("invalid pending log reservation".into()));
+        }
         let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1")
             .bind(document_id)
             .fetch_one(&mut **tx)
             .await?;
-        let retained_blobs: i64 =
+        let _retained: i64 =
             sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
                 .fetch_one(&mut **tx)
                 .await?;
+        if reserved_bytes > 0 {
+            let epoch = self.writer_epoch()?;
+            let removed = sqlx::query(
+                "DELETE FROM pending_log_reservations \
+                 WHERE document_id=$1 AND writer_epoch=$2 AND bytes=$3",
+            )
+            .bind(document_id)
+            .bind(epoch)
+            .bind(reserved_bytes)
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+            let removed = if removed == 1 {
+                removed
+            } else {
+                sqlx::query(
+                    "UPDATE pending_log_reservations SET bytes=bytes-$3 \
+                     WHERE document_id=$1 AND writer_epoch=$2 AND bytes > $3",
+                )
+                .bind(document_id)
+                .bind(epoch)
+                .bind(reserved_bytes)
+                .execute(&mut **tx)
+                .await?
+                .rows_affected()
+            };
+            if removed != 1 {
+                return Err(Error::Conflict("pending log reservation was lost".into()));
+            }
+        }
         let owner_usage = super::repository::owner_usage_bytes(&mut **tx, owner_id).await?;
-        let incoming_bytes = row.update_bytes.len().min(i64::MAX as usize) as i64;
-        if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
+        let incoming = row.update_bytes.len().min(i64::MAX as usize) as i64;
+        if owner_usage.saturating_add(incoming) > self.policy.owner_bytes {
             return Err(Error::Conflict("account storage quota exceeded".into()));
         }
-        let log_usage: i64 = sqlx::query_scalar(
-            "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
+        let deployment_usage: i64 = sqlx::query_scalar(
+            "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
+             + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut **tx)
         .await?;
-        if retained_blobs
-            .saturating_add(log_usage)
-            .saturating_add(incoming_bytes)
-            > self.policy.deployment_bytes
-        {
+        if deployment_usage.saturating_add(incoming) > self.policy.deployment_bytes {
             return Err(Error::Conflict(
                 "deployment storage threshold exceeded".into(),
             ));
@@ -421,6 +463,81 @@ impl PostgresCatalog {
         .execute(&mut **tx)
         .await?;
         Ok(sequence)
+    }
+
+    /// Persist a quota reservation before an accepted source batch is
+    /// relayed. Each batch reserves its frame charge plus a row header; a
+    /// flush replaces the prefix reservation with the actual encoded row in
+    /// the same transaction.
+    pub(crate) async fn reserve_pending_log_bytes(
+        &self,
+        document_id: Uuid,
+        bytes: i64,
+    ) -> Result<()> {
+        if bytes <= 0 {
+            return Err(Error::Invalid("invalid pending log reservation".into()));
+        }
+        let mut tx = self.begin_writer_transaction().await?;
+        let owner_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT owner_id FROM documents WHERE id=$1 AND status='active' \
+             AND NOT EXISTS(SELECT 1 FROM moderated_projects WHERE document_id=$1) FOR UPDATE",
+        )
+        .bind(document_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let owner_id = owner_id.ok_or(Error::NotFound)?;
+        let retained: i64 =
+            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+                .fetch_one(&mut *tx)
+                .await?;
+        let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
+        let log_usage: i64 = sqlx::query_scalar(
+            "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        let reservations: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(sum(bytes),0)::bigint FROM pending_log_reservations",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if owner_usage.saturating_add(bytes) > self.policy.owner_bytes {
+            return Err(Error::Conflict("account storage quota exceeded".into()));
+        }
+        if retained
+            .saturating_add(log_usage)
+            .saturating_add(reservations)
+            .saturating_add(bytes)
+            > self.policy.deployment_bytes
+        {
+            return Err(Error::Conflict(
+                "deployment storage threshold exceeded".into(),
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO pending_log_reservations(document_id,writer_epoch,bytes) \
+             VALUES($1,$2,$3) ON CONFLICT(document_id) DO UPDATE \
+             SET writer_epoch=EXCLUDED.writer_epoch,bytes=pending_log_reservations.bytes+EXCLUDED.bytes",
+        )
+        .bind(document_id)
+        .bind(self.writer_epoch()?)
+        .bind(bytes)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn clear_stale_pending_log_reservations(&self) -> Result<()> {
+        let epoch = self.writer_epoch()?;
+        let mut tx = self.begin_writer_transaction().await?;
+        sqlx::query("DELETE FROM pending_log_reservations WHERE writer_epoch <> $1")
+            .bind(epoch)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// The document's head sequence, read on its own. §5.1's ambiguous
@@ -462,10 +579,10 @@ impl PostgresCatalog {
         }
         let mut tx = self.begin_metered().await?;
         self.check_writer_epoch(&mut tx).await?;
-        let head = sqlx::query_scalar!(
-            "SELECT update_sequence FROM documents WHERE id=$1 FOR UPDATE",
-            document_id,
+        let (head, owner_id) = sqlx::query_as::<_, (i64, Uuid)>(
+            "SELECT update_sequence,owner_id FROM documents WHERE id=$1 FOR UPDATE",
         )
+        .bind(document_id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(Error::NotFound)?;
@@ -496,20 +613,16 @@ impl PostgresCatalog {
             tx.commit().await?;
             return Ok(None);
         }
-        let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1")
-            .bind(document_id)
-            .fetch_one(&mut *tx)
-            .await?;
-        // Base activation can replace many small rows with a larger snapshot.
-        // Serialize the retained-byte delta against asset and archive writes,
-        // then validate the post-activation accounting before committing.
         let _usage_lock: i64 =
             sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
                 .fetch_one(&mut *tx)
                 .await?;
         let owner_before = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
         let deployment_before: i64 = sqlx::query_scalar(
-            "SELECT (SELECT bytes FROM storage_usage WHERE singleton) + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
+            "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
+             + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -567,7 +680,10 @@ impl PostgresCatalog {
             return Err(Error::Conflict("account storage quota exceeded".into()));
         }
         let deployment_usage: i64 = sqlx::query_scalar(
-            "SELECT (SELECT bytes FROM storage_usage WHERE singleton) + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
+            "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
+             + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut *tx)
         .await?;

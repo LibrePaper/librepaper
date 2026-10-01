@@ -831,8 +831,10 @@ impl PostgresCatalog {
         let owner_usage = owner_usage_bytes(&mut **tx, owner_id).await?;
         // The deployment total is blob bytes plus every current base plus
         // every document's uncompacted rows.
-        let log_usage = sqlx::query_scalar!(
-            r#"SELECT (COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0))::bigint AS "total!""#
+        let log_usage: i64 = sqlx::query_scalar(
+            "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut **tx)
         .await?;
@@ -1126,14 +1128,50 @@ impl PostgresCatalog {
         Ok(changed)
     }
 
-    pub async fn usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
+    /// Durable-only usage for the sequencer's soft ledger. Pending source
+    /// reservations are replaced by durable row charges on flush; including
+    /// them here would let that ledger count the same work twice.
+    pub async fn durable_usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
         let Some(account_id) = account_id else {
-            return sqlx::query_scalar!(
+            return sqlx::query_scalar::<_, i64>(
                 r#"SELECT (
                      (SELECT bytes FROM storage_usage WHERE singleton) +
                      COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL), 0) +
                      COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents), 0)
-                   )::bigint AS "total!""#
+                   )::bigint"#,
+            )
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Error::from);
+        };
+        sqlx::query_scalar::<_, i64>(
+            r#"SELECT COALESCE(sum(bytes),0)::bigint FROM (
+                 SELECT a.byte_length AS bytes FROM document_archives a
+                   JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
+                 UNION ALL SELECT a.byte_length FROM document_assets a
+                   JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
+                 UNION ALL SELECT s.snapshot_bytes FROM document_snapshots s
+                   JOIN documents d ON d.id=s.document_id
+                   WHERE d.owner_id=$1 AND s.delete_after IS NULL
+                 UNION ALL SELECT d.uncompacted_update_bytes FROM documents d
+                   WHERE d.owner_id=$1
+               ) usage"#,
+        )
+        .bind(account_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    pub async fn usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
+        let Some(account_id) = account_id else {
+            return sqlx::query_scalar::<_, i64>(
+                r#"SELECT (
+                     (SELECT bytes FROM storage_usage WHERE singleton) +
+                     COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL), 0) +
+                     COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents), 0) +
+                     COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations), 0)
+                   )::bigint"#
             )
             .fetch_one(&self.pool)
             .await
@@ -1198,6 +1236,8 @@ where
                WHERE d.owner_id=$1 AND s.delete_after IS NULL
              UNION ALL SELECT d.uncompacted_update_bytes FROM documents d
                WHERE d.owner_id=$1
+             UNION ALL SELECT r.bytes FROM pending_log_reservations r
+               JOIN documents d ON d.id=r.document_id WHERE d.owner_id=$1
            ) usage"#,
     )
     .bind(account_id)

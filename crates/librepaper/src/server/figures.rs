@@ -113,19 +113,12 @@ impl Server {
             .await;
         match stored {
             Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),
-            Err(error) => {
-                if !matches!(&error, crate::room::WriteError::Storage(_)) {
-                    let _ = self
-                        .store
-                        .catalog
-                        .cancel_upload_admission(upload_admission)
-                        .await;
-                }
-                // A storage error may arrive after the catalogue commit; keep
-                // its admission counted so an ambiguous outcome cannot be
-                // retried for free.
-                refused(&format!("could not store a figure for {slug}"), &error)
-            }
+            // Every error from this point can follow a fresh object write: the
+            // room writes and verifies the immutable blob before attaching it
+            // under quota and authorization checks. Keep the admission even
+            // for a definite catalogue refusal, so it cannot be repeated to
+            // create unbounded orphan objects.
+            Err(error) => refused(&format!("could not store a figure for {slug}"), &error),
         }
     }
 

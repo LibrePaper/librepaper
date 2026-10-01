@@ -162,6 +162,7 @@ impl LogCatalog for FakeCatalog {
         &'a self,
         _document_id: Uuid,
         row: FlushRow<'a>,
+        _reserved_bytes: i64,
         scratch: super::pending::Reservation,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
         if self.fail_next_flush.swap(false, Ordering::SeqCst) {
@@ -228,6 +229,7 @@ impl LogCatalog for FakeCatalog {
         _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         _document_id: Uuid,
         _row: FlushRow<'a>,
+        _reserved_bytes: i64,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
         Box::pin(async {
             unimplemented!("a semantic command needs a real transaction; it needs LIBREPAPER_TEST_POSTGRES_URL")

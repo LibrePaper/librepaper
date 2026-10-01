@@ -4,6 +4,8 @@
 use time::Duration;
 use uuid::Uuid;
 
+use crate::storage::blob::{BlobStore, FsStore};
+
 use super::super::{
     AccessRole, FlushRow, MutationAuthorization, NewAccount, NewAsset, NewDocument, NewSnapshot,
     PostgresCatalog, PostgresOptions,
@@ -622,6 +624,57 @@ async fn quota_rejected_new_project_keeps_its_upload_admission() {
             .status,
         "active"
     );
+    assert!(catalog.reserve_upload_admission(owner.id).await.is_err());
+
+    drop(writer);
+    catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn quota_rejected_figure_keeps_rate_slot_after_writing_an_orphan_blob() {
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
+    let mut options = PostgresOptions::new(url);
+    options.policy.owner_bytes = 0;
+    options.policy.asset_uploads_per_hour = 1;
+    let catalog = PostgresCatalog::connect(options).await.unwrap();
+    catalog.migrate().await.unwrap();
+    let writer = catalog.claim_writer().await.unwrap();
+    let owner = account(&catalog).await;
+    let document = catalog
+        .create_document(document(
+            owner.id,
+            format!("lifecycle-rejected-figure-{}", Uuid::now_v7()),
+            None,
+        ))
+        .await
+        .unwrap();
+    catalog.reserve_upload_admission(owner.id).await.unwrap();
+
+    let objects = tempfile::tempdir().unwrap();
+    let blobs = FsStore::new(objects.path(), false);
+    let body = vec![7_u8; 1];
+    let stored_body = body.clone();
+    let key = format!("documents/{}/assets/{}", document.id, Uuid::now_v7());
+    blobs
+        .put_new(&key, body, "application/octet-stream")
+        .await
+        .unwrap();
+    let result = catalog
+        .complete_asset(NewAsset {
+            document_id: document.id,
+            storage_key: key.clone(),
+            digest: [7; 32],
+            byte_length: 1,
+            media_type: "application/octet-stream".into(),
+            original_name: None,
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(blobs.get(&key).await.unwrap(), stored_body);
+    // The route must retain this slot: refunding it after the catalogue
+    // quota refusal would make every rejected upload a free orphan write.
     assert!(catalog.reserve_upload_admission(owner.id).await.is_err());
 
     drop(writer);
