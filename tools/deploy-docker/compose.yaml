@@ -86,8 +86,9 @@ services:
       POSTGRES_EXPORTER_PASSWORD: ""
       LIBREPAPER_ADMIN_PASSWORD: ""
       LIBREPAPER_DATABASE_URL: postgresql://librepaper:${POSTGRES_PASSWORD}@postgres/librepaper
-      # Who may publish has no default: the server insists you say.
-      LIBREPAPER_PUBLISHERS: ${LIBREPAPER_PUBLISHERS:?set LIBREPAPER_PUBLISHERS in .env}
+      # Any signed-in GitHub or Google account may publish by default.
+      # Set LIBREPAPER_PUBLISHERS in .env to use an explicit allowlist.
+      LIBREPAPER_PUBLISHERS: ${LIBREPAPER_PUBLISHERS:-any}
       # Keep admission defaults explicit so older downloaded releases get them too.
       # Values in .env override these defaults.
       LIBREPAPER_QUOTA: ${LIBREPAPER_QUOTA:-50}
