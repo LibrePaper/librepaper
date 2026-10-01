@@ -28,7 +28,9 @@ use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
 use crate::storage::blob::FsStore;
-use crate::storage::postgres::{AccessRole, NewAccount, PostgresCatalog};
+use crate::storage::postgres::{
+    AccessRole, NewAccount, PostgresCatalog, PostgresOptions, StoragePolicy,
+};
 
 use super::Server;
 
@@ -48,6 +50,7 @@ struct Deployment {
     asset_sha: String,
     share_key: String,
     commenter_link_key: String,
+    blobs: Arc<dyn crate::storage::blob::BlobStore>,
     _writer: crate::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
@@ -69,7 +72,33 @@ async fn open_deployment(slug: &str) -> Option<Deployment> {
 }
 
 async fn deployment_mode(slug: &str, open: bool) -> Option<Deployment> {
-    let catalog = crate::tests::catalog().await?;
+    deployment_mode_with_policy(slug, open, None).await
+}
+
+async fn deployment_with_policy(
+    slug: &str,
+    open: bool,
+    policy: StoragePolicy,
+) -> Option<Deployment> {
+    deployment_mode_with_policy(slug, open, Some(policy)).await
+}
+
+async fn deployment_mode_with_policy(
+    slug: &str,
+    open: bool,
+    policy: Option<StoragePolicy>,
+) -> Option<Deployment> {
+    let catalog = if let Some(policy) = policy {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
+        let mut options = PostgresOptions::new(url);
+        options.policy = policy;
+        let catalog = Arc::new(PostgresCatalog::connect(options).await.unwrap());
+        catalog.migrate().await.unwrap();
+        crate::tests::reset(&catalog).await;
+        Some(catalog)
+    } else {
+        crate::tests::catalog().await
+    }?;
     let writer = catalog.claim_writer().await.unwrap();
     let account = catalog
         .create_account(NewAccount {
@@ -116,7 +145,7 @@ async fn deployment_mode(slug: &str, open: bool) -> Option<Deployment> {
         config.clone(),
     );
     tokio::spawn(worker.run());
-    let store = Store::open_with_catalog(blobs, config.clone(), catalog.clone(), registry);
+    let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone(), registry);
     let actor = MutationActor {
         account_id: account.id.to_string(),
         owner_key: account.handle.clone(),
@@ -210,6 +239,7 @@ async fn deployment_mode(slug: &str, open: bool) -> Option<Deployment> {
         asset_sha,
         share_key,
         commenter_link_key,
+        blobs,
         _writer: writer,
         _objects: objects,
     })
@@ -704,6 +734,166 @@ async fn any_commenter_policy_rejects_anonymous_comments_and_accepts_a_signed_in
     assert_eq!(
         signed_in_status, 200,
         "signed-in commenter response: {signed_in_body}"
+    );
+
+    let _ = stop.send(());
+    close_deployment(deployment).await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn quota_rejected_replacement_keeps_its_hourly_upload_admission() {
+    let mut policy = StoragePolicy::default();
+    // The fixture's existing project fits; the replacement's 16 KiB figure
+    // does not. Its immutable blob is staged before the catalogue refuses it.
+    policy.owner_bytes = 1024;
+    policy.asset_uploads_per_hour = 1;
+    let Some(deployment) =
+        deployment_with_policy("moderation-upload-quota-http", false, policy).await
+    else {
+        return;
+    };
+    let (base, _address, stop) = serve(deployment.server.clone()).await;
+    let client = reqwest::Client::new();
+    let url = format!("{base}/api/documents");
+    let bearer = bearer(&deployment);
+    let figure = vec![0x5a; 16 * 1024];
+
+    let first = client
+        .post(&url)
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("authorization", format!("Bearer {bearer}"))
+        .multipart(
+            reqwest::multipart::Form::new()
+                .text("title", "Replacement fixture")
+                .text("slug", deployment.slug.clone())
+                .text("main", "paper.md")
+                .part(
+                    "file",
+                    reqwest::multipart::Part::bytes(b"# Replacement\n\nQuota test.\n".to_vec())
+                        .file_name("paper.md"),
+                )
+                .part(
+                    "file",
+                    reqwest::multipart::Part::bytes(figure.clone()).file_name("figure.png"),
+                ),
+        )
+        .send()
+        .await
+        .unwrap();
+    let first_status = first.status().as_u16();
+    let first_body = first.text().await.unwrap();
+    assert_eq!(
+        first_status, 507,
+        "first replacement response: {first_body}"
+    );
+    assert!(
+        first_body.contains("quota"),
+        "first replacement response: {first_body}"
+    );
+
+    let entry = deployment
+        .catalog
+        .document_by_slug(&deployment.slug)
+        .await
+        .unwrap()
+        .unwrap();
+    let staged = deployment
+        .blobs
+        .list(&format!("documents/{}/assets/", entry.id))
+        .await
+        .unwrap();
+    assert!(
+        staged
+            .iter()
+            .any(|object| object.size == figure.len() as i64),
+        "the rejected replacement should leave its staged figure blob"
+    );
+
+    let second = client
+        .post(&url)
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("authorization", format!("Bearer {bearer}"))
+        .multipart(
+            reqwest::multipart::Form::new()
+                .text("title", "Replacement fixture")
+                .text("slug", deployment.slug.clone())
+                .text("main", "paper.md")
+                .part(
+                    "file",
+                    reqwest::multipart::Part::bytes(b"# Replacement\n\nQuota test.\n".to_vec())
+                        .file_name("paper.md"),
+                )
+                .part(
+                    "file",
+                    reqwest::multipart::Part::bytes(figure).file_name("figure.png"),
+                ),
+        )
+        .send()
+        .await
+        .unwrap();
+    let second_status = second.status().as_u16();
+    let second_body = second.text().await.unwrap();
+    assert_eq!(
+        second_status, 429,
+        "second replacement response: {second_body}"
+    );
+
+    let _ = stop.send(());
+    close_deployment(deployment).await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn empty_figure_upload_does_not_spend_the_hourly_admission() {
+    let mut policy = StoragePolicy::default();
+    policy.asset_uploads_per_hour = 1;
+    let Some(deployment) =
+        deployment_with_policy("moderation-empty-figure-http", false, policy).await
+    else {
+        return;
+    };
+    let (base, _address, stop) = serve(deployment.server.clone()).await;
+    let client = reqwest::Client::new();
+    let url = format!("{base}/api/documents/{}/assets", deployment.slug);
+    let empty = client
+        .post(&url)
+        .header("host", "paper.example")
+        .header("content-length", "0")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("authorization", format!("Bearer {}", bearer(&deployment)))
+        .body(Vec::new())
+        .send()
+        .await
+        .unwrap();
+    let empty_status = empty.status().as_u16();
+    let empty_body = empty.text().await.unwrap();
+    assert_eq!(empty_status, 400, "empty figure response: {empty_body}");
+
+    let valid = client
+        .post(&url)
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("authorization", format!("Bearer {}", bearer(&deployment)))
+        .body(b"valid figure bytes".to_vec())
+        .send()
+        .await
+        .unwrap();
+    let valid_status = valid.status().as_u16();
+    let valid_body = valid.text().await.unwrap();
+    assert_eq!(
+        valid_status, 200,
+        "valid figure after empty request: {valid_body}"
     );
 
     let _ = stop.send(());

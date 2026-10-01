@@ -41,6 +41,11 @@ impl Server {
                 &json!({"error": "a figure upload must declare its content length"}),
             );
         };
+        // The room rejects empty uploads before writing a blob. They do not
+        // consume an hourly admission.
+        if length == 0 {
+            return write_json(400, &json!({"error": "a figure upload may not be empty"}));
+        }
         // A figure request and a whole-project publish each consume one
         // durable owner upload event. The database serializes concurrent
         // admissions across server processes.
@@ -66,6 +71,14 @@ impl Server {
                 .await;
             return write_json(413, &json!({"error": "that figure is too large"}));
         };
+        if body.is_empty() {
+            let _ = self
+                .store
+                .catalog
+                .cancel_upload_admission(upload_admission)
+                .await;
+            return write_json(400, &json!({"error": "a figure upload may not be empty"}));
+        }
         let (_entry, who) = match self.entry_viewer_in(slug, context, &headers, None).await {
             Ok(result) => result,
             Err(response) => {

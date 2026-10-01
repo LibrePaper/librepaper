@@ -517,23 +517,12 @@ impl Server {
         {
             Ok(entry) => entry,
             Err(PutError::Quota { status, message }) => {
-                if mine {
-                    let _ = self
-                        .store
-                        .catalog
-                        .cancel_upload_admission(upload_admission)
-                        .await;
-                }
+                // Staging may already have written immutable objects before
+                // quota admission failed. Keep this request's hourly slot.
                 return write_json(status, &json!({"error": message}));
             }
             Err(PutError::Authorization { status, message }) => {
-                if mine {
-                    let _ = self
-                        .store
-                        .catalog
-                        .cancel_upload_admission(upload_admission)
-                        .await;
-                }
+                // Authorization can fail after staging too.
                 return write_json(status, &json!({"error": message}));
             }
             Err(PutError::Storage(_)) => {

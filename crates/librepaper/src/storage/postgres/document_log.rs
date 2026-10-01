@@ -330,6 +330,7 @@ impl PostgresCatalog {
         &self,
         document_id: Uuid,
         row: FlushRow<'_>,
+        reserved_keys: &[Uuid],
         reserved_bytes: i64,
         scratch: crate::log::pending::Reservation,
     ) -> Result<i64> {
@@ -338,7 +339,7 @@ impl PostgresCatalog {
         self.check_fenced_flush(&mut tx, document_id, row.expected_update_sequence)
             .await?;
         let sequence = self
-            .insert_log_row_reserved(&mut tx, document_id, row, reserved_bytes)
+            .insert_log_row_reserved(&mut tx, document_id, row, reserved_keys, reserved_bytes)
             .await?;
         tx.commit().await?;
         connection.complete();
@@ -357,7 +358,8 @@ impl PostgresCatalog {
         document_id: Uuid,
         row: FlushRow<'_>,
     ) -> Result<i64> {
-        self.insert_log_row_reserved(tx, document_id, row, 0).await
+        self.insert_log_row_reserved(tx, document_id, row, &[], 0)
+            .await
     }
 
     pub(crate) async fn insert_log_row_reserved(
@@ -365,6 +367,7 @@ impl PostgresCatalog {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         row: FlushRow<'_>,
+        reserved_keys: &[Uuid],
         reserved_bytes: i64,
     ) -> Result<i64> {
         if row.update_bytes.is_empty() {
@@ -376,7 +379,7 @@ impl PostgresCatalog {
         {
             return Err(Error::Invalid("source identity is invalid".into()));
         }
-        if reserved_bytes < 0 {
+        if reserved_bytes < 0 || (reserved_keys.is_empty() != (reserved_bytes == 0)) {
             return Err(Error::Invalid("invalid pending log reservation".into()));
         }
         let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1")
@@ -389,31 +392,18 @@ impl PostgresCatalog {
                 .await?;
         if reserved_bytes > 0 {
             let epoch = self.writer_epoch()?;
-            let removed = sqlx::query(
+            let removed: Vec<i64> = sqlx::query_scalar(
                 "DELETE FROM pending_log_reservations \
-                 WHERE document_id=$1 AND writer_epoch=$2 AND bytes=$3",
+                 WHERE document_id=$1 AND writer_epoch=$2 AND reservation_id=ANY($3) \
+                 RETURNING bytes",
             )
             .bind(document_id)
             .bind(epoch)
-            .bind(reserved_bytes)
-            .execute(&mut **tx)
-            .await?
-            .rows_affected();
-            let removed = if removed == 1 {
-                removed
-            } else {
-                sqlx::query(
-                    "UPDATE pending_log_reservations SET bytes=bytes-$3 \
-                     WHERE document_id=$1 AND writer_epoch=$2 AND bytes > $3",
-                )
-                .bind(document_id)
-                .bind(epoch)
-                .bind(reserved_bytes)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected()
-            };
-            if removed != 1 {
+            .bind(reserved_keys)
+            .fetch_all(&mut **tx)
+            .await?;
+            let removed_bytes = removed.iter().copied().fold(0_i64, i64::saturating_add);
+            if removed.len() != reserved_keys.len() || removed_bytes != reserved_bytes {
                 return Err(Error::Conflict("pending log reservation was lost".into()));
             }
         }
@@ -472,7 +462,9 @@ impl PostgresCatalog {
     pub(crate) async fn reserve_pending_log_bytes(
         &self,
         document_id: Uuid,
+        reservation_key: Uuid,
         bytes: i64,
+        digest: [u8; 32],
     ) -> Result<()> {
         if bytes <= 0 {
             return Err(Error::Invalid("invalid pending log reservation".into()));
@@ -491,6 +483,29 @@ impl PostgresCatalog {
                 .fetch_one(&mut *tx)
                 .await?;
         let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
+        let epoch = self.writer_epoch()?;
+        if let Some((existing_document, existing_epoch, existing_bytes, existing_digest)) =
+            sqlx::query_as::<_, (Uuid, i64, i64, Vec<u8>)>(
+                "SELECT document_id,writer_epoch,bytes,batch_digest \
+                 FROM pending_log_reservations WHERE reservation_id=$1",
+            )
+            .bind(reservation_key)
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            tx.commit().await?;
+            return if existing_document == document_id
+                && existing_epoch == epoch
+                && existing_bytes == bytes
+                && existing_digest.as_slice() == digest.as_slice()
+            {
+                Ok(())
+            } else {
+                Err(Error::Conflict(
+                    "pending source batch identity was reused with different bytes".into(),
+                ))
+            };
+        }
         let log_usage: i64 = sqlx::query_scalar(
             "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
              + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
@@ -516,17 +531,53 @@ impl PostgresCatalog {
             ));
         }
         sqlx::query(
-            "INSERT INTO pending_log_reservations(document_id,writer_epoch,bytes) \
-             VALUES($1,$2,$3) ON CONFLICT(document_id) DO UPDATE \
-             SET writer_epoch=EXCLUDED.writer_epoch,bytes=pending_log_reservations.bytes+EXCLUDED.bytes",
+            "INSERT INTO pending_log_reservations \
+             (reservation_id,document_id,writer_epoch,bytes,batch_digest) \
+             VALUES($1,$2,$3,$4,$5)",
         )
+        .bind(reservation_key)
         .bind(document_id)
-        .bind(self.writer_epoch()?)
+        .bind(epoch)
         .bind(bytes)
+        .bind(digest.as_slice())
         .execute(&mut *tx)
         .await?;
-        tx.commit().await?;
-        Ok(())
+        match tx.commit().await {
+            Ok(()) => Ok(()),
+            Err(commit_error) => match self
+                .pending_log_reservation_matches(reservation_key, document_id, epoch, bytes, digest)
+                .await
+            {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(Error::from(commit_error)),
+                Err(reconcile_error) => Err(reconcile_error),
+            },
+        }
+    }
+
+    async fn pending_log_reservation_matches(
+        &self,
+        reservation_key: Uuid,
+        document_id: Uuid,
+        epoch: i64,
+        bytes: i64,
+        digest: [u8; 32],
+    ) -> Result<bool> {
+        let existing = sqlx::query_as::<_, (Uuid, i64, i64, Vec<u8>)>(
+            "SELECT document_id,writer_epoch,bytes,batch_digest \
+             FROM pending_log_reservations WHERE reservation_id=$1",
+        )
+        .bind(reservation_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(existing.is_some_and(
+            |(existing_document, existing_epoch, existing_bytes, existing_digest)| {
+                existing_document == document_id
+                    && existing_epoch == epoch
+                    && existing_bytes == bytes
+                    && existing_digest.as_slice() == digest.as_slice()
+            },
+        ))
     }
 
     pub(crate) async fn clear_stale_pending_log_reservations(&self) -> Result<()> {

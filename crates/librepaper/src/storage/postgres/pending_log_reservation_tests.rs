@@ -1,5 +1,6 @@
 //! Durable admission survives a failed flush and is replaced on commit.
 
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::super::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
@@ -45,10 +46,33 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
         })
         .await
         .unwrap();
+    let reservation_key = Uuid::now_v7();
+    let digest: [u8; 32] = Sha256::digest(b"x").into();
     catalog
-        .reserve_pending_log_bytes(document.id, 32)
+        .reserve_pending_log_bytes(document.id, reservation_key, 32, digest)
         .await
         .unwrap();
+    assert!(catalog
+        .reserve_pending_log_bytes(
+            document.id,
+            reservation_key,
+            32,
+            Sha256::digest(b"different payload").into(),
+        )
+        .await
+        .is_err());
+    catalog
+        .reserve_pending_log_bytes(document.id, reservation_key, 32, digest)
+        .await
+        .unwrap();
+    let reserved_total: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(sum(bytes),0)::bigint FROM pending_log_reservations WHERE document_id=$1",
+    )
+    .bind(document.id)
+    .fetch_one(catalog.pool())
+    .await
+    .unwrap();
+    assert_eq!(reserved_total, 32);
 
     let mut tx = catalog.begin_fenced_flush(document.id, 0).await.unwrap();
     catalog
@@ -62,17 +86,20 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
                 source_format: None,
                 main_path: None,
             },
+            &[reservation_key],
             32,
         )
         .await
         .unwrap();
     tx.rollback().await.unwrap();
-    let remaining: i64 =
-        sqlx::query_scalar("SELECT bytes FROM pending_log_reservations WHERE document_id=$1")
-            .bind(document.id)
-            .fetch_one(catalog.pool())
-            .await
-            .unwrap();
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT bytes FROM pending_log_reservations WHERE document_id=$1 AND reservation_id=$2",
+    )
+    .bind(document.id)
+    .bind(reservation_key)
+    .fetch_one(catalog.pool())
+    .await
+    .unwrap();
     assert_eq!(remaining, 32);
 
     let mut tx = catalog.begin_fenced_flush(document.id, 0).await.unwrap();
@@ -87,6 +114,7 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
                 source_format: None,
                 main_path: None,
             },
+            &[reservation_key],
             32,
         )
         .await
@@ -138,12 +166,19 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
         .await
         .unwrap();
 
+    let first_key = Uuid::now_v7();
+    let first_digest: [u8; 32] = Sha256::digest(b"first").into();
     catalog
-        .reserve_pending_log_bytes(document.id, 32)
+        .reserve_pending_log_bytes(document.id, first_key, 32, first_digest)
         .await
         .unwrap();
     assert!(catalog
-        .reserve_pending_log_bytes(document.id, 16)
+        .reserve_pending_log_bytes(
+            document.id,
+            Uuid::now_v7(),
+            16,
+            Sha256::digest(b"second").into(),
+        )
         .await
         .is_err());
     catalog
@@ -163,6 +198,7 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
                 source_format: None,
                 main_path: None,
             },
+            &[first_key],
             32,
         )
         .await
@@ -177,7 +213,6 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
     assert_eq!(remaining, 0);
     assert_eq!(catalog.log_sequence(document.id).await.unwrap(), 1);
 }
-
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
@@ -210,8 +245,14 @@ async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
         .unwrap();
     let owner_before = catalog.durable_usage_bytes(Some(account.id)).await.unwrap();
     let deployment_before = catalog.durable_usage_bytes(None).await.unwrap();
+    let reservation_key = Uuid::now_v7();
     catalog
-        .reserve_pending_log_bytes(document.id, 32)
+        .reserve_pending_log_bytes(
+            document.id,
+            reservation_key,
+            32,
+            Sha256::digest(b"x").into(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -243,6 +284,7 @@ async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
                 source_format: None,
                 main_path: None,
             },
+            &[reservation_key],
             32,
         )
         .await
