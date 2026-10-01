@@ -127,6 +127,13 @@
     </div>
     <div class="setting-control"><button type="button" class="btn btn-sm lp-control-outline" disabled={backupStatus.loading} onclick={() => void backups.refresh()}>{backupStatus.loading ? "Checking…" : "Retry"}</button></div>
   </div>
+  {#if data.enabled}
+    <SettingRow id="backup-enable" title="Automatic backups are on" description="You can turn off future backups without signing in again. A backup already in progress may finish.">
+      <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked="true" data-state="checked" disabled={busy !== ""} onclick={() => void changeSettings(false)}>
+        <span class="switch-thumb" data-state="checked"></span>
+      </button>
+    </SettingRow>
+  {/if}
 {:else if backupStatus.error}
   <div class="setting-status" data-tone="warn" role="status">
     <span class="setting-status-dot" aria-hidden="true"></span>
@@ -172,6 +179,6 @@
   .backup-frequency { min-width: 8rem; }
   .backup-status { display: flex; align-items: center; justify-content: space-between; gap: calc(var(--spacing) * 3); margin-top: calc(var(--spacing) * 3); }
   .backup-state { color: var(--color-text-secondary); font-size: var(--text-sm); }
-  .backup-state.error, .backup-error { color: var(--color-error); }
+  .backup-state.error, .backup-error { color: var(--color-error-text); }
   @media (max-width: 42rem) { .backup-status { align-items: flex-start; flex-direction: column; } }
 </style>
