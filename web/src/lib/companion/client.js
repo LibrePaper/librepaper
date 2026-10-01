@@ -46,6 +46,10 @@ const POLL_FAST_MS = 500;
 const POLL_SLOW_MS = 1000;
 const POLL_SLOW_AFTER_MS = 10 * 1000;
 const RECONNECT_INTERVAL_MS = 15 * 1000;
+// How long a launch link may take to bring an installed companion up before a
+// connect attempt says nothing is running. The installer registers no
+// `librepaper://` handler, so for most people the link does nothing at all.
+const START_GRACE_MS = 15 * 1000;
 
 function realWait(ms, signal) {
   return new Promise((resolve) => {
@@ -65,6 +69,16 @@ function defaultDeps() {
     now: () => Date.now(),
     wait: realWait,
     location: () => (typeof location !== "undefined" ? location : null),
+    // Chrome's Local Network Access permission, where the browser has one:
+    // "local-network-access" in Chrome 142, later split so loopback has its
+    // own name. An unknown name throws, which means "not this browser".
+    async localNetworkPermission() {
+      if (typeof navigator === "undefined" || !navigator.permissions?.query) return null;
+      for (const name of ["loopback-network", "local-network-access"]) {
+        try { return (await navigator.permissions.query({ name })).state; } catch { /* not this browser's name */ }
+      }
+      return null;
+    },
     replaceHash(hash) {
       if (typeof history === "undefined" || typeof location === "undefined") return;
       const url = new URL(location.href);
@@ -356,9 +370,9 @@ function requirePairing() {
 function instructionsFor(state) {
   switch (state) {
     case "unreachable":
-      return `No local LibrePaper at ${address()}. Start it with \`librepaper local start\`, or fix the address in Settings.`;
+      return `LibrePaper Companion is not running on this computer (nothing answered at ${address()}). Run \`librepaper local start\` in a terminal, then try again. Not installed? See Local companion settings.`;
     case "denied":
-      return "Allow local-network access for this site in your browser, then connect.";
+      return "Your browser blocked this site from reaching LibrePaper Companion on this computer. Allow local network access for this site in the browser's site settings, then try again.";
     case "unauthorized":
       return "Local LibrePaper is running but has not allowed this site yet. Click Connect and approve the dialog the companion shows.";
     case "connected":
@@ -502,6 +516,18 @@ async function sha256hex(bytes) {
   return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+// What a failed loopback request means to the person. The browser's own text
+// ("Failed to fetch", "NetworkError when attempting to fetch resource.",
+// "Load failed") names no cause, and a blocked Local Network Access
+// permission fails with the same text, so the permission is asked separately.
+async function unreachableState(error) {
+  if (/permission|blocked|private network/i.test(String(error?.message || error))) return "denied";
+  try {
+    if (await deps.localNetworkPermission?.() === "denied") return "denied";
+  } catch { /* no answer is not a denial */ }
+  return "unreachable";
+}
+
 // Shared by `send()` and `localPreviewPage()`: a 401 drops the stored
 // pairing and is `Unauthorized`; any other non-2xx is `Refused`, carrying the
 // server's own JSON `error` message when it gave one. A caller that must
@@ -547,7 +573,7 @@ async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
     if (signal?.aborted) {
       throw named("Canceled", "Canceled");
     }
-    throw named("Unreachable", String(error?.message || error));
+    throw named("Unreachable", instructionsFor(await unreachableState(error)));
   }
   if (scope !== pairingKey() || addr !== address()) throw named("Canceled", "The local project changed.");
   await throwOnFailure(response);
@@ -584,8 +610,7 @@ export async function probe({ force = false } = {}) {
     response = await healthFetch(addr);
   } catch (error) {
     const message = String(error?.message || error);
-    const denied = /permission|blocked|private network/i.test(message);
-    const state = denied ? "denied" : "unreachable";
+    const state = await unreachableState(error);
     noteNegative(deps.now());
     return scopedStatus({
       state, address: addr, protocol: null, version: null, capabilities: null,
@@ -673,7 +698,7 @@ export function connectApp(options = {}) {
   return connectionAttempt;
 }
 
-async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal } = {}) {
+async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGraceMs = START_GRACE_MS, signal } = {}) {
   const { origin } = current;
   if (!origin) throw named("Unauthorized", "Open LibrePaper before connecting the companion.");
   const scope = pairingKey();
@@ -706,8 +731,10 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
       if (status.state === "connected") { clearPending(); return status; }
       if (status.state === "unauthorized") throw named("Unauthorized", "The permission expired or was revoked. Try connecting again to approve it.");
       if (status.state === "denied" || status.state === "incompatible") throw named("Refused", status.instructions);
+      // Nothing has answered since the link fired, so nothing is starting.
+      if (status.state === "unreachable" && deps.now() - started >= startGraceMs) throw named("Unreachable", status.instructions);
     }
-    throw named("Unreachable", "The companion did not connect. Install and open the companion, approve the local permission window, then try again.");
+    throw named("Unreachable", "LibrePaper Companion is running but did not connect. Try connecting again.");
   }
 
   // Asked directly first, whatever the last probe said: a stale "unreachable"
@@ -735,6 +762,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
   if (!asked) {
     deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, request, challenge, return: returnUrl })}`);
   }
+  let answered = asked;
 
   const started = deps.now();
   while (deps.now() - started < timeoutMs) {
@@ -750,12 +778,17 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
       });
     } catch (error) {
       checkScope();
-      if (/permission|blocked|private network/i.test(String(error?.message || error))) {
-        throw named("Refused", "Allow this site's local-network permission in your browser, then connect again.");
+      const state = await unreachableState(error);
+      if (state === "denied") throw named("Refused", instructionsFor("denied"));
+      // Nothing has answered since the link fired, so nothing is starting.
+      if (!answered && deps.now() - started >= startGraceMs) {
+        clearPending();
+        throw named("Unreachable", instructionsFor("unreachable"));
       }
       continue; // The installed companion may still be starting.
     }
     checkScope();
+    answered = true;
     if (response.status === 202 || response.status === 404) continue;
     if (response.status === 403) {
       let errorMessage = "This connection request expired or was refused. Try connecting again.";
@@ -777,7 +810,9 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
     return probe({ force: true });
   }
   clearPending();
-  throw named("Unreachable", "The companion did not connect. Install and open the companion, approve the local permission window, then try again.");
+  throw named("Unreachable", answered
+    ? "LibrePaper Companion did not connect. Approve the permission window it shows, then try again."
+    : instructionsFor("unreachable"));
 }
 
 export async function disconnect() {
@@ -1364,7 +1399,7 @@ export async function localPreviewPage(id, { etag } = {}) {
   try {
     response = await deps.fetch(url, { method: "GET", mode: "cors", credentials: "omit", headers });
   } catch (error) {
-    throw named("Unreachable", String(error?.message || error));
+    throw named("Unreachable", instructionsFor(await unreachableState(error)));
   }
   const rendering = renderingHeaderOf(response);
   if (response.status === 304) return { rendering };

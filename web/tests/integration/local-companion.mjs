@@ -5,7 +5,7 @@ import * as local from "../../src/lib/companion/client.js";
 const response = (status, body) => ({ status, ok: status >= 200 && status < 300,
   json: async () => body, clone() { return response(status, body); } });
 
-let now, link, storage, claimBody, pairBody, attempts, companionUp;
+let now, link, storage, claimBody, pairBody, attempts, companionUp, healthUp, permission;
 function inject(claim) {
   local._testing.inject({
     storage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) },
@@ -13,12 +13,15 @@ function inject(claim) {
     wait: async () => { now += 700; },
     location: () => ({ href: "https://papers.example/docs/paper" }),
     launchLink: (url) => { link = url; },
+    localNetworkPermission: async () => permission,
     fetch: async (url, init) => {
       if (url.includes("pair/request")) {
         if (!companionUp) throw new TypeError("Failed to fetch");
         pairBody = JSON.parse(init.body); return response(202, { request: pairBody.request }); }
       if (url.includes("connect/claim")) { claimBody = JSON.parse(init.body); return claim(++attempts); }
-      if (url.includes("health")) return response(200, { service: "librepaper-local", protocol: [2], instance: "restart" });
+      if (url.includes("health")) {
+        if (!healthUp) throw new TypeError("Failed to fetch");
+        return response(200, { service: "librepaper-local", protocol: [2], instance: "restart" }); }
       if (url.includes("capabilities")) return response(200, { tools: {} });
       throw new Error(`Unexpected request ${url}`);
     },
@@ -29,7 +32,7 @@ function inject(claim) {
 // ask fails, so `connectApp` falls back to the `librepaper://connect` link.
 function setup(claim) {
   local._testing.reset();
-  now = 0; link = ""; pairBody = null; storage = new Map(); attempts = 0; companionUp = false;
+  now = 0; link = ""; pairBody = null; storage = new Map(); attempts = 0; companionUp = false; healthUp = true; permission = "prompt";
   inject(claim);
   local.configure({ origin: "https://papers.example", project: "paper" });
 }
@@ -101,8 +104,41 @@ assert.ok(!storage.has("librepaper-local-connections"));
 setup(() => response(202, {}));
 await assert.rejects(local.connectApp({ timeoutMs: 1500 }), /did not connect/);
 assert.ok(!storage.has("librepaper-local-connections"));
+
+// Nothing installed, so the link starts nothing: the attempt gives up after
+// the start grace with the explanation, not after the approval wait.
+setup(() => { throw new TypeError("Failed to fetch"); });
+await assert.rejects(local.connectApp(), (error) => error.name === "Unreachable"
+  && /not running on this computer/.test(error.message) && /librepaper local start/.test(error.message));
+assert.equal(new URL(link).hostname, "connect", "the link is still tried first");
+assert.ok(now >= 15000 && now < 30000, "gives up once the start grace has passed");
+assert.ok(!storage.has("librepaper-local-pending"));
+
+// A blocked Local Network Access permission fails with the same text as a
+// stopped companion; the permission tells the two apart.
+setup(() => { throw new TypeError("Failed to fetch"); });
+permission = "denied";
+await assert.rejects(local.connectApp(), (error) => error.name === "Refused" && /blocked this site/.test(error.message));
+
+// Paired, then the companion stopped: the relaunch link fires, the probe
+// keeps finding nothing, and the same explanation follows the grace.
+setup((n) => (n === 1 ? response(202, {}) : response(200, { token: "stopped-token", expires: 1000000, instance: "restart" })));
+companionUp = true;
+await local.connectApp({ timeoutMs: 10000 });
 local._testing.reset();
-console.log("local-companion: cold launch, direct ask, verifier isolation, restart, already-connected, rejection, scope change and timeout passed");
+now = 0; link = ""; companionUp = false; healthUp = false;
+inject(() => response(200, {}));
+local.configure({ origin: "https://papers.example", project: "paper" });
+await assert.rejects(local.connectApp(), /not running on this computer/);
+assert.equal(new URL(link).hostname, "launch");
+
+// A paired request that cannot reach the companion names the cause, not the
+// browser's "Failed to fetch".
+local._testing.inject({ fetch: async () => { throw new TypeError("Failed to fetch"); } });
+await assert.rejects(local.agents(), (error) => /not running on this computer/.test(error.message) && !/Failed to fetch/.test(error.message));
+
+local._testing.reset();
+console.log("local-companion: cold launch, direct ask, verifier isolation, restart, already-connected, rejection, scope change and timeout, not running, blocked passed");
 
 // Fragment intake: the OS link handler's only channel back to this page is a
 // top-level navigation carrying the real port in the hash, matched against
