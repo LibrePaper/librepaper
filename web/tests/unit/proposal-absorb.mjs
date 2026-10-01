@@ -413,6 +413,56 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.equal(sent.at(-1).type, "proposal-open", "the residual branch is sent after deletion settles");
 }
 
+// A delayed update ack cannot destroy a retained draft while its empty row's
+// discard acknowledgement is outstanding. Reconnect retries the same delete.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "A paper.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  proposals.text("f1").insert(0, "New. ");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+
+  proposals.text("f1").delete(0, 5);
+  proposals.flush();
+  const firstDiscard = sent.at(-1);
+  assert.equal(firstDiscard.type, "proposal-discard", "undo requests deletion of the now-empty row");
+  proposals.stop();
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  assert.equal(proposals.status().id, id, "the retained row survives its late update ack");
+  const repeatedDiscard = sent.at(-1);
+  assert.equal(repeatedDiscard.type, "proposal-discard", "the pending delete is retried");
+  assert.equal(repeatedDiscard.request_id, firstDiscard.request_id,
+    "the retry remains idempotent with the original discard id");
+
+  proposals.reconnect();
+  const query = sent.at(-1);
+  assert.equal(query.type, "proposal-open", "reconnect checks whether the row still exists");
+  assert.equal(query.resume, true, "reconnect resumes the same durable row");
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: update.tip, applied_version: 2 });
+  const reconnectDiscard = sent.at(-1);
+  assert.equal(reconnectDiscard.type, "proposal-discard", "reconnect retries an unacknowledged deletion");
+  assert.equal(reconnectDiscard.request_id, firstDiscard.request_id,
+    "reconnect reuses the original discard id");
+  proposals.apply({ type: "proposal-discarded", proposal_id: id,
+    request_id: firstDiscard.request_id, discarded: true,
+    resolved_tip: update.tip, resolved_base: open.base });
+  assert.notEqual(proposals.status().id, id, "the retained row clears only after durable deletion");
+}
+
 // When a reviewer rejects the published tip, a local edit made inside that
 // proposed word survives the inverse and becomes a new proposal from live.
 {
@@ -524,6 +574,97 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.equal(proposals.text("f1").toString(), beforeResolution, "the local replacement remains untouched");
   assert.equal(sent.length, sendsBeforeResolution, "the unsafe replacement is not auto-published");
   assert.ok(proposals.recoveryTexts().some((draft) => draft.files.some((file) => file.text === beforeResolution)));
+}
+
+// A mixed resolution imports the accepted edit and the server's rejected-hunk
+// inverse together. Compare against the private pre-import frontier: a local
+// restoration needs recovery, while a clean or disjoint tail resolves normally.
+for (const localChange of ["restore", "clean", "tail"]) {
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "The cat sat. The dog ran.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.delete(4, 3);
+  branchText.insert(4, "tabby");
+  const dogAt = branchText.toString().indexOf("dog");
+  branchText.delete(dogAt, 3);
+  branchText.insert(dogAt, "fox");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+
+  if (localChange === "restore") {
+    branchText.delete(4, 5);
+    branchText.insert(4, "cat");
+  } else if (localChange === "tail") {
+    branchText.insert(branchText.toString().length, " X");
+  }
+  let recoveryText = branchText.toString();
+  const sourceUpdate = Uint8Array.from(atob(update.update), (character) => character.charCodeAt(0));
+  const resolved = room.fork();
+  resolved.import(sourceUpdate);
+  resolved.setPeerId(4n);
+  const resolvedMain = resolved.getMap("files").get("f1");
+  resolvedMain.delete(4, 5);
+  resolvedMain.insert(4, "cat");
+  resolved.commit();
+  room.import(resolved.export({ mode: "update", from: room.oplogVersion() }));
+  resolved.destroy?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (localChange === "restore") {
+    branchText.insert(branchText.toString().length, " private");
+    recoveryText = branchText.toString();
+    proposals.flush();
+    const laterCoauthor = room.fork();
+    laterCoauthor.setPeerId(5n);
+    const laterText = laterCoauthor.getMap("files").get("f1");
+    laterText.insert(laterText.toString().length, " Coauthor.");
+    laterCoauthor.commit();
+    room.import(laterCoauthor.export({ mode: "update", from: room.oplogVersion() }));
+    laterCoauthor.destroy?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  const sentBeforeDecision = sent.length;
+
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [{ hunk: 0, accepted: false }, { hunk: 1, accepted: true }],
+    resolved_tip: update.tip, resolved_base: open.base });
+  assert.ok(room.getMap("files").get("f1").toString().startsWith("The cat sat. The fox ran."),
+    "the source contains the accepted hunk and server inverse for the declined hunk");
+  if (localChange === "restore") {
+    assert.equal(proposals.status().recoveryRequired, true,
+      "a declined local restoration blocks mixed automatic rebasing");
+    assert.match(proposals.status().error, /local edit overlaps declined text/);
+    assert.equal(sent.length, sentBeforeDecision, "the conflicted restoration is not auto-published");
+    assert.ok(recoveryText.endsWith(" private"), "the local branch includes typing after the room inverse");
+    assert.ok(proposals.recoveryTexts().some((draft) =>
+      draft.files.some((file) => file.id === "f1" && file.text === recoveryText)),
+    "the private restore and later typing remain downloadable after another room import");
+  } else {
+    assert.notEqual(proposals.status().recoveryRequired, true,
+      "a server inverse alone does not create a local overlap");
+    assert.equal(proposals.drafting(), localChange === "tail",
+      "only an independent local tail remains as a draft");
+    if (localChange === "tail") {
+      assert.ok(proposals.text("f1").toString().endsWith(" X"),
+        "the disjoint local tail survives the mixed resolution");
+      assert.equal(sent.at(-1).type, "proposal-open", "the disjoint tail can be proposed normally");
+    } else {
+      assert.equal(sent.length, sentBeforeDecision, "a clean mixed resolution sends no residual proposal");
+    }
+  }
 }
 
 // Restoring text at the zero-width gap of a published deletion also conflicts.

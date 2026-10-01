@@ -172,12 +172,40 @@ function inverseChangeSpans(deltas) {
 // Independent local insertions survive inverse deletes. Deleting text that
 // the inverse replaces, or inserting at a gap it restores, requires manual
 // review because restoring the base could duplicate the local replacement.
-function overlapsPostTipInverse(branch, tip, inverse) {
+function overlappingPostTipInverseFiles(branch, tip, inverse, proposalHunks = null, declinedHunkIndexes = null) {
+  const conflicts = new Set();
   let later;
-  try { later = branch.diff(tip, branch.frontiers(), false); } catch { return true; }
+  try {
+    later = branch.diff(tip, branch.frontiers(), false);
+  } catch { return new Set(["*"]); }
+  const files = branch.getMap("files");
+  const fileByContainer = new Map();
+  for (const id of files.keys()) {
+    const text = files.get(id);
+    if (text?.kind?.() === "Text") fileByContainer.set(String(text.id), String(id));
+  }
   for (const [containerId, reverted] of inverse) {
     if (reverted.type !== "text") continue;
     const spans = inverseChangeSpans(reverted.diff);
+    const fileId = fileByContainer.get(String(containerId)) ?? String(containerId);
+    let selected = spans;
+    if (proposalHunks !== null) {
+      const textHunks = proposalHunks.filter((hunk) => String(hunk.file) === fileId);
+      let shifted = 0;
+      const ranges = [];
+      for (const hunk of textHunks) {
+        const start = hunk.start + shifted;
+        const end = start + (hunk.inserted ?? "").length;
+        if (declinedHunkIndexes === null || declinedHunkIndexes.has(hunk.index)) {
+          ranges.push({ start, end });
+        }
+        shifted += (hunk.inserted ?? "").length - hunk.deleted;
+      }
+      selected = spans.filter((span) => ranges.some(({ start, end }) =>
+        span.deleted > 0
+          ? span.start < end && start < span.start + span.deleted
+          : start <= span.start && span.start <= end));
+    }
     const laterText = later.find(([id]) => String(id) === String(containerId))?.[1];
     if (laterText?.type !== "text") continue;
     let oldAt = 0;
@@ -186,18 +214,18 @@ function overlapsPostTipInverse(branch, tip, inverse) {
         oldAt += part.retain;
       } else if (part.delete !== undefined) {
         const end = oldAt + part.delete;
-        if (spans.some((span) => span.restores && span.deleted > 0 &&
+        if (selected.some((span) => span.restores && span.deleted > 0 &&
             oldAt < span.start + span.deleted && span.start < end)) {
-          return true;
+          conflicts.add(fileId);
         }
         oldAt = end;
-      } else if (part.insert !== undefined && spans.some((span) =>
+      } else if (part.insert !== undefined && selected.some((span) =>
         span.restores && span.deleted === 0 && oldAt === span.start)) {
-        return true;
+        conflicts.add(fileId);
       }
     }
   }
-  return false;
+  return conflicts;
 }
 
 /// The hunks of one proposal, in this browser's own UTF-16 basis.
@@ -475,6 +503,24 @@ export function createProposals({ session, send, mayEdit }) {
   const allDrafts = () => [...retained.values(), ...(proposal ? [proposal] : [])];
   const dirty = (draft) => ownOps(draft) !== draft.ackOwn;
 
+  const captureBranchOnlyFiles = (draft, frontiers = draft.branch.frontiers()) => {
+    draft.preResolutionFiles ??= new Map();
+    const roomFiles = session.doc.getMap("files");
+    const branchFiles = draft.branch.getMap("files");
+    const paths = draft.branch.getMap("paths");
+    for (const id of branchFiles.keys()) {
+      if (roomFiles.get(id)) continue;
+      const text = branchFiles.get(id);
+      if (text?.kind?.() !== "Text") continue;
+      draft.preResolutionFiles.set(id, {
+        id,
+        path: paths.get(id) ?? null,
+        text: text.toString(),
+        frontiers,
+      });
+    }
+  };
+
   const hasTextChanges = (base, branch) => {
     try {
       const diff = branch.diff(base, branch.frontiers(), false);
@@ -662,6 +708,10 @@ export function createProposals({ session, send, mayEdit }) {
       try { sourceAtResolution = session.doc.forkAt(resolvedTip); } catch { return; }
       sourceAtResolution?.destroy?.();
     }
+    // A held branch still contains all of the author's typing, including edits
+    // made after the source update. Refresh branch-only copies for the case
+    // where a mixed decision removes a created file before it can be exported.
+    captureBranchOnlyFiles(draft);
     // Full rejection is handled by the private identity-based inverse below;
     // this snapshot fallback is only needed when a mixed/accepted source
     // update has already removed a declined new file from the room graph.
@@ -676,6 +726,46 @@ export function createProposals({ session, send, mayEdit }) {
       draft.resolutionPending = null;
       changed();
       return;
+    }
+    const declinedHunkIndexes = decisions.length
+      ? decisions.filter((decision) => !decision.accepted).map((decision) => Number(decision.hunk))
+      : null;
+    if (!allRejected && declinedHunkIndexes?.length) {
+      let resolvedBranch = null;
+      let atBase = null;
+      try {
+        resolvedBranch = draft.branch.forkAt(resolvedTip);
+        atBase = session.doc.forkAt(resolvedBase);
+        const bytes = resolvedBranch.export({ mode: "update", from: atBase.oplogVersion() });
+        const proposalHunks = hunksOfProposal(session.doc, { base: resolvedBase, tip: resolvedTip, bytes });
+        const inverse = resolvedBranch.diff(resolvedTip, resolvedBase, false)
+          .filter(([, diff]) => diff.type === "text");
+        const conflicts = overlappingPostTipInverseFiles(draft.branch, resolvedTip, inverse,
+          proposalHunks, new Set(declinedHunkIndexes));
+        if (conflicts.size) {
+          // New files may be removed from the room graph on resolution; the
+          // private branch itself retains every existing file and local edit.
+          draft.recoveryExtraFiles = [...(draft.preResolutionFiles?.values() ?? [])]
+            .filter((file) => conflicts.has("*") || conflicts.has(String(file.id)))
+            .map(({ id, path, text }) => ({ id, path, text }));
+          draft.error = "a local edit overlaps declined text being restored; draft preserved for manual recovery";
+          draft.resolutionBlocked = true;
+          draft.resolutionPending = null;
+          changed();
+          return;
+        }
+      } catch {
+        draft.recoveryExtraFiles = [...(draft.preResolutionFiles?.values() ?? [])]
+          .map(({ id, path, text }) => ({ id, path, text }));
+        draft.error = "the declined proposal text could not be checked for local overlap";
+        draft.resolutionBlocked = true;
+        draft.resolutionPending = null;
+        changed();
+        return;
+      } finally {
+        resolvedBranch?.destroy?.();
+        atBase?.destroy?.();
+      }
     }
     if (allRejected && !draft.inverseApplied) {
       let publishedOwn = 0;
@@ -703,11 +793,13 @@ export function createProposals({ session, send, mayEdit }) {
         resolvedBranch = draft.branch.forkAt(resolvedTip);
         const atBase = session.doc.forkAt(resolvedBase);
         let staleHunks = [];
+        let rejected = [];
+        let proposalHunks = [];
         try {
           originalFileIds = new Set([...atBase.getMap("files").keys()].map(String));
           const bytes = resolvedBranch.export({ mode: "update", from: atBase.oplogVersion() });
-          const proposalHunks = hunksOfProposal(session.doc, { base: resolvedBase, tip: resolvedTip, bytes });
-          const rejected = decisions.length
+          proposalHunks = hunksOfProposal(session.doc, { base: resolvedBase, tip: resolvedTip, bytes });
+          rejected = decisions.length
             ? decisions.filter((decision) => !decision.accepted).map((decision) => Number(decision.hunk))
             : proposalHunks.map((hunk) => hunk.index);
           staleHunks = rejected.filter((index) => {
@@ -729,7 +821,8 @@ export function createProposals({ session, send, mayEdit }) {
         }
         const inverse = resolvedBranch.diff(resolvedTip, resolvedBase, false)
           .filter(([, diff]) => diff.type === "text");
-        if (overlapsPostTipInverse(draft.branch, resolvedTip, inverse)) {
+        if (overlappingPostTipInverseFiles(draft.branch, resolvedTip, inverse, proposalHunks,
+          rejected.length ? new Set(rejected) : null).size) {
           draft.error = "a local edit overlaps text being restored; draft preserved for manual recovery";
           draft.resolutionBlocked = true;
           draft.resolutionPending = null;
@@ -801,6 +894,7 @@ export function createProposals({ session, send, mayEdit }) {
     draft.resolutionPending = null;
     draft.inverseApplied = false;
     draft.preResolutionFiles?.clear();
+    draft.preResolutionTip = null;
     draft.recoveryExtraFiles = null;
     draft.decisions.clear();
     draft.error = "";
@@ -833,25 +927,40 @@ export function createProposals({ session, send, mayEdit }) {
     const update = session.doc.export({ mode: "update", from: draft.branch.oplogVersion() });
     if (update.byteLength) {
       try {
-        // Keep a pre-import text snapshot for branch-only files. A mixed
-        // decision can remove a declined created file from the source graph
-        // before this manager learns its resolved frontier.
-        draft.preResolutionFiles ??= new Map();
-        const roomFiles = session.doc.getMap("files");
-        const branchFiles = draft.branch.getMap("files");
-        const branchPaths = draft.branch.getMap("paths");
         const frontiers = draft.branch.frontiers();
-        for (const id of branchFiles.keys()) {
-          if (roomFiles.get(id)) continue;
-          const text = branchFiles.get(id);
-          if (text?.kind?.() === "Text") {
-            draft.preResolutionFiles.set(id, {
-              id,
-              path: branchPaths.get(id) ?? null,
-              text: text.toString(),
-              frontiers,
-            });
+        captureBranchOnlyFiles(draft, frontiers);
+        if (draft.preResolutionTip) {
+          if (draft.resolutionPending) finishResolution(draft);
+          changed();
+          return;
+        }
+        const publishedTips = [draft.inflight?.tipBytes, draft.opened ? draft.ackTipBytes : null]
+          .filter(Boolean);
+        const baseline = draft.branch.forkAt(draft.openBase ?? draft.base);
+        const baselineOwn = ownOps(draft, baseline.oplogVersion());
+        baseline.destroy?.();
+        let publishedTip = null;
+        for (const rawTip of publishedTips) {
+          try {
+            const candidate = decodeFrontiers(decodeBase64(rawTip));
+            const atTip = session.doc.forkAt(candidate);
+            const containsAuthorUpdate = ownOps(draft, atTip.oplogVersion()) > baselineOwn;
+            atTip.destroy?.();
+            if (!containsAuthorUpdate) continue;
+            publishedTip = encodeBase64(encodeFrontiers(candidate));
+            break;
+          } catch { /* Try the last acknowledged source tip next. */ }
+        }
+        if (publishedTip) {
+          draft.preResolutionTip = publishedTip;
+          if (draft.resolutionPending) {
+            finishResolution(draft);
+            changed();
+            return;
           }
+          // Keep the private author branch intact until the outcome is known.
+          changed();
+          return;
         }
         draft.branch.import(update);
         draft.base = session.doc.frontiers();
@@ -917,6 +1026,7 @@ export function createProposals({ session, send, mayEdit }) {
         appliedVersion: null,
         retryTimer: null,
         preResolutionFiles: new Map(),
+        preResolutionTip: null,
       };
       subscribe(proposal);
       changed();
@@ -1115,7 +1225,8 @@ export function createProposals({ session, send, mayEdit }) {
         if (draft.resolutionPending) finishResolution(draft);
         else if (draft === proposal && ownOps(draft) !== draft.ackOwn) flushDraft(draft);
         else if (retained.has(draft.id)) {
-          if (hasTextChanges(draft.base, draft.branch) && dirty(draft)) flushDraft(draft);
+          if (draft.discarding) sendDiscardRequest(draft);
+          else if (hasTextChanges(draft.base, draft.branch) && dirty(draft)) flushDraft(draft);
           else destroy(draft);
         }
         changed();
