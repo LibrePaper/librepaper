@@ -8,7 +8,7 @@ export function createBackupStatus(bridge = client) {
   let scope = 0;
   let timer = null;
   let inFlight = null;
-  let refreshQueued = false;
+  let queuedRefresh = null;
 
   function stop() {
     if (timer !== null) clearInterval(timer);
@@ -20,8 +20,12 @@ export function createBackupStatus(bridge = client) {
     const requestScope = scope;
     if (!accountId || !current.paired) return current;
     if (inFlight) {
-      refreshQueued = true;
-      return inFlight;
+      if (!queuedRefresh) {
+        let resolveQueued;
+        const promise = new Promise((resolve) => { resolveQueued = resolve; });
+        queuedRefresh = { promise, resolve: resolveQueued };
+      }
+      return queuedRefresh.promise;
     }
     // A retry or a post-mutation read can arrive during a poll. Keep one
     // request active and guarantee one follow-up read after it settles.
@@ -48,9 +52,14 @@ export function createBackupStatus(bridge = client) {
       // queued refresh or clear that slot.
       if (inFlight === request) {
         inFlight = null;
-        if (refreshQueued) {
-          refreshQueued = false;
-          if (requestScope === scope && accountId === current.accountId && current.paired) void refresh();
+        const followup = queuedRefresh;
+        queuedRefresh = null;
+        if (followup) {
+          if (requestScope === scope && accountId === current.accountId && current.paired) {
+            void refresh().then(followup.resolve, followup.resolve);
+          } else {
+            followup.resolve(current);
+          }
         }
       }
     }
@@ -63,7 +72,8 @@ export function createBackupStatus(bridge = client) {
     stop();
     scope += 1;
     inFlight = null;
-    refreshQueued = false;
+    queuedRefresh?.resolve(current);
+    queuedRefresh = null;
     current = { accountId: nextId, paired: nextPaired, loading: false, data: null, error: "" };
     if (!nextPaired) return;
     void refresh();
