@@ -96,6 +96,34 @@ window.editorCheck = async () => {
     sameView: firstView === finalView,
   };
 };
+window.projectedMainFallbackCheck = async () => {
+  const outcomes = [];
+  for (const mainState of ["absent", "dangling"]) {
+    const value = joinSession({ send: () => {}, mayEdit: true });
+    const textId = value.addText("fallback.md", "Valid " + mainState + " main");
+    const meta = value.doc.getMap("meta");
+    if (mainState === "absent") meta.delete("main");
+    else meta.set("main", "missing-text-id");
+    value.doc.commit();
+    const host = document.createElement("section");
+    document.body.append(host);
+    const fallbackEditor = createClassComponent({
+      component: Editor,
+      target: host,
+      props: { session: value, format: "markdown" },
+    });
+    await tick();
+    const shown = EditorView.findFromDOM(host.querySelector(".cm-editor")).state.doc.toString();
+    fallbackEditor.setDiagnostics([{ severity: "error", message: "Implicit main diagnostic", line: 1, column: 1 }]);
+    const navigated = fallbackEditor.nextDiagnostic();
+    await tick();
+    outcomes.push({ mainState, textId, open: fallbackEditor.openFile(), shown, navigated });
+    fallbackEditor.$destroy();
+    host.remove();
+    value.leave();
+  }
+  return outcomes;
+};
 window.remoteUndoCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const textId = value.addText("undo.md", "alpha");
@@ -769,6 +797,14 @@ try {
   assert.equal(result.before.caret + 7, result.after.caret);
   assert.equal(result.after.text, "REMOTE LOCAL alpha");
   console.log("editor-browser: file state, undo, caret, and inactive remote text preserved");
+  const projectedMain = await evaluate("projectedMainFallbackCheck()");
+  assert.deepEqual(projectedMain.map((outcome) => outcome.mainState), ["absent", "dangling"]);
+  for (const outcome of projectedMain) {
+    assert.equal(outcome.open, outcome.textId, `${outcome.mainState} main did not select the projected text`);
+    assert.equal(outcome.shown, `Valid ${outcome.mainState} main`);
+    assert.equal(outcome.navigated, true, "an implicit-main diagnostic did not resolve through the projection");
+  }
+  console.log("editor-browser: absent and dangling main IDs resolve to projected fallback text");
   const quarto = await evaluate("quartoEditorCheck()");
   assert.match(quarto.text, /title: Demo/);
   assert.match(quarto.text, /fig-one/);
