@@ -360,6 +360,7 @@ impl Server {
                         let mut response = write_json(
                             200,
                             &json!({
+                                "id": "",
                                 "provider": "",
                                 "handle": "",
                                 "name": "",
@@ -381,6 +382,10 @@ impl Server {
                 let mut response = write_json(
                     200,
                     &json!({
+                        // The stable catalogue account id lets companion
+                        // features bind local data to the signed-in account.
+                        // Anonymous and share-link-only callers receive no id.
+                        "id": id.id,
                         "provider": id.provider,
                         // The handle is the caller's own, and reaches only the
                         // caller: it is what the page checks against the

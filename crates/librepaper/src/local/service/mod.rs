@@ -51,6 +51,7 @@ const PREVIEW_LOG_TAIL_BYTES: usize = 4 * 1024;
 use crate::local::quarto::{sync_hosted_workspace, BindingStore, HOSTED_BINDING};
 
 mod consent;
+mod backups;
 mod jobs;
 
 pub(super) type Reply = Response<Body>;
@@ -439,6 +440,7 @@ struct PendingPair {
 pub(super) struct Inner {
     pub(super) state_home: PathBuf,
     folder_dialog: Mutex<()>,
+    backups: Arc<backups::BackupManager>,
     instance: String,
     port: u16,
     pairing: PairingStore,
@@ -522,6 +524,7 @@ impl LocalService {
         let inner = Arc::new(Inner {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
+            backups: Arc::new(backups::BackupManager::new(state_home)),
             instance,
             port,
             pairing: PairingStore::new(state_home, fixed_code),
@@ -540,6 +543,7 @@ impl LocalService {
         });
         tokio::spawn(run_worker(inner.clone()));
         tokio::spawn(run_reaper(inner.clone()));
+        backups::spawn_scheduler(inner.clone());
         LocalService { inner }
     }
 
@@ -1000,6 +1004,18 @@ async fn dispatch(
         }
         ["bindings", "folder"] if *method == Method::POST => {
             handle_binding_folder(inner, headers, origin, request).await
+        }
+        ["backups"] if *method == Method::GET => {
+            backups::handle_get(inner, headers, origin, request).await
+        }
+        ["backups"] if *method == Method::PUT => {
+            backups::handle_put(inner, headers, origin, request).await
+        }
+        ["backups", "folder"] if *method == Method::POST => {
+            backups::handle_folder(inner, headers, origin, request).await
+        }
+        ["backups", "run"] if *method == Method::POST => {
+            backups::handle_run(inner, headers, origin, request).await
         }
         ["bindings", id] if *method == Method::DELETE => {
             handle_binding_revoke(inner, headers, origin, id).await
@@ -2295,6 +2311,7 @@ mod settings_tests {
         let inner = Arc::new(Inner {
             state_home: state_home.path().to_path_buf(),
             folder_dialog: Mutex::new(()),
+            backups: Arc::new(backups::BackupManager::new(state_home.path())),
             instance: "test-instance".to_string(),
             port: 8763,
             pairing: PairingStore::new(state_home.path(), None),
@@ -2312,6 +2329,24 @@ mod settings_tests {
             ),
         });
         (inner, state_home, cache_home)
+    }
+
+    #[tokio::test]
+    async fn backup_routes_require_the_pairing_for_the_request_origin() {
+        let (inner, state_home, _cache_home) = test_inner().await;
+        let (token, _) = inner
+            .pairing
+            .issue("https://paper.example", "test")
+            .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        assert!(authenticate(&inner, &headers, Some("https://paper.example")).is_ok());
+        assert!(authenticate(&inner, &headers, Some("https://other.example")).is_err());
+        assert!(authenticate(&inner, &HeaderMap::new(), Some("https://paper.example")).is_err());
+        drop(state_home);
     }
 
     #[tokio::test]

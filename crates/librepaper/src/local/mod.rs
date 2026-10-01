@@ -9,6 +9,7 @@ pub mod acp_agents;
 pub(crate) mod approval;
 pub(crate) mod assistant;
 pub mod bindings;
+pub(crate) mod backup;
 pub mod builders;
 pub mod cli;
 pub mod connections;
