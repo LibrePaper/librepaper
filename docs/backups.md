@@ -27,6 +27,12 @@ which project the archive belongs to. Each project has one latest ZIP; this
 feature does not keep a history of older ZIPs. The companion replaces that ZIP
 when it backs up newer content.
 
+Unchanged projects keep their existing ZIP. For a changed project, the companion
+reuses unchanged assets from the previous ZIP and builds a replacement archive
+before swapping it into place. Renaming a project updates its ZIP filename on
+the next run; the old filename is removed only after the replacement is saved.
+Only changes already saved to the server are included.
+
 These are one-way copies. Editing or deleting a ZIP does not change a project
 on LibrePaper, and restoring a ZIP requires importing it as a project. Turning
 backups off stops future scheduled runs; a backup already in progress may

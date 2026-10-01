@@ -1464,7 +1464,9 @@ mod tests {
     async fn cancelled_backup_keeps_lock_until_its_writer_finishes() {
         let (server, state, server_task) = start_fixture().await;
         let output = tempfile::tempdir().unwrap();
-        run_backup(&server, "token", "account-one", output.path()).await.unwrap();
+        run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
         let root = namespace(output.path());
         let paper = root.join(archive_name("Paper", "paper-a1"));
         let original_archive = fs::read(&paper).unwrap();
@@ -1511,16 +1513,25 @@ mod tests {
         let writer_finished =
             tokio::time::timeout(std::time::Duration::from_secs(5), finished_rx).await;
 
-        assert!(entered.is_ok(), "the actual run_backup writer did not pause");
+        assert!(
+            entered.is_ok(),
+            "the actual run_backup writer did not pause"
+        );
         assert!(matches!(
             second,
             Ok(Err(ref error)) if error.contains("backup already running")
         ));
         assert_eq!(archive_while_paused, Some(original_archive));
-        assert!(writer_finished.is_ok(), "the cancelled run's writer did not finish");
+        assert!(
+            writer_finished.is_ok(),
+            "the cancelled run's writer did not finish"
+        );
 
         let recovered = run_backup(&server, "token", "account-one", output.path()).await;
-        assert!(recovered.is_ok(), "a new run can acquire the lock after writer completion");
+        assert!(
+            recovered.is_ok(),
+            "a new run can acquire the lock after writer completion"
+        );
         server_task.abort();
     }
 }
