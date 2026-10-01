@@ -173,8 +173,9 @@ try {
   // here does not mean a new line in this server.
   const CONTENT_TYPES = { ".js": "text/javascript", ".css": "text/css", ".map": "application/json" };
   server=createServer((request,response)=>{
-    const path = join(temporary, "build", decodeURIComponent(request.url.split("?")[0]));
-    if (request.url !== "/" && existsSync(path)) {
+    const pathname = new URL(request.url, "http://localhost").pathname;
+    const path = join(temporary, "build", decodeURIComponent(pathname));
+    if (pathname !== "/" && existsSync(path)) {
       const ext = path.slice(path.lastIndexOf("."));
       response.setHeader("content-type", CONTENT_TYPES[ext] || "application/octet-stream");
       response.end(readFileSync(path));
@@ -193,7 +194,7 @@ try {
   // companion. Wait for both the hosted conversation and the local Connect
   // prompt to settle before checking the request log.
   await until("saved-pair Connect prompt and hosted conversation", () => page.evaluate(
-    `Boolean(document.querySelector('.connect-required button')) && window.calls.some(call=>call.suffix==='')`), 10000);
+    `Boolean(document.querySelector('.connect-required button')) && (window.calls.some(call=>call.suffix==='') || window.sockets.some(socket=>socket.sent.some(frame=>frame.type==='join')))`), 10000);
   assert.equal(await page.evaluate("window.localCalls.length"), 0,
     "mounting with a saved pairing makes no local companion requests before Connect");
   // A full page reload must preserve the same opt-in boundary. localStorage
@@ -201,7 +202,7 @@ try {
   // another explicit Connect click.
   await page.navigate(appUrl);
   await until("reloaded saved-pair Connect prompt and hosted conversation", () => page.evaluate(
-    `Boolean(document.querySelector('.connect-required button')) && window.calls.some(call=>call.suffix==='')`), 10000);
+    `Boolean(document.querySelector('.connect-required button')) && (window.calls.some(call=>call.suffix==='') || window.sockets.some(socket=>socket.sent.some(frame=>frame.type==='join')))`), 10000);
   assert.equal(await page.evaluate("window.localCalls.length"), 0,
     "a full page reload with a saved pairing makes no local requests before Connect");
   await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Connect').click()`);
@@ -648,7 +649,7 @@ try {
   await page.navigate(`${appUrl}?unpaired=1`);
   await until("fresh unpaired agent panel", () => page.evaluate("Boolean(document.querySelector('.agent-panel'))"), 10000);
   await until("pairing prompt and hosted conversation shown", () => page.evaluate(
-    `Boolean(document.querySelector('.connect-required button')) && window.calls.some(call=>call.suffix==='')`), 10000);
+    `Boolean(document.querySelector('.connect-required button')) && (window.calls.some(call=>call.suffix==='') || window.sockets.some(socket=>socket.sent.some(frame=>frame.type==='join')))`), 10000);
   assert.equal(await page.evaluate("window.localCalls.length"), 0,
     "mounting without a pairing makes no local companion requests before Connect");
   // The Connect button initiates the pairing flow. The way to the companion
