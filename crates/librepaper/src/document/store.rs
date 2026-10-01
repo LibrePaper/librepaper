@@ -611,14 +611,18 @@ impl Command for ReplaceProject {
             }
             // Rows reused at staging may have been deleted by a trim since.
             // A retry stages those bytes again because their rows are gone.
-            let digests: Vec<Vec<u8>> = self.assets
+            let digests: Vec<Vec<u8>> = self
+                .assets
                 .iter()
                 .filter_map(|(_, digest_hex)| hex::decode(digest_hex).ok())
                 .collect();
             if !digests.is_empty() {
-                if self.catalog
+                if self
+                    .catalog
                     .missing_assets_in_transaction(tx, self.document_id, &digests)
-                    .await? > 0 {
+                    .await?
+                    > 0
+                {
                     return Err(CommandError::Conflict("a figure this project names was removed while it was being saved; try again".to_string()));
                 }
             }

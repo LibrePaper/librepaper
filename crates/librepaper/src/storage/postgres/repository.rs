@@ -856,7 +856,10 @@ impl PostgresCatalog {
         let present: i64 = sqlx::query_scalar(
             "SELECT count(DISTINCT digest) FROM document_assets WHERE document_id=$1 AND digest = ANY($2::bytea[])")
             .bind(document_id).bind(digests.to_vec()).fetch_one(&mut **tx).await?;
-        let wanted = digests.iter().collect::<std::collections::HashSet<_>>().len();
+        let wanted = digests
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         Ok(wanted.saturating_sub(present.max(0) as usize))
     }
 
