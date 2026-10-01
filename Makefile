@@ -276,7 +276,7 @@ $(PINNED): | pins
 # the same markdown engine the application embeds (web/tools/build-site.mjs),
 # wrapped in the sidebar from docs/nav.js, beside the landing page authored in
 # web/src/site/. Built by vite.site.config.js into docs/_site, which nothing
-# else reads -- it is deployed on its own by .github/workflows/site.yml.
+# else reads and nothing deploys: `make site-serve` previews it locally.
 site: pins
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
 	@cd web && bun install --silent && bun run build:site
