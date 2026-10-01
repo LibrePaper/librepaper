@@ -176,7 +176,7 @@ cp .env.example .env
 docker compose -f compose.yaml -f compose.local.yaml up -d --build
 ```
 
-`DOCS_DOMAIN` defaults to `docs.$DOMAIN`; both names must resolve to this host. The container uses `--no-local`. See [the Docker deployment guide](../tools/deploy-docker/README.md) for password rotation, backup, and release upgrades.
+`DOCS_DOMAIN` defaults to `docs.$DOMAIN`; both names must resolve to this host. The container uses `--no-local`. See [the Docker deployment guide](https://github.com/LibrePaper/librepaper/blob/main/tools/deploy-docker/README.md) for password rotation, backup, and release upgrades.
 
 The official instance also runs free, open-source Prometheus, Grafana, PostgreSQL exporter, and Node Exporter containers. Grafana is available at `/admin/monitoring/` on the app hostname and requires its built-in admin login. Prometheus and the exporters have no public ports; Caddy exposes only the Grafana path on the app hostname. The metrics listener binds inside the app container and reports aggregate counts and health, without user or document identifiers. See [production operations](dev/production.html#monitoring) for deployment, password retrieval, and rotation.
 
