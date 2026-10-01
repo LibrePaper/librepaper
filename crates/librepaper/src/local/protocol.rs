@@ -1065,15 +1065,26 @@ pub struct AssistantQuery {
 
 /// Renew the server grant for an already-running assistant. This value is
 /// received only from a paired browser origin and contains no browser cookie.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssistantRenewal {
     pub link: String,
     pub conversation: String,
     pub agent_token: String,
 }
 
+impl std::fmt::Debug for AssistantRenewal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AssistantRenewal")
+            .field("link", &"[redacted]")
+            .field("conversation", &self.conversation)
+            .field("agent_token", &"[redacted]")
+            .finish()
+    }
+}
+
 /// Start, inspect or stop the sidebar assistant for one conversation.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssistantRequest {
     /// The protected document URL, key fragment included.
     pub link: String,
@@ -1089,9 +1100,43 @@ pub struct AssistantRequest {
     /// Which detected agent to drive. It must advertise ACP support.
     pub agent: String,
 }
+
+impl std::fmt::Debug for AssistantRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AssistantRequest")
+            .field("link", &"[redacted]")
+            .field("conversation", &self.conversation)
+            .field("chat_token", &"[redacted]")
+            .field("agent_token", &"[redacted]")
+            .field("agent", &self.agent)
+            .finish()
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn companion_agent_credentials_are_redacted_from_debug_output() {
+        let request = AssistantRequest {
+            link: "https://papers.example/docs/paper#k=link-secret".into(),
+            conversation: "conversation".into(),
+            chat_token: "chat-secret".into(),
+            agent_token: "lpa_agent-secret".into(),
+            agent: "agent".into(),
+        };
+        let renewal = AssistantRenewal {
+            link: request.link.clone(),
+            conversation: request.conversation.clone(),
+            agent_token: request.agent_token.clone(),
+        };
+        for diagnostic in [format!("{request:?}"), format!("{renewal:?}")] {
+            assert!(!diagnostic.contains("link-secret"));
+            assert!(!diagnostic.contains("chat-secret"));
+            assert!(!diagnostic.contains("agent-secret"));
+        }
+    }
 
     #[test]
     fn a_relative_path_is_safe_and_an_escaping_one_is_not() {

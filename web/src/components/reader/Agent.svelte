@@ -318,6 +318,10 @@
     const savedAccess = connection.assistantAccess || "";
     if (!agent && !savedAccess) return;
     try {
+      // Re-fetch the same named link the runner was started with. This keeps
+      // the browser able to renew that runner's grant after a reload, without
+      // persisting the link key in its agent-session record.
+      if (savedAccess) await prepareAccessLink(savedAccess);
       const answer = await local.assistantStatus({ link: agentLink || link, conversation: conversationId });
       if (connection.id !== conversationId || restoredConversation !== conversationId || !answer?.running) return;
       assistant = { running: true, agent, access: savedAccess };
