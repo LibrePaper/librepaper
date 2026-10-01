@@ -21,7 +21,7 @@
 
 import { execFileSync } from "node:child_process";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,10 @@ const ROOT = dirname(dirname(dirname(HERE)));
 const MIRROR = process.env.MIRROR || join(ROOT, "..", "wasm-latex", "mirror");
 const CORPUS = join(ROOT, "tools", "latex", "corpus");
 const PAGES = JSON.parse(readFileSync(join(CORPUS, "pages.json"), "utf8"));
+if (!/^https?:\/\//i.test(MIRROR) && !existsSync(MIRROR)) {
+  console.log(`latex-browser: no LaTeX mirror at ${MIRROR}; skipping (build wasm-latex next to this checkout, or set MIRROR to a release URL)`);
+  process.exit(0);
+}
 
 const PORT = 8813;
 const DEBUG_PORT = 9813;

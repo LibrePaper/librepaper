@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { readFileSync, writeFileSync, readdirSync, symlinkSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, readdirSync, symlinkSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { browser, until } from "../../tools/browser-driver.mjs";
@@ -17,6 +17,10 @@ const engineRoot = resolve(process.env.LATEXML_DIST || join(root, "../wasm-latex
 const mirror = resolve(process.env.MIRROR || join(root, "../wasm-latex/mirror"));
 const hostedMirrorUrl = process.env.LATEXML_MIRROR_URL?.replace(/\/?$/, "/");
 if (hostedMirrorUrl && !/^https:\/\//i.test(hostedMirrorUrl)) throw new Error("LATEXML_MIRROR_URL must use HTTPS");
+if (!existsSync(engineRoot) || (!hostedMirrorUrl && !existsSync(mirror))) {
+  console.log("latex-html-browser: no wasm-latex engine build or mirror next to this checkout; skipping (build wasm-latex, or set LATEXML_DIST and LATEXML_MIRROR_URL)");
+  process.exit(0);
+}
 // The local mirror is served over HTTPS from a throwaway self-signed cert,
 // which openssl mints; a hosted mirror needs none.
 if (!hostedMirrorUrl && spawnSync("openssl", ["version"], { stdio: "ignore" }).error) {
