@@ -5,7 +5,7 @@
 # there. Building from a fork means building the archive first -- `make build`
 # -- and swapping the fetch below for a COPY.
 #
-#   docker build --build-arg LIBREPAPER_VERSION=v0.1.0 -t librepaper .
+#   docker build --build-arg LIBREPAPER_VERSION=v0.0.5 -t librepaper .
 FROM alpine:3.21
 
 # The version to install. There is no default on purpose: an image that
