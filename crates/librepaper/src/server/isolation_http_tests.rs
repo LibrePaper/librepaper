@@ -385,17 +385,16 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
     // A WebSocket handshake cannot set the custom client header. Its Origin
     // alone must identify the reader, before upgrade processing begins.
     assert_eq!(
-        websocket_status(
-            address,
-            &format!("/ws/{}", deployment.slug),
-            DOCS,
-            &cookie,
-        )
-        .await,
+        websocket_status(address, &format!("/ws/{}", deployment.slug), DOCS, &cookie,).await,
         403
     );
     assert_eq!(
-        websocket_status(address, &format!("/ws/{}", deployment.slug), READER, &cookie)
+        websocket_status(
+            address,
+            &format!("/ws/{}", deployment.slug),
+            READER,
+            &cookie
+        )
         .await,
         101
     );
