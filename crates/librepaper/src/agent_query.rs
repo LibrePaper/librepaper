@@ -1782,6 +1782,9 @@ mod tests {
     fn a_manifest_carries_projection_digests_and_no_invented_asset_size() {
         let main = "# Intro\n😀 repeated repeated\nlast\n";
         let mut snapshot = snapshot();
+        // This fixture changes projection metadata under the shared test
+        // snapshot digest, so give its cached file identities their own key.
+        snapshot.tree_digest = "manifest-projection-digests".into();
         Arc::make_mut(&mut snapshot.projected)
             .projection
             .files
@@ -1866,6 +1869,7 @@ mod tests {
     #[test]
     fn a_range_names_the_file_by_its_projected_digest() {
         let mut snapshot = snapshot();
+        snapshot.tree_digest = "range-projected-digest".into();
         Arc::make_mut(&mut snapshot.projected)
             .projection
             .files
@@ -1951,6 +1955,7 @@ mod tests {
     #[test]
     fn budget_marks_truncation_without_returning_a_whole_file() {
         let mut small = snapshot();
+        small.tree_digest = "budget-large-source".into();
         small
             .texts_mut()
             .insert("large.md".into(), "x".repeat(50_000));
@@ -2005,6 +2010,7 @@ mod tests {
     #[test]
     fn paragraph_pages_advance_without_reexpanding_to_the_start() {
         let mut captured = snapshot();
+        captured.tree_digest = "paragraph-pages-long-source".into();
         let paragraph = "😀\\\"text ".repeat(800);
         captured
             .texts_mut()
@@ -2036,6 +2042,7 @@ mod tests {
     #[test]
     fn malformed_bibliography_tail_does_not_panic() {
         let mut captured = snapshot();
+        captured.tree_digest = "malformed-bibliography-tail".into();
         captured
             .texts_mut()
             .insert("refs.bib".into(), "@book{key, title={unfinished".into());
@@ -2049,6 +2056,7 @@ mod tests {
     #[test]
     fn bibliography_index_stops_at_each_balanced_entry() {
         let mut captured = snapshot();
+        captured.tree_digest = "bibliography-balanced-entries".into();
         captured.texts_mut().insert(
             "refs.bib".into(),
             "@book{first,author={Ada},title={One},}\n@article{second,author={Bob},title={Two}}\n"
@@ -2073,6 +2081,7 @@ mod tests {
     #[test]
     fn bibliography_fields_allow_spacing_and_commas_in_values() {
         let mut captured = snapshot();
+        captured.tree_digest = "bibliography-spaced-fields".into();
         captured.texts_mut().insert(
             "refs.bib".into(),
             "@book{key, author = {Doe, Jane}, title = {A, careful title}}".into(),
