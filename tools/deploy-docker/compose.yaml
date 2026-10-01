@@ -80,11 +80,11 @@ services:
     # (which are visible in `ps`). Deployment-only passwords are removed below.
     env_file: .env
     environment:
-      # These deployment-only secrets do not need to reach the app process;
-      # Compose removes the env_file entries after applying these null values.
-      POSTGRES_PASSWORD: null
-      POSTGRES_EXPORTER_PASSWORD: null
-      LIBREPAPER_ADMIN_PASSWORD: null
+      # Blank deployment-only credentials inherited from env_file. The app
+      # receives its database password only through LIBREPAPER_DATABASE_URL.
+      POSTGRES_PASSWORD: ""
+      POSTGRES_EXPORTER_PASSWORD: ""
+      LIBREPAPER_ADMIN_PASSWORD: ""
       LIBREPAPER_DATABASE_URL: postgresql://librepaper:${POSTGRES_PASSWORD}@postgres/librepaper
       # Who may publish has no default: the server insists you say.
       LIBREPAPER_PUBLISHERS: ${LIBREPAPER_PUBLISHERS:?set LIBREPAPER_PUBLISHERS in .env}
