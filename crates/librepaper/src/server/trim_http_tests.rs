@@ -242,7 +242,6 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
 
     // Step 4: manually add unreferenced figure-c (fresh) via catalog.
     let figure_c_digest_bytes = Sha256::digest(FIGURE_C).to_vec();
-    let figure_c_digest_hex = hex::encode(&figure_c_digest_bytes);
     let (_assets, staged_c) = crate::storage::source::SourceStorage::new(
         deployment.catalog.clone(),
         deployment.server.documents.store.blobs.clone(),
@@ -292,6 +291,16 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
     // Prepare digest hex for figure-b for later reference checks.
     let figure_b_digest_hex = hex::encode(Sha256::digest(FIGURE_B));
 
+    // Every label goes, not only the named one: creating and replacing the
+    // project each leave a retry record in `document_labels` as well.
+    let labels_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_labels WHERE document_id=$1")
+            .bind(room.document_id)
+            .fetch_one(deployment.catalog.pool())
+            .await
+            .unwrap();
+    assert!(labels_before >= 1, "the named version is a label");
+
     // Record owner usage before trim.
     let usage_before = deployment
         .catalog
@@ -323,11 +332,14 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         .await
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(body["versions"].is_number(), "response must have versions count");
+    assert!(
+        body["versions"].is_number(),
+        "response must have versions count"
+    );
     assert_eq!(
         body["versions"].as_i64().unwrap_or(0),
-        1,
-        "one label should be deleted"
+        labels_before,
+        "every label should be deleted"
     );
     assert_eq!(
         body["versionBytes"].as_i64().unwrap_or(0),
@@ -346,22 +358,20 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
     );
 
     // Step 8: verify database state.
-    let label_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM document_labels WHERE document_id=$1",
-    )
-    .bind(room.document_id)
-    .fetch_one(deployment.catalog.pool())
-    .await
-    .unwrap();
+    let label_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_labels WHERE document_id=$1")
+            .bind(room.document_id)
+            .fetch_one(deployment.catalog.pool())
+            .await
+            .unwrap();
     assert_eq!(label_count, 0, "all labels must be deleted");
 
-    let archive_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM document_archives WHERE document_id=$1",
-    )
-    .bind(room.document_id)
-    .fetch_one(deployment.catalog.pool())
-    .await
-    .unwrap();
+    let archive_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_archives WHERE document_id=$1")
+            .bind(room.document_id)
+            .fetch_one(deployment.catalog.pool())
+            .await
+            .unwrap();
     assert_eq!(archive_count, 0, "all archives must be deleted");
 
     let figure_a_exists: bool = sqlx::query_scalar(
@@ -550,13 +560,12 @@ async fn a_trim_refuses_while_a_suggestion_is_pending() {
     );
 
     // Step 5: verify label still exists.
-    let label_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM document_labels WHERE id=$1)",
-    )
-    .bind(named.id)
-    .fetch_one(deployment.catalog.pool())
-    .await
-    .unwrap();
+    let label_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM document_labels WHERE id=$1)")
+            .bind(named.id)
+            .fetch_one(deployment.catalog.pool())
+            .await
+            .unwrap();
     assert!(label_exists, "label must survive the refused trim");
 
     // Teardown: drop all room/Arc references before closing catalog.
