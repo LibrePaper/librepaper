@@ -230,12 +230,11 @@
       observedDrafting = Boolean(proposals.drafting?.());
     }
     proposalUnsubscribe = proposals.onchange?.(() => {
-      const status = proposals?.status?.() || null;
       const drafting = Boolean(proposals?.drafting?.());
       // Reader owns proposal delivery. If this active branch resolves while
       // tracking remains enabled, keep the switch's intent by opening a new
       // local branch now; it stays server-invisible until the next edit.
-      if (observedDrafting && !drafting && trackingIntent && !startingIntentBranch && !status?.recoveryRequired) {
+      if (observedDrafting && !drafting && trackingIntent && !startingIntentBranch) {
         const previous = proposals?.doc?.() || activeDocument;
         startingIntentBranch = true;
         proposals.start();

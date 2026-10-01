@@ -852,6 +852,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   const active = { joined: false };
   const ctx = context({
     proposalListNeeded: true,
+    sourceJoin: { session: active, pending: 0, failed: false },
     session: active,
     connected: true,
     collaboration: { send: (message) => sent.push(message) },
@@ -865,6 +866,105 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.equal(sent.length, 1, "an unchanged reconnect join requests the proposal list once hydration completes");
   assert.equal(sent[0].type, "proposal-list");
   assert.equal(ctx.proposalListNeeded, false);
+}
+
+// A rejected proposal may resolve while reconnecting. Hold its final event
+// and the status query until every source frame already received for this
+// join has finished importing, including rows queued behind doc-state.
+{
+  const timeline = [];
+  const active = { joined: false, source: "before reconnect" };
+  const ctx = context({
+    proposalListNeeded: true,
+    proposalReconnectNeeded: true,
+    deferredProposalOutcomes: [],
+    sourceJoin: { session: active, pending: 0, failed: false },
+    session: active,
+    connected: true,
+    collaboration: { send: (message) => timeline.push([message.type, active.source]) },
+    proposalManager: { reconnect: () => timeline.push(["reconnect", active.source]) },
+    receive: (event) => timeline.push([event.type, active.source, event.decisions?.[0]?.accepted]),
+  });
+  vm.runInContext(body("  function sendProposalListWhenReady", "  function attachProposalManager"), ctx);
+  const docStateJoin = ctx.noteSourceJoinFrame(active);
+  const queuedRowsJoin = ctx.noteSourceJoinFrame(active);
+  const rejected = {
+    type: "proposal-decided", proposal_id: "draft", resolved: true,
+    decisions: [{ hunk: 0, accepted: false }],
+  };
+  assert.equal(ctx.deferProposalFinalization(rejected), true);
+
+  // start() can set joined before the queued rows import finishes. Neither
+  // the final rejection nor the reconnect query may run against that partial
+  // base, where a remote replacement is still missing.
+  active.joined = true;
+  active.source = "doc-state only";
+  ctx.finishSourceJoinFrame(docStateJoin);
+  ctx.sendProposalListWhenReady(active);
+  assert.deepEqual(timeline, []);
+
+  active.source = "snapshot plus overlapping remote replacement";
+  ctx.finishSourceJoinFrame(queuedRowsJoin);
+  assert.deepEqual(timeline, [
+    ["proposal-decided", "snapshot plus overlapping remote replacement", false],
+    ["reconnect", "snapshot plus overlapping remote replacement"],
+    ["proposal-list", "snapshot plus overlapping remote replacement"],
+  ], "a missed rejection is finalized and queried only after all received source rows hydrate");
+}
+
+// A proposal whose branch cannot be reconstructed has no trustworthy hunk
+// index. Keep it visible for an editor to discard, but do not fabricate a
+// decision or duplicate the whole replacement already shown by its linked
+// suggestion comment.
+{
+  const proposal = { id: "unreadable", author: "writer", base: "base" };
+  const ctx = context({
+    session: { doc: {}, paths: new Map() },
+    openProposals: new Map([[proposal.id, proposal]]),
+    comments: [],
+    hunksOfProposal: () => [],
+    markContention: (rows) => rows,
+    review: [], reviewRows: [], decidedHunks: new Map(),
+  });
+  vm.runInContext(body("  function recomputeReview()", "  /// Read the paper as a chosen set of proposals"), ctx);
+  ctx.recomputeReview();
+  assert.equal(ctx.reviewRows.length, 1);
+  assert.equal(ctx.reviewRows[0].proposal, "unreadable");
+  assert.equal(ctx.reviewRows[0].hunk, undefined, "unreadable proposals have no invented hunk index");
+  assert.equal(ctx.reviewRows[0].discardOnly, true);
+  assert.match(ctx.reviewRows[0].unavailableLabel, /no readable changes/);
+
+  ctx.comments = [{ id: "remark", motivation: "editing", proposal: proposal.id }];
+  ctx.recomputeReview();
+  assert.equal(ctx.reviewRows.length, 0, "the linked suggestion row is the only visible decision for its proposal");
+}
+
+// A proposal that creates a file is not a file in the live document yet.
+// Revealing its row should leave the editor on the live file and point the
+// reviewer back to the proposed text shown in Changes rather than opening a
+// null LoroText in Editor.stateFor.
+{
+  let mobileSwitches = 0;
+  let navigations = 0;
+  const messages = [];
+  const ctx = context({
+    reviewing: null,
+    editing: true,
+    session: { textOf: () => null },
+    row: { proposal: "new-bib", hunk: 0, file_id: "proposal-only", path: "references.bib", position: 0 },
+    showMobileView: () => { mobileSwitches += 1; },
+    tick: async () => {},
+    shown: { source: true },
+    editor: { goToIn: () => { navigations += 1; } },
+    ws: { openFile: "paper.md" },
+    say: (message) => messages.push(message),
+  });
+  vm.runInContext(body("  async function revealProposal(row)", "  /// A reviewer answers one hunk"), ctx);
+  await ctx.revealProposal(ctx.row);
+  assert.equal(ctx.ws.openFile, "paper.md", "a proposal-only file never becomes the live editor's open file");
+  assert.equal(mobileSwitches, 0, "the reader stays with the visible proposal text");
+  assert.equal(navigations, 0, "Editor is never asked to build a state for a missing live file");
+  assert.match(messages[0], /proposed text in Changes/);
 }
 
 // Ctrl-S names where the work is, and reserves "saved" for the server. This

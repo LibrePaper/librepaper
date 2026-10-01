@@ -48,6 +48,7 @@ import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEdi
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
+import { createProposals } from ${JSON.stringify(join(root, "web/src/lib/proposals.js"))};
 import { durableProjectPersistence, prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
@@ -408,6 +409,7 @@ window.trackingResolutionRestartsCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const id = value.addText("tracked-resolution.md", "alpha");
   value.setMain(id);
+  await value.start({ protocol: "librepaper.room.v3", vector: "", updates: [] });
   const host = document.createElement("section");
   document.body.append(host);
   const tracked = createClassComponent({
@@ -456,6 +458,82 @@ window.trackingResolutionRestartsCheck = async () => {
   return {
     stillTracking, restartedId, openCountBeforeTyping, firstId: firstOpen?.request_id || "",
     secondId, opensAfterTyping: opens.length, liveImmediately, finalText,
+  };
+};
+// A retained draft can require manual recovery while a newer active draft is
+// still safe to rebase. Resolution delivery belongs to the session manager,
+// which also owns both drafts while the editor is mounted.
+window.trackingRecoveryDoesNotBlockResolutionCheck = async () => {
+  const sent = [];
+  const send = (message) => { sent.push(message); return true; };
+  const value = joinSession({ send, mayEdit: true });
+  const id = value.addText("tracked-recovery.md", "alpha");
+  value.setMain(id);
+  await value.start({ protocol: "librepaper.room.v3", vector: "", updates: [] });
+  const manager = createProposals({ session: value, send, mayEdit: true });
+  const host = document.createElement("section");
+  document.body.append(host);
+  const tracked = createClassComponent({
+    component: Editor,
+    target: host,
+    props: { session: value, format: "markdown", file: id, editable: true, send },
+  });
+  await tick();
+
+  // Leave an update in flight before stopping so the manager retains it. An
+  // expired server outcome marks that older draft blocked for manual export.
+  tracked.startTracking();
+  await tick();
+  let view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  view.dispatch({ changes: { from: 0, insert: "OLD " } });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const oldOpen = sent.find((message) => message.type === "proposal-open");
+  if (oldOpen) manager.apply({ type: "proposal-opened", proposal_id: oldOpen.request_id, request_id: oldOpen.request_id, applied_version: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const oldUpdate = sent.find((message) => message.type === "proposal-update");
+  tracked.stopTracking();
+  if (oldUpdate) manager.apply({ type: "error", request_id: oldUpdate.request_id, status_unknown: true });
+  const oldRecoveryRequired = Boolean(manager.status()?.recoveryRequired);
+
+  // A new branch is allowed to proceed even while the retained draft keeps
+  // the recovery warning visible. The manager, rather than Editor's private
+  // API, receives the fresh proposal's open, update and resolution messages.
+  tracked.startTracking();
+  await tick();
+  view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  view.dispatch({ changes: { from: 0, insert: "FRESH " } });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const freshOpen = sent.filter((message) => message.type === "proposal-open").at(-1);
+  if (freshOpen) manager.apply({ type: "proposal-opened", proposal_id: freshOpen.request_id, request_id: freshOpen.request_id, applied_version: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const freshUpdate = sent.filter((message) => message.type === "proposal-update").at(-1);
+  if (freshUpdate) manager.apply({ type: "proposal-updated", proposal_id: freshUpdate.proposal_id, request_id: freshUpdate.request_id, tip: freshUpdate.tip, applied_version: 3 });
+  if (freshOpen && freshUpdate) manager.apply({
+    type: "proposal-decided", proposal_id: freshOpen.request_id, resolved: true,
+    decisions: [{ hunk: 0, accepted: false }], resolved_base: freshOpen.base, resolved_tip: freshUpdate.tip,
+  });
+  await tick();
+  const recoveryAfterFreshResolution = Boolean(manager.status()?.recoveryRequired);
+  const recoveryStatusId = tracked.proposalStatus()?.id || "";
+  const restartedDraftId = manager.id?.() || "";
+  const trackingAfterFreshResolution = tracked.trackingOn();
+  const opensBeforeNextTyping = sent.filter((message) => message.type === "proposal-open").length;
+  view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  view.dispatch({ changes: { from: 0, insert: "NEXT " } });
+  const liveImmediately = value.textOf(id).toString();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const opens = sent.filter((message) => message.type === "proposal-open");
+  const latestOpenId = opens.at(-1)?.request_id || "";
+  const finalText = value.textOf(id).toString();
+  tracked.stopTracking();
+  tracked.$destroy();
+  host.remove();
+  value.leave();
+  return {
+    oldOpenId: oldOpen?.request_id || "", oldUpdateId: oldUpdate?.request_id || "",
+    oldRecoveryRequired, freshOpenId: freshOpen?.request_id || "", freshUpdateId: freshUpdate?.request_id || "",
+    recoveryAfterFreshResolution, recoveryStatusId, restartedDraftId, trackingAfterFreshResolution, opensBeforeNextTyping, latestOpenId,
+    opensAfterNextTyping: opens.length, liveImmediately, finalText,
   };
 };
 window.diagnosticsCheck = async () => {
@@ -789,6 +867,27 @@ try {
   assert.equal(trackingResolved.liveImmediately, "FIRST alpha", "the first keystroke after resolution reached the room");
   assert.equal(trackingResolved.finalText, "FIRST alpha", "the next tracked edit leaked into live text");
   console.log("editor-browser: tracking restarts lazily after its own proposal resolves");
+  const retainedRecovery = await evaluate("trackingRecoveryDoesNotBlockResolutionCheck()");
+  assert.notEqual(retainedRecovery.oldOpenId, "", "the retained draft was never opened");
+  assert.notEqual(retainedRecovery.oldUpdateId, "", "the retained draft had no in-flight update to preserve");
+  assert.equal(retainedRecovery.oldRecoveryRequired, true, "the old unresolved outcome did not require manual recovery");
+  assert.notEqual(retainedRecovery.freshOpenId, "", "tracking did not create a fresh proposal beside the retained draft");
+  assert.notEqual(retainedRecovery.freshOpenId, retainedRecovery.oldOpenId, "the fresh proposal reused the retained draft id");
+  assert.notEqual(retainedRecovery.freshUpdateId, "", "the fresh proposal update was not delivered to the session manager");
+  assert.equal(retainedRecovery.recoveryAfterFreshResolution, true, "resolving the fresh proposal incorrectly cleared the old recovery warning");
+  assert.equal(retainedRecovery.recoveryStatusId, retainedRecovery.oldOpenId, "the old manual recovery warning was not retained after the fresh resolution");
+  assert.notEqual(retainedRecovery.restartedDraftId, "", "the fresh resolution did not establish another local draft");
+  assert.notEqual(retainedRecovery.restartedDraftId, retainedRecovery.freshOpenId, "the restarted local branch reused the resolved proposal id");
+  assert.equal(retainedRecovery.trackingAfterFreshResolution, true, "resolving the fresh proposal did not restart local tracking");
+  assert.equal(retainedRecovery.opensBeforeNextTyping, 2, "restarting after resolution created an empty server proposal");
+  assert.notEqual(retainedRecovery.latestOpenId, "", "typing after fresh resolution did not open a new proposal");
+  assert.equal(retainedRecovery.latestOpenId, retainedRecovery.restartedDraftId, "typing opened a different proposal than the fresh local branch");
+  assert.notEqual(retainedRecovery.latestOpenId, retainedRecovery.oldOpenId, "typing reused the retained proposal id");
+  assert.notEqual(retainedRecovery.latestOpenId, retainedRecovery.freshOpenId, "typing reused the resolved proposal id");
+  assert.equal(retainedRecovery.opensAfterNextTyping, 3);
+  assert.equal(retainedRecovery.liveImmediately, "alpha", "typing after the old recovery warning reached live text");
+  assert.equal(retainedRecovery.finalText, "alpha", "the next tracked edit leaked into live text");
+  console.log("editor-browser: an old retained recovery warning does not block fresh tracked resolution");
 } finally {
   socket?.close();
   browser?.kill();
