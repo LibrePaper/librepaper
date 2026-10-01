@@ -754,7 +754,6 @@ export function createProposals({ session, send, mayEdit }) {
               id,
               path: branchPaths.get(id) ?? null,
               text: text.toString(),
-              container: text,
               frontiers,
             });
           }
