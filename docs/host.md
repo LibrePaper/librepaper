@@ -163,13 +163,14 @@ Set lifetime for public deployments: `--document-expire-after 24h`. Use `--docum
 
 ## Containers
 
-`tools/deploy-docker` provides Compose for PostgreSQL, LibrePaper, and HTTPS proxy. Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 certificates.
+`tools/deploy-docker` provides Compose for PostgreSQL, LibrePaper, and HTTPS proxy. Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 certificates. Other names, such as `www`, get a 421 from the server: redirect them in the `Caddyfile` (example at its end).
 
 ```sh
 cd tools/deploy-docker
 cp .env.example .env
-# Edit .env: set DOMAIN, ACME_EMAIL, POSTGRES_PASSWORD, LIBREPAPER_PUBLISHERS,
-# and at least one of LIBREPAPER_GITHUB_CLIENT_ID or LIBREPAPER_GOOGLE_CLIENT_ID
+# Edit .env: set LIBREPAPER_VERSION (v0.1.0 or later), DOMAIN, ACME_EMAIL,
+# POSTGRES_PASSWORD, LIBREPAPER_PUBLISHERS, and at least one of
+# LIBREPAPER_GITHUB_CLIENT_ID or LIBREPAPER_GOOGLE_CLIENT_ID
 docker compose up -d
 ```
 

@@ -48,7 +48,7 @@ Both volumes, together, at one instant. `docker compose exec` the backup
 command rather than copying the volume out from under a running server:
 
 ```sh
-docker compose exec librepaper librepaper admin backup create \
+docker compose exec librepaper librepaper admin backup \
   --data-directory /var/lib/librepaper /var/backups/librepaper/$(date +%F)
 ```
 
