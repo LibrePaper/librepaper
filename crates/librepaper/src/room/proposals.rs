@@ -38,8 +38,8 @@ use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
 use loro::{
-    Container, ContainerID, ContainerTrait, Frontiers, JsonMapOp, JsonOpContent, LoroDoc,
-    LoroValue, PeerID, TextDelta, ValueOrContainer,
+    Container, ContainerID, ContainerTrait, ContainerType, Frontiers, JsonMapOp, JsonOpContent,
+    LoroDoc, LoroValue, PeerID, TextDelta, ValueOrContainer,
 };
 use uuid::Uuid;
 
@@ -305,7 +305,7 @@ fn validate_proposed_changes(
                                 "a proposal may only add a new text file".into(),
                             ));
                         };
-                        if !matches!(branch.get_container(id.clone()), Some(Container::Text(_))) {
+                        if id.container_type() != ContainerType::Text {
                             return Err(ProposalError::Failed(
                                 "a proposal may only add a new text file".into(),
                             ));
@@ -838,19 +838,7 @@ pub fn carry_decisions(
     out
 }
 
-/// Applies the accepted part of a decided proposal and returns its single
-/// update. The last decision triggers this atomically; fully declined proposals
-/// are discarded without importing their branch.
-///
-/// `declined` names hunks by the index [`hunks`] gave them. `against` is the
-/// tip the reviewer's decisions were computed from: if the proposal has moved
-/// since, the decisions describe a diff that no longer exists and are refused
-/// rather than applied to text the reviewer never saw.
-///
-/// Declined hunks are reverted on the rebuilt private branch at its exact tip.
-/// This preserves the proposal's CRDT identities while locating its inverse,
-/// then imports the final branch into the current document in one operation.
-/// Called from `DecideProposalHunk::evaluate` and the suggestion adapters.
+/// Refuses to merge historical file-index operations whose IDs are now occupied.
 fn validate_new_file_keys_available(
     current: &LoroDoc,
     branch: &LoroDoc,
@@ -895,6 +883,19 @@ fn validate_new_file_keys_available(
     Ok(())
 }
 
+/// Applies the accepted part of a decided proposal and returns its single
+/// update. The last decision triggers this atomically; fully declined proposals
+/// are discarded without importing their branch.
+///
+/// `declined` names hunks by the index [`hunks`] gave them. `against` is the
+/// tip the reviewer's decisions were computed from: if the proposal has moved
+/// since, the decisions describe a diff that no longer exists and are refused
+/// rather than applied to text the reviewer never saw.
+///
+/// Declined hunks are reverted on the rebuilt private branch at its exact tip.
+/// This preserves the proposal's CRDT identities while locating its inverse,
+/// then imports the final branch into the current document in one operation.
+/// Called from `DecideProposalHunk::evaluate` and the suggestion adapters.
 pub fn resolve(
     doc: &LoroDoc,
     proposal: &Proposal,
