@@ -55,18 +55,9 @@
   let chosenAgent = $state("");
   let assistant = $state({ running: false, agent: "", access: "" });
   let pairProblem = $state("");
-  // The local app's state drives the whole connection panel, so this view
-  // holds its own subscription and asks once itself. Subscribing alone only
-  // schedules the periodic reconnect, so a panel that waited for someone
-  // else's probe would sit on "install the app" for up to fifteen seconds
-  // with the app already running.
+  // The shared local-app state drives this panel. Watching it reflects probes
+  // started elsewhere; the Connect action below is what contacts the app.
   $effect(() => companion.watch());
-  // Which document the local app is asked about is page-level state the
-  // Reader sets when it loads one; this panel does not reach for it. The
-  // probe does belong here: the panel is only mounted once the reader opens
-  // it, so asking then is a response to their gesture rather than something
-  // opening a document does on its own.
-  onMount(() => { void local.probe().catch(() => {}); });
   const paired = $derived(companion.status?.state === "connected");
   const chosenInstalled = $derived(installed.find((entry) => entry.id === chosenAgent) || null);
   // The four access levels, as a choice rather than four commands: each row
