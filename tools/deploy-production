@@ -22,6 +22,16 @@ note() { printf '    %s%s%s\n' "$dim" "$*" "$reset"; }
 
 die() { printf '%sdeploy-production: %s%s\n' "$red" "$*" "$reset" >&2; exit 1; }
 key() { sops --decrypt --extract "[\"$1\"]" tools/deploy-keys.yaml; }
+required_key() {
+	local name="$1" value
+	if ! value=$(key "$name" 2>/dev/null); then
+		die "could not decrypt required key $name in tools/deploy-keys.yaml"
+	fi
+	if [[ ! "$value" =~ [^[:space:]] ]] || [[ "${value,,}" =~ ^[[:space:]]*(null|~)[[:space:]]*$ ]]; then
+		die "required key $name in tools/deploy-keys.yaml is empty or null"
+	fi
+	printf '%s' "$value"
+}
 
 site_build() {
 	step "Site: make site (app links point at https://$APP)"
@@ -81,6 +91,8 @@ verify() {
 		printf '\n'
 	fi
 	ok "answers"
+	verify_oauth_redirect github 'https://github.com/login/oauth/authorize?'
+	verify_oauth_redirect google 'https://accounts.google.com/o/oauth2/v2/auth?'
 
 	step "Site: https://$SITE"
 	curl -fs -o /dev/null "https://$SITE/start.html" || die "https://$SITE/start.html did not answer: is the site uploaded?"
@@ -110,6 +122,18 @@ verify() {
 	ssh "$HOST" 'cd librepaper && docker compose logs --tail 50'
 }
 
+verify_oauth_redirect() {
+	local provider="$1" expected="$2" result code location
+	if ! result=$(curl -s -o /dev/null -w '%{http_code}\t%{redirect_url}' --max-time 15 "https://$APP/auth/login/$provider"); then
+		die "could not check the $provider OAuth redirect at https://$APP/auth/login/$provider"
+	fi
+	IFS=$'\t' read -r code location <<< "$result"
+	if [ "$code" != "302" ] || [[ "$location" != "$expected"* ]]; then
+		die "$provider OAuth route did not redirect to its expected authorization endpoint (HTTP $code)"
+	fi
+	ok "$provider OAuth redirect answers"
+}
+
 deploy() {
 	local version="${1:-v$(sed -n 's/^version = "\(.*\)"/\1/p' crates/librepaper/Cargo.toml | head -n 1)}"
 
@@ -131,16 +155,14 @@ deploy() {
 	ok "$names names -> $ip"
 
 	step "Secrets from tools/deploy-keys.yaml"
-	local acme postgres github_id github_secret
-	acme=$(key PRODUCTION_ACME_EMAIL)
-	postgres=$(key PRODUCTION_POSTGRES_PASSWORD)
-	github_id=$(key PRODUCTION_GITHUB_CLIENT_ID)
-	github_secret=$(key PRODUCTION_GITHUB_CLIENT_SECRET)
-
-	if [ -z "$acme" ] || [ -z "$postgres" ] || [ -z "$github_id" ] || [ -z "$github_secret" ]; then
-		die "a PRODUCTION_* key in tools/deploy-keys.yaml is empty"
-	fi
-	ok "4 keys decrypted (values not shown)"
+	local acme postgres github_id github_secret google_id google_secret
+	acme=$(required_key PRODUCTION_ACME_EMAIL)
+	postgres=$(required_key PRODUCTION_POSTGRES_PASSWORD)
+	github_id=$(required_key PRODUCTION_GITHUB_CLIENT_ID)
+	github_secret=$(required_key PRODUCTION_GITHUB_CLIENT_SECRET)
+	google_id=$(required_key PRODUCTION_GOOGLE_CLIENT_ID)
+	google_secret=$(required_key PRODUCTION_GOOGLE_CLIENT_SECRET)
+	ok "6 keys decrypted (values not shown)"
 
 	site_build
 
@@ -167,8 +189,10 @@ LIBREPAPER_PUBLISHERS=$PUBLISHERS
 LIBREPAPER_COMMENTERS=$COMMENTERS
 LIBREPAPER_GITHUB_CLIENT_ID=$github_id
 LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret
+LIBREPAPER_GOOGLE_CLIENT_ID=$google_id
+LIBREPAPER_GOOGLE_CLIENT_SECRET=$google_secret
 EOF
-	ok "wrote librepaper/.env (mode 600, 9 settings)"
+	ok "wrote librepaper/.env (mode 600, 12 settings)"
 
 	step "Containers: build and start"
 	note "docker compose up -d --build"
