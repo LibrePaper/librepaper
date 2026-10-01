@@ -21,11 +21,31 @@ fn identity_matches(identity: &Value, account_id: &str) -> bool {
     identity.get("id").and_then(Value::as_str) == Some(account_id)
 }
 
+fn identity_error(identity: &Value, account_id: &str) -> Option<&'static str> {
+    match identity.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+        None => Some("cached login is no longer valid; sign in again"),
+        Some(id) if id != account_id => Some("cached login account does not match the requested account; sign in again with the intended account"),
+        Some(_) => None,
+    }
+}
+
+fn identity_error_disables_schedule(error: &str) -> bool {
+    error.contains("account does not match")
+}
+
 fn is_due(config: &BackupConfig, now: u64) -> bool {
     config.enabled
         && config.last_attempt.is_none_or(|attempt| {
             now.saturating_sub(attempt) >= config.frequency_minutes.saturating_mul(60)
         })
+}
+
+fn run_result_is_current(current: &BackupConfig, run: &BackupConfig) -> bool {
+    current.enabled
+        && current.run_generation == run.run_generation
+        && current.destination == run.destination
+        && current.origin == run.origin
+        && current.account_id == run.account_id
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -40,6 +60,8 @@ struct BackupConfig {
     error: Option<String>,
     projects: usize,
     updated: usize,
+    #[serde(default)]
+    run_generation: u64,
     revision: u64,
     #[serde(skip)]
     running: bool,
@@ -62,6 +84,7 @@ impl BackupConfig {
             error: None,
             projects: 0,
             updated: 0,
+            run_generation: 0,
             revision: 0,
             running: false,
         }
@@ -183,7 +206,7 @@ impl BackupManager {
             return Err(write_json(401, &json!({"error":"This site is no longer connected."})));
         }
         let key = BackupConfig::key(origin, account_id);
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
         if state.in_flight.contains(&key) {
             return Err(write_json(409, &json!({"error":"A backup is running; choose a new destination when it finishes."})));
         }
@@ -193,6 +216,7 @@ impl BackupManager {
             .entry(key.clone())
             .or_insert_with(|| BackupConfig::new(origin, account_id));
         config.destination = destination;
+        config.run_generation = config.run_generation.wrapping_add(1);
         config.last_attempt = None;
         config.last_success = None;
         config.projects = 0;
@@ -252,11 +276,10 @@ impl BackupManager {
                     .entry(key.clone())
                     .or_insert_with(|| BackupConfig::new(origin, account_id));
                 config.error = Some(error.clone());
-                if error.contains("account does not match")
-                    || !inner.pairing.has_live_pairing(origin)
-                {
+                if identity_error_disables_schedule(&error) || !inner.pairing.has_live_pairing(origin) {
                     if config.enabled {
                         config.revision = config.revision.wrapping_add(1);
+                        config.run_generation = config.run_generation.wrapping_add(1);
                     }
                     config.enabled = false;
                 }
@@ -289,6 +312,9 @@ impl BackupManager {
         config.error = None;
         if previous_enabled != enabled || previous_frequency != frequency_minutes {
             config.revision = config.revision.wrapping_add(1);
+        }
+        if previous_enabled != enabled {
+            config.run_generation = config.run_generation.wrapping_add(1);
         }
         if enabled && !previous_enabled {
             // Enabling always queues an immediate initial save.
@@ -352,13 +378,12 @@ impl BackupManager {
 
     async fn finish_run(&self, inner: &Inner, config: BackupConfig) {
         let key = BackupConfig::key(&config.origin, &config.account_id);
-        let run_revision = config.revision;
         let result = run_backup(inner, &config).await;
         let mut state = self.state.lock().await;
         state.in_flight.remove(&key);
         if let Some(current) = state.configs.get_mut(&key) {
             current.running = false;
-            if current.revision == run_revision { match result {
+            if run_result_is_current(current, &config) { match result {
                 Ok(report) => {
                     current.last_success = Some(unix_now());
                     current.projects = report.projects;
@@ -370,10 +395,11 @@ impl BackupManager {
                     // Identity mismatch or revoked pairing permanently stops
                     // scheduled runs until the user explicitly enables again.
                     if !inner.pairing.has_live_pairing(&current.origin)
-                        || current.error.as_deref().is_some_and(|error| error.contains("account does not match"))
+                        || current.error.as_deref().is_some_and(identity_error_disables_schedule)
                     {
                         if current.enabled {
                             current.revision = current.revision.wrapping_add(1);
+                            current.run_generation = current.run_generation.wrapping_add(1);
                         }
                         current.enabled = false;
                     }
@@ -557,8 +583,8 @@ async fn verify_account(inner: &Inner, origin: &str, account_id: &str) -> Result
         .json()
         .await
         .map_err(|error| format!("could not verify account: {error}"))?;
-    if !identity_matches(&identity, account_id) {
-        return Err("cached login account does not match the requested account; sign in again with the intended account".into());
+    if let Some(error) = identity_error(&identity, account_id) {
+        return Err(error.into());
     }
     if !inner.pairing.has_live_pairing(origin) {
         return Err("This site is no longer connected.".into());
@@ -600,6 +626,7 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                             current.enabled = false;
                             current.error = Some("This site is no longer connected.".into());
                             current.revision = current.revision.wrapping_add(1);
+                            current.run_generation = current.run_generation.wrapping_add(1);
                             changed = true;
                         }
                     } else if !state.in_flight.contains(&key)
@@ -668,6 +695,42 @@ mod tests {
         assert!(!identity_matches(&json!({"id": ""}), &account));
         assert!(!identity_matches(&json!({"handle": "alice"}), &account));
         assert!(!identity_matches(&json!({"id": uuid::Uuid::now_v7().to_string()}), &account));
+        assert!(identity_error(&json!({"id": ""}), &account)
+            .unwrap()
+            .contains("no longer valid"));
+        assert!(identity_error(&json!({"handle": "alice"}), &account)
+            .unwrap()
+            .contains("no longer valid"));
+        assert!(identity_error(&json!({"id": uuid::Uuid::now_v7().to_string()}), &account)
+            .unwrap()
+            .contains("does not match"));
+        assert_eq!(identity_error(&json!({"id": account.clone()}), &account), None);
+        assert!(!identity_error_disables_schedule(
+            identity_error(&json!({"id": ""}), &account).unwrap()
+        ));
+        assert!(identity_error_disables_schedule(
+            identity_error(&json!({"id": uuid::Uuid::now_v7().to_string()}), &account).unwrap()
+        ));
+    }
+
+    #[test]
+    fn frequency_changes_keep_admitted_run_result_but_destination_or_enable_changes_do_not() {
+        let account = uuid::Uuid::now_v7().to_string();
+        let mut run = BackupConfig::new("https://paper.example", &account);
+        run.enabled = true;
+        run.destination = PathBuf::from("/chosen/folder");
+        let mut current = run.clone();
+
+        // Frequency is scheduler policy, not the identity of a running save.
+        current.frequency_minutes = 30;
+        current.revision = current.revision.wrapping_add(1);
+        assert!(run_result_is_current(&current, &run));
+
+        current.run_generation = current.run_generation.wrapping_add(1);
+        assert!(!run_result_is_current(&current, &run));
+        current = run.clone();
+        current.enabled = false;
+        assert!(!run_result_is_current(&current, &run));
     }
 
     #[test]
@@ -746,13 +809,18 @@ mod tests {
         Json(json!({"documents":[{"slug":"scheduled-project","title":"Scheduled Project"}]}))
     }
 
-    async fn fixture_snapshot(
+    async fn fixture_project(
         State(fixture): State<Arc<BackupFixture>>,
         AxumPath(_slug): AxumPath<String>,
     ) -> Json<Value> {
         Json(json!({
-            "digest": fixture.projection.digest(),
-            "projection": fixture.projection.clone(),
+            "schema": 1,
+            "project_digest": fixture.projection.digest(),
+            "slug": "scheduled-project",
+            "title": "Scheduled Project",
+            "format": "markdown",
+            "main": fixture.projection.main,
+            "tree": fixture.projection.clone(),
             "texts":{"project.md": fixture.text.clone()}
         }))
     }
@@ -778,7 +846,7 @@ mod tests {
         let app = Router::new()
             .route("/api/me", get(fixture_me))
             .route("/api/list", post(fixture_list))
-            .route("/api/documents/{slug}/snapshot", get(fixture_snapshot))
+            .route("/api/documents/{slug}/project", get(fixture_project))
             .with_state(fixture);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let server = format!("http://{}", listener.local_addr().unwrap());
