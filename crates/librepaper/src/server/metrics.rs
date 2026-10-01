@@ -805,7 +805,10 @@ mod tests {
             .lines()
             .filter(|line| line.starts_with("librepaper_http_requests_total{"))
             .count();
-        assert_eq!(request_series, ROUTES.len() * METHODS.len() * STATUS_CLASSES.len());
+        assert_eq!(
+            request_series,
+            ROUTES.len() * METHODS.len() * STATUS_CLASSES.len()
+        );
         let histogram_bucket_series = before
             .lines()
             .filter(|line| line.starts_with("librepaper_http_request_duration_seconds_bucket{"))
