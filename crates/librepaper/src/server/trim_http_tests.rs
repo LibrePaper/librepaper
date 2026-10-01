@@ -1,10 +1,11 @@
-//! HTTP-layer coverage for `Trim`: history compaction and cleanup.
+//! HTTP-layer coverage for history trim: compaction and cleanup.
 //!
 //! `POST /api/documents/{slug}/history/trim` (body `{}`, editor auth) compacts
 //! the document to a shallow snapshot and deletes every version label, archive,
-//! and unreferenced figure that is more than one hour old. The response is
-//! JSON with counts of deleted rows and their byte sizes. Refuses with 409 if
-//! a pending proposal exists, without deleting anything.
+//! and unreferenced figure that is more than one hour old. Fresh unreferenced
+//! uploads are kept as a grace period. The response is JSON with counts of
+//! deleted rows and their byte sizes. Refuses with 409 if a pending suggestion
+//! exists, without deleting anything.
 //!
 //! Needs `LIBREPAPER_TEST_POSTGRES_URL` and is skipped without it, like the
 //! rest of the catalogue coverage.
@@ -14,6 +15,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Request};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
@@ -239,7 +241,8 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         .unwrap();
 
     // Step 4: manually add unreferenced figure-c (fresh) via catalog.
-    let figure_c_digest = hex::encode(sha2::Sha256::digest(FIGURE_C));
+    let figure_c_digest_bytes = Sha256::digest(FIGURE_C).to_vec();
+    let figure_c_digest_hex = hex::encode(&figure_c_digest_bytes);
     let (_assets, staged_c) = crate::storage::source::SourceStorage::new(
         deployment.catalog.clone(),
         deployment.server.documents.store.blobs.clone(),
@@ -272,7 +275,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
          WHERE document_id=$1 AND digest=$2",
     )
     .bind(room.document_id)
-    .bind(hex::encode(sha2::Sha256::digest(FIGURE_A)))
+    .bind(Sha256::digest(FIGURE_A).to_vec())
     .execute(deployment.catalog.pool())
     .await
     .unwrap();
@@ -281,10 +284,13 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
          WHERE document_id=$1 AND digest=$2",
     )
     .bind(room.document_id)
-    .bind(hex::encode(sha2::Sha256::digest(FIGURE_B)))
+    .bind(Sha256::digest(FIGURE_B).to_vec())
     .execute(deployment.catalog.pool())
     .await
     .unwrap();
+
+    // Prepare digest hex for figure-b for later reference checks.
+    let figure_b_digest_hex = hex::encode(Sha256::digest(FIGURE_B));
 
     // Record owner usage before trim.
     let usage_before = deployment
@@ -328,18 +334,15 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         archive_bytes,
         "version bytes should match archive byte_length"
     );
-    assert!(body["figures"].is_number(), "response must have figures count");
-    let figures_count = body["figures"].as_i64().unwrap_or(0);
-    assert!(
-        figures_count >= 1,
-        "at least figure-a should be deleted (count: {})",
-        figures_count
+    assert_eq!(
+        body["figures"].as_i64().unwrap_or(0),
+        1,
+        "exactly one figure (figure-a) should be deleted"
     );
-    let figures_bytes = body["figureBytes"].as_i64().unwrap_or(0);
-    assert!(
-        figures_bytes >= FIGURE_A.len() as i64,
-        "figure bytes should include at least figure-a (count: {})",
-        figures_bytes
+    assert_eq!(
+        body["figureBytes"].as_i64().unwrap_or(0),
+        FIGURE_A.len() as i64,
+        "figure bytes should be exactly figure-a size"
     );
 
     // Step 8: verify database state.
@@ -347,31 +350,28 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         "SELECT count(*) FROM document_labels WHERE document_id=$1",
     )
     .bind(room.document_id)
-    .execute(deployment.catalog.pool())
+    .fetch_one(deployment.catalog.pool())
     .await
-    .unwrap()
-    .unwrap_or(0);
+    .unwrap();
     assert_eq!(label_count, 0, "all labels must be deleted");
 
     let archive_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM document_archives WHERE document_id=$1",
     )
     .bind(room.document_id)
-    .execute(deployment.catalog.pool())
+    .fetch_one(deployment.catalog.pool())
     .await
-    .unwrap()
-    .unwrap_or(0);
+    .unwrap();
     assert_eq!(archive_count, 0, "all archives must be deleted");
 
     let figure_a_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM document_assets WHERE document_id=$1 AND digest=$2)",
     )
     .bind(room.document_id)
-    .bind(hex::encode(sha2::Sha256::digest(FIGURE_A)))
-    .execute(deployment.catalog.pool())
+    .bind(Sha256::digest(FIGURE_A).to_vec())
+    .fetch_one(deployment.catalog.pool())
     .await
-    .unwrap()
-    .unwrap_or(false);
+    .unwrap();
     assert!(
         !figure_a_exists,
         "unreferenced old figure-a must be deleted"
@@ -381,11 +381,10 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         "SELECT EXISTS(SELECT 1 FROM document_assets WHERE document_id=$1 AND digest=$2)",
     )
     .bind(room.document_id)
-    .bind(hex::encode(sha2::Sha256::digest(FIGURE_B)))
-    .execute(deployment.catalog.pool())
+    .bind(Sha256::digest(FIGURE_B).to_vec())
+    .fetch_one(deployment.catalog.pool())
     .await
-    .unwrap()
-    .unwrap_or(false);
+    .unwrap();
     assert!(
         figure_b_exists,
         "referenced figure-b (even if old) must be kept"
@@ -395,11 +394,10 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         "SELECT EXISTS(SELECT 1 FROM document_assets WHERE document_id=$1 AND digest=$2)",
     )
     .bind(room.document_id)
-    .bind(&figure_c_digest)
-    .execute(deployment.catalog.pool())
+    .bind(&figure_c_digest_bytes)
+    .fetch_one(deployment.catalog.pool())
     .await
-    .unwrap()
-    .unwrap_or(false);
+    .unwrap();
     assert!(figure_c_exists, "fresh unreferenced figure-c must be kept");
 
     // Step 9: verify owner usage decreased by expected amounts.
@@ -418,7 +416,51 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         expected_freed
     );
 
-    deployment.catalog.close().await;
+    // Step 10: verify acceptance checks for deleted label and current figure references.
+    // Restoring to the deleted label should return 404.
+    let head_frontier = room
+        .log()
+        .with_head(|doc| doc.oplog_frontiers().encode())
+        .await
+        .unwrap();
+    let expected_frontier = crate::room::encode_update(&head_frontier);
+    let restore_request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/documents/{}/restore", deployment.slug))
+        .header("content-type", "application/json")
+        .header(
+            "authorization",
+            headers.get("authorization").unwrap().clone(),
+        )
+        .body(Body::from(
+            json!({
+                "sha": named.id.to_string(),
+                "expected_frontier": expected_frontier,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let restore_response = deployment
+        .server
+        .handle_restore(restore_request, &arrival, &deployment.slug)
+        .await;
+    assert_eq!(
+        restore_response.status(),
+        404,
+        "restoring a deleted label must return 404"
+    );
+
+    // Figure B is still referenced in the current document.
+    assert!(
+        room.references_asset(&figure_b_digest_hex).await.unwrap(),
+        "figure-b must still be referenced as current"
+    );
+
+    // Teardown: drop all room/Arc references before closing catalog.
+    let catalog = deployment.catalog.clone();
+    drop(room);
+    drop(deployment);
+    catalog.close().await;
 }
 
 #[tokio::test]
@@ -512,11 +554,14 @@ async fn a_trim_refuses_while_a_suggestion_is_pending() {
         "SELECT EXISTS(SELECT 1 FROM document_labels WHERE id=$1)",
     )
     .bind(named.id)
-    .execute(deployment.catalog.pool())
+    .fetch_one(deployment.catalog.pool())
     .await
-    .unwrap()
-    .unwrap_or(false);
+    .unwrap();
     assert!(label_exists, "label must survive the refused trim");
 
-    deployment.catalog.close().await;
+    // Teardown: drop all room/Arc references before closing catalog.
+    let catalog = deployment.catalog.clone();
+    drop(room);
+    drop(deployment);
+    catalog.close().await;
 }
