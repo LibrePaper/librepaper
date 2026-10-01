@@ -96,6 +96,55 @@ window.editorCheck = async () => {
     sameView: firstView === finalView,
   };
 };
+window.proposalOverlayMappingCheck = async () => {
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const textId = value.addText("cats.md", "the cat sat.");
+  value.setMain(textId);
+  const base = value.doc.frontiers();
+  const host = document.createElement("section");
+  document.body.append(host);
+  const component = createClassComponent({
+    component: Editor,
+    target: host,
+    props: { session: value, format: "markdown", file: textId },
+  });
+  await tick();
+  component.$set({ review: [{
+    id: "adjacent-cat-replacement",
+    base,
+    hunks: [{ index: 0, start: 4, deleted: 3, inserted: "dog", before: "cat", prefix: "the ", suffix: " sat.", file: textId }],
+  }] });
+  await tick();
+  fromAPeer(value.doc, (peer) => {
+    const text = peer.getMap("files").get(textId);
+    text.insert(4, "very ");
+    text.insert(12, " very");
+  });
+  await tick();
+  await tick();
+  const adjacentView = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  const adjacent = {
+    text: adjacentView.state.doc.toString(),
+    line: host.querySelector(".cm-line")?.textContent || "",
+    removed: [...host.querySelectorAll("del.proposal-removed")].map((node) => node.textContent),
+    added: [...host.querySelectorAll("ins.proposal-added")].map((node) => node.textContent),
+  };
+  fromAPeer(value.doc, (peer) => {
+    const text = peer.getMap("files").get(textId);
+    text.delete(9, 3);
+    text.insert(9, "fox");
+  });
+  await tick();
+  await tick();
+  const stale = {
+    text: EditorView.findFromDOM(host.querySelector(".cm-editor")).state.doc.toString(),
+    overlay: Boolean(host.querySelector("del.proposal-removed, ins.proposal-added")),
+  };
+  component.$destroy();
+  host.remove();
+  value.leave();
+  return { adjacent, stale };
+};
 window.projectedMainFallbackCheck = async () => {
   const outcomes = [];
   for (const mainState of ["absent", "dangling"]) {
@@ -797,6 +846,14 @@ try {
   assert.equal(result.before.caret + 7, result.after.caret);
   assert.equal(result.after.text, "REMOTE LOCAL alpha");
   console.log("editor-browser: file state, undo, caret, and inactive remote text preserved");
+  const proposalOverlay = await evaluate("proposalOverlayMappingCheck()");
+  assert.equal(proposalOverlay.adjacent.text, "the very cat very sat.");
+  assert.equal(proposalOverlay.adjacent.line, "the very catdog very sat.", "the proposal overlay moved away from the original cat");
+  assert.deepEqual(proposalOverlay.adjacent.removed, ["cat"]);
+  assert.deepEqual(proposalOverlay.adjacent.added, ["dog"]);
+  assert.equal(proposalOverlay.stale.text, "the very fox very sat.");
+  assert.equal(proposalOverlay.stale.overlay, false, "an edit inside the replacement remained painted as valid");
+  console.log("editor-browser: adjacent edits preserve proposal overlays, while interior edits make them stale");
   const projectedMain = await evaluate("projectedMainFallbackCheck()");
   assert.deepEqual(projectedMain.map((outcome) => outcome.mainState), ["absent", "dangling"]);
   for (const outcome of projectedMain) {

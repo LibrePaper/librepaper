@@ -169,6 +169,11 @@
         const mapped = locateProposalHunk(document_, { base: proposal.base }, hunk);
         return mapped.stale ? null : {
           ...hunk,
+          // CRDT identity validation already proved that the original hunk
+          // still exists. Its original context can change at either edge
+          // when a coauthor makes an adjacent insertion.
+          prefix: "",
+          suffix: "",
           start: mapped.position ?? hunk.start,
           file: mapped.file_id || hunk.file,
         };
