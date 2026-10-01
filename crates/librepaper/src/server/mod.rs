@@ -67,6 +67,8 @@ mod quota;
 mod reply;
 #[cfg(test)]
 mod restore_http_tests;
+#[cfg(test)]
+mod trim_http_tests;
 mod routes;
 pub mod serve;
 mod sharing;

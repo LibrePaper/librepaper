@@ -1,0 +1,522 @@
+//! HTTP-layer coverage for `Trim`: history compaction and cleanup.
+//!
+//! `POST /api/documents/{slug}/history/trim` (body `{}`, editor auth) compacts
+//! the document to a shallow snapshot and deletes every version label, archive,
+//! and unreferenced figure that is more than one hour old. The response is
+//! JSON with counts of deleted rows and their byte sizes. Refuses with 409 if
+//! a pending proposal exists, without deleting anything.
+//!
+//! Needs `LIBREPAPER_TEST_POSTGRES_URL` and is skipped without it, like the
+//! rest of the catalogue coverage.
+
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::{HeaderMap, HeaderValue, Request};
+use serde_json::json;
+use uuid::Uuid;
+
+use crate::auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
+use crate::config::Configuration;
+use crate::document::store::{DocumentInput, MutationActor, Store};
+use crate::log::Registry;
+use crate::room::Rooms;
+use crate::server::origins::Origins;
+use crate::storage::blob::FsStore;
+use crate::storage::postgres::{Authority, NewAccount, NewProposal, PostgresCatalog};
+
+use super::Server;
+
+const PAPER: &str = "# Figure test\n\nA document with figures.\n";
+const FIGURE_A: &[u8] = b"figure A bytes";
+const FIGURE_B: &[u8] = b"figure B bytes";
+const FIGURE_C: &[u8] = b"figure C bytes";
+
+struct Deployment {
+    server: Server,
+    catalog: Arc<PostgresCatalog>,
+    slug: String,
+    owner_id: Uuid,
+    owner_session_generation: String,
+    _writer: crate::storage::postgres::WriterLease,
+    _objects: tempfile::TempDir,
+}
+
+async fn deployment(slug: &str) -> Option<Deployment> {
+    let catalog = crate::tests::catalog().await?;
+    let writer = catalog.claim_writer().await.unwrap();
+    let owner = catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some("test".into()),
+            provider_subject: Some("owner".into()),
+            handle: "owner".into(),
+            display_name: "Owner".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    let objects = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+        Arc::new(FsStore::new(objects.path(), false));
+    let config = Arc::new(Configuration::default());
+    let registry = Registry::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        "deployment".into(),
+    );
+    let rooms = Rooms::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        registry.clone(),
+    );
+    let (worker, background) = crate::storage::worker::Worker::new(
+        catalog.clone(),
+        blobs.clone(),
+        registry.clone(),
+        config.clone(),
+    );
+    tokio::spawn(worker.run());
+    let store = Store::open_with_catalog(
+        blobs.clone(),
+        config.clone(),
+        catalog.clone(),
+        registry.clone(),
+    );
+    let actor = MutationActor {
+        account_id: owner.id.to_string(),
+        owner_key: "owner".into(),
+        session_generation: owner.session_generation.to_string(),
+        link_hash: String::new(),
+        policy_editor: true,
+        policy_comment: true,
+        automation: false,
+        unowned_publisher: false,
+    };
+    store
+        .put_directory_as_actor(
+            DocumentInput {
+                slug: slug.into(),
+                title: "Figure Test".into(),
+                source: PAPER.into(),
+                source_format: "markdown".into(),
+                main: "paper.md".into(),
+            },
+            vec![("figure-a.png".into(), FIGURE_A.to_vec())],
+            actor,
+        )
+        .await
+        .unwrap();
+    let app = GithubApp {
+        client_id: "test-client".into(),
+        ..GithubApp::default()
+    };
+    let server = Server::new(
+        store,
+        rooms,
+        background,
+        std::collections::HashMap::new(),
+        app,
+        vec![0u8; 32],
+        config.clone(),
+        Policy::parse_publishers("owner").unwrap(),
+        Policy::parse(""),
+    );
+    Some(Deployment {
+        server,
+        catalog,
+        slug: slug.into(),
+        owner_id: owner.id,
+        owner_session_generation: owner.session_generation.to_string(),
+        _writer: writer,
+        _objects: objects,
+    })
+}
+
+fn owner_bearer(deployment: &Deployment) -> HeaderMap {
+    let identity = Identity {
+        provider: PROVIDER_GITHUB.into(),
+        id: deployment.owner_id.to_string(),
+        handle: "owner".into(),
+        name: "Owner".into(),
+        picture: String::new(),
+        session_generation: deployment.owner_session_generation.clone(),
+    };
+    let token = sign_device(&[0u8; 32], &identity, crate::util::now_unix() + 3600);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+    );
+    headers
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_trim_deletes_every_version_and_every_unused_figure() {
+    let Some(deployment) = deployment("trim-versions-and-figures").await else {
+        return;
+    };
+
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+
+    let authority = Authority {
+        principal_key: deployment.owner_id.to_string(),
+        account_id: Some(deployment.owner_id),
+        link_hash: None,
+        session_generation: Some(1),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
+    };
+
+    // Step 1: name the initial document as a version.
+    let named = room
+        .take_label("v1", Some("Version 1".into()), "Owner", &authority, None)
+        .await
+        .unwrap();
+
+    // Step 2: attach an archive to this label for versionBytes test.
+    let archive_bytes = 1234i64;
+    let storage_key = format!("documents/{}/labels/{}.tar.zst", room.document_id, named.id);
+    let archive_object = crate::storage::postgres::ArchiveObject {
+        document_id: room.document_id,
+        storage_key,
+        tree_digest: Some(vec![1; 32]),
+        content_digest: Some(vec![2; 32]),
+        byte_length: archive_bytes,
+    };
+    assert!(deployment
+        .catalog
+        .request_label_archive(room.document_id, named.id)
+        .await
+        .unwrap());
+    assert_eq!(
+        deployment
+            .catalog
+            .attach_label_archive(named.id, &archive_object)
+            .await
+            .unwrap(),
+        crate::storage::postgres::ArchiveAttach::Attached
+    );
+
+    // Step 3: replace project so figure-a becomes unreferenced, and add figure-b (named).
+    // We'll also add figure-c (unreferenced, fresh).
+    let actor = MutationActor {
+        account_id: deployment.owner_id.to_string(),
+        owner_key: "owner".into(),
+        session_generation: deployment.owner_session_generation.clone(),
+        link_hash: String::new(),
+        policy_editor: true,
+        policy_comment: true,
+        automation: false,
+        unowned_publisher: false,
+    };
+    deployment
+        .server
+        .documents
+        .store
+        .put_directory_as_actor(
+            DocumentInput {
+                slug: deployment.slug.clone(),
+                title: "Figure Test".into(),
+                source: PAPER.into(),
+                source_format: "markdown".into(),
+                main: "paper.md".into(),
+            },
+            vec![("figure-b.png".into(), FIGURE_B.to_vec())],
+            actor,
+        )
+        .await
+        .unwrap();
+
+    // Step 4: manually add unreferenced figure-c (fresh) via catalog.
+    let figure_c_digest = hex::encode(sha2::Sha256::digest(FIGURE_C));
+    let (_assets, staged_c) = crate::storage::source::SourceStorage::new(
+        deployment.catalog.clone(),
+        deployment.server.documents.store.blobs.clone(),
+    )
+    .stage_assets(
+        room.document_id,
+        std::iter::once(&crate::storage::source::ProjectFile {
+            path: "figure-c.png".into(),
+            bytes: FIGURE_C.to_vec(),
+            media_type: "application/octet-stream".into(),
+        }),
+    )
+    .await
+    .unwrap();
+    if !staged_c.is_empty() {
+        let mut tx = deployment.catalog.pool().begin().await.unwrap();
+        deployment
+            .catalog
+            .complete_assets_in_transaction(&mut tx, &staged_c)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Step 5: backdate figure-a to 2 hours ago (unreferenced + old, will be deleted).
+    // Figure-b is old but still referenced (in the current project), so it will NOT be deleted.
+    // Figure-c stays fresh (unreferenced + fresh), so it will NOT be deleted.
+    sqlx::query(
+        "UPDATE document_assets SET created_at = now() - interval '2 hours'
+         WHERE document_id=$1 AND digest=$2",
+    )
+    .bind(room.document_id)
+    .bind(hex::encode(sha2::Sha256::digest(FIGURE_A)))
+    .execute(deployment.catalog.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE document_assets SET created_at = now() - interval '2 hours'
+         WHERE document_id=$1 AND digest=$2",
+    )
+    .bind(room.document_id)
+    .bind(hex::encode(sha2::Sha256::digest(FIGURE_B)))
+    .execute(deployment.catalog.pool())
+    .await
+    .unwrap();
+
+    // Record owner usage before trim.
+    let usage_before = deployment
+        .catalog
+        .usage_bytes(Some(deployment.owner_id))
+        .await
+        .unwrap();
+
+    // Step 6: POST trim.
+    let headers = owner_bearer(&deployment);
+    let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/documents/{}/history/trim", deployment.slug))
+        .header("content-type", "application/json")
+        .header(
+            "authorization",
+            headers.get("authorization").unwrap().clone(),
+        )
+        .body(Body::from(json!({}).to_string()))
+        .unwrap();
+    let response = deployment
+        .server
+        .handle_history_trim(request, &arrival, &deployment.slug)
+        .await;
+    assert_eq!(response.status(), 200, "trim must succeed");
+
+    // Step 7: verify response JSON.
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(body["versions"].is_number(), "response must have versions count");
+    assert_eq!(
+        body["versions"].as_i64().unwrap_or(0),
+        1,
+        "one label should be deleted"
+    );
+    assert_eq!(
+        body["versionBytes"].as_i64().unwrap_or(0),
+        archive_bytes,
+        "version bytes should match archive byte_length"
+    );
+    assert!(body["figures"].is_number(), "response must have figures count");
+    let figures_count = body["figures"].as_i64().unwrap_or(0);
+    assert!(
+        figures_count >= 1,
+        "at least figure-a should be deleted (count: {})",
+        figures_count
+    );
+    let figures_bytes = body["figureBytes"].as_i64().unwrap_or(0);
+    assert!(
+        figures_bytes >= FIGURE_A.len() as i64,
+        "figure bytes should include at least figure-a (count: {})",
+        figures_bytes
+    );
+
+    // Step 8: verify database state.
+    let label_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM document_labels WHERE document_id=$1",
+    )
+    .bind(room.document_id)
+    .execute(deployment.catalog.pool())
+    .await
+    .unwrap()
+    .unwrap_or(0);
+    assert_eq!(label_count, 0, "all labels must be deleted");
+
+    let archive_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM document_archives WHERE document_id=$1",
+    )
+    .bind(room.document_id)
+    .execute(deployment.catalog.pool())
+    .await
+    .unwrap()
+    .unwrap_or(0);
+    assert_eq!(archive_count, 0, "all archives must be deleted");
+
+    let figure_a_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM document_assets WHERE document_id=$1 AND digest=$2)",
+    )
+    .bind(room.document_id)
+    .bind(hex::encode(sha2::Sha256::digest(FIGURE_A)))
+    .execute(deployment.catalog.pool())
+    .await
+    .unwrap()
+    .unwrap_or(false);
+    assert!(
+        !figure_a_exists,
+        "unreferenced old figure-a must be deleted"
+    );
+
+    let figure_b_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM document_assets WHERE document_id=$1 AND digest=$2)",
+    )
+    .bind(room.document_id)
+    .bind(hex::encode(sha2::Sha256::digest(FIGURE_B)))
+    .execute(deployment.catalog.pool())
+    .await
+    .unwrap()
+    .unwrap_or(false);
+    assert!(
+        figure_b_exists,
+        "referenced figure-b (even if old) must be kept"
+    );
+
+    let figure_c_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM document_assets WHERE document_id=$1 AND digest=$2)",
+    )
+    .bind(room.document_id)
+    .bind(&figure_c_digest)
+    .execute(deployment.catalog.pool())
+    .await
+    .unwrap()
+    .unwrap_or(false);
+    assert!(figure_c_exists, "fresh unreferenced figure-c must be kept");
+
+    // Step 9: verify owner usage decreased by expected amounts.
+    // Expected freed: archive bytes + figure A bytes (B is kept because it's still referenced).
+    let usage_after = deployment
+        .catalog
+        .usage_bytes(Some(deployment.owner_id))
+        .await
+        .unwrap();
+    let expected_freed = archive_bytes + (FIGURE_A.len() as i64);
+    assert!(
+        usage_after <= usage_before - expected_freed,
+        "usage should decrease by at least archive bytes and old unreferenced figure bytes (before: {}, after: {}, expected freed: {})",
+        usage_before,
+        usage_after,
+        expected_freed
+    );
+
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_trim_refuses_while_a_suggestion_is_pending() {
+    let Some(deployment) = deployment("trim-pending-proposal").await else {
+        return;
+    };
+
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+
+    let authority = Authority {
+        principal_key: deployment.owner_id.to_string(),
+        account_id: Some(deployment.owner_id),
+        link_hash: None,
+        session_generation: Some(1),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
+    };
+
+    // Step 1: create a label so we can verify it survives the refused trim.
+    let named = room
+        .take_label("v1", Some("Version 1".into()), "Owner", &authority, None)
+        .await
+        .unwrap();
+
+    // Step 2: open a pending proposal.
+    let mut tx = deployment.catalog.pool().begin().await.unwrap();
+    let _proposal = deployment
+        .catalog
+        .open_proposal(
+            &mut tx,
+            NewProposal {
+                document_id: room.document_id,
+                id: Uuid::new_v4(),
+                author: "owner".into(),
+                owner_key: "owner".into(),
+                base_frontiers: Vec::new(),
+                tip_frontiers: Vec::new(),
+                branch_bytes: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // Step 3: POST trim.
+    let headers = owner_bearer(&deployment);
+    let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/documents/{}/history/trim", deployment.slug))
+        .header("content-type", "application/json")
+        .header(
+            "authorization",
+            headers.get("authorization").unwrap().clone(),
+        )
+        .body(Body::from(json!({}).to_string()))
+        .unwrap();
+    let response = deployment
+        .server
+        .handle_history_trim(request, &arrival, &deployment.slug)
+        .await;
+    assert_eq!(
+        response.status(),
+        409,
+        "trim must refuse while a proposal is pending"
+    );
+
+    // Step 4: verify error message mentions suggestion/proposal.
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let error_msg = body["error"].as_str().unwrap_or("");
+    assert!(
+        error_msg.contains("suggestion") || error_msg.contains("proposal"),
+        "error message must mention suggestion or proposal (got: {})",
+        error_msg
+    );
+
+    // Step 5: verify label still exists.
+    let label_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM document_labels WHERE id=$1)",
+    )
+    .bind(named.id)
+    .execute(deployment.catalog.pool())
+    .await
+    .unwrap()
+    .unwrap_or(false);
+    assert!(label_exists, "label must survive the refused trim");
+
+    deployment.catalog.close().await;
+}
