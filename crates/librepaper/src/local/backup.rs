@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
-use std::io::{Cursor, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -94,23 +94,50 @@ pub(crate) async fn run_backup(
         let result: Result<bool, String> = async {
             let snapshot = fetch_snapshot(&client, &normalized_server, token, slug).await?;
             let existing = manifest.projects.get(slug).cloned();
-            if let Some(record) = &existing {
+            let snapshot = if let Some(record) = &existing {
                 if record.snapshot == snapshot.digest
                     && record.title == title
                     && record.archive == archive_name(&title, slug)
-                    && owned_archive(&root, &record.archive, slug).is_ok()
                 {
-                    return Ok(false);
+                    let check_root = root.clone();
+                    let check_archive = record.archive.clone();
+                    let check_slug = slug.to_string();
+                    let (snapshot, archive_matches) = tokio::task::spawn_blocking(move || {
+                        let matches = archive_matches_snapshot(
+                            &check_root,
+                            &check_archive,
+                            &check_slug,
+                            &snapshot,
+                        );
+                        (snapshot, matches)
+                    })
+                    .await
+                    .map_err(|error| format!("backup archive verifier failed: {error}"))?;
+                    if archive_matches {
+                        return Ok(false);
+                    }
+                    snapshot
+                } else {
+                    snapshot
                 }
-            }
+            } else {
+                snapshot
+            };
 
             let filename = archive_name(&title, slug);
             let archive_path = checked_child(&root, &filename)?;
             // The archive comment and already-checked namespace marker prove
             // this target belongs to this backup, including crash recovery
             // when ZIP publication succeeded before its manifest update.
-            if archive_path.exists() {
-                if owned_archive(&root, &filename, slug).is_err() {
+            if let Ok(metadata) = fs::symlink_metadata(&archive_path) {
+                let manifest_owns_target = existing.as_ref().is_some_and(|record| {
+                    record.archive == filename
+                        && record.archive == archive_name(&record.title, slug)
+                });
+                if metadata.file_type().is_symlink()
+                    || !metadata.file_type().is_file()
+                    || (!manifest_owns_target && owned_archive(&root, &filename, slug).is_err())
+                {
                     return Err(format!(
                         "refusing to replace unowned backup archive {}",
                         archive_path.display()
@@ -123,9 +150,15 @@ pub(crate) async fn run_backup(
                 .filter(|record| owned_archive(&root, &record.archive, slug).is_ok())
                 .map(|record| root.join(&record.archive));
             let previous_files = match previous_archive {
-                Some(path) => tokio::task::spawn_blocking(move || read_previous_files(path))
+                Some(path) => match tokio::task::spawn_blocking(move || read_previous_files(path))
                     .await
-                    .map_err(|error| format!("previous backup reader failed: {error}"))??,
+                    .map_err(|error| format!("previous backup reader failed: {error}"))?
+                {
+                    Ok(files) => files,
+                    // A damaged archive is repaired from the server snapshot;
+                    // unreadable old entries simply cannot be reused.
+                    Err(_) => BTreeMap::new(),
+                },
                 None => BTreeMap::new(),
             };
             let entries = materialize_snapshot(
@@ -552,6 +585,62 @@ fn owned_archive(root: &Path, filename: &str, slug: &str) -> Result<(), String> 
     Ok(())
 }
 
+fn archive_matches_snapshot(
+    root: &Path,
+    filename: &str,
+    slug: &str,
+    snapshot: &Snapshot,
+) -> bool {
+    if owned_archive(root, filename, slug).is_err() {
+        return false;
+    }
+    let path = match checked_child(root, filename) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut archive = match zip::ZipArchive::new(file) {
+        Ok(archive) => archive,
+        Err(_) => return false,
+    };
+    if archive.len() != snapshot.projection.files.len() {
+        return false;
+    }
+    for (path, expected) in &snapshot.projection.files {
+        let relative = match safe_relative_path(path) {
+            Ok(path) => path,
+            Err(_) => return false,
+        };
+        let entry = match archive.by_name(relative.to_string_lossy().as_ref()) {
+            Ok(entry) if !entry.is_dir() && entry.size() <= MAX_FILE_BYTES as u64 => entry,
+            _ => return false,
+        };
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        if entry
+            .take(MAX_FILE_BYTES.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.len() > MAX_FILE_BYTES
+            || hex::encode(Sha256::digest(&bytes)) != expected.digest
+        {
+            return false;
+        }
+        if expected.kind == "text" {
+            if bytes.len() as u64 != expected.bytes
+                || snapshot.texts.get(path).map(String::as_bytes) != Some(bytes.as_slice())
+            {
+                return false;
+            }
+        } else if expected.kind != "asset" {
+            return false;
+        }
+    }
+    true
+}
+
 fn read_previous_files(path: PathBuf) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let file = File::open(path).map_err(|error| format!("could not open previous backup: {error}"))?;
     let mut archive = zip::ZipArchive::new(file)
@@ -562,7 +651,7 @@ fn read_previous_files(path: PathBuf) -> Result<BTreeMap<String, Vec<u8>>, Strin
     let mut files = BTreeMap::new();
     let mut total = 0usize;
     for index in 0..archive.len() {
-        let mut entry = archive
+        let entry = archive
             .by_index(index)
             .map_err(|error| format!("could not read previous backup entry: {error}"))?;
         let name = entry.name().to_string();
@@ -575,9 +664,7 @@ fn read_previous_files(path: PathBuf) -> Result<BTreeMap<String, Vec<u8>>, Strin
         let available = MAX_PROJECT_BYTES.saturating_sub(total);
         let limit = MAX_FILE_BYTES.min(available);
         let mut bytes = Vec::with_capacity((entry.size() as usize).min(limit));
-        let read_result = entry
-            .take(limit.saturating_add(1) as u64)
-            .read_to_end(&mut bytes);
+        let read_result = entry.take(limit.saturating_add(1) as u64).read_to_end(&mut bytes);
         if read_result.is_ok() && bytes.len() <= limit {
             total += bytes.len();
             files.insert(name, bytes);
@@ -686,8 +773,8 @@ fn normalize_server(server: &str) -> Result<String, String> {
     }
     url.set_query(None);
     url.set_fragment(None);
-    let path = url.path().trim_end_matches('/');
-    url.set_path(path);
+    let path = url.path().trim_end_matches('/').to_string();
+    url.set_path(&path);
     Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
@@ -769,6 +856,16 @@ mod tests {
             let mut projection = crate::document::projection::Projection::default();
             projection.main = "paper.md".into();
             projection.files.insert("paper.md".into(), entry);
+            let asset_bytes = b"\x00\x01\xff";
+            projection.files.insert(
+                "images/plot.bin".into(),
+                crate::document::projection::Entry {
+                    kind: "asset".into(),
+                    id: String::new(),
+                    digest: hex::encode(Sha256::digest(asset_bytes)),
+                    bytes: 0,
+                },
+            );
             Json(json!({
                 "digest": projection.digest(),
                 "projection": projection,
@@ -795,13 +892,13 @@ mod tests {
 
     async fn asset(
         State(state): State<Arc<Fixture>>,
-        AxumPath((_slug, _digest)): AxumPath<(String, String)>,
+        AxumPath((slug, _digest)): AxumPath<(String, String)>,
     ) -> (StatusCode, Vec<u8>) {
         state.asset_hits.fetch_add(1, Ordering::SeqCst);
-        if state.fail_assets.load(Ordering::SeqCst) {
+        if slug == "shared-z9" && state.fail_assets.load(Ordering::SeqCst) {
             return (StatusCode::SERVICE_UNAVAILABLE, Vec::new());
         }
-        let bytes = if state.revision.load(Ordering::SeqCst) == 0 {
+        let bytes = if slug == "paper-a1" || state.revision.load(Ordering::SeqCst) == 0 {
             b"\x00\x01\xff".to_vec()
         } else {
             b"\x00\x02\xff".to_vec()
@@ -867,6 +964,7 @@ mod tests {
             .find(|path| path.extension().is_some_and(|extension| extension == "zip") && path.file_name().unwrap().to_string_lossy().starts_with("Paper--"))
             .unwrap();
         assert_eq!(archive_files(&paper)["paper.md"], b"# paper");
+        assert_eq!(archive_files(&paper)["images/plot.bin"], b"\x00\x01\xff");
         let shared = fs::read_dir(&root)
             .unwrap()
             .filter_map(Result::ok)
@@ -886,6 +984,7 @@ mod tests {
         let second = run_backup(&server, "token", "account-one", output.path()).await.unwrap();
         assert_eq!(first.updated, 2);
         assert_eq!(second.updated, 0);
+        assert_eq!(first_asset_hits, 2);
         assert_eq!(state.asset_hits.load(Ordering::SeqCst), first_asset_hits);
         task.abort();
     }
@@ -917,13 +1016,48 @@ mod tests {
             .find(|path| path.file_name().unwrap().to_string_lossy().starts_with("Shared-Project--"))
             .unwrap();
         let previous = fs::read(&shared).unwrap();
+        let asset_hits_before_update = state.asset_hits.load(Ordering::SeqCst);
         state.revision.store(1, Ordering::SeqCst);
         state.fail_assets.store(true, Ordering::SeqCst);
         let error = run_backup(&server, "token", "account-one", output.path()).await.unwrap_err();
         assert!(error.contains("shared-z9"));
+        assert_eq!(
+            state.asset_hits.load(Ordering::SeqCst),
+            asset_hits_before_update + 1,
+            "the changed text project reused its unchanged asset"
+        );
         assert_eq!(fs::read(shared).unwrap(), previous);
         let paper = archive_name("Paper", "paper-a1");
-        assert!(root.join(paper).exists(), "the independent text project was updated");
+        let updated_paper = archive_files(&root.join(paper));
+        assert_eq!(updated_paper["paper.md"], b"# revised paper");
+        assert_eq!(updated_paper["images/plot.bin"], b"\x00\x01\xff");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn damaged_archive_is_rebuilt_from_manifest_owned_filename() {
+        let (server, _state, task) = start_fixture().await;
+        let output = tempfile::tempdir().unwrap();
+        run_backup(&server, "token", "account-one", output.path()).await.unwrap();
+        let root = namespace(output.path());
+        let paper = root.join(archive_name("Paper", "paper-a1"));
+        fs::write(&paper, b"corrupt ZIP bytes").unwrap();
+        let report = run_backup(&server, "token", "account-one", output.path()).await.unwrap();
+        assert_eq!(report.updated, 1);
+        assert_eq!(archive_files(&paper)["paper.md"], b"# paper");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn owned_orphan_archive_can_recover_when_manifest_is_missing() {
+        let (server, _state, task) = start_fixture().await;
+        let output = tempfile::tempdir().unwrap();
+        run_backup(&server, "token", "account-one", output.path()).await.unwrap();
+        let root = namespace(output.path());
+        fs::remove_file(root.join(MANIFEST_FILE)).unwrap();
+        let report = run_backup(&server, "token", "account-one", output.path()).await.unwrap();
+        assert_eq!(report.updated, 2);
+        assert_eq!(archive_files(&root.join(archive_name("Paper", "paper-a1")))["paper.md"], b"# paper");
         task.abort();
     }
 
