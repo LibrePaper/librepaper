@@ -934,45 +934,22 @@
   // snapshot. Keep it until the joined document is hydrated so the draft
   // manager rebases against the same room state the server used.
   let deferredProposalOutcomes = [];
-  let sourceJoin = { session: null, pending: 0, failed: false };
 
   function sendProposalListWhenReady(active = session) {
-    if (!proposalListNeeded || !active || active !== session || !connected || !active.joined
-        || sourceJoin.session === active && (sourceJoin.pending > 0 || sourceJoin.failed)) return;
+    if (!proposalListNeeded || !active || active !== session || !connected || !active.joined) return;
     proposalListNeeded = false;
     collaboration?.send({ type: "proposal-list" });
   }
 
-  function noteSourceJoinFrame(active) {
-    if (!active) return;
-    if (sourceJoin.session !== active) sourceJoin = { session: active, pending: 0, failed: false };
-    sourceJoin.pending += 1;
-    return sourceJoin;
-  }
-
-  function finishSourceJoinFrame(join) {
-    if (!join || sourceJoin !== join) return;
-    join.pending = Math.max(0, join.pending - 1);
-    finishSourceRejoin(join.session);
-  }
-
-  function failSourceJoinFrame(join) {
-    if (!join || sourceJoin !== join) return;
-    join.pending = Math.max(0, join.pending - 1);
-    join.failed = true;
-  }
-
   function deferProposalFinalization(event) {
     if (!(event?.type === "proposal-discarded" || event?.type === "proposal-decided" && event.resolved)
-        || !session || session.joined !== false
-          && !(sourceJoin.session === session && (sourceJoin.pending > 0 || sourceJoin.failed))) return false;
+        || !session || session.joined !== false) return false;
     deferredProposalOutcomes.push({ session, event });
     return true;
   }
 
   function finishSourceRejoin(active = session) {
-    if (!active || active !== session || active.joined !== true
-        || sourceJoin.session === active && (sourceJoin.pending > 0 || sourceJoin.failed)) return;
+    if (!active || active !== session || active.joined !== true) return;
     const outcomes = deferredProposalOutcomes.filter((item) => item.session === active);
     deferredProposalOutcomes = deferredProposalOutcomes.filter((item) => item.session !== active);
     for (const { event } of outcomes) receive(event);
@@ -1436,16 +1413,14 @@
     // see the current text -- and sends none of it.
     if (event.type === "doc-state") {
       const active = session;
-      const join = noteSourceJoinFrame(active);
       active
         ?.start(event)
         .then(() => {
           if (active !== session) return;
           paintPreview();
-          finishSourceJoinFrame(join);
+          finishSourceRejoin(active);
         })
         .catch((error) => {
-          failSourceJoinFrame(join);
           say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" });
         });
       peers = event.count || 1;
@@ -1460,16 +1435,14 @@
       // referenced base (project-session.js `joinGate`), so it can no longer
       // be assumed synchronous.
       const active = session;
-      const join = noteSourceJoinFrame(active);
       active
         ?.rows(event)
         .then(() => {
           if (active !== session) return;
           paintPreview();
-          finishSourceJoinFrame(join);
+          finishSourceRejoin(active);
         })
         .catch((error) => {
-          failSourceJoinFrame(join);
           say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" });
         });
       return;
@@ -3193,7 +3166,6 @@
       onMessage: receive,
       onConnected: (up) => {
         connected = up;
-        sourceJoin = { session, pending: 0, failed: false };
         if (up && sourceBound) {
           proposalListNeeded = true;
           proposalReconnectNeeded = true;
@@ -3220,7 +3192,6 @@
       },
       onSession: (active) => {
         session = active;
-        sourceJoin = { session: active, pending: 0, failed: false };
         deferredProposalOutcomes = deferredProposalOutcomes.filter((item) => item.session === active);
         attachProposalManager(active);
         proposalListNeeded = true;

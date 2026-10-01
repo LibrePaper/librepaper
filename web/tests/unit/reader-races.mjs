@@ -852,7 +852,6 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   const active = { joined: false };
   const ctx = context({
     proposalListNeeded: true,
-    sourceJoin: { session: active, pending: 0, failed: false },
     session: active,
     connected: true,
     collaboration: { send: (message) => sent.push(message) },
@@ -868,9 +867,9 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.equal(ctx.proposalListNeeded, false);
 }
 
-// A rejected proposal may resolve while reconnecting. Hold its final event
-// and the status query until every source frame already received for this
-// join has finished importing, including rows queued behind doc-state.
+// A rejected proposal may resolve while reconnecting. A base-only doc-state
+// that advertises a head beyond the imported base leaves session.joined false;
+// hold its final event and status query until doc-rows complete that head.
 {
   const timeline = [];
   const active = { joined: false, source: "before reconnect" };
@@ -878,7 +877,6 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
     proposalListNeeded: true,
     proposalReconnectNeeded: true,
     deferredProposalOutcomes: [],
-    sourceJoin: { session: active, pending: 0, failed: false },
     session: active,
     connected: true,
     collaboration: { send: (message) => timeline.push([message.type, active.source]) },
@@ -886,25 +884,24 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
     receive: (event) => timeline.push([event.type, active.source, event.decisions?.[0]?.accepted]),
   });
   vm.runInContext(body("  function sendProposalListWhenReady", "  function attachProposalManager"), ctx);
-  const docStateJoin = ctx.noteSourceJoinFrame(active);
-  const queuedRowsJoin = ctx.noteSourceJoinFrame(active);
   const rejected = {
     type: "proposal-decided", proposal_id: "draft", resolved: true,
     decisions: [{ hunk: 0, accepted: false }],
   };
   assert.equal(ctx.deferProposalFinalization(rejected), true);
 
-  // start() can set joined before the queued rows import finishes. Neither
-  // the final rejection nor the reconnect query may run against that partial
-  // base, where a remote replacement is still missing.
-  active.joined = true;
+  // start() completed after importing the base, but the source session keeps
+  // joined false because its advertised vector includes a coauthor row not
+  // yet dispatched by the socket. Neither the rejection nor reconnect query
+  // may run against that partial base.
   active.source = "doc-state only";
-  ctx.finishSourceJoinFrame(docStateJoin);
+  ctx.finishSourceRejoin(active);
   ctx.sendProposalListWhenReady(active);
   assert.deepEqual(timeline, []);
 
   active.source = "snapshot plus overlapping remote replacement";
-  ctx.finishSourceJoinFrame(queuedRowsJoin);
+  active.joined = true;
+  ctx.finishSourceRejoin(active);
   assert.deepEqual(timeline, [
     ["proposal-decided", "snapshot plus overlapping remote replacement", false],
     ["reconnect", "snapshot plus overlapping remote replacement"],
