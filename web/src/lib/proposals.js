@@ -130,6 +130,7 @@ function hunkify(deltas, oldText = "") {
       // container this delta run came from.
       file: /** @type {string | null} */ (null),
       path: /** @type {string | null} */ (null),
+      new_file: false,
     });
     cursor += deleted;
     at = range.end;
