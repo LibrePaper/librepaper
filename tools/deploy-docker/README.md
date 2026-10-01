@@ -35,6 +35,10 @@ secret for at least one OAuth provider. For GitHub, the callback is
 publishers you know and wrong for one strangers may publish to: that is
 durable hosting for whatever they upload. `LIBREPAPER_EXPIRE_AFTER=30d`.
 
+Compose sets admission defaults of 50 MB of retained storage and 30 uploads per
+publisher per hour, including for older downloaded releases. Override them
+with `LIBREPAPER_QUOTA` and `LIBREPAPER_UPLOADS_PER_HOUR` in `.env` when needed.
+
 ## What is where
 
 | | |

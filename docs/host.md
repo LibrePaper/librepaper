@@ -64,9 +64,9 @@ Storage limits:
 
 | Flag | Default |
 | --- | --- |
-| `--publisher-storage-limit` | 100 MB |
+| `--publisher-storage-limit` | 50 MB |
 | `--deployment-storage-limit` | 5120 MB |
-| `--publisher-upload-limit` | 500 uploads/hour |
+| `--publisher-upload-limit` | 30 uploads/hour |
 | `log_quota_mb` (advanced config) | 32 MB |
 
 ```sh

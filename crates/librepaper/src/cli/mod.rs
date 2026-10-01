@@ -77,7 +77,7 @@ pub(crate) struct ServiceFlags {
     /// Who may comment: 'anyone' (default), 'any' signed-in account, or a list of accounts
     #[arg(long, env = "LIBREPAPER_COMMENTERS", value_name = "WHO")]
     commenters: Option<String>,
-    /// Most one publisher may store across their documents, in megabytes (default 100)
+    /// Most one publisher may store across their documents, in megabytes (default 50)
     #[arg(
         long = "publisher-storage-limit",
         env = "LIBREPAPER_QUOTA",
@@ -91,7 +91,7 @@ pub(crate) struct ServiceFlags {
         value_name = "MB"
     )]
     storage: Option<usize>,
-    /// Most uploads one publisher may make in an hour (default 500)
+    /// Most uploads one publisher may make in an hour (default 30)
     #[arg(
         long = "publisher-upload-limit",
         env = "LIBREPAPER_UPLOADS_PER_HOUR",
