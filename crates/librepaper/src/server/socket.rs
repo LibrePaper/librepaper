@@ -566,13 +566,10 @@ impl Server {
         let mut editor_joined = false;
         // Consecutive ingest refusals on this socket (§5 step 2).
         let mut refusals: u32 = 0;
-        // §12: "link expiry is a per-connection deadline" -- deleted the
-        // sweep that used to re-check every open socket on a timer, on the
-        // grounds that a socket which already knows when its own link
-        // expires can simply close itself at that moment, which is exact and
-        // costs nothing for the (common) socket that presented no link or an
-        // unexpiring one. Armed once, outside the loop, so re-entering
-        // `select!` on every frame does not keep resetting it.
+        // Link expiry is still its own precise per-connection deadline; the
+        // moderation refresh above is separate and only handles state that
+        // can change out of process. Armed once, outside the loop, so
+        // re-entering `select!` on every frame does not keep resetting it.
         let has_deadline = link_expires.is_some();
         let deadline = match link_expires {
             Some(until) => {
@@ -586,8 +583,21 @@ impl Server {
         };
         let link_sleep = tokio::time::sleep_until(deadline);
         tokio::pin!(link_sleep);
+        // Operator moderation can change a project's visibility without an
+        // in-process event. Recheck idle sockets on a bounded cadence so a
+        // hidden project stops sending document frames even when its reader
+        // has no reason to send a frame of their own.
+        let mut authorization_refresh = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(2),
+            Duration::from_secs(2),
+        );
         'reader: loop {
             tokio::select! {
+                _ = authorization_refresh.tick() => {
+                    if !self.reauthorize_connection(&room.slug, socket_id).await {
+                        break 'reader;
+                    }
+                }
                 () = &mut link_sleep, if has_deadline => {
                     let _ = send_outgoing(&tx, Outgoing::Close("link_expired; reconnect".into())).await;
                     break 'reader;
@@ -1666,6 +1676,20 @@ impl Server {
     /// frames use this sender-specific path so an expensive catalogue lookup
     /// cannot make every other socket pay the same PostgreSQL query cost.
     pub async fn reauthorize_connection(&self, slug: &str, socket_id: u64) -> bool {
+        // A short ordinary authorization cache is useful for document
+        // commands, but it must not delay an out-of-process moderation hide.
+        match self.store.catalog.project_is_hidden_by_slug(slug).await {
+            Ok(false) => {}
+            Ok(true) => {
+                self.disconnect_connection(slug, socket_id).await;
+                return false;
+            }
+            Err(error) => {
+                eprintln!("could not check moderation state for {slug}: {error}");
+                self.disconnect_connection(slug, socket_id).await;
+                return false;
+            }
+        }
         let cached = {
             let connections = self.connections.lock().await;
             connections.get(&socket_id).cloned()

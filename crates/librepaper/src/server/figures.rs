@@ -33,29 +33,6 @@ impl Server {
             Ok(result) => result,
             Err(response) => return response,
         };
-        // This durable account counter is shared with project uploads and
-        // forks, so changing browser tokens or hitting another upload route
-        // cannot reset the limit.
-        let account_id = match uuid::Uuid::parse_str(&who.id.id) {
-            Ok(id) => id,
-            Err(_) => return write_json(401, &json!({"error": "sign in to upload"})),
-        };
-        if let Err(error) = self.store.catalog.admit_account_upload(account_id).await {
-            return match error {
-                crate::storage::postgres::Error::Conflict(message)
-                    if message == "account upload rate exceeded" =>
-                {
-                    write_json(
-                        429,
-                        &json!({"error": "too many uploads this hour; try later"}),
-                    )
-                }
-                _ => write_json(
-                    503,
-                    &json!({"error": "could not check the upload limit", "retryable": true}),
-                ),
-            };
-        }
         let Some(length) =
             header_of(&headers, "content-length").and_then(|v| v.parse::<usize>().ok())
         else {
@@ -64,21 +41,75 @@ impl Server {
                 &json!({"error": "a figure upload must declare its content length"}),
             );
         };
+        // The room rejects empty uploads before writing a blob. They do not
+        // consume an hourly admission.
+        if length == 0 {
+            return write_json(400, &json!({"error": "a figure upload may not be empty"}));
+        }
+        // A figure request and a whole-project publish each consume one
+        // durable owner upload event. The database serializes concurrent
+        // admissions across server processes.
+        let owner_id = match uuid::Uuid::parse_str(&who.id.id) {
+            Ok(id) => id,
+            Err(_) => return write_json(401, &json!({"error": "invalid account"})),
+        };
+        let upload_admission = match self.store.catalog.reserve_upload_admission(owner_id).await {
+            Ok(id) => id,
+            Err(crate::storage::postgres::Error::Conflict(_)) => {
+                return write_json(
+                    429,
+                    &json!({"error": "too many uploads this hour; try later"}),
+                )
+            }
+            Err(error) => return plain(503, &error.to_string()),
+        };
         let Ok(body) = to_bytes(request.into_body(), length).await else {
+            let _ = self
+                .store
+                .catalog
+                .cancel_upload_admission(upload_admission)
+                .await;
             return write_json(413, &json!({"error": "that figure is too large"}));
         };
+        if body.is_empty() {
+            let _ = self
+                .store
+                .catalog
+                .cancel_upload_admission(upload_admission)
+                .await;
+            return write_json(400, &json!({"error": "a figure upload may not be empty"}));
+        }
         let (_entry, who) = match self.entry_viewer_in(slug, context, &headers, None).await {
             Ok(result) => result,
-            Err(response) => return response,
+            Err(response) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
+                return response;
+            }
         };
         if !who.at_least(Role::Editor) {
+            let _ = self
+                .store
+                .catalog
+                .cancel_upload_admission(upload_admission)
+                .await;
             return write_json(403, &json!({"error": "edit access changed"}));
         }
         // Atomic object admission accounts for physical bytes and recognizes
         // deduplicated uploads even when the owner's quota is full.
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => return plain(error.status(), &error.client_message()),
+            Err(error) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
+                return plain(error.status(), &error.client_message());
+            }
         };
         let mutation_actor = crate::document::store::MutationActor {
             account_id: who.id.id.clone(),
@@ -95,6 +126,11 @@ impl Server {
             .await;
         match stored {
             Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),
+            // Every error from this point can follow a fresh object write: the
+            // room writes and verifies the immutable blob before attaching it
+            // under quota and authorization checks. Keep the admission even
+            // for a definite catalogue refusal, so it cannot be repeated to
+            // create unbounded orphan objects.
             Err(error) => refused(&format!("could not store a figure for {slug}"), &error),
         }
     }

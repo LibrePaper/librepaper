@@ -62,6 +62,8 @@ mod host_metrics;
 mod isolation_http_tests;
 pub(crate) mod mcp;
 mod metrics;
+#[cfg(test)]
+mod moderation_http_tests;
 mod onboarding;
 pub mod origins;
 mod quarto_checkpoint;

@@ -277,7 +277,8 @@ impl PostgresCatalog {
         let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner).await?;
         let log_usage: i64 = sqlx::query_scalar(
             "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
+             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -398,7 +399,8 @@ impl PostgresCatalog {
         let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
         let log_usage: i64 = sqlx::query_scalar(
             "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
+             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut *tx)
         .await?;

@@ -11,7 +11,9 @@ cp .env.example .env
 # Set LIBREPAPER_VERSION=v0.0.9, DOMAIN, ACME_EMAIL, all three passwords
 # described below, and both client ID and client secret for GitHub or Google
 # OAuth. Any account signed in through either configured provider may publish
-# by default; set LIBREPAPER_PUBLISHERS in .env to restrict that access.
+# and comment by default; set LIBREPAPER_PUBLISHERS or LIBREPAPER_COMMENTERS
+# in .env to restrict either access. Set LIBREPAPER_COMMENTERS=anyone to allow
+# comments without signing in.
 docker compose up -d --build
 ```
 
@@ -34,6 +36,11 @@ requires GitHub or Google OAuth credentials: configure both the client ID and
 client secret for at least one provider. For GitHub, the callback is
 `https://$DOMAIN/auth/callback`; Google's is
 `https://$DOMAIN/auth/callback/google`.
+
+Commenting defaults to any signed-in GitHub or Google account too. Set
+`LIBREPAPER_COMMENTERS` to a login, verified email address, `@domain`, or
+comma-separated allowlist to restrict commenters. Use `anyone` to allow
+comments without signing in.
 
 **Decide about retention.** Off by default, which is right for a server whose
 publishers you know and wrong for one strangers may publish to: that is

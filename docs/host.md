@@ -56,6 +56,38 @@ librepaper admin serve \
 
 Proxy must preserve `Host` header. Only one `admin serve` per database.
 
+### Moderation
+
+Moderation commands connect directly to the deployment database selected by
+`--database-url` or `LIBREPAPER_DATABASE_URL`. Database access is the operator
+authorization boundary.
+
+```sh
+librepaper admin moderate block-account github-handle \
+  --actor "on-call@example.org" --reason "automated abuse investigation"
+librepaper admin moderate unblock-account github-handle \
+  --actor "on-call@example.org" --reason "appeal reviewed"
+
+librepaper admin moderate hide-project abusive-project \
+  --actor "on-call@example.org" --reason "contains abusive material"
+librepaper admin moderate unhide-project abusive-project \
+  --actor "on-call@example.org" --reason "review completed"
+```
+
+- Every command requires `--actor` and `--reason`; `moderation_audit` records
+  the actor, database timestamp, action, target, and reason. Accounts accept a
+  unique handle or UUID.
+- Blocking revokes existing sessions and denies future access and writes.
+  Unblocking permits a fresh sign-in; previously issued credentials stay
+  revoked.
+- Hiding preserves project data, history, assets, and grants while denying
+  document, asset, source, history, export, and new socket access. Unhiding
+  restores its previous access rules.
+- Existing sockets refresh authorization every two seconds and then disconnect;
+  frames already in flight may still arrive.
+
+Preserve `moderation_audit` with normal database backups.
+
 ## Storage
 
 `librepaper admin serve` stores catalog, objects, server state, and session secrets in `--data-directory` (default `librepaper-data`). Back up and restore to an empty database and non-existent path.
@@ -131,12 +163,14 @@ librepaper admin serve --publishers alice,anne@example.org --commenters @example
 | `any` | any signed-in account |
 | `anyone` | any signed-in account |
 
-`--publishers` has no default. `--commenters` defaults to `anyone`. Both are
-ceilings on signed-in accounts, and read, comment, and edit share links require
-sign-in. The official public service allows any signed-in GitHub or Google
-account to publish, with 50 MiB storage and 30 project creation, fork, or figure
-asset uploads per account per rolling hour. Self-hosted deployments can set
-their own publisher and quota policies.
+For a direct `admin serve` deployment, `--publishers` has no default and
+`--commenters` defaults to `anyone`. Both are ceilings on signed-in accounts;
+document access and share links require sign-in. Docker Compose defaults both
+settings to `any`, so any signed-in account may publish and comment. Set either
+environment variable to a comma-separated allowlist to narrow access. The
+official public service allows any signed-in GitHub or Google account to
+publish, with 50 MiB storage and 30 project creation, fork, or figure uploads
+per account per rolling hour. Self-hosted deployments can set their own quotas.
 
 A domain matches exactly: `@example.org` admits `alice@example.org`, not `alice@mail.example.org`.
 
@@ -174,9 +208,12 @@ Set lifetime for public deployments: `--document-expire-after 24h`. Use `--docum
 # From the repository root, configure the release image version in .env.
 cd tools/deploy-docker
 cp .env.example .env
-# Set DOMAIN, ACME_EMAIL, LIBREPAPER_PUBLISHERS, and independent random values
+# Set DOMAIN, ACME_EMAIL, and independent random values
 # for POSTGRES_PASSWORD, POSTGRES_EXPORTER_PASSWORD, LIBREPAPER_ADMIN_PASSWORD.
 # Set both client ID and client secret for GitHub or Google OAuth.
+# The Compose defaults allow any signed-in account to publish and comment;
+# set LIBREPAPER_PUBLISHERS or LIBREPAPER_COMMENTERS to comma-separated
+# allowlists to narrow either permission.
 docker compose up -d --build
 ```
 

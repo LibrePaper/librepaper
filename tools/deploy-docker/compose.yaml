@@ -89,6 +89,9 @@ services:
       # Any signed-in GitHub or Google account may publish by default.
       # Set LIBREPAPER_PUBLISHERS in .env to use an explicit allowlist.
       LIBREPAPER_PUBLISHERS: ${LIBREPAPER_PUBLISHERS:-any}
+      # Any signed-in GitHub or Google account may comment by default.
+      # Set LIBREPAPER_COMMENTERS in .env to restrict who may comment.
+      LIBREPAPER_COMMENTERS: ${LIBREPAPER_COMMENTERS:-any}
       # Keep admission defaults explicit so older downloaded releases get them too.
       # Values in .env override these defaults.
       LIBREPAPER_QUOTA: ${LIBREPAPER_QUOTA:-50}

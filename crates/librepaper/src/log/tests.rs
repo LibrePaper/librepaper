@@ -162,6 +162,8 @@ impl LogCatalog for FakeCatalog {
         &'a self,
         _document_id: Uuid,
         row: FlushRow<'a>,
+        _reserved_keys: &'a [Uuid],
+        _reserved_bytes: i64,
         scratch: super::pending::Reservation,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
         if self.fail_next_flush.swap(false, Ordering::SeqCst) {
@@ -228,6 +230,8 @@ impl LogCatalog for FakeCatalog {
         _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         _document_id: Uuid,
         _row: FlushRow<'a>,
+        _reserved_keys: &'a [Uuid],
+        _reserved_bytes: i64,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
         Box::pin(async {
             unimplemented!("a semantic command needs a real transaction; it needs LIBREPAPER_TEST_POSTGRES_URL")
@@ -688,6 +692,25 @@ async fn a_complete_batch_is_accepted_without_building_a_cache() {
         !sequencer.is_warm().await,
         "ingest must not decode a document to accept a batch (§4.1)"
     );
+}
+
+#[tokio::test]
+async fn retrying_a_buffered_batch_does_not_duplicate_its_reservation_or_row() {
+    let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
+    let batch = Outbox::new().edit();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 1, batch.clone())
+            .await,
+        Ingested::Accepted
+    ));
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 1, batch)
+            .await,
+        Ingested::Accepted
+    ));
+    assert_eq!(sequencer.log_state().await.buffered, 1);
 }
 
 #[tokio::test]

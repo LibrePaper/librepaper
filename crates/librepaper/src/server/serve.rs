@@ -385,6 +385,14 @@ pub async fn serve(options: ServeOptions) {
         .claim_writer()
         .await
         .unwrap_or_else(|error| die(format!("could not claim deployment writer: {error}")));
+    catalog
+        .clear_stale_pending_log_reservations()
+        .await
+        .unwrap_or_else(|error| {
+            die(format!(
+                "could not recover pending source quota reservations: {error}"
+            ))
+        });
     // The registry, the rooms and the background worker all share one
     // catalogue, blob store and configuration; they are wired together here
     // rather than separately so there is exactly one cache of any document

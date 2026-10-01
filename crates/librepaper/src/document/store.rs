@@ -699,13 +699,35 @@ impl Store {
         let Some(document) = catalog.document_by_slug(slug).await? else {
             return Ok(None);
         };
+        // Hidden projects remain active catalogue rows so restoration is
+        // lossless, but no public or authenticated route may resolve them.
+        if catalog.project_is_hidden(document.id).await? {
+            return Ok(None);
+        }
         Ok(Some(entry_from_document(catalog, &document).await?))
     }
 
-    pub async fn list_result(&self) -> Result<Vec<IndexEntry>, CatalogError> {
+    /// Reads a bounded active-document maintenance page, including moderated
+    /// projects that users must not see but retention still processes.
+    /// Returns the next cursor only when another page may exist.
+    pub async fn maintenance_page(
+        &self,
+        before: Option<(time::OffsetDateTime, Uuid)>,
+        limit: u32,
+    ) -> Result<(Vec<IndexEntry>, Option<(time::OffsetDateTime, Uuid)>), CatalogError> {
         let catalog = &self.catalog;
-        let documents = catalog.list_documents(None, 200).await?;
-        entries_from_documents(catalog, &documents).await
+        let documents = catalog
+            .list_documents_for_maintenance(before, i64::from(limit))
+            .await?;
+        let next = if documents.len() == limit as usize {
+            documents
+                .last()
+                .map(|document| (document.updated_at, document.id))
+        } else {
+            None
+        };
+        let entries = entries_from_documents(catalog, &documents).await?;
+        Ok((entries, next))
     }
 
     pub async fn visible_page_with_options(

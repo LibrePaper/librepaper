@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use futures_util::future::BoxFuture;
 use loro::{ExportMode, Frontiers, LoroDoc, VersionVector};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::budget::{estimate, Budget, Busy, Reservation};
@@ -153,6 +154,10 @@ struct Pending {
     /// `Drop`, so there is no path -- error, panic, cancellation -- on which
     /// removing the batch forgets to give the bytes back.
     charge: super::pending::Reservation,
+    /// Durable quota reserved before this batch was acknowledged to peers.
+    durable_charge: i64,
+    durable_key: Uuid,
+    durable_digest: [u8; 32],
 }
 
 /// A decoded document, held for as long as the budget allows. Dropping it
@@ -585,8 +590,20 @@ pub(crate) trait LogCatalog: Send + Sync {
         &'a self,
         document_id: Uuid,
         row: FlushRow<'a>,
+        reserved_keys: &'a [Uuid],
+        reserved_bytes: i64,
         scratch: super::pending::Reservation,
     ) -> BoxFuture<'a, postgres::Result<i64>>;
+    fn reserve_log_bytes<'a>(
+        &'a self,
+        document_id: Uuid,
+        reservation_key: Uuid,
+        bytes: i64,
+        digest: [u8; 32],
+    ) -> BoxFuture<'a, postgres::Result<()>> {
+        let _ = (document_id, reservation_key, bytes, digest);
+        Box::pin(async { Ok(()) })
+    }
     fn persistence_connection(
         &self,
         scratch: super::pending::Reservation,
@@ -604,6 +621,8 @@ pub(crate) trait LogCatalog: Send + Sync {
         tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         row: FlushRow<'a>,
+        reserved_keys: &'a [Uuid],
+        reserved_bytes: i64,
     ) -> BoxFuture<'a, postgres::Result<i64>>;
     /// The compaction base, read through the object store (§4.3). Returns a
     /// plain string error because that is all any caller here does with it.
@@ -646,9 +665,27 @@ impl LogCatalog for PostgresCatalog {
         &'a self,
         document_id: Uuid,
         row: FlushRow<'a>,
+        reserved_keys: &'a [Uuid],
+        reserved_bytes: i64,
         scratch: super::pending::Reservation,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
-        Box::pin(self.flush_log_row_charged(document_id, row, scratch))
+        Box::pin(self.flush_log_row_charged(
+            document_id,
+            row,
+            reserved_keys,
+            reserved_bytes,
+            scratch,
+        ))
+    }
+
+    fn reserve_log_bytes<'a>(
+        &'a self,
+        document_id: Uuid,
+        reservation_key: Uuid,
+        bytes: i64,
+        digest: [u8; 32],
+    ) -> BoxFuture<'a, postgres::Result<()>> {
+        Box::pin(self.reserve_pending_log_bytes(document_id, reservation_key, bytes, digest))
     }
 
     fn persistence_connection(
@@ -682,8 +719,10 @@ impl LogCatalog for PostgresCatalog {
         tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         row: FlushRow<'a>,
+        reserved_keys: &'a [Uuid],
+        reserved_bytes: i64,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
-        Box::pin(self.insert_log_row(tx, document_id, row))
+        Box::pin(self.insert_log_row_reserved(tx, document_id, row, reserved_keys, reserved_bytes))
     }
 
     fn read_base(
@@ -1204,6 +1243,18 @@ impl Sequencer {
             return Ingested::Refused("this server no longer holds this document; reconnect");
         }
 
+        let digest: [u8; 32] = Sha256::digest(&bytes).into();
+        let durable_key = durable_reservation_key(self.document_id, peer_key, client_seq, &digest);
+        if let Some(previous) = inner
+            .buffer
+            .iter()
+            .find(|pending| pending.durable_key == durable_key)
+        {
+            if previous.durable_digest == digest {
+                return Ingested::Accepted;
+            }
+        }
+
         // A batch that carries no changes is not work, and appending it
         // would put a row in the log for nothing.
         //
@@ -1328,6 +1379,23 @@ impl Sequencer {
             }
         };
 
+        let durable_charge = charge
+            .bytes()
+            .saturating_add(frame::ROW_HEADER_BYTES as u64) as i64;
+        if self
+            .catalog
+            .reserve_log_bytes(self.document_id, durable_key, durable_charge, digest)
+            .await
+            .is_err()
+        {
+            return retryable(
+                &inner,
+                "this account's storage is full",
+                "storage_quota",
+                false,
+            );
+        }
+
         // A warm document grows synchronously below. Extend its reservation
         // before importing; if the budget cannot cover the growth, evict
         // this cache and leave the accepted update in the buffer for a
@@ -1381,6 +1449,9 @@ impl Sequencer {
             // bytes and is released when they are retired or the sequencer
             // holding them is dropped.
             charge,
+            durable_charge,
+            durable_key,
+            durable_digest: digest,
         });
         self.note_source_changed(&mut inner);
         Ingested::Accepted
@@ -1467,7 +1538,17 @@ impl Sequencer {
         } else {
             None
         };
-        let (take, acknowledged, encoded, mut scratch, vector, expected, identity) = {
+        let (
+            take,
+            reserved_keys,
+            reserved_bytes,
+            acknowledged,
+            encoded,
+            mut scratch,
+            vector,
+            expected,
+            identity,
+        ) = {
             let inner = self.inner.lock().await;
             // §10: once fenced, this sequencer's view of the log can never
             // be made durable again by writing more to it. Fail fast rather
@@ -1506,6 +1587,14 @@ impl Sequencer {
             };
             (
                 take,
+                inner.buffer[..take]
+                    .iter()
+                    .map(|pending| pending.durable_key)
+                    .collect::<Vec<_>>(),
+                inner.buffer[..take]
+                    .iter()
+                    .map(|pending| pending.durable_charge)
+                    .fold(0_i64, i64::saturating_add),
                 inner.ack_prefix(take),
                 inner.encode_prefix(take),
                 scratch,
@@ -1528,6 +1617,8 @@ impl Sequencer {
                     source_format: identity.as_ref().map(|(format, _)| format.as_str()),
                     main_path: identity.as_ref().map(|(_, main)| main.as_str()),
                 },
+                &reserved_keys,
+                reserved_bytes,
                 driver_scratch,
             )
             .await
@@ -2004,6 +2095,14 @@ impl Sequencer {
         let source_sequence = if acknowledged.is_empty() {
             expected
         } else {
+            let reserved_keys: Vec<_> = inner.buffer[..take]
+                .iter()
+                .map(|pending| pending.durable_key)
+                .collect();
+            let reserved_bytes = inner.buffer[..take]
+                .iter()
+                .map(|pending| pending.durable_charge)
+                .fold(0_i64, i64::saturating_add);
             let written = self
                 .catalog
                 .insert_log_row(
@@ -2016,6 +2115,8 @@ impl Sequencer {
                         source_format: identity.as_ref().map(|(format, _)| format.as_str()),
                         main_path: identity.as_ref().map(|(_, main)| main.as_str()),
                     },
+                    &reserved_keys,
+                    reserved_bytes,
                 )
                 .await?;
             written
@@ -2859,6 +2960,28 @@ fn covers(holder: &VersionVector, wanted: &VersionVector) -> bool {
         holder.partial_cmp(wanted),
         Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
     )
+}
+
+/// Stable across retries of the same batch. Client sequence and payload
+/// digest both participate, so the same sequence may carry distinct updates.
+fn durable_reservation_key(
+    document_id: Uuid,
+    peer_key: &str,
+    client_seq: i64,
+    digest: &[u8; 32],
+) -> Uuid {
+    let mut hash = Sha256::new();
+    hash.update(document_id.as_bytes());
+    hash.update((peer_key.len() as u64).to_be_bytes());
+    hash.update(peer_key.as_bytes());
+    hash.update(client_seq.to_be_bytes());
+    hash.update(digest);
+    let digest = hash.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
 }
 
 fn decode_vector(bytes: &[u8]) -> Result<VersionVector> {

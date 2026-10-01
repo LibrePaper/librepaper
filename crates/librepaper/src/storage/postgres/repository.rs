@@ -585,20 +585,47 @@ impl PostgresCatalog {
         if !(1..=200).contains(&limit) {
             return Err(Error::Invalid("document page limit must be 1..=200".into()));
         }
-        sqlx::query_as!(
-            DocumentRecord,
+        sqlx::query_as::<_, DocumentRecord>(
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,
-                       created_at,updated_at,deleted_at
+                    main_path,update_sequence,created_at,updated_at,deleted_at
+             FROM documents
+             WHERE status='active'
+               AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=documents.id)
+               AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),
+                                      COALESCE($2::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+             ORDER BY updated_at DESC,id DESC LIMIT $3",
+        )
+        .bind(before.map(|value| value.0))
+        .bind(before.map(|value| value.1))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    /// Enumerates active documents for retention and other maintenance tasks.
+    /// Unlike user-facing listing, this includes moderated projects so hiding
+    /// a project cannot exempt it from configured retention.
+    pub async fn list_documents_for_maintenance(
+        &self,
+        before: Option<(OffsetDateTime, Uuid)>,
+        limit: i64,
+    ) -> Result<Vec<DocumentRecord>> {
+        if !(1..=200).contains(&limit) {
+            return Err(Error::Invalid("document page limit must be 1..=200".into()));
+        }
+        sqlx::query_as::<_, DocumentRecord>(
+            "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
+                    main_path,update_sequence,created_at,updated_at,deleted_at
              FROM documents
              WHERE status='active'
                AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),
                                       COALESCE($2::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
              ORDER BY updated_at DESC,id DESC LIMIT $3",
-            before.map(|value| value.0),
-            before.map(|value| value.1),
-            limit,
         )
+        .bind(before.map(|value| value.0))
+        .bind(before.map(|value| value.1))
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
@@ -618,12 +645,12 @@ impl PostgresCatalog {
         // walk every active document when a caller owned only a small subset;
         // each branch gets the cursor and page limit, while UNION removes
         // duplicates when a document is both owned and granted.
-        sqlx::query_as!(
-            DocumentRecord,
+        sqlx::query_as::<_, DocumentRecord>(
             "WITH candidates AS (
                  (SELECT d.id,d.updated_at
                  FROM documents d
                  WHERE d.owner_id=$1 AND d.status='active'
+                   AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)
                    AND (d.updated_at,d.id) <
                        (COALESCE($2::timestamptz,'infinity'),
                         COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
@@ -633,6 +660,7 @@ impl PostgresCatalog {
                  FROM grants g
                  JOIN documents d ON d.id=g.document_id AND d.status='active'
                  WHERE g.account_id=$1
+                   AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)
                    AND (g.source_link_hash IS NULL OR EXISTS (
                      SELECT 1 FROM share_links l
                      WHERE l.document_id=g.document_id
@@ -652,11 +680,11 @@ impl PostgresCatalog {
              FROM documents d
              JOIN candidates c ON c.id=d.id
              ORDER BY d.updated_at DESC,d.id DESC LIMIT $4",
-            account_id,
-            before.map(|value| value.0),
-            before.map(|value| value.1),
-            limit,
         )
+        .bind(account_id)
+        .bind(before.map(|value| value.0))
+        .bind(before.map(|value| value.1))
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
@@ -678,6 +706,55 @@ impl PostgresCatalog {
         .fetch_one(&self.pool)
         .await?;
         Ok((row.documents, row.versions))
+    }
+
+    /// Reserves one account upload from the rolling hourly allowance. The
+    /// account row serializes simultaneous requests from this account; the
+    /// event is removed if the caller's upload fails and kept on success.
+    pub async fn reserve_upload_admission(&self, account_id: Uuid) -> Result<Uuid> {
+        let mut tx = self.begin_writer_transaction().await?;
+        let status =
+            sqlx::query_scalar::<_, String>("SELECT status FROM accounts WHERE id=$1 FOR UPDATE")
+                .bind(account_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(Error::NotFound)?;
+        if status != "active" {
+            return Err(Error::Conflict("account is not active".into()));
+        }
+        sqlx::query(
+            "DELETE FROM upload_admissions WHERE account_id=$1 AND created_at<clock_timestamp()-interval '1 hour'",
+        )
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
+        let recent = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*)::bigint FROM upload_admissions WHERE account_id=$1 AND created_at>=clock_timestamp()-interval '1 hour'",
+        )
+        .bind(account_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if recent >= self.policy.asset_uploads_per_hour {
+            return Err(Error::Conflict("account upload rate exceeded".into()));
+        }
+        let id = new_id();
+        sqlx::query("INSERT INTO upload_admissions(id,account_id,created_at) VALUES($1,$2,clock_timestamp())")
+            .bind(id)
+            .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    /// Releases an upload reservation when the request fails before its
+    /// project or figure bytes are accepted.
+    pub async fn cancel_upload_admission(&self, id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM upload_admissions WHERE id=$1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn complete_asset(&self, input: NewAsset) -> Result<(AssetRecord, bool)> {
@@ -729,6 +806,7 @@ impl PostgresCatalog {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         inputs: &[NewAsset],
     ) -> Result<Vec<(AssetRecord, bool)>> {
+        use sqlx::Row as _;
         if inputs.is_empty() || inputs.len() > 4096 {
             return Err(Error::Invalid("invalid completed asset batch".into()));
         }
@@ -751,15 +829,19 @@ impl PostgresCatalog {
         // The owner is read under the same lock that guards the document's
         // status, so the quota below is measured against the owner this
         // document still has when the assets are written.
-        let document = sqlx::query!(
-            "SELECT status,owner_id FROM documents WHERE id=$1 FOR UPDATE",
-            document_id,
+        let document = sqlx::query(
+            "SELECT d.status,d.owner_id,EXISTS(SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id) AS hidden FROM documents d WHERE d.id=$1 FOR UPDATE",
         )
+        .bind(document_id)
         .fetch_optional(&mut **tx)
         .await?;
         let document = document.ok_or(Error::NotFound)?;
-        match document.status.as_str() {
-            "active" => {}
+        let status: String = document.try_get("status")?;
+        let owner_id: Uuid = document.try_get("owner_id")?;
+        let hidden: bool = document.try_get("hidden")?;
+        match status.as_str() {
+            "active" if !hidden => {}
+            "active" => return Err(Error::NotFound),
             _ => return Err(Error::Conflict("document is being deleted".into())),
         }
         let digests: Vec<Vec<u8>> = inputs.iter().map(|input| input.digest.to_vec()).collect();
@@ -807,11 +889,13 @@ impl PostgresCatalog {
         let incoming_bytes = new_inputs.iter().fold(0_i64, |total, input| {
             total.saturating_add(input.byte_length)
         });
-        let owner_usage = owner_usage_bytes(&mut **tx, document.owner_id).await?;
+        let owner_usage = owner_usage_bytes(&mut **tx, owner_id).await?;
         // The deployment total is blob bytes plus every current base plus
         // every document's uncompacted rows.
-        let log_usage = sqlx::query_scalar!(
-            r#"SELECT (COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0))::bigint AS "total!""#
+        let log_usage: i64 = sqlx::query_scalar(
+            "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut **tx)
         .await?;
@@ -1126,14 +1210,50 @@ impl PostgresCatalog {
         Ok(changed)
     }
 
-    pub async fn usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
+    /// Durable-only usage for the sequencer's soft ledger. Pending source
+    /// reservations are replaced by durable row charges on flush; including
+    /// them here would let that ledger count the same work twice.
+    pub async fn durable_usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
         let Some(account_id) = account_id else {
-            return sqlx::query_scalar!(
+            return sqlx::query_scalar::<_, i64>(
                 r#"SELECT (
                      (SELECT bytes FROM storage_usage WHERE singleton) +
                      COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL), 0) +
                      COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents), 0)
-                   )::bigint AS "total!""#
+                   )::bigint"#,
+            )
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Error::from);
+        };
+        sqlx::query_scalar::<_, i64>(
+            r#"SELECT COALESCE(sum(bytes),0)::bigint FROM (
+                 SELECT a.byte_length AS bytes FROM document_archives a
+                   JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
+                 UNION ALL SELECT a.byte_length FROM document_assets a
+                   JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
+                 UNION ALL SELECT s.snapshot_bytes FROM document_snapshots s
+                   JOIN documents d ON d.id=s.document_id
+                   WHERE d.owner_id=$1 AND s.delete_after IS NULL
+                 UNION ALL SELECT d.uncompacted_update_bytes FROM documents d
+                   WHERE d.owner_id=$1
+               ) usage"#,
+        )
+        .bind(account_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    pub async fn usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
+        let Some(account_id) = account_id else {
+            return sqlx::query_scalar::<_, i64>(
+                r#"SELECT (
+                     (SELECT bytes FROM storage_usage WHERE singleton) +
+                     COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL), 0) +
+                     COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents), 0) +
+                     COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations), 0)
+                   )::bigint"#
             )
             .fetch_one(&self.pool)
             .await
@@ -1198,6 +1318,8 @@ where
                WHERE d.owner_id=$1 AND s.delete_after IS NULL
              UNION ALL SELECT d.uncompacted_update_bytes FROM documents d
                WHERE d.owner_id=$1
+             UNION ALL SELECT r.bytes FROM pending_log_reservations r
+               JOIN documents d ON d.id=r.document_id WHERE d.owner_id=$1
            ) usage"#,
     )
     .bind(account_id)

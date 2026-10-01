@@ -18,6 +18,7 @@ mod document_log;
 mod labels;
 mod marks;
 mod meter;
+mod moderation;
 mod operation_outcomes;
 mod ownership;
 pub(crate) use operation_outcomes::OperationReceipt;
@@ -33,6 +34,7 @@ mod schema_regression_tests;
 pub use commit::Authority;
 pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCoverage};
 pub use labels::{ArchiveAttach, ArchiveObject, LabelRecord, NewLabel, TrimOutcome};
+pub use moderation::ModerationAction;
 pub use ownership::WriterLease;
 pub use proposals::{NewProposal, StoredDecision, StoredProposal, StoredProposalOutcome};
 pub use repository::{
@@ -60,9 +62,9 @@ pub struct StoragePolicy {
 impl Default for StoragePolicy {
     fn default() -> Self {
         Self {
-            owner_bytes: 100 * 1024 * 1024,
+            owner_bytes: 50 * 1024 * 1024,
             deployment_bytes: 5 * 1024 * 1024 * 1024,
-            asset_uploads_per_hour: 500,
+            asset_uploads_per_hour: 30,
         }
     }
 }
