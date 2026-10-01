@@ -105,7 +105,8 @@ LibrePaper org, Settings, Developer settings, OAuth Apps.
 ## Secrets
 
 ```sh
-# PRODUCTION_POSTGRES_PASSWORD: hex, since it sits inside a postgresql:// URL
+# Generate each database, exporter, and Grafana password this way. Production
+# passwords must use letters, digits, underscores, or hyphens only for .env safety.
 openssl rand -hex 24          # without openssl: nix shell nixpkgs#openssl -c openssl rand -hex 24
 sops tools/deploy-keys.yaml   # add the six PRODUCTION_* keys
 git add tools/deploy-keys.yaml && git commit -m "Add production secrets"   # values stay encrypted
@@ -146,7 +147,7 @@ The deploy command bootstraps or updates the `librepaper_metrics` PostgreSQL rol
 
 To rotate the Grafana password, change it from the Grafana account page, update `PRODUCTION_ADMIN_PASSWORD` in SOPS to the same new value, then deploy. Changing only the SOPS value does not alter an existing Grafana account because `GF_SECURITY_ADMIN_PASSWORD` is an initialization setting.
 
-Compose waits for service health during deployment, and the verifier allows Grafana up to a minute to finish its startup before checking the authenticated API. It confirms anonymous API access is denied, ensures `/metrics`, `/api/status`, and Prometheus APIs are not public, checks that all Prometheus scrape targets are up, and waits for recent LibrePaper samples and a fresh successful snapshot. It also validates that the provisioned dashboard has panels.
+Compose waits for service health during deployment, and the verifier allows Grafana up to a minute to finish its startup before checking the authenticated API. It confirms anonymous API access is denied, ensures `/metrics`, `/api/status`, and Prometheus APIs are not public, checks that the LibrePaper, Node Exporter, and PostgreSQL exporter scrape targets are up, and waits for recent LibrePaper samples, a fresh successful snapshot, and `pg_up == 1`. It also validates that the provisioned dashboard has panels.
 
 ## Verify
 
