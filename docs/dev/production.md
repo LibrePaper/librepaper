@@ -77,7 +77,9 @@ done
 LibrePaper org, Settings, Developer settings, OAuth Apps.
 
 - Homepage URL: `https://librepaper.org`
-- Callback URL: `https://librepaper.org/auth/callback`
+- Callback URL: `https://librepaper.org/auth/callback`, the only one
+- Wildcard matching: off (it would also accept `docs.librepaper.org`, which serves published documents, so a document could catch sign-in codes)
+- Device flow: off (`librepaper login` uses the server's own device flow, not GitHub's)
 - Client ID and secret go in SOPS
 
 ## Secrets
