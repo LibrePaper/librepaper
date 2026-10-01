@@ -5,6 +5,7 @@ The official instance at librepaper.org runs `tools/deploy-docker` on an OVHclou
 - Reader: `https://librepaper.org`; documents: `https://docs.librepaper.org`
 - Redirected to the reader: `www.librepaper.org`, `librepaper.com`, `www.librepaper.com` (the server answers 421 to any other host)
 - Host: OVHcloud VPS, Ubuntu 24.04, BHS, user `ubuntu`, kit in `~/librepaper`
+- Shell: in zsh, run `setopt interactivecomments` first, or the `#` lines in these blocks fail as commands
 - Secrets: `tools/deploy-keys.yaml` (SOPS)
   - `PRODUCTION_POSTGRES_PASSWORD`, `PRODUCTION_ACME_EMAIL`
   - `PRODUCTION_GITHUB_CLIENT_ID`, `PRODUCTION_GITHUB_CLIENT_SECRET`
@@ -29,6 +30,9 @@ gh release view "$VERSION" --json assets -q '.assets[].name' | grep linux-musl
 - Firewall: nothing to open by default; if you enable `ufw` or OVHcloud's Edge Network Firewall, allow 22, 80 and 443 (Caddy needs 80 and 443 for Let's Encrypt)
 
 ```sh
+# key not pasted at checkout: install it with the password from the delivery email
+ssh-copy-id ubuntu@VPS_IP
+
 # on the VPS, once
 sudo apt update && sudo apt upgrade -y
 curl -fsSL https://get.docker.com | sudo sh
@@ -85,8 +89,10 @@ LibrePaper org, Settings, Developer settings, OAuth Apps.
 ## Secrets
 
 ```sh
-openssl rand -hex 24          # PRODUCTION_POSTGRES_PASSWORD: hex, since it sits inside a postgresql:// URL
+# PRODUCTION_POSTGRES_PASSWORD: hex, since it sits inside a postgresql:// URL
+openssl rand -hex 24          # without openssl: nix shell nixpkgs#openssl -c openssl rand -hex 24
 sops tools/deploy-keys.yaml   # add the four PRODUCTION_* keys
+git add tools/deploy-keys.yaml && git commit -m "Add production secrets"   # values stay encrypted
 ```
 
 - The Postgres password is fixed at first start; changing it later needs an `ALTER ROLE`
