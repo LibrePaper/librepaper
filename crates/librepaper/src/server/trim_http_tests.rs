@@ -353,8 +353,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
     );
     let version_bytes = body["versionBytes"].as_i64().unwrap();
     assert_eq!(
-        version_bytes,
-        archive_bytes,
+        version_bytes, archive_bytes,
         "version bytes should match archive byte_length"
     );
     assert_eq!(
