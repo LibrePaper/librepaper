@@ -68,7 +68,10 @@ if (url.includes("/auth/login/google")) {
 if (url.includes("/auth/login/")) require("node:fs").appendFileSync(process.env.TEST_CURL_CALLS, JSON.stringify({ url, args }) + "\\n");
 if (url === "https://librepaper.com") { process.stdout.write("HTTP/2 301\\r\\nLocation: https://librepaper.org/\\r\\n\\r\\n"); process.exit(0); }
 const formatAt = args.indexOf("-w");
-if (formatAt >= 0) process.stdout.write(args[formatAt + 1].replaceAll("%{http_code}", status).replaceAll("%{redirect_url}", location));
+if (formatAt >= 0) {
+  const format = args[formatAt + 1].replaceAll("\\\\t", "\\t").replaceAll("\\\\n", "\\n");
+  process.stdout.write(format.replaceAll("%{http_code}", status).replaceAll("%{redirect_url}", location));
+}
 `);
   for (const path of [sops, make, rsync, ssh, dig, curl]) await chmod(path, 0o755);
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -79,9 +82,11 @@ if (formatAt >= 0) process.stdout.write(args[formatAt + 1].replaceAll("%{http_co
     curlCalls,
     envFile,
     run(args, overrides = {}) {
-      return execFileSync(node, [join(root, "tools", "deploy-production"), ...args], {
+      return execFileSync("bash", [join(root, "tools", "deploy-production"), ...args], {
         cwd: root,
         encoding: "utf8",
+        stdio: "pipe",
+        timeout: 10_000,
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH}`,
@@ -163,6 +168,7 @@ test("verify accepts GitHub and Google authorization redirects without following
 test("verify rejects absent and wrong-provider Google authorization redirects without exposing their URLs", async (t) => {
   for (const scenario of [
     { name: "missing redirect", googleStatus: "200", googleLocation: "" },
+    { name: "not found with no Location", googleStatus: "404", googleLocation: "" },
     { name: "GitHub provider redirect", googleStatus: "302", googleLocation: "https://github.com/login/oauth/authorize?client_id=test" },
   ]) {
     await t.test(scenario.name, async (t) => {
