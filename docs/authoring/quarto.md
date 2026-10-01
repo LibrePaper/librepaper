@@ -19,9 +19,29 @@ per document (default: **Quarto preview**):
   through the local app. Document previews may produce HTML, RevealJS, or
   PDF; DOCX is available only as an export.
 
-Rendering runs on your own computer, with Quarto and R or Python installed
-there. Enable local rendering from the preview banner, or start the companion from a
-terminal; see [the companion](../cli.html#the-companion).
+## Install and start the local app
+
+Quarto preview runs on your own computer, with Quarto and R or Python
+installed there. The LibrePaper local app does the rendering. Install it
+(Linux and macOS; details on the [install page](../start.html#install)),
+then start it:
+
+```sh
+# Install
+curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
+
+# Start
+librepaper local start              # start in the background
+librepaper local start --at-login   # also start every time you log in
+librepaper local status             # check it is running and found Quarto
+```
+
+When the server runs on the machine you browse from, it runs the local app
+itself and there is nothing to start. `--no-local` turns that off.
+
+More commands are in [the CLI reference](../cli.html#the-companion).
+
+## Connect the browser
 
 The first time you pick Quarto preview, the browser asks the local app
 to connect. Allow it in the dialog the app shows (on a computer with no display, run the
@@ -36,6 +56,8 @@ Nothing rendered is ever uploaded: the server holds only the
 `.qmd` source and its declared shared resources. Website and book project
 renders are not supported; LibrePaper previews one document at a time.
 
+## Sandbox
+
 Executable previews and renders require operating-system confinement:
 Bubblewrap on Linux or `sandbox-exec` on macOS. LibrePaper refuses to run
 Quarto code when confinement is unavailable. The renderer can see the
@@ -44,8 +66,7 @@ scope are hidden and network access is disabled. For an isolated one-shot
 render, additional local data must be named explicitly as a project-relative
 input; only those inputs are copied into the temporary workspace.
 
-When the server runs on the machine you browse from, it runs the local app
-itself and there is nothing to start. `--no-local` turns that off.
+## Publishing a project
 
 Publishing a project directory includes editorial resources and code, but skips
 generated output directories, execution caches, environments, and raw data by
