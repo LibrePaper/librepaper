@@ -23,6 +23,13 @@ note() { printf '    %s%s%s\n' "$dim" "$*" "$reset"; }
 die() { printf '%sdeploy-production: %s%s\n' "$red" "$*" "$reset" >&2; exit 1; }
 key() { sops --decrypt --extract "[\"$1\"]" tools/deploy-keys.yaml; }
 
+validate_env_passwords() {
+	local secret
+	for secret in "$@"; do
+		[[ "$secret" =~ ^[A-Za-z0-9_-]+$ ]] || die "production passwords must use only ASCII letters, digits, underscore, or hyphen"
+	done
+}
+
 VERIFY_TMP_FILES=()
 cleanup_verify_tmp() {
 	if [ "${#VERIFY_TMP_FILES[@]}" -gt 0 ]; then rm -f -- "${VERIFY_TMP_FILES[@]}"; fi
@@ -126,17 +133,23 @@ monitoring_verify() {
 	escaped_password=$(printf '%s' "$password" | sed 's/\\/\\\\/g; s/"/\\"/g')
 	printf 'user = "admin:%s"\n' "$escaped_password" > "$config"
 	unset password escaped_password
-	local api_tries=0
-	while [ "$api_tries" -lt 30 ]; do
-		api_code=$(curl --connect-timeout 3 --max-time 5 --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
+	local api_deadline=$((SECONDS + 60)) api_remaining waiting_note=false
+	while :; do
+		api_remaining=$((api_deadline - SECONDS))
+		[ "$api_remaining" -gt 0 ] || break
+		api_code=$(curl --connect-timeout "$api_remaining" --max-time "$api_remaining" --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
 		[ "$api_code" = 200 ] && break
 		case "$api_code" in
-			000|502|503) ;;
+			000|502|503)
+				if [ "$waiting_note" = false ]; then
+					note "waiting for Grafana to finish starting (up to 60 seconds)"
+					waiting_note=true
+				fi
+				;;
 			*) die "authenticated Grafana dashboard API returned HTTP $api_code" ;;
 		esac
-		api_tries=$((api_tries + 1))
-		if [ "$api_tries" -eq 1 ]; then note "waiting for Grafana to finish starting (up to 60 seconds)"; fi
-		sleep 2
+		api_remaining=$((api_deadline - SECONDS))
+		if [ "$api_remaining" -gt 0 ]; then sleep "$((api_remaining < 2 ? api_remaining : 2))"; fi
 	done
 	[ "$api_code" = 200 ] || die "authenticated Grafana dashboard API returned HTTP $api_code"
 	DASHBOARDS_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARDS_JSON);process.exit(d.some(x=>x.type==="dash-db"&&x.uid)?0:1)' || die "Grafana has no provisioned dashboard"
@@ -173,7 +186,7 @@ monitoring_verify() {
 		response=$(ssh "$HOST" 'cd librepaper && docker compose exec -T prometheus sh -s' <<PROMETHEUS_API_EOF
 targets=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/targets?state=active') || exit 1
 history=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query_range?query=up%7Bjob%3D%22librepaper%22%7D&start=$start&end=$now&step=15s') || exit 1
-snapshot=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=librepaper_metrics_snapshot_success%3D%3D1%20and%20time%28%29-librepaper_metrics_snapshot_timestamp_seconds%3C60') || exit 1
+		snapshot=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=(librepaper_metrics_snapshot_success%3D%3D1%20and%20time%28%29-librepaper_metrics_snapshot_timestamp_seconds%3C60)%20and%20on%28%29%20(pg_up%3D%3D1)') || exit 1
 printf '%s\n---LIBREPAPER-METRICS---\n%s\n---LIBREPAPER-METRICS---\n%s\n' "\$targets" "\$history" "\$snapshot"
 PROMETHEUS_API_EOF
 ) || die "could not query internal Prometheus APIs"
@@ -181,7 +194,7 @@ PROMETHEUS_API_EOF
 		remainder=${response#*$'\n---LIBREPAPER-METRICS---\n'}
 		history=${remainder%%$'\n---LIBREPAPER-METRICS---\n'*}
 		snapshot=${remainder#*$'\n---LIBREPAPER-METRICS---\n'}
-		if TARGETS_JSON="$targets" HISTORY_JSON="$history" SNAPSHOT_JSON="$snapshot" node -e 'const t=JSON.parse(process.env.TARGETS_JSON).data.activeTargets;const h=JSON.parse(process.env.HISTORY_JSON).data.result;const s=JSON.parse(process.env.SNAPSHOT_JSON).data.result;const healthy=t.length>0&&t.every(x=>x.health==="up");const samples=h.some(x=>{const v=x.values||[];return v.length>=2&&v.slice(-2).every(y=>y[1]==="1")});process.exit(healthy&&samples&&s.length>0?0:1)' 2>/dev/null; then
+		if TARGETS_JSON="$targets" HISTORY_JSON="$history" SNAPSHOT_JSON="$snapshot" node -e 'const t=JSON.parse(process.env.TARGETS_JSON).data.activeTargets;const h=JSON.parse(process.env.HISTORY_JSON).data.result;const s=JSON.parse(process.env.SNAPSHOT_JSON).data.result;const expected=["librepaper","node","postgres"];const jobs=t.map(x=>x.labels&&x.labels.job);const healthy=t.length===expected.length&&t.every(x=>x.health==="up"&&expected.includes(x.labels&&x.labels.job))&&expected.every(x=>jobs.includes(x));const samples=h.some(x=>{const v=x.values||[];return v.length>=2&&v.slice(-2).every(y=>y[1]==="1")});const pgup=s.some(x=>x.value&&x.value[1]==="1");process.exit(healthy&&samples&&pgup?0:1)' 2>/dev/null; then
 			prometheus_ok=true
 			break
 		fi
@@ -298,6 +311,7 @@ deploy() {
 	if [ -z "$acme" ] || [ -z "$postgres" ] || [ -z "$exporter_password" ] || [ -z "$github_id" ] || [ -z "$github_secret" ] || [ -z "$admin_password" ]; then
 		die "a PRODUCTION_* key in tools/deploy-keys.yaml is empty"
 	fi
+	validate_env_passwords "$postgres" "$exporter_password" "$admin_password"
 	ok "6 keys decrypted (values not shown)"
 
 	site_build
@@ -363,6 +377,7 @@ deploy_local() {
 	if [ -z "$acme" ] || [ -z "$postgres" ] || [ -z "$exporter_password" ] || [ -z "$github_id" ] || [ -z "$github_secret" ] || [ -z "$admin_password" ]; then
 		die "a PRODUCTION_* key in tools/deploy-keys.yaml is empty"
 	fi
+	validate_env_passwords "$postgres" "$exporter_password" "$admin_password"
 	ok "6 keys decrypted (values not shown)"
 
 	site_build
