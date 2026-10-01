@@ -18,6 +18,8 @@ ARG TARGETARCH
 # what the healthcheck uses.
 RUN apk add --no-cache ca-certificates wget
 
+# The release's .sha256 file ends with a blank line, which BusyBox sha256sum
+# counts as a failed entry, so blank lines are dropped before the check.
 RUN set -eu; \
 	[ -n "${LIBREPAPER_VERSION:-}" ] || { echo "build: set --build-arg LIBREPAPER_VERSION" >&2; exit 1; }; \
 	case "$TARGETARCH" in \
@@ -30,7 +32,7 @@ RUN set -eu; \
 	cd /tmp; \
 	wget -q "$base/$archive"; \
 	wget -q "$base/$archive.sha256"; \
-	sha256sum -c "$archive.sha256"; \
+	sed '/^$/d' "$archive.sha256" | sha256sum -c -; \
 	tar -xJf "$archive" -C /usr/local/bin --strip-components=1 "librepaper-$target/librepaper"; \
 	rm -f "$archive" "$archive.sha256"; \
 	librepaper --version
