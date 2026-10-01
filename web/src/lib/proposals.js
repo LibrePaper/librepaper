@@ -138,17 +138,43 @@ function hunkify(deltas, oldText = "") {
 }
 
 // Replaying a rejection inverse over a local replacement can duplicate the
-// restored base text. Pure insertions inside a nonempty inverse span remain
-// independent (for example, an X typed into a proposed word), while deletions
-// of that span and inserts at a zero-width restoration gap need manual review.
-function overlapsPostTipInverse(published, branch, tip, inverse) {
+// restored base text. Keep every retained segment as a boundary here: review
+// hunk grouping can bridge a nearby zero-width restoration gap into a replace.
+function inverseChangeSpans(deltas) {
+  const spans = [];
+  let cursor = 0;
+  let start = null;
+  let deleted = 0;
+  const flush = () => {
+    if (start !== null) spans.push({ start, deleted });
+    start = null;
+    deleted = 0;
+  };
+  for (const part of deltas) {
+    if (part.retain !== undefined) {
+      flush();
+      cursor += part.retain;
+    } else if (part.delete !== undefined) {
+      if (start === null) start = cursor;
+      deleted += part.delete;
+      cursor += part.delete;
+    } else if (part.insert !== undefined && start === null) {
+      start = cursor;
+    }
+  }
+  flush();
+  return spans;
+}
+
+// Pure insertions inside a nonempty inverse span remain independent (for
+// example, an X typed into a proposed word). Deletions of that span and
+// inserts at a zero-width restoration gap need manual review.
+function overlapsPostTipInverse(branch, tip, inverse) {
   let later;
   try { later = branch.diff(tip, branch.frontiers(), false); } catch { return true; }
   for (const [containerId, reverted] of inverse) {
     if (reverted.type !== "text") continue;
-    const text = published.getContainerById(containerId)?.toString?.();
-    if (typeof text !== "string") return true;
-    const spans = hunkify(reverted.diff, text);
+    const spans = inverseChangeSpans(reverted.diff);
     const laterText = later.find(([id]) => String(id) === String(containerId))?.[1];
     if (laterText?.type !== "text") continue;
     let oldAt = 0;
@@ -677,7 +703,7 @@ export function createProposals({ session, send, mayEdit }) {
         }
         const inverse = resolvedBranch.diff(resolvedTip, resolvedBase, false)
           .filter(([, diff]) => diff.type === "text");
-        if (overlapsPostTipInverse(resolvedBranch, draft.branch, resolvedTip, inverse)) {
+        if (overlapsPostTipInverse(draft.branch, resolvedTip, inverse)) {
           draft.error = "a local edit overlaps text being restored; draft preserved for manual recovery";
           draft.resolutionBlocked = true;
           draft.resolutionPending = null;

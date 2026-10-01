@@ -472,6 +472,43 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.equal(proposals.text("f1").toString(), "The cat sat.", "the restored text is left untouched");
 }
 
+// A nearby published deletion keeps its zero-width restore gap even though
+// reviewer hunk grouping bridges it to another inverse replacement.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "The cat sat.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.delete(4, 3);
+  branchText.insert(4, "tabby");
+  branchText.delete(10, 3);
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  branchText.insert(10, "sat");
+  const beforeResolution = branchText.toString();
+  const sendsBeforeResolution = sent.length;
+
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip,
+    resolved_base: open.base });
+  assert.equal(proposals.status().recoveryRequired, true, "restoration at a bridged inverse gap requires recovery");
+  assert.equal(proposals.text("f1").toString(), beforeResolution, "the nearby restoration remains untouched");
+  assert.equal(sent.length, sendsBeforeResolution, "the ambiguous restoration is not auto-published");
+}
+
 // A disjoint local replacement still rebases automatically.
 {
   const room = new LoroDoc();
