@@ -12,14 +12,11 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
-import { cpSync, existsSync, readdirSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, rmSync } from "node:fs";
 
 const root = resolve(import.meta.dirname, "../docs/.build");
 const outDir = resolve(import.meta.dirname, "../docs/_site");
 
-// The screenshots the docs and the landing page link to. Nothing builds
-// them; they are only copied beside whatever this build produced, once, at
-// the end, so plugin ordering elsewhere never matters.
 // Where the application lives, which is a different host from this static
 // site. The published site points at the deployment; a local run points at
 // whatever `make demo` started, so the Sign in button reaches a server that
@@ -37,11 +34,19 @@ const pointAtApp = {
   },
 };
 
-const copyImages = {
-  name: "librepaper-site-copy-images",
+// The screenshots the docs and the landing page link to. Nothing builds
+// them; they are only copied beside whatever this build produced, once, at
+// the end, so plugin ordering elsewhere never matters. It also drops what
+// publicDir brings that the site must not serve.
+const finishSite = {
+  name: "librepaper-site-finish",
   closeBundle() {
     const images = resolve(import.meta.dirname, "../docs/images");
     if (existsSync(images)) cpSync(images, resolve(outDir, "images"), { recursive: true });
+    // The reader's service worker rides in with publicDir but belongs to the
+    // app alone: served here, it would keep a browser that once ran the app
+    // on this host serving the cached app shell instead of these pages.
+    rmSync(resolve(outDir, "offline-sw.js"), { force: true });
   },
 };
 
@@ -67,7 +72,7 @@ export default defineConfig({
   // .../librepaper-logo.svg unconditionally, and those absolute paths only
   // resolve if this build carries the same files at the same place.
   publicDir: resolve(import.meta.dirname, "public"),
-  plugins: [pointAtApp, copyImages, tailwindcss(), svelte()],
+  plugins: [pointAtApp, finishSite, tailwindcss(), svelte()],
   define: { __APP_ORIGIN__: JSON.stringify(appOrigin) },
   base: "/",
   build: {
