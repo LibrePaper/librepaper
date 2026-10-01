@@ -473,14 +473,14 @@ fn validate_accepted_hunks_on_branch(
         if !accepted.contains(&hunk.index) {
             continue;
         }
-        let found_id = tip_ids.iter().find_map(|id| {
-            match at_tip.get_map(session::FILES).get(id) {
+        let found_id = tip_ids
+            .iter()
+            .find_map(|id| match at_tip.get_map(session::FILES).get(id) {
                 Some(ValueOrContainer::Container(Container::Text(text))) if text.id() == cid => {
                     Some(id.clone())
                 }
                 _ => None,
-            }
-        });
+            });
         let Some(id) = found_id else {
             return Err(ProposalError::Stale);
         };

@@ -331,8 +331,8 @@ async fn a_suggestion_keeps_its_file_id_across_a_raw_path_collision_and_refineme
                 base: loro::Frontiers::decode(&stored.base_frontiers).unwrap(),
                 tip: loro::Frontiers::decode(&stored.tip_frontiers).unwrap(),
             };
-            let (base, tip) = crate::room::proposals::sides(doc, &proposal, &stored.branch_bytes)
-                .unwrap();
+            let (base, tip) =
+                crate::room::proposals::sides(doc, &proposal, &stored.branch_bytes).unwrap();
             (
                 super::comments::text_for_file_id(&base, &main_id).unwrap(),
                 super::comments::text_for_file_id(&tip, &main_id).unwrap(),

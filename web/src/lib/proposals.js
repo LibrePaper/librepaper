@@ -169,9 +169,9 @@ function inverseChangeSpans(deltas) {
   return spans;
 }
 
-// Pure insertions inside a nonempty inverse span remain independent (for
-// example, an X typed into a proposed word). Deletions of that span and
-// inserts at a zero-width restoration gap need manual review.
+// Independent local insertions survive inverse deletes. Deleting text that
+// the inverse replaces, or inserting at a gap it restores, requires manual
+// review because restoring the base could duplicate the local replacement.
 function overlapsPostTipInverse(branch, tip, inverse) {
   let later;
   try { later = branch.diff(tip, branch.frontiers(), false); } catch { return true; }

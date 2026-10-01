@@ -1878,8 +1878,8 @@ impl RefineSuggestion {
         let file_id = annotation.file_id.as_deref().ok_or_else(stale)?;
         let base_text = text_for_file_id(&at_base, file_id).ok_or_else(stale)?;
         let tip_text = text_for_file_id(&at_tip, file_id).ok_or_else(stale)?;
-        // The same offsets `from_suggestion` was given: a UTF-16 offset into
-        // the file as it read at the base, and the passage found there.
+        // The original UTF-16 offset into this file at the proposal's base,
+        // and the passage found there.
         let at = annotation.start_utf16.unwrap_or_default().max(0) as usize;
         let exact = annotation.exact.clone().unwrap_or_default();
         if replace_utf16_span(&base_text, at, &exact, &expected).as_deref()
