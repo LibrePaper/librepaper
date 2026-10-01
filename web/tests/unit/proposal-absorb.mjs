@@ -250,6 +250,91 @@ import { createProposals } from "../../src/lib/proposals.js";
   proposals.apply({ type: "proposal-updated", proposal_id: id, request_id: update.request_id, tip: update.tip, applied_version: 2 });
   assert.equal(proposals.status().pending, 0, "the retained branch is released only after update acknowledgement");
 }
+
+// Undoing an unacknowledged open keeps its stable id through a retry, then
+// removes the empty server row before accepting new typing.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "A paper.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.insert(0, "New. ");
+  proposals.flush();
+  const open = sent.at(-1);
+  branchText.delete(0, 5);
+  proposals.flush();
+  proposals.apply({ type: "error", request_id: id, message: "temporary open refusal", retry: true });
+
+  await new Promise((resolve) => setTimeout(resolve, 1600));
+  const retried = sent.at(-1);
+  assert.equal(retried.type, "proposal-open", "the retry resends the pending create despite empty-text discard");
+  assert.equal(retried.request_id, id, "the retry preserves the client-chosen create id");
+  assert.equal(retried.resume, false, "the retry remains an initial create");
+  assert.equal(retried.base, open.base, "the retry keeps the immutable open base");
+
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const discard = sent.at(-1);
+  assert.equal(discard.type, "proposal-discard", "the open acknowledgement completes the pending empty discard");
+  proposals.apply({ type: "proposal-discarded", proposal_id: id, request_id: discard.request_id,
+    discarded: true, resolved_tip: open.base, resolved_base: open.base });
+  assert.equal(proposals.drafting(), false, "the empty discarded branch is released");
+
+  proposals.start();
+  proposals.text("f1").insert(0, "Again. ");
+  proposals.flush();
+  const nextOpen = sent.at(-1);
+  assert.equal(nextOpen.type, "proposal-open", "typing after the discard opens a proposal");
+  assert.notEqual(nextOpen.request_id, id, "new typing gets a fresh proposal id");
+}
+
+// An opened discard retries with the same request id after a retryable error.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "A paper.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.insert(0, "New. ");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  branchText.delete(0, 5);
+  proposals.flush();
+  const discard = sent.at(-1);
+  assert.equal(discard.type, "proposal-discard");
+  proposals.apply({ type: "error", request_id: discard.request_id,
+    message: "temporary discard refusal", retry: true });
+
+  await new Promise((resolve) => setTimeout(resolve, 1600));
+  const retried = sent.at(-1);
+  assert.equal(retried.type, "proposal-discard", "the retry resends the outstanding discard");
+  assert.equal(retried.proposal_id, id);
+  assert.equal(retried.request_id, discard.request_id, "the retry keeps the discard idempotency key");
+  proposals.apply({ type: "proposal-discarded", proposal_id: id, request_id: retried.request_id,
+    discarded: true, resolved_tip: update.tip, resolved_base: open.base });
+  assert.equal(proposals.drafting(), false, "the acknowledged discard releases the draft");
+}
+
 // A reconnect queries a saved row even with no pending update, so a final
 // decision missed by this client can still rebase its unsent typing.
 {
@@ -532,8 +617,9 @@ import { createProposals } from "../../src/lib/proposals.js";
   const update = sent.at(-1);
   proposals.apply({ type: "proposal-updated", proposal_id: id,
     request_id: update.request_id, tip: update.tip, applied_version: 2 });
-  branchText.delete(17, 3);
-  branchText.insert(17, "fox");
+  const dogAt = branchText.toString().indexOf("dog");
+  branchText.delete(dogAt, 3);
+  branchText.insert(dogAt, "fox");
 
   proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
     decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip,
