@@ -5,7 +5,7 @@ import * as local from "../../src/lib/companion/client.js";
 const response = (status, body) => ({ status, ok: status >= 200 && status < 300,
   json: async () => body, clone() { return response(status, body); } });
 
-let now, link, storage, claimBody, pairBody, attempts, companionUp, healthUp, permission;
+let now, link, storage, claimBody, pairBody, attempts, companionUp, healthUp, permission, staleCapabilities;
 function inject(claim) {
   local._testing.inject({
     storage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) },
@@ -22,7 +22,13 @@ function inject(claim) {
       if (url.includes("health")) {
         if (!healthUp) throw new TypeError("Failed to fetch");
         return response(200, { service: "librepaper-local", protocol: [2], instance: "restart" }); }
-      if (url.includes("capabilities")) return response(200, { tools: {} });
+      if (url.includes("capabilities")) {
+        if (init.headers.Authorization === "Bearer stale-token") {
+          if (staleCapabilities === "opaque") throw new TypeError("Failed to fetch");
+          if (staleCapabilities === "unauthorized") return response(401, {});
+        }
+        return response(200, { tools: {} });
+      }
       throw new Error(`Unexpected request ${url}`);
     },
   });
@@ -32,7 +38,7 @@ function inject(claim) {
 // ask fails, so `connectApp` falls back to the `librepaper://connect` link.
 function setup(claim) {
   local._testing.reset();
-  now = 0; link = ""; pairBody = null; storage = new Map(); attempts = 0; companionUp = false; healthUp = true; permission = "prompt";
+  now = 0; link = ""; pairBody = null; storage = new Map(); attempts = 0; companionUp = false; healthUp = true; permission = "prompt"; staleCapabilities = null;
   inject(claim);
   local.configure({ origin: "https://papers.example", project: "paper" });
 }
@@ -55,29 +61,60 @@ assert.ok(!link.includes("scoped-token"));
 assert.equal(attempts, 4);
 assert.equal(local.status().state, "connected");
 
-// A restart before reconnecting: the stored pairing survives (it is read
-// straight from storage), but this tab's own memory of being connected does
-// not, so the launch link fires again rather than being skipped.
-const priorLink = link;
+// A restart before reconnecting: a working stored pairing is revalidated and
+// reused without prompting or launching the companion.
 now = 0; link = ""; attempts = 0;
 local._testing.reset();
 inject(() => response(200, {}));
 local.configure({ origin: "https://papers.example", project: "paper" });
 await local.connectApp({ timeoutMs: 10000 });
-assert.notEqual(link, priorLink, "a fresh attempt mints a fresh link");
-const relaunch = new URL(link);
-assert.equal(relaunch.protocol, "librepaper:");
-assert.equal(relaunch.hostname, "launch");
-assert.equal(relaunch.searchParams.get("origin"), "https://papers.example");
-assert.equal(relaunch.searchParams.get("project"), null, "a launch link carries exactly origin, request and return");
-assert.equal(attempts, 0, "an already-paired reconnect polls the probe rather than claiming again");
+assert.equal(link, "", "a working stored pairing needs no launch link");
+assert.equal(attempts, 0, "an already-paired reconnect revalidates without claiming again");
 assert.equal(local.status().state, "connected");
+
+// A healthy app with a stale token can hide its 401 behind a browser CORS
+// TypeError. Explicit Connect clears that unusable local token and starts a
+// fresh native consent request in the same click.
+for (const failure of ["opaque", "unauthorized"]) {
+  setup((n) => (n === 1 ? response(202, {}) : response(200, { token: "fresh-token", expires: 1000000, instance: "restart" })));
+  companionUp = true;
+  staleCapabilities = failure;
+  storage.set("librepaper-local-connections", JSON.stringify({
+    "https://papers.example": { token: "stale-token", expires: 1000000, instance: "restart" },
+  }));
+  if (failure === "opaque") {
+    const background = await local.probe({ force: true });
+    assert.equal(background.state, "reachable", "a background credential-fetch failure keeps the companion reachable");
+    assert.equal(JSON.parse(storage.get("librepaper-local-connections"))["https://papers.example"].token, "stale-token",
+      "a transient background TypeError does not discard the stored pairing");
+  }
+  await local.connectApp({ timeoutMs: 10000 });
+  assert.equal(link, "", `${failure}: reachable companion gets a direct consent request`);
+  assert.equal(pairBody.origin, "https://papers.example");
+  assert.equal(attempts, 2, `${failure}: fresh claim starts in the same Connect call`);
+  assert.equal(local.status().state, "connected");
+  assert.equal(JSON.parse(storage.get("librepaper-local-connections"))["https://papers.example"].token, "fresh-token");
+}
 
 // Already connected: nothing to relaunch for, so `connectApp` resolves at
 // once without firing another link at all.
 link = "";
 await local.connectApp({ timeoutMs: 10000 });
 assert.equal(link, "", "an already-connected browser fires no link");
+
+// A browser denial is a permission problem, not evidence of a stale token.
+// Keep the pairing and let the explicit Connect report the denial directly.
+setup(() => response(200, { token: "unexpected-token", expires: 1000000, instance: "restart" }));
+companionUp = true;
+permission = "denied";
+staleCapabilities = "opaque";
+storage.set("librepaper-local-connections", JSON.stringify({
+  "https://papers.example": { token: "stale-token", expires: 1000000, instance: "restart" },
+}));
+await assert.rejects(local.connectApp(), (error) => error.name === "Refused" && /blocked this site/.test(error.message));
+assert.equal(JSON.parse(storage.get("librepaper-local-connections"))["https://papers.example"].token, "stale-token");
+assert.equal(pairBody, null, "blocked permission does not request fresh consent");
+assert.equal(link, "", "blocked permission does not launch the companion");
 
 // A companion already answering: the page asks it directly even though this
 // tab never probed it, the dialog appears with no link, and the claim picks

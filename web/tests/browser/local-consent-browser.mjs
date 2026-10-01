@@ -134,9 +134,36 @@ try {
   const pairings = JSON.parse(readFileSync(join(stateHome, "librepaper", "local", "pairings.json"), "utf8"));
   const keys = Object.keys(pairings);
   assert.equal(keys.length, 1, `one pairing: ${keys}`);
-  assert.match(keys[0], new RegExp(`^http://localhost:${pagePort}\\|paper-check$`));
+  assert.equal(keys[0], `http://localhost:${pagePort}`, "the companion grant is scoped to this exact browser origin");
 
-  console.log("local-consent-browser: hosted binding by default, Connect asks the companion with no window, terminal approval pairs and connects, one pairing for the reader's origin passed");
+  // Revoke the server-side grant, then leave a stale browser token behind.
+  // The next explicit Connect sees a healthy companion but the real browser
+  // hides its unauthorized capabilities response behind a CORS TypeError.
+  // It must recover with a fresh native approval request in the same click.
+  await b.evaluate("window.local.disconnect().then(() => true)");
+  await until("server-side pairing revoked", async () => {
+    const state = JSON.parse(readFileSync(join(stateHome, "librepaper", "local", "pairings.json"), "utf8"));
+    return Object.keys(state).length === 0;
+  }, 10000);
+  await b.evaluate(`localStorage.setItem("librepaper-local-connections", JSON.stringify({
+    [location.origin]: { token: "stale-browser-token", expires: Date.now() + 60000, instance: "stale" },
+  }))`);
+  assert.equal(await b.evaluate("window.local.probe({ force: true }).then((s) => s.state)"), "reachable",
+    "health succeeds while real-browser CORS hides the stale token's unauthorized capabilities response");
+  appLog = "";
+  await b.evaluate("window.startPairing()");
+  let staleApproveCode = null;
+  await until("fresh approval requested for stale browser token", () => {
+    staleApproveCode = appLog.match(/librepaper local approve (\d{6})/)?.[1] || null;
+    return Boolean(staleApproveCode);
+  }, 10000).catch(async (error) => { throw new Error(`${error.message}\nstatus: ${await b.evaluate("JSON.stringify(window.local.status())")}\nerrors: ${await b.evaluate("JSON.stringify(window.errors)")}\napp log: ${appLog}`); });
+  const staleApproved = spawnSync(binary, ["local", "approve", staleApproveCode], { env: appEnv, encoding: "utf8" });
+  assert.equal(staleApproved.status, 0, `stale-token approve: ${staleApproved.stderr}`);
+  await until("stale browser pairing replaced", () => b.evaluate("window.local.status().state === 'connected'"), 15000);
+  const replacedToken = await b.evaluate("JSON.parse(localStorage.getItem('librepaper-local-connections'))[location.origin].token");
+  assert.notEqual(replacedToken, "stale-browser-token");
+
+  console.log("local-consent-browser: hosted binding, fresh consent, stale-token CORS recovery with same-click terminal approval, one pairing for the reader's origin passed");
 } finally {
   if (b) await b.close();
   app.kill();

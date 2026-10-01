@@ -395,6 +395,7 @@ function initialStatus() {
     capabilities: null,
     checkedAt: null,
     error: null,
+    errorKind: null,
     instructions: instructionsFor("unknown"),
   };
 }
@@ -602,7 +603,7 @@ export async function probe({ force = false } = {}) {
     noteNegative(deps.now());
     return scopedStatus({
       state: "unreachable", address: addr, protocol: null, version, capabilities: null,
-      checkedAt: deps.now(), error, instructions: instructionsFor("unreachable"),
+      checkedAt: deps.now(), error, errorKind: null, instructions: instructionsFor("unreachable"),
     });
   };
   let response;
@@ -614,7 +615,7 @@ export async function probe({ force = false } = {}) {
     noteNegative(deps.now());
     return scopedStatus({
       state, address: addr, protocol: null, version: null, capabilities: null,
-      checkedAt: deps.now(), error: message, instructions: instructionsFor(state),
+      checkedAt: deps.now(), error: message, errorKind: null, instructions: instructionsFor(state),
     });
   }
   if (scope !== pairingKey() || addr !== address()) return currentStatus;
@@ -642,7 +643,7 @@ export async function probe({ force = false } = {}) {
     resetNegativeCache();
     return scopedStatus({
       state: "incompatible", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
-      checkedAt: deps.now(), error: "protocol mismatch", instructions: instructionsFor("incompatible"),
+      checkedAt: deps.now(), error: "protocol mismatch", errorKind: null, instructions: instructionsFor("incompatible"),
     });
   }
   resetNegativeCache();
@@ -650,7 +651,7 @@ export async function probe({ force = false } = {}) {
   // the same "unauthorized" status once the health check itself succeeded.
   const markUnauthorized = () => scopedStatus({
     state: "unauthorized", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
-    checkedAt: deps.now(), error: null, instructions: instructionsFor("unauthorized"),
+    checkedAt: deps.now(), error: null, errorKind: null, instructions: instructionsFor("unauthorized"),
   });
   const pairing = getPairing();
   if (!pairing || !pairing.token) {
@@ -661,7 +662,7 @@ export async function probe({ force = false } = {}) {
     const caps = await capsResponse.json();
     const connectedStatus = scopedStatus({
       state: "connected", address: addr, protocol: body.protocol, version: body.version || null, capabilities: caps, instance: lastInstance,
-      checkedAt: deps.now(), error: null, instructions: instructionsFor("connected"),
+      checkedAt: deps.now(), error: null, errorKind: null, instructions: instructionsFor("connected"),
     });
     scheduleAutoReconnect();
     return connectedStatus;
@@ -669,11 +670,19 @@ export async function probe({ force = false } = {}) {
     if (error?.name === "Unauthorized") {
       return markUnauthorized();
     }
+    if (error?.name === "Unreachable" && await unreachableState(error) === "denied") {
+      return scopedStatus({
+        state: "denied", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
+        checkedAt: deps.now(), error: String(error?.message || error), errorKind: error.name,
+        instructions: instructionsFor("denied"),
+      });
+    }
     // The health check just succeeded, so the service is up; a hiccup
     // verifying the token is not the same claim as "unreachable".
     return scopedStatus({
       state: "reachable", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
-      checkedAt: deps.now(), error: String(error?.message || error), instructions: instructionsFor("reachable"),
+      checkedAt: deps.now(), error: String(error?.message || error), errorKind: error?.name || "Error",
+      instructions: instructionsFor("reachable"),
     });
   }
 }
@@ -719,24 +728,55 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
   checkScope();
 
   if (getPairing()) {
-    if (currentStatus.state !== "connected") {
+    // Revalidate stored credentials before deciding to relaunch the app.
+    // A healthy companion that cannot verify this token is ready for a fresh
+    // consent request; waiting on a launch link here would only keep polling
+    // with credentials the bridge cannot use.
+    const status = await probe({ force: true });
+    checkScope();
+    if (status.state === "connected") { clearPending(); return status; }
+    if (status.state === "unauthorized") {
+      // A 401 already clears the pairing in send(). An unpaired status can
+      // also be reported if the token disappeared between reads.
+      dropPairing();
+    } else if (status.state === "reachable" && status.errorKind === "Unreachable") {
+      // Fetch can hide an authorization failure behind a CORS TypeError. The
+      // successful health response above proves the companion is available;
+      // on an explicit Connect, ask it for fresh consent in this same click.
+      dropPairing();
+    } else if (status.state === "denied") {
+      clearPending();
+      throw named("Refused", status.instructions);
+    } else if (status.state === "incompatible") {
+      clearPending();
+      throw named("Refused", status.instructions);
+    } else {
       deps.launchLink(`librepaper://launch?${new URLSearchParams({ origin, request, return: returnUrl })}`);
     }
-    const started = deps.now();
-    while (deps.now() - started < timeoutMs) {
-      await deps.wait(pollMs, signal);
-      checkScope();
-      const status = await probe({ force: true });
-      checkScope();
-      if (status.state === "connected") { clearPending(); return status; }
-      if (status.state === "unauthorized") throw named("Unauthorized", "The permission expired or was revoked. Try connecting again to approve it.");
-      if (status.state === "denied" || status.state === "incompatible") throw named("Refused", status.instructions);
-      // Nothing has answered since the link fired, so nothing is starting.
-      if (status.state === "unreachable" && deps.now() - started >= startGraceMs) throw named("Unreachable", status.instructions);
+
+    if (getPairing()) {
+      const started = deps.now();
+      while (deps.now() - started < timeoutMs) {
+        await deps.wait(pollMs, signal);
+        checkScope();
+        const retryStatus = await probe({ force: true });
+        checkScope();
+        if (retryStatus.state === "connected") { clearPending(); return retryStatus; }
+        if (retryStatus.state === "unauthorized"
+          || (retryStatus.state === "reachable" && retryStatus.errorKind === "Unreachable")) {
+          dropPairing();
+          break;
+        }
+        if (retryStatus.state === "denied" || retryStatus.state === "incompatible") {
+          throw named("Refused", retryStatus.instructions);
+        }
+        // Nothing has answered since the link fired, so nothing is starting.
+        if (retryStatus.state === "unreachable" && deps.now() - started >= startGraceMs) throw named("Unreachable", retryStatus.instructions);
+      }
+      if (getPairing()) throw named("Unreachable", currentStatus.state === "unreachable"
+        ? currentStatus.instructions
+        : "LibrePaper Companion is running but did not connect. Try connecting again.");
     }
-    throw named("Unreachable", currentStatus.state === "unreachable"
-      ? currentStatus.instructions
-      : "LibrePaper Companion is running but did not connect. Try connecting again.");
   }
 
   // Asked directly first, whatever the last probe said: a stale "unreachable"
