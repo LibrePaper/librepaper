@@ -585,6 +585,87 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.ok(recovery.files.some((file) => file.path === "references.bib" && file.text === "@article{a}"),
     "the recovery export preserves identity-only edits even when visible text is unchanged");
 }
+// A mixed resolution reaches a retained draft while no Editor is tracking it.
+// Late acknowledgements and errors must preserve its recovery export.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const source = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  source.insert(0, "The cat sat.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const main = proposals.text("f1");
+  main.delete(4, 3);
+  main.insert(4, "tabby");
+  const bib = proposals.doc().getMap("files").setContainer("f2", new LoroText());
+  proposals.doc().getMap("paths").set("f2", "references.bib");
+  bib.insert(0, "@article{a}");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  bib.insert(11, "X"); // This text is absent from the unacknowledged update.
+  proposals.stop();
+
+  const decode = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+  const { decodeFrontiers } = await import("loro-crdt");
+  const hunks = proposals.hunksOf({
+    base: decodeFrontiers(decode(open.base)),
+    tip: decodeFrontiers(decode(update.tip)),
+    bytes: decode(update.update),
+  });
+  const mainHunk = hunks.find((hunk) => hunk.file === "f1");
+  const bibHunk = hunks.find((hunk) => hunk.file === "f2");
+  assert.ok(mainHunk && bibHunk, "the proposal contains one hunk in each file");
+
+  const resolved = room.fork();
+  resolved.setPeerId(4n);
+  resolved.import(decode(update.update));
+  resolved.getMap("files").delete("f2");
+  resolved.getMap("paths").delete("f2");
+  resolved.commit();
+  room.import(resolved.export({ mode: "update", from: room.oplogVersion() }));
+  resolved.destroy?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [
+      { hunk: mainHunk.index, accepted: true },
+      { hunk: bibHunk.index, accepted: false },
+    ],
+    resolved_tip: update.tip,
+    resolved_base: open.base,
+  });
+  const recoveryError = proposals.status().error;
+  assert.equal(proposals.status().recoveryRequired, true, "the mixed decision blocks for recovery");
+  proposals.start();
+
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 3 });
+  assert.equal(proposals.status().error, recoveryError, "a delayed open status keeps the recovery explanation");
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 4 });
+  assert.equal(proposals.status().recoveryRequired, true, "a delayed update ack keeps recovery required");
+  assert.equal(proposals.status().error, recoveryError, "the delayed ack keeps the recovery explanation");
+  const recovery = proposals.recoveryTexts().find((draft) => draft.id === id);
+  assert.ok(recovery?.files.some((file) => file.path === "references.bib" && file.text === "@article{a}X"),
+    "the delayed ack keeps the complete declined file available after Editor restart");
+  const sendsBeforeLateError = sent.length;
+  proposals.apply({ type: "error", request_id: id, message: "late update error", retry: true });
+  assert.equal(proposals.status().error, recoveryError, "a late error keeps the recovery explanation");
+  assert.equal(sent.length, sendsBeforeLateError, "a late error does not start a retry");
+  await new Promise((resolve) => setTimeout(resolve, 1600));
+  assert.equal(sent.length, sendsBeforeLateError, "the blocked draft does not emit a delayed retry");
+  const afterLateError = proposals.recoveryTexts().find((draft) => draft.id === id);
+  assert.ok(afterLateError?.files.some((file) => file.path === "references.bib" && file.text === "@article{a}X"),
+    "late acknowledgements and errors retain the exact recovery file");
+}
 // A final rejection received before hydration must remain pending. Once the
 // coauthor's overlapping replacement arrives, re-evaluate against that source
 // identity and preserve the unsent tail for recovery without undoing their text.
