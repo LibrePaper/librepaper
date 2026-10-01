@@ -1064,15 +1064,21 @@
     return { main: projection.main, texts, files, digests };
   }
   function addTextToDoc(doc, path, body = "") {
-    const bytes = new Uint8Array(6);
-    crypto.getRandomValues(bytes);
-    const id = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const existingMainId = projectDirectory(doc, rules ?? null).mainId;
+    const files = doc.getMap("files"), paths = doc.getMap("paths");
+    let id = "";
+    do {
+      const bytes = new Uint8Array(6);
+      crypto.getRandomValues(bytes);
+      const random = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      // With no declared main, projection chooses the first text ID. Keep a
+      // newly imported bibliography after the existing projected main.
+      id = existingMainId ? `${existingMainId}~${random}` : random;
+    } while (files.has(id) || paths.has(id));
     const text = new LoroText();
     if (body) text.insert(0, body);
-    doc.getMap("files").setContainer(id, text);
-    doc.getMap("paths").set(id, path);
-    const meta = doc.getMap("meta");
-    if (!meta.get("main")) meta.set("main", id);
+    files.setContainer(id, text);
+    paths.set(id, path);
     doc.commit({ origin: DIRECTORY_ORIGIN });
     return id;
   }

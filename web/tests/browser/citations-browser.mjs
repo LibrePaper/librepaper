@@ -18,6 +18,7 @@ writeFileSync(entry, [
   "import { EditorView } from " + imports("web/node_modules/@codemirror/view/dist/index.js") + ";",
   "import { createClassComponent } from " + imports("web/node_modules/svelte/src/legacy/legacy-client.js") + ";",
   "import { join as joinSession } from " + imports("web/src/lib/collab.js") + ";",
+  "import { projectDirectory } from " + imports("web/src/lib/projection.js") + ";",
   "import Editor from " + imports("web/src/components/Editor.svelte") + ";",
   "globalThis.LIBREPAPER_MODULES = { bibliography: '/bibliography.wasm' };",
   "const session = joinSession({ send: () => {}, mayEdit: true });",
@@ -28,6 +29,68 @@ writeFileSync(entry, [
   "window.citationReady = async () => { await tick(); return Boolean(document.querySelector('.cm-editor')); };",
   "window.citationPrepare = () => { const view = EditorView.findFromDOM(document.querySelector('.cm-editor')); view.dispatch({ selection: { anchor: view.state.doc.length } }); view.focus(); };",
   "window.citationState = () => { const view = EditorView.findFromDOM(document.querySelector('.cm-editor')); return { popup: Boolean(document.querySelector('.cm-tooltip-autocomplete')), popupText: document.querySelector('.cm-tooltip-autocomplete')?.textContent || '', text: view.state.doc.toString() }; };",
+  `window.zoteroFallbackCheck = async () => {
+    const value = joinSession({ send: () => {}, mayEdit: true });
+    const main = value.addText("paper.md", "See ");
+    value.doc.getMap("meta").delete("main");
+    value.doc.commit();
+    const pairingKey = "librepaper-local-connections", addressKey = "librepaper-local-address";
+    const oldPairings = localStorage.getItem(pairingKey), oldAddress = localStorage.getItem(addressKey);
+    const fetchBefore = globalThis.fetch;
+    const host = document.createElement("section");
+    document.body.append(host);
+    const editor = createClassComponent({ component: Editor, target: host, props: {
+      session: value, format: "markdown", file: main, analyze: async () => ({ entries: [], diagnostics: [] }),
+    } });
+    try {
+      localStorage.setItem(pairingKey, JSON.stringify({ "": { token: "browser-fixture" } }));
+      globalThis.fetch = async (input, init) => {
+        const url = String(input);
+        if (url.includes("/zotero/search?")) return new Response(JSON.stringify({ entries: [{
+          citation_key: "Riv2024", authors: ["Jane Smith"], title: "Rivers", year: "2024", item_type: "article", zotero_item: "ITEM123",
+        }] }), { status: 200, headers: { "content-type": "application/json" } });
+        if (url.includes("/zotero/items/ITEM123")) return new Response(JSON.stringify({
+          citation_key: "Riv2024", zotero_item: "ITEM123",
+          bibtex: "@article{Riv2024,\\n  title={Rivers},\\n  x-librepaper-zotero-item={ITEM123}\\n}\\n",
+        }), { status: 200, headers: { "content-type": "application/json" } });
+        return fetchBefore(input, init);
+      };
+      await tick();
+      const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+      const at = view.state.doc.length;
+      view.dispatch({ changes: { from: at, insert: "@Riv" }, selection: { anchor: at + 4 } });
+      view.focus();
+      let popup = "";
+      for (let attempt = 0; attempt < 100; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        popup = host.querySelector(".cm-tooltip-autocomplete")?.textContent || "";
+        if (popup.includes("Riv2024")) break;
+      }
+      if (!popup.includes("Riv2024")) throw new Error("Zotero fixture did not appear in the citation picker");
+      view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
+      for (let attempt = 0; attempt < 100; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        if (value.textOf(main).toString().includes("@Riv2024") && value.list().some((file) => file.path === "references.bib")) break;
+      }
+      const projection = projectDirectory(value.doc, null);
+      return {
+        text: value.textOf(main).toString(),
+        mainId: main,
+        bib: value.list().find((file) => file.path === "references.bib")?.id || "",
+        metaMain: value.doc.getMap("meta").get("main") ?? null,
+        projectedMain: projection.mainId,
+        projectedPath: projection.main,
+        bibliography: projection.texts.get("references.bib") || "",
+      };
+    } finally {
+      globalThis.fetch = fetchBefore;
+      if (oldPairings === null) localStorage.removeItem(pairingKey); else localStorage.setItem(pairingKey, oldPairings);
+      if (oldAddress === null) localStorage.removeItem(addressKey); else localStorage.setItem(addressKey, oldAddress);
+      editor.$destroy();
+      host.remove();
+      value.leave();
+    }
+  };`,
 ].join("\n"));
 let server, browser, socket;
 try {
@@ -75,4 +138,13 @@ try {
   assert.equal(state.popup, false, "a space after an accepted key should not reopen the picker");
   assert.equal(state.text, "---\nbibliography: refs.bib\n---\n\nSee @smith2020 ");
   console.log("citations-browser: analyzer-backed @ Rivers picker opened, inserted Smith, and stayed closed");
+  const zotero = await evaluate("zoteroFallbackCheck()");
+  assert.match(zotero.text, /bibliography: references\.bib/);
+  assert.match(zotero.text, /@Riv2024/);
+  assert.notEqual(zotero.bib, "", "the Zotero import did not create references.bib");
+  assert.match(zotero.bibliography, /x-librepaper-zotero-item=\{ITEM123\}/);
+  assert.equal(zotero.metaMain, null, "Zotero import wrote a metadata main key into the Loro document");
+  assert.equal(zotero.projectedMain, zotero.mainId, "creating the bibliography displaced the projected paper main");
+  assert.equal(zotero.projectedPath, "paper.md");
+  console.log("citations-browser: Zotero import creates a bibliography without changing an absent main");
 } finally { socket?.close(); browser?.kill(); server?.close(); rmSync(temporary, { recursive: true, force: true }); }
