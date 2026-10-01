@@ -10,6 +10,7 @@ The official instance at librepaper.org runs `tools/deploy-docker` on an OVHclou
 - Secrets: `tools/deploy-keys.yaml` (SOPS)
   - `PRODUCTION_POSTGRES_PASSWORD`, `PRODUCTION_ACME_EMAIL`
   - `PRODUCTION_GITHUB_CLIENT_ID`, `PRODUCTION_GITHUB_CLIENT_SECRET`
+  - `PRODUCTION_GOOGLE_CLIENT_ID`, `PRODUCTION_GOOGLE_CLIENT_SECRET`
 
 ## Release
 
@@ -102,12 +103,20 @@ LibrePaper org, Settings, Developer settings, OAuth Apps.
 - Device flow: off (`librepaper login` uses the server's own device flow, not GitHub's)
 - Client ID and secret go in SOPS
 
+## Google OAuth client
+
+Create a Google OAuth client for a web application. Its authorized redirect URI must be exactly `https://app.librepaper.org/auth/callback/google`; Google requires the redirect URI used by the app to match an authorized URI. This callback is separate from GitHub's `https://app.librepaper.org/auth/callback`. See Google's [web server OAuth guide](https://developers.google.com/identity/protocols/oauth2/web-server).
+
+- Store the client ID and client secret as `PRODUCTION_GOOGLE_CLIENT_ID` and `PRODUCTION_GOOGLE_CLIENT_SECRET` in `tools/deploy-keys.yaml` (SOPS), alongside the four existing production keys
+- `tools/deploy-production deploy` requires all six keys and writes the Google values as `LIBREPAPER_GOOGLE_CLIENT_ID` and `LIBREPAPER_GOOGLE_CLIENT_SECRET` into the VPS `.env`
+- `tools/deploy-production verify` checks that both `/auth/login/github` and `/auth/login/google` return an HTTP 302 to the matching provider's authorization endpoint
+
 ## Secrets
 
 ```sh
 # PRODUCTION_POSTGRES_PASSWORD: hex, since it sits inside a postgresql:// URL
 openssl rand -hex 24          # without openssl: nix shell nixpkgs#openssl -c openssl rand -hex 24
-sops tools/deploy-keys.yaml   # add the four PRODUCTION_* keys
+sops tools/deploy-keys.yaml   # add the six PRODUCTION_* keys, including both Google client values
 git add tools/deploy-keys.yaml && git commit -m "Add production secrets"   # values stay encrypted
 ```
 
