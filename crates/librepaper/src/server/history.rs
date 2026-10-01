@@ -101,6 +101,9 @@ fn client_seq_of(id: uuid::Uuid) -> i64 {
 struct Restore {
     request_id: uuid::Uuid,
     document_id: uuid::Uuid,
+    /// The version being restored, rechecked under the lock because a trim can
+    /// delete it after the handler read it.
+    label_id: uuid::Uuid,
     catalog: std::sync::Arc<crate::storage::postgres::PostgresCatalog>,
     expected_frontier: Vec<u8>,
     /// Each restored text as `(path, body, original id)`. The id comes from
@@ -250,6 +253,35 @@ impl crate::log::Command for Restore {
         std::result::Result<Self::Output, crate::log::CommandError>,
     > {
         Box::pin(async move {
+            // Recheck the label and figures under the lock. A trim can delete both
+            // after the handler read them but before this command locks the sequencer.
+            if !self
+                .catalog
+                .label_exists_in_transaction(tx, self.document_id, self.label_id)
+                .await
+                .map_err(|error| crate::log::CommandError::Storage(error.into()))?
+            {
+                return Err(crate::log::CommandError::Conflict(
+                    "that version was deleted by a history trim".to_string(),
+                ));
+            }
+            let digests: Vec<Vec<u8>> = self
+                .assets
+                .iter()
+                .filter_map(|(_, digest_hex)| hex::decode(digest_hex).ok())
+                .collect();
+            if !digests.is_empty()
+                && self
+                    .catalog
+                    .missing_assets_in_transaction(tx, self.document_id, &digests)
+                    .await
+                    .map_err(|error| crate::log::CommandError::Storage(error.into()))?
+                    > 0
+            {
+                return Err(crate::log::CommandError::Conflict(
+                    "a figure that version names has been deleted".to_string(),
+                ));
+            }
             // What the restore replaces goes into history first, so that
             // everything written after the restored moment can be read and
             // restored in turn. Skipped when the newest version already
@@ -873,6 +905,7 @@ impl Server {
         let mut command = Restore {
             request_id: uuid::Uuid::new_v4(),
             document_id: room.document_id,
+            label_id,
             catalog: self.store.catalog.clone(),
             expected_frontier,
             texts,
