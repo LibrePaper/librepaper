@@ -236,17 +236,6 @@ pub struct Server {
     pub(crate) metrics_listener_slots: Arc<tokio::sync::Semaphore>,
     pub socket_budget: Arc<socket_budget::SocketBudget>,
     sockets: AtomicU64,
-    /// How many figures each owner has uploaded this hour, and which hour that
-    /// is. Uploading a figure is an upload and counts against
-    /// `uploads_per_hour` like any other; it cannot be counted the way
-    /// document uploads are, from the index, because storing a figure writes
-    /// no index entry of its own.
-    ///
-    /// Held in this process rather than in storage. A second server sharing
-    /// the bucket keeps its own count, so the ceiling is per server -- which
-    /// bounds what one deployment will take without a write on every upload,
-    /// and is the same trade the socket rate limiter already makes.
-    asset_uploads: tokio::sync::Mutex<HashMap<String, (i64, usize)>>,
     /// Every live socket, keyed by the id `run_socket` was given at attach.
     /// Authorization is resolved once, at the handshake -- this is what lets
     /// `reauthorize` rerun that exact resolution later, against whatever the
@@ -850,7 +839,6 @@ impl Server {
             )),
             socket_budget,
             sockets: AtomicU64::new(1),
-            asset_uploads: tokio::sync::Mutex::new(HashMap::new()),
             connections: tokio::sync::Mutex::new(HashMap::new()),
             state_transfers: tokio::sync::Mutex::new(StateTransfers::default()),
         }

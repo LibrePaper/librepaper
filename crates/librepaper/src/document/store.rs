@@ -1078,13 +1078,19 @@ impl Store {
         .await;
         if let Err(error) = write_project {
             if created_here {
-                if let Err(cleanup_error) = catalog
+                match catalog
                     .discard_unwritten_document(document.id, account_id)
                     .await
                 {
-                    return Err(PutError::Storage(format!(
-                        "{error}; could not remove the refused new project: {cleanup_error}"
-                    )));
+                    Ok(true) => {
+                        self.registry.retire_empty(document.id).await;
+                    }
+                    Ok(false) => {}
+                    Err(cleanup_error) => {
+                        return Err(PutError::Storage(format!(
+                            "{error}; could not remove the refused new project: {cleanup_error}"
+                        )));
+                    }
                 }
             }
             return Err(error);
