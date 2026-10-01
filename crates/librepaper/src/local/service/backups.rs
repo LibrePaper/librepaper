@@ -77,9 +77,9 @@ mod path_serde {
     use serde::{Deserialize, Deserializer, Serializer};
     use std::ffi::OsString;
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -117,9 +117,9 @@ mod path_serde {
     use serde::{Deserialize, Deserializer, Serializer};
     use std::ffi::OsString;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -155,15 +155,17 @@ mod path_serde {
 mod path_serde {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serializer};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    pub fn serialize<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         match path.to_str() {
             Some(path) => serializer.serialize_str(path),
-            None => Err(serde::ser::Error::custom("unsupported non-UTF-8 backup path")),
+            None => Err(serde::ser::Error::custom(
+                "unsupported non-UTF-8 backup path",
+            )),
         }
     }
 
@@ -418,9 +420,7 @@ impl BackupManager {
         config.last_success = None;
         config.projects = 0;
         config.updated = 0;
-        if enabled && config.error.as_deref().is_some_and(is_identity_error) {
-            config.error = None;
-        }
+        config.error = None;
         config.revision = config.revision.wrapping_add(1);
         if let Err(error) = self.persist(&state).await {
             match previous {
@@ -528,7 +528,9 @@ impl BackupManager {
         let previous_frequency = config.frequency_minutes;
         config.enabled = enabled;
         config.frequency_minutes = frequency_minutes;
-        config.error = None;
+        if enabled && config.error.as_deref().is_some_and(is_identity_error) {
+            config.error = None;
+        }
         if previous_enabled != enabled || previous_frequency != frequency_minutes {
             config.revision = config.revision.wrapping_add(1);
         }
@@ -1058,9 +1060,9 @@ mod tests {
 
         let home = tempfile::tempdir().unwrap();
         let account = uuid::Uuid::now_v7().to_string();
-        let destination = home
-            .path()
-            .join(std::ffi::OsString::from_vec(vec![b'b', b'a', b'c', b'k', 0xff]));
+        let destination = home.path().join(std::ffi::OsString::from_vec(vec![
+            b'b', b'a', b'c', b'k', 0xff,
+        ]));
         std::fs::create_dir(&destination).unwrap();
         let manager = BackupManager::new(home.path());
         let key = BackupConfig::key("https://paper.example", &account);
