@@ -186,7 +186,7 @@ monitoring_verify() {
 		response=$(ssh "$HOST" 'cd librepaper && docker compose exec -T prometheus sh -s' <<PROMETHEUS_API_EOF
 targets=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/targets?state=active') || exit 1
 history=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query_range?query=up%7Bjob%3D%22librepaper%22%7D&start=$start&end=$now&step=15s') || exit 1
-		snapshot=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=(librepaper_metrics_snapshot_success%3D%3D1%20and%20time%28%29-librepaper_metrics_snapshot_timestamp_seconds%3C60)%20and%20on%28%29%20(pg_up%3D%3D1)') || exit 1
+snapshot=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=(librepaper_metrics_snapshot_success%3D%3D1%20and%20time%28%29-librepaper_metrics_snapshot_timestamp_seconds%3C60)%20and%20on%28%29%20(pg_up%3D%3D1)') || exit 1
 printf '%s\n---LIBREPAPER-METRICS---\n%s\n---LIBREPAPER-METRICS---\n%s\n' "\$targets" "\$history" "\$snapshot"
 PROMETHEUS_API_EOF
 ) || die "could not query internal Prometheus APIs"

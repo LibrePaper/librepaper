@@ -91,7 +91,7 @@ case "$command" in
     printf '%s\\n---LIBREPAPER-METRICS---\\n%s\\n---LIBREPAPER-METRICS---\\n%s\\n' \\
       '{"data":{"activeTargets":[{"health":"up","labels":{"job":"librepaper"}},{"health":"up","labels":{"job":"node"}},{"health":"up","labels":{"job":"postgres"}}]}}' \\
       '{"data":{"result":[{"values":[[1,"1"],[2,"1"]]}]}}' \\
-      '${pgUpHealthy ? '{"data":{"result":[{"value":[[3,"1"]]}]}}' : '{"data":{"result":[]}}'}'
+      '${pgUpHealthy ? '{"data":{"result":[{"value":[3,"1"]}]}}' : '{"data":{"result":[]}}'}'
     ;;
   *) : ;;
 esac`);
