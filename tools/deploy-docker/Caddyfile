@@ -9,7 +9,7 @@
 	email {$ACME_EMAIL}
 }
 
-{$DOMAIN}, docs.{$DOMAIN} {
+{$DOMAIN}, {$DOCS_DOMAIN} {
 	encode zstd gzip
 	# Collaboration is a WebSocket; Caddy carries the upgrade itself.
 	reverse_proxy librepaper:8080

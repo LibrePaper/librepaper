@@ -15,11 +15,12 @@ docker compose up -d
 ## Before the first start
 
 **Both names must resolve here.** A deployment answers on two hostnames: the
-reader on `DOMAIN`, published documents on `docs.DOMAIN`. An uploaded document
-is code, and what keeps it out of a reader's session is that the browser sees
-the two as different sites, so this is the setting with no safe default. The
-proxy takes a certificate for each over HTTP-01, which it cannot do before the
-`A`/`AAAA` records exist. The server refuses any other `Host` with 421.
+reader on `DOMAIN`, published documents on `DOCS_DOMAIN` (`docs.DOMAIN` unless
+set). An uploaded document is code, and what keeps it out of a reader's session
+is that the browser sees the two as different sites, so this is the setting
+with no safe default. The proxy takes a certificate for each over HTTP-01,
+which it cannot do before the `A`/`AAAA` records exist. The server refuses any
+other `Host` with 421.
 
 **Say who may publish.** `LIBREPAPER_PUBLISHERS` has no default and the server
 will not start without it. Publishing requires GitHub or Google, so a
