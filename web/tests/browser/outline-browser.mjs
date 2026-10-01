@@ -223,7 +223,6 @@ try {
   };
   const clickHeading = async (title) => {
     await waitHeading(title);
-    const before = await tab.evaluate("document.querySelector('.cm-scroller')?.scrollTop || 0");
     await tab.evaluate(`[...document.querySelectorAll('.outline .outline-heading')].find(node => node.textContent.trim().includes(${JSON.stringify(title)})).click()`);
     await until(`active heading ${title}`, () => tab.evaluate(`(() => {
       const selected = document.querySelector('.outline .outline-heading[aria-current="location"]');
@@ -232,12 +231,18 @@ try {
     })()`), 5000);
     // The active line lights up before the editor has finished scrolling to
     // it: CodeMirror applies the scroll on its next measure cycle, which on a
-    // busy machine is a few frames after the line is marked. So the position
-    // is waited for rather than read the instant the line appears -- read
-    // once, this passed on an idle machine and failed on a loaded one.
+    // busy machine is a few frames after the line is marked. Wait until the
+    // line is actually in the scrollport; adjacent headings can need no scroll
+    // at all, while an absolute scrollTop threshold may already be satisfied.
     await until(`heading ${title} scrolls the source`, async () => {
-      const after = await tab.evaluate("document.querySelector('.cm-scroller')?.scrollTop || 0");
-      return after > before || after > 20;
+      return tab.evaluate(`(() => {
+        const scroller = document.querySelector('.cm-scroller');
+        const active = document.querySelector('.cm-activeLine');
+        if (!scroller || !active) return false;
+        const viewport = scroller.getBoundingClientRect();
+        const line = active.getBoundingClientRect();
+        return line.top >= viewport.top && line.bottom <= viewport.bottom;
+      })()`);
     }, 5000);
     assert.equal(await tab.evaluate("document.activeElement?.closest('.cm-editor') !== null"), true, `heading ${title} focuses source`);
   };
