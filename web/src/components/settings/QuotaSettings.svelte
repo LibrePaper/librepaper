@@ -184,16 +184,16 @@
   </SettingRow>
 {/if}
 
-<Modal bind:open={trimOpen} title=”Trim history?”
-       confirm={{ label: trimPending ? “Trimming…” : “Trim history”, tone: “error”, disabled: trimPending, onclick: confirmTrim }}>
+<Modal bind:open={trimOpen} title="Trim history?"
+       confirm={{ label: trimPending ? "Trimming…" : "Trim history", tone: "error", disabled: trimPending, onclick: confirmTrim }}>
   {#if trimTarget}
     <p>This keeps “<strong>{trimTarget.title}</strong>” as it is now and permanently deletes everything before it:</p>
-    <ul class=”trim-list”>
+    <ul class="trim-list">
       <li>Its editing history ({storageBytes(trimTarget.historyBytes)})</li>
       <li>All its named versions ({storageBytes(trimTarget.archiveBytes)})</li>
       <li>Figures its current files no longer use</li>
     </ul>
-    <p class=”lp-text-secondary text-sm”>Comments stay. This cannot be undone.</p>
+    <p class="lp-text-secondary text-sm">Comments stay. This cannot be undone.</p>
   {/if}
 </Modal>
 
