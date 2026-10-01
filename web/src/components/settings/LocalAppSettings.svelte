@@ -36,7 +36,6 @@
   const tone = $derived(connected ? "good" : ["denied", "incompatible"].includes(local?.state) ? "warn" : "off");
   const status = $derived(({ unknown: "Companion not connected", unreachable: "Companion not connected", denied: "Local network access blocked", reachable: "Companion found", unauthorized: "Companion needs permission", connected: "Companion connected", incompatible: "Companion needs an update" })[local?.state] || "Companion not connected");
   const installer = "https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh";
-  const windowsInstaller = "https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1";
 
   async function pair() {
     if (connecting) return;
@@ -165,10 +164,7 @@
       <div class="setting-title">macOS &amp; Linux</div>
       <div class="command-line"><code>curl --proto '=https' --tlsv1.2 -LsSf {installer} | sh</code><button type="button" class="btn btn-sm lp-control-outline" onclick={() => void copy(`curl --proto '=https' --tlsv1.2 -LsSf ${installer} | sh`, "macOS & Linux")}>{copying === "macOS & Linux" ? "Copied" : "Copy"}</button></div>
     </div>
-    <div class="install-option">
-      <div class="setting-title">Windows</div>
-      <div class="command-line"><code>powershell -ExecutionPolicy Bypass -c "irm {windowsInstaller} | iex"</code><button type="button" class="btn btn-sm lp-control-outline" onclick={() => void copy(`powershell -ExecutionPolicy Bypass -c "irm ${windowsInstaller} | iex"`, "Windows")}>{copying === "Windows" ? "Copied" : "Copy"}</button></div>
-    </div>
+    <p class="setting-description">The companion is currently available for macOS and Linux only; Windows builds are not published.</p>
     <p class="setting-description">After installation, open LibrePaper Companion and return here to connect. <a href="https://librepaper.org/start.html" target="_blank" rel="noreferrer">Installation help</a></p>
   </section>
 {/if}
