@@ -579,7 +579,7 @@ impl BackupManager {
         if let Some(current) = state.configs.get_mut(&key) {
             current.running = true;
             current.last_attempt = Some(unix_now());
-            current.error = None;
+            // A retry is not evidence that the previous failure is repaired.
         }
         if let Err(error) = self.persist(&state).await {
             state.in_flight.remove(&key);
@@ -1452,6 +1452,16 @@ mod tests {
         let destination = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path(), cache_home.path()).await;
         configure_scheduled_backup(&inner, &server, &account_id, destination.path()).await;
+        let previous_error = "backup completed with 1 project failure(s): asset unavailable";
+        {
+            let mut state = inner.backups.state.lock().await;
+            state
+                .configs
+                .get_mut(&BackupConfig::key(&server, &account_id))
+                .unwrap()
+                .error = Some(previous_error.into());
+            inner.backups.persist(&state).await.unwrap();
+        }
 
         let (pairing_token, _) = inner.pairing.issue(&server, "manual run test").unwrap();
         let mut headers = HeaderMap::new();
@@ -1477,6 +1487,10 @@ mod tests {
             .unwrap();
         let status: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(status["running"], true);
+        assert_eq!(
+            status["error"], previous_error,
+            "admitting a manual retry must retain the failed-backup warning"
+        );
         inner
             .backups
             .configure(&inner, &server, &account_id, false, 5)
