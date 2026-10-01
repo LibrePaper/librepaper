@@ -33,13 +33,13 @@
 //! already moved. For a tracked edit, which is usually one hunk, deciding it
 //! resolves the proposal and the difference is invisible.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
 use loro::{
-    Container, ContainerID, ContainerTrait, Frontiers, LoroDoc, LoroValue, PeerID, TextDelta,
-    ValueOrContainer,
+    Container, ContainerID, ContainerTrait, Frontiers, JsonMapOp, JsonOpContent, LoroDoc,
+    LoroValue, PeerID, TextDelta, ValueOrContainer,
 };
 use uuid::Uuid;
 
@@ -237,7 +237,7 @@ fn rebuild(
     if branch.state_frontiers() != proposal.tip {
         return Err(ProposalError::Stale);
     }
-    validate_proposed_changes(&branch, &proposal.base, &proposal.tip)?;
+    validate_proposed_changes(&branch, doc, &proposal.base, &proposal.tip)?;
     Ok(branch)
 }
 
@@ -246,6 +246,7 @@ fn rebuild(
 /// or any other container are not part of a text suggestion and are refused.
 fn validate_proposed_changes(
     branch: &LoroDoc,
+    current: &LoroDoc,
     base: &Frontiers,
     tip: &Frontiers,
 ) -> Result<(), ProposalError> {
@@ -260,26 +261,169 @@ fn validate_proposed_changes(
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
     let file_map_id = at_base.get_map(session::FILES).id();
     let path_map_id = at_base.get_map(session::PATHS).id();
+    let mut valid_texts: HashSet<ContainerID> = supported_text_file_ids(&at_base)
+        .into_iter()
+        .chain(supported_text_file_ids(&at_tip))
+        .filter_map(|id| match at_base.get_map(session::FILES).get(&id) {
+            Some(ValueOrContainer::Container(Container::Text(text))) => Some(text.id()),
+            _ => match at_tip.get_map(session::FILES).get(&id) {
+                Some(ValueOrContainer::Container(Container::Text(text))) => Some(text.id()),
+                _ => None,
+            },
+        })
+        .collect();
+    let history = branch.export_json_updates_without_peer_compression(
+        &at_base.oplog_vv(),
+        &at_tip.oplog_vv(),
+    );
+    let base_files = at_base.get_map(session::FILES);
+    let base_paths = at_base.get_map(session::PATHS);
+    let current_files = current.get_map(session::FILES);
+    let current_paths = current.get_map(session::PATHS);
+    let existing_paths: HashSet<String> = session::paths_of(&at_base)
+        .into_values()
+        .chain(session::paths_of(current).into_values())
+        .collect();
+    let mut inserted_files = HashSet::new();
+    let mut inserted_paths: HashMap<String, String> = HashMap::new();
+    let mut deleted_files = HashSet::new();
+    let mut deleted_paths = HashSet::new();
+
+    for change in &history.changes {
+        for op in &change.ops {
+            if op.container == file_map_id {
+                let JsonOpContent::Map(map_op) = &op.content else {
+                    return Err(ProposalError::Failed(
+                        "a proposal may only add a new text file".into(),
+                    ));
+                };
+                match map_op {
+                    JsonMapOp::Insert { key, value } => {
+                        if base_files.get(key).is_some()
+                            || current_files.get(key).is_some()
+                            || !inserted_files.insert(key.clone())
+                        {
+                            return Err(ProposalError::Failed(
+                                "a proposal may only add a new text file".into(),
+                            ));
+                        }
+                        let LoroValue::Container(id) = value else {
+                            return Err(ProposalError::Failed(
+                                "a proposal may only add a new text file".into(),
+                            ));
+                        };
+                        if !matches!(branch.get_container(id.clone()), Some(Container::Text(_))) {
+                            return Err(ProposalError::Failed(
+                                "a proposal may only add a new text file".into(),
+                            ));
+                        }
+                        valid_texts.insert(id.clone());
+                    }
+                    JsonMapOp::Delete { key } => {
+                        if base_files.get(key).is_some()
+                            || current_files.get(key).is_some()
+                            || !deleted_files.insert(key.clone())
+                        {
+                            return Err(ProposalError::Failed(
+                                "a proposal may only add a new text file".into(),
+                            ));
+                        }
+                    }
+                }
+            } else if op.container == path_map_id {
+                let JsonOpContent::Map(map_op) = &op.content else {
+                    return Err(ProposalError::Failed(
+                        "a proposal may only add a new text file".into(),
+                    ));
+                };
+                match map_op {
+                    JsonMapOp::Insert { key, value } => {
+                        if base_paths.get(key).is_some()
+                            || current_paths.get(key).is_some()
+                        {
+                            return Err(ProposalError::Failed(
+                                "a proposal may only add a new text file".into(),
+                            ));
+                        }
+                        let LoroValue::String(path) = value else {
+                            return Err(ProposalError::Failed(
+                                "a proposal may only add a new text file".into(),
+                            ));
+                        };
+                        let path = path.to_string();
+                        if !crate::local::protocol::safe_relative_path(&path)
+                            || existing_paths.contains(&path)
+                            || inserted_paths.values().any(|existing| existing == &path)
+                            || inserted_paths.insert(key.clone(), path).is_some()
+                        {
+                            return Err(ProposalError::Failed(
+                                "a new text file path is invalid or duplicated".into(),
+                            ));
+                        }
+                    }
+                    JsonMapOp::Delete { key } => {
+                        if base_paths.get(key).is_some()
+                            || current_paths.get(key).is_some()
+                            || !deleted_paths.insert(key.clone())
+                        {
+                            return Err(ProposalError::Failed(
+                                "a proposal may only add a new text file".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let inserted_file_ids = inserted_files;
+    let inserted_path_ids: HashSet<_> = inserted_paths.keys().cloned().collect();
+    if inserted_file_ids != inserted_path_ids
+        || deleted_files != deleted_paths
+        || !deleted_files.is_subset(&inserted_file_ids)
+    {
+        return Err(ProposalError::Failed(
+            "a new text file must add both its text and path".into(),
+        ));
+    }
+    for id in &inserted_file_ids {
+        if deleted_files.contains(id) {
+            if at_tip.get_map(session::FILES).get(id).is_some()
+                || at_tip.get_map(session::PATHS).get(id).is_some()
+            {
+                return Err(ProposalError::Failed(
+                    "a new text file must add both its text and path".into(),
+                ));
+            }
+        } else if at_tip.get_map(session::FILES).get(id).is_none()
+            || at_tip.get_map(session::PATHS).get(id).is_none()
+        {
+            return Err(ProposalError::Failed(
+                "a new text file must add both its text and path".into(),
+            ));
+        }
+    }
+    for change in &history.changes {
+        for op in &change.ops {
+            if op.container == file_map_id || op.container == path_map_id {
+                continue;
+            }
+            if valid_texts.contains(&op.container)
+                && matches!(op.content, JsonOpContent::Text(_))
+            {
+                continue;
+            }
+            return Err(ProposalError::Failed(
+                "a proposal may only change text and add text files".into(),
+            ));
+        }
+    }
+
     let files = at_base.get_map(session::FILES);
     let paths = at_base.get_map(session::PATHS);
     let mut created_files = HashSet::new();
     let mut created_paths = HashSet::new();
     let mut created_path_names = HashSet::new();
-    let valid_texts: HashSet<ContainerID> = supported_text_file_ids(&at_base)
-        .into_iter()
-        .filter_map(|id| match at_base.get_map(session::FILES).get(&id) {
-            Some(ValueOrContainer::Container(Container::Text(text))) => Some(text.id()),
-            _ => None,
-        })
-        .chain(
-            supported_text_file_ids(&at_tip)
-                .into_iter()
-                .filter_map(|id| match at_tip.get_map(session::FILES).get(&id) {
-                    Some(ValueOrContainer::Container(Container::Text(text))) => Some(text.id()),
-                    _ => None,
-                }),
-        )
-        .collect();
     for (container, change) in diff.iter() {
         match change {
             loro::event::Diff::Text(_) if valid_texts.contains(container) => {}
@@ -335,7 +479,6 @@ fn validate_proposed_changes(
             "a new text file must add both its text and path".into(),
         ));
     }
-    let existing_paths: HashSet<String> = session::paths_of(&at_base).into_values().collect();
     let tip_paths = session::paths_of(&at_tip);
     for id in created_files {
         let Some(path) = tip_paths.get(&id) else {
@@ -2217,6 +2360,88 @@ mod tests {
             hunks(&room, &proposal, &new_bytes),
             Err(ProposalError::Failed(_))
         ));
+    }
+
+    #[test]
+    fn a_proposal_cannot_hide_reverted_metadata_changes_in_its_history() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.get_map(session::META).insert("engine", "base").unwrap();
+        room.commit();
+        let base = room.state_frontiers();
+        let vector = session::encode_vector(&room);
+        let mut ids = supported_text_file_ids(&room);
+        ids.sort();
+
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        set_text_by_id(&branch, &ids[0], "The tabby sat.");
+        branch.get_map(session::META).insert("engine", "hidden").unwrap();
+        branch.commit();
+        branch.get_map(session::META).insert("engine", "base").unwrap();
+        branch.commit();
+        let tip = branch.state_frontiers();
+        let bytes = session::encode_diff(&branch, &vector).unwrap();
+        let proposal = Proposal { base, tip };
+
+        room.set_peer_id(REVIEWER).unwrap();
+        room.get_map(session::META).insert("engine", "current").unwrap();
+        room.commit();
+
+        assert!(matches!(
+            rebuild(&room, &proposal, &bytes),
+            Err(ProposalError::Failed(_))
+        ));
+        assert!(matches!(
+            hunks(&room, &proposal, &bytes),
+            Err(ProposalError::Failed(_))
+        ));
+        assert!(matches!(
+            resolve(&room, &proposal, &bytes, &HashSet::new(), &proposal.tip),
+            Err(ProposalError::Failed(_))
+        ));
+        assert_eq!(
+            room.get_map(session::META).get("engine"),
+            Some("current".into())
+        );
+        assert_eq!(text_at(&room, "main.md"), "The cat sat.");
+    }
+
+    #[test]
+    fn a_proposal_cannot_hide_reverted_existing_path_changes_in_its_history() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.commit();
+        let base = room.state_frontiers();
+        let vector = session::encode_vector(&room);
+        let id = supported_text_file_ids(&room).remove(0);
+
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        set_text_by_id(&branch, &id, "The tabby sat.");
+        branch.get_map(session::PATHS).insert(&id, "moved.md").unwrap();
+        branch.commit();
+        branch.get_map(session::PATHS).insert(&id, "main.md").unwrap();
+        branch.commit();
+        let proposal = Proposal {
+            base,
+            tip: branch.state_frontiers(),
+        };
+        let bytes = session::encode_diff(&branch, &vector).unwrap();
+
+        assert!(matches!(
+            hunks(&room, &proposal, &bytes),
+            Err(ProposalError::Failed(_))
+        ));
+        assert!(matches!(
+            resolve(&room, &proposal, &bytes, &HashSet::new(), &proposal.tip),
+            Err(ProposalError::Failed(_))
+        ));
+        assert_eq!(text_at(&room, "main.md"), "The cat sat.");
+        let current_paths = session::paths_of(&room);
+        assert_eq!(current_paths.get(&id).map(String::as_str), Some("main.md"));
     }
 
     #[test]
