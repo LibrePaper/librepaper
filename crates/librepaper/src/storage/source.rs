@@ -78,6 +78,30 @@ impl SourceStorage {
         document_id: Uuid,
         files: impl Iterator<Item = &'a ProjectFile>,
     ) -> Result<HashMap<([u8; 32], i64), AssetRecord>, Error> {
+        let (mut records, pending) = self.stage_assets(document_id, files).await?;
+        if !pending.is_empty() {
+            for (asset, _) in self.catalog.complete_assets(pending).await? {
+                let digest: [u8; 32] = asset
+                    .digest
+                    .as_slice()
+                    .try_into()
+                    .expect("asset digests are constrained to 32 bytes");
+                records.insert((digest, asset.byte_length), asset);
+            }
+        }
+        Ok(records)
+    }
+
+    /// Writes any new asset bytes under immutable blob keys without adding
+    /// catalogue rows. Callers that need authorization to cover the asset
+    /// references can pass the returned inputs to
+    /// `PostgresCatalog::complete_assets_in_transaction` in their semantic
+    /// command transaction.
+    pub async fn stage_assets<'a>(
+        &self,
+        document_id: Uuid,
+        files: impl Iterator<Item = &'a ProjectFile>,
+    ) -> Result<(HashMap<([u8; 32], i64), AssetRecord>, Vec<NewAsset>), Error> {
         let mut unique = HashMap::new();
         for file in files {
             let digest: [u8; 32] = Sha256::digest(&file.bytes).into();
@@ -86,7 +110,7 @@ impl SourceStorage {
                 .or_insert(file);
         }
         if unique.is_empty() {
-            return Ok(HashMap::new());
+            return Ok((HashMap::new(), Vec::new()));
         }
         let digests: Vec<String> = unique
             .keys()
@@ -125,17 +149,7 @@ impl SourceStorage {
                 original_name: Some(file.path.clone()),
             });
         }
-        if !pending.is_empty() {
-            for (asset, _) in self.catalog.complete_assets(pending).await? {
-                let digest: [u8; 32] = asset
-                    .digest
-                    .as_slice()
-                    .try_into()
-                    .expect("asset digests are constrained to 32 bytes");
-                records.insert((digest, asset.byte_length), asset);
-            }
-        }
-        Ok(records)
+        Ok((records, pending))
     }
 
     pub async fn write_verified(

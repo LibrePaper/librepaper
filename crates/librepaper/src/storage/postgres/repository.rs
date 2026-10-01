@@ -652,6 +652,27 @@ impl PostgresCatalog {
         inputs: Vec<NewAsset>,
         actor: Option<&super::MutationAuthorization>,
     ) -> Result<Vec<(AssetRecord, bool)>> {
+        let document_id = inputs.first().map(|input| input.document_id);
+        let mut tx = self.begin_writer_transaction().await?;
+        if let (Some(document_id), Some(actor)) = (document_id, actor) {
+            super::annotations::authorize_mutation(&mut tx, document_id, actor, true).await?;
+        }
+        let completed = self
+            .complete_assets_in_transaction(&mut tx, &inputs)
+            .await?;
+        tx.commit().await?;
+        Ok(completed)
+    }
+
+    /// Completes staged asset references in the caller's transaction. The
+    /// caller must already have performed semantic authorization; this helper
+    /// retains the document-then-storage_usage lock order and the existing
+    /// duplicate and quota accounting.
+    pub(crate) async fn complete_assets_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        inputs: &[NewAsset],
+    ) -> Result<Vec<(AssetRecord, bool)>> {
         if inputs.is_empty() || inputs.len() > 4096 {
             return Err(Error::Invalid("invalid completed asset batch".into()));
         }
@@ -671,10 +692,6 @@ impl PostgresCatalog {
         if unique.len() != inputs.len() {
             return Err(Error::Invalid("duplicate asset in completion batch".into()));
         }
-        let mut tx = self.begin_writer_transaction().await?;
-        if let Some(actor) = actor {
-            super::annotations::authorize_mutation(&mut tx, document_id, actor, true).await?;
-        }
         // The owner is read under the same lock that guards the document's
         // status, so the quota below is measured against the owner this
         // document still has when the assets are written.
@@ -682,7 +699,7 @@ impl PostgresCatalog {
             "SELECT status,owner_id FROM documents WHERE id=$1 FOR UPDATE",
             document_id,
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         let document = document.ok_or(Error::NotFound)?;
         match document.status.as_str() {
@@ -698,7 +715,7 @@ impl PostgresCatalog {
             document_id,
             &digests,
         )
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
         let existing_keys: std::collections::HashSet<_> = existing
             .iter()
@@ -709,7 +726,6 @@ impl PostgresCatalog {
             .filter(|input| !existing_keys.contains(&(input.digest.to_vec(), input.byte_length)))
             .collect();
         if new_inputs.is_empty() {
-            tx.commit().await?;
             return Ok(inputs
                 .into_iter()
                 .map(|input| {
@@ -730,7 +746,7 @@ impl PostgresCatalog {
         // protects the per-owner count and byte total across documents.
         let _lock =
             sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?;
         let uploads = sqlx::query_scalar!(
             r#"SELECT count(*) AS "count!" FROM document_assets a
@@ -738,7 +754,7 @@ impl PostgresCatalog {
                WHERE d.owner_id=$1 AND a.created_at>=now()-interval '1 hour'"#,
             document.owner_id,
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         if uploads.saturating_add(new_inputs.len() as i64) > self.policy.asset_uploads_per_hour {
             return Err(Error::Conflict("account asset upload rate exceeded".into()));
@@ -746,13 +762,13 @@ impl PostgresCatalog {
         let incoming_bytes = new_inputs.iter().fold(0_i64, |total, input| {
             total.saturating_add(input.byte_length)
         });
-        let owner_usage = owner_usage_bytes(&mut *tx, document.owner_id).await?;
+        let owner_usage = owner_usage_bytes(&mut **tx, document.owner_id).await?;
         // The deployment total is blob bytes plus every current base plus
         // every document's uncompacted rows.
         let log_usage = sqlx::query_scalar!(
             r#"SELECT (COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0))::bigint AS "total!""#
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         let deployment_usage = _lock.saturating_add(log_usage);
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
@@ -799,7 +815,7 @@ impl PostgresCatalog {
             &media_types,
             &names as &[Option<String>],
         )
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
         let inserted_keys: std::collections::HashSet<_> = inserted
             .iter()
@@ -813,9 +829,8 @@ impl PostgresCatalog {
             document_id,
             &digests,
         )
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
-        tx.commit().await?;
         Ok(inputs
             .into_iter()
             .map(|input| {
