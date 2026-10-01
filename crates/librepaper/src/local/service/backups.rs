@@ -12,13 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const FREQUENCIES: [u64; 5] = [1, 5, 15, 30, 60];
 const SCHEDULER_POLL: Duration = Duration::from_secs(15);
+const LOGIN_RECHECK_INTERVAL: Duration = Duration::from_secs(15);
 
 fn valid_frequency(minutes: u64) -> bool {
     FREQUENCIES.contains(&minutes)
-}
-
-fn identity_matches(identity: &Value, account_id: &str) -> bool {
-    identity.get("id").and_then(Value::as_str) == Some(account_id)
 }
 
 fn identity_error(identity: &Value, account_id: &str) -> Option<&'static str> {
@@ -27,6 +24,12 @@ fn identity_error(identity: &Value, account_id: &str) -> Option<&'static str> {
         Some(id) if id != account_id => Some("cached login account does not match the requested account; sign in again with the intended account"),
         Some(_) => None,
     }
+}
+
+fn is_login_error(error: &str) -> bool {
+    error.contains("not signed in")
+        || error.contains("cached login")
+        || error.contains("account does not match")
 }
 
 fn identity_error_disables_schedule(error: &str) -> bool {
@@ -101,6 +104,7 @@ pub(super) struct BackupManager {
     path: PathBuf,
     state: Mutex<BackupState>,
     changed: Notify,
+    auth_checks: std::sync::Mutex<HashMap<String, Instant>>,
 }
 
 impl BackupManager {
@@ -130,6 +134,7 @@ impl BackupManager {
             path,
             state: Mutex::new(state),
             changed: Notify::new(),
+            auth_checks: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -163,8 +168,35 @@ impl BackupManager {
     }
 
     async fn status(&self, inner: &Inner, origin: &str, account_id: &str) -> Value {
-        let config = self.config(origin, account_id).await;
+        let key = BackupConfig::key(origin, account_id);
+        let mut config = self.config(origin, account_id).await;
         let token_missing = crate::cli::stored_token_at(&inner.state_home, origin).is_empty();
+        if !token_missing
+            && config.error.as_deref().is_some_and(is_login_error)
+            && self.should_recheck_login(&key)
+        {
+            if verify_account(inner, origin, account_id).await.is_ok() {
+                let mut state = self.state.lock().await;
+                if let Some(current) = state.configs.get_mut(&key) {
+                    if current.error == config.error
+                        && current.error.as_deref().is_some_and(is_login_error)
+                    {
+                        let previous = current.error.take();
+                        if let Err(error) = self.persist(&state).await {
+                            if let Some(current) = state.configs.get_mut(&key) {
+                                current.error = previous;
+                            }
+                            if let Some(current) = state.configs.get_mut(&key) {
+                                current.error = Some(error);
+                            }
+                        }
+                    }
+                }
+                if let Some(current) = state.configs.get(&key) {
+                    config = current.clone();
+                }
+            }
+        }
         json!({
             "enabled": config.enabled,
             "frequency_minutes": config.frequency_minutes,
@@ -174,12 +206,23 @@ impl BackupManager {
             "error": config.error,
             "projects": config.projects,
             "updated": config.updated,
-            "needs_login": token_missing || config.error.as_deref().is_some_and(|error| {
-                error.contains("not signed in")
-                    || error.contains("cached login")
-                    || error.contains("account does not match")
-            }),
+            "needs_login": token_missing || config.error.as_deref().is_some_and(is_login_error),
         })
+    }
+
+    fn should_recheck_login(&self, key: &str) -> bool {
+        let now = Instant::now();
+        let Ok(mut checks) = self.auth_checks.lock() else {
+            return false;
+        };
+        if checks
+            .get(key)
+            .is_some_and(|checked| now.duration_since(*checked) < LOGIN_RECHECK_INTERVAL)
+        {
+            return false;
+        }
+        checks.insert(key.to_owned(), now);
+        true
     }
 
     async fn choose_destination(
@@ -691,10 +734,6 @@ mod tests {
     #[test]
     fn identity_must_match_the_requested_signed_in_account() {
         let account = uuid::Uuid::now_v7().to_string();
-        assert!(identity_matches(&json!({"id": account.clone()}), &account));
-        assert!(!identity_matches(&json!({"id": ""}), &account));
-        assert!(!identity_matches(&json!({"handle": "alice"}), &account));
-        assert!(!identity_matches(&json!({"id": uuid::Uuid::now_v7().to_string()}), &account));
         assert!(identity_error(&json!({"id": ""}), &account)
             .unwrap()
             .contains("no longer valid"));
@@ -1088,6 +1127,40 @@ mod tests {
         let value: Value = serde_json::from_slice(&response).unwrap();
         assert_eq!(value["needs_login"], true);
         assert!(value["error"].as_str().unwrap().contains("account does not match"));
+        fixture_task.abort();
+    }
+
+    #[tokio::test]
+    async fn status_clears_stale_login_mismatch_after_correct_account_signs_in() {
+        let account_id = uuid::Uuid::now_v7().to_string();
+        let (server, fixture_task) = start_backup_fixture(account_id.clone()).await;
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path(), cache_home.path()).await;
+        configure_scheduled_backup(&inner, &server, &account_id, destination.path()).await;
+        {
+            let key = BackupConfig::key(&server, &account_id);
+            let mut state = inner.backups.state.lock().await;
+            let config = state.configs.get_mut(&key).unwrap();
+            config.enabled = false;
+            config.error = Some(
+                "cached login account does not match the requested account; sign in again with the intended account".into(),
+            );
+            inner.backups.persist(&state).await.unwrap();
+        }
+
+        let status = inner.backups.status(&inner, &server, &account_id).await;
+        assert_eq!(status["needs_login"], false);
+        assert_eq!(status["error"], Value::Null);
+        assert_eq!(status["enabled"], false);
+
+        inner
+            .backups
+            .configure(&inner, &server, &account_id, true, 5)
+            .await
+            .unwrap();
+        assert_eq!(inner.backups.status(&inner, &server, &account_id).await["enabled"], true);
         fixture_task.abort();
     }
 
