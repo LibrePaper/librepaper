@@ -12,8 +12,7 @@ cp .env.example .env
 # described below, and both client ID and client secret for GitHub or Google
 # OAuth. Any account signed in through either configured provider may publish
 # and comment by default; set LIBREPAPER_PUBLISHERS or LIBREPAPER_COMMENTERS
-# in .env to restrict either access. Set LIBREPAPER_COMMENTERS=anyone to allow
-# comments without signing in.
+# in .env to restrict either access. Document access requires sign-in.
 docker compose up -d --build
 ```
 
@@ -39,8 +38,8 @@ client secret for at least one provider. For GitHub, the callback is
 
 Commenting defaults to any signed-in GitHub or Google account too. Set
 `LIBREPAPER_COMMENTERS` to a login, verified email address, `@domain`, or
-comma-separated allowlist to restrict commenters. Use `anyone` to allow
-comments without signing in.
+comma-separated allowlist to restrict commenters. Document access requires
+sign-in, including for shared links.
 
 **Decide about retention.** Off by default, which is right for a server whose
 publishers you know and wrong for one strangers may publish to: that is
