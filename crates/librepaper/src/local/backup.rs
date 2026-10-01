@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use fs2::FileExt;
@@ -74,7 +75,7 @@ pub(crate) async fn run_backup(
     create_private_directory(&root)?;
     // Hold the namespace lock until every manifest/archive update and stale
     // archive cleanup has finished. The persistent lock file is never removed.
-    let _namespace_lock = acquire_backup_lock(&root.join(".backup.lock"))?;
+    let namespace_lock = Arc::new(acquire_backup_lock(&root.join(".backup.lock"))?);
     ensure_namespace(&root.join(NAMESPACE_FILE), &normalized_server, account_id)?;
     let manifest_path = root.join(MANIFEST_FILE);
     let mut manifest = load_manifest(&manifest_path, &normalized_server, account_id)?;
@@ -110,7 +111,9 @@ pub(crate) async fn run_backup(
                     let check_root = root.clone();
                     let check_archive = record.archive.clone();
                     let check_slug = slug.to_string();
+                    let check_lock = Arc::clone(&namespace_lock);
                     let (snapshot, archive_matches) = tokio::task::spawn_blocking(move || {
+                        let _keep_lock = check_lock;
                         let matches = archive_matches_snapshot(
                             &check_root,
                             &check_archive,
@@ -125,7 +128,9 @@ pub(crate) async fn run_backup(
                         let cleanup_root = root.clone();
                         let cleanup_slug = slug.to_string();
                         let current_archive = record.archive.clone();
+                        let cleanup_lock = Arc::clone(&namespace_lock);
                         tokio::task::spawn_blocking(move || {
+                            let _keep_lock = cleanup_lock;
                             cleanup_superseded_archives(
                                 &cleanup_root,
                                 &cleanup_slug,
@@ -170,10 +175,16 @@ pub(crate) async fn run_backup(
                 .filter(|record| owned_archive(&root, &record.archive, slug).is_ok())
                 .map(|record| root.join(&record.archive));
             let previous_files = match previous_archive {
-                Some(path) => tokio::task::spawn_blocking(move || read_previous_files(path))
+                Some(path) => {
+                    let read_lock = Arc::clone(&namespace_lock);
+                    tokio::task::spawn_blocking(move || {
+                        let _keep_lock = read_lock;
+                        read_previous_files(path)
+                    })
                     .await
                     .map_err(|error| format!("previous backup reader failed: {error}"))?
-                    .unwrap_or_default(),
+                    .unwrap_or_default()
+                }
                 None => BTreeMap::new(),
             };
             let entries = materialize_snapshot(
@@ -189,7 +200,9 @@ pub(crate) async fn run_backup(
             let archive_root = root.clone();
             let archive_slug = slug.to_string();
             let archive_name = filename.clone();
+            let writer_lock = Arc::clone(&namespace_lock);
             tokio::task::spawn_blocking(move || {
+                let _keep_lock = writer_lock;
                 write_archive(&archive_root, &archive_name, &archive_slug, &entries)
             })
             .await
@@ -240,18 +253,16 @@ async fn list_documents(
     server: &str,
     token: &str,
 ) -> Result<Vec<Value>, String> {
-    let mut target = url::Url::parse(&format!("{server}/api/list"))
+    let mut target = url::Url::parse(&format!("{server}/api/backup/projects"))
         .map_err(|error| format!("invalid backup server URL: {error}"))?;
     let mut documents = Vec::new();
     let mut seen_slugs = HashSet::new();
     let mut seen_cursors = HashSet::new();
     loop {
-        let mut request = client
-            .post(target.clone())
+        let response = client
+            .get(target.clone())
             .bearer_auth(token)
-            .json(&json!({}));
-        request = request.timeout(Duration::from_secs(60));
-        let response = request
+            .timeout(Duration::from_secs(60))
             .send()
             .await
             .map_err(|error| format!("document listing failed: {error}"))?;
@@ -885,7 +896,7 @@ fn checked_child(root: &Path, filename: &str) -> Result<PathBuf, String> {
 }
 
 fn safe_relative_path(path: &str) -> Result<PathBuf, String> {
-    if path.is_empty() || path.contains('\\') || path.contains(':') || path.contains('\0') {
+    if path.is_empty() || path.starts_with('/') || path.contains('\\') || path.contains('\0') {
         return Err(format!("path {path:?} contains a dangerous component"));
     }
     if path
@@ -894,17 +905,12 @@ fn safe_relative_path(path: &str) -> Result<PathBuf, String> {
     {
         return Err(format!("path {path:?} contains a dangerous component"));
     }
-    let relative = PathBuf::from(path);
-    if relative
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(format!("path {path:?} contains a dangerous component"));
-    }
     if path.chars().any(char::is_control) {
         return Err(format!("path {path:?} contains a control character"));
     }
-    Ok(relative)
+    // ZIP member names are slash-separated labels, not host filesystem paths:
+    // names such as `notes:2026.md` are valid project files on every host.
+    Ok(PathBuf::from(path))
 }
 
 fn archive_name(title: &str, slug: &str) -> String {
@@ -986,10 +992,10 @@ mod tests {
     use super::*;
     use axum::extract::{Path as AxumPath, Query, State};
     use axum::http::StatusCode;
-    use axum::routing::{get, post};
+    use axum::routing::get;
     use axum::{Json, Router};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Barrier, Mutex};
 
     #[derive(Default)]
     struct Fixture {
@@ -1045,10 +1051,20 @@ mod tests {
                     bytes: 0,
                 },
             );
+            let dated_note = "A colon is part of this valid filename.";
+            projection.files.insert(
+                "notes:2026.md".into(),
+                crate::document::projection::Entry {
+                    kind: "text".into(),
+                    id: "note-id".into(),
+                    digest: hex::encode(Sha256::digest(dated_note.as_bytes())),
+                    bytes: dated_note.len() as u64,
+                },
+            );
             Json(json!({
                 "project_digest": projection.digest(),
                 "tree": projection,
-                "texts":{"paper.md":body}
+                "texts":{"paper.md":body,"notes:2026.md":dated_note}
             }))
         } else {
             let bytes = if revision == 0 {
@@ -1095,7 +1111,7 @@ mod tests {
             ..Fixture::default()
         });
         let app = Router::new()
-            .route("/api/list", post(list_page))
+            .route("/api/backup/projects", get(list_page))
             .route("/api/documents/{slug}/project", get(snapshot))
             .route("/api/documents/{slug}/assets/{digest}", get(asset))
             .with_state(state.clone());
@@ -1155,6 +1171,10 @@ mod tests {
             .unwrap();
         assert_eq!(archive_files(&paper)["paper.md"], b"# paper");
         assert_eq!(archive_files(&paper)["images/plot.bin"], b"\x00\x01\xff");
+        assert_eq!(
+            archive_files(&paper)["notes:2026.md"],
+            b"A colon is part of this valid filename."
+        );
         let shared = fs::read_dir(&root)
             .unwrap()
             .filter_map(Result::ok)
@@ -1348,6 +1368,8 @@ mod tests {
             );
         }
         assert!(safe_relative_path("../escape.txt").is_err());
+        assert!(safe_relative_path("/absolute.md").is_err());
+        assert!(safe_relative_path("notes:2026.md").is_ok());
         assert!(safe_relative_path("C:\\escape.txt").is_err());
         assert!(safe_relative_path("dir\\escape.txt").is_err());
         task.abort();
@@ -1387,5 +1409,33 @@ mod tests {
         assert!(lock_path.is_file(), "the lock file remains persistent");
         drop(first_lock);
         assert!(lock_path.is_file(), "releasing the lock does not unlink it");
+    }
+
+    #[tokio::test]
+    async fn blocking_backup_task_keeps_lock_after_async_owner_is_dropped() {
+        let output = tempfile::tempdir().unwrap();
+        let root = output.path().join("namespace");
+        fs::create_dir(&root).unwrap();
+        let lock_path = root.join(".backup.lock");
+        let lock = Arc::new(acquire_backup_lock(&lock_path).unwrap());
+        let entered = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let task_lock = Arc::clone(&lock);
+        let task_entered = Arc::clone(&entered);
+        let task_resume = Arc::clone(&resume);
+        let task = tokio::task::spawn_blocking(move || {
+            let _keep_lock = task_lock;
+            task_entered.wait();
+            task_resume.wait();
+        });
+        entered.wait();
+        drop(lock);
+
+        assert!(acquire_backup_lock(&lock_path)
+            .unwrap_err()
+            .contains("backup already running"));
+        resume.wait();
+        task.await.unwrap();
+        assert!(acquire_backup_lock(&lock_path).is_ok());
     }
 }
