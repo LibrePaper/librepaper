@@ -199,7 +199,7 @@
       let sharing = await getPrivate(endpoint);
       let accessLink = sharing.links?.[mode];
       if (!accessLink?.key || accessLink.expired) {
-        sharing = await post(endpoint, { link: { role: mode, until: "180d", label: "Agent" } });
+        sharing = await post(endpoint, { link: { role: mode, until: "7d", label: "Agent" } });
         accessLink = sharing.links?.[mode];
       }
       if (!accessLink?.url) throw new Error("Could not create an agent access link.");

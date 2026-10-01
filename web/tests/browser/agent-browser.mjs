@@ -585,7 +585,7 @@ try {
   await page.evaluate("window.missingAccess=true");
   await connectAs("editor");
   assert.equal(await linkFor("editor"), true);
-  assert.deepEqual(await page.evaluate("window.createdAccess"), {link:{role:"editor",until:"180d",label:"Agent"}});
+  assert.deepEqual(await page.evaluate("window.createdAccess"), {link:{role:"editor",until:"7d",label:"Agent"}});
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), true);
   await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
