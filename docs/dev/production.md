@@ -12,13 +12,13 @@ The official instance at librepaper.org runs `tools/deploy-docker` on an OVHclou
 ## Release
 
 ```sh
-VERSION=v0.0.5                                   # must match crates/librepaper/Cargo.toml
+VERSION=v0.0.6                                   # must match crates/librepaper/Cargo.toml
 git tag "$VERSION" && git push origin "$VERSION"
 gh run watch                                     # the Release workflow
 gh release view "$VERSION" --json assets -q '.assets[].name' | grep linux-musl
 ```
 
-- The image builds from v0.0.5 on: v0.0.1 to v0.0.3 are Komodoc archives, and v0.0.4 never released
+- The image builds from v0.0.6 on: v0.0.1 to v0.0.3 are Komodoc archives, and v0.0.4 and v0.0.5 never released
 
 ## DNS (Hover)
 
@@ -67,7 +67,7 @@ sudo usermod -aG docker ubuntu   # log out and back in
 From the repository root; rerun with a new `VERSION` to upgrade.
 
 ```sh
-VERSION=v0.0.5
+VERSION=v0.0.6
 HOST=ubuntu@VPS_IP
 key() { sops --decrypt --extract "[\"$1\"]" tools/deploy-keys.yaml; }
 
