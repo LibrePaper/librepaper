@@ -438,6 +438,42 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
+    /// Admit one account upload request under the deployment's rolling-hour
+    /// limit. The account row serializes checks across processes, and the
+    /// admission row is durable across browser sessions and restarts.
+    pub async fn admit_account_upload(&self, account_id: Uuid) -> Result<()> {
+        let mut tx = self.begin_writer_transaction().await?;
+        let active: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM accounts WHERE id=$1 AND status='active' FOR UPDATE",
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if active.is_none() {
+            return Err(Error::Conflict("account is inactive".into()));
+        }
+        let recent: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM account_upload_admissions WHERE account_id=$1 AND created_at >= now()-interval '1 hour'",
+        )
+        .bind(account_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if recent >= self.policy.asset_uploads_per_hour {
+            return Err(Error::Conflict("account upload rate exceeded".into()));
+        }
+        sqlx::query("INSERT INTO account_upload_admissions(account_id) VALUES($1)")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "DELETE FROM account_upload_admissions WHERE created_at < now()-interval '2 days'",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The name a version written by this account is signed with.
     ///
     /// A signed-in caller's `Identity::id` is this row's id -- the catalogue
@@ -743,17 +779,6 @@ impl PostgresCatalog {
             sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
                 .fetch_one(&mut **tx)
                 .await?;
-        let uploads = sqlx::query_scalar!(
-            r#"SELECT count(*) AS "count!" FROM document_assets a
-               JOIN documents d ON d.id=a.document_id
-               WHERE d.owner_id=$1 AND a.created_at>=now()-interval '1 hour'"#,
-            document.owner_id,
-        )
-        .fetch_one(&mut **tx)
-        .await?;
-        if uploads.saturating_add(new_inputs.len() as i64) > self.policy.asset_uploads_per_hour {
-            return Err(Error::Conflict("account asset upload rate exceeded".into()));
-        }
         let incoming_bytes = new_inputs.iter().fold(0_i64, |total, input| {
             total.saturating_add(input.byte_length)
         });

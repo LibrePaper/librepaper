@@ -354,6 +354,20 @@ impl Server {
             Ok(who) => who,
             Err(response) => return response,
         };
+        let account_id = match uuid::Uuid::parse_str(&who.id) {
+            Ok(id) => id,
+            Err(_) => return write_json(401, &json!({"error": "sign in to publish"})),
+        };
+        if let Err(error) = self.store.catalog.admit_account_upload(account_id).await {
+            return match error {
+                crate::storage::postgres::Error::Conflict(message)
+                    if message == "account upload rate exceeded" =>
+                {
+                    write_json(429, &json!({"error": "too many uploads this hour; try later"}))
+                }
+                _ => write_json(503, &json!({"error": "could not check the upload limit", "retryable": true})),
+            };
+        }
         let parsed = match self.read_upload(request).await {
             Ok(parsed) => parsed,
             Err(response) => return response,
@@ -1267,6 +1281,20 @@ impl Server {
         };
         if who.id.is_empty() {
             return write_json(401, &json!({"error": "sign in to keep a copy"}));
+        }
+        let account_id = match uuid::Uuid::parse_str(&who.id) {
+            Ok(id) => id,
+            Err(_) => return write_json(401, &json!({"error": "sign in to keep a copy"})),
+        };
+        if let Err(error) = self.store.catalog.admit_account_upload(account_id).await {
+            return match error {
+                crate::storage::postgres::Error::Conflict(message)
+                    if message == "account upload rate exceeded" =>
+                {
+                    write_json(429, &json!({"error": "too many uploads this hour; try later"}))
+                }
+                _ => write_json(503, &json!({"error": "could not check the upload limit", "retryable": true})),
+            };
         }
         let files = match self.store.project_files(slug).await {
             Ok(Some(files)) => files,

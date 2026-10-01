@@ -33,23 +33,22 @@ impl Server {
             Ok(result) => result,
             Err(response) => return response,
         };
-        // Counted before the bytes are read, so a refusal costs the body
-        // rather than the storage. The ceiling is per hour and per owner.
-        {
-            let hour = crate::util::now_unix() / 3600;
-            let mut counts = self.asset_uploads.lock().await;
-            counts.retain(|_, (seen_hour, _)| *seen_hour == hour);
-            let seen = counts.entry(who.key.clone()).or_insert((hour, 0));
-            if seen.0 != hour {
-                *seen = (hour, 0);
-            }
-            if seen.1 >= self.config.storage.uploads_per_hour {
-                return write_json(
-                    429,
-                    &json!({"error": "too many uploads this hour; try later"}),
-                );
-            }
-            seen.1 += 1;
+        // This durable account counter is shared with project uploads and
+        // forks, so changing browser tokens or hitting another upload route
+        // cannot reset the limit.
+        let account_id = match uuid::Uuid::parse_str(&who.id.id) {
+            Ok(id) => id,
+            Err(_) => return write_json(401, &json!({"error": "sign in to upload"})),
+        };
+        if let Err(error) = self.store.catalog.admit_account_upload(account_id).await {
+            return match error {
+                crate::storage::postgres::Error::Conflict(message)
+                    if message == "account upload rate exceeded" =>
+                {
+                    write_json(429, &json!({"error": "too many uploads this hour; try later"}))
+                }
+                _ => write_json(503, &json!({"error": "could not check the upload limit", "retryable": true})),
+            };
         }
         let Some(length) =
             header_of(&headers, "content-length").and_then(|v| v.parse::<usize>().ok())
