@@ -48,6 +48,13 @@ window.localAgents = [
   {id:'claude',label:'Claude Code',path:'/usr/bin/claude',configurable:true,assistant:true,assistant_fetches:false,assistant_blocked:'',assistant_note:'',restart:'Restart Claude Code'},
   {id:'pi',label:'Pi',path:'/usr/bin/pi',configurable:false,assistant:true,assistant_fetches:true,assistant_blocked:'',assistant_note:"Pi's ACP adapter has incomplete MCP support, so the document tools may not reach it",restart:'Restart Pi'},
 ];
+// Let the browser test drive the otherwise two-minute grant renewal without
+// waiting for wall-clock time. Keep every other interval on its real timer.
+const nativeSetInterval = window.setInterval.bind(window);
+window.setInterval = (callback, delay, ...args) => {
+  if (delay === 120000) window.renewAgentGrant = callback;
+  return nativeSetInterval(callback, delay, ...args);
+};
 window.fetch = async (url, init) => {
   const pathname = new URL(url, location.href).pathname;
   if (new URL(url, location.href).origin === 'http://127.0.0.1:8763') {
@@ -82,6 +89,10 @@ window.fetch = async (url, init) => {
       window.activeRunner={link:body.link,conversation:body.conversation,agent:body.agent};
       return Response.json({running:true});
     }
+    if (route === 'assistant/renew') {
+      window.renewCalls = [...(window.renewCalls || []), body];
+      return Response.json({renewed:true});
+    }
     if (route === 'assistant/status') {
       if (window.delayAssistantStatus) {
         window.delayAssistantStatus=false;
@@ -94,6 +105,12 @@ window.fetch = async (url, init) => {
     }
     if (route === 'assistant/stop') { window.activeRunner=null; return Response.json({stopped:true}); }
     throw new Error('unexpected local app request: ' + route);
+  }
+  if (pathname === '/api/documents/paper/agent-token') {
+    window.agentTokenCalls = [...(window.agentTokenCalls || []), {
+      method:init.method, headers:{...init.headers},
+    }];
+    return Response.json({token:`lpa_test_${window.agentTokenCalls.length}`});
   }
   if (pathname === '/api/documents/paper/agent/candidates/candidate-large') {
     window.candidateHeaders = {...init.headers};
@@ -410,6 +427,12 @@ try {
   const started = await page.evaluate("window.localCalls.find(call=>call.route==='assistant')");
   assert.equal(started.body.agent, "claude");
   assert.equal(started.body.chat_token, "secret-token");
+  assert.match(started.body.agent_token, /^lpa_test_\d+$/,
+    "the companion receives a short-lived document grant rather than the browser chat token");
+  const grantRequest = await page.evaluate("window.agentTokenCalls[0]");
+  assert.equal(grantRequest.method, "POST");
+  assert.equal(grantRequest.headers["X-LibrePaper-Key"], "editor",
+    "the grant is minted with the selected document access key");
   assert.equal(started.body.connection, undefined, "the assistant call carries no separate connection name");
   // The link crosses loopback exactly once, in the assistant call itself.
   // Everything afterwards refers to the document by conversation and link.
@@ -417,6 +440,13 @@ try {
   // There is no separate route to register a connection; the sidebar never
   // calls one.
   assert.equal(await page.evaluate("window.localCalls.some(call=>call.route==='connections')"), false);
+  await page.evaluate("window.renewAgentGrant()");
+  await until("assistant grant renewed", () => page.evaluate("window.localCalls.some(call=>call.route==='assistant/renew')"), 2000);
+  const renewed = await page.evaluate("window.localCalls.find(call=>call.route==='assistant/renew')");
+  assert.equal(renewed.body.link, started.body.link);
+  assert.equal(renewed.body.conversation, started.body.conversation);
+  assert.match(renewed.body.agent_token, /^lpa_test_\d+$/,
+    "renewal sends a freshly minted document grant to the companion");
   // The agent settings stay visible at all times when paired, and nothing in
   // the pane header stops the agent: sending, changing a select or clearing the
   // conversation is how its state changes.
