@@ -457,8 +457,6 @@ export function createProposals({ session, send, mayEdit }) {
     try { published = draft.branch.forkAt(resolvedTip); } catch { return []; }
     try {
       const publishedFiles = published.getMap("files");
-      // Include edits made after the removal import and before this final frame.
-      const currentFrontiers = draft.branch.frontiers();
       const lost = [];
       for (const [id, file] of draft.preResolutionFiles) {
         if (roomFiles.get(id)) continue;
@@ -466,7 +464,7 @@ export function createProposals({ session, send, mayEdit }) {
         if (publishedText?.kind?.() !== "Text") continue;
         let changedIdentities = false;
         try {
-          const delta = draft.branch.diff(resolvedTip, currentFrontiers, false)
+          const delta = draft.branch.diff(resolvedTip, file.frontiers, false)
             .find(([containerId]) => String(containerId) === String(publishedText.id))?.[1];
           changedIdentities = delta?.type === "text" &&
             delta.diff.some((part) => part.insert !== undefined || part.delete !== undefined);
@@ -475,10 +473,8 @@ export function createProposals({ session, send, mayEdit }) {
           // is safer than dropping text that merely happens to compare equal.
           changedIdentities = true;
         }
-        let localText = file.text;
-        try { localText = file.container?.toString?.() ?? file.text; } catch { /* Keep the captured text. */ }
-        if (changedIdentities || localText !== publishedText.toString()) {
-          lost.push({ id, path: file.path, text: localText, container: file.container });
+        if (changedIdentities || file.text !== publishedText.toString()) {
+          lost.push({ id, path: file.path, text: file.text });
         }
       }
       return lost;
@@ -749,6 +745,7 @@ export function createProposals({ session, send, mayEdit }) {
         const roomFiles = session.doc.getMap("files");
         const branchFiles = draft.branch.getMap("files");
         const branchPaths = draft.branch.getMap("paths");
+        const frontiers = draft.branch.frontiers();
         for (const id of branchFiles.keys()) {
           if (roomFiles.get(id)) continue;
           const text = branchFiles.get(id);
@@ -758,6 +755,7 @@ export function createProposals({ session, send, mayEdit }) {
               path: branchPaths.get(id) ?? null,
               text: text.toString(),
               container: text,
+              frontiers,
             });
           }
         }
@@ -968,11 +966,7 @@ export function createProposals({ session, send, mayEdit }) {
           const text = files.get(id);
           if (text?.kind?.() === "Text") byId.set(String(id), { id, path: paths.get(id) ?? null, text: text.toString() });
         }
-        for (const file of draft.recoveryExtraFiles ?? []) {
-          let text = file.text;
-          try { text = file.container?.toString?.() ?? text; } catch { /* Keep the captured text. */ }
-          byId.set(String(file.id), { id: file.id, path: file.path, text });
-        }
+        for (const file of draft.recoveryExtraFiles ?? []) byId.set(String(file.id), file);
         return {
           id: draft.id,
           files: [...byId.values()],
