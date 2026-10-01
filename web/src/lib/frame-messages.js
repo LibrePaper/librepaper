@@ -117,6 +117,7 @@ export function createFrameMessageReceiver({
   let buckets = new Map();
   let pending = new Map();
   let timer = null;
+  let timerDue = null;
   let generation = 0;
   let disposed = false;
 
@@ -124,6 +125,7 @@ export function createFrameMessageReceiver({
     generation++;
     if (timer !== null) clearTimer(timer);
     timer = null;
+    timerDue = null;
     pending.clear();
   }
 
@@ -131,6 +133,13 @@ export function createFrameMessageReceiver({
     cancelPending();
     budgetUrl = undefined;
     buckets = new Map();
+  }
+
+  // A load may replace the document while preserving the iframe WindowProxy
+  // and URL. Drop queued work on every load, but keep the budgets so a hostile
+  // same-origin document cannot renew its allowance by navigating itself.
+  function frameLoaded() {
+    cancelPending();
   }
 
   function dispose() {
@@ -166,7 +175,7 @@ export function createFrameMessageReceiver({
   }
 
   function scheduleFlush() {
-    if (timer !== null || !pending.size) return;
+    if (!pending.size) return;
     const time = now();
     const wait = Math.min(...[...pending].map(([type, entry]) => {
       const rule = RATE[type];
@@ -175,9 +184,15 @@ export function createFrameMessageReceiver({
       const cost = type === "ready" ? Math.max(1, Math.ceil(entry.message.text.length / 1_000_000)) : 1;
       return Math.max(1, (cost - available) * 1000 / rule.refillPerSecond);
     }));
+    const due = time + wait;
+    if (timer !== null && timerDue <= due) return;
+    if (timer !== null) clearTimer(timer);
+    generation++;
     const mine = generation;
+    timerDue = due;
     timer = setTimer(() => {
       timer = null;
+      timerDue = null;
       if (disposed || mine !== generation) return;
       flushPending();
     }, wait);
@@ -239,5 +254,5 @@ export function createFrameMessageReceiver({
     return true;
   }
 
-  return { receive, reset, dispose };
+  return { receive, reset, frameLoaded, dispose };
 }

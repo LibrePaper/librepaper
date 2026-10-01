@@ -88,7 +88,7 @@
       title="Document"
       {src}
       onload={() => {
-        receiver?.reset();
+        receiver?.frameLoaded();
         onload?.();
         tell({ type: "reader-ready" });
       }}

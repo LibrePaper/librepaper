@@ -55,6 +55,8 @@ pub mod fonts;
 mod history;
 #[cfg(test)]
 mod history_frontier_tests;
+#[cfg(test)]
+mod isolation_http_tests;
 mod host_metrics;
 pub(crate) mod mcp;
 mod metrics;

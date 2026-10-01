@@ -26,6 +26,16 @@ window.preview = mount(Preview, { target: document.querySelector('#mount'), prop
   docsOrigin: 'http://localhost:' + new URL(location.href).port,
   onmessage: message => window.messages.push(message),
 } });
+window.previewFrameLoads = 0;
+const previewFrame = document.querySelector('iframe[title=Document]');
+previewFrame.addEventListener('load', () => window.previewFrameLoads++);
+window.rawFrameEvents = [];
+window.addEventListener('message', event => {
+  if (event.data?.text === 'external-origin-doc') window.rawFrameEvents.push({
+    origin: event.origin,
+    fromPreviewFrame: event.source === previewFrame.contentWindow,
+  });
+});
 `);
 
 const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8" };
@@ -36,28 +46,40 @@ try {
   await build({ configFile: false, root, logLevel: "error",
     build: { outDir: viewerBuild, rollupOptions: { input: { viewer: join(root, "pages/viewer.html") } } } });
   scriptServer = createServer((request, response) => {
-    if (new URL(request.url, "http://127.0.0.1").pathname !== "/attack.js") {
+    const scriptUrl = new URL(request.url, "http://127.0.0.1");
+    if (scriptUrl.pathname === "/external") {
+      response.setHeader("content-type", types[".html"]);
+      response.end('<!doctype html><script>parent.postMessage({librepaper:true,type:"ready",text:"external-origin-doc"},"*")</script>');
+      return;
+    }
+    if (scriptUrl.pathname !== "/attack.js") {
       response.writeHead(404).end();
       return;
     }
+    const appOrigin = scriptUrl.searchParams.get("app") || "";
     response.setHeader("content-type", types[".js"]);
     response.end(`
       window.thirdScriptRan = true;
-      try { window.parent.document.body.dataset.thirdScriptReadParent = 'yes'; }
-      catch { window.thirdScriptParentDenied = true; }
-      try { parent.localStorage.getItem('app-secret'); window.thirdScriptReadAppStorage = true; }
-      catch { window.thirdScriptStorageDenied = true; }
-      window.thirdScriptCookie = document.cookie;
-      window.thirdScriptMessages = [];
-      const send = data => parent.postMessage(data, '*');
-      send({librepaper:true,type:'ready',text:'Document text'});
-      send({librepaper:true,type:'selection',selector:{exact:'selected text',prefix:'',suffix:''}});
-      send({librepaper:true,type:'admin-command',action:'read-session'});
-      send({librepaper:true,type:'selection',selector:{exact:'x'.repeat(1000001)}});
-      send(null);
-      window.thirdScriptMessages.push('sent');
-      try { parent.location.href = parent.location.origin + '/navigated'; }
-      catch { window.thirdScriptNavigationDenied = true; }
+      window.addEventListener('message', event => {
+        if (event.data?.isolateNavigate) location.href = ${JSON.stringify(`${scriptOrigin}/external`)};
+      });
+      if (sessionStorage.getItem('frameIsolationReloads') === '1') {
+        try { window.parent.document.body.dataset.thirdScriptReadParent = 'yes'; }
+        catch { window.thirdScriptParentDenied = true; }
+        try { parent.localStorage.getItem('app-secret'); window.thirdScriptReadAppStorage = true; }
+        catch { window.thirdScriptStorageDenied = true; }
+        window.thirdScriptCookie = document.cookie;
+        window.thirdScriptMessages = [];
+        const send = data => parent.postMessage(data, '*');
+        send({librepaper:true,type:'ready',text:'Document text'});
+        send({librepaper:true,type:'selection',selector:{exact:'selected text',prefix:'',suffix:''}});
+        send({librepaper:true,type:'admin-command',action:'read-session'});
+        send({librepaper:true,type:'selection',selector:{exact:'x'.repeat(1000001),prefix:'',suffix:''}});
+        send(null);
+        window.thirdScriptMessages.push('sent');
+        try { parent.location.href = ${JSON.stringify(`${appOrigin}/navigated`)}; }
+        catch { window.thirdScriptNavigationDenied = true; }
+      }
     `);
   });
   await new Promise((resolve, reject) => { scriptServer.once("error", reject); scriptServer.listen(0, resolve); });
@@ -76,7 +98,11 @@ try {
     }
     if (url.pathname === "/docs") {
       response.setHeader("content-type", types[".html"]);
-      response.end(`<!doctype html><meta charset="utf-8"><script>localStorage.setItem('docs-secret','private-to-docs')</script><script src="${scriptOrigin}/attack.js"></script>`);
+      response.end(`<!doctype html><meta charset="utf-8"><script>
+        window.reloadCount=(Number(sessionStorage.getItem('frameIsolationReloads'))||0)+1;
+        sessionStorage.setItem('frameIsolationReloads',String(window.reloadCount));
+        localStorage.setItem('docs-secret','private-to-docs');
+      </script><script src="${scriptOrigin}/attack.js?app=${encodeURIComponent(`http://127.0.0.1:${appServer.address().port}`)}"></script>`);
       return;
     }
     if (url.pathname === "/sibling") {
@@ -164,16 +190,43 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.ok(!String(await page.evaluate("JSON.stringify(window.messages)")).includes("wrong-origin"));
 
-  // Refill behavior is kept intentionally modest in this browser check. The
-  // unit test pins the deterministic budget boundary and recovery interval.
+  // The expected frame can navigate itself to another origin; its messages
+  // still fail the configured docs-origin check. Restore the docs URL before
+  // the reload/budget scenario below.
+  await page.evaluate(`document.querySelector('iframe[title=Document]').contentWindow.postMessage({isolateNavigate:true},'*')`);
+  await until("current Preview frame posted from the external origin", () => page.evaluate(`window.rawFrameEvents.some(event => event.origin === ${JSON.stringify(scriptOrigin)} && event.fromPreviewFrame)`), 5000);
+  await until("external-origin frame load handler ran", () => page.evaluate("window.previewFrameLoads >= 2"), 5000);
+  assert.ok(!String(await page.evaluate("JSON.stringify(window.messages)")).includes("external-origin-doc"), "a message from the current frame at an untrusted origin is rejected");
+  await page.evaluate(`document.querySelector('iframe[title=Document]').src='http://localhost:${port}/docs'`);
+  await until("main document restored to docs origin", () => page.frameEvaluate(`location.origin === 'http://localhost:${port}' && window.reloadCount >= 2`), 5000);
+  await until("restored docs frame load handler ran", () => page.evaluate("window.previewFrameLoads >= 3"), 5000);
+
+  // Flood both message classes until their finite budgets are used, then put
+  // an expensive repaint in the ready queue. The same-URL iframe load must
+  // cancel that delayed repaint; selection cancellation is pinned by the
+  // deterministic receiver test because its shorter refill window is 83ms.
   await page.evaluate("window.messages.length = 0");
-  await page.frameEvaluate(`for (let i=0;i<1000;i++) parent.postMessage({librepaper:true,type:'ready',text:'flood '+i},'*')`);
+  await page.frameEvaluate(`for (let i=0;i<64;i++) parent.postMessage({librepaper:true,type:'ready',text:'before-reload-'+i},'*'); for (let i=0;i<64;i++) parent.postMessage({librepaper:true,type:'selection',selector:{exact:'before-reload-'+i,prefix:'',suffix:''}},'*')`);
   await new Promise((resolve) => setTimeout(resolve, 100));
-  const floodSize = await page.evaluate("window.messages.length");
-  assert.ok(floodSize < 1000, `flood must be bounded (received ${floodSize})`);
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  await page.frameEvaluate("parent.postMessage({librepaper:true,type:'ready',text:'after refill'},'*')");
-  await until("legitimate message after flood refill", () => page.evaluate("window.messages.some(m => m.text === 'after refill')"), 3000);
+  const bounded = await page.evaluate("({ready:window.messages.filter(m => m.type === 'ready').length,selection:window.messages.filter(m => m.type === 'selection').length})");
+  assert.ok(bounded.ready < 64 && bounded.selection < 64, `flood counts remain bounded: ${JSON.stringify(bounded)}`);
+  await page.frameEvaluate("parent.postMessage({librepaper:true,type:'ready',text:'stale-ready-before-reload-'+'x'.repeat(15000000)},'*')");
+  await page.frameEvaluate("location.reload(); true");
+  await until("same docs document reloaded", () => page.frameEvaluate("window.reloadCount >= 3"), 5000);
+  await until("reloaded docs frame load handler ran", () => page.evaluate("window.previewFrameLoads >= 4"), 5000);
+  assert.ok(!String(await page.evaluate("JSON.stringify(window.messages)")).includes("stale-ready-before-reload"));
+
+  // `frameLoaded()` drops queued messages while retaining the depleted token
+  // buckets. A new flood remains bounded until tokens refill, after which a
+  // legitimate repaint is delivered again.
+  await page.evaluate("window.messages.length = 0");
+  await page.frameEvaluate(`for (let i=0;i<32;i++) parent.postMessage({librepaper:true,type:'ready',text:'after-reload-flood-'+i},'*')`);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const afterReloadFlood = await page.evaluate("window.messages.filter(m => m.type === 'ready').length");
+  assert.ok(afterReloadFlood < 32, `reload must retain the depleted budget (accepted ${afterReloadFlood} of 32 immediately)`);
+  await until("queued repaint after reload refill", () => page.evaluate("window.messages.some(m => m.text === 'after-reload-flood-31')"), 5000);
+  await page.frameEvaluate("parent.postMessage({librepaper:true,type:'ready',text:'legitimate-after-reload-refill'},'*')");
+  await until("legitimate message after reload refill", () => page.evaluate("window.messages.some(m => m.text === 'legitimate-after-reload-refill')"), 5000);
 
   // The production PDF viewer is built from pages/viewer.html and receives
   // its reader origin through the same frame.js injection that deployment

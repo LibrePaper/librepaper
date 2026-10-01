@@ -1,0 +1,431 @@
+//! Authenticated HTTP regressions for the application/document origin boundary.
+//!
+//! These exercise the production router and request middleware. They need
+//! `LIBREPAPER_TEST_POSTGRES_URL`, like the other server HTTP fixtures.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use axum::Router;
+use serde_json::json;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use uuid::Uuid;
+
+use crate::auth::{sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB};
+use crate::config::Configuration;
+use crate::document::store::{DocumentInput, MutationActor, Store};
+use crate::log::Registry;
+use crate::room::Rooms;
+use crate::server::origins::Origins;
+use crate::storage::blob::FsStore;
+use crate::storage::postgres::{NewAccount, PostgresCatalog};
+
+use super::Server;
+
+const READER: &str = "https://paper.example";
+const DOCS: &str = "https://docs.paper.example";
+const SOURCE: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";
+
+struct Deployment {
+    server: Arc<Server>,
+    catalog: Arc<PostgresCatalog>,
+    account_id: Uuid,
+    account_session_generation: String,
+    slug: String,
+    document_id: Uuid,
+    _writer: crate::storage::postgres::WriterLease,
+    _objects: tempfile::TempDir,
+}
+
+async fn deployment(slug: &str) -> Option<Deployment> {
+    let catalog = crate::tests::catalog().await?;
+    let writer = catalog.claim_writer().await.unwrap();
+    let account = catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some(PROVIDER_GITHUB.into()),
+            provider_subject: Some("origin-isolation".into()),
+            handle: "isolation-owner".into(),
+            display_name: "Isolation owner".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    let objects = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+        Arc::new(FsStore::new(objects.path(), false));
+    let config = Arc::new(Configuration::default());
+    let registry = Registry::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        "origin-isolation".into(),
+    );
+    let rooms = Rooms::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        registry.clone(),
+    );
+    let (worker, background) = crate::storage::worker::Worker::new(
+        catalog.clone(),
+        blobs.clone(),
+        registry.clone(),
+        config.clone(),
+    );
+    tokio::spawn(worker.run());
+    let store = Store::open_with_catalog(
+        blobs,
+        config.clone(),
+        catalog.clone(),
+        registry,
+    );
+    store
+        .put_directory_as_actor(
+            DocumentInput {
+                slug: slug.into(),
+                title: "Isolation check".into(),
+                source: SOURCE.into(),
+                source_format: "markdown".into(),
+                main: "paper.md".into(),
+            },
+            Vec::new(),
+            MutationActor {
+                account_id: account.id.to_string(),
+                owner_key: "isolation-owner".into(),
+                session_generation: account.session_generation.to_string(),
+                link_hash: String::new(),
+                policy_editor: true,
+                policy_comment: true,
+                automation: false,
+                unowned_publisher: false,
+            },
+        )
+        .await
+        .unwrap();
+    let entry = store.get_result(slug).await.unwrap().unwrap();
+    let document_id = Uuid::parse_str(&entry.storage_id).unwrap();
+    let mut server = Server::new(
+        store,
+        rooms,
+        background,
+        std::collections::HashMap::new(),
+        GithubApp {
+            client_id: "test-client".into(),
+            ..GithubApp::default()
+        },
+        vec![0u8; 32],
+        config,
+        Policy::parse_publishers("isolation-owner").unwrap(),
+        Policy::parse("any"),
+    );
+    server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
+    Some(Deployment {
+        server: Arc::new(server),
+        catalog,
+        account_id: account.id,
+        account_session_generation: account.session_generation.to_string(),
+        slug: slug.into(),
+        document_id,
+        _writer: writer,
+        _objects: objects,
+    })
+}
+
+fn identity(deployment: &Deployment) -> Identity {
+    Identity {
+        provider: PROVIDER_GITHUB.into(),
+        id: deployment.account_id.to_string(),
+        handle: "isolation-owner".into(),
+        name: "Isolation owner".into(),
+        picture: String::new(),
+        session_generation: deployment.account_session_generation.clone(),
+    }
+}
+
+fn session_cookie(deployment: &Deployment) -> String {
+    let token = sign_session(
+        &[0; 32],
+        &identity(deployment),
+        crate::util::now_unix() + 3600,
+    );
+    format!("__Host-librepaper_session={token}")
+}
+
+fn device_bearer(deployment: &Deployment) -> String {
+    sign_device(
+        &[0; 32],
+        &identity(deployment),
+        crate::util::now_unix() + 3600,
+    )
+}
+
+async fn serve(
+    server: Arc<Server>,
+) -> (
+    String,
+    SocketAddr,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router: Router = server.router();
+    let (shutdown, stopped) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    (format!("http://{address}"), address, shutdown)
+}
+
+async fn websocket_status(
+    address: SocketAddr,
+    path: &str,
+    origin: &str,
+    cookie: &str,
+) -> u16 {
+    let mut socket = TcpStream::connect(address).await.unwrap();
+    let request = format!(
+        "GET {path} HTTP/1.1\r\n\
+         Host: paper.example\r\n\
+         Origin: {origin}\r\n\
+         Cookie: {cookie}\r\n\
+         Connection: Upgrade\r\n\
+         Upgrade: websocket\r\n\
+         Sec-WebSocket-Version: 13\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+    );
+    socket.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    let mut buffer = [0; 1024];
+    loop {
+        let read = socket.read(&mut buffer).await.unwrap();
+        if read == 0 {
+            break;
+        }
+        response.extend_from_slice(&buffer[..read]);
+        if response.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let status = String::from_utf8_lossy(&response)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("0")
+        .parse()
+        .unwrap_or(0);
+    // Dropping this stream closes an accepted upgrade too, allowing the
+    // server's socket task to release its room connection.
+    drop(socket);
+    status
+}
+
+fn body_json() -> serde_json::Value {
+    json!({
+        "type": "comment",
+        "body": "The authenticated same-origin control comment.",
+        "exact": "interval covers the mean",
+        "prefix": "Interval estimates The ",
+        "suffix": " of the posterior.",
+        "request_id": Uuid::new_v4().to_string(),
+    })
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn authenticated_browser_routes_enforce_the_origin_boundary() {
+    let Some(deployment) = deployment("origin-isolation-http").await else {
+        return;
+    };
+    let (base, address, stop) = serve(deployment.server.clone()).await;
+    let client = reqwest::Client::new();
+    let cookie = session_cookie(&deployment);
+    let project = format!("/api/documents/{}/project", deployment.slug);
+
+    // The document origin is same-site with the reader and can initiate a
+    // credentialed fetch carrying the reader cookie. Neither that ambient
+    // cookie nor the browser-only client marker makes the request same-origin.
+    let hostile_comment = client
+        .post(format!("{base}/api/documents/{}/comments", deployment.slug))
+        .header("host", "paper.example")
+        .header("origin", DOCS)
+        .header("sec-fetch-site", "same-site")
+        .header("x-librepaper-client", "web")
+        .header("cookie", &cookie)
+        .json(&body_json())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(hostile_comment.status().as_u16(), 403);
+    assert_eq!(
+        deployment
+            .catalog
+            .listing_counts(&[deployment.document_id])
+            .await
+            .unwrap()[0]
+            .comments,
+        0,
+        "a refused request must not add its comment"
+    );
+
+    // Repeat the refusal against a second write route whose effect is a
+    // per-account database mark, then confirm the mark is still absent.
+    let hostile_favorite = client
+        .post(format!("{base}/api/documents/{}/favorite", deployment.slug))
+        .header("host", "paper.example")
+        .header("origin", DOCS)
+        .header("sec-fetch-site", "same-site")
+        .header("x-librepaper-client", "web")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(hostile_favorite.status().as_u16(), 403);
+    assert!(deployment
+        .catalog
+        .marks_for_documents(deployment.account_id, &[deployment.document_id])
+        .await
+        .unwrap()
+        .is_empty());
+
+    // Same-origin browser credentials still work through the identical
+    // production handlers and middleware.
+    let same_origin_comment = client
+        .post(format!("{base}/api/documents/{}/comments", deployment.slug))
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("cookie", &cookie)
+        .json(&body_json())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(same_origin_comment.status().as_u16(), 200);
+    assert_eq!(
+        deployment
+            .catalog
+            .listing_counts(&[deployment.document_id])
+            .await
+            .unwrap()[0]
+            .comments,
+        1
+    );
+    let same_origin_favorite = client
+        .post(format!("{base}/api/documents/{}/favorite", deployment.slug))
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(same_origin_favorite.status().as_u16(), 200);
+
+    // The authorized source endpoint may answer to a same-site request, but
+    // it does not grant CORS access to the document origin. A request to the
+    // document host itself is stopped at api_guard before any API handler.
+    let cross_origin_read = client
+        .get(format!("{base}/api/documents/{}/source", deployment.slug))
+        .header("host", "paper.example")
+        .header("origin", DOCS)
+        .header("sec-fetch-site", "same-site")
+        .header("x-librepaper-client", "web")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_origin_read.status().as_u16(), 200);
+    assert!(cross_origin_read
+        .headers()
+        .get("access-control-allow-origin")
+        .is_none());
+    let docs_api = client
+        .get(format!("{base}{project}"))
+        .header("host", "docs.paper.example")
+        .header("origin", DOCS)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(docs_api.status().as_u16(), 404);
+    assert!(docs_api.headers().get("access-control-allow-origin").is_none());
+
+    // The isolated frame is served from the document host without a reader
+    // session cookie or user-specific bearer material in its HTML.
+    let cookie = session_cookie(&deployment);
+    let bearer = device_bearer(&deployment);
+    let document_shell = client
+        .get(format!("{base}/raw/{}/", deployment.slug))
+        .header("host", "docs.paper.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(document_shell.status().as_u16(), 200);
+    assert!(document_shell.headers().get("set-cookie").is_none());
+    let shell_html = document_shell.text().await.unwrap();
+    assert!(!shell_html.contains(&cookie));
+    assert!(!shell_html.contains(&bearer));
+    assert!(!shell_html.contains(&deployment.account_id.to_string()));
+
+    // Bearer credentials remain usable by browserless callers; the origin
+    // guard does not replace explicit authentication with a blanket ban.
+    let bearer_read = client
+        .get(format!("{base}{project}"))
+        .header("host", "paper.example")
+        .header("origin", DOCS)
+        .header("authorization", format!("Bearer {bearer}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bearer_read.status().as_u16(), 200);
+    assert!(bearer_read.headers().get("access-control-allow-origin").is_none());
+
+    // A WebSocket handshake cannot set the custom client header. Its Origin
+    // alone must identify the reader, before upgrade processing begins.
+    assert_eq!(
+        websocket_status(
+            address,
+            &format!("/ws/{}", deployment.slug),
+            DOCS,
+            &cookie,
+        )
+        .await,
+        403
+    );
+    assert_eq!(
+        websocket_status(
+            address,
+            &format!("/ws/{}", deployment.slug),
+            READER,
+            &cookie,
+        )
+        .await,
+        101
+    );
+    assert_eq!(
+        websocket_status(
+            address,
+            &format!("/api/documents/{}/chat/test-channel/socket", deployment.slug),
+            DOCS,
+            &cookie,
+        )
+        .await,
+        403,
+        "the chat WebSocket has the same foreign-Origin refusal"
+    );
+
+    let _ = stop.send(());
+    deployment.catalog.close().await;
+}

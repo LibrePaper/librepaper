@@ -80,6 +80,59 @@ function advance(ms) {
   }
   time = target;
 }
+
+// Mixed queues must share one correctly rescheduled timer. An expensive ready
+// repaint initially needs eight seconds of tokens; an exhausted selection
+// bucket is due in about 83ms; replacing the queued repaint with a one-unit
+// update moves its own deadline to 500ms without delaying that selection.
+let mixedTime = 0;
+let mixedTimerId = 0;
+const mixedTimers = new Map();
+function setMixedTimer(callback, delay) {
+  const id = ++mixedTimerId;
+  mixedTimers.set(id, { callback, due: mixedTime + delay });
+  return id;
+}
+function clearMixedTimer(id) { mixedTimers.delete(id); }
+function advanceMixed(ms) {
+  const target = mixedTime + ms;
+  while (true) {
+    const next = [...mixedTimers.entries()].sort((a, b) => a[1].due - b[1].due)[0];
+    if (!next || next[1].due > target) break;
+    mixedTimers.delete(next[0]);
+    mixedTime = next[1].due;
+    next[1].callback();
+  }
+  mixedTime = target;
+}
+const mixedWindow = {};
+const mixedOutput = [];
+const mixedReceiver = createFrameMessageReceiver({
+  getFrame: () => ({ contentWindow: mixedWindow }),
+  getSrc: () => "https://docs.example/raw/mixed",
+  getDocsOrigin: () => "https://docs.example",
+  onmessage: (message) => mixedOutput.push(message),
+  now: () => mixedTime,
+  setTimer: setMixedTimer,
+  clearTimer: clearMixedTimer,
+});
+const mixedEvent = (data) => mixedReceiver.receive({ source: mixedWindow, origin: "https://docs.example", data: { librepaper: true, ...data } });
+const expensiveReady = "x".repeat(15_000_001);
+mixedEvent({ type: "ready", text: expensiveReady });
+mixedEvent({ type: "ready", text: expensiveReady });
+const beforeMixedQueue = mixedOutput.length;
+mixedEvent({ type: "ready", text: expensiveReady });
+for (let i = 0; i < 48; i++) mixedEvent({ type: "selection", selector: { exact: `spent-${i}`, prefix: "", suffix: "" } });
+mixedEvent({ type: "selection", selector: { exact: "eligible-in-83ms", prefix: "", suffix: "" } });
+mixedEvent({ type: "ready", text: "eligible-in-500ms" });
+advanceMixed(100);
+assert.ok(mixedOutput.some((message) => message.selector?.exact === "eligible-in-83ms"));
+assert.ok(!mixedOutput.some((message) => message.text === "eligible-in-500ms"));
+advanceMixed(400);
+assert.ok(mixedOutput.some((message) => message.text === "eligible-in-500ms"));
+assert.ok(!mixedOutput.slice(beforeMixedQueue).some((message) => message.text === expensiveReady), "the smaller latest repaint replaced the queued expensive repaint");
+mixedReceiver.dispose();
+
 const frameWindow = {};
 const frame = { contentWindow: frameWindow };
 let src = "https://docs.example/raw/paper/?v=1";
@@ -130,6 +183,20 @@ event({ librepaper: true, type: "ready", text: "newer-in-budget" });
 assert.equal(received.at(-1).text, "newer-in-budget");
 advance(500);
 assert.ok(!received.some((message) => message.text === "stale-queued"));
+
+// The iframe load hook cancels pending data without restoring spent tokens.
+// A new small repaint after the same-URL reload waits for the normal refill.
+receiver.reset();
+for (let i = 0; i < 32; i++) event({ librepaper: true, type: "ready", text: `fill-before-frame-load-${i}` });
+for (let i = 0; i < 48; i++) event({ librepaper: true, type: "selection", selector: { exact: `fill-selection-${i}`, prefix: "", suffix: "" } });
+event({ librepaper: true, type: "ready", text: "stale-ready-before-frame-load" });
+event({ librepaper: true, type: "selection", selector: { exact: "stale-selection-before-frame-load", prefix: "", suffix: "" } });
+receiver.frameLoaded();
+event({ librepaper: true, type: "ready", text: "fresh-ready-after-frame-load" });
+assert.ok(!received.some((message) => message.text === "fresh-ready-after-frame-load"), "frameLoaded retains the depleted same-URL budget");
+advance(500);
+assert.ok(received.some((message) => message.text === "fresh-ready-after-frame-load"));
+assert.ok(!received.some((message) => message.text === "stale-ready-before-frame-load" || message.selector?.exact === "stale-selection-before-frame-load"));
 
 // A source URL change clears its old bucket and pending work. Explicit reset
 // and dispose also cancel queued data so a previous document cannot publish
