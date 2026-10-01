@@ -110,7 +110,7 @@ window.fetch = async (url, init) => {
     window.agentTokenCalls = [...(window.agentTokenCalls || []), {
       method:init.method, headers:{...init.headers},
     }];
-    return Response.json({token:`lpa_test_${window.agentTokenCalls.length}`});
+    return Response.json({token:'lpa_test_' + window.agentTokenCalls.length});
   }
   if (pathname === '/api/documents/paper/agent/candidates/candidate-large') {
     window.candidateHeaders = {...init.headers};
