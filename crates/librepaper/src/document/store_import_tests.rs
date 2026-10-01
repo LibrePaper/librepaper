@@ -228,20 +228,16 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
     assert!(a_exists_before, "A should have an unreferenced row");
 
     // Get initial label count for later verification
-    let label_count_before: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM document_labels WHERE document_id=$1",
-    )
-    .bind(document.id)
-    .fetch_one(catalog.pool())
-    .await
-    .expect("count labels before staged replacement");
+    let label_count_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_labels WHERE document_id=$1")
+            .bind(document.id)
+            .fetch_one(catalog.pool())
+            .await
+            .expect("count labels before staged replacement");
 
     // Step 3: Stage a new replacement naming A
     let (texts, assets, staged_assets) = store
-        .sort_and_stage_assets(
-            document.id,
-            vec![("figure_a.png".into(), bytes_a.clone())],
-        )
+        .sort_and_stage_assets(document.id, vec![("figure_a.png".into(), bytes_a.clone())])
         .await
         .expect("stage replacement naming A");
 
@@ -303,13 +299,12 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
     );
 
     // Step 6: Verify nothing changed
-    let label_count_after: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM document_labels WHERE document_id=$1",
-    )
-    .bind(document.id)
-    .fetch_one(catalog.pool())
-    .await
-    .expect("count labels after failed replacement");
+    let label_count_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_labels WHERE document_id=$1")
+            .bind(document.id)
+            .fetch_one(catalog.pool())
+            .await
+            .expect("count labels after failed replacement");
     assert_eq!(
         label_count_after, label_count_before,
         "failed replacement should not add a label"
@@ -351,6 +346,9 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
     .fetch_one(catalog.pool())
     .await
     .expect("check A row after retry");
-    assert!(a_exists_after_retry, "A row should be recreated after retry");
+    assert!(
+        a_exists_after_retry,
+        "A row should be recreated after retry"
+    );
     drop(_writer);
 }
