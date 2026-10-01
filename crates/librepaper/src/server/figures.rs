@@ -113,10 +113,19 @@ impl Server {
             .await;
         match stored {
             Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),
-            // The catalogue commit may have succeeded before an ambiguous
-            // storage error reached this request, so retain the reservation
-            // for the hour rather than hand the account a free retry.
-            Err(error) => refused(&format!("could not store a figure for {slug}"), &error),
+            Err(error) => {
+                if !matches!(&error, crate::room::WriteError::Storage(_)) {
+                    let _ = self
+                        .store
+                        .catalog
+                        .cancel_upload_admission(upload_admission)
+                        .await;
+                }
+                // A storage error may arrive after the catalogue commit; keep
+                // its admission counted so an ambiguous outcome cannot be
+                // retried for free.
+                refused(&format!("could not store a figure for {slug}"), &error)
+            }
         }
     }
 

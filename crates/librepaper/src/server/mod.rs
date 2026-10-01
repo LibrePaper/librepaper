@@ -55,13 +55,13 @@ pub mod fonts;
 mod history;
 #[cfg(test)]
 mod history_frontier_tests;
+mod host_metrics;
 #[cfg(test)]
 mod isolation_http_tests;
-#[cfg(test)]
-mod moderation_http_tests;
-mod host_metrics;
 pub(crate) mod mcp;
 mod metrics;
+#[cfg(test)]
+mod moderation_http_tests;
 mod onboarding;
 pub mod origins;
 mod quarto_checkpoint;

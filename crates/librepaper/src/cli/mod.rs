@@ -634,16 +634,57 @@ async fn run_admin(command: AdminCommand) {
 async fn moderate(command: ModerationCommand) {
     use crate::storage::postgres::{ModerationAction, PostgresCatalog, PostgresOptions};
     let (database, action, target, actor, reason) = match command {
-        ModerationCommand::BlockAccount { account, actor, reason, database } =>
-            (database, ModerationAction::BlockAccount, account, actor, reason),
-        ModerationCommand::UnblockAccount { account, actor, reason, database } =>
-            (database, ModerationAction::UnblockAccount, account, actor, reason),
-        ModerationCommand::HideProject { project, actor, reason, database } =>
-            (database, ModerationAction::HideProject, project, actor, reason),
-        ModerationCommand::UnhideProject { project, actor, reason, database } =>
-            (database, ModerationAction::UnhideProject, project, actor, reason),
+        ModerationCommand::BlockAccount {
+            account,
+            actor,
+            reason,
+            database,
+        } => (
+            database,
+            ModerationAction::BlockAccount,
+            account,
+            actor,
+            reason,
+        ),
+        ModerationCommand::UnblockAccount {
+            account,
+            actor,
+            reason,
+            database,
+        } => (
+            database,
+            ModerationAction::UnblockAccount,
+            account,
+            actor,
+            reason,
+        ),
+        ModerationCommand::HideProject {
+            project,
+            actor,
+            reason,
+            database,
+        } => (
+            database,
+            ModerationAction::HideProject,
+            project,
+            actor,
+            reason,
+        ),
+        ModerationCommand::UnhideProject {
+            project,
+            actor,
+            reason,
+            database,
+        } => (
+            database,
+            ModerationAction::UnhideProject,
+            project,
+            actor,
+            reason,
+        ),
     };
-    let catalog = match PostgresCatalog::connect(PostgresOptions::new(database.database_url)).await {
+    let catalog = match PostgresCatalog::connect(PostgresOptions::new(database.database_url)).await
+    {
         Ok(catalog) => catalog,
         Err(error) => die(error.to_string()),
     };
@@ -656,14 +697,24 @@ async fn moderate(command: ModerationCommand) {
             catalog
                 .moderate_account(&target, blocked, &actor, &reason)
                 .await
-                .map(|(id, label)| format!("{} account {label} ({id})", if blocked { "blocked" } else { "unblocked" }))
+                .map(|(id, label)| {
+                    format!(
+                        "{} account {label} ({id})",
+                        if blocked { "blocked" } else { "unblocked" }
+                    )
+                })
         }
         ModerationAction::HideProject | ModerationAction::UnhideProject => {
             let hidden = matches!(action, ModerationAction::HideProject);
             catalog
                 .moderate_project(&target, hidden, &actor, &reason)
                 .await
-                .map(|id| format!("{} project {target} ({id})", if hidden { "hidden" } else { "restored" }))
+                .map(|id| {
+                    format!(
+                        "{} project {target} ({id})",
+                        if hidden { "hidden" } else { "restored" }
+                    )
+                })
         }
     };
     match outcome {

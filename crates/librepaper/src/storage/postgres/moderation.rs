@@ -1,7 +1,5 @@
 //! Reversible operator moderation and its durable audit trail.
 
-use std::collections::HashSet;
-
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -57,7 +55,11 @@ impl PostgresCatalog {
         let row = match matches.as_slice() {
             [] => return Err(Error::NotFound),
             [row] => row,
-            _ => return Err(Error::Invalid("account handle is ambiguous; use its UUID".into())),
+            _ => {
+                return Err(Error::Invalid(
+                    "account handle is ambiguous; use its UUID".into(),
+                ))
+            }
         };
         let id: Uuid = row.try_get("id")?;
         let provider: Option<String> = row.try_get("provider")?;
@@ -84,7 +86,11 @@ impl PostgresCatalog {
         insert_audit(
             &mut tx,
             actor,
-            if blocked { ModerationAction::BlockAccount } else { ModerationAction::UnblockAccount },
+            if blocked {
+                ModerationAction::BlockAccount
+            } else {
+                ModerationAction::UnblockAccount
+            },
             "account",
             id,
             &label,
@@ -111,11 +117,12 @@ impl PostgresCatalog {
             return Err(Error::Invalid("project slug must not be empty".into()));
         }
         let mut tx = self.begin_metered().await?;
-        let row = sqlx::query("SELECT id FROM documents WHERE slug=$1 AND status='active' FOR UPDATE")
-            .bind(slug)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or(Error::NotFound)?;
+        let row =
+            sqlx::query("SELECT id FROM documents WHERE slug=$1 AND status='active' FOR UPDATE")
+                .bind(slug)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(Error::NotFound)?;
         let id: Uuid = row.try_get("id")?;
         let changed = if hidden {
             sqlx::query(
@@ -139,7 +146,11 @@ impl PostgresCatalog {
         insert_audit(
             &mut tx,
             actor,
-            if hidden { ModerationAction::HideProject } else { ModerationAction::UnhideProject },
+            if hidden {
+                ModerationAction::HideProject
+            } else {
+                ModerationAction::UnhideProject
+            },
             "project",
             id,
             slug,
@@ -164,25 +175,12 @@ impl PostgresCatalog {
             "SELECT EXISTS(
                  SELECT 1 FROM documents d
                  JOIN moderated_projects m ON m.document_id=d.id
-                 WHERE d.slug=$1 AND d.status='active'
+                 WHERE d.slug=$1
              )",
         )
         .bind(slug)
         .fetch_one(&self.pool)
         .await?)
-    }
-
-    pub async fn hidden_project_ids(&self, document_ids: &[Uuid]) -> Result<HashSet<Uuid>> {
-        if document_ids.is_empty() {
-            return Ok(HashSet::new());
-        }
-        let rows = sqlx::query_scalar::<_, Uuid>(
-            "SELECT document_id FROM moderated_projects WHERE document_id=ANY($1)",
-        )
-        .bind(document_ids)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().collect())
     }
 }
 
@@ -225,7 +223,7 @@ async fn insert_audit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::postgres::{PostgresOptions, PostgresCatalog};
+    use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
 
     async fn test_catalog() -> PostgresCatalog {
         let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
@@ -233,7 +231,10 @@ mod tests {
         let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
             .await
             .expect("connect to PostgreSQL");
-        catalog.migrate().await.expect("apply PostgreSQL migrations");
+        catalog
+            .migrate()
+            .await
+            .expect("apply PostgreSQL migrations");
         catalog
     }
 
@@ -326,17 +327,12 @@ mod tests {
         let lifecycle: String = sqlx::query_scalar("SELECT status FROM documents WHERE id=$1")
             .bind(document)
             .fetch_one(catalog.pool())
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         assert_eq!(lifecycle, "active");
         assert_eq!(
             catalog
-                .access_role(
-                    document,
-                    Some(owner),
-                    None,
-                    time::OffsetDateTime::now_utc(),
-                )
+                .access_role(document, Some(owner), None, time::OffsetDateTime::now_utc(),)
                 .await
                 .unwrap(),
             None
@@ -351,7 +347,9 @@ mod tests {
             automation: false,
         };
         assert!(matches!(
-            catalog.authorize_document_mutation(document, &actor, true).await,
+            catalog
+                .authorize_document_mutation(document, &actor, true)
+                .await,
             Err(Error::NotFound)
         ));
 
@@ -362,12 +360,7 @@ mod tests {
         assert!(!catalog.project_is_hidden(document).await.unwrap());
         assert_eq!(
             catalog
-                .access_role(
-                    document,
-                    Some(owner),
-                    None,
-                    time::OffsetDateTime::now_utc(),
-                )
+                .access_role(document, Some(owner), None, time::OffsetDateTime::now_utc(),)
                 .await
                 .unwrap(),
             Some(crate::storage::postgres::access::AccessRole::Owner)
@@ -380,6 +373,150 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(audits, 2);
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn hidden_projects_do_not_consume_public_pages_and_still_expire() {
+        let catalog = test_catalog().await;
+        crate::tests::reset(&catalog).await;
+        let owner = Uuid::now_v7();
+        let hidden_id = Uuid::now_v7();
+        let visible_id = Uuid::now_v7();
+        let hidden_slug = format!("moderation-expired-{hidden_id}");
+        let visible_slug = format!("moderation-visible-{visible_id}");
+        sqlx::query(
+            "INSERT INTO accounts(id,kind,handle,display_name,status)
+             VALUES($1,'anonymous',$2,'Moderation pagination test','active')",
+        )
+        .bind(owner)
+        .bind(format!("moderation-pagination-owner-{owner}"))
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        for (id, slug) in [(hidden_id, &hidden_slug), (visible_id, &visible_slug)] {
+            sqlx::query(
+                "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
+                 VALUES($1,$2,$3,'owned','Moderation pagination test','active','markdown','main.md')",
+            )
+            .bind(id)
+            .bind(slug)
+            .bind(owner)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        }
+        sqlx::query("UPDATE documents SET updated_at=now()-interval '1 day' WHERE id=$1")
+            .bind(hidden_id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE documents SET updated_at=now()-interval '2 days' WHERE id=$1")
+            .bind(visible_id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        catalog
+            .moderate_project(&hidden_slug, true, "operator", "abuse report")
+            .await
+            .unwrap();
+
+        let public = catalog.list_documents(None, 1).await.unwrap();
+        assert_eq!(public.len(), 1);
+        assert_eq!(public[0].id, visible_id);
+        let owned = catalog
+            .visible_documents(Some(owner), None, 1)
+            .await
+            .unwrap();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].id, visible_id);
+
+        let maintenance = catalog
+            .list_documents_for_maintenance(None, 200)
+            .await
+            .unwrap();
+        let hidden = maintenance
+            .iter()
+            .find(|document| document.id == hidden_id)
+            .expect("maintenance enumeration retains hidden documents");
+        assert!(
+            hidden.updated_at.unix_timestamp()
+                <= time::OffsetDateTime::now_utc().unix_timestamp() - 86_400
+        );
+        let _writer = catalog.claim_writer().await.unwrap();
+        assert!(catalog.mark_document_deleting(hidden_id).await.unwrap());
+        let status: String = sqlx::query_scalar("SELECT status FROM documents WHERE id=$1")
+            .bind(hidden_id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(status, "deleting");
+        drop(_writer);
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn retention_maintenance_pages_reach_a_hidden_document_after_200_rows() {
+        let catalog = test_catalog().await;
+        crate::tests::reset(&catalog).await;
+        let owner = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO accounts(id,kind,handle,display_name,status)
+             VALUES($1,'anonymous',$2,'Retention pagination test','active')",
+        )
+        .bind(owner)
+        .bind(format!("moderation-retention-owner-{owner}"))
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO documents
+             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path,updated_at)
+             SELECT md5('moderation-retention-' || n::text)::uuid,
+                    'moderation-retention-' || n::text,$1,'owned',
+                    'Retention pagination test','active','markdown','main.md',
+                    now() - n * interval '1 day'
+             FROM generate_series(0,200) AS series(n)",
+        )
+        .bind(owner)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        let hidden_slug = "moderation-retention-200";
+        let hidden_id: Uuid = sqlx::query_scalar("SELECT id FROM documents WHERE slug=$1")
+            .bind(hidden_slug)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        catalog
+            .moderate_project(hidden_slug, true, "operator", "abuse report")
+            .await
+            .unwrap();
+
+        let first = catalog
+            .list_documents_for_maintenance(None, 200)
+            .await
+            .unwrap();
+        assert_eq!(first.len(), 200);
+        let last = first.last().unwrap();
+        let second = catalog
+            .list_documents_for_maintenance(Some((last.updated_at, last.id)), 200)
+            .await
+            .unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].id, hidden_id);
+
+        let _writer = catalog.claim_writer().await.unwrap();
+        assert!(catalog.mark_document_deleting(hidden_id).await.unwrap());
+        let status: String = sqlx::query_scalar("SELECT status FROM documents WHERE id=$1")
+            .bind(hidden_id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(status, "deleting");
+        drop(_writer);
         catalog.close().await;
     }
 }

@@ -507,6 +507,52 @@ async fn compaction_can_shrink_over_quota_storage_but_cannot_grow_it() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn already_admitted_log_rows_can_flush_after_a_project_is_hidden() {
+    let catalog = catalog().await;
+    let writer = catalog.claim_writer().await.unwrap();
+    let owner = account(&catalog).await;
+    let document = catalog
+        .create_document(document(
+            owner.id,
+            format!("lifecycle-hidden-flush-{}", Uuid::now_v7()),
+            None,
+        ))
+        .await
+        .unwrap();
+    // The edit was admitted before moderation. Hiding the project must stop
+    // new authorized edits without stranding work already relayed to peers.
+    sqlx::query("INSERT INTO moderated_projects(document_id) VALUES($1)")
+        .bind(document.id)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    assert!(catalog
+        .authorize_document_mutation(document.id, &mutation_authorization(&owner), true)
+        .await
+        .is_err());
+    let row_bytes = vec![11_u8; 60];
+    let sequence = catalog
+        .flush_log_row(
+            document.id,
+            FlushRow {
+                expected_update_sequence: 0,
+                update_bytes: &row_bytes,
+                vector: &[],
+                source_format: None,
+                main_path: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(sequence, 1);
+    assert_eq!(catalog.usage_bytes(Some(owner.id)).await.unwrap(), 60);
+
+    drop(writer);
+    catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn concurrent_upload_admissions_share_the_owner_hourly_allowance() {
     let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
         .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
@@ -532,6 +578,58 @@ async fn concurrent_upload_admissions_share_the_owner_hourly_allowance() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn quota_rejected_new_project_keeps_its_upload_admission() {
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
+    let mut options = PostgresOptions::new(url);
+    options.policy.owner_bytes = 0;
+    options.policy.asset_uploads_per_hour = 1;
+    let catalog = PostgresCatalog::connect(options).await.unwrap();
+    catalog.migrate().await.unwrap();
+    let writer = catalog.claim_writer().await.unwrap();
+    let owner = account(&catalog).await;
+    // Mirrors handle_upload: the rate admission precedes document creation,
+    // and the row can exist even though its first retained bytes are refused.
+    catalog.reserve_upload_admission(owner.id).await.unwrap();
+    let document = catalog
+        .create_document(document(
+            owner.id,
+            format!("lifecycle-rejected-create-{}", Uuid::now_v7()),
+            None,
+        ))
+        .await
+        .unwrap();
+    let rejected_bytes = [3_u8; 1];
+    assert!(catalog
+        .flush_log_row(
+            document.id,
+            FlushRow {
+                expected_update_sequence: 0,
+                update_bytes: &rejected_bytes,
+                vector: &[],
+                source_format: None,
+                main_path: None,
+            },
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        catalog
+            .document_by_slug(&document.slug)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "active"
+    );
+    assert!(catalog.reserve_upload_admission(owner.id).await.is_err());
+
+    drop(writer);
+    catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn upload_admissions_survive_restart_and_expire_after_one_hour() {
     let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
         .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
@@ -541,10 +639,7 @@ async fn upload_admissions_survive_restart_and_expire_after_one_hour() {
     catalog.migrate().await.unwrap();
     let writer = catalog.claim_writer().await.unwrap();
     let account = account(&catalog).await;
-    let accepted = catalog
-        .reserve_upload_admission(account.id)
-        .await
-        .unwrap();
+    let accepted = catalog.reserve_upload_admission(account.id).await.unwrap();
     drop(writer);
     catalog.close().await;
 
@@ -553,7 +648,10 @@ async fn upload_admissions_survive_restart_and_expire_after_one_hour() {
     let restarted = PostgresCatalog::connect(options).await.unwrap();
     restarted.migrate().await.unwrap();
     let writer = restarted.claim_writer().await.unwrap();
-    assert!(restarted.reserve_upload_admission(account.id).await.is_err());
+    assert!(restarted
+        .reserve_upload_admission(account.id)
+        .await
+        .is_err());
     sqlx::query(
         "UPDATE upload_admissions SET created_at=now()-interval '1 hour 1 second' WHERE id=$1",
     )

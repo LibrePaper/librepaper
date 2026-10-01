@@ -41,14 +41,34 @@ struct Deployment {
     catalog: Arc<PostgresCatalog>,
     account_id: Uuid,
     session_generation: String,
+    commenter_id: Uuid,
+    commenter_session_generation: String,
+    commenter_handle: String,
     slug: String,
     asset_sha: String,
     share_key: String,
+    commenter_link_key: String,
     _writer: crate::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
+async fn close_deployment(deployment: Deployment) {
+    let Deployment {
+        catalog, _writer, ..
+    } = deployment;
+    drop(_writer);
+    catalog.close().await;
+}
+
 async fn deployment(slug: &str) -> Option<Deployment> {
+    deployment_mode(slug, false).await
+}
+
+async fn open_deployment(slug: &str) -> Option<Deployment> {
+    deployment_mode(slug, true).await
+}
+
+async fn deployment_mode(slug: &str, open: bool) -> Option<Deployment> {
     let catalog = crate::tests::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let account = catalog
@@ -58,6 +78,17 @@ async fn deployment(slug: &str) -> Option<Deployment> {
             provider_subject: Some(format!("moderation-{slug}")),
             handle: format!("moderation-{slug}"),
             display_name: "Moderation fixture".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    let commenter = catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some(PROVIDER_GITHUB.into()),
+            provider_subject: Some(format!("moderation-commenter-{slug}")),
+            handle: format!("moderation-commenter-{slug}"),
+            display_name: "Moderation commenter".into(),
             email: None,
         })
         .await
@@ -94,8 +125,10 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         policy_editor: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
+        unowned_publisher: open,
     };
+    let asset_bytes = b"moderation figure bytes".to_vec();
+    let asset_sha = crate::document::store::digest_of_bytes(&asset_bytes);
     store
         .put_directory_as_actor(
             DocumentInput {
@@ -105,7 +138,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
                 source_format: "markdown".into(),
                 main: "paper.md".into(),
             },
-            Vec::new(),
+            vec![("figure.png".into(), asset_bytes)],
             actor.clone(),
         )
         .await
@@ -127,6 +160,21 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         )
         .await
         .unwrap();
+    let commenter_link_key = format!("commenter-{}", Uuid::new_v4().simple());
+    catalog
+        .create_share_link(
+            document_id,
+            AccessRole::Commenter,
+            hex::decode(crate::server::sharing::hash_link_key(&commenter_link_key))
+                .unwrap()
+                .try_into()
+                .unwrap(),
+            "moderation HTTP commenter".into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     let mut server = Server::new(
         store,
         rooms,
@@ -143,30 +191,25 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     );
     server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
     let room = server.documents.rooms.get(slug).await.unwrap();
-    let (asset_sha, _) = room
-        .put_asset_authorized(b"moderation figure bytes".to_vec(), &actor)
-        .await
-        .unwrap();
-    let (vector, edited) = room
-        .log()
-        .with_head(|doc| (crate::document::session::encode_vector(doc), doc.fork()))
-        .await
-        .unwrap();
-    crate::document::session::put_asset(&edited, "figure.bin", &asset_sha);
-    let update = crate::document::session::encode_diff(&edited, &vector).unwrap();
-    assert!(matches!(
-        room.ingest(991, "moderation-asset", "moderation-asset", 1, update)
-            .await,
-        crate::log::Ingested::Accepted
-    ));
+    let _unreferenced_asset = tokio::time::timeout(
+        Duration::from_secs(10),
+        room.put_asset_authorized(b"asset-attach lock regression".to_vec(), &actor),
+    )
+    .await
+    .expect("asset attachment must finish without waiting on its own document lock")
+    .unwrap();
     Some(Deployment {
         server: Arc::new(server),
         catalog,
         account_id: account.id,
         session_generation: account.session_generation.to_string(),
+        commenter_id: commenter.id,
+        commenter_session_generation: commenter.session_generation.to_string(),
+        commenter_handle: commenter.handle,
         slug: slug.into(),
         asset_sha,
         share_key,
+        commenter_link_key,
         _writer: writer,
         _objects: objects,
     })
@@ -184,31 +227,52 @@ fn identity(deployment: &Deployment) -> Identity {
 }
 
 fn bearer(deployment: &Deployment) -> String {
-    sign_device(
-        &[0; 32],
-        &identity(deployment),
-        crate::util::now_unix() + 3600,
-    )
+    bearer_for(&identity(deployment))
+}
+
+fn bearer_for(identity: &Identity) -> String {
+    sign_device(&[0; 32], identity, crate::util::now_unix() + 3600)
 }
 
 fn cookie(deployment: &Deployment) -> String {
-    let token = sign_session(
-        &[0; 32],
-        &identity(deployment),
-        crate::util::now_unix() + 3600,
-    );
+    cookie_for(&identity(deployment))
+}
+
+fn cookie_for(identity: &Identity) -> String {
+    let token = sign_session(&[0; 32], identity, crate::util::now_unix() + 3600);
     format!("__Host-librepaper_session={token}")
 }
 
-fn comment_body() -> serde_json::Value {
-    json!({
+fn commenter_identity(deployment: &Deployment) -> Identity {
+    Identity {
+        provider: PROVIDER_GITHUB.into(),
+        id: deployment.commenter_id.to_string(),
+        handle: deployment.commenter_handle.clone(),
+        name: "Moderation commenter".into(),
+        picture: String::new(),
+        session_generation: deployment.commenter_session_generation.clone(),
+    }
+}
+
+fn comment_body(render_digest: Option<&str>) -> serde_json::Value {
+    let mut body = json!({
         "type": "comment",
         "body": "A comment under the signed-in-only policy.",
         "exact": "interval covers the mean",
         "prefix": "Interval estimates The ",
         "suffix": " of the posterior.",
         "request_id": Uuid::new_v4().to_string(),
-    })
+    });
+    if let Some(render_digest) = render_digest {
+        body["render_digest"] = json!(render_digest);
+    }
+    body
+}
+
+fn visitor_cookie() -> String {
+    let token = format!("visitor-{}", Uuid::new_v4().simple());
+    let signed = sign_visitor(&[0; 32], &token);
+    format!("__Host-{VISITOR_COOKIE}={signed}; {VISITOR_COOKIE}={signed}")
 }
 
 async fn serve(server: Arc<Server>) -> (String, SocketAddr, tokio::sync::oneshot::Sender<()>) {
@@ -285,16 +349,11 @@ async fn open_websocket(
     request
         .headers_mut()
         .insert(COOKIE, HeaderValue::from_str(cookie).unwrap());
-    tokio_tungstenite::connect_async(request)
-        .await
-        .unwrap()
-        .0
+    tokio_tungstenite::connect_async(request).await.unwrap().0
 }
 
 async fn websocket_closes(
-    socket: &mut tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<TcpStream>,
-    >,
+    socket: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
 ) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(frame) = socket.next().await {
@@ -318,30 +377,16 @@ async fn hiding_a_project_closes_public_and_bearer_routes_until_unhidden() {
     let client = reqwest::Client::new();
     let bearer = bearer(&deployment);
     let cookie = cookie(&deployment);
+    let visitor_cookie = visitor_cookie();
     let paths = [
         (format!("/api/documents/{}", deployment.slug), 200),
-        (
-            format!("/api/documents/{}/project", deployment.slug),
-            200,
-        ),
-        (
-            format!("/api/documents/{}/source", deployment.slug),
-            200,
-        ),
-        (
-            format!("/api/documents/{}/snapshot", deployment.slug),
-            200,
-        ),
-        (
-            format!("/api/documents/{}/history", deployment.slug),
-            200,
-        ),
+        (format!("/api/documents/{}/project", deployment.slug), 200),
+        (format!("/api/documents/{}/source", deployment.slug), 200),
+        (format!("/api/documents/{}/snapshot", deployment.slug), 200),
+        (format!("/api/documents/{}/history", deployment.slug), 200),
         // State needs a live transfer id; without one the active route answers
         // 410 after authenticating and authorizing the caller.
-        (
-            format!("/api/documents/{}/state", deployment.slug),
-            410,
-        ),
+        (format!("/api/documents/{}/state", deployment.slug), 410),
         (
             format!(
                 "/api/documents/{}/assets/{}",
@@ -375,31 +420,44 @@ async fn hiding_a_project_closes_public_and_bearer_routes_until_unhidden() {
     let share_read = client
         .get(format!("{base}/api/documents/{}/project", deployment.slug))
         .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
         .header("x-librepaper-key", &deployment.share_key)
+        .header("cookie", &visitor_cookie)
         .send()
         .await
         .unwrap();
-    assert_eq!(share_read.status().as_u16(), 200);
+    let share_read_status = share_read.status().as_u16();
+    let share_read_body = share_read.text().await.unwrap();
+    assert_eq!(
+        share_read_status, 200,
+        "share read response: {share_read_body}"
+    );
     let share_asset = client
         .get(format!(
             "{base}/api/documents/{}/assets/{}",
             deployment.slug, deployment.asset_sha
         ))
         .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
         .header("x-librepaper-key", &deployment.share_key)
+        .header("cookie", &visitor_cookie)
         .send()
         .await
         .unwrap();
-    assert_eq!(share_asset.status().as_u16(), 200);
+    let share_asset_status = share_asset.status().as_u16();
+    let share_asset_body = share_asset.text().await.unwrap();
+    assert_eq!(
+        share_asset_status, 200,
+        "share asset response: {share_asset_body}"
+    );
 
     deployment
         .catalog
-        .moderate_project(
-            &deployment.slug,
-            true,
-            "test-operator",
-            "abuse report",
-        )
+        .moderate_project(&deployment.slug, true, "test-operator", "abuse report")
         .await
         .unwrap();
     for (path, _) in &paths {
@@ -433,7 +491,11 @@ async fn hiding_a_project_closes_public_and_bearer_routes_until_unhidden() {
     let hidden_share_read = client
         .get(format!("{base}/api/documents/{}/project", deployment.slug))
         .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
         .header("x-librepaper-key", &deployment.share_key)
+        .header("cookie", &visitor_cookie)
         .send()
         .await
         .unwrap();
@@ -444,7 +506,11 @@ async fn hiding_a_project_closes_public_and_bearer_routes_until_unhidden() {
             deployment.slug, deployment.asset_sha
         ))
         .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
         .header("x-librepaper-key", &deployment.share_key)
+        .header("cookie", &visitor_cookie)
         .send()
         .await
         .unwrap();
@@ -452,12 +518,7 @@ async fn hiding_a_project_closes_public_and_bearer_routes_until_unhidden() {
 
     deployment
         .catalog
-        .moderate_project(
-            &deployment.slug,
-            false,
-            "test-operator",
-            "appeal upheld",
-        )
+        .moderate_project(&deployment.slug, false, "test-operator", "appeal upheld")
         .await
         .unwrap();
     for (path, active_status) in &paths {
@@ -490,13 +551,17 @@ async fn hiding_a_project_closes_public_and_bearer_routes_until_unhidden() {
     let restored_share = client
         .get(format!("{base}/api/documents/{}/project", deployment.slug))
         .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
         .header("x-librepaper-key", &deployment.share_key)
+        .header("cookie", &visitor_cookie)
         .send()
         .await
         .unwrap();
     assert_eq!(restored_share.status().as_u16(), 200);
     let _ = stop.send(());
-    deployment.catalog.close().await;
+    close_deployment(deployment).await;
 }
 
 #[tokio::test]
@@ -567,13 +632,13 @@ async fn blocking_an_account_refuses_writes_and_unblock_does_not_restore_its_ses
     assert_eq!(after_unblock.status().as_u16(), 401);
 
     let _ = stop.send(());
-    deployment.catalog.close().await;
+    close_deployment(deployment).await;
 }
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn any_commenter_policy_rejects_anonymous_comments_and_accepts_a_signed_in_account() {
-    let Some(deployment) = deployment("moderation-comment-policy-http").await else {
+    let Some(deployment) = open_deployment("moderation-comment-policy-http").await else {
         return;
     };
     // The fixture deliberately uses `Policy::parse("any")`, the Docker
@@ -581,23 +646,43 @@ async fn any_commenter_policy_rejects_anonymous_comments_and_accepts_a_signed_in
     // anonymous reader still cannot.
     let (base, _address, stop) = serve(deployment.server.clone()).await;
     let client = reqwest::Client::new();
-    let visitor_token = format!("visitor-{}", Uuid::new_v4().simple());
-    let visitor_cookie = format!(
-        "__Host-{VISITOR_COOKIE}={}",
-        sign_visitor(&[0; 32], &visitor_token)
-    );
+    let visitor_cookie = visitor_cookie();
     let anonymous = client
         .post(format!("{base}/api/documents/{}/comments", deployment.slug))
         .header("host", "paper.example")
         .header("origin", READER)
         .header("sec-fetch-site", "same-origin")
         .header("x-librepaper-client", "web")
+        .header("x-librepaper-key", &deployment.commenter_link_key)
         .header("cookie", visitor_cookie)
-        .json(&comment_body())
+        .json(&comment_body(None))
         .send()
         .await
         .unwrap();
-    assert_eq!(anonymous.status().as_u16(), 403);
+    let anonymous_status = anonymous.status().as_u16();
+    let anonymous_body = anonymous.text().await.unwrap();
+    assert_eq!(
+        anonymous_status, 403,
+        "anonymous comment response: {anonymous_body}"
+    );
+
+    let project = client
+        .get(format!("{base}/api/documents/{}/project", deployment.slug))
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("x-librepaper-key", &deployment.commenter_link_key)
+        .header(
+            "authorization",
+            format!("Bearer {}", bearer_for(&commenter_identity(&deployment))),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(project.status().as_u16(), 200);
+    let project: serde_json::Value = project.json().await.unwrap();
+    let render_digest = project["project_digest"].as_str().unwrap();
 
     let signed_in = client
         .post(format!("{base}/api/documents/{}/comments", deployment.slug))
@@ -605,13 +690,22 @@ async fn any_commenter_policy_rejects_anonymous_comments_and_accepts_a_signed_in
         .header("origin", READER)
         .header("sec-fetch-site", "same-origin")
         .header("x-librepaper-client", "web")
-        .header("cookie", cookie(&deployment))
-        .json(&comment_body())
+        .header("x-librepaper-key", &deployment.commenter_link_key)
+        .header(
+            "authorization",
+            format!("Bearer {}", bearer_for(&commenter_identity(&deployment))),
+        )
+        .json(&comment_body(Some(render_digest)))
         .send()
         .await
         .unwrap();
-    assert_eq!(signed_in.status().as_u16(), 200);
+    let signed_in_status = signed_in.status().as_u16();
+    let signed_in_body = signed_in.text().await.unwrap();
+    assert_eq!(
+        signed_in_status, 200,
+        "signed-in commenter response: {signed_in_body}"
+    );
 
     let _ = stop.send(());
-    deployment.catalog.close().await;
+    close_deployment(deployment).await;
 }

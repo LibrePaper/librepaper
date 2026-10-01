@@ -688,17 +688,27 @@ impl Store {
         Ok(Some(entry_from_document(catalog, &document).await?))
     }
 
-    pub async fn list_result(&self) -> Result<Vec<IndexEntry>, CatalogError> {
+    /// Reads a bounded active-document maintenance page, including moderated
+    /// projects that users must not see but retention still processes.
+    /// Returns the next cursor only when another page may exist.
+    pub async fn maintenance_page(
+        &self,
+        before: Option<(time::OffsetDateTime, Uuid)>,
+        limit: u32,
+    ) -> Result<(Vec<IndexEntry>, Option<(time::OffsetDateTime, Uuid)>), CatalogError> {
         let catalog = &self.catalog;
-        let documents = catalog.list_documents(None, 200).await?;
-        let hidden = catalog
-            .hidden_project_ids(&documents.iter().map(|document| document.id).collect::<Vec<_>>())
+        let documents = catalog
+            .list_documents_for_maintenance(before, i64::from(limit))
             .await?;
-        let visible = documents
-            .into_iter()
-            .filter(|document| !hidden.contains(&document.id))
-            .collect::<Vec<_>>();
-        entries_from_documents(catalog, &visible).await
+        let next = if documents.len() == limit as usize {
+            documents
+                .last()
+                .map(|document| (document.updated_at, document.id))
+        } else {
+            None
+        };
+        let entries = entries_from_documents(catalog, &documents).await?;
+        Ok((entries, next))
     }
 
     pub async fn visible_page_with_options(
@@ -732,14 +742,7 @@ impl Store {
         let documents = catalog
             .visible_documents(account_id, before, i64::from(limit))
             .await?;
-        let hidden = catalog
-            .hidden_project_ids(&documents.iter().map(|document| document.id).collect::<Vec<_>>())
-            .await?;
-        let visible = documents
-            .into_iter()
-            .filter(|document| !hidden.contains(&document.id))
-            .collect::<Vec<_>>();
-        entries_from_documents(catalog, &visible).await
+        entries_from_documents(catalog, &documents).await
     }
 
     /// Every document this account has deleted and can still get back, newest

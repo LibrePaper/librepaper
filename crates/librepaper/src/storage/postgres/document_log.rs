@@ -261,18 +261,14 @@ impl PostgresCatalog {
         use sqlx::Row as _;
         self.check_writer_epoch(tx).await?;
         let row =
-            sqlx::query("SELECT d.status,d.update_sequence,EXISTS(SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id) AS hidden FROM documents d WHERE d.id=$1 FOR UPDATE")
+            sqlx::query("SELECT status,update_sequence FROM documents WHERE id=$1 FOR UPDATE")
                 .bind(document_id)
                 .fetch_optional(&mut **tx)
                 .await?
                 .ok_or(Error::NotFound)?;
         let status: String = row.get(0);
         let sequence: i64 = row.get(1);
-        let hidden: bool = row.get(2);
         if status != "active" {
-            return Err(Error::NotFound);
-        }
-        if hidden {
             return Err(Error::NotFound);
         }
         if sequence != expected_update_sequence {
@@ -364,15 +360,6 @@ impl PostgresCatalog {
         {
             return Err(Error::Invalid("source identity is invalid".into()));
         }
-        let hidden: bool = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM moderated_projects WHERE document_id=$1)",
-        )
-        .bind(document_id)
-        .fetch_one(&mut **tx)
-        .await?;
-        if hidden {
-            return Err(Error::NotFound);
-        }
         // The sequencer's in-memory ledger is an early admission check, but
         // another document can be edited while this row is buffered. Recheck
         // under the deployment storage lock at the durable boundary so two
@@ -383,11 +370,10 @@ impl PostgresCatalog {
             .bind(document_id)
             .fetch_one(&mut **tx)
             .await?;
-        let retained_blobs: i64 = sqlx::query_scalar(
-            "SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",
-        )
-        .fetch_one(&mut **tx)
-        .await?;
+        let retained_blobs: i64 =
+            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+                .fetch_one(&mut **tx)
+                .await?;
         let owner_usage = super::repository::owner_usage_bytes(&mut **tx, owner_id).await?;
         let incoming_bytes = row.update_bytes.len().min(i64::MAX as usize) as i64;
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
@@ -517,11 +503,10 @@ impl PostgresCatalog {
         // Base activation can replace many small rows with a larger snapshot.
         // Serialize the retained-byte delta against asset and archive writes,
         // then validate the post-activation accounting before committing.
-        let _usage_lock: i64 = sqlx::query_scalar(
-            "SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let _usage_lock: i64 =
+            sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+                .fetch_one(&mut *tx)
+                .await?;
         let owner_before = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
         let deployment_before: i64 = sqlx::query_scalar(
             "SELECT (SELECT bytes FROM storage_usage WHERE singleton) + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
@@ -586,9 +571,7 @@ impl PostgresCatalog {
         )
         .fetch_one(&mut *tx)
         .await?;
-        if deployment_usage > self.policy.deployment_bytes
-            && deployment_usage > deployment_before
-        {
+        if deployment_usage > self.policy.deployment_bytes && deployment_usage > deployment_before {
             return Err(Error::Conflict(
                 "deployment storage threshold exceeded".into(),
             ));

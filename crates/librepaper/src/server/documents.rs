@@ -47,25 +47,33 @@ impl Server {
     pub async fn delete_expired(&self, now: i64, retention: i64, from: &str) -> usize {
         let mut removed = 0;
         let cutoff = now - retention;
-        let entries = match self.store.list_result().await {
-            Ok(entries) => entries,
-            Err(error) => {
-                eprintln!("could not enumerate documents for retention: {error}");
-                return 0;
+        let mut before = None;
+        loop {
+            let (entries, next) = match self.store.maintenance_page(before, 200).await {
+                Ok(page) => page,
+                Err(error) => {
+                    eprintln!("could not enumerate documents for retention: {error}");
+                    return removed;
+                }
+            };
+            if entries.is_empty() {
+                break;
             }
-        };
-        for entry in entries {
-            if let Some(stamp) = entry.expiry_time(from) {
-                if stamp <= cutoff {
-                    // The janitor runs unattended: a document whose index entry
-                    // could not be rewritten is left for the next pass.
-                    if let Err(err) = self.delete_document(&entry.slug).await {
-                        eprintln!("could not expire {}: {err}", entry.slug);
-                        continue;
+            for entry in entries {
+                if let Some(stamp) = entry.expiry_time(from) {
+                    if stamp <= cutoff {
+                        // The janitor runs unattended: a document whose index entry
+                        // could not be rewritten is left for the next pass.
+                        if let Err(err) = self.delete_document(&entry.slug).await {
+                            eprintln!("could not expire {}: {err}", entry.slug);
+                            continue;
+                        }
+                        removed += 1;
                     }
-                    removed += 1;
                 }
             }
+            let Some(next) = next else { break };
+            before = Some(next);
         }
         removed
     }
@@ -417,7 +425,7 @@ impl Server {
                         "error": error.to_string(),
                         "retryable": true,
                     }),
-                )
+                );
             }
         };
         let mine = existing.as_ref().is_some_and(|e| e.owned_by(&who.id));
@@ -509,20 +517,24 @@ impl Server {
         {
             Ok(entry) => entry,
             Err(PutError::Quota { status, message }) => {
-                let _ = self
-                    .store
-                    .catalog
-                    .cancel_upload_admission(upload_admission)
-                    .await;
-                return write_json(status, &json!({"error": message}))
+                if mine {
+                    let _ = self
+                        .store
+                        .catalog
+                        .cancel_upload_admission(upload_admission)
+                        .await;
+                }
+                return write_json(status, &json!({"error": message}));
             }
             Err(PutError::Authorization { status, message }) => {
-                let _ = self
-                    .store
-                    .catalog
-                    .cancel_upload_admission(upload_admission)
-                    .await;
-                return write_json(status, &json!({"error": message}))
+                if mine {
+                    let _ = self
+                        .store
+                        .catalog
+                        .cancel_upload_admission(upload_admission)
+                        .await;
+                }
+                return write_json(status, &json!({"error": message}));
             }
             Err(PutError::Storage(_)) => {
                 return write_json(500, &json!({"error": "could not store the document"}))
@@ -1357,6 +1369,17 @@ impl Server {
                 return write_json(503, &json!({"error": "could not read that project"}));
             }
         };
+        if files.len() > self.config.max_files {
+            let _ = self
+                .store
+                .catalog
+                .cancel_upload_admission(upload_admission)
+                .await;
+            return write_json(
+                413,
+                &json!({"error": format!("a document may hold {} files", self.config.max_files)}),
+            );
+        }
         let title = if asked.is_empty() {
             format!("{} (copy)", entry.title)
         } else {
@@ -1386,6 +1409,21 @@ impl Server {
             .into_iter()
             .filter(|(path, _)| path != &entry.main)
             .collect();
+        if let Err(response) = self.preflight_directory(&Upload {
+            title: title.clone(),
+            slug: String::new(),
+            source: source.clone(),
+            source_format: entry.source_format.clone(),
+            main: entry.main.clone(),
+            files: rest.clone(),
+        }) {
+            let _ = self
+                .store
+                .catalog
+                .cancel_upload_admission(upload_admission)
+                .await;
+            return response;
+        }
         let actor = crate::document::store::MutationActor {
             account_id: who.id.clone(),
             owner_key: who.key.clone(),
@@ -1415,9 +1453,17 @@ impl Server {
                 200,
                 &json!({"slug": made.slug, "title": made.title, "url": format!("/docs/{}", made.slug)}),
             ),
-            Err(error) => {
-                // The command may have committed before returning an
-                // ambiguous storage error, so keep its hourly admission.
+            Err(PutError::Quota { status, message }) => {
+                // A failed create can leave its new, empty document row; keep
+                // the upload counted to bound those side effects.
+                write_json(status, &json!({"error": message}))
+            }
+            Err(PutError::Authorization { status, message }) => {
+                write_json(status, &json!({"error": message}))
+            }
+            Err(PutError::Storage(error)) => {
+                // The command may have committed before this ambiguous
+                // storage error reached the request, so keep the admission.
                 eprintln!("could not fork {slug}: {error:?}");
                 write_json(500, &json!({"error": "could not copy that project"}))
             }

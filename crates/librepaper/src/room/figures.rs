@@ -15,9 +15,7 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
-use crate::storage::postgres::{
-    AssetRecord, Authority, MutationAuthorization, NewAsset, PostgresCatalog,
-};
+use crate::storage::postgres::{AssetRecord, Authority, NewAsset, PostgresCatalog};
 
 /// A reservation made before an asset upload leaves the room.  The reservation
 /// is deliberately independent of anything the sequencer holds: the blob write
@@ -66,7 +64,6 @@ impl Drop for AssetUpload<'_> {
 /// flight against the same document.
 struct AttachAsset {
     input: NewAsset,
-    authorization: MutationAuthorization,
     catalog: Arc<PostgresCatalog>,
 }
 
@@ -86,20 +83,24 @@ impl Command for AttachAsset {
 
     fn transact<'a>(
         &'a mut self,
-        _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
         Box::pin(async move {
-            // `complete_asset_authorized` proves the upload rate under its own
-            // `FOR UPDATE` lock on the document row (repository.rs), which is
-            // the atomicity this write needs. It does not take `_tx`, the
-            // fenced transaction the sequencer opened for whatever source this
-            // command might have produced: since it produces none, that
-            // transaction stays empty and nothing here needs to share it.
+            // The sequencer already holds the account and document locks in
+            // this transaction. Reuse it for quota accounting and insertion;
+            // opening a second transaction here would wait forever on the
+            // document row held by this command's transaction.
             self.catalog
-                .complete_asset_authorized(self.input.clone(), &self.authorization)
-                .await
-                .map_err(CommandError::from)
+                .complete_assets_in_transaction(tx, std::slice::from_ref(&self.input))
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    CommandError::from(crate::storage::postgres::Error::Invalid(
+                        "asset completion returned no row".into(),
+                    ))
+                })
         })
     }
 }
@@ -198,7 +199,6 @@ impl Room {
                 media_type: "application/octet-stream".into(),
                 original_name: None,
             },
-            authorization,
             catalog: self.catalog().clone(),
         };
         let result = self.command(&authority, &mut attach).await;

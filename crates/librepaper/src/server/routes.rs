@@ -841,6 +841,14 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(404, "not found");
         }
+        match self.store.catalog.project_is_hidden_by_slug(slug).await {
+            Ok(false) => {}
+            Ok(true) => return plain(404, "not found"),
+            Err(error) => {
+                eprintln!("could not check moderation state for {slug}: {error}");
+                return plain(503, "catalogue temporarily unavailable");
+            }
+        }
         let reader = arrival.reader_origin();
         // A document whose format is `html` is sent as it is. It has to be:
         // its renderer is the identity, and a notebook or a Quarto page

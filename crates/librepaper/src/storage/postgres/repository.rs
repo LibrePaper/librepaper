@@ -524,20 +524,47 @@ impl PostgresCatalog {
         if !(1..=200).contains(&limit) {
             return Err(Error::Invalid("document page limit must be 1..=200".into()));
         }
-        sqlx::query_as!(
-            DocumentRecord,
+        sqlx::query_as::<_, DocumentRecord>(
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,
-                       created_at,updated_at,deleted_at
+                    main_path,update_sequence,created_at,updated_at,deleted_at
+             FROM documents
+             WHERE status='active'
+               AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=documents.id)
+               AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),
+                                      COALESCE($2::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+             ORDER BY updated_at DESC,id DESC LIMIT $3",
+        )
+        .bind(before.map(|value| value.0))
+        .bind(before.map(|value| value.1))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    /// Enumerates active documents for retention and other maintenance tasks.
+    /// Unlike user-facing listing, this includes moderated projects so hiding
+    /// a project cannot exempt it from configured retention.
+    pub async fn list_documents_for_maintenance(
+        &self,
+        before: Option<(OffsetDateTime, Uuid)>,
+        limit: i64,
+    ) -> Result<Vec<DocumentRecord>> {
+        if !(1..=200).contains(&limit) {
+            return Err(Error::Invalid("document page limit must be 1..=200".into()));
+        }
+        sqlx::query_as::<_, DocumentRecord>(
+            "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
+                    main_path,update_sequence,created_at,updated_at,deleted_at
              FROM documents
              WHERE status='active'
                AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),
                                       COALESCE($2::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
              ORDER BY updated_at DESC,id DESC LIMIT $3",
-            before.map(|value| value.0),
-            before.map(|value| value.1),
-            limit,
         )
+        .bind(before.map(|value| value.0))
+        .bind(before.map(|value| value.1))
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
@@ -557,12 +584,12 @@ impl PostgresCatalog {
         // walk every active document when a caller owned only a small subset;
         // each branch gets the cursor and page limit, while UNION removes
         // duplicates when a document is both owned and granted.
-        sqlx::query_as!(
-            DocumentRecord,
+        sqlx::query_as::<_, DocumentRecord>(
             "WITH candidates AS (
                  (SELECT d.id,d.updated_at
                  FROM documents d
                  WHERE d.owner_id=$1 AND d.status='active'
+                   AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)
                    AND (d.updated_at,d.id) <
                        (COALESCE($2::timestamptz,'infinity'),
                         COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
@@ -572,6 +599,7 @@ impl PostgresCatalog {
                  FROM grants g
                  JOIN documents d ON d.id=g.document_id AND d.status='active'
                  WHERE g.account_id=$1
+                   AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)
                    AND (g.source_link_hash IS NULL OR EXISTS (
                      SELECT 1 FROM share_links l
                      WHERE l.document_id=g.document_id
@@ -591,11 +619,11 @@ impl PostgresCatalog {
              FROM documents d
              JOIN candidates c ON c.id=d.id
              ORDER BY d.updated_at DESC,d.id DESC LIMIT $4",
-            account_id,
-            before.map(|value| value.0),
-            before.map(|value| value.1),
-            limit,
         )
+        .bind(account_id)
+        .bind(before.map(|value| value.0))
+        .bind(before.map(|value| value.1))
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
@@ -624,13 +652,12 @@ impl PostgresCatalog {
     /// event is removed if the caller's upload fails and kept on success.
     pub async fn reserve_upload_admission(&self, account_id: Uuid) -> Result<Uuid> {
         let mut tx = self.begin_writer_transaction().await?;
-        let status = sqlx::query_scalar::<_, String>(
-            "SELECT status FROM accounts WHERE id=$1 FOR UPDATE",
-        )
-        .bind(account_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(Error::NotFound)?;
+        let status =
+            sqlx::query_scalar::<_, String>("SELECT status FROM accounts WHERE id=$1 FOR UPDATE")
+                .bind(account_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(Error::NotFound)?;
         if status != "active" {
             return Err(Error::Conflict("account is not active".into()));
         }
