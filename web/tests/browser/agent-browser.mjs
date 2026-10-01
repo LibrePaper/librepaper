@@ -66,10 +66,10 @@ window.fetch = async (url, init) => {
       // Claim phase: check if pairing was accepted and return token.
       // The real app would have approved or rejected based on the approve command.
       window.connectClaimBodies = [...(window.connectClaimBodies || []), body];
-      if (typeof body.project !== 'string' || !body.project) return Response.json({error:'bad JSON body'}, {status:400});
+      if (typeof body.origin !== 'string' || !body.origin) return Response.json({error:'bad JSON body'}, {status:400});
       return window.pairingAccepted
         ? Response.json({token:'pair-token',expires:Date.now()/1000+3600,instance:'one'})
-        : Response.json({error:'connection request refused'}, {status:403});
+        : Response.json({error:'approval was denied'}, {status:403});
     }
     if (route === 'assistant') {
       // Runners are located by server, document and conversation, not by a
@@ -633,15 +633,12 @@ try {
   // Try Connect when pairing is not yet accepted to trigger a refused response.
   await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Connect').click()`);
   await until("refused pairing is reported in place", () => page.evaluate(
-    `document.querySelector('.connect-required [role=alert]')?.textContent.includes('connection request refused')`), 3000);
+    `document.querySelector('.connect-required [role=alert]')?.textContent.includes('approval was denied')`), 3000);
 
-  // The pairing must name this document, whatever its format. The Reader only
-  // scopes the local client for locally renderable formats, so a panel that
-  // relied on that would send a null project and be refused outright.
-  assert.equal(
-    await page.evaluate("window.pairRequestBodies?.at(-1)?.project"), "paper",
-    "pairing is scoped to this document, not to whatever configured the client last",
-  );
+  // Pairing is scoped to the page's origin, not to a document: the request
+  // names the origin and carries no project.
+  assert.equal(await page.evaluate("window.pairRequestBodies?.at(-1)?.origin === location.origin"), true, "pairing is scoped to this origin");
+  assert.equal(await page.evaluate("'project' in (window.pairRequestBodies?.at(-1) || {})"), false, "the pairing request carries no project");
 
   await page.evaluate("window.pairingAccepted=true");
   await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Connect').click()`);

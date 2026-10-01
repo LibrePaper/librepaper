@@ -140,10 +140,10 @@ try {
   assert.equal(disconnected.summaries, 0, "initial view has no disclosure summary");
   assert.doesNotMatch(disconnected.text, /Build presets/);
 
-  // A failed one-click permission window is shown, explaining why it happened.
+  // A failed connection request is shown beside Connect, explaining why it happened.
   await b.evaluate("window.setLocalStatus({ state: 'unauthorized', address: 'http://127.0.0.1:8763/', capabilities: null })");
   await settle();
-  await b.evaluate(clickText("Connect companion"));
+  await b.evaluate(clickText("Connect"));
   await until("popup failure shown", () => b.evaluate("document.body.innerText.includes('permission window was blocked')"), 5000);
 
   // Once connected, the install commands give way to machine controls, and

@@ -95,7 +95,7 @@ try {
     'Local settings shows connection status text');
   assert.equal((await connectionState('Local')).offline,true,'Local pill is red while its app is unavailable');
   const localSettingsText = await b.evaluate('document.querySelector(".settings-body").innerText');
-  for (const os of ['Linux installer','macOS Apple silicon','macOS Intel','Windows setup']) {
+  for (const os of ['macOS & Linux','Windows']) {
     assert.ok(localSettingsText.includes(os),`Local settings includes ${os}`);
   }
 
@@ -108,15 +108,17 @@ try {
   assert.match(await b.evaluate('document.querySelector("#remote-status").innerText'),/Connected to the LibrePaper server\./);
   await click('[aria-label="Close"]');
 
+  // A phone runs no local app, so the Local pill goes; the Remote pill stays,
+  // shrunk to its dot and named by its aria-label.
   await b.resize(390,844); await flush();
   const pills = await b.evaluate(`Array.from(document.querySelectorAll('.connection-pill')).map(pill => {
     const box=pill.getBoundingClientRect();
-    return {name:pill.textContent.trim(),visible:Boolean(pill.getClientRects().length && getComputedStyle(pill).visibility !== 'hidden'),left:box.left,right:box.right};
+    return {name:pill.getAttribute('aria-label'),local:pill.classList.contains('local-pill'),visible:Boolean(pill.getClientRects().length && getComputedStyle(pill).visibility !== 'hidden'),left:box.left,right:box.right};
   })`);
-  assert.equal(pills.length,2,'both connection pills remain in the mobile navbar');
+  assert.equal(pills.length,2,'both connection pills remain in the mobile navbar markup');
   for (const pill of pills) {
-    assert.equal(pill.visible,true,`${pill.name} is visible on mobile`);
-    assert.ok(pill.left >= -1 && pill.right <= 391,`${pill.name} stays inside the mobile viewport: ${JSON.stringify(pill)}`);
+    assert.equal(pill.visible,!pill.local,`${pill.name} is ${pill.local ? 'hidden' : 'visible'} on mobile`);
+    if (!pill.local) assert.ok(pill.left >= -1 && pill.right <= 391,`${pill.name} stays inside the mobile viewport: ${JSON.stringify(pill)}`);
   }
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
   console.log('connections-browser: status pills, settings pages, local install links, and mobile bounds passed');
