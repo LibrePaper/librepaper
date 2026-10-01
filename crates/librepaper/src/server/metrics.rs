@@ -326,22 +326,24 @@ impl Metrics {
         ));
 
         out.push_str("# HELP librepaper_http_requests_total Completed HTTP requests by bounded route, method, and response class.\n# TYPE librepaper_http_requests_total counter\n");
-        for route in 0..ROUTES.len() {
-            for method in 0..METHODS.len() {
-                for status in 0..STATUS_CLASSES.len() {
-                    let index = ((route * METHODS.len() + method) * STATUS_CLASSES.len()) + status;
+        for (route_index, route) in ROUTES.iter().enumerate() {
+            for (method_index, method) in METHODS.iter().enumerate() {
+                for (status_index, status_class) in STATUS_CLASSES.iter().enumerate() {
+                    let index = ((route_index * METHODS.len() + method_index)
+                        * STATUS_CLASSES.len())
+                        + status_index;
                     let count = self.requests[index].load(Ordering::Relaxed);
                     if count > 0 {
-                        out.push_str(&format!("librepaper_http_requests_total{{route=\"{}\",method=\"{}\",status_class=\"{}\"}} {}\n", ROUTES[route], METHODS[method], STATUS_CLASSES[status], count));
+                        out.push_str(&format!("librepaper_http_requests_total{{route=\"{route}\",method=\"{method}\",status_class=\"{status_class}\"}} {count}\n"));
                     }
                 }
             }
         }
 
         out.push_str("# HELP librepaper_http_request_duration_seconds HTTP request handling time through response headers.\n# TYPE librepaper_http_request_duration_seconds histogram\n");
-        for route in 0..ROUTES.len() {
-            for method in 0..METHODS.len() {
-                let index = route * METHODS.len() + method;
+        for (route_index, route) in ROUTES.iter().enumerate() {
+            for (method_index, method) in METHODS.iter().enumerate() {
+                let index = route_index * METHODS.len() + method_index;
                 let bucket_counts: [u64; HISTOGRAM_EDGES_SECONDS.len() + 1] =
                     std::array::from_fn(|bucket| {
                         self.histogram_buckets[index * (HISTOGRAM_EDGES_SECONDS.len() + 1) + bucket]
@@ -351,17 +353,19 @@ impl Metrics {
                     continue;
                 }
                 let mut cumulative = 0;
-                for bucket in 0..HISTOGRAM_EDGES_SECONDS.len() {
-                    let bucket_count = bucket_counts[bucket];
-                    cumulative += bucket_count;
-                    out.push_str(&format!("librepaper_http_request_duration_seconds_bucket{{route=\"{}\",method=\"{}\",le=\"{}\"}} {}\n", ROUTES[route], METHODS[method], HISTOGRAM_EDGES_SECONDS[bucket], cumulative));
+                for (edge, bucket_count) in HISTOGRAM_EDGES_SECONDS
+                    .iter()
+                    .zip(bucket_counts.iter())
+                {
+                    cumulative += *bucket_count;
+                    out.push_str(&format!("librepaper_http_request_duration_seconds_bucket{{route=\"{route}\",method=\"{method}\",le=\"{edge}\"}} {cumulative}\n"));
                 }
                 let count: u64 = bucket_counts.iter().sum();
-                out.push_str(&format!("librepaper_http_request_duration_seconds_bucket{{route=\"{}\",method=\"{}\",le=\"+Inf\"}} {}\n", ROUTES[route], METHODS[method], count));
+                out.push_str(&format!("librepaper_http_request_duration_seconds_bucket{{route=\"{route}\",method=\"{method}\",le=\"+Inf\"}} {count}\n"));
                 let sum =
                     self.histogram_sum_micros[index].load(Ordering::Relaxed) as f64 / 1_000_000.0;
-                out.push_str(&format!("librepaper_http_request_duration_seconds_sum{{route=\"{}\",method=\"{}\"}} {:.6}\n", ROUTES[route], METHODS[method], sum));
-                out.push_str(&format!("librepaper_http_request_duration_seconds_count{{route=\"{}\",method=\"{}\"}} {}\n", ROUTES[route], METHODS[method], count));
+                out.push_str(&format!("librepaper_http_request_duration_seconds_sum{{route=\"{route}\",method=\"{method}\"}} {sum:.6}\n"));
+                out.push_str(&format!("librepaper_http_request_duration_seconds_count{{route=\"{route}\",method=\"{method}\"}} {count}\n"));
             }
         }
 
