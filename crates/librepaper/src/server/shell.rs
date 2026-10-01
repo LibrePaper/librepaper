@@ -125,9 +125,10 @@ fn parse_lock(source: &str) -> Result<HashMap<String, String>, String> {
 /// The browser URL of every renderer, `{mirror}wasm/{sha256}/{module}.wasm`,
 /// as the JSON object a page is given in place of `__MODULES__`. `mirror` is
 /// the validated asset mirror, which ends in `/`.
-/// The output is placed inside a `<script type="application/json">` element,
-/// so any `<` characters are escaped as unicode escape sequences to prevent
-/// early script tag closure, which would still be valid JSON.
+///
+/// The page carries it in a `<script type="application/json">` element, so
+/// every `<` is written as `\u003c`: the same JSON, but it can never close
+/// that element early.
 fn modules_json(mirror: &str, lock: &str) -> Result<String, String> {
     let pins = parse_lock(lock)?;
     let mut modules = serde_json::Map::new();
@@ -135,7 +136,9 @@ fn modules_json(mirror: &str, lock: &str) -> Result<String, String> {
         let url = format!("{mirror}wasm/{}/{name}.wasm", pins[*name]);
         modules.insert(name.to_string(), serde_json::Value::String(url));
     }
-    Ok(serde_json::Value::Object(modules).to_string().replace('<', "\\u003c"))
+    Ok(serde_json::Value::Object(modules)
+        .to_string()
+        .replace('<', "\\u003c"))
 }
 
 /// The source formats this process can render in a reader, and so offer an
