@@ -14,3 +14,11 @@
 	# Collaboration is a WebSocket; Caddy carries the upgrade itself.
 	reverse_proxy librepaper:8080
 }
+
+# Other names for the same deployment, such as www or a second domain, must
+# stop here: the server answers 421 to any host but DOMAIN and docs.DOMAIN.
+# Give each a DNS record and send it to the reader:
+#
+# www.{$DOMAIN}, example.com, www.example.com {
+#	redir https://{$DOMAIN}{uri} permanent
+# }
