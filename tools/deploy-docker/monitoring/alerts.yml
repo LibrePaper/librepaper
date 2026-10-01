@@ -1,0 +1,83 @@
+groups:
+  - name: librepaper-health
+    rules:
+      - alert: LibrePaperMetricsScrapeDown
+        expr: up{job="librepaper"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: LibrePaper metrics endpoint is unavailable
+          description: Prometheus has failed to scrape the private LibrePaper metrics endpoint for two minutes.
+
+      - alert: LibrePaperMetricsSnapshotStale
+        expr: librepaper_metrics_snapshot_success == 0 or (time() - librepaper_metrics_snapshot_timestamp_seconds) > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: LibrePaper aggregate metrics snapshot is stale
+          description: The private metrics handler still responds, but its cached application snapshot has not refreshed successfully.
+
+      - alert: LibrePaperRoomMemorySaturated
+        expr: librepaper_rooms_memory_limit_bytes > 0 and librepaper_rooms_memory_used_bytes / librepaper_rooms_memory_limit_bytes > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Collaboration room memory is above 80% of its configured limit
+          description: Reduce concurrent collaboration load or raise the room memory limit after checking host capacity.
+
+      - alert: LibrePaperSocketCapacityNearLimit
+        expr: librepaper_sockets_deployment_utilization_ratio > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Active sockets are above 80% of the deployment socket limit
+          description: Review active rooms and client churn before increasing the socket limit.
+
+      - alert: HostCpuSaturation
+        expr: 100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Host CPU has been above 90% for ten minutes
+          description: Inspect sustained work, active rooms, and database activity before increasing capacity.
+
+      - alert: HostRootDiskLow
+        expr: node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} < 0.15
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Less than 15% of the host root filesystem is free
+          description: Free disk space or move Docker data before monitoring, database, or document writes fail.
+
+      - alert: PostgresConnectionsNearLimit
+        expr: librepaper_database_connection_utilization_ratio > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: LibrePaper's database pool is using more than 80% of available connections
+          description: The LibrePaper connection pool is using more than 80% of its configured connections; review query latency and concurrency.
+
+      - alert: MonitoringExporterDown
+        expr: up{job=~"node|postgres"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A host or PostgreSQL monitoring exporter is unavailable
+          description: Check the exporter container and its network access to the host or PostgreSQL.
+
+      - alert: PostgreSQLExporterCannotConnect
+        expr: pg_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: The PostgreSQL exporter cannot connect to the database
+          description: Check PostgreSQL health and the dedicated librepaper_metrics role credentials.

@@ -1,0 +1,9 @@
+# Use with `docker compose -f compose.yaml -f compose.local.yaml up -d --build`
+# after copying the locally built static musl executable here as `librepaper`.
+services:
+  librepaper:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      args:
+        LIBREPAPER_VERSION: local
