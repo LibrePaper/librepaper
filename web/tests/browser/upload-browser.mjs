@@ -86,6 +86,12 @@ try {
   await dialog();
   assert.equal(await tab.evaluate("Boolean(document.querySelector('input[type=file]'))"), false);
 
+  // The name field opens empty, with nothing in it to read past or delete,
+  // and the caret already in it: the dialog is answered by typing.
+  await until("the caret is in the name field", () => tab.evaluate("document.activeElement === document.querySelector('#new-project input')"));
+  assert.deepEqual(await tab.evaluate("(() => { const input = document.querySelector('#new-project input'); return { value: input.value, placeholder: input.getAttribute('placeholder'), label: input.closest('label').querySelector('.label-text').textContent.trim() }; })()"),
+    { value: "", placeholder: null, label: "Project name" });
+
   // A name and a format make the project: one file, named by the format, with
   // the name written into it as its title.
   await type("A Paper You Can Change");

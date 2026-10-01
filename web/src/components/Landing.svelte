@@ -963,9 +963,9 @@
     <form id="new-project" onsubmit={create}>
       <Stack gap={3}>
         <label class="label">
-          <span class="label-text">Name</span>
+          <span class="label-text">Project name</span>
           <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
-          <input class="input" autofocus bind:this={nameInput} bind:value={name} placeholder="A paper you can change" />
+          <input class="input" autofocus bind:this={nameInput} bind:value={name} />
         </label>
         <label class="label">
           <span class="label-text">Format</span>
