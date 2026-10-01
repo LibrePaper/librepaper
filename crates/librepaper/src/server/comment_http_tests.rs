@@ -821,7 +821,11 @@ async fn backup_listing_includes_shared_reader_without_granting_publishing_acces
             session_generation: deployment.commenter_session_generation.clone(),
         }),
     };
-    let headers = axum::http::HeaderMap::new();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "x-librepaper-client",
+        axum::http::HeaderValue::from_static("test"),
+    );
 
     let ordinary_listing = deployment
         .server
