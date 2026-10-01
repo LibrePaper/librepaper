@@ -30,6 +30,7 @@ const entry = join(temporary, "entry.js");
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "src/styles/app.css"))};
 import { mount, unmount } from ${JSON.stringify(join(root, "node_modules/svelte/src/index-client.js"))};
+import { createClassComponent } from ${JSON.stringify(join(root, "node_modules/svelte/src/legacy/legacy-client.js"))};
 import { tick } from ${JSON.stringify(join(root, "node_modules/svelte/src/index-client.js"))};
 import Changes from ${JSON.stringify(join(root, "src/components/reader/Changes.svelte"))};
 
@@ -129,6 +130,30 @@ window.unreadableProposalCheck = async () => {
   const discardLabel = document.querySelector('.change-detail .empty-link:last-child')?.textContent.trim() || '';
   await document.querySelector('.change-detail .empty-link:last-child')?.click();
   return { visible, actions, discardLabel, discarded: window.discarded, decided: window.decided };
+};
+window.lateLinkedSuggestionCheck = async () => {
+  const placeholder = { id: 'run#unreadable', proposal: 'run', __from: 'proposal',
+    author: 'ada@example.org', before: '', after: undefined, unavailable: true,
+    unavailableLabel: 'This proposal has no readable changes.', discardOnly: true,
+    status: 'pending', file_id: '', path: 'paper.md', position: 0 };
+  if (component) await unmount(component);
+  component = null;
+  window.decided = []; window.discarded = []; window.revealed = []; window.asked = null; window.recovered = 0;
+  const host = document.createElement('section');
+  document.body.append(host);
+  const lateComponent = createClassComponent({ component: Changes, target: host, props: {
+    proposals: [placeholder], comments: [], files, canReview: true, canModerate: true, ...handlers,
+  } });
+  await tick();
+  const before = window.rows();
+  lateComponent.$set({ comments: [{ ...linkedComment, id: 'late-linked' }] });
+  await settle();
+  const visible = window.rows();
+  const actions = await window.actions('suggestion:late-linked');
+  await window.act('suggestion:late-linked', 'reject');
+  lateComponent.$destroy();
+  host.remove();
+  return { before, visible, actions, decided: window.decided };
 };
 window.recoveryControlCheck = async () => {
   await window.show({ proposals: [], comments: [], recoveryRequired: true });
@@ -327,6 +352,16 @@ try {
   assert.equal(unreadable.discardLabel, "Discard change");
   assert.deepEqual(unreadable.discarded, ["unreadable"]);
   assert.deepEqual(unreadable.decided, [], "discard is the only operation sent for an unreadable proposal");
+  const lateLinked = await page.evaluate("window.lateLinkedSuggestionCheck()");
+  assert.equal(lateLinked.before.length, 1, "the unreadable proposal appears before its suggestion comment arrives");
+  assert.equal(lateLinked.before[0].id, "run#unreadable");
+  assert.equal(lateLinked.visible.length, 1, "the late linked comment replaces the placeholder row");
+  assert.equal(lateLinked.visible[0].id, "suggestion:late-linked");
+  assert.equal(lateLinked.visible[0].removed, "− cat");
+  assert.equal(lateLinked.visible[0].added, "+ tabby");
+  assert.equal(lateLinked.visible[0].summary, "", "the unreadable-placeholder warning clears when the comment arrives");
+  assert.deepEqual(lateLinked.actions, { accept: false, reject: false }, "the available whole suggestion has both decisions enabled");
+  assert.deepEqual(lateLinked.decided, [["comment", "late-linked", "reject"]], "the linked row rejects through the whole-comment callback");
   const recovery = await page.evaluate("window.recoveryControlCheck()");
   assert.match(recovery.text, /preserved here for manual recovery/);
   assert.equal(recovery.recovered, 1, "the recovery message exposes a direct export action");

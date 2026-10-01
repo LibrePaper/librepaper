@@ -121,6 +121,8 @@
         // Empty string is an available replacement that deletes the passage.
         after: comment.proposed == null ? undefined : comment.proposed,
         unavailable: comment.proposed == null,
+        unavailableLabel: undefined,
+        discardOnly: false,
         status: comment.resolved ? comment.outcome || "accepted" : "pending",
         resolved: Boolean(comment.resolved),
         stale: hunks.some((row) => Boolean(row.stale)),
