@@ -114,14 +114,53 @@ pub fn from_suggestion(
     exact: &str,
     proposed: &str,
 ) -> Result<(LoroDoc, Frontiers, Frontiers, PeerID), ProposalError> {
+    let paths = doc.get_map(session::PATHS);
+    let mut file_ids = supported_text_file_ids(doc).into_iter().filter(|id| {
+        matches!(
+            paths.get(id),
+            Some(ValueOrContainer::Value(LoroValue::String(found)))
+                if found.to_string() == path
+        )
+    });
+    let Some(file_id) = file_ids.next() else {
+        return Err(ProposalError::Failed(
+            "that suggestion names a file that is not here".into(),
+        ));
+    };
+    if file_ids.next().is_some() {
+        return Err(ProposalError::Failed(
+            "that suggestion names more than one file".into(),
+        ));
+    }
+    from_suggestion_at_file_id(doc, &file_id, at, exact, proposed)
+}
+
+/// Builds a suggestion for one stable file identity, even when several files
+/// share the same raw path.
+pub fn from_suggestion_at_file_id(
+    doc: &LoroDoc,
+    file_id: &str,
+    at: usize,
+    exact: &str,
+    proposed: &str,
+) -> Result<(LoroDoc, Frontiers, Frontiers, PeerID), ProposalError> {
     if exact == proposed {
         return Err(ProposalError::Failed(
             "a suggestion must change the selected text".into(),
         ));
     }
-    let body = session::texts_of(doc).get(path).cloned().ok_or_else(|| {
-        ProposalError::Failed("that suggestion names a file that is not here".into())
-    })?;
+    if !supported_text_file_ids(doc).iter().any(|id| id == file_id) {
+        return Err(ProposalError::Failed(
+            "that suggestion names a file that is not here".into(),
+        ));
+    }
+    let files = doc.get_map(session::FILES);
+    let Some(ValueOrContainer::Container(Container::Text(text))) = files.get(file_id) else {
+        return Err(ProposalError::Failed(
+            "that suggestion names a file that is not here".into(),
+        ));
+    };
+    let body = text.to_string();
     let exact_len = exact.encode_utf16().count();
     let end = at.saturating_add(exact_len);
     // The anchor was found against some reading of this file. If the file no
@@ -140,13 +179,8 @@ pub fn from_suggestion(
     branch
         .set_peer_id(peer)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
-    let Some(file_id) = session::text_ids_of(&branch).get(path).cloned() else {
-        return Err(ProposalError::Failed(
-            "that suggestion names a file that is not here".into(),
-        ));
-    };
     let files = branch.get_map(session::FILES);
-    let Some(ValueOrContainer::Container(Container::Text(text))) = files.get(&file_id) else {
+    let Some(ValueOrContainer::Container(Container::Text(text))) = files.get(file_id) else {
         return Err(ProposalError::Failed(
             "that suggestion names a file that is not here".into(),
         ));
@@ -158,6 +192,29 @@ pub fn from_suggestion(
     branch.commit();
     let tip = branch.state_frontiers();
     Ok((branch, base, tip, peer))
+}
+
+/// The supported text files, identified without collapsing equal path values.
+/// Keep the same paired-file requirement as `session::text_ids_of`: an id is
+/// usable only when FILES contains text and PATHS contains a string for it.
+fn supported_text_file_ids(doc: &LoroDoc) -> Vec<String> {
+    let files = doc.get_map(session::FILES);
+    let paths = doc.get_map(session::PATHS);
+    files
+        .keys()
+        .filter_map(|key| {
+            let id = key.to_string();
+            let is_text = matches!(
+                files.get(&id),
+                Some(ValueOrContainer::Container(Container::Text(_)))
+            );
+            let is_named = matches!(
+                paths.get(&id),
+                Some(ValueOrContainer::Value(LoroValue::String(_)))
+            );
+            (is_text && is_named).then_some(id)
+        })
+        .collect()
 }
 
 /// Rebuilds a branch from the room document and the operations it added.
@@ -207,15 +264,20 @@ fn validate_proposed_changes(
     let mut created_files = HashSet::new();
     let mut created_paths = HashSet::new();
     let mut created_path_names = HashSet::new();
-    let base_ids = session::text_ids_of(&at_base);
-    let tip_ids = session::text_ids_of(&at_tip);
-    let valid_texts: HashSet<ContainerID> = base_ids
-        .values()
-        .chain(tip_ids.values())
-        .filter_map(|id| match at_tip.get_map(session::FILES).get(id) {
+    let valid_texts: HashSet<ContainerID> = supported_text_file_ids(&at_base)
+        .into_iter()
+        .filter_map(|id| match at_base.get_map(session::FILES).get(&id) {
             Some(ValueOrContainer::Container(Container::Text(text))) => Some(text.id()),
             _ => None,
         })
+        .chain(
+            supported_text_file_ids(&at_tip)
+                .into_iter()
+                .filter_map(|id| match at_tip.get_map(session::FILES).get(&id) {
+                    Some(ValueOrContainer::Container(Container::Text(text))) => Some(text.id()),
+                    _ => None,
+                }),
+        )
         .collect();
     for (container, change) in diff.iter() {
         match change {
@@ -389,8 +451,9 @@ fn validate_accepted_hunks_on_branch(
     let at_tip = branch
         .fork_at(&proposal.tip)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
-    let ids = session::text_ids_of(&at_base);
-    let tip_ids = session::text_ids_of(&at_tip);
+    let tip_ids = supported_text_file_ids(&at_tip);
+    let tip_paths = session::paths_of(&at_tip);
+    let current_paths = session::paths_of(doc);
     let review_hunks = hunks_of_batch(&batch, |cid| base_text(&at_base, cid.clone()));
     if accepted.iter().any(|index| *index >= review_hunks.len()) {
         return Err(ProposalError::Stale);
@@ -410,17 +473,14 @@ fn validate_accepted_hunks_on_branch(
         if !accepted.contains(&hunk.index) {
             continue;
         }
-        let mut found_id = None;
-        for id in ids.values().chain(tip_ids.values()) {
-            if let Some(ValueOrContainer::Container(Container::Text(text))) =
-                at_tip.get_map(session::FILES).get(id)
-            {
-                if text.id() == cid {
-                    found_id = Some(id.clone());
-                    break;
+        let found_id = tip_ids.iter().find_map(|id| {
+            match at_tip.get_map(session::FILES).get(id) {
+                Some(ValueOrContainer::Container(Container::Text(text))) if text.id() == cid => {
+                    Some(id.clone())
                 }
+                _ => None,
             }
-        }
+        });
         let Some(id) = found_id else {
             return Err(ProposalError::Stale);
         };
@@ -430,14 +490,9 @@ fn validate_accepted_hunks_on_branch(
             _ => None,
         };
         let Some(base_text) = base_text else {
-            let path = tip_ids
-                .iter()
-                .find(|(_, candidate)| candidate.as_str() == id)
-                .map(|(path, _)| path)
-                .ok_or(ProposalError::Stale)?;
-            if session::paths_of(doc)
-                .values()
-                .any(|current| current == path)
+            let path = tip_paths.get(id).ok_or(ProposalError::Stale)?;
+            if doc.get_map(session::FILES).get(id).is_some()
+                || current_paths.values().any(|current| current == path)
             {
                 return Err(ProposalError::Stale);
             }
@@ -725,14 +780,11 @@ pub fn resolve(
     branch
         .apply_diff(reverts)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
-    let base_ids = session::text_ids_of(&at_base);
-    let tip_ids = session::text_ids_of(&at_tip);
+    let base_ids: HashSet<String> = supported_text_file_ids(&at_base).into_iter().collect();
+    let tip_ids = supported_text_file_ids(&at_tip);
     let files = branch.get_map(session::FILES);
     let paths = branch.get_map(session::PATHS);
-    for id in tip_ids
-        .values()
-        .filter(|id| !base_ids.values().any(|base_id| base_id == *id))
-    {
+    for id in tip_ids.iter().filter(|id| !base_ids.contains(*id)) {
         let Some(ValueOrContainer::Container(Container::Text(text))) =
             at_tip.get_map(session::FILES).get(id)
         else {
@@ -1632,6 +1684,149 @@ mod tests {
             .get(path)
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn add_raw_path_text(doc: &LoroDoc, id: &str, path: &str, body: &str) {
+        let text = doc
+            .get_map(session::FILES)
+            .insert_container(id, loro::LoroText::new())
+            .unwrap();
+        doc.get_map(session::PATHS).insert(id, path).unwrap();
+        text.insert_utf16(0, body).unwrap();
+    }
+
+    fn set_text_by_id(doc: &LoroDoc, id: &str, body: &str) {
+        let Some(ValueOrContainer::Container(Container::Text(text))) =
+            doc.get_map(session::FILES).get(id)
+        else {
+            panic!("text file exists");
+        };
+        text.delete_utf16(0, text.len_utf16()).unwrap();
+        text.insert_utf16(0, body).unwrap();
+    }
+
+    fn text_by_id(doc: &LoroDoc, id: &str) -> String {
+        match doc.get_map(session::FILES).get(id) {
+            Some(ValueOrContainer::Container(Container::Text(text))) => text.to_string(),
+            _ => panic!("text file exists"),
+        }
+    }
+
+    #[test]
+    fn a_proposal_can_edit_and_accept_both_files_with_the_same_raw_path() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        add_raw_path_text(&room, "000000000001", "shared.md", "The cat sat.");
+        add_raw_path_text(&room, "000000000002", "shared.md", "The cat sat.");
+        room.commit();
+        let mut ids = supported_text_file_ids(&room);
+        ids.sort();
+        assert_eq!(ids.len(), 2);
+
+        let (branch, base, _, _) =
+            from_suggestion_at_file_id(&room, &ids[1], 4, "cat", "kitten").unwrap();
+        set_text_by_id(&branch, &ids[0], "The tabby sat.");
+        branch.commit();
+        let tip = branch.state_frontiers();
+        let bytes = session::encode_diff(&branch, &session::encode_vector(&room)).unwrap();
+        let proposal = Proposal { base, tip };
+
+        let found = hunks(&room, &proposal, &bytes).unwrap();
+        let keys = keyed_hunks(&room, &proposal, &bytes).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(keys.len(), 2);
+        assert_ne!(keys[0].container, keys[1].container);
+        validate_accepted_hunks(&room, &proposal, &bytes, &HashSet::from([0, 1])).unwrap();
+
+        resolve(&room, &proposal, &bytes, &HashSet::new(), &proposal.tip).unwrap();
+        assert_eq!(text_by_id(&room, &ids[0]), "The tabby sat.");
+        assert_eq!(text_by_id(&room, &ids[1]), "The kitten sat.");
+    }
+
+    #[test]
+    fn metadata_in_a_proposal_with_raw_path_colliders_is_rejected_without_dropping_them() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        add_raw_path_text(&room, "000000000001", "shared.md", "The cat sat.");
+        add_raw_path_text(&room, "000000000002", "shared.md", "The cat sat.");
+        room.commit();
+        let mut ids = supported_text_file_ids(&room);
+        ids.sort();
+        let base = room.state_frontiers();
+        let vector = session::encode_vector(&room);
+
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        set_text_by_id(&branch, &ids[0], "The tabby sat.");
+        set_text_by_id(&branch, &ids[1], "The kitten sat.");
+        branch
+            .get_map(session::META)
+            .insert("latex.engine", "unreviewed-engine")
+            .unwrap();
+        branch.commit();
+        let proposal = Proposal {
+            base,
+            tip: branch.state_frontiers(),
+        };
+        let bytes = session::encode_diff(&branch, &vector).unwrap();
+
+        assert!(matches!(
+            hunks(&room, &proposal, &bytes),
+            Err(ProposalError::Failed(_))
+        ));
+        assert_eq!(text_by_id(&room, &ids[0]), "The cat sat.");
+        assert_eq!(text_by_id(&room, &ids[1]), "The cat sat.");
+    }
+
+    #[test]
+    fn declining_a_new_file_keeps_both_existing_raw_path_colliders() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        add_raw_path_text(&room, "000000000001", "shared.md", "The cat sat.");
+        add_raw_path_text(&room, "000000000002", "shared.md", "The cat sat.");
+        room.commit();
+        let mut ids = supported_text_file_ids(&room);
+        ids.sort();
+        let base = room.state_frontiers();
+        let vector = session::encode_vector(&room);
+
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        set_text_by_id(&branch, &ids[0], "The tabby sat.");
+        set_text_by_id(&branch, &ids[1], "The kitten sat.");
+        let new_id = session::put_text(&branch, "extra.md", "New unreviewed text.");
+        branch.commit();
+        let proposal = Proposal {
+            base,
+            tip: branch.state_frontiers(),
+        };
+        let bytes = session::encode_diff(&branch, &vector).unwrap();
+        let at_base = branch.fork_at(&proposal.base).unwrap();
+        let batch = branch.diff(&proposal.base, &proposal.tip).unwrap();
+        let reviewed = hunks_of_batch(&batch, |cid| base_text(&at_base, cid.clone()));
+        let new_container = match branch.get_map(session::FILES).get(&new_id) {
+            Some(ValueOrContainer::Container(Container::Text(text))) => text.id(),
+            _ => panic!("new text file exists"),
+        };
+        let declined_index = reviewed
+            .iter()
+            .find(|(container, _)| container == &new_container)
+            .map(|(_, hunk)| hunk.index)
+            .expect("new file has a reviewed hunk");
+
+        resolve(
+            &room,
+            &proposal,
+            &bytes,
+            &HashSet::from([declined_index]),
+            &proposal.tip,
+        )
+        .unwrap();
+
+        assert_eq!(text_by_id(&room, &ids[0]), "The tabby sat.");
+        assert_eq!(text_by_id(&room, &ids[1]), "The kitten sat.");
+        assert!(room.get_map(session::FILES).get(&new_id).is_none());
+        assert!(room.get_map(session::PATHS).get(&new_id).is_none());
     }
 
     /// A decision names the tip it was made against, and that tip crosses the

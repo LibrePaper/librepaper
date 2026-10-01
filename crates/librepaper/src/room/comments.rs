@@ -469,11 +469,9 @@ fn build_suggestion_branch(
     if source.exact == proposed {
         return Err("a suggestion must change the selected passage".into());
     }
-    let path = path_for_file_id(doc, &source.file_id)
-        .ok_or_else(|| "that source file is not part of this document".to_string())?;
-    let (branch_doc, base, tip, peer) = crate::room::proposals::from_suggestion(
+    let (branch_doc, base, tip, peer) = crate::room::proposals::from_suggestion_at_file_id(
         doc,
-        &path,
+        &source.file_id.0,
         source.start_utf16 as usize,
         &source.exact,
         proposed,
@@ -1344,18 +1342,16 @@ impl SequencerCommand for AddComment {
         }
         if self.motivation == "editing" {
             let source = source.expect("checked above");
-            let path = path_for_file_id(head.doc(), &source.file_id).ok_or_else(|| {
-                CommandError::Conflict("that source file is not part of this document".into())
-            })?;
             let proposed = self.proposed.as_deref().unwrap_or_default();
-            let (branch_doc, base, tip, _peer) = crate::room::proposals::from_suggestion(
-                head.doc(),
-                &path,
-                source.start_utf16 as usize,
-                &source.exact,
-                proposed,
-            )
-            .map_err(|error| CommandError::Conflict(error.to_string()))?;
+            let (branch_doc, base, tip, _peer) =
+                crate::room::proposals::from_suggestion_at_file_id(
+                    head.doc(),
+                    &source.file_id.0,
+                    source.start_utf16 as usize,
+                    &source.exact,
+                    proposed,
+                )
+                .map_err(|error| CommandError::Conflict(error.to_string()))?;
             let branch_bytes =
                 session::encode_diff(&branch_doc, &session::encode_vector(head.doc()))
                     .map_err(CommandError::Conflict)?;
