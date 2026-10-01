@@ -378,11 +378,12 @@ impl PostgresCatalog {
         )
         .fetch_one(&mut *tx)
         .await?;
-        let refused = owner_usage.saturating_add(delta) > self.policy.owner_bytes
-            || deployment_usage
-                .saturating_add(log_usage)
-                .saturating_add(delta)
-                > self.policy.deployment_bytes;
+        let refused = delta > 0
+            && (owner_usage.saturating_add(delta) > self.policy.owner_bytes
+                || deployment_usage
+                    .saturating_add(log_usage)
+                    .saturating_add(delta)
+                    > self.policy.deployment_bytes);
         if refused {
             sqlx::query(
                 "UPDATE document_labels SET archive_requested_at=NULL,archive_error='storage quota exceeded' \

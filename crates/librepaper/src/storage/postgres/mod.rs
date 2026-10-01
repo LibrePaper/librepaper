@@ -341,6 +341,83 @@ mod tests {
             .unwrap()
     }
 
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn archive_migration_preserves_populated_legacy_objects_without_digests() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        let mut tx = catalog.pool().begin().await.unwrap();
+        let schema = format!("archive_upgrade_{}", uuid::Uuid::now_v7().simple());
+        sqlx::raw_sql(&format!(
+            "CREATE SCHEMA {schema}; SET LOCAL search_path={schema}"
+        ))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+        for migration in [
+            include_str!("../../../migrations/postgres/0001_catalog.sql"),
+            include_str!("../../../migrations/postgres/0002_purge_claim.sql"),
+            include_str!("../../../migrations/postgres/0003_catalog_constraints_indexes.sql"),
+            include_str!("../../../migrations/postgres/0004_archive_accounting.sql"),
+            include_str!("../../../migrations/postgres/0005_document_snapshots.sql"),
+            include_str!("../../../migrations/postgres/0006_operation_outcomes.sql"),
+            include_str!("../../../migrations/postgres/0007_drop_example_ownership.sql"),
+            include_str!("../../../migrations/postgres/0008_proposals_are_pending.sql"),
+            include_str!("../../../migrations/postgres/0009_grant_provenance.sql"),
+        ] {
+            sqlx::raw_sql(migration).execute(&mut *tx).await.unwrap();
+        }
+
+        sqlx::raw_sql(
+            "INSERT INTO accounts(id,kind,handle,display_name,status)
+             VALUES(md5('archive-upgrade-owner')::uuid,'anonymous','owner','Owner','active');
+             INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
+             VALUES(md5('archive-upgrade-document')::uuid,'archive-upgrade',
+                    md5('archive-upgrade-owner')::uuid,'owned','Archive upgrade','active','markdown','main.md');
+             INSERT INTO document_labels
+                 (id,document_id,sequence,source_sequence,vector,frontier,tree_digest,
+                  reason,author_label,archive_key,archive_bytes)
+             VALUES
+                 (md5('archive-upgrade-label-1')::uuid,md5('archive-upgrade-document')::uuid,
+                  1,1,'v1'::bytea,'f1'::bytea,NULL,'restore','Owner','archives/legacy',321),
+                 (md5('archive-upgrade-label-2')::uuid,md5('archive-upgrade-document')::uuid,
+                  2,2,'v2'::bytea,'f2'::bytea,NULL,'restore','Owner','archives/legacy',321);",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!("../../../migrations/postgres/0010_document_archives.sql"))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "DO $$ BEGIN
+               IF (SELECT count(*) FROM document_archives WHERE storage_key='archives/legacy'
+                   AND document_id=md5('archive-upgrade-document')::uuid
+                   AND tree_digest IS NULL AND content_digest IS NULL AND byte_length=321) <> 1 THEN
+                 RAISE EXCEPTION 'legacy archive metadata was not preserved once';
+               END IF;
+               IF (SELECT count(*) FROM document_labels WHERE archive_key='archives/legacy') <> 2 THEN
+                 RAISE EXCEPTION 'legacy label references were not preserved';
+               END IF;
+               IF (SELECT bytes FROM storage_usage WHERE singleton) <> 321 THEN
+                 RAISE EXCEPTION 'legacy archive accounting was not preserved';
+               END IF;
+             END $$;",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+        tx.rollback().await.unwrap();
+        catalog.close().await;
+    }
+
     async fn authorize_for_test(
         catalog: &PostgresCatalog,
         document_id: uuid::Uuid,
@@ -1659,6 +1736,10 @@ mod tests {
             .unwrap());
         // A later encoder version may produce different bytes under the same
         // projection key. The first catalog row remains authoritative.
+        // The owner is already over this lowered quota, but reusing the
+        // catalogued object adds no bytes and must remain admissible.
+        catalog.policy.owner_bytes = before.saturating_add(100);
+        assert!(catalog.usage_bytes(Some(account.id)).await.unwrap() > catalog.policy.owner_bytes);
         let newer_encoding = ArchiveObject {
             content_digest: Some(vec![3; 32]),
             byte_length: 700,
@@ -1748,9 +1829,11 @@ mod tests {
             content_digest: Some(vec![9; 32]),
             byte_length: 60,
         };
+        let one_object = object(&one);
+        let two_object = object(&two);
         let (one_result, two_result) = tokio::join!(
-            catalog.attach_label_archive(one.id, &object(&one)),
-            catalog.attach_label_archive(two.id, &object(&two)),
+            catalog.attach_label_archive(one.id, &one_object),
+            catalog.attach_label_archive(two.id, &two_object),
         );
         let one_result = one_result.unwrap();
         let two_result = two_result.unwrap();
