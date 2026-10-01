@@ -19,7 +19,6 @@ use axum::routing::get;
 use axum::Router;
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
 
 const ROUTES: &[&str] = &[
     "root",
@@ -116,6 +115,16 @@ impl Metrics {
             elapsed.as_micros().min(u128::from(u64::MAX)) as u64,
             Ordering::Relaxed,
         );
+    }
+
+    pub(super) fn record_middleware_result(
+        &self,
+        route: &str,
+        method: &str,
+        status: u16,
+        started: Instant,
+    ) {
+        self.record_request(route, method, status, started.elapsed());
     }
 
     pub fn record_refusal(&self, reason: &str) {
@@ -248,9 +257,7 @@ impl Metrics {
         out.push_str("# HELP librepaper_resource_refusals_total Requests refused by bounded deployment resource reason.\n# TYPE librepaper_resource_refusals_total counter\n");
         for (index, reason) in REFUSALS.iter().enumerate() {
             let count = self.refusals[index].load(Ordering::Relaxed);
-            if count > 0 {
-                out.push_str(&format!("librepaper_resource_refusals_total{{reason=\"{reason}\"}} {count}\n"));
-            }
+            out.push_str(&format!("librepaper_resource_refusals_total{{reason=\"{reason}\"}} {count}\n"));
         }
 
         let gauges = self.gauges.read().unwrap_or_else(|poison| poison.into_inner());
@@ -439,11 +446,45 @@ mod tests {
         metrics.update_gauges(&serde_json::json!({"rooms":{"documents":2,"private_id":8}}), &crate::config::Configuration::default());
         let text = metrics.render();
         assert!(text.contains("route=\"api_documents\",method=\"GET\",status_class=\"5xx\""));
-        assert!(text.contains("librepaper_http_request_duration_seconds_bucket"));
+        assert!(text.contains("le=\"0.005\"} 0\n"));
+        assert!(text.contains("le=\"0.01\"} 0\n"));
+        assert!(text.contains("le=\"0.025\"} 1\n"));
+        assert!(text.contains("le=\"+Inf\"} 1\n"));
+        assert!(text.contains("librepaper_http_request_duration_seconds_count{route=\"api_documents\",method=\"GET\"} 1"));
         assert!(text.contains("librepaper_resource_refusals_total{reason=\"work_concurrency\"} 1"));
+        for reason in REFUSALS {
+            assert!(text.contains(&format!("librepaper_resource_refusals_total{{reason=\"{reason}\"}} ")));
+        }
         assert!(!text.contains("sensitive-id"));
         assert!(!text.contains("private_id"));
         assert!(!text.contains("/api/documents"));
+    }
+
+    #[test]
+    fn middleware_result_records_an_early_rejection_and_exposition_has_unique_series() {
+        let metrics = Metrics::new();
+        let started = Instant::now();
+        metrics.record_middleware_result("api_status", "GET", 421, started);
+        let text = metrics.render();
+        assert!(text.contains("route=\"api_status\",method=\"GET\",status_class=\"4xx\"} 1"));
+
+        let mut series = HashSet::new();
+        for line in text.lines().filter(|line| !line.starts_with('#')) {
+            let identity = line.split_whitespace().next().unwrap();
+            assert!(series.insert(identity), "duplicate metric sample: {identity}");
+        }
+    }
+
+    #[test]
+    fn failed_sample_marks_export_stale_without_erasing_last_success_timestamp() {
+        let metrics = Metrics::new();
+        metrics.update_gauges(&serde_json::json!({"rooms":{"documents":1}}), &crate::config::Configuration::default());
+        let timestamp = metrics.snapshot_timestamp.load(Ordering::Relaxed);
+        assert_ne!(timestamp, 0);
+        metrics.note_snapshot_failure();
+        let text = metrics.render();
+        assert!(text.contains("librepaper_metrics_snapshot_success 0\n"));
+        assert!(text.contains(&format!("librepaper_metrics_snapshot_timestamp_seconds {timestamp}\n")));
     }
 
     #[test]
