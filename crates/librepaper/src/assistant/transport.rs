@@ -51,6 +51,7 @@ impl Transport {
         token: String,
         binding_nonce: String,
     ) -> Self {
+        crate::tls::ensure_crypto_provider();
         let (outgoing, mut output) = mpsc::channel::<Value>(128);
         let (input, incoming) = mpsc::channel::<Event>(128);
         let task = tokio::spawn(async move {
@@ -184,6 +185,102 @@ impl Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    const TRANSPORT_CHILD: &str = "LIBREPAPER_TEST_TLS_TRANSPORT_CHILD";
+    const PRESERVE_CHILD: &str = "LIBREPAPER_TEST_TLS_PRESERVE_CHILD";
+
+    fn run_isolated_test(test_name: &str, marker: &str) {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(test_name)
+            .arg("--nocapture")
+            .env(marker, "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "isolated TLS test failed: {test_name}");
+    }
+
+    #[test]
+    fn transport_start_selects_provider_and_sends_tls_client_hello() {
+        if std::env::var_os(TRANSPORT_CHILD).is_none() {
+            run_isolated_test(
+                "assistant::transport::tests::transport_start_selects_provider_and_sends_tls_client_hello",
+                TRANSPORT_CHILD,
+            );
+            return;
+        }
+
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_none(),
+            "subprocess must begin without a rustls provider"
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) =
+                    tokio::time::timeout(Duration::from_secs(4), listener.accept())
+                        .await
+                        .expect("transport did not connect to the local listener")
+                        .unwrap();
+                let mut header = [0; 5];
+                tokio::time::timeout(Duration::from_secs(4), stream.read_exact(&mut header))
+                    .await
+                    .expect("TLS client hello timed out")
+                    .unwrap();
+                assert_eq!(header[0], 0x16, "expected a TLS handshake record");
+                // Dropping the plain TCP listener connection makes the TLS
+                // handshake fail locally after proving client setup worked.
+            });
+
+            let endpoint = format!("wss://{address}/");
+            let mut transport = Transport::start(
+                move || {
+                    endpoint
+                        .clone()
+                        .into_client_request()
+                        .map_err(|error| error.to_string())
+                },
+                String::new(),
+                String::new(),
+            );
+            let event = tokio::time::timeout(Duration::from_secs(5), transport.incoming.recv())
+                .await
+                .expect("transport did not report the local TLS handshake failure");
+            assert!(matches!(event, Some(Event::Offline)));
+            server.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn provider_initializer_preserves_and_reuses_existing_provider() {
+        if std::env::var_os(PRESERVE_CHILD).is_none() {
+            run_isolated_test(
+                "assistant::transport::tests::provider_initializer_preserves_and_reuses_existing_provider",
+                PRESERVE_CHILD,
+            );
+            return;
+        }
+
+        assert!(rustls::crypto::CryptoProvider::get_default().is_none());
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .unwrap();
+        let installed = rustls::crypto::CryptoProvider::get_default().unwrap();
+
+        crate::tls::ensure_crypto_provider();
+        crate::tls::ensure_crypto_provider();
+
+        let after = rustls::crypto::CryptoProvider::get_default().unwrap();
+        assert!(std::sync::Arc::ptr_eq(installed, after));
+    }
 
     #[test]
     fn presence_without_epoch_retains_ready_epoch_until_socket_reset() {

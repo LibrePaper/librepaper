@@ -43,6 +43,7 @@ mod room;
 mod seed;
 mod server;
 mod storage;
+mod tls;
 mod util;
 
 pub use cli::main;
