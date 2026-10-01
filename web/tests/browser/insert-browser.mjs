@@ -93,20 +93,29 @@ window.trackedMultiFileInsertCheck=async()=>{
   const chapter=session.addText('chapter.tex','Before AFTER');
   session.setMain(main);
   component.$set({file:chapter,format:'latex'});await tick();await tick();
+  const initial=component.getInsertContext();
+  const rawPath=initial.path;
+  const duplicate=session.addText(rawPath,'DUPLICATE BEFORE');
+  component.releaseInsertContext(initial);
   component.startTracking();await tick();
   view().dispatch({selection:{anchor:7}});
   const context=component.getInsertContext();
   const mainBefore=session.textOf(main).toString();
-  const at=mainBefore.indexOf('\\\\begin{document}');
+  const duplicateBefore=session.textOf(duplicate).toString();
   const ok=component.applyInsertResult({text:'TRACKED ',additionalEdits:[{path:'paper-'+Date.now()+'.tex',from:0,to:0,insert:'SETUP '}]},context);
   // The requested main edit uses a path that is not in the tree and must be
-  // refused atomically; retry with the actual captured main path.
-  const path=context.mainPath;
-  const retry=component.applyInsertResult({text:'TRACKED ',additionalEdits:[{path,from:at,to:at,insert:'% tracked\\n'}]},context);
-  const liveUnchanged=session.textOf(main).toString()===mainBefore&&session.textOf(chapter).toString()==='Before AFTER';
+  // refused atomically; retry with the projected suffix for the duplicate.
+  const movedPrefix=rawPath.slice(0,rawPath.lastIndexOf('.'))+' (';
+  const path=context.files.find(file=>file.path.startsWith(movedPrefix))?.path;
+  const projectedBefore=context.files.find(file=>file.path===path)?.text;
+  const retry=Boolean(path)&&component.applyInsertResult({text:'TRACKED ',additionalEdits:[{path,from:0,to:0,insert:'% tracked\\n'}]},context);
+  const branch=component.getInsertContext();
+  const projectedEdit=branch.files.find(file=>file.path===path)?.text==='% tracked\\n'+projectedBefore;
+  component.releaseInsertContext(branch);
+  const liveUnchanged=session.textOf(main).toString()===mainBefore&&session.textOf(duplicate).toString()===duplicateBefore&&session.textOf(chapter).toString()==='Before AFTER';
   const shown=view().state.doc.toString();
   component.stopTracking();await tick();
-  return {ok,retry,liveUnchanged,shown};
+  return {ok,retry,projectedEdit,liveUnchanged,shown};
 };
 window.insertReady=true;
 `);
@@ -190,6 +199,7 @@ try {
   const trackedInsert=await evaluate("trackedMultiFileInsertCheck()");
   assert.equal(trackedInsert.ok,false,"a missing cross-file target is rejected before either edit is applied");
   assert.equal(trackedInsert.retry,true,"the active tracked branch accepts a valid multi-file insertion");
+  assert.equal(trackedInsert.projectedEdit,true,"a projected collision-suffixed target receives the cross-file edit in the branch");
   assert.equal(trackedInsert.liveUnchanged,true,"the tracked Insert and cross-file setup never write into the live document");
   assert.match(trackedInsert.shown,/Before TRACKED AFTER/);
   await evaluate("setupInsert('quarto')");await evaluate("selectInsert(7)");await choose("toc");await until("Quarto TOC",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);await confirm();assert.match((await evaluate("insertState()")).text,/toc: true/);

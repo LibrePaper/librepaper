@@ -1032,10 +1032,17 @@
     return text?.kind?.() === "Text" ? text : null;
   }
 
-  function pathOfDoc(doc, id) { return doc?.getMap("paths")?.get(id) || ""; }
-  function textIdForPath(doc, path) {
-    for (const [id, candidate] of doc?.getMap("paths")?.entries?.() || []) if (candidate === path) return id;
+  function pathOfDoc(doc, id) {
+    if (!doc || !id) return "";
+    for (const [path, file] of projectDirectory(doc, rules ?? null).files) {
+      if (file.kind === "text" && file.id === id) return path;
+    }
     return "";
+  }
+  function textIdForPath(doc, path) {
+    if (!doc || !path) return "";
+    const file = projectDirectory(doc, rules ?? null).files.get(path);
+    return file?.kind === "text" ? file.id : "";
   }
   function treeForDoc(doc) {
     const projection = projectDirectory(doc, rules ?? null);
