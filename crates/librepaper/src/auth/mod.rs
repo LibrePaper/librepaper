@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
@@ -35,6 +36,112 @@ pub const STATE_COOKIE: &str = "librepaper_state";
 /// belongs to whoever made it.
 pub const VISITOR_COOKIE: &str = "librepaper_visitor";
 pub const SESSION_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
+
+/// A short-lived credential delegated by a signed-in browser to its local
+/// companion. It is useful only for one document and one already-presented
+/// share link. `role` is a ceiling: 1 = reader, 2 = commenter, 3 = editor.
+/// The document server must still resolve the live link and deployment policy
+/// on every request, and must treat this credential as automation even when
+/// the caller omits the automation header.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentGrant {
+    pub identity: Identity,
+    pub slug: String,
+    /// Lowercase hex SHA-256 digest of the share-link key, never the key.
+    pub link_hash: String,
+    pub role: u8,
+    pub expires_at: i64,
+}
+
+/// Delegated credentials are deliberately much shorter lived than browser
+/// sessions or device tokens. The browser renews them while its session lives.
+pub const AGENT_GRANT_MAX_AGE: Duration = Duration::from_secs(5 * 60);
+pub const AGENT_GRANT_PREFIX: &str = "lpa_";
+
+#[derive(Serialize, Deserialize)]
+struct AgentGrantPayload {
+    provider: String,
+    id: String,
+    handle: String,
+    name: String,
+    picture: String,
+    session_generation: String,
+    slug: String,
+    link_hash: String,
+    role: u8,
+    expires_at: i64,
+}
+
+/// Sign a document-bound grant for the local companion. Invalid or overly
+/// broad claims cannot be minted through this API.
+pub fn sign_agent_grant(key: &[u8], grant: &AgentGrant) -> Option<String> {
+    if !valid_agent_grant(grant, now_unix()) {
+        return None;
+    }
+    let payload = AgentGrantPayload {
+        provider: grant.identity.provider.clone(),
+        id: grant.identity.id.clone(),
+        handle: grant.identity.handle.clone(),
+        name: grant.identity.name.clone(),
+        picture: acceptable_picture(&grant.identity.picture),
+        session_generation: grant.identity.session_generation.clone(),
+        slug: grant.slug.clone(),
+        link_hash: grant.link_hash.clone(),
+        role: grant.role,
+        expires_at: grant.expires_at,
+    };
+    let encoded = base64url(&serde_json::to_vec(&payload).ok()?);
+    let signature = sign(key, "agent-grant-v1", &encoded);
+    Some(format!("{AGENT_GRANT_PREFIX}v1.{encoded}.{signature}"))
+}
+
+/// Verify a delegated credential. Its signature, account generation, slug,
+/// link digest and role are all returned as claims for the server's request
+/// authorization layer to check against current catalogue state.
+pub fn read_agent_grant(key: &[u8], token: &str) -> Option<AgentGrant> {
+    let token = token.strip_prefix(AGENT_GRANT_PREFIX)?.strip_prefix("v1.")?;
+    let (encoded, signature) = token.split_once('.')?;
+    if !verifies(key, "agent-grant-v1", encoded, signature) {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .ok()?;
+    let payload: AgentGrantPayload = serde_json::from_slice(&bytes).ok()?;
+    let identity = Identity {
+        provider: payload.provider,
+        id: payload.id,
+        handle: payload.handle,
+        name: payload.name,
+        picture: acceptable_picture(&payload.picture),
+        session_generation: payload.session_generation,
+    };
+    let grant = AgentGrant {
+        identity,
+        slug: payload.slug,
+        link_hash: payload.link_hash,
+        role: payload.role,
+        expires_at: payload.expires_at,
+    };
+    valid_agent_grant(&grant, now_unix()).then_some(grant)
+}
+
+fn valid_agent_grant(grant: &AgentGrant, now: i64) -> bool {
+    let identity = &grant.identity;
+    identity.is_signed_in()
+        && !identity.session_generation.is_empty()
+        && matches!(identity.provider.as_str(), PROVIDER_GITHUB | PROVIDER_GOOGLE)
+        && !identity.handle.is_empty()
+        && (1..=3).contains(&grant.role)
+        && !grant.slug.is_empty()
+        && grant.slug.len() <= 128
+        && grant.slug.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+        && grant.link_hash.len() == 64
+        && grant.link_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && grant.link_hash.bytes().all(|byte| !byte.is_ascii_uppercase())
+        && grant.expires_at > now
+        && grant.expires_at <= now + AGENT_GRANT_MAX_AGE.as_secs() as i64
+}
 
 /// Added to every cookie name on an HTTPS request. A browser refuses to set a
 /// __Host- cookie unless it also carries Secure, Path=/, and no Domain --
