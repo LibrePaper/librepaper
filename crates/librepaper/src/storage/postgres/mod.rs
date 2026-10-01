@@ -1794,7 +1794,7 @@ mod tests {
             .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
         let mut options = PostgresOptions::new(url);
         options.policy.owner_bytes = 100;
-        let catalog = PostgresCatalog::connect(options).await.unwrap();
+        let mut catalog = PostgresCatalog::connect(options).await.unwrap();
         catalog.migrate().await.unwrap();
         let _writer = catalog.claim_writer().await.unwrap();
         let tag = new_id().simple().to_string();
