@@ -400,5 +400,6 @@ async fn archive_poll_preserves_terminal_failure_until_explicit_retry() {
         .unwrap();
     assert!(refreshed.archive_error.is_none());
 
+    drop(deployment._writer);
     deployment.catalog.close().await;
 }

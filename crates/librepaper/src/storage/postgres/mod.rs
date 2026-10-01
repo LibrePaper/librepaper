@@ -1980,6 +1980,7 @@ mod tests {
             .execute(catalog.pool())
             .await
             .unwrap();
+        drop(_writer);
         catalog.close().await;
     }
 
