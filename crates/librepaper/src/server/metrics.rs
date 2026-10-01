@@ -333,9 +333,7 @@ impl Metrics {
                         * STATUS_CLASSES.len())
                         + status_index;
                     let count = self.requests[index].load(Ordering::Relaxed);
-                    if count > 0 {
-                        out.push_str(&format!("librepaper_http_requests_total{{route=\"{route}\",method=\"{method}\",status_class=\"{status_class}\"}} {count}\n"));
-                    }
+                    out.push_str(&format!("librepaper_http_requests_total{{route=\"{route}\",method=\"{method}\",status_class=\"{status_class}\"}} {count}\n"));
                 }
             }
         }
@@ -349,9 +347,6 @@ impl Metrics {
                         self.histogram_buckets[index * (HISTOGRAM_EDGES_SECONDS.len() + 1) + bucket]
                             .load(Ordering::Relaxed)
                     });
-                if bucket_counts.iter().all(|count| *count == 0) {
-                    continue;
-                }
                 let mut cumulative = 0;
                 for (edge, bucket_count) in HISTOGRAM_EDGES_SECONDS.iter().zip(bucket_counts.iter())
                 {
@@ -800,6 +795,49 @@ mod tests {
         assert!(!text.contains("sensitive-id"));
         assert!(!text.contains("private_id"));
         assert!(!text.contains("/api/documents"));
+    }
+
+    #[test]
+    fn zero_series_are_exposed_at_startup_and_first_5xx_advances_them() {
+        let metrics = Metrics::new();
+        let before = metrics.render();
+        let request_series = before
+            .lines()
+            .filter(|line| line.starts_with("librepaper_http_requests_total{"))
+            .count();
+        assert_eq!(request_series, ROUTES.len() * METHODS.len() * STATUS_CLASSES.len());
+        let histogram_bucket_series = before
+            .lines()
+            .filter(|line| line.starts_with("librepaper_http_request_duration_seconds_bucket{"))
+            .count();
+        assert_eq!(
+            histogram_bucket_series,
+            ROUTES.len() * METHODS.len() * (HISTOGRAM_EDGES_SECONDS.len() + 1)
+        );
+        assert!(before.contains(
+            "librepaper_http_requests_total{route=\"health\",method=\"GET\",status_class=\"5xx\"} 0\n"
+        ));
+        assert!(before.contains(
+            "librepaper_http_request_duration_seconds_count{route=\"health\",method=\"GET\"} 0\n"
+        ));
+        assert!(before.contains(
+            "librepaper_http_request_duration_seconds_bucket{route=\"health\",method=\"GET\",le=\"+Inf\"} 0\n"
+        ));
+
+        metrics.record_request("health", "GET", 503, Duration::from_millis(12));
+        let after = metrics.render();
+        assert!(after.contains(
+            "librepaper_http_requests_total{route=\"health\",method=\"GET\",status_class=\"5xx\"} 1\n"
+        ));
+        assert!(after.contains(
+            "librepaper_http_request_duration_seconds_bucket{route=\"health\",method=\"GET\",le=\"0.025\"} 1\n"
+        ));
+        assert!(after.contains(
+            "librepaper_http_request_duration_seconds_bucket{route=\"health\",method=\"GET\",le=\"+Inf\"} 1\n"
+        ));
+        assert!(after.contains(
+            "librepaper_http_request_duration_seconds_count{route=\"health\",method=\"GET\"} 1\n"
+        ));
     }
 
     #[test]
