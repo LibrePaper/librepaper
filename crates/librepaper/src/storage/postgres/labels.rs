@@ -71,6 +71,15 @@ pub enum ArchiveAttach {
     RefusedQuota,
 }
 
+/// What a history trim deleted besides the history itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrimOutcome {
+    pub versions: i64,
+    pub version_bytes: i64,
+    pub figures: i64,
+    pub figure_bytes: i64,
+}
+
 const SELECT: &str = "SELECT l.id,l.document_id,l.sequence,l.source_sequence,l.vector,l.frontier,l.tree_digest,\
      l.label,l.reason,l.request_id,l.author_account_id,l.author_label,l.created_at,l.archive_requested_at,\
      l.archive_key,a.byte_length AS archive_bytes,l.archive_error FROM document_labels l \
@@ -513,5 +522,51 @@ impl PostgresCatalog {
             .fetch_optional(&self.pool)
             .await
             .map_err(Error::from)
+    }
+
+    /// Deletes every label and archive of the document, and every asset row
+    /// whose digest is not in `referenced` and that is older than the one-hour
+    /// upload grace. The grace exists because an upload records its row before
+    /// the edit that names it in the document arrives, so a fresh unnamed figure
+    /// may be about to be named. Note that 0001_catalog.sql's "nothing deletes
+    /// from this table" on document_assets now has this one exception besides
+    /// the document's own cascade. Runs inside the caller's fenced command
+    /// transaction.
+    pub async fn trim_retained_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        referenced: &[Vec<u8>],
+    ) -> Result<TrimOutcome> {
+        // Labels first: document_labels has an FK (document_id, archive_key) ->
+        // document_archives ON DELETE CASCADE, so deleting labels first lets
+        // rows_affected count every label.
+        let versions = sqlx::query("DELETE FROM document_labels WHERE document_id=$1")
+            .bind(document_id)
+            .execute(&mut **tx)
+            .await?
+            .rows_affected() as i64;
+        let archive_bytes: Vec<i64> = sqlx::query_scalar(
+            "DELETE FROM document_archives WHERE document_id=$1 RETURNING byte_length",
+        )
+        .bind(document_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        let figure_bytes: Vec<i64> = sqlx::query_scalar(
+            "DELETE FROM document_assets WHERE document_id=$1 \
+             AND NOT (digest = ANY($2::bytea[])) \
+             AND created_at < now() - interval '1 hour' \
+             RETURNING byte_length",
+        )
+        .bind(document_id)
+        .bind(referenced.to_vec())
+        .fetch_all(&mut **tx)
+        .await?;
+        Ok(TrimOutcome {
+            versions,
+            version_bytes: archive_bytes.iter().sum(),
+            figures: figure_bytes.len() as i64,
+            figure_bytes: figure_bytes.iter().sum(),
+        })
     }
 }
