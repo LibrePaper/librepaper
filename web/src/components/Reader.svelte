@@ -233,6 +233,7 @@
   // it, rather than the page keeping a copy of each and a callback to keep
   // the copy honest.
   let localConnectionError = $state("");
+  let localConnecting = $state(false);
   let quartoLiveSyncTimer = null;
   let calepinSyncTimer = null;
   // The Quarto profile and parameters this browser previews with, set under
@@ -1575,19 +1576,25 @@
   // ask it to connect. What remains for the person is to have started the
   // app and to click Allow once; the status text says which when it fails.
   async function ensureLocalApp() {
-    localConnectionError = "";
-    localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
-    let status = await localQuarto.retry();
-    if (["unreachable", "unauthorized", "reachable"].includes(status.state)) {
-      try { status = await localQuarto.connectApp(); }
-      catch (error) { localConnectionError = error.message; showPanel("diagnostics"); return false; }
+    if (localConnecting) return false;
+    localConnecting = true;
+    try {
+      localConnectionError = "";
+      localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
+      let status = await localQuarto.retry();
+      if (["unreachable", "unauthorized", "reachable"].includes(status.state)) {
+        try { status = await localQuarto.connectApp(); }
+        catch (error) { localConnectionError = error.message; showPanel("diagnostics"); return false; }
+      }
+      if (status.state !== "connected") {
+        localConnectionError = status.instructions || "Local LibrePaper is unavailable.";
+        showPanel("diagnostics");
+        return false;
+      }
+      return true;
+    } finally {
+      localConnecting = false;
     }
-    if (status.state !== "connected") {
-      localConnectionError = status.instructions || "Local LibrePaper is unavailable.";
-      showPanel("diagnostics");
-      return false;
-    }
-    return true;
   }
 
   /* --------------------------------------------------------- the timeline */
@@ -2338,7 +2345,8 @@
       || quartoNeedsLocalApp || typstNeedsLocalApp || typstNeedsCalepinCommand,
   ));
   const previewStatusLabel = $derived(
-    previewProblem ? "Preview needs attention"
+    localConnecting ? "Connecting to the local app"
+      : previewProblem ? "Preview needs attention"
       // What is on screen came from the last visit. While it is being
       // compiled again, say which of the two it is: a page drawn from this
       // very source is not stale and calling it "last session's" would send
@@ -3742,7 +3750,7 @@
   {@render layoutItems()}
 {/snippet}
 
-{#snippet previewStatusDetails()}
+{#snippet previewStatusDetails(close)}
   <div class="preview-status-details">
     {#if renderState.provenance}
       <p>Built with {renderState.provenance.builder} · {renderState.provenance.backend}{renderState.provenance.engine ? ` · ${renderState.provenance.engine}` : ""}{renderState.provenance.version ? ` · ${renderState.provenance.version}` : ""}</p>
@@ -3757,10 +3765,10 @@
     {/if}
     {#if sourceFormat === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
       <p>Showing Markdown preview. {quartoPreviewError || localConnectionError || "Use Quarto on this computer to generate the full preview."}</p>
-      <button class="btn btn-sm lp-control-outline" onclick={() => void startLocalExecution()}>
+      <button class="btn btn-sm lp-control-outline" disabled={localConnecting} onclick={() => { close(); void startLocalExecution(); }}>
         {quartoNeedsLocalApp ? "Enable local rendering" : "Retry Quarto preview"}
       </button>
-      {#if quartoNeedsLocalApp}<button class="btn btn-sm lp-control-outline" onclick={() => openSettings("local")}>Install or configure companion</button>{/if}
+      {#if quartoNeedsLocalApp}<button class="btn btn-sm lp-control-outline" onclick={() => { close(); openSettings("local"); }}>Install or configure companion</button>{/if}
     {/if}
     {#if quartoReaderNeedsLocalTool}
       <p>Showing the browser's Markdown draft. Full Quarto preview requires the local LibrePaper app with Quarto and its execution tools.</p>
@@ -3769,7 +3777,7 @@
       <p>{calepinPreviewError || localConnectionError || (typstNeedsCalepinCommand ? "Install the calepin command to use this preview." : "Connect the local LibrePaper app to use Calepin preview.")}</p>
     {/if}
     {#if previewProblem}
-      <button class="btn btn-sm lp-control-outline" onclick={() => showPanel("diagnostics")}>Open Diagnostics</button>
+      <button class="btn btn-sm lp-control-outline" onclick={() => { close(); showPanel("diagnostics"); }}>Open Diagnostics</button>
     {/if}
   </div>
 {/snippet}
@@ -3777,9 +3785,9 @@
   {#if sourceFormat === "quarto" && mayEdit && !localExecution}
     <button class="btn btn-sm lp-control-brand" onclick={() => (localExecutionConsent = true)}>Turn on local execution</button>
   {:else}
-    <PreviewStatus label={previewStatusLabel} busy={previewBusy}
-      tone={previewProblem ? "error" : "neutral"}>
-      {#snippet details()}{@render previewStatusDetails()}{/snippet}
+    <PreviewStatus label={previewStatusLabel} busy={previewBusy || localConnecting}
+      tone={previewProblem && !localConnecting ? "error" : "neutral"}>
+      {#snippet details(close)}{@render previewStatusDetails(close)}{/snippet}
     </PreviewStatus>
   {/if}
 {/snippet}
@@ -4344,7 +4352,7 @@
   .presence { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-divider); color: var(--color-text-secondary); font-size: .65rem; }
-  .preview-status-details { display: grid; gap: calc(var(--spacing) * 2); }
+  .preview-status-details { display: grid; gap: calc(var(--spacing) * 2); justify-items: start; }
   /* A heading over a run of items. Aligned with the names rather than with
      the panel edge, so the column the items make starts once. */
   .menu-section-label { padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5) calc(var(--spacing) * 0.5) calc(var(--spacing) * 7); color: var(--color-text-secondary); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }

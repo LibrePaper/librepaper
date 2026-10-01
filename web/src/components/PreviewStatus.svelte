@@ -10,11 +10,31 @@
   // outside it nor Escape, so the panel stayed over the document until the
   // summary was clicked again. All three are Zag's to answer.
   let { label = "", tone = "neutral", busy = false, details } = $props();
+
+  let open = $state(false);
+  const close = () => (open = false);
+
+  // Close the popover when focus moves to the preview frame. The preview is
+  // a cross-origin iframe, so clicks in it are invisible to Zag's
+  // click-outside detection, and the window losing focus to a frame is the
+  // only sign the user clicked the preview.
+  $effect(() => {
+    if (!open) return;
+    const listener = () => {
+      if (document.activeElement?.tagName === "IFRAME") {
+        close();
+      }
+    };
+    window.addEventListener("blur", listener);
+    return () => window.removeEventListener("blur", listener);
+  });
 </script>
 
 {#if label}
   <Popover
     positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}
+    {open}
+    onOpenChange={(event) => (open = event.open)}
   >
     <!-- The button is authored here rather than handed a `class`: a class
          arriving as a prop carries no scope hash, so the rules below would
@@ -35,9 +55,9 @@
          a positioned, clipping row, and a panel this wide opened from inside
          it was confined to it. -->
     <Portal>
-      <Popover.Positioner class="preview-status-positioner">
+      <Popover.Positioner>
         <Popover.Content class="preview-status-popover">
-          {@render details?.()}
+          {@render details?.(close)}
         </Popover.Content>
       </Popover.Positioner>
     </Portal>
@@ -56,7 +76,8 @@
     .preview-status-label { display: none; }
   }
   /* The panel's width is the pane's business, not the window's: it is capped
-     against the positioner's available width, which Zag measures. */
-  :global(.preview-status-positioner) { z-index: 30; }
-  :global(.preview-status-popover) { width: min(32rem, var(--available-width, 80vw)); max-height: var(--available-height); overflow-y: auto; padding: calc(var(--spacing) * 3); border: 1px solid var(--color-divider); border-radius: var(--radius-container); background: var(--color-raised); color: var(--color-text); box-shadow: var(--shadow-xl); font-size: var(--text-sm); }
+     against the positioner's available width, which Zag measures. The
+     z-index is on the content because Zag writes the positioner's inline
+     from the content's computed value; a class on the positioner lost. */
+  :global(.preview-status-popover) { z-index: 30; width: min(32rem, var(--available-width, 80vw)); max-height: var(--available-height); overflow-y: auto; padding: calc(var(--spacing) * 3); border: 1px solid var(--color-divider); border-radius: var(--radius-container); background: var(--color-raised); color: var(--color-text); box-shadow: var(--shadow-xl); font-size: var(--text-sm); }
 </style>

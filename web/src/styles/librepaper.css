@@ -1162,9 +1162,9 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .lp-control-success:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { filter: brightness(.94); }
 .lp-control-neutral { background: var(--color-subtle); color: var(--color-text); border-color: var(--color-border); }
 .lp-control-neutral:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
-.lp-control-outline { background: transparent; color: var(--color-text); border-color: var(--color-border-strong); }
+.lp-control-outline { background: transparent; color: var(--color-text); border-color: var(--color-border-strong); border-width: 1px; border-style: solid; }
 .lp-control-outline:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
-.lp-control-outline-brand { background: transparent; color: var(--color-brand); border-color: var(--color-brand); }
+.lp-control-outline-brand { background: transparent; color: var(--color-brand); border-color: var(--color-brand); border-width: 1px; border-style: solid; }
 .lp-control-outline-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-selected); }
 .lp-control-tonal { background: var(--color-subtle); color: var(--color-text); border-color: transparent; }
 .lp-control-tonal:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }

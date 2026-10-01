@@ -24,6 +24,7 @@ const entry = join(temporary, "entry.js");
 
 const source = `
 import PreviewStatus from ${JSON.stringify(join(root, "web/src/components/PreviewStatus.svelte"))};
+import PreviewStatusHarness from ${JSON.stringify(join(root, "web/tests/fixtures/PreviewStatusHarness.svelte"))};
 import CommentCard from ${JSON.stringify(join(root, "web/src/components/CommentCard.svelte"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
@@ -65,8 +66,31 @@ window.statusPopoverCheck = async () => {
   check(panel(), 'it opens again');
   document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flush();
   check(!panel(), 'Escape closes it');
+
   status.$destroy();
   statusHost.remove();
+
+  // A panel whose action opens something else has to get out of the way, and
+  // the preview it covers is a cross-origin frame Zag cannot hear a click in.
+  const harnessHost = document.createElement('div');
+  document.body.append(harnessHost);
+  const harness = createClassComponent({ component: PreviewStatusHarness, target: harnessHost });
+  await flush();
+  const harnessTrigger = harnessHost.querySelector('.preview-status-trigger');
+  harnessTrigger.click(); await flush();
+  check(panel(), 'the panel opens');
+  // Stacked above the panes: Zag copies the content's z-index onto the
+  // positioner inline, so a class on the positioner never applied.
+  check(getComputedStyle(node().parentElement).zIndex === '30', 'the panel stacks above the panes');
+  node().querySelector('.harness-action').click(); await flush();
+  check(!panel(), 'an action inside the panel puts it away');
+  harnessTrigger.click(); await flush();
+  check(panel(), 'it opens again');
+  harnessHost.querySelector('.harness-frame').focus();
+  window.dispatchEvent(new Event('blur')); await flush();
+  check(!panel(), 'focus moving into a frame closes the panel');
+  harness.$destroy();
+  harnessHost.remove();
 
   // A resolved card collapses to one line, and the button that opens it is
   // replaced by the card itself. Focus has to land somewhere real.
@@ -130,7 +154,7 @@ writeFileSync(entry, source);
 let server;
 let tab;
 try {
-  await build({ configFile: false, root: join(root, "web"), plugins: [svelte()], logLevel: "error",
+  await build({ configFile: false, root: join(root, "web"), plugins: [svelte({ emitCss: false })], logLevel: "error",
     build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "status-popover-check.js" } } });
   server = createServer((request, response) => {
     const file = join(output, request.url.slice(1));
@@ -144,7 +168,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("status popover component", () => tab.evaluate("Boolean(window.statusPopoverCheck)"));
   assert.equal(await tab.evaluate("window.statusPopoverCheck()"), true);
-  console.log("status popover: the preview panel flips, dismisses and portals; a resolved card keeps focus when it opens");
+  console.log("status popover: the preview panel flips, dismisses and portals; an action closes it; frame focus closes it; z-index stacks correctly; a resolved card keeps focus when it opens");
 } finally {
   await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
 }
