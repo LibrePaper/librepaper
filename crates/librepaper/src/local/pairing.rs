@@ -188,14 +188,6 @@ pub fn random_token() -> String {
     URL_SAFE_NO_PAD.encode(random_bytes(32))
 }
 
-/// A fresh six-digit approval code, as `approval::ask_headless` generates
-/// for the terminal fallback when no dialog tool exists.
-pub fn generate_code() -> String {
-    use rand::Rng;
-    let value: u32 = rand::rng().random_range(0..1_000_000);
-    format!("{value:06}")
-}
-
 fn hash_token(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
+#[cfg(not(any(target_os = "macos", windows)))]
 use std::time::Duration;
 use tokio::sync::Mutex;
 
@@ -104,8 +105,9 @@ async fn ask_linux(approval: &Approval) -> Decision {
     ask_headless(approval).await
 }
 
+#[cfg(not(any(target_os = "macos", windows)))]
 async fn ask_headless(approval: &Approval) -> Decision {
-    let code = super::pairing::generate_code();
+    let code = generate_code();
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
     {
@@ -132,6 +134,14 @@ async fn ask_headless(approval: &Approval) -> Decision {
             Decision::Denied
         }
     }
+}
+
+/// A fresh six-digit approval code for the terminal fallback.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn generate_code() -> String {
+    use rand::Rng;
+    let value: u32 = rand::rng().random_range(0..1_000_000);
+    format!("{value:06}")
 }
 
 /// Called from the CLI to approve a pending approval request. Returns true if
