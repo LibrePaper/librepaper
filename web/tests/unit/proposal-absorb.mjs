@@ -836,6 +836,93 @@ for (const localChange of ["restore", "clean", "tail"]) {
   assert.equal(sent.at(-1).type, "proposal-open", "the disjoint remainder opens as a fresh proposal");
 }
 
+// A local delete can cross a zero-width restoration gap while replacing the
+// whole published word. Apply only the declined hunk's actual inverse, keeping
+// the retained original `t` and the accepted puppy edit in the room.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "The cat sat. The dog ran.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.update("The tabby sat. The puppy ran.");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+
+  const decode = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+  const { decodeFrontiers } = await import("loro-crdt");
+  const base = decodeFrontiers(decode(open.base));
+  const tip = decodeFrontiers(decode(update.tip));
+  const proposalHunks = proposals.hunksOf({ base, tip, bytes: decode(update.update) });
+  const declined = proposalHunks.find((hunk) => hunk.file === "f1" && hunk.inserted.includes("tabby"));
+  const accepted = proposalHunks.find((hunk) => hunk.file === "f1" && hunk.inserted.includes("puppy"));
+  assert.ok(declined && accepted, "the proposal contains separate declined and accepted edits");
+
+  branchText.delete(4, 5);
+  branchText.insert(4, "cat");
+  const privateText = branchText.toString();
+
+  const resolved = room.fork();
+  resolved.import(decode(update.update));
+  const publishedText = resolved.getMap("files").get("f1");
+  const [containerId, inverseEntry] = resolved.diff(tip, base, false)
+    .find(([cid]) => String(cid) === String(publishedText.id));
+  const inverseStart = declined.start + proposalHunks
+    .filter((hunk) => hunk.file === declined.file && hunk.index < declined.index)
+    .reduce((offset, hunk) => offset + hunk.inserted.length - hunk.deleted, 0);
+  const inverseEnd = inverseStart + declined.inserted.length;
+  let oldAt = 0;
+  const declinedInverse = [];
+  for (const part of inverseEntry.diff) {
+    if (part.retain !== undefined) {
+      declinedInverse.push(part);
+      oldAt += part.retain;
+    } else if (part.insert !== undefined) {
+      if (inverseStart <= oldAt && oldAt <= inverseEnd) declinedInverse.push(part);
+    } else if (part.delete !== undefined) {
+      const end = oldAt + part.delete;
+      const overlapStart = Math.max(oldAt, inverseStart);
+      const overlapEnd = Math.min(end, inverseEnd);
+      if (overlapStart > oldAt) declinedInverse.push({ retain: overlapStart - oldAt });
+      if (overlapEnd > overlapStart) declinedInverse.push({ delete: overlapEnd - overlapStart });
+      if (end > overlapEnd) declinedInverse.push({ retain: end - overlapEnd });
+      oldAt = end;
+    }
+  }
+  resolved.setPeerId(4n);
+  resolved.applyDiff(new Map([[containerId, { ...inverseEntry, diff: declinedInverse }]]));
+  resolved.commit();
+  room.import(resolved.export({ mode: "update", from: room.oplogVersion() }));
+  resolved.destroy?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const sentBeforeDecision = sent.length;
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [{ hunk: declined.index, accepted: false }, { hunk: accepted.index, accepted: true }],
+    resolved_tip: update.tip, resolved_base: open.base });
+  assert.equal(room.getMap("files").get("f1").toString(), "The cat sat. The puppy ran.",
+    "the server inverse restores only the declined hunk");
+  assert.equal(proposals.status().recoveryRequired, true,
+    "the whole-word deletion crossing the restore gap requires manual recovery");
+  assert.equal(proposals.text("f1").toString(), privateText, "the private replacement remains untouched");
+  assert.ok(proposals.recoveryTexts().some((draft) =>
+    draft.files.some((file) => file.id === "f1" && file.text === privateText)),
+  "recovery exports the exact private replacement without a duplicated cat");
+  assert.equal(sent.length, sentBeforeDecision, "the ambiguous replacement is not auto-published");
+}
+
 // A stale rejected span must not be inversed over a coauthor replacement:
 // preserve the full local branch and expose a recovery error instead.
 {

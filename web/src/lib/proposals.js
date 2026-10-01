@@ -215,8 +215,9 @@ function overlappingPostTipInverseFiles(branch, tip, inverse, proposalHunks = nu
         oldAt += part.retain;
       } else if (part.delete !== undefined) {
         const end = oldAt + part.delete;
-        if (selected.some((span) => span.restores && span.deleted > 0 &&
-            oldAt < span.start + span.deleted && span.start < end)) {
+        if (selected.some((span) => span.restores && (span.deleted === 0
+          ? oldAt <= span.start && span.start < end
+          : oldAt < span.start + span.deleted && span.start < end))) {
           conflicts.add(fileId);
         }
         oldAt = end;
