@@ -239,7 +239,7 @@ impl PostgresCatalog {
             tx.commit().await?;
             return Ok(false);
         };
-        // A legacy NULL digest leaves the projection key unknown until the
+        // A NULL digest leaves the projection key unknown until the
         // worker reads the label. Defer quota admission in that case: the
         // serialized attachment check can still determine whether the
         // encoded archive reuses an existing object or adds bytes.

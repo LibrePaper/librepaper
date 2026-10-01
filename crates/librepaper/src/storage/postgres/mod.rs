@@ -1797,15 +1797,26 @@ mod tests {
         // so the worker must be allowed to reach the serialized delta check.
         catalog.policy.owner_bytes = catalog.usage_bytes(Some(account.id)).await.unwrap();
         catalog.policy.deployment_bytes = catalog.usage_bytes(None).await.unwrap();
-        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), catalog.policy.owner_bytes);
-        assert_eq!(catalog.usage_bytes(None).await.unwrap(), catalog.policy.deployment_bytes);
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap(),
+            catalog.policy.owner_bytes
+        );
+        assert_eq!(
+            catalog.usage_bytes(None).await.unwrap(),
+            catalog.policy.deployment_bytes
+        );
         assert!(catalog
             .request_label_archive(document.id, two.id)
             .await
             .unwrap());
         let pending = catalog.label(document.id, two.id).await.unwrap().unwrap();
+        assert!(pending.tree_digest.is_none());
         assert!(pending.archive_requested_at.is_some());
         assert!(pending.archive_error.is_none());
+        // Preserve coverage for reusing an object even after the owner cap
+        // is lowered below the bytes already retained.
+        catalog.policy.owner_bytes = before.saturating_add(100);
+        assert!(catalog.usage_bytes(Some(account.id)).await.unwrap() > catalog.policy.owner_bytes);
         // A later encoder version may produce different bytes under the same
         // projection key. The first catalog row remains authoritative.
         let newer_encoding = ArchiveObject {
@@ -1833,6 +1844,7 @@ mod tests {
         assert_eq!(stored.byte_length, 500);
         assert_eq!(stored.content_digest.as_deref(), Some(&[2; 32][..]));
 
+        catalog.policy.owner_bytes = catalog.usage_bytes(Some(account.id)).await.unwrap();
         // The same unknown-identity admission must still reach the final
         // quota gate for a genuinely new object; its positive delta is
         // refused and leaves a terminal error for an explicit retry.
@@ -1856,9 +1868,18 @@ mod tests {
         );
         let refused = catalog.label(document.id, three.id).await.unwrap().unwrap();
         assert!(refused.archive_requested_at.is_none());
-        assert_eq!(refused.archive_error.as_deref(), Some("storage quota exceeded"));
-        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), catalog.policy.owner_bytes);
-        assert_eq!(catalog.usage_bytes(None).await.unwrap(), catalog.policy.deployment_bytes);
+        assert_eq!(
+            refused.archive_error.as_deref(),
+            Some("storage quota exceeded")
+        );
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap(),
+            catalog.policy.owner_bytes
+        );
+        assert_eq!(
+            catalog.usage_bytes(None).await.unwrap(),
+            catalog.policy.deployment_bytes
+        );
         assert_eq!(
             catalog
                 .label_archive_keys(None, 100)
