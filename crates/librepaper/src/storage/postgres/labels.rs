@@ -569,4 +569,21 @@ impl PostgresCatalog {
             figure_bytes: figure_bytes.iter().sum(),
         })
     }
+
+    /// Checks whether a label still exists, under the caller's transaction lock.
+    pub async fn label_exists_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        label_id: Uuid,
+    ) -> Result<bool> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM document_labels WHERE id=$1 AND document_id=$2)",
+        )
+        .bind(label_id)
+        .bind(document_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(Error::from)
+    }
 }
