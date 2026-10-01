@@ -17,6 +17,7 @@ writeFileSync(entry, [
   "import { tick } from " + imports("web/node_modules/svelte/src/index-client.js") + ";",
   "import { EditorView } from " + imports("web/node_modules/@codemirror/view/dist/index.js") + ";",
   "import { Transaction } from " + imports("web/node_modules/@codemirror/state/dist/index.js") + ";",
+  "import { acceptCompletion } from " + imports("web/node_modules/@codemirror/autocomplete/dist/index.js") + ";",
   "import { createClassComponent } from " + imports("web/node_modules/svelte/src/legacy/legacy-client.js") + ";",
   "import { join as joinSession } from " + imports("web/src/lib/collab.js") + ";",
   "import { projectDirectory } from " + imports("web/src/lib/projection.js") + ";",
@@ -83,7 +84,7 @@ writeFileSync(entry, [
       }
       if (!popup.includes("Rivers")) throw new Error("Zotero fixture did not appear in the citation picker: " + JSON.stringify({ popup, hasPairing: hasPairing(), calls: zoteroCalls, text: view.state.doc.toString() }));
       await new Promise((resolve) => setTimeout(resolve, 100));
-      view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
+      if (!acceptCompletion(view)) throw new Error("the Zotero picker could not accept its selected entry");
       for (let attempt = 0; attempt < 100; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 50));
         if (sent.some((message) => message.type === "proposal-open")) break;
