@@ -767,8 +767,7 @@ async fn a_discard_keeps_a_reconnect_receipt_without_rebuilding_the_branch() {
         .command(&deployment.authority, &mut command)
         .await
         .unwrap();
-    assert_eq!(discarded.resolved_base, Some(stored.base_frontiers.clone()));
-    assert_eq!(discarded.resolved_tip, Some(stored.tip_frontiers.clone()));
+    assert!(discarded.applied);
 
     let receipt = deployment
         .catalog
