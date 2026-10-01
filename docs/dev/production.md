@@ -15,8 +15,8 @@ The official instance at librepaper.org runs `tools/deploy-docker` on an OVHclou
 ## Release
 
 ```sh
-# Release the instrumented v0.0.12 build.
-VERSION=v0.0.12                                  # must match crates/librepaper/Cargo.toml
+# Release the instrumented v0.0.13 build.
+VERSION=v0.0.13                                  # must match crates/librepaper/Cargo.toml
 git tag "$VERSION" && git push origin "$VERSION"
 gh run watch                                     # the Release workflow
 gh release view "$VERSION" --json assets -q '.assets[].name' | grep linux-musl
@@ -133,8 +133,8 @@ Deploy the tagged release with the normal release flow. The local binary flow re
 
 ```sh
 # deploy the tagged release
-tools/deploy-production deploy v0.0.12
-HOST=ubuntu@VPS_IP tools/deploy-production deploy v0.0.12   # before DNS resolves
+tools/deploy-production deploy v0.0.13
+HOST=ubuntu@VPS_IP tools/deploy-production deploy v0.0.13   # before DNS resolves
 tools/deploy-production site                                 # landing page and manual only: no release, no restart
 # optional: deploy a previously built static Linux musl executable
 tools/deploy-production deploy-local target/x86_64-unknown-linux-musl/release/librepaper
