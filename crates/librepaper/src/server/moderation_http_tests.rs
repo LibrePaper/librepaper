@@ -743,11 +743,13 @@ async fn any_commenter_policy_rejects_anonymous_comments_and_accepts_a_signed_in
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn quota_rejected_replacement_keeps_its_hourly_upload_admission() {
-    let mut policy = StoragePolicy::default();
     // The fixture's existing project fits; the replacement's 16 KiB figure
     // does not. Its immutable blob is staged before the catalogue refuses it.
-    policy.owner_bytes = 1024;
-    policy.asset_uploads_per_hour = 1;
+    let policy = StoragePolicy {
+        owner_bytes: 1024,
+        asset_uploads_per_hour: 1,
+        ..StoragePolicy::default()
+    };
     let Some(deployment) =
         deployment_with_policy("moderation-upload-quota-http", false, policy).await
     else {
@@ -852,8 +854,10 @@ async fn quota_rejected_replacement_keeps_its_hourly_upload_admission() {
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn empty_figure_upload_does_not_spend_the_hourly_admission() {
-    let mut policy = StoragePolicy::default();
-    policy.asset_uploads_per_hour = 1;
+    let policy = StoragePolicy {
+        asset_uploads_per_hour: 1,
+        ..StoragePolicy::default()
+    };
     let Some(deployment) =
         deployment_with_policy("moderation-empty-figure-http", false, policy).await
     else {
