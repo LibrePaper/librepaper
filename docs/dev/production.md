@@ -15,14 +15,14 @@ The official instance at librepaper.org runs `tools/deploy-docker` on an OVHclou
 ## Release
 
 ```sh
-# Monitoring requires an instrumented release v0.0.9 or later.
-VERSION=v0.0.9                                   # once this matches crates/librepaper/Cargo.toml
+# Release the instrumented v0.0.9 build.
+VERSION=v0.0.9                                   # must match crates/librepaper/Cargo.toml
 git tag "$VERSION" && git push origin "$VERSION"
 gh run watch                                     # the Release workflow
 gh release view "$VERSION" --json assets -q '.assets[].name' | grep linux-musl
 ```
 
-- v0.0.8 is the current historical baseline and does not include the metrics listener. Do not deploy it to the monitoring stack; use `deploy-local` until an instrumented v0.0.9+ release is published.
+- v0.0.8 does not include the metrics listener. Do not deploy it to the monitoring stack; v0.0.9 is the first release with the listener.
 - v0.0.1 to v0.0.3 are Komodoc archives, and v0.0.4 to v0.0.7 never released
 - No Windows build since v0.0.8: the PowerShell installer in the README, docs/start.md and the settings page 404s until `x86_64-pc-windows-msvc` is back in the dist targets
 
@@ -129,15 +129,15 @@ git add tools/deploy-keys.yaml && git commit -m "Add production secrets"   # val
 
 ## Deploy and upgrade
 
-The currently instrumented source can be deployed before its first tagged release. Use the local binary flow now; once an instrumented `v0.0.9` or later release is published, use the normal release flow.
+Deploy the tagged release with the normal release flow. The local binary flow remains available for unreleased source builds or forks.
 
 ```sh
-# current source: deploy the previously built static Linux musl executable
-tools/deploy-production deploy-local target/x86_64-unknown-linux-musl/release/librepaper
-# after an instrumented tag and release: deploy v0.0.9 or a later exact tag
+# deploy the tagged release
 tools/deploy-production deploy v0.0.9
 HOST=ubuntu@VPS_IP tools/deploy-production deploy v0.0.9    # before DNS resolves
 tools/deploy-production site                                 # landing page and manual only: no release, no restart
+# optional: deploy a previously built static Linux musl executable
+tools/deploy-production deploy-local target/x86_64-unknown-linux-musl/release/librepaper
 ```
 
 - `deploy VERSION` accepts only canonical `vMAJOR.MINOR.PATCH` tags at `v0.0.9` or later. It refuses `v0.0.8` before any remote write because that binary has no metrics endpoint. The default version comes from Cargo.toml and is subject to the same guard.

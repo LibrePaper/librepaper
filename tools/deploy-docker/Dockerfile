@@ -6,7 +6,7 @@
 # -- and swapping the fetch below for a COPY.
 #
 #   docker build --build-arg LIBREPAPER_VERSION=v0.0.9 -t librepaper .
-# Use this example only after a metrics-capable v0.0.9 or later release exists.
+# Build with a tagged release that includes the native metrics listener.
 FROM alpine:3.21
 
 # The version to install. There is no default on purpose: an image that

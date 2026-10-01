@@ -1,18 +1,17 @@
 # A deployment in containers
 
 The stack runs PostgreSQL, LibrePaper, Caddy, Prometheus, Grafana, and host and
-PostgreSQL exporters. The currently published v0.0.8 binary does not include
-the native metrics listener, so start with a local static musl binary until a
-metrics-capable v0.0.9 or later release is published.
+PostgreSQL exporters. Set `LIBREPAPER_VERSION=v0.0.9` in `.env` to deploy the
+tagged release, which includes the native metrics listener. The historical
+v0.0.8 binary does not include that listener.
 
 ```sh
-# From the repository root, after building a static binary for this host.
-cp target/x86_64-unknown-linux-musl/release/librepaper tools/deploy-docker/librepaper
 cd tools/deploy-docker
 cp .env.example .env
-# Set DOMAIN, ACME_EMAIL, LIBREPAPER_PUBLISHERS, all three passwords described
-# below, and both client ID and client secret for GitHub or Google OAuth.
-docker compose -f compose.yaml -f compose.local.yaml up -d --build
+# Set LIBREPAPER_VERSION=v0.0.9, DOMAIN, ACME_EMAIL, LIBREPAPER_PUBLISHERS,
+# all three passwords described below, and both client ID and client secret
+# for GitHub or Google OAuth.
+docker compose up -d --build
 ```
 
 ## Before the first start
@@ -115,7 +114,7 @@ volume.
 ### Building a locally built binary
 
 The normal `Dockerfile` downloads a tagged release and verifies its checksum.
-Use that path only with a metrics-capable v0.0.9 or later release. For a
+Set `LIBREPAPER_VERSION` to `v0.0.9` or a later metrics-capable release. For a
 locally built static musl binary, copy it to this directory as `librepaper`
 and use the alternate Dockerfile:
 
@@ -128,9 +127,9 @@ directory. The executable must target the same architecture as the Docker
 host; supported targets are `x86_64-unknown-linux-musl` and
 `aarch64-unknown-linux-musl`.
 
-For the full stack, use `docker compose -f compose.yaml -f compose.local.yaml
-up -d --build` from this directory. The local binary path is required until a
-published v0.0.9 or later release includes the native metrics listener.
+For the full stack with the local binary, use
+`docker compose -f compose.yaml -f compose.local.yaml up -d --build` from this
+directory. The local binary path is optional for source builds and forks.
 
 ## Backups
 
@@ -148,11 +147,10 @@ guess.
 
 ## Upgrading
 
-Once an instrumented v0.0.9 or later release is published, set
-`LIBREPAPER_VERSION` to that exact tag and run `docker compose up -d --build`.
-The image is built from the published release archive and checked against its
-checksums. Until then, keep using the local binary overlay. To run a fork,
-build a static musl binary and use `Dockerfile.local`.
+Set `LIBREPAPER_VERSION` to the exact release tag (for example,
+`v0.0.9`) and run `docker compose up -d --build`. The image is built from the
+tagged release archive and checked against its checksums. To run a fork, build
+a static musl binary and use `Dockerfile.local`.
 
 ## S3 instead of local objects
 

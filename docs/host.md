@@ -163,17 +163,16 @@ Set lifetime for public deployments: `--document-expire-after 24h`. Use `--docum
 
 ## Containers
 
-`tools/deploy-docker` provides Compose for PostgreSQL, LibrePaper, HTTPS proxy, and internal monitoring. The current v0.0.8 release has no metrics endpoint, so start with a local static musl binary until a metrics-capable v0.0.9 or later release is published. Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 certificates. Other names, such as `www`, get a 421 from the server: redirect them in the `Caddyfile` (example at its end).
+`tools/deploy-docker` provides Compose for PostgreSQL, LibrePaper, HTTPS proxy, and internal monitoring. Use the tagged v0.0.9 release for the application image; v0.0.8 has no metrics endpoint. A locally built static musl binary remains available for source builds and forks. Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 certificates. Other names, such as `www`, get a 421 from the server: redirect them in the `Caddyfile` (example at its end).
 
 ```sh
-# From the repository root, after building a static binary for this host.
-cp target/x86_64-unknown-linux-musl/release/librepaper tools/deploy-docker/librepaper
+# From the repository root, configure the release image version in .env.
 cd tools/deploy-docker
 cp .env.example .env
 # Set DOMAIN, ACME_EMAIL, LIBREPAPER_PUBLISHERS, and independent random values
 # for POSTGRES_PASSWORD, POSTGRES_EXPORTER_PASSWORD, LIBREPAPER_ADMIN_PASSWORD.
 # Set both client ID and client secret for GitHub or Google OAuth.
-docker compose -f compose.yaml -f compose.local.yaml up -d --build
+docker compose up -d --build
 ```
 
 `DOCS_DOMAIN` defaults to `docs.$DOMAIN`; both names must resolve to this host. The container uses `--no-local`. See [the Docker deployment guide](https://github.com/LibrePaper/librepaper/blob/main/tools/deploy-docker/README.md) for password rotation, backup, and release upgrades.
