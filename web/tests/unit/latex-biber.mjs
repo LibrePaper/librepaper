@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 const enc=new TextEncoder();
 const original = { fetch: globalThis.fetch, Worker: globalThis.Worker };
-let made=0,terminated=0,payload;
+const originalRevoke = URL.revokeObjectURL;
+let made=0,terminated=0,payload,hostUrl,hostMessage,revoked=[];
 class Worker {
-  constructor() { made++; }
+  constructor(url) { made++; hostUrl = String(url); }
   postMessage(data) {
+    if (data.librepaperEngineHost) { hostMessage = data.librepaperEngineHost; return; }
     payload = data;
     queueMicrotask(() => this.onmessage?.({ data: { ok: true, bbl: enc.encode("BBL"), blg: "" } }));
   }
@@ -38,6 +40,7 @@ const request = {
 };
 try{
   globalThis.Worker = Worker;
+  URL.revokeObjectURL = url => { revoked.push(url); };
   globalThis.fetch = async url => new Response(contents[String(url).split("/").at(-1)]);
   const backend = await import("../../src/lib/latex/biber.js?success");
   const result = await backend.runBiber(request, { base: "https://mirror.test/", release });
@@ -50,6 +53,10 @@ try{
   assert.ok(payload.wasm instanceof WebAssembly.Module);
   assert.equal(made, 1);
   assert.equal(terminated, 1);
+  assert.match(hostUrl, /engine-host\.js$/, "biber starts in the same-origin engine host");
+  assert.match(hostMessage.source, /^blob:/, "the host is handed the verified worker as a blob URL");
+  assert.deepEqual(Object.keys(hostMessage), ["source"]);
+  assert.deepEqual(revoked, [hostMessage.source], "the source blob lives until the job finishes");
 
   const incomplete = { ...release, engines: { biber: { worker: "biber.worker.js", files: Object.keys(contents).filter(name => name !== "biber.build.json") } } };
   await assert.rejects(backend.runBiber(request, { base: "https://mirror.test/", release: { ...incomplete, digest: "b".repeat(64) } }), /biber\.build\.json/);
@@ -67,7 +74,7 @@ try{
 
   let entered;
   const waiting = new Promise(resolve => { entered = resolve; });
-  Worker.prototype.postMessage = function() { entered(); };
+  Worker.prototype.postMessage = function(data) { if (!data.librepaperEngineHost) entered(); };
   const controller = new AbortController();
   const running = backend.runBiber(request, { base: "https://mirror.test/", release, signal: controller.signal });
   await waiting;
@@ -77,4 +84,5 @@ try{
   console.log("Biber backend: verified manifest inventory, nested paths, provenance, corruption rejection and cancellation passed");
 } finally {
   Object.assign(globalThis, original);
+  URL.revokeObjectURL = originalRevoke;
 }

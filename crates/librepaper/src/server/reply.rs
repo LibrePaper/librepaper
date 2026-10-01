@@ -318,28 +318,26 @@ fn accepts_encoding(headers: &HeaderMap, wanted: &str) -> bool {
 /// The policy every shell page is served with: the app's own scripts and
 /// nothing inline.
 ///
-/// The reader turns uploaded figures into blob URLs on this origin, and a
-/// page the app opens from one of them -- an SVG figure in a tab of its own
-/// -- inherits this policy. Without it, a script inside the SVG would run as
-/// the app, with the reader's session. A blob URL pasted into the address bar
-/// inherits nothing, so this narrows that hole rather than closing it.
+/// The reader no longer hands out app-origin blob URLs for images (they are
+/// data URLs), but a blob URL on this origin that the app opens in a page of
+/// its own, an SVG figure for one, would inherit this policy. Without it, a
+/// script inside the SVG would run as the app, with the reader's session. So
+/// this is defence in depth for anything the app opens from this origin. A
+/// blob URL pasted into the address bar inherits nothing, so it narrows that
+/// hole rather than closing it.
 ///
 /// - `'self'`: the bundled modules under `/assets/`.
-/// - `blob:` in script-src and worker-src: the LaTeX engine worker is built
-///   from a blob URL and calls `importScripts` on verified blob URLs, and a
-///   worker made from a blob URL inherits this policy too.
-/// - `'unsafe-eval'`: the LaTeXML engine calls `emscripten_run_script_string`,
-///   which is `eval`, inside that inherited policy. It lets running script
-///   evaluate strings; it does not let an uploaded file start any, which is
-///   what `'unsafe-inline'` would do. Moving the engine to a same-origin
-///   worker would take it off this page.
+/// - The TeX engines and biber run in `web/src/lib/latex/engine-host.js`, a
+///   worker served from this origin. It takes its policy from its own
+///   response, so the engine may `eval` there and the page itself needs
+///   neither `'unsafe-eval'` nor `blob:` scripts.
 /// - `'wasm-unsafe-eval'`: the renderers and the CRDT are WebAssembly, and
-///   would stay so without `'unsafe-eval'`.
+///   they need no `'unsafe-eval'`.
 /// - `object-src 'self' blob:`: the reader's PDF figure view is an `<object>`
 ///   on a blob URL.
 /// - `frame-ancestors 'none'`: a hostile site could otherwise iframe a shell
 ///   page to phish against, since the reader carries a session cookie.
-const SHELL_POLICY: &str = "script-src 'self' blob: 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; object-src 'self' blob:; base-uri 'none'; frame-ancestors 'none'";
+const SHELL_POLICY: &str = "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'self' blob:; base-uri 'none'; frame-ancestors 'none'";
 
 /// Serves one shell file, cached for a year if its bytes never change.
 pub(super) fn write_asset(asset: &ShellFile, headers: &HeaderMap) -> Reply {
@@ -450,9 +448,14 @@ mod asset_tests {
             .split("; ")
             .find(|d| d.starts_with("script-src "))
             .expect("the policy names script-src");
-        for refused in ["'unsafe-inline'", "https:", "data:"] {
+        for refused in ["'unsafe-inline'", "'unsafe-eval'", "blob:", "https:", "data:"] {
             assert!(!script_src.contains(refused), "{script_src}");
         }
+        let worker_src = csp
+            .split("; ")
+            .find(|d| d.starts_with("worker-src "))
+            .expect("the policy names worker-src");
+        assert!(!worker_src.contains("blob:"), "{worker_src}");
         assert!(csp.contains("frame-ancestors 'none'"));
         assert!(csp.contains("base-uri 'none'"));
         // A bundle is not a page, so it carries no policy.
