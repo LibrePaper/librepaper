@@ -172,11 +172,18 @@ impl BackupManager {
         let destination = super::super::folder::choose_directory(origin, "backup destination")
             .await
             .map_err(|error| write_json(400, &json!({"error": error})))?;
+        let destination = tokio::task::spawn_blocking(move || destination.canonicalize())
+            .await
+            .map_err(|error| write_json(500, &json!({"error": format!("could not resolve selected folder: {error}")})))?
+            .map_err(|error| write_json(400, &json!({"error": format!("could not resolve selected folder: {error}")})))?;
+        if !destination.is_dir() {
+            return Err(write_json(400, &json!({"error":"Select an existing backup destination."})));
+        }
         if authenticate(inner, headers, Some(origin)).is_err() {
             return Err(write_json(401, &json!({"error":"This site is no longer connected."})));
         }
         let key = BackupConfig::key(origin, account_id);
-        let mut state = self.state.lock().await;
+        let state = self.state.lock().await;
         if state.in_flight.contains(&key) {
             return Err(write_json(409, &json!({"error":"A backup is running; choose a new destination when it finishes."})));
         }
@@ -212,7 +219,7 @@ impl BackupManager {
     }
 
     async fn configure(
-        &self,
+        self: &Arc<Self>,
         inner: &Inner,
         origin: &str,
         account_id: &str,
@@ -223,17 +230,23 @@ impl BackupManager {
             return Err("frequency_minutes must be one of 1, 5, 15, 30, or 60".into());
         }
         let key = BackupConfig::key(origin, account_id);
-        let mut state = self.state.lock().await;
+        let state = self.state.lock().await;
         if enabled && !state.configs.get(&key).is_some_and(|config| config.destination.is_dir()) {
             return Err("Choose a backup destination before enabling backups.".into());
         }
         // Never hold the status/config lock over a network request. Apart
         // from keeping GETs responsive, re-check the destination below in
         // case it changed while identity verification was in flight.
+        let expected_revision = state.configs.get(&key).map_or(0, |config| config.revision);
         drop(state);
         if enabled {
             if let Err(error) = verify_account(inner, origin, account_id).await {
                 let mut state = self.state.lock().await;
+                if state.configs.get(&key).map_or(0, |config| config.revision)
+                    != expected_revision
+                {
+                    return Err("backup settings changed during account verification; retry the request".into());
+                }
                 let config = state
                     .configs
                     .entry(key.clone())
@@ -258,6 +271,9 @@ impl BackupManager {
             }
         }
         let mut state = self.state.lock().await;
+        if state.configs.get(&key).map_or(0, |config| config.revision) != expected_revision {
+            return Err("backup settings changed during account verification; retry the request".into());
+        }
         if enabled && !state.configs.get(&key).is_some_and(|config| config.destination.is_dir()) {
             return Err("Choose a backup destination before enabling backups.".into());
         }
@@ -266,14 +282,15 @@ impl BackupManager {
             .configs
             .entry(key.clone())
             .or_insert_with(|| BackupConfig::new(origin, account_id));
-        let was_enabled = config.enabled;
+        let previous_enabled = config.enabled;
+        let previous_frequency = config.frequency_minutes;
         config.enabled = enabled;
         config.frequency_minutes = frequency_minutes;
         config.error = None;
-        if was_enabled != enabled {
+        if previous_enabled != enabled || previous_frequency != frequency_minutes {
             config.revision = config.revision.wrapping_add(1);
         }
-        if enabled && !was_enabled {
+        if enabled && !previous_enabled {
             // Enabling always queues an immediate initial save.
             config.last_attempt = None;
         }
@@ -296,35 +313,45 @@ impl BackupManager {
         Ok(())
     }
 
-    async fn run_now(&self, inner: &Arc<Inner>, origin: &str, account_id: &str) -> Result<(), String> {
+    async fn admit_run(&self, origin: &str, account_id: &str) -> Result<BackupConfig, String> {
         let key = BackupConfig::key(origin, account_id);
-        let config = {
-            let mut state = self.state.lock().await;
-            let Some(config) = state.configs.get(&key).cloned() else {
-                return Err("Configure a backup destination first.".into());
-            };
-            if !config.enabled {
-                return Err("Backups are disabled.".into());
-            }
-            if state.in_flight.contains(&key) {
-                return Err("A backup is already running.".into());
-            }
-            let previous = config.clone();
-            state.in_flight.insert(key.clone());
-            if let Some(current) = state.configs.get_mut(&key) {
-                current.running = true;
-                current.last_attempt = Some(unix_now());
-            }
-            if let Err(error) = self.persist(&state).await {
-                state.in_flight.remove(&key);
-                state.configs.insert(key, previous);
-                if let Some(current) = state.configs.get_mut(&key) {
-                    current.error = Some(error.clone());
-                }
-                return Err(error);
-            }
-            config
+        let mut state = self.state.lock().await;
+        let Some(config) = state.configs.get(&key).cloned() else {
+            return Err("Configure a backup destination first.".into());
         };
+        if !config.enabled {
+            return Err("Backups are disabled.".into());
+        }
+        if state.in_flight.contains(&key) {
+            return Err("A backup is already running.".into());
+        }
+        let previous = config.clone();
+        state.in_flight.insert(key.clone());
+        if let Some(current) = state.configs.get_mut(&key) {
+            current.running = true;
+            current.last_attempt = Some(unix_now());
+            current.error = None;
+        }
+        if let Err(error) = self.persist(&state).await {
+            state.in_flight.remove(&key);
+            state.configs.insert(key.clone(), previous);
+            if let Some(current) = state.configs.get_mut(&key) {
+                current.error = Some(error.clone());
+            }
+            return Err(error);
+        }
+        Ok(config)
+    }
+
+    fn start_run(self: &Arc<Self>, inner: Arc<Inner>, config: BackupConfig) {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            manager.finish_run(&inner, config).await;
+        });
+    }
+
+    async fn finish_run(&self, inner: &Inner, config: BackupConfig) {
+        let key = BackupConfig::key(&config.origin, &config.account_id);
         let run_revision = config.revision;
         let result = run_backup(inner, &config).await;
         let mut state = self.state.lock().await;
@@ -359,6 +386,16 @@ impl BackupManager {
             }
         }
         self.changed.notify_one();
+    }
+
+    async fn run_now(
+        self: &Arc<Self>,
+        inner: &Arc<Inner>,
+        origin: &str,
+        account_id: &str,
+    ) -> Result<(), String> {
+        let config = self.admit_run(origin, account_id).await?;
+        self.start_run(inner.clone(), config);
         Ok(())
     }
 }
@@ -549,6 +586,7 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
             let due = {
                 let mut state = inner.backups.state.lock().await;
                 let now = unix_now();
+                let mut changed = false;
                 let candidates: Vec<_> = state
                     .configs
                     .iter()
@@ -562,6 +600,7 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                             current.enabled = false;
                             current.error = Some("This site is no longer connected.".into());
                             current.revision = current.revision.wrapping_add(1);
+                            changed = true;
                         }
                     } else if !state.in_flight.contains(&key)
                         && is_due(&config, now)
@@ -571,6 +610,7 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                                 current.last_attempt = Some(now);
                                 current.error = Some("The selected backup destination is unavailable.".into());
                             }
+                            changed = true;
                             continue;
                         }
                         state.in_flight.insert(key);
@@ -578,54 +618,23 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                             current.running = true;
                             current.last_attempt = Some(now);
                         }
+                        changed = true;
                         due.push(config);
                     }
                 }
-                if let Err(error) = inner.backups.persist(&state).await {
+                if changed {
+                    if let Err(error) = inner.backups.persist(&state).await {
                     for config in state.configs.values_mut().filter(|config| config.running) {
                         config.error = Some(error.clone());
+                    }
                     }
                 }
                 due
             };
             for config in due {
-                let task_inner = inner.clone();
-                tokio::spawn(async move {
-                    let key = BackupConfig::key(&config.origin, &config.account_id);
-                    let run_revision = config.revision;
-                    let result = run_backup(&task_inner, &config).await;
-                    let mut state = task_inner.backups.state.lock().await;
-                    state.in_flight.remove(&key);
-                    if let Some(current) = state.configs.get_mut(&key) {
-                        current.running = false;
-                        if current.revision == run_revision {
-                        match result {
-                            Ok(report) => {
-                                current.last_success = Some(unix_now());
-                                current.projects = report.projects;
-                                current.updated = report.updated;
-                                current.error = None;
-                            }
-                            Err(error) => {
-                                if !task_inner.pairing.has_live_pairing(&current.origin)
-                                    || error.contains("account does not match")
-                                {
-                                    if current.enabled {
-                                        current.revision = current.revision.wrapping_add(1);
-                                    }
-                                    current.enabled = false;
-                                }
-                                current.error = Some(error);
-                            }
-                        }
-                        }
-                    }
-                    if let Err(error) = task_inner.backups.persist(&state).await {
-                        if let Some(current) = state.configs.get_mut(&key) {
-                            current.error = Some(error);
-                        }
-                    }
-                });
+                inner
+                    .backups
+                    .start_run(inner.clone(), config);
             }
             tokio::select! {
                 _ = tokio::time::sleep(SCHEDULER_POLL) => {},
@@ -645,6 +654,12 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::{Path as AxumPath, State};
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use sha2::Digest as _;
+    use std::io::Read;
+    use std::sync::Arc;
 
     #[test]
     fn identity_must_match_the_requested_signed_in_account() {
@@ -712,6 +727,300 @@ mod tests {
         assert!(config.destination.is_dir());
         assert!(config.last_attempt.is_none());
         assert!(!config.running);
+    }
+
+    #[derive(Clone)]
+    struct BackupFixture {
+        account_id: String,
+        projection: crate::document::projection::Projection,
+        text: String,
+    }
+
+    async fn fixture_me(State(fixture): State<Arc<BackupFixture>>) -> Json<Value> {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        Json(json!({"id": fixture.account_id.clone()}))
+    }
+
+    async fn fixture_list() -> Json<Value> {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        Json(json!({"documents":[{"slug":"scheduled-project","title":"Scheduled Project"}]}))
+    }
+
+    async fn fixture_snapshot(
+        State(fixture): State<Arc<BackupFixture>>,
+        AxumPath(_slug): AxumPath<String>,
+    ) -> Json<Value> {
+        Json(json!({
+            "digest": fixture.projection.digest(),
+            "projection": fixture.projection.clone(),
+            "texts":{"project.md": fixture.text.clone()}
+        }))
+    }
+
+    async fn start_backup_fixture(account_id: String) -> (String, tokio::task::JoinHandle<()>) {
+        let text = "# scheduled backup\n".to_string();
+        let mut projection = crate::document::projection::Projection::default();
+        projection.main = "project.md".into();
+        projection.files.insert(
+            "project.md".into(),
+            crate::document::projection::Entry {
+                kind: "text".into(),
+                id: "test-text".into(),
+                digest: hex::encode(sha2::Sha256::digest(text.as_bytes())),
+                bytes: text.len() as u64,
+            },
+        );
+        let fixture = Arc::new(BackupFixture {
+            account_id,
+            projection,
+            text,
+        });
+        let app = Router::new()
+            .route("/api/me", get(fixture_me))
+            .route("/api/list", post(fixture_list))
+            .route("/api/documents/{slug}/snapshot", get(fixture_snapshot))
+            .with_state(fixture);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (server, task)
+    }
+
+    async fn test_inner(state_home: &Path, cache_home: &Path) -> Arc<Inner> {
+        let jobs_root = cache_home.join("jobs");
+        std::fs::create_dir_all(&jobs_root).unwrap();
+        Arc::new(Inner {
+            state_home: state_home.to_path_buf(),
+            folder_dialog: Mutex::new(()),
+            backups: Arc::new(BackupManager::new(state_home)),
+            instance: "backup-test".into(),
+            port: 8764,
+            pairing: pairing::PairingStore::new(state_home, None),
+            quarto_bindings: crate::local::quarto::BindingStore::new(state_home),
+            previews: Mutex::new(Default::default()),
+            runner: Arc::new(super::super::FakeRunner::default()),
+            jobs: Mutex::new(HashMap::new()),
+            queue: Mutex::new(Default::default()),
+            work: Notify::new(),
+            jobs_root,
+            connect_attempts: Mutex::new(HashMap::new()),
+            pending_pairs: Mutex::new(HashMap::new()),
+            assistant_sessions: crate::assistant::registry::SessionRegistry::new(
+                state_home.to_path_buf(),
+            ),
+        })
+    }
+
+    async fn configure_scheduled_backup(
+        inner: &Inner,
+        origin: &str,
+        account_id: &str,
+        destination: &Path,
+    ) {
+        crate::cli::store_token_at(&inner.state_home, origin, "backup-test-token").unwrap();
+        inner.pairing.issue(origin, "backup integration fixture").unwrap();
+        let config = BackupConfig {
+            enabled: true,
+            destination: destination.to_path_buf(),
+            ..BackupConfig::new(origin, account_id)
+        };
+        let key = BackupConfig::key(origin, account_id);
+        let mut state = inner.backups.state.lock().await;
+        state.configs.insert(key, config);
+        inner.backups.persist(&state).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn scheduler_runs_without_a_browser_and_publishes_a_real_project_zip() {
+        let account_id = uuid::Uuid::now_v7().to_string();
+        let (server, fixture_task) = start_backup_fixture(account_id.clone()).await;
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path(), cache_home.path()).await;
+        configure_scheduled_backup(&inner, &server, &account_id, destination.path()).await;
+
+        // This task is the only trigger: the test does not make a browser
+        // request after enabling the persisted setting.
+        spawn_scheduler(inner.clone());
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let status = inner.backups.status(&inner, &server, &account_id).await;
+                if status["last_success"].as_u64().is_some()
+                    && status["projects"] == 1
+                    && status["running"] == false
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the scheduler completes the first backup");
+
+        let namespace = hex::encode(sha2::Sha256::digest(
+            format!("{}\0{}", crate::local::credentials::origin(&server), account_id).as_bytes(),
+        ));
+        let backup_dir = destination
+            .path()
+            .join("librepaper-backups")
+            .join(namespace);
+        let archive_path = std::fs::read_dir(&backup_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|extension| extension == "zip"))
+            .expect("the engine publishes a project archive");
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(archive_path).unwrap()).unwrap();
+        let mut file = archive.by_name("project.md").unwrap();
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "# scheduled backup\n");
+        fixture_task.abort();
+    }
+
+    #[tokio::test]
+    async fn manual_run_admits_and_detaches_the_backup_work() {
+        let account_id = uuid::Uuid::now_v7().to_string();
+        let (server, fixture_task) = start_backup_fixture(account_id.clone()).await;
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path(), cache_home.path()).await;
+        configure_scheduled_backup(&inner, &server, &account_id, destination.path()).await;
+
+        let (pairing_token, _) = inner.pairing.issue(&server, "manual run test").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {pairing_token}")).unwrap(),
+        );
+        let response = handle_run(
+            &inner,
+            &headers,
+            Some(&server),
+            Request::post(format!("{BASE_PATH}/backups/run"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"account_id": account_id.clone()}).to_string()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), MAX_JSON_BYTES).await.unwrap();
+        let status: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(status["running"], true);
+        inner
+            .backups
+            .configure(&inner, &server, &account_id, false, 5)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = inner.backups.status(&inner, &server, &account_id).await;
+                if status["running"] == false {
+                    assert_eq!(status["enabled"], false);
+                    assert!(status["last_success"].is_null());
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the detached run finishes after its caller returns");
+        fixture_task.abort();
+    }
+
+    #[tokio::test]
+    async fn delayed_enable_verification_cannot_undo_a_concurrent_disable() {
+        let account_id = uuid::Uuid::now_v7().to_string();
+        let (server, fixture_task) = start_backup_fixture(account_id.clone()).await;
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path(), cache_home.path()).await;
+        configure_scheduled_backup(&inner, &server, &account_id, destination.path()).await;
+
+        let enable_inner = inner.clone();
+        let enable_origin = server.clone();
+        let enable_account = account_id.clone();
+        let enabling = tokio::spawn(async move {
+            enable_inner
+                .backups
+                .configure(&enable_inner, &enable_origin, &enable_account, true, 5)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        inner
+            .backups
+            .configure(&inner, &server, &account_id, false, 5)
+            .await
+            .unwrap();
+        let result = enabling.await.unwrap();
+        assert!(result.unwrap_err().contains("settings changed"));
+        assert_eq!(inner.backups.status(&inner, &server, &account_id).await["enabled"], false);
+        fixture_task.abort();
+    }
+
+    #[tokio::test]
+    async fn backup_status_route_rejects_wrong_origin_and_enable_rejects_mismatched_account() {
+        let account_id = uuid::Uuid::now_v7().to_string();
+        let (server, fixture_task) = start_backup_fixture(account_id.clone()).await;
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path(), cache_home.path()).await;
+        configure_scheduled_backup(&inner, &server, &account_id, destination.path()).await;
+        let other_account = uuid::Uuid::now_v7().to_string();
+        let mut state = inner.backups.state.lock().await;
+        state.configs.insert(
+            BackupConfig::key(&server, &other_account),
+            BackupConfig {
+                destination: destination.path().to_path_buf(),
+                ..BackupConfig::new(&server, &other_account)
+            },
+        );
+        inner.backups.persist(&state).await.unwrap();
+        drop(state);
+        let (pairing_token, _) = inner.pairing.issue(&server, "test").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {pairing_token}")).unwrap(),
+        );
+
+        let wrong_origin = handle_get(
+            &inner,
+            &headers,
+            Some("http://wrong.example"),
+            Request::get(format!("{BASE_PATH}/backups?account={account_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(wrong_origin.status(), StatusCode::UNAUTHORIZED);
+
+        let mismatch = handle_put(
+            &inner,
+            &headers,
+            Some(&server),
+            Request::put(format!("{BASE_PATH}/backups"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({
+                    "account_id": other_account,
+                    "enabled": true,
+                    "frequency_minutes": 5,
+                }).to_string()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(mismatch.status(), StatusCode::BAD_REQUEST);
+        let response = axum::body::to_bytes(mismatch.into_body(), MAX_JSON_BYTES).await.unwrap();
+        let value: Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(value["needs_login"], true);
+        assert!(value["error"].as_str().unwrap().contains("account does not match"));
+        fixture_task.abort();
     }
 
     #[test]
