@@ -124,7 +124,20 @@ try {
   const face = (name) => `.face-switch [aria-label="${name}"]`;
   const visible = (selector) => b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); return Boolean(node?.getClientRects().length && getComputedStyle(node).visibility !== 'hidden'); })()`);
   const bounded = async () => {
-    const bounds = await b.evaluate(`({width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,scrollHeight:document.documentElement.scrollHeight,children:[...document.body.children].map(n=>({tag:n.tagName,cls:n.className,top:n.getBoundingClientRect().top,bottom:n.getBoundingClientRect().bottom}))})`);
+    const bounds = await b.evaluate(`(() => {
+      const width = document.documentElement.clientWidth;
+      const overflow = [...document.body.querySelectorAll('*')].flatMap(node => {
+        const rect = node.getBoundingClientRect();
+        if (!node.getClientRects().length || rect.width === 0 || (rect.left >= -1 && rect.right <= width + 1)) return [];
+        const style = getComputedStyle(node);
+        return [{ tag: node.tagName.toLowerCase(), id: node.id || undefined,
+          cls: typeof node.className === 'string' ? node.className.slice(0, 100) : '',
+          left: Math.round(rect.left), right: Math.round(rect.right), width: Math.round(rect.width),
+          position: style.position, scrollWidth: node.scrollWidth, clientWidth: node.clientWidth }];
+      }).sort((a, b) => (b.right - width) - (a.right - width)).slice(0, 12);
+      return { width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth,
+        scrollHeight: document.documentElement.scrollHeight, overflow };
+    })()`);
     assert.ok(bounds.scrollHeight <= bounds.height + 1 && bounds.scrollWidth <= bounds.width + 1, 'the outer page fits the viewport: ' + JSON.stringify(bounds));
     assert.equal(await b.evaluate('document.querySelector("main.reader").getBoundingClientRect().bottom <= innerHeight + 1'), true);
   };
