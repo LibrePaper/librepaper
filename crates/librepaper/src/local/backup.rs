@@ -1030,8 +1030,10 @@ mod tests {
                 digest: hex::encode(Sha256::digest(body.as_bytes())),
                 bytes: body.len() as u64,
             };
-            let mut projection = crate::document::projection::Projection::default();
-            projection.main = "paper.md".into();
+            let mut projection = crate::document::projection::Projection {
+                main: "paper.md".into(),
+                ..Default::default()
+            };
             projection.files.insert("paper.md".into(), entry);
             let asset_bytes = b"\x00\x01\xff";
             projection.files.insert(
@@ -1369,7 +1371,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(fs::metadata(&lock_path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                fs::metadata(&lock_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         let archive = root.join("Paper--paper-a1-test.zip");
         fs::write(&archive, b"existing archive").unwrap();

@@ -177,27 +177,26 @@ impl BackupManager {
         if !token_missing
             && config.error.as_deref().is_some_and(is_login_error)
             && self.should_recheck_login(&key)
+            && verify_account(inner, origin, account_id).await.is_ok()
         {
-            if verify_account(inner, origin, account_id).await.is_ok() {
-                let mut state = self.state.lock().await;
-                if let Some(current) = state.configs.get_mut(&key) {
-                    if current.error == config.error
-                        && current.error.as_deref().is_some_and(is_login_error)
-                    {
-                        let previous = current.error.take();
-                        if let Err(error) = self.persist(&state).await {
-                            if let Some(current) = state.configs.get_mut(&key) {
-                                current.error = previous;
-                            }
-                            if let Some(current) = state.configs.get_mut(&key) {
-                                current.error = Some(error);
-                            }
+            let mut state = self.state.lock().await;
+            if let Some(current) = state.configs.get_mut(&key) {
+                if current.error == config.error
+                    && current.error.as_deref().is_some_and(is_login_error)
+                {
+                    let previous = current.error.take();
+                    if let Err(error) = self.persist(&state).await {
+                        if let Some(current) = state.configs.get_mut(&key) {
+                            current.error = previous;
+                        }
+                        if let Some(current) = state.configs.get_mut(&key) {
+                            current.error = Some(error);
                         }
                     }
                 }
-                if let Some(current) = state.configs.get(&key) {
-                    config = current.clone();
-                }
+            }
+            if let Some(current) = state.configs.get(&key) {
+                config = current.clone();
             }
         }
         json!({
@@ -966,8 +965,10 @@ mod tests {
 
     async fn start_backup_fixture(account_id: String) -> (String, tokio::task::JoinHandle<()>) {
         let text = "# scheduled backup\n".to_string();
-        let mut projection = crate::document::projection::Projection::default();
-        projection.main = "project.md".into();
+        let mut projection = crate::document::projection::Projection {
+            main: "project.md".into(),
+            ..Default::default()
+        };
         projection.files.insert(
             "project.md".into(),
             crate::document::projection::Entry {
