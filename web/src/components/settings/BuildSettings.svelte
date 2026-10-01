@@ -45,7 +45,7 @@
     const capability = capabilityFor(local?.capabilities, preferences.tool);
     return !capability || !Array.isArray(capability.outputs) || !capability.outputs.includes(output);
   }
-  const statusMessage = $derived(({ unknown: "The local companion has not been looked for yet.", unreachable: "Local companion unavailable.", denied: "Local network access was blocked by the browser.", reachable: "Local companion is running; connect this site.", unauthorized: "Connect this site to use local tools.", incompatible: "Update the local companion to use these tools.", connected: "Local companion connected." })[local?.state] || "");
+  const statusMessage = $derived(["unreachable", "denied"].includes(local?.state) ? local.instructions : ({ unknown: "The local companion has not been looked for yet.", reachable: "Local companion is running; connect this site.", unauthorized: "Connect this site to use local tools.", incompatible: "Update the local companion to use these tools.", connected: "Local companion connected." })[local?.state] || "");
   function version(entry) { return capabilityFor(local?.capabilities, entry.id)?.version; }
   function engineLabel(engine) { return engine === "pdflatex" ? "pdfLaTeX" : engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"; }
   const savedMissing = $derived(preferences.selection === "tool" && preferences.tool && !builders.some((entry) => entry.id === preferences.tool) ? preferences.tool : "");
@@ -108,10 +108,9 @@
      local either, so this pane says nothing about the companion for it. -->
 {#if format !== "latex"}<SettingRow title="Local tools" description="Refresh installed tools.">
   <span class="setting-description" role="status">{statusMessage}</span>
-  <!-- Launching the app is an answer to "it is not running". Before anybody
-       has looked, the only thing to offer is the looking. -->
-  {#if ["unreachable", "denied"].includes(local?.state)}<button type="button" class="btn btn-sm lp-control-brand" onclick={connect}>Open companion</button>{/if}
-  {#if ["unauthorized", "reachable"].includes(local?.state)}<button type="button" class="btn btn-sm lp-control-brand" onclick={connect}>Connect</button>{/if}
+  <!-- Nothing here can open the companion; the status line says how to start
+       it. Before anybody has looked, the only thing to offer is the looking. -->
+  {#if ["unreachable", "denied", "unauthorized", "reachable"].includes(local?.state)}<button type="button" class="btn btn-sm lp-control-brand" onclick={connect}>Connect</button>{/if}
   {#if local?.state !== "connected"}<a class="btn btn-sm lp-control-outline" href="https://github.com/LibrePaper/librepaper/releases/latest" target="_blank" rel="noreferrer">Install companion</a>{/if}
   <button type="button" class="btn btn-sm lp-control-outline" disabled={local?.state !== "connected"} onclick={rescan}>Rescan</button>
 </SettingRow>{/if}

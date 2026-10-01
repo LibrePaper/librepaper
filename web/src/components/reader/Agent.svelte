@@ -564,7 +564,7 @@
       <p class="panel-muted">Connect the LibrePaper app on this computer to use an agent.</p>
       <div class="setup-actions">
         <button class="btn btn-sm lp-control-brand" disabled={busy}
-                onclick={() => void connectToApp()}>Connect</button>
+                onclick={() => void connectToApp()}>{busy ? "Connecting…" : "Connect"}</button>
       </div>
       <!-- A refused connection must say so here, beside the button that was
            pressed, rather than in the panel's shared error line below. -->

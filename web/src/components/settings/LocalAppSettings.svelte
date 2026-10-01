@@ -34,7 +34,7 @@
   });
   const connected = $derived(local?.state === "connected");
   const tone = $derived(connected ? "good" : ["denied", "incompatible"].includes(local?.state) ? "warn" : "off");
-  const status = $derived(({ unknown: "Companion not connected", unreachable: "Companion not connected", denied: "Local network access blocked", reachable: "Companion found", unauthorized: "Companion needs permission", connected: "Companion connected", incompatible: "Companion needs an update" })[local?.state] || "Companion not connected");
+  const status = $derived(({ unknown: "Companion not connected", unreachable: "Companion not running", denied: "Local network access blocked", reachable: "Companion found", unauthorized: "Companion needs permission", connected: "Companion connected", incompatible: "Companion needs an update" })[local?.state] || "Companion not connected");
   const installer = "https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh";
 
   async function pair() {
@@ -136,15 +136,15 @@
       {#if connected}
         Local tools are available to LibrePaper.
       {:else if local?.state === "denied"}
-        Allow local-network access for this site in your browser, then connect.
+        Your browser blocked this site from reaching the companion. Allow local network access for this site in the browser's site settings, then connect.
       {:else if local?.state === "incompatible"}
         Install the latest companion version, then connect.
       {:else if local?.state === "unauthorized" || local?.state === "reachable"}
         The companion is running. Connect to approve access for this site.
       {:else if local?.state === "unreachable"}
-        Install and open the companion, then connect.
+        Nothing answered on this computer. Start the companion with <code>librepaper local start</code> in a terminal, then connect.
       {:else}
-        Install and open the companion to use local tools.
+        Install the companion and start it with <code>librepaper local start</code> to use local tools.
       {/if}
     </div>
   </div>
@@ -165,7 +165,7 @@
       <div class="command-line"><code>curl --proto '=https' --tlsv1.2 -LsSf {installer} | sh</code><button type="button" class="btn btn-sm lp-control-outline" onclick={() => void copy(`curl --proto '=https' --tlsv1.2 -LsSf ${installer} | sh`, "macOS & Linux")}>{copying === "macOS & Linux" ? "Copied" : "Copy"}</button></div>
     </div>
     <p class="setting-description">The companion is currently available for macOS and Linux only; Windows builds are not published.</p>
-    <p class="setting-description">After installation, open LibrePaper Companion and return here to connect. <a href="https://librepaper.org/start.html" target="_blank" rel="noreferrer">Installation help</a></p>
+    <p class="setting-description">After installation, run <code>librepaper local start</code> in a terminal and return here to connect. <a href="https://librepaper.org/start.html" target="_blank" rel="noreferrer">Installation help</a></p>
   </section>
 {/if}
 
