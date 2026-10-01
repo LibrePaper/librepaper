@@ -57,9 +57,10 @@ cmd_dev() {
     # Start the container if not running.
     docker start "$DEV_POSTGRES_CONTAINER" >/dev/null
 
-    # Wait for PostgreSQL to be ready (up to 30 seconds).
+    # Wait for PostgreSQL to be ready (up to 30 seconds). The init server answers on the Unix
+    # socket then shuts down, so probe over TCP.
     for _ in $(seq 1 30); do
-        if docker exec "$DEV_POSTGRES_CONTAINER" pg_isready -U postgres -d librepaper >/dev/null 2>&1; then
+        if docker exec "$DEV_POSTGRES_CONTAINER" pg_isready -h 127.0.0.1 -U postgres -d librepaper >/dev/null 2>&1; then
             echo "$DEV_POSTGRES_URL"
             return 0
         fi
