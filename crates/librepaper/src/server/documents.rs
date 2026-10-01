@@ -354,9 +354,34 @@ impl Server {
             Ok(who) => who,
             Err(response) => return response,
         };
+        // One whole project publish is one upload, regardless of how many
+        // files it contains. Source edits made later over sockets or agent
+        // tools are storage changes, not upload requests. Reserve before
+        // reading the body so the hourly limit also bounds upload traffic.
+        let owner_id = match uuid::Uuid::parse_str(&who.id) {
+            Ok(id) => id,
+            Err(_) => return write_json(401, &json!({"error": "invalid account"})),
+        };
+        let upload_admission = match self.store.catalog.reserve_upload_admission(owner_id).await {
+            Ok(id) => id,
+            Err(crate::storage::postgres::Error::Conflict(_)) => {
+                return write_json(
+                    429,
+                    &json!({"error": "too many uploads this hour; try later"}),
+                )
+            }
+            Err(error) => return write_json(503, &json!({"error": error.to_string()})),
+        };
         let parsed = match self.read_upload(request).await {
             Ok(parsed) => parsed,
-            Err(response) => return response,
+            Err(response) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
+                return response;
+            }
         };
 
         let mut base = slugify(&parsed.slug, &self.config);
@@ -364,6 +389,11 @@ impl Server {
             base = slugify(&parsed.title, &self.config);
         }
         if base.is_empty() {
+            let _ = self
+                .store
+                .catalog
+                .cancel_upload_admission(upload_admission)
+                .await;
             return write_json(400, &json!({"error": "could not derive a slug"}));
         }
         // An exact slug that already exists is a replacement of that document,
@@ -376,6 +406,11 @@ impl Server {
         let existing = match self.store.get_result(&base).await {
             Ok(existing) => existing,
             Err(error) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
                 return write_json(
                     503,
                     &json!({
@@ -450,6 +485,11 @@ impl Server {
         // the eleventh file was the one that broke a rule the first ten
         // happened to keep.
         if let Err(response) = self.preflight_directory(&parsed) {
+            let _ = self
+                .store
+                .catalog
+                .cancel_upload_admission(upload_admission)
+                .await;
             return response;
         }
         let entry = match self
@@ -469,9 +509,19 @@ impl Server {
         {
             Ok(entry) => entry,
             Err(PutError::Quota { status, message }) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
                 return write_json(status, &json!({"error": message}))
             }
             Err(PutError::Authorization { status, message }) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
                 return write_json(status, &json!({"error": message}))
             }
             Err(PutError::Storage(_)) => {
@@ -1268,10 +1318,41 @@ impl Server {
         if who.id.is_empty() {
             return write_json(401, &json!({"error": "sign in to keep a copy"}));
         }
+        let account_id = match uuid::Uuid::parse_str(&who.id) {
+            Ok(id) => id,
+            Err(_) => return write_json(401, &json!({"error": "invalid account"})),
+        };
+        let upload_admission = match self
+            .store
+            .catalog
+            .reserve_upload_admission(account_id)
+            .await
+        {
+            Ok(id) => id,
+            Err(crate::storage::postgres::Error::Conflict(_)) => {
+                return write_json(
+                    429,
+                    &json!({"error": "too many uploads this hour; try later"}),
+                )
+            }
+            Err(error) => return write_json(503, &json!({"error": error.to_string()})),
+        };
         let files = match self.store.project_files(slug).await {
             Ok(Some(files)) => files,
-            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Ok(None) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
+                return write_json(404, &json!({"error": "not found"}));
+            }
             Err(error) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
                 eprintln!("could not read {slug} to fork it: {error}");
                 return write_json(503, &json!({"error": "could not read that project"}));
             }
@@ -1335,6 +1416,8 @@ impl Server {
                 &json!({"slug": made.slug, "title": made.title, "url": format!("/docs/{}", made.slug)}),
             ),
             Err(error) => {
+                // The command may have committed before returning an
+                // ambiguous storage error, so keep its hourly admission.
                 eprintln!("could not fork {slug}: {error:?}");
                 write_json(500, &json!({"error": "could not copy that project"}))
             }

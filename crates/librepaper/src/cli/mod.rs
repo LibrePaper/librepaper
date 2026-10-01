@@ -364,6 +364,12 @@ pub(crate) enum AdminCommand {
         /// New deployment directory to create
         directory: String,
     },
+    /// Block accounts or hide and restore projects. This command connects
+    /// directly to the deployment database and requires database access.
+    Moderate {
+        #[command(subcommand)]
+        command: ModerationCommand,
+    },
     /// Delete objects no catalogue row names any more.
     ///
     /// Every blob a deployment keeps on purpose is named by an asset, a
@@ -386,6 +392,67 @@ pub(crate) enum AdminCommand {
             value_name = "COUNT"
         )]
         batch: u32,
+    },
+}
+
+#[derive(Args, Clone, Debug)]
+pub(crate) struct ModerationDatabase {
+    /// PostgreSQL URL for the deployment being moderated.
+    #[arg(
+        long,
+        env = "LIBREPAPER_DATABASE_URL",
+        hide_env_values = true,
+        default_value = "postgresql:///librepaper",
+        value_name = "URL"
+    )]
+    database_url: String,
+}
+
+#[derive(Subcommand, Clone, Debug)]
+pub(crate) enum ModerationCommand {
+    /// Revoke an account's sessions and deny future access and writes.
+    BlockAccount {
+        /// Account UUID or unique provider handle.
+        account: String,
+        #[arg(long, value_name = "ACTOR", required = true)]
+        actor: String,
+        #[arg(long, value_name = "REASON", required = true)]
+        reason: String,
+        #[command(flatten)]
+        database: ModerationDatabase,
+    },
+    /// Restore an account blocked by moderation.
+    UnblockAccount {
+        /// Account UUID or unique provider handle.
+        account: String,
+        #[arg(long, value_name = "ACTOR", required = true)]
+        actor: String,
+        #[arg(long, value_name = "REASON", required = true)]
+        reason: String,
+        #[command(flatten)]
+        database: ModerationDatabase,
+    },
+    /// Hide a project from every document and asset route without deleting it.
+    HideProject {
+        /// Project slug.
+        project: String,
+        #[arg(long, value_name = "ACTOR", required = true)]
+        actor: String,
+        #[arg(long, value_name = "REASON", required = true)]
+        reason: String,
+        #[command(flatten)]
+        database: ModerationDatabase,
+    },
+    /// Restore public access to a project hidden by moderation.
+    UnhideProject {
+        /// Project slug.
+        project: String,
+        #[arg(long, value_name = "ACTOR", required = true)]
+        actor: String,
+        #[arg(long, value_name = "REASON", required = true)]
+        reason: String,
+        #[command(flatten)]
+        database: ModerationDatabase,
     },
 }
 
@@ -559,8 +626,51 @@ async fn run_admin(command: AdminCommand) {
             backup,
             directory,
         } => crate::storage::backup::restore_cli(storage.options(), backup, directory).await,
+        AdminCommand::Moderate { command } => moderate(command).await,
         AdminCommand::Sweep { storage, batch } => sweep(storage, batch as usize).await,
     }
+}
+
+async fn moderate(command: ModerationCommand) {
+    use crate::storage::postgres::{ModerationAction, PostgresCatalog, PostgresOptions};
+    let (database, action, target, actor, reason) = match command {
+        ModerationCommand::BlockAccount { account, actor, reason, database } =>
+            (database, ModerationAction::BlockAccount, account, actor, reason),
+        ModerationCommand::UnblockAccount { account, actor, reason, database } =>
+            (database, ModerationAction::UnblockAccount, account, actor, reason),
+        ModerationCommand::HideProject { project, actor, reason, database } =>
+            (database, ModerationAction::HideProject, project, actor, reason),
+        ModerationCommand::UnhideProject { project, actor, reason, database } =>
+            (database, ModerationAction::UnhideProject, project, actor, reason),
+    };
+    let catalog = match PostgresCatalog::connect(PostgresOptions::new(database.database_url)).await {
+        Ok(catalog) => catalog,
+        Err(error) => die(error.to_string()),
+    };
+    if let Err(error) = catalog.migrate().await {
+        die(error.to_string());
+    }
+    let outcome = match action {
+        ModerationAction::BlockAccount | ModerationAction::UnblockAccount => {
+            let blocked = matches!(action, ModerationAction::BlockAccount);
+            catalog
+                .moderate_account(&target, blocked, &actor, &reason)
+                .await
+                .map(|(id, label)| format!("{} account {label} ({id})", if blocked { "blocked" } else { "unblocked" }))
+        }
+        ModerationAction::HideProject | ModerationAction::UnhideProject => {
+            let hidden = matches!(action, ModerationAction::HideProject);
+            catalog
+                .moderate_project(&target, hidden, &actor, &reason)
+                .await
+                .map(|id| format!("{} project {target} ({id})", if hidden { "hidden" } else { "restored" }))
+        }
+    };
+    match outcome {
+        Ok(message) => println!("{message}"),
+        Err(error) => die(error.to_string()),
+    }
+    catalog.close().await;
 }
 
 /// `librepaper admin sweep`. The seven-day floor is the orphan sweeper's
@@ -612,6 +722,32 @@ pub fn server_or_die(server: Option<String>) -> String {
 #[cfg(test)]
 mod socket_policy_tests {
     use super::*;
+
+    #[test]
+    fn moderation_cli_requires_actor_and_reason_for_reversible_actions() {
+        let incomplete = Cli::try_parse_from([
+            "librepaper",
+            "admin",
+            "moderate",
+            "hide-project",
+            "abusive-paper",
+            "--actor",
+            "operator@example.org",
+        ]);
+        assert!(incomplete.is_err());
+        let complete = Cli::try_parse_from([
+            "librepaper",
+            "admin",
+            "moderate",
+            "hide-project",
+            "abusive-paper",
+            "--actor",
+            "operator@example.org",
+            "--reason",
+            "abuse review",
+        ]);
+        assert!(complete.is_ok());
+    }
 
     #[test]
     fn export_project_parse() {

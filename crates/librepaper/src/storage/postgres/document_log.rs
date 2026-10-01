@@ -261,14 +261,18 @@ impl PostgresCatalog {
         use sqlx::Row as _;
         self.check_writer_epoch(tx).await?;
         let row =
-            sqlx::query("SELECT status,update_sequence FROM documents WHERE id=$1 FOR UPDATE")
+            sqlx::query("SELECT d.status,d.update_sequence,EXISTS(SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id) AS hidden FROM documents d WHERE d.id=$1 FOR UPDATE")
                 .bind(document_id)
                 .fetch_optional(&mut **tx)
                 .await?
                 .ok_or(Error::NotFound)?;
         let status: String = row.get(0);
         let sequence: i64 = row.get(1);
+        let hidden: bool = row.get(2);
         if status != "active" {
+            return Err(Error::NotFound);
+        }
+        if hidden {
             return Err(Error::NotFound);
         }
         if sequence != expected_update_sequence {
@@ -359,6 +363,49 @@ impl PostgresCatalog {
         }) || row.main_path.is_some_and(str::is_empty)
         {
             return Err(Error::Invalid("source identity is invalid".into()));
+        }
+        let hidden: bool = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM moderated_projects WHERE document_id=$1)",
+        )
+        .bind(document_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if hidden {
+            return Err(Error::NotFound);
+        }
+        // The sequencer's in-memory ledger is an early admission check, but
+        // another document can be edited while this row is buffered. Recheck
+        // under the deployment storage lock at the durable boundary so two
+        // concurrent flushes cannot both spend the same remaining quota.
+        // This is the same document-then-storage_usage lock order used by
+        // asset and archive admission.
+        let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1")
+            .bind(document_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        let retained_blobs: i64 = sqlx::query_scalar(
+            "SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+        let owner_usage = super::repository::owner_usage_bytes(&mut **tx, owner_id).await?;
+        let incoming_bytes = row.update_bytes.len().min(i64::MAX as usize) as i64;
+        if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
+            return Err(Error::Conflict("account storage quota exceeded".into()));
+        }
+        let log_usage: i64 = sqlx::query_scalar(
+            "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+        if retained_blobs
+            .saturating_add(log_usage)
+            .saturating_add(incoming_bytes)
+            > self.policy.deployment_bytes
+        {
+            return Err(Error::Conflict(
+                "deployment storage threshold exceeded".into(),
+            ));
         }
         let sequence = sqlx::query_scalar!(
             r#"UPDATE documents SET update_sequence=update_sequence+1,
@@ -463,6 +510,24 @@ impl PostgresCatalog {
             tx.commit().await?;
             return Ok(None);
         }
+        let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1")
+            .bind(document_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        // Base activation can replace many small rows with a larger snapshot.
+        // Serialize the retained-byte delta against asset and archive writes,
+        // then validate the post-activation accounting before committing.
+        let _usage_lock: i64 = sqlx::query_scalar(
+            "SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        let owner_before = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
+        let deployment_before: i64 = sqlx::query_scalar(
+            "SELECT (SELECT bytes FROM storage_usage WHERE singleton) + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         sqlx::query!(
             "UPDATE document_snapshots SET delete_after=$2
              WHERE document_id=$1 AND delete_after IS NULL",
@@ -512,6 +577,22 @@ impl PostgresCatalog {
         .await?;
         let uncompacted_count = counters.try_get("uncompacted_update_count")?;
         let uncompacted_bytes = counters.try_get("uncompacted_update_bytes")?;
+        let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
+        if owner_usage > self.policy.owner_bytes && owner_usage > owner_before {
+            return Err(Error::Conflict("account storage quota exceeded".into()));
+        }
+        let deployment_usage: i64 = sqlx::query_scalar(
+            "SELECT (SELECT bytes FROM storage_usage WHERE singleton) + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if deployment_usage > self.policy.deployment_bytes
+            && deployment_usage > deployment_before
+        {
+            return Err(Error::Conflict(
+                "deployment storage threshold exceeded".into(),
+            ));
+        }
         tx.commit().await?;
         Ok(Some(ActivatedLogBase {
             base,

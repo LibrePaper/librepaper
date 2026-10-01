@@ -5,8 +5,8 @@ use time::Duration;
 use uuid::Uuid;
 
 use super::super::{
-    AccessRole, MutationAuthorization, NewAccount, NewAsset, NewDocument, PostgresCatalog,
-    PostgresOptions,
+    AccessRole, FlushRow, MutationAuthorization, NewAccount, NewAsset, NewDocument, NewSnapshot,
+    PostgresCatalog, PostgresOptions,
 };
 
 async fn catalog() -> PostgresCatalog {
@@ -309,4 +309,260 @@ async fn uploads_on_different_documents_serialize_the_owner_quota_observation() 
 
     drop(writer);
     catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn source_rows_on_different_owners_serialize_the_deployment_quota() {
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
+    let mut options = PostgresOptions::new(url);
+    options.policy.owner_bytes = 100;
+    let mut catalog = PostgresCatalog::connect(options).await.unwrap();
+    catalog.migrate().await.unwrap();
+    let writer = catalog.claim_writer().await.unwrap();
+    let first_owner = account(&catalog).await;
+    let second_owner = account(&catalog).await;
+    let first = catalog
+        .create_document(document(
+            first_owner.id,
+            format!("lifecycle-log-quota-a-{}", Uuid::now_v7()),
+            None,
+        ))
+        .await
+        .unwrap();
+    let second = catalog
+        .create_document(document(
+            second_owner.id,
+            format!("lifecycle-log-quota-b-{}", Uuid::now_v7()),
+            None,
+        ))
+        .await
+        .unwrap();
+    let before = catalog.usage_bytes(None).await.unwrap();
+    catalog.policy.deployment_bytes = before + 100;
+    let first_bytes = vec![7_u8; 60];
+    let second_bytes = vec![7_u8; 60];
+
+    let (left, right) = tokio::join!(
+        catalog.flush_log_row(
+            first.id,
+            FlushRow {
+                expected_update_sequence: 0,
+                update_bytes: &first_bytes,
+                vector: &[],
+                source_format: None,
+                main_path: None,
+            },
+        ),
+        catalog.flush_log_row(
+            second.id,
+            FlushRow {
+                expected_update_sequence: 0,
+                update_bytes: &second_bytes,
+                vector: &[],
+                source_format: None,
+                main_path: None,
+            },
+        ),
+    );
+    assert_ne!(left.is_ok(), right.is_ok());
+    assert_eq!(catalog.usage_bytes(None).await.unwrap(), before + 60);
+
+    drop(writer);
+    catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn source_and_asset_admissions_serialize_the_same_owner_quota() {
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
+    let mut options = PostgresOptions::new(url);
+    options.policy.owner_bytes = 100;
+    let catalog = PostgresCatalog::connect(options).await.unwrap();
+    catalog.migrate().await.unwrap();
+    let writer = catalog.claim_writer().await.unwrap();
+    let owner = account(&catalog).await;
+    let source_doc = catalog
+        .create_document(document(
+            owner.id,
+            format!("lifecycle-source-asset-a-{}", Uuid::now_v7()),
+            None,
+        ))
+        .await
+        .unwrap();
+    let asset_doc = catalog
+        .create_document(document(
+            owner.id,
+            format!("lifecycle-source-asset-b-{}", Uuid::now_v7()),
+            None,
+        ))
+        .await
+        .unwrap();
+    let source_bytes = vec![3_u8; 60];
+    let asset = NewAsset {
+        document_id: asset_doc.id,
+        storage_key: format!("documents/{}/assets/source-asset", asset_doc.id),
+        digest: [41; 32],
+        byte_length: 60,
+        media_type: "image/png".into(),
+        original_name: None,
+    };
+
+    let (source, figure) = tokio::join!(
+        catalog.flush_log_row(
+            source_doc.id,
+            FlushRow {
+                expected_update_sequence: 0,
+                update_bytes: &source_bytes,
+                vector: &[],
+                source_format: None,
+                main_path: None,
+            },
+        ),
+        catalog.complete_asset(asset),
+    );
+    assert_ne!(source.is_ok(), figure.is_ok());
+    assert_eq!(catalog.usage_bytes(Some(owner.id)).await.unwrap(), 60);
+
+    drop(writer);
+    catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn compaction_can_shrink_over_quota_storage_but_cannot_grow_it() {
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
+    let mut options = PostgresOptions::new(url);
+    options.policy.owner_bytes = 100;
+    let mut catalog = PostgresCatalog::connect(options).await.unwrap();
+    catalog.migrate().await.unwrap();
+    let writer = catalog.claim_writer().await.unwrap();
+    let owner = account(&catalog).await;
+    let document = catalog
+        .create_document(document(
+            owner.id,
+            format!("lifecycle-compaction-quota-{}", Uuid::now_v7()),
+            None,
+        ))
+        .await
+        .unwrap();
+    let row_bytes = vec![9_u8; 80];
+    catalog
+        .flush_log_row(
+            document.id,
+            FlushRow {
+                expected_update_sequence: 0,
+                update_bytes: &row_bytes,
+                vector: &[],
+                source_format: None,
+                main_path: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(catalog.usage_bytes(Some(owner.id)).await.unwrap(), 80);
+    catalog.policy.owner_bytes = 50;
+    let grace = time::OffsetDateTime::now_utc() + Duration::days(7);
+    let compacted = catalog
+        .activate_log_base(
+            document.id,
+            1,
+            &[],
+            NewSnapshot {
+                key: format!("documents/{}/bases/shrunk", document.id),
+                digest: [51; 32],
+                bytes: 60,
+            },
+            grace,
+            false,
+        )
+        .await
+        .unwrap();
+    assert!(compacted.is_some());
+    assert_eq!(catalog.usage_bytes(Some(owner.id)).await.unwrap(), 60);
+
+    let growth = catalog
+        .activate_log_base(
+            document.id,
+            1,
+            &[],
+            NewSnapshot {
+                key: format!("documents/{}/bases/growth", document.id),
+                digest: [52; 32],
+                bytes: 90,
+            },
+            grace,
+            true,
+        )
+        .await;
+    assert!(growth.is_err());
+    assert_eq!(catalog.usage_bytes(Some(owner.id)).await.unwrap(), 60);
+
+    drop(writer);
+    catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn concurrent_upload_admissions_share_the_owner_hourly_allowance() {
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
+    let mut options = PostgresOptions::new(url);
+    options.policy.asset_uploads_per_hour = 1;
+    let catalog = PostgresCatalog::connect(options).await.unwrap();
+    catalog.migrate().await.unwrap();
+    let writer = catalog.claim_writer().await.unwrap();
+    let owner = account(&catalog).await;
+
+    let (left, right) = tokio::join!(
+        catalog.reserve_upload_admission(owner.id),
+        catalog.reserve_upload_admission(owner.id),
+    );
+    assert_ne!(left.is_ok(), right.is_ok());
+    let accepted = left.or(right).unwrap();
+    catalog.cancel_upload_admission(accepted).await.unwrap();
+    assert!(catalog.reserve_upload_admission(owner.id).await.is_ok());
+
+    drop(writer);
+    catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn upload_admissions_survive_restart_and_expire_after_one_hour() {
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
+    let mut options = PostgresOptions::new(url.clone());
+    options.policy.asset_uploads_per_hour = 1;
+    let catalog = PostgresCatalog::connect(options).await.unwrap();
+    catalog.migrate().await.unwrap();
+    let writer = catalog.claim_writer().await.unwrap();
+    let account = account(&catalog).await;
+    let accepted = catalog
+        .reserve_upload_admission(account.id)
+        .await
+        .unwrap();
+    drop(writer);
+    catalog.close().await;
+
+    let mut options = PostgresOptions::new(url);
+    options.policy.asset_uploads_per_hour = 1;
+    let restarted = PostgresCatalog::connect(options).await.unwrap();
+    restarted.migrate().await.unwrap();
+    let writer = restarted.claim_writer().await.unwrap();
+    assert!(restarted.reserve_upload_admission(account.id).await.is_err());
+    sqlx::query(
+        "UPDATE upload_admissions SET created_at=now()-interval '1 hour 1 second' WHERE id=$1",
+    )
+    .bind(accepted)
+    .execute(restarted.pool())
+    .await
+    .unwrap();
+    assert!(restarted.reserve_upload_admission(account.id).await.is_ok());
+
+    drop(writer);
+    restarted.close().await;
 }

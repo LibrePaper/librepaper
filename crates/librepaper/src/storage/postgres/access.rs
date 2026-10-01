@@ -1,4 +1,4 @@
-use sqlx::FromRow;
+use sqlx::{FromRow, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -75,7 +75,19 @@ impl PostgresCatalog {
         )
         .fetch_optional(&mut **tx)
         .await?;
-        found.map(|_| ()).ok_or(Error::NotFound)
+        if found.is_none() {
+            return Err(Error::NotFound);
+        }
+        let hidden = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM moderated_projects WHERE document_id=$1)",
+        )
+        .bind(document_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if hidden {
+            return Err(Error::NotFound);
+        }
+        Ok(())
     }
 
     /// Makes this document's live links exactly `links`.
@@ -426,31 +438,35 @@ impl PostgresCatalog {
         token_hash: Option<[u8; 32]>,
         now: OffsetDateTime,
     ) -> Result<Option<AccessRole>> {
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"SELECT d.owner_id,
                 (SELECT CASE WHEN g.source_link_hash IS NULL THEN g.role ELSE gl.role END
                    FROM grants g LEFT JOIN share_links gl
                      ON gl.document_id=g.document_id AND gl.token_hash=g.source_link_hash
                     AND gl.revoked_at IS NULL AND (gl.expires_at IS NULL OR gl.expires_at>$4)
                    WHERE g.document_id=d.id AND g.account_id=$2
-                     AND (g.source_link_hash IS NULL OR gl.token_hash IS NOT NULL)) AS "grant_role?",
+                     AND (g.source_link_hash IS NULL OR gl.token_hash IS NOT NULL)) AS grant_role,
                 (SELECT role FROM share_links l WHERE l.document_id=d.id AND l.token_hash=$3
-                    AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>$4)) AS "link_role?"
-             FROM documents d WHERE d.id=$1 AND d.status='active'"#,
-            document_id,
-            account_id,
-            token_hash.map(|v| v.to_vec()),
-            now,
+                    AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>$4)) AS link_role
+             FROM documents d WHERE d.id=$1 AND d.status='active'
+               AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)"#,
         )
+        .bind(document_id)
+        .bind(account_id)
+        .bind(token_hash.map(|v| v.to_vec()))
+        .bind(now)
         .fetch_optional(&self.pool)
         .await?;
         let Some(row) = row else {
             return Ok(None);
         };
-        if account_id == Some(row.owner_id) {
+        let owner_id: Uuid = row.try_get("owner_id")?;
+        let grant_role: Option<String> = row.try_get("grant_role")?;
+        let link_role: Option<String> = row.try_get("link_role")?;
+        if account_id == Some(owner_id) {
             return Ok(Some(AccessRole::Owner));
         }
-        Ok(highest(row.grant_role.as_deref(), row.link_role.as_deref()))
+        Ok(highest(grant_role.as_deref(), link_role.as_deref()))
     }
 }
 

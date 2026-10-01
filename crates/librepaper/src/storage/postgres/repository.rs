@@ -619,6 +619,56 @@ impl PostgresCatalog {
         Ok((row.documents, row.versions))
     }
 
+    /// Reserves one account upload from the rolling hourly allowance. The
+    /// account row serializes simultaneous requests from this account; the
+    /// event is removed if the caller's upload fails and kept on success.
+    pub async fn reserve_upload_admission(&self, account_id: Uuid) -> Result<Uuid> {
+        let mut tx = self.begin_writer_transaction().await?;
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM accounts WHERE id=$1 FOR UPDATE",
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        if status != "active" {
+            return Err(Error::Conflict("account is not active".into()));
+        }
+        sqlx::query(
+            "DELETE FROM upload_admissions WHERE account_id=$1 AND created_at<clock_timestamp()-interval '1 hour'",
+        )
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
+        let recent = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*)::bigint FROM upload_admissions WHERE account_id=$1 AND created_at>=clock_timestamp()-interval '1 hour'",
+        )
+        .bind(account_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if recent >= self.policy.asset_uploads_per_hour {
+            return Err(Error::Conflict("account upload rate exceeded".into()));
+        }
+        let id = new_id();
+        sqlx::query("INSERT INTO upload_admissions(id,account_id,created_at) VALUES($1,$2,clock_timestamp())")
+            .bind(id)
+            .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    /// Releases an upload reservation when the request fails before its
+    /// project or figure bytes are accepted.
+    pub async fn cancel_upload_admission(&self, id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM upload_admissions WHERE id=$1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn complete_asset(&self, input: NewAsset) -> Result<(AssetRecord, bool)> {
         self.complete_assets_inner(vec![input], None)
             .await?
@@ -668,6 +718,7 @@ impl PostgresCatalog {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         inputs: &[NewAsset],
     ) -> Result<Vec<(AssetRecord, bool)>> {
+        use sqlx::Row as _;
         if inputs.is_empty() || inputs.len() > 4096 {
             return Err(Error::Invalid("invalid completed asset batch".into()));
         }
@@ -690,15 +741,19 @@ impl PostgresCatalog {
         // The owner is read under the same lock that guards the document's
         // status, so the quota below is measured against the owner this
         // document still has when the assets are written.
-        let document = sqlx::query!(
-            "SELECT status,owner_id FROM documents WHERE id=$1 FOR UPDATE",
-            document_id,
+        let document = sqlx::query(
+            "SELECT d.status,d.owner_id,EXISTS(SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id) AS hidden FROM documents d WHERE d.id=$1 FOR UPDATE",
         )
+        .bind(document_id)
         .fetch_optional(&mut **tx)
         .await?;
         let document = document.ok_or(Error::NotFound)?;
-        match document.status.as_str() {
-            "active" => {}
+        let status: String = document.try_get("status")?;
+        let owner_id: Uuid = document.try_get("owner_id")?;
+        let hidden: bool = document.try_get("hidden")?;
+        match status.as_str() {
+            "active" if !hidden => {}
+            "active" => return Err(Error::NotFound),
             _ => return Err(Error::Conflict("document is being deleted".into())),
         }
         let digests: Vec<Vec<u8>> = inputs.iter().map(|input| input.digest.to_vec()).collect();
@@ -743,21 +798,10 @@ impl PostgresCatalog {
             sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
                 .fetch_one(&mut **tx)
                 .await?;
-        let uploads = sqlx::query_scalar!(
-            r#"SELECT count(*) AS "count!" FROM document_assets a
-               JOIN documents d ON d.id=a.document_id
-               WHERE d.owner_id=$1 AND a.created_at>=now()-interval '1 hour'"#,
-            document.owner_id,
-        )
-        .fetch_one(&mut **tx)
-        .await?;
-        if uploads.saturating_add(new_inputs.len() as i64) > self.policy.asset_uploads_per_hour {
-            return Err(Error::Conflict("account asset upload rate exceeded".into()));
-        }
         let incoming_bytes = new_inputs.iter().fold(0_i64, |total, input| {
             total.saturating_add(input.byte_length)
         });
-        let owner_usage = owner_usage_bytes(&mut **tx, document.owner_id).await?;
+        let owner_usage = owner_usage_bytes(&mut **tx, owner_id).await?;
         // The deployment total is blob bytes plus every current base plus
         // every document's uncompacted rows.
         let log_usage = sqlx::query_scalar!(

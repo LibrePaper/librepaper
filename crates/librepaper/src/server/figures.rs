@@ -33,24 +33,6 @@ impl Server {
             Ok(result) => result,
             Err(response) => return response,
         };
-        // Counted before the bytes are read, so a refusal costs the body
-        // rather than the storage. The ceiling is per hour and per owner.
-        {
-            let hour = crate::util::now_unix() / 3600;
-            let mut counts = self.asset_uploads.lock().await;
-            counts.retain(|_, (seen_hour, _)| *seen_hour == hour);
-            let seen = counts.entry(who.key.clone()).or_insert((hour, 0));
-            if seen.0 != hour {
-                *seen = (hour, 0);
-            }
-            if seen.1 >= self.config.storage.uploads_per_hour {
-                return write_json(
-                    429,
-                    &json!({"error": "too many uploads this hour; try later"}),
-                );
-            }
-            seen.1 += 1;
-        }
         let Some(length) =
             header_of(&headers, "content-length").and_then(|v| v.parse::<usize>().ok())
         else {
@@ -59,21 +41,62 @@ impl Server {
                 &json!({"error": "a figure upload must declare its content length"}),
             );
         };
+        // A figure request and a whole-project publish each consume one
+        // durable owner upload event. The database serializes concurrent
+        // admissions across server processes.
+        let owner_id = match uuid::Uuid::parse_str(&who.id.id) {
+            Ok(id) => id,
+            Err(_) => return write_json(401, &json!({"error": "invalid account"})),
+        };
+        let upload_admission = match self.store.catalog.reserve_upload_admission(owner_id).await {
+            Ok(id) => id,
+            Err(crate::storage::postgres::Error::Conflict(_)) => {
+                return write_json(
+                    429,
+                    &json!({"error": "too many uploads this hour; try later"}),
+                )
+            }
+            Err(error) => return plain(503, &error.to_string()),
+        };
         let Ok(body) = to_bytes(request.into_body(), length).await else {
+            let _ = self
+                .store
+                .catalog
+                .cancel_upload_admission(upload_admission)
+                .await;
             return write_json(413, &json!({"error": "that figure is too large"}));
         };
         let (_entry, who) = match self.entry_viewer_in(slug, context, &headers, None).await {
             Ok(result) => result,
-            Err(response) => return response,
+            Err(response) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
+                return response;
+            }
         };
         if !who.at_least(Role::Editor) {
+            let _ = self
+                .store
+                .catalog
+                .cancel_upload_admission(upload_admission)
+                .await;
             return write_json(403, &json!({"error": "edit access changed"}));
         }
         // Atomic object admission accounts for physical bytes and recognizes
         // deduplicated uploads even when the owner's quota is full.
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => return plain(error.status(), &error.client_message()),
+            Err(error) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
+                return plain(error.status(), &error.client_message());
+            }
         };
         let mutation_actor = crate::document::store::MutationActor {
             account_id: who.id.id.clone(),
@@ -90,6 +113,9 @@ impl Server {
             .await;
         match stored {
             Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),
+            // The catalogue commit may have succeeded before an ambiguous
+            // storage error reached this request, so retain the reservation
+            // for the hour rather than hand the account a free retry.
             Err(error) => refused(&format!("could not store a figure for {slug}"), &error),
         }
     }

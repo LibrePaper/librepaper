@@ -379,6 +379,19 @@ impl PostgresCatalog {
         let Some(document) = document else {
             return Err(Error::NotFound);
         };
+        // Moderation shares the document row lock: a command admitted before
+        // the hide commits first, and every command admitted afterwards sees
+        // the marker while still holding the same lock. Treat a hidden
+        // document as absent even when the actor already has a live grant.
+        let hidden = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM moderated_projects WHERE document_id=$1)",
+        )
+        .bind(document_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if hidden {
+            return Err(Error::NotFound);
+        }
         let owner_id: Uuid = document.try_get("owner_id")?;
         let ownership_mode: String = document.try_get("ownership_mode")?;
         let owner = !actor.automation && actor.account_id == Some(owner_id);

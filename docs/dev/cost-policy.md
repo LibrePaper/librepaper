@@ -17,7 +17,11 @@ LibrePaper limits logical admission; it does not keep a billing-grade count of p
 
 Names beginning with `--` are serve flags; the others are advanced configuration keys.
 
-Retained quotas count current document bases and rows, figures, and label archives; superseded bases are excluded. A requested archive counts once produced. Dereferencing a figure does not free it; deleting the document does. Identical re-uploaded bytes reuse the existing object. Admission is checked before writes and again at commit, so concurrent work can briefly create quota-exceeding or orphan bytes. Cleanup is asynchronous.
+Admission rules:
+
+- The 50 MiB storage quota is charged to the project owner. It counts figure and archive bytes, the current compressed base, and uncompacted encoded update rows with framing; rendered output and uncompressed source text are not retained bytes. Superseded bases are excluded from logical use during their physical retention window. A requested archive counts once produced. Dereferencing a figure does not free it; deleting the document does. Identical re-uploaded bytes reuse the existing object.
+- The 30/hour upload allowance is per signed-in account across projects. A project publish, fork, or figure request counts once, regardless of project file count. Later editor keystrokes and agent source edits are not uploads. Known failures release admission; ambiguous storage failures keep it counted for an hour.
+- Upload admission is serialized in PostgreSQL. Update rows and new bases recheck retained bytes at commit, so concurrent writes cannot pass owner or deployment limits. A quota refusal keeps accepted edits buffered for retry after storage is freed; staged objects may need asynchronous cleanup.
 
 The log quota bounds build input, not build memory or time. Caches, builds, projections, request bodies, and transfers share the memory budget. POST, PUT, and PATCH require `Content-Length` and reserve four times that length. Pending scratch is about five times the largest framed row plus 32 KiB. Startup requires memory of at least fourteen times the log quota. See [resource limits](../host.md#storage) for failure behavior. Other request and socket ceilings are in [`cost.rs`](../crates/librepaper/src/server/cost.rs), [`config.rs`](../crates/librepaper/src/config.rs), and [`socket_budget.rs`](../crates/librepaper/src/server/socket_budget.rs).
 
