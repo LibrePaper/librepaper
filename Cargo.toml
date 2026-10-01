@@ -23,9 +23,8 @@ targets = [
     "aarch64-unknown-linux-musl",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
 ]
-installers = ["shell", "powershell"]
+installers = ["shell"]
 install-updater = true
 github-build-setup = "../dist-build-setup.yml"
 install-success-msg = "LibrePaper Companion is installed. In a new terminal, run: librepaper local settings. Then return to your browser."

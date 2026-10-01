@@ -168,7 +168,7 @@ Set lifetime for public deployments: `--document-expire-after 24h`. Use `--docum
 ```sh
 cd tools/deploy-docker
 cp .env.example .env
-# Edit .env: set LIBREPAPER_VERSION (v0.0.7 or later), DOMAIN, ACME_EMAIL,
+# Edit .env: set LIBREPAPER_VERSION (v0.0.8 or later), DOMAIN, ACME_EMAIL,
 # POSTGRES_PASSWORD, LIBREPAPER_PUBLISHERS, and at least one of
 # LIBREPAPER_GITHUB_CLIENT_ID or LIBREPAPER_GOOGLE_CLIENT_ID
 docker compose up -d
