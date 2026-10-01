@@ -43,13 +43,28 @@ try {
   await writeFile(join(state, "librepaper", "local", "connections.json"),
     JSON.stringify({ [name]: { link, origin: "http://127.0.0.1", created: now, used: now } }), { mode: 0o600 });
 
+  // What the sidebar runner hands its bridge: the scoped grant the signed-in
+  // page mints, in a private file beside the connection record, named only in
+  // the bridge's environment. Without it the bridge has no bearer, and a link
+  // alone is refused.
+  const minted = await fetch(`${deployment.base}/api/documents/${slug}/agent-token`, {
+    method: "POST",
+    headers: {
+      origin: deployment.base, cookie: deployment.cookie, "x-librepaper-client": "shell",
+      "x-librepaper-key": new URL(link).hash.replace(/^#k=/, ""),
+    },
+  }).then((response) => response.json());
+  assert.match(minted.token || "", /^lpa_/, `agent-token refused: ${JSON.stringify(minted)}`);
+  const grantFile = join(state, "librepaper", "local", `${name}.grant`);
+  await writeFile(grantFile, minted.token, { mode: 0o600 });
+
   // The runner writes the model name here; the bridge sends it with each call.
   const labelFile = join(state, "agent-label");
   await writeFile(labelFile, "Opus 5.5\n");
 
   bridge = spawn(deploymentBinary(), ["mcp", "--connection", name], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, XDG_STATE_HOME: state, LIBREPAPER_AGENT_LABEL_FILE: labelFile },
+    env: { ...process.env, XDG_STATE_HOME: state, LIBREPAPER_AGENT_LABEL_FILE: labelFile, LIBREPAPER_RUNNER_GRANT_FILE: grantFile },
   });
   let stderr = "";
   bridge.stderr.on("data", (bytes) => { stderr += bytes; });

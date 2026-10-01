@@ -136,6 +136,59 @@ fn runner_connection(peer: &AutomationPeer, config: &Config) -> Result<String, S
     Ok(name)
 }
 
+/// The scoped grant the document bridge authenticates with, published as a
+/// private file the bridge reads, and removed when the runner ends however it
+/// ends, including a hard stop that aborts this task.
+///
+/// The bridge is a grandchild process, so it cannot share the peer's
+/// in-memory token, and a renewal reaches only that in-memory value (see
+/// `SessionRegistry::renew_agent_token`). The runner's own tick loop copies the
+/// value into the file whenever it differs from what was last written. That
+/// keeps exactly one writer, so a renewal racing the first publication can
+/// never leave an older grant on disk, at the cost of the bridge seeing a
+/// renewal up to a tick or two late, which a grant renewed well before it
+/// expires absorbs.
+struct BridgeGrant {
+    path: PathBuf,
+    source: std::sync::Arc<std::sync::RwLock<String>>,
+    written: Option<String>,
+}
+
+impl BridgeGrant {
+    fn publish(
+        path: PathBuf,
+        source: std::sync::Arc<std::sync::RwLock<String>>,
+    ) -> Result<Self, String> {
+        let mut grant = Self {
+            path,
+            source,
+            written: None,
+        };
+        grant.sync()?;
+        Ok(grant)
+    }
+
+    fn sync(&mut self) -> Result<(), String> {
+        let current = self
+            .source
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        if self.written.as_deref() == Some(current.as_str()) {
+            return Ok(());
+        }
+        crate::private_files::publish(&self.path, current.as_bytes(), "assistant document grant")?;
+        self.written = Some(current);
+        Ok(())
+    }
+}
+
+impl Drop for BridgeGrant {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 struct Active {
     id: String,
     /// ACP streams the answer in chunks, so it accumulates here.
@@ -262,6 +315,7 @@ async fn start_agent_with_bridge(
     base_environment: &[(String, String)],
     executable: &Path,
     connection: &str,
+    grant_file: &Path,
 ) -> Result<acp::Agent, String> {
     lease.write_status(RunnerState::Starting, None, Some("Starting agent session"))?;
     let token = event_id();
@@ -284,6 +338,7 @@ async fn start_agent_with_bridge(
         executable,
         connection,
         &config.state_home,
+        grant_file,
     )
     .await?;
     lease.write_status(
@@ -595,6 +650,10 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     let mut environment = adapter_environment(&journal_path, &session_path);
     environment.extend(config.agent_environment.clone());
     let connection = runner_connection(peer, config)?;
+    let mut grant = BridgeGrant::publish(
+        crate::local::connections::ConnectionStore::new(&config.state_home).grant_path(&connection),
+        peer.token_source(),
+    )?;
     // Prove the document is reachable at this access level before starting an
     // agent against it. The tools are handed to the agent as an MCP server it
     // launches itself, so a refusal there is invisible: the assistant comes up
@@ -614,8 +673,15 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // document tools and nothing anywhere says which of the agent, the
     // adapter or the connection was at fault.
     eprintln!("agent command: {:?}", config.agent);
-    let mut agent =
-        start_agent_with_bridge(config, lease, &environment, &executable, &connection).await?;
+    let mut agent = start_agent_with_bridge(
+        config,
+        lease,
+        &environment,
+        &executable,
+        &connection,
+        &grant.path,
+    )
+    .await?;
     // Always a new session, never `session/load`. A resumed session keeps the
     // MCP servers it was created with and does not take the ones handed to
     // `session/load`, so resuming produced an assistant that could hold a
@@ -728,6 +794,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
         tokio::select! {
             _=tick.tick()=> {
                 let now=tokio::time::Instant::now();
+                grant.sync()?;
                 if let Some(current) = active.as_ref().filter(|current| current.answer_dirty && current.last_answer_emit.elapsed() >= Duration::from_millis(500)) {
                     let id = current.id.clone();
                     let text = bounded_answer(&current.answer, current.answer_truncated);
@@ -753,9 +820,8 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         ).await?;
                     }
                     if stopping.is_some() { return Ok(()); }
-                    let environment = adapter_environment(&journal_path, &session_path);
                     agent = start_agent_with_bridge(
-                        config, lease, &environment, &executable, &connection,
+                        config, lease, &environment, &executable, &connection, &grant.path,
                     ).await?;
                     if connected && stopping.is_none() { runner_journal::set_session_epoch(&session_path, current_epoch.as_deref())?; }
                     session_id = agent.session_id().to_string();
@@ -1231,6 +1297,49 @@ mod tests {
         // the private connection record, never through this environment.
         assert!(!names.contains(&"LIBREPAPER_DOCUMENT"));
         assert!(!names.contains(&"LIBREPAPER_CHAT_TOKEN"));
+        // The agent shares this environment, so the grant file is named only
+        // in the bridge's own (`acp::bridge_environment`).
+        assert!(!names.contains(&crate::local::connections::GRANT_FILE_VARIABLE));
+    }
+
+    /// The bridge reads whatever the file holds at any moment, so it must be
+    /// private from creation, hold exactly the grant, follow a renewal, and
+    /// be gone once the runner is.
+    #[cfg(unix)]
+    #[test]
+    fn the_bridge_grant_file_is_private_current_and_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("librepaper/local/runner-x.grant");
+        let source = std::sync::Arc::new(std::sync::RwLock::new("lpa_v1.first".to_string()));
+        let mut grant = BridgeGrant::publish(path.clone(), source.clone()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "lpa_v1.first");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        // A renewal replaces the shared value; the next sync replaces the
+        // file by rename, so a reader holding the old inode still sees the
+        // whole old grant rather than a partial new one.
+        let mut held = std::fs::File::open(&path).unwrap();
+        *source.write().unwrap() = "lpa_v1.second".to_string();
+        grant.sync().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "lpa_v1.second");
+        let mut old = String::new();
+        std::io::Read::read_to_string(&mut held, &mut old).unwrap();
+        assert_eq!(old, "lpa_v1.first");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        // Nothing but the grant itself is left in the directory: no
+        // temporary from either publication.
+        let entries: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("runner-x.grant")]);
+
+        drop(grant);
+        assert!(!path.exists());
     }
 
     #[test]

@@ -259,6 +259,32 @@ impl Drop for Agent {
     }
 }
 
+/// The environment of the document bridge, the agent's MCP child: the
+/// runner's own environment plus two entries kept out of the agent's own
+/// process environment. XDG_STATE_HOME points the bridge at the companion's
+/// own connections.json, which an embedded companion keeps outside the
+/// agent's XDG_STATE_HOME, while the agent keeps its own state where it
+/// always does. LIBREPAPER_RUNNER_GRANT_FILE names the private file holding
+/// the scoped grant the bridge must authenticate with. Only the path travels
+/// here, never the grant: the agent is handed this whole environment in
+/// `session/new` so that it can spawn the bridge, and it may log or echo it.
+pub(super) fn bridge_environment(
+    environment: &[(String, String)],
+    state_home: &Path,
+    grant_file: &Path,
+) -> Vec<(String, String)> {
+    let mut bridge = environment.to_vec();
+    bridge.push((
+        "XDG_STATE_HOME".into(),
+        state_home.to_string_lossy().into_owned(),
+    ));
+    bridge.push((
+        crate::local::connections::GRANT_FILE_VARIABLE.into(),
+        grant_file.to_string_lossy().into_owned(),
+    ));
+    bridge
+}
+
 impl Agent {
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn start(
@@ -269,6 +295,7 @@ impl Agent {
         executable: &Path,
         connection: &str,
         state_home: &Path,
+        grant_file: &Path,
     ) -> Result<Self, String> {
         let (program, arguments) = command
             .split_first()
@@ -310,21 +337,11 @@ impl Agent {
             McpServerStdio::new("librepaper", executable)
                 .args(vec!["mcp".into(), "--connection".into(), connection.into()])
                 .env(
-                    environment
-                        .iter()
+                    bridge_environment(environment, state_home, grant_file)
+                        .into_iter()
                         .map(|(name, value)| {
                             agent_client_protocol::schema::v1::EnvVariable::new(name, value)
                         })
-                        // The MCP child alone, never the agent: it must read the
-                        // companion's own connections.json, which an embedded
-                        // companion keeps outside XDG_STATE_HOME, while the agent
-                        // keeps its own state where it always does.
-                        .chain(std::iter::once(
-                            agent_client_protocol::schema::v1::EnvVariable::new(
-                                "XDG_STATE_HOME",
-                                state_home.to_string_lossy(),
-                            ),
-                        ))
                         .collect(),
                 ),
         );
@@ -581,6 +598,37 @@ fn translate_update(update: SessionUpdate) -> Update {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::PermissionOptionKind;
+
+    /// The grant file is named in the bridge's environment and not in the
+    /// agent's process environment, which is `environment` as given, and no
+    /// entry in either carries a grant value.
+    #[test]
+    fn the_grant_file_is_named_only_in_the_bridge_environment() {
+        let agent = vec![(
+            "LIBREPAPER_RUNNER_JOURNAL".to_string(),
+            "/tmp/runner.journal.json".to_string(),
+        )];
+        let bridge = bridge_environment(
+            &agent,
+            Path::new("/tmp/companion-state"),
+            Path::new("/tmp/companion-state/librepaper/local/runner-x.grant"),
+        );
+        assert!(!agent
+            .iter()
+            .any(|(name, _)| name == crate::local::connections::GRANT_FILE_VARIABLE));
+        assert!(bridge.contains(&(
+            crate::local::connections::GRANT_FILE_VARIABLE.to_string(),
+            "/tmp/companion-state/librepaper/local/runner-x.grant".to_string(),
+        )));
+        assert!(bridge.contains(&(
+            "XDG_STATE_HOME".to_string(),
+            "/tmp/companion-state".to_string(),
+        )));
+        assert!(bridge
+            .iter()
+            .chain(agent.iter())
+            .all(|(_, value)| !value.contains(crate::auth::AGENT_GRANT_PREFIX)));
+    }
 
     #[tokio::test]
     async fn shutdown_waits_for_connection_resources_to_drop() {

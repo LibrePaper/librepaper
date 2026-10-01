@@ -30,6 +30,12 @@ use crate::auth::now_unix;
 /// disk indefinitely.
 pub const IDLE_TTL_SECONDS: i64 = 90 * 24 * 3600;
 
+/// The variable that names a sidebar runner's grant file (see
+/// [`ConnectionStore::grant_path`]) in its document bridge's environment, and
+/// only there. Its presence is what tells `librepaper mcp` it is serving a
+/// sidebar runner and must use that grant rather than this computer's login.
+pub const GRANT_FILE_VARIABLE: &str = "LIBREPAPER_RUNNER_GRANT_FILE";
+
 /// One document an agent on this computer may reach.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Connection {
@@ -93,6 +99,14 @@ impl ConnectionStore {
 
     fn lock_path(&self) -> PathBuf {
         self.dir.join("connections.lock")
+    }
+
+    /// Where a sidebar runner publishes the scoped grant its document bridge
+    /// authenticates with. Beside the connection record rather than in the
+    /// runner's own directory, because that directory is the agent's working
+    /// directory and an agent reads its working directory freely.
+    pub fn grant_path(&self, name: &str) -> PathBuf {
+        self.dir.join(format!("{name}.grant"))
     }
 
     fn load(&self) -> BTreeMap<String, Connection> {

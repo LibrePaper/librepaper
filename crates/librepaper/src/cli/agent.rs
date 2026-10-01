@@ -6,10 +6,15 @@
 //! which drives ACP directly in-process instead of spawning a runner (see
 //! `crate::assistant::registry`).
 
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
 use clap::Args;
 
 use crate::automation::peer::AutomationPeer;
 use crate::cli::Deployment;
+use crate::local::connections::GRANT_FILE_VARIABLE;
 
 /// Serve the document MCP tools over stdio for the sidebar assistant's own
 /// agent.
@@ -40,6 +45,75 @@ pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
         &resolved.link,
         server.as_deref().unwrap_or(""),
     )?;
-    let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
+    let peer = match std::env::var_os(GRANT_FILE_VARIABLE) {
+        // Started by a sidebar runner: its scoped grant is the only
+        // credential this bridge may use. Falling back to this computer's
+        // login would either fail with a sign-in error or, worse, quietly
+        // give the agent more authority than the browser delegated.
+        Some(path) => {
+            let path = PathBuf::from(path);
+            let peer = AutomationPeer::open_scoped(link, read_grant(&path)?).await?;
+            follow_grant(path, peer.token_source());
+            peer
+        }
+        None => AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?,
+    };
     crate::automation::mcp::stdio(&peer).await
+}
+
+/// Read the runner's scoped grant. The runner publishes the file by rename,
+/// so a read sees one whole grant or another, never part of one; anything
+/// that is not a scoped grant is refused rather than sent.
+fn read_grant(path: &Path) -> Result<String, String> {
+    let token = std::fs::read_to_string(path).map_err(|error| {
+        format!("could not read the assistant's document authorization: {error}")
+    })?;
+    if !token.starts_with(crate::auth::AGENT_GRANT_PREFIX) {
+        return Err("the assistant's document authorization is not a scoped grant; start the assistant again from the browser".into());
+    }
+    Ok(token)
+}
+
+/// Keep this bridge on the runner's current grant. A renewal reaches the
+/// runner, which republishes the file; this picks the new value up within a
+/// second. A file that is briefly missing or invalid keeps the last good
+/// grant: the runner removes it only when it stops, and its agent, and so
+/// this process, go with it.
+fn follow_grant(path: PathBuf, source: Arc<RwLock<String>>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            let Ok(token) = read_grant(&path) else {
+                continue;
+            };
+            let mut current = source.write().unwrap_or_else(|error| error.into_inner());
+            if *current != token {
+                *current = token;
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_scoped_grant_file_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runner-x.grant");
+        assert!(read_grant(&path).is_err());
+
+        std::fs::write(&path, "").unwrap();
+        assert!(read_grant(&path).is_err());
+
+        // A device login token is exactly what this path must never send.
+        std::fs::write(&path, "lp_device-login-token").unwrap();
+        assert!(read_grant(&path).is_err());
+
+        let scoped = format!("{}v1.payload.signature", crate::auth::AGENT_GRANT_PREFIX);
+        std::fs::write(&path, &scoped).unwrap();
+        assert_eq!(read_grant(&path).unwrap(), scoped);
+    }
 }
