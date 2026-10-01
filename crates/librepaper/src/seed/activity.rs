@@ -793,7 +793,6 @@ mod tests {
                 title: "Seed session test".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: serde_json::json!({"version": 1}),
             })
             .await
             .unwrap();
@@ -849,7 +848,6 @@ mod tests {
                 title: "Text only seed test".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: serde_json::json!({"version": 1}),
             })
             .await
             .unwrap();
