@@ -133,7 +133,12 @@ impl Metrics {
         for (family, section, field) in GAUGE_FIELDS {
             if let Some(value) = snapshot.get(section).and_then(|v| v.get(field)) {
                 if let Some(number) = json_number(value) {
-                    gauges.push((*family, number));
+                    let value = match *family {
+                        "librepaper_database_begin_wait_mean_seconds"
+                        | "librepaper_database_begin_wait_max_seconds" => number / 1_000_000.0,
+                        _ => number,
+                    };
+                    gauges.push((*family, value));
                 }
             }
         }
@@ -703,12 +708,12 @@ const GAUGE_FIELDS: &[(&str, &str, &str)] = &[
         "transactions_failed_to_begin",
     ),
     (
-        "librepaper_database_begin_wait_mean_microseconds",
+        "librepaper_database_begin_wait_mean_seconds",
         "database",
         "begin_wait_mean_us",
     ),
     (
-        "librepaper_database_begin_wait_max_microseconds",
+        "librepaper_database_begin_wait_max_seconds",
         "database",
         "begin_wait_max_us",
     ),
@@ -940,6 +945,26 @@ mod tests {
         assert!(rendered.contains("librepaper_rooms_documents 7"));
         assert!(!rendered.contains("account_id"));
         assert!(!rendered.contains("email"));
+    }
+
+    #[test]
+    fn database_waits_export_in_seconds_while_status_values_remain_microseconds() {
+        let metrics = Metrics::new();
+        let snapshot = serde_json::json!({
+            "database": {
+                "begin_wait_mean_us": 1_250_000,
+                "begin_wait_max_us": 2_500_000,
+            }
+        });
+        metrics.update_gauges(&snapshot, &crate::config::Configuration::default());
+        let rendered = metrics.render();
+
+        assert!(rendered.contains("librepaper_database_begin_wait_mean_seconds 1.25\n"));
+        assert!(rendered.contains("librepaper_database_begin_wait_max_seconds 2.5\n"));
+        assert!(!rendered.contains("librepaper_database_begin_wait_mean_microseconds"));
+        assert!(!rendered.contains("librepaper_database_begin_wait_max_microseconds"));
+        assert_eq!(snapshot["database"]["begin_wait_mean_us"], 1_250_000);
+        assert_eq!(snapshot["database"]["begin_wait_max_us"], 2_500_000);
     }
 
     #[tokio::test]
