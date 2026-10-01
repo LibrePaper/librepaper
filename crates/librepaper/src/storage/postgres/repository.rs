@@ -892,6 +892,27 @@ impl PostgresCatalog {
             .collect())
     }
 
+    /// How many of `digests` have no asset row for this document, read inside
+    /// the caller's transaction. A replacement reuses rows it found while
+    /// staging, before the command lock, and a trim may delete such a row in
+    /// between; counting here, under the lock, is what catches that.
+    pub(crate) async fn missing_assets_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        digests: &[Vec<u8>],
+    ) -> Result<usize> {
+        // distinct input digests minus distinct digests present
+        let present: i64 = sqlx::query_scalar(
+            "SELECT count(DISTINCT digest) FROM document_assets WHERE document_id=$1 AND digest = ANY($2::bytea[])")
+            .bind(document_id).bind(digests.to_vec()).fetch_one(&mut **tx).await?;
+        let wanted = digests
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        Ok(wanted.saturating_sub(present.max(0) as usize))
+    }
+
     pub async fn retained_asset_bytes(&self, document_id: Uuid) -> Result<i64> {
         sqlx::query_scalar!(
             r#"SELECT COALESCE(sum(byte_length),0)::bigint AS "total!"

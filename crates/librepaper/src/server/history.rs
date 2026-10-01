@@ -101,6 +101,9 @@ fn client_seq_of(id: uuid::Uuid) -> i64 {
 struct Restore {
     request_id: uuid::Uuid,
     document_id: uuid::Uuid,
+    /// The version being restored, rechecked under the lock because a trim can
+    /// delete it after the handler read it.
+    label_id: uuid::Uuid,
     catalog: std::sync::Arc<crate::storage::postgres::PostgresCatalog>,
     expected_frontier: Vec<u8>,
     /// Each restored text as `(path, body, original id)`. The id comes from
@@ -250,6 +253,35 @@ impl crate::log::Command for Restore {
         std::result::Result<Self::Output, crate::log::CommandError>,
     > {
         Box::pin(async move {
+            // Recheck the label and figures under the lock. A trim can delete both
+            // after the handler read them but before this command locks the sequencer.
+            if !self
+                .catalog
+                .label_exists_in_transaction(tx, self.document_id, self.label_id)
+                .await
+                .map_err(crate::log::CommandError::Storage)?
+            {
+                return Err(crate::log::CommandError::Conflict(
+                    "that version was deleted by a history trim".to_string(),
+                ));
+            }
+            let digests: Vec<Vec<u8>> = self
+                .assets
+                .iter()
+                .filter_map(|(_, digest_hex)| hex::decode(digest_hex).ok())
+                .collect();
+            if !digests.is_empty()
+                && self
+                    .catalog
+                    .missing_assets_in_transaction(tx, self.document_id, &digests)
+                    .await
+                    .map_err(crate::log::CommandError::Storage)?
+                    > 0
+            {
+                return Err(crate::log::CommandError::Conflict(
+                    "a figure that version names has been deleted".to_string(),
+                ));
+            }
             // What the restore replaces goes into history first, so that
             // everything written after the restored moment can be read and
             // restored in turn. Skipped when the newest version already
@@ -319,6 +351,54 @@ impl crate::log::Command for Restore {
                 .await
                 .map_err(crate::log::CommandError::Storage)?;
             Ok(())
+        })
+    }
+}
+
+/// What a trim leaves unreachable. Reads the head's figure digests in
+/// `evaluate`, under the sequencer lock, and deletes in `transact`, inside the
+/// same lock, so no edit can name a figure between the read and the delete.
+struct TrimRetained {
+    document_id: uuid::Uuid,
+    catalog: std::sync::Arc<crate::storage::postgres::PostgresCatalog>,
+    referenced: Vec<Vec<u8>>,
+}
+
+impl crate::log::Command for TrimRetained {
+    type Output = crate::storage::postgres::TrimOutcome;
+
+    fn name(&self) -> &'static str {
+        "history-trim"
+    }
+
+    fn evaluate(
+        &mut self,
+        head: &crate::log::Head<'_>,
+    ) -> std::result::Result<Option<crate::log::PreparedSource>, crate::log::CommandError> {
+        self.referenced = head
+            .projection
+            .projection
+            .files
+            .values()
+            .filter(|file| file.kind != "text")
+            .filter_map(|file| hex::decode(&file.digest).ok())
+            .collect();
+        Ok(None)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
+        _evidence: &'a crate::log::Evidence,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        std::result::Result<Self::Output, crate::log::CommandError>,
+    > {
+        Box::pin(async move {
+            self.catalog
+                .trim_retained_in_transaction(tx, self.document_id, &self.referenced)
+                .await
+                .map_err(crate::log::CommandError::from)
         })
     }
 }
@@ -834,6 +914,7 @@ impl Server {
         let mut command = Restore {
             request_id: uuid::Uuid::new_v4(),
             document_id: room.document_id,
+            label_id,
             catalog: self.store.catalog.clone(),
             expected_frontier,
             texts,
@@ -858,11 +939,12 @@ impl Server {
         )
     }
 
-    /// Discards a document's editing history, compacting it to a shallow snapshot.
-    ///
-    /// The document keeps its content; named versions (source archives) and comments
-    /// are untouched; every live socket on the document is closed and asked to
-    /// reconnect, and the request is refused while another editor is connected.
+    /// Keeps the document as it is now and deletes everything before it: the
+    /// editing history (a shallow snapshot replaces the log), every version and
+    /// its archive, and every figure the current files do not name (figures
+    /// uploaded in the last hour are kept). Comments stay and re-find their
+    /// text. Refused while another editor is connected and while suggestions are
+    /// pending. The freed objects leave storage with the orphan sweep.
     pub(super) async fn handle_history_trim(
         &self,
         request: Request<Body>,
@@ -918,24 +1000,91 @@ impl Server {
                 &json!({"error": "another editor has this document open; ask them to close it first"}),
             );
         }
-        // Compact to a shallow snapshot and delete the log.
-        let result = crate::storage::worker::compact_document(
-            &self.store.catalog,
-            &self.store.blobs,
-            self.rooms.registry(),
-            &self.background,
-            &self.config,
-            room.document_id,
-            crate::log::sequencer::SnapshotMode::Shallow,
-        )
-        .await;
-        let after = match result {
-            Ok(bytes) => bytes,
-            Err(message) => return write_json(503, &json!({"error": message})),
+        // Refuse while suggestions are pending, because a proposal forks at a
+        // base the trim discards.
+        match self.store.catalog.open_proposals(room.document_id).await {
+            Ok(open) if !open.is_empty() => {
+                return write_json(
+                    409,
+                    &json!({
+                        "error": format!(
+                            "decide or discard the {} pending suggestion{} before trimming",
+                            open.len(),
+                            if open.len() == 1 { "" } else { "s" }
+                        )
+                    }),
+                )
+            }
+            Ok(_) => {}
+            Err(error) => return refused("read the catalogue", &error.into()),
+        }
+        // Compact to a shallow snapshot and delete the log. Retry if a concurrent
+        // edit entered the buffer after the flush; Ok(None) means the document is
+        // ahead of the log, not that compaction succeeded.
+        let mut after = None;
+        for attempt in 0..3 {
+            let result = crate::storage::worker::compact_document(
+                &self.store.catalog,
+                &self.store.blobs,
+                self.rooms.registry(),
+                &self.background,
+                &self.config,
+                room.document_id,
+                crate::log::sequencer::SnapshotMode::Shallow,
+            )
+            .await;
+            match result {
+                Ok(Some(bytes)) => {
+                    after = Some(bytes);
+                    break;
+                }
+                Ok(None) => {
+                    if attempt < 2 {
+                        tokio::task::yield_now().await;
+                    }
+                }
+                Err(message) => return write_json(503, &json!({"error": message})),
+            }
+        }
+        let after = match after {
+            Some(bytes) => bytes,
+            None => {
+                return write_json(
+                    503,
+                    &json!({"error": "the document changed while it was being trimmed; try again"}),
+                )
+            }
         };
         // Drop the attachment cache so comments re-resolve against the shallow document.
         room.forget_comments().await;
-        write_json(200, &json!({"historyBytes": after.unwrap_or(0)}))
+        let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
+        let mut command = TrimRetained {
+            document_id: room.document_id,
+            catalog: self.store.catalog.clone(),
+            referenced: Vec::new(),
+        };
+        let outcome = match room.command(&authority, &mut command).await {
+            Ok(outcome) => outcome,
+            Err(error) => return command_reply("trim history", error),
+        };
+        // The ledger is a coarse running total, so move it by what was freed.
+        // A failed lookup leaves it alone: admission reloads the owner's total from the catalogue.
+        if let Ok(Some(document)) = self.store.catalog.document(room.document_id).await {
+            self.rooms.registry().ledger().charge(
+                document.owner_id,
+                -(outcome.version_bytes + outcome.figure_bytes),
+            );
+        }
+        write_json(
+            200,
+            &json!({
+                "historyBytes": after,
+                "versions": outcome.versions,
+                "versionBytes": outcome.version_bytes,
+                "figures": outcome.figures,
+                "figureBytes": outcome.figure_bytes
+            }),
+        )
     }
 
     /* -------------------------------------------------------------- assets */

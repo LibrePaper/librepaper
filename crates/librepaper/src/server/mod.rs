@@ -77,6 +77,8 @@ mod signin;
 mod socket;
 pub mod socket_budget;
 mod suggestions;
+#[cfg(test)]
+mod trim_http_tests;
 
 pub use reply::*;
 pub use routes::*;
