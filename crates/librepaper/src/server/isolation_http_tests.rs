@@ -344,7 +344,10 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
         .await
         .unwrap();
     assert_eq!(docs_api.status().as_u16(), 404);
-    assert!(docs_api.headers().get("access-control-allow-origin").is_none());
+    assert!(docs_api
+        .headers()
+        .get("access-control-allow-origin")
+        .is_none());
 
     // The isolated frame is served from the document host without a reader
     // session cookie or user-specific bearer material in its HTML.
@@ -374,12 +377,20 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
         .await
         .unwrap();
     assert_eq!(bearer_read.status().as_u16(), 200);
-    assert!(bearer_read.headers().get("access-control-allow-origin").is_none());
+    assert!(bearer_read
+        .headers()
+        .get("access-control-allow-origin")
+        .is_none());
 
     // A WebSocket handshake cannot set the custom client header. Its Origin
     // alone must identify the reader, before upgrade processing begins.
     assert_eq!(
-        websocket_status(address, &format!("/ws/{}", deployment.slug), DOCS, &cookie)
+        websocket_status(
+            address,
+            &format!("/ws/{}", deployment.slug),
+            DOCS,
+            &cookie,
+        )
         .await,
         403
     );
@@ -391,7 +402,10 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
     assert_eq!(
         websocket_status(
             address,
-            &format!("/api/documents/{}/chat/test-channel/socket", deployment.slug),
+            &format!(
+                "/api/documents/{}/chat/test-channel/socket",
+                deployment.slug
+            ),
             DOCS,
             &cookie,
         )
