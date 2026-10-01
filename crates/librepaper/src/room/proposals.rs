@@ -424,11 +424,19 @@ fn validate_proposed_changes(
             loro::event::Diff::Map(delta) if *container == file_map_id => {
                 for (id, value) in &delta.updated {
                     if files.get(id.as_ref()).is_some()
-                        || !matches!(value, Some(ValueOrContainer::Container(Container::Text(_))))
+                        || (value.is_none() && !deleted_files.contains(id.as_ref()))
+                        || (value.is_some()
+                            && !matches!(
+                                value,
+                                Some(ValueOrContainer::Container(Container::Text(_)))
+                            ))
                     {
                         return Err(ProposalError::Failed(
                             "a proposal may only add a new text file".into(),
                         ));
+                    }
+                    if value.is_none() {
+                        continue;
                     }
                     created_files.insert(id.to_string());
                 }
@@ -441,6 +449,9 @@ fn validate_proposed_changes(
                         ));
                     }
                     let Some(ValueOrContainer::Value(LoroValue::String(path))) = value else {
+                        if value.is_none() && deleted_paths.contains(id.as_ref()) {
+                            continue;
+                        }
                         return Err(ProposalError::Failed(
                             "a proposal may only add a new text file".into(),
                         ));
