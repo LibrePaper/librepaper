@@ -727,7 +727,7 @@ impl PostgresCatalog {
             .collect();
         if new_inputs.is_empty() {
             return Ok(inputs
-                .into_iter()
+                .iter()
                 .map(|input| {
                     let row = existing
                         .iter()
@@ -832,7 +832,7 @@ impl PostgresCatalog {
         .fetch_all(&mut **tx)
         .await?;
         Ok(inputs
-            .into_iter()
+            .iter()
             .map(|input| {
                 let row = all
                     .iter()

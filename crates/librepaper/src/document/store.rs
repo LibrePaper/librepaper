@@ -492,7 +492,7 @@ fn command_put_error(error: CommandError) -> PutError {
                 message: "the document changed; reload it before retrying",
             }
         }
-        CommandError::Storage(error) => PutError::Storage(error.to_string()),
+        CommandError::Storage(error) => source_put_error(error),
         CommandError::Sequencer(error) => PutError::Storage(error.to_string()),
     }
 }
