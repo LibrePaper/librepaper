@@ -825,6 +825,9 @@ export function createProposals({ session, send, mayEdit }) {
   };
 
   const absorb = (draft) => {
+    // A blocked draft is the recovery copy. Later room imports must not erase
+    // its private text; other active drafts have their own subscriptions.
+    if (draft.resolutionBlocked) return;
     draft.branch.commit();
     const update = session.doc.export({ mode: "update", from: draft.branch.oplogVersion() });
     if (update.byteLength) {

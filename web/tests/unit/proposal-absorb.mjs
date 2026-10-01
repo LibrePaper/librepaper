@@ -679,6 +679,72 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.ok(recovery.files.some((file) => file.text.includes("X")), "the export contains the unsent tail");
   assert.equal(proposals.status().recoveryRequired, true, "recovery status survives a new active draft");
 }
+// Later room imports cannot erase a blocked recovery copy, while a fresh
+// active draft still absorbs those same source changes.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const main = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  main.insert(0, "The cat sat.");
+  const notes = room.getMap("files").setContainer("f2", new LoroText());
+  room.getMap("paths").set("f2", "notes.md");
+  notes.insert(0, "Notes.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.delete(4, 3);
+  branchText.insert(4, "tabby");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  branchText.insert(6, "X");
+
+  const coauthor = room.fork();
+  coauthor.setPeerId(3n);
+  coauthor.getMap("files").get("f1").delete(4, 3);
+  coauthor.getMap("files").get("f1").insert(4, "fox");
+  coauthor.commit();
+  room.import(coauthor.export({ mode: "update", from: room.oplogVersion() }));
+  coauthor.destroy?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  proposals.apply({ type: "proposal-decided", proposal_id: id,
+    decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip,
+    resolved_base: open.base });
+  const recoveryError = proposals.status().error;
+  const before = proposals.recoveryTexts().find((draft) => draft.id === id);
+  const preservedFile = before?.files.find((file) => file.id === "f1");
+  assert.ok(preservedFile, "the stale draft exports the conflicted source file");
+  proposals.stop();
+  proposals.start();
+
+  const laterCoauthor = room.fork();
+  laterCoauthor.setPeerId(4n);
+  laterCoauthor.getMap("files").delete("f1");
+  laterCoauthor.getMap("paths").delete("f1");
+  laterCoauthor.getMap("files").get("f2").insert(6, " revised");
+  laterCoauthor.commit();
+  room.import(laterCoauthor.export({ mode: "update", from: room.oplogVersion() }));
+  laterCoauthor.destroy?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(proposals.status().recoveryRequired, true, "later imports keep recovery required");
+  assert.equal(proposals.status().error, recoveryError, "later imports do not change the recovery warning");
+  const after = proposals.recoveryTexts().find((draft) => draft.id === id);
+  assert.deepEqual(after?.files.find((file) => file.id === "f1"), preservedFile,
+    "the blocked recovery file survives a later room deletion");
+  assert.equal(proposals.text("f2").toString(), "Notes. revised",
+    "the fresh active draft still absorbs a coauthor edit");
+}
 // Rejecting a newly created file's published text preserves a local tail in
 // that file and keeps its path metadata so the remainder can be reviewed.
 {
