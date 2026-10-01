@@ -40,6 +40,8 @@ window.sockets = [];
 // is now a conversation between the browser and this computer, so the panel
 // cannot be exercised at all without one.
 window.localCalls = [];
+window.launchCalls = [];
+localBridge._testing.inject({launchLink:url=>window.launchCalls.push(url)});
 window.activeRunner = null;
 window.delayedAssistantStatuses = [];
 window.localAgents = [
@@ -142,9 +144,10 @@ window.WebSocket = class {
 // the harness seeds it exactly as a previously paired browser would hold it,
 // under the real key: the origin. A pairing stored under any other key is
 // not this origin's.
-// Setting window.unpaired drops it, to exercise the panel before pairing.
+// The query flag creates a fresh, unpaired page session for the pairing flow.
 window.pairingKey = location.origin;
-if (!window.unpaired) localStorage.setItem('librepaper-local-connections', JSON.stringify({[window.pairingKey]:{token:'pair-token',expires:Date.now()/1000+3600}}));
+if (new URLSearchParams(location.search).has('unpaired')) localStorage.removeItem('librepaper-local-connections');
+else localStorage.setItem('librepaper-local-connections', JSON.stringify({[window.pairingKey]:{token:'pair-token',expires:Date.now()/1000+3600}}));
 let component;
 window.remount = async () => {
   if (component) await unmount(component);
@@ -183,25 +186,22 @@ try {
   await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",resolve);});
   page=await browser("chromium",join(temporary,"profile"),22000+Math.floor(Math.random()*10000));
   await page.resize(800, 800);
-  await page.navigate(`http://127.0.0.1:${server.address().port}/`);
-  await until("live agent panel",()=>page.evaluate("Boolean(document.querySelector('.agent-panel textarea[aria-label=Message]'))"),10000);
+  const appUrl = `http://127.0.0.1:${server.address().port}/`;
+  await page.navigate(appUrl);
+  await until("live agent panel",()=>page.evaluate("Boolean(document.querySelector('.agent-panel'))"),10000);
   // A previously saved pairing is data, not permission to contact the local
   // companion. Wait for both the hosted conversation and the local Connect
   // prompt to settle before checking the request log.
-  await until("saved-pair Connect prompt", () => page.evaluate(`Boolean(document.querySelector('.connect-required button'))`), 3000);
-  // There is no longer a status line that reads "Waiting" once the runner is
-  // ready with nothing in flight; the composer's own sendability is the
-  // observable stand-in for "the runner is here and this can be sent".
-  await until("runner connected",()=>page.evaluate('document.querySelector(".chat-form")?.dataset.cansend === "true"'),10000);
+  await until("saved-pair Connect prompt and hosted conversation", () => page.evaluate(
+    `Boolean(document.querySelector('.connect-required button')) && window.calls.some(call=>call.suffix==='')`), 10000);
   assert.equal(await page.evaluate("window.localCalls.length"), 0,
     "mounting with a saved pairing makes no local companion requests before Connect");
   // A full page reload must preserve the same opt-in boundary. localStorage
   // still contains the valid saved token, but the new page session waits for
   // another explicit Connect click.
-  await page.navigate(`http://127.0.0.1:${server.address().port}/`);
-  await until("reloaded live agent panel", () => page.evaluate("Boolean(document.querySelector('.agent-panel textarea[aria-label=Message]'))"), 10000);
-  await until("reloaded saved-pair Connect prompt", () => page.evaluate(`Boolean(document.querySelector('.connect-required button'))`), 3000);
-  await until("reloaded hosted conversation", () => page.evaluate('document.querySelector(".chat-form")?.dataset.cansend === "true"'), 10000);
+  await page.navigate(appUrl);
+  await until("reloaded saved-pair Connect prompt and hosted conversation", () => page.evaluate(
+    `Boolean(document.querySelector('.connect-required button')) && window.calls.some(call=>call.suffix==='')`), 10000);
   assert.equal(await page.evaluate("window.localCalls.length"), 0,
     "a full page reload with a saved pairing makes no local requests before Connect");
   await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Connect').click()`);
@@ -211,8 +211,12 @@ try {
     "Connect reuses a valid saved pairing without requesting a new pairing");
   assert.equal(await page.evaluate("window.localCalls.some(call=>call.route==='connect/claim')"), false,
     "Connect reuses a valid saved pairing without claiming a new pairing");
+  assert.equal(await page.evaluate("window.launchCalls.length"), 0,
+    "Connect recognizes the saved pairing without launching the companion protocol");
   assert.ok(await page.evaluate("window.localCalls.some(call=>call.route==='health')"),
     "the companion is contacted only after the explicit Connect click");
+  // The composer is rendered only after the local app is connected.
+  await until("runner composer after Connect", () => page.evaluate('document.querySelector(".chat-form")?.dataset.cansend === "true"'), 10000);
   // The Chat tab is the default: the agent/access/start controls live there
   // now, so there is no separate Connection tab to land on first.
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), false);
@@ -641,11 +645,10 @@ try {
   assert.equal(await page.evaluate("window.calls.filter(call=>call.suffix==='').length"),beforeNewConversation.creates + 1);
   // Pairing, from an unpaired browser. The new flow uses pair/request which
   // is triggered by the Connect button, not a manual code entry.
-  await page.evaluate("window.unpaired=true; localStorage.removeItem('librepaper-local-connections'); window.pairingAccepted=false");
-  await page.evaluate("window.remount()");
-  await page.evaluate('document.querySelector("#agent-tab-chat").click()');
-  await until("pairing prompt shown", () => page.evaluate(`Boolean(document.querySelector('.connect-required button'))`), 3000);
-  await until("unpaired hosted conversation settled", () => page.evaluate('document.querySelector(".chat-form")?.dataset.cansend === "true"'), 3000);
+  await page.navigate(`${appUrl}?unpaired=1`);
+  await until("fresh unpaired agent panel", () => page.evaluate("Boolean(document.querySelector('.agent-panel'))"), 10000);
+  await until("pairing prompt and hosted conversation shown", () => page.evaluate(
+    `Boolean(document.querySelector('.connect-required button')) && window.calls.some(call=>call.suffix==='')`), 10000);
   assert.equal(await page.evaluate("window.localCalls.length"), 0,
     "mounting without a pairing makes no local companion requests before Connect");
   // The Connect button initiates the pairing flow. The way to the companion
