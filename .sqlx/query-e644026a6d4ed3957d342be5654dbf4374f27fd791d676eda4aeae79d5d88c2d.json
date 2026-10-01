@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,\n                    main_path,update_sequence,\n                       settings,created_at,updated_at,deleted_at\n             FROM documents WHERE id=$1",
+  "query": "INSERT INTO accounts\n             (id,kind,provider,provider_subject,handle,display_name,email,status)\n             VALUES($1,$2,$3,$4,$5,$6,$7,'active')\n             RETURNING id,kind,provider,provider_subject,handle,display_name,email,status,\n                       session_generation,created_at,last_seen_at",
   "describe": {
     "columns": [
       {
@@ -10,85 +10,79 @@
       },
       {
         "ordinal": 1,
-        "name": "slug",
+        "name": "kind",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
-        "name": "owner_id",
-        "type_info": "Uuid"
+        "name": "provider",
+        "type_info": "Text"
       },
       {
         "ordinal": 3,
-        "name": "ownership_mode",
+        "name": "provider_subject",
         "type_info": "Text"
       },
       {
         "ordinal": 4,
-        "name": "title",
+        "name": "handle",
         "type_info": "Text"
       },
       {
         "ordinal": 5,
-        "name": "status",
+        "name": "display_name",
         "type_info": "Text"
       },
       {
         "ordinal": 6,
-        "name": "source_format",
+        "name": "email",
         "type_info": "Text"
       },
       {
         "ordinal": 7,
-        "name": "main_path",
+        "name": "status",
         "type_info": "Text"
       },
       {
         "ordinal": 8,
-        "name": "update_sequence",
+        "name": "session_generation",
         "type_info": "Int8"
       },
       {
         "ordinal": 9,
-        "name": "settings",
-        "type_info": "Jsonb"
-      },
-      {
-        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
-        "name": "updated_at",
-        "type_info": "Timestamptz"
-      },
-      {
-        "ordinal": 12,
-        "name": "deleted_at",
+        "ordinal": 10,
+        "name": "last_seen_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
       false,
       false,
+      true,
+      true,
+      false,
+      false,
+      true,
       false,
       false,
       false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      true
+      false
     ]
   },
-  "hash": "edf528a8df0c36a79f441ca271e9d4bd5e2de3aabadb6e3211e3127ebce6b925"
+  "hash": "e644026a6d4ed3957d342be5654dbf4374f27fd791d676eda4aeae79d5d88c2d"
 }

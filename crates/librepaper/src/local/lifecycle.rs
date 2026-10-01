@@ -204,12 +204,10 @@ pub fn connection_target(raw: &str, port: u16) -> Result<Target, String> {
 fn connect_target(link: &url::Url) -> Result<Target, String> {
     let mut fields = std::collections::HashMap::new();
     for (key, value) in link.query_pairs() {
-        if !matches!(
-            key.as_ref(),
-            "origin" | "request" | "challenge" | "return"
-        ) || fields
-            .insert(key.into_owned(), value.into_owned())
-            .is_some()
+        if !matches!(key.as_ref(), "origin" | "request" | "challenge" | "return")
+            || fields
+                .insert(key.into_owned(), value.into_owned())
+                .is_some()
         {
             return Err("Unexpected or repeated companion link parameter.".into());
         }

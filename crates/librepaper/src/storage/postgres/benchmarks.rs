@@ -75,11 +75,11 @@ async fn document(catalog: &PostgresCatalog, owner: uuid::Uuid, slug: String) ->
         .create_document(NewDocument {
             slug,
             owner_id: owner,
+            owner_session_generation: None,
             ownership_mode: "owned".into(),
             title: "Throughput benchmark".into(),
             source_format: "markdown".into(),
             main_path: "paper.md".into(),
-            settings: json!({"version":1}),
         })
         .await
         .expect("benchmark document")
@@ -127,6 +127,10 @@ async fn typing_throughput_release_benchmark() {
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,
+        session_generation: Some(owner.session_generation),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
     };
     let _writer = catalog.claim_writer().await.expect("writer lease");
     let wal_before: String = sqlx::query_scalar("SELECT pg_current_wal_lsn()::text")
@@ -788,6 +792,10 @@ async fn compaction_cost_release_benchmark() {
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,
+        session_generation: Some(owner.session_generation),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
     };
     let _writer = catalog.claim_writer().await.expect("writer lease");
 
@@ -1611,6 +1619,10 @@ async fn concurrent_compaction_release_benchmark() {
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,
+        session_generation: Some(owner.session_generation),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
     };
     let _writer = catalog.claim_writer().await.expect("writer lease");
 
@@ -2421,9 +2433,9 @@ async fn active_document_capacity_benchmark() {
     if stored > 0 {
         sqlx::query(
             "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,source_format,\
-             main_path,settings,status)
+             main_path,status)
              SELECT gen_random_uuid(),'stored-'||n,$1,'owned','Stored','markdown','paper.md',\
-             '{\"version\":1}'::jsonb,'active' FROM generate_series(1,$2) AS n",
+             'active' FROM generate_series(1,$2) AS n",
         )
         .bind(owner.id)
         .bind(stored as i64)
@@ -3412,6 +3424,10 @@ async fn maintenance_backlog_capacity_benchmark() {
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,
+        session_generation: Some(owner.session_generation),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
     };
     let _writer = catalog.claim_writer().await.expect("writer lease");
 

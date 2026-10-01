@@ -130,7 +130,20 @@ pub struct MutationAuthorization {
     pub account_id: Option<Uuid>,
     pub session_generation: Option<i64>,
     pub token_hash: Option<[u8; 32]>,
-    pub policy_editor: bool,
+    pub policy_edit: bool,
+    pub policy_comment: bool,
+    pub automation: bool,
+}
+
+/// Shared commit-boundary authorization check for document commands and
+/// catalogue mutations. It uses the same transaction as the rows it guards.
+pub(crate) async fn authorize_mutation(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    document_id: Uuid,
+    actor: &MutationAuthorization,
+    require_editor: bool,
+) -> Result<()> {
+    PostgresCatalog::authorize_mutation(tx, document_id, actor, require_editor).await
 }
 
 #[derive(Clone, Debug)]
@@ -175,8 +188,8 @@ pub struct AnnotationRecord {
     pub author_label: String,
     pub color: Option<String>,
     pub proposal_id: Option<Uuid>,
-    pub source_sequence: Option<i64>,
-    pub frontier: Option<Vec<u8>>,
+    pub source_sequence: i64,
+    pub frontier: Vec<u8>,
     pub render_digest: Option<Vec<u8>>,
     pub target_kind: String,
     pub file_id: Option<String>,
@@ -327,17 +340,36 @@ async fn put_reply(
 }
 
 impl PostgresCatalog {
-    /// The in-transaction authorization check a document command runs
-    /// before writing. The writer-epoch fence and the document row lock
-    /// already happened when the caller opened `tx`
-    /// (`document_log::begin_document_command`); this checks that the
-    /// account or link behind `actor` still has the access it claims.
-    pub(super) async fn authorize_annotation_mutation(
+    /// The in-transaction authorization check shared by document commands
+    /// and catalogue mutations. The caller takes the writer fence first;
+    /// this checks and locks the account session, then the active document,
+    /// before resolving the live grant and link rows.
+    pub(crate) async fn authorize_mutation(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         actor: &MutationAuthorization,
         require_editor: bool,
     ) -> Result<()> {
+        // Match account erasure's lock order: erasure owns the account row
+        // before it takes any document rows. Holding FOR SHARE through commit
+        // also prevents a session generation or active status from changing
+        // after this check succeeds.
+        if let Some(account_id) = actor.account_id {
+            let Some(session_generation) = actor.session_generation else {
+                return Err(Error::Conflict("actor session changed".into()));
+            };
+            let active = sqlx::query_scalar!(
+                "SELECT id FROM accounts WHERE id=$1 AND status='active' AND session_generation=$2 FOR SHARE",
+                account_id,
+                session_generation
+            )
+            .fetch_optional(&mut **tx)
+            .await?
+            .is_some();
+            if !active {
+                return Err(Error::Conflict("actor session changed".into()));
+            }
+        }
         let document = sqlx::query(
             "SELECT owner_id,ownership_mode FROM documents WHERE id=$1 AND status='active' FOR UPDATE",
         )
@@ -349,30 +381,23 @@ impl PostgresCatalog {
         };
         let owner_id: Uuid = document.try_get("owner_id")?;
         let ownership_mode: String = document.try_get("ownership_mode")?;
-        if let Some(account_id) = actor.account_id {
-            let valid = sqlx::query_scalar!(
-                "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=$1 AND status='active' AND ($2::bigint IS NULL OR session_generation=$2))",
-                account_id,
-                actor.session_generation
-            )
-            .fetch_one(&mut **tx)
-            .await?
-            .unwrap_or(false);
-            if !valid {
-                return Err(Error::Conflict("actor session changed".into()));
-            }
-        }
-        let grant: Option<String> = match actor.account_id {
-            Some(account_id) => {
+        let owner = !actor.automation && actor.account_id == Some(owner_id);
+        let grant: Option<String> = match (actor.account_id, actor.automation, owner) {
+            (Some(account_id), false, false) => {
                 sqlx::query_scalar!(
-                    "SELECT role FROM grants g WHERE g.document_id=$1 AND g.account_id=$2 AND (g.source_link_hash IS NULL OR EXISTS (SELECT 1 FROM share_links l WHERE l.document_id=g.document_id AND l.token_hash=g.source_link_hash AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>now())))",
+                    "SELECT CASE WHEN g.source_link_hash IS NULL THEN g.role ELSE l.role END AS \"role!\"
+                     FROM grants g LEFT JOIN share_links l
+                       ON l.document_id=g.document_id AND l.token_hash=g.source_link_hash
+                      AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>now())
+                     WHERE g.document_id=$1 AND g.account_id=$2
+                       AND (g.source_link_hash IS NULL OR l.token_hash IS NOT NULL)",
                     document_id,
                     account_id
                 )
                 .fetch_optional(&mut **tx)
                 .await?
             }
-            None => None,
+            _ => None,
         };
         let link: Option<String> = match actor.token_hash {
             Some(token_hash) => {
@@ -392,17 +417,24 @@ impl PostgresCatalog {
             Some("reader") => 1,
             _ => 0,
         };
-        let owner = actor.account_id == Some(owner_id);
-        let editor = owner
-            || (actor.policy_editor && actor.account_id.is_some())
-            || rank(grant.as_deref()).max(rank(link.as_deref())) >= 3;
+        let granted = rank(grant.as_deref()).max(rank(link.as_deref()));
+        let editor = actor.policy_edit && (owner || granted >= 3);
         let commenter = editor
-            || rank(grant.as_deref()).max(rank(link.as_deref())) >= 2
-            || ownership_mode == "open";
+            || (actor.policy_comment && granted >= 2)
+            || (actor.policy_comment && !actor.automation && ownership_mode == "open");
         if (require_editor && !editor) || (!require_editor && !commenter) {
             return Err(Error::Conflict("access changed".into()));
         }
         Ok(())
+    }
+
+    pub(super) async fn authorize_annotation_mutation(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        actor: &MutationAuthorization,
+        require_editor: bool,
+    ) -> Result<()> {
+        Self::authorize_mutation(tx, document_id, actor, require_editor).await
     }
 
     /// A standalone probe of the same check, for a caller that wants to know
@@ -1036,8 +1068,8 @@ impl<'a> Stored<'a> {
 /// range is.
 fn same_anchor(row: &AnnotationRecord, anchor: &OriginalAnchor) -> Result<bool> {
     let stored = Stored::of(anchor)?;
-    Ok(row.source_sequence == Some(anchor.source_sequence)
-        && row.frontier.as_deref() == Some(anchor.frontier.as_slice())
+    Ok(row.source_sequence == anchor.source_sequence
+        && row.frontier == anchor.frontier
         && row.target_kind == stored.kind
         && row.file_id.as_deref() == stored.file_id
         && row.start_utf16 == stored.start_utf16
@@ -1079,10 +1111,8 @@ pub fn original_anchor_from_record(row: &AnnotationRecord) -> Result<OriginalAnc
         _ => return Err(invalid("an unknown target kind")),
     };
     Ok(OriginalAnchor {
-        source_sequence: row
-            .source_sequence
-            .ok_or_else(|| invalid("no source sequence"))?,
-        frontier: row.frontier.clone().ok_or_else(|| invalid("no frontier"))?,
+        source_sequence: row.source_sequence,
+        frontier: row.frontier.clone(),
         target,
     })
 }
@@ -1152,8 +1182,8 @@ mod tests {
             author_label: "A".into(),
             color: None,
             proposal_id: None,
-            source_sequence: Some(7),
-            frontier: Some(vec![9, 9, 9]),
+            source_sequence: 7,
+            frontier: vec![9, 9, 9],
             render_digest: None,
             target_kind: "source_text".into(),
             file_id: Some("file-key".into()),
@@ -1207,7 +1237,7 @@ mod tests {
     fn same_anchor_checks_the_evidence_too() {
         let anchor = original_anchor_from_record(&row()).unwrap();
         let mut moved = row();
-        moved.source_sequence = Some(8);
+        moved.source_sequence = 8;
         assert!(!same_anchor(&moved, &anchor).unwrap());
     }
 

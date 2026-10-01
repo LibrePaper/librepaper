@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,\n                    d.source_format,d.main_path,d.update_sequence,\n                    d.settings,d.created_at,\n                    d.updated_at,d.deleted_at\n             FROM documents d\n             WHERE d.owner_id=$1 AND d.status='deleting'\n             ORDER BY d.deleted_at DESC,d.id DESC LIMIT $2",
+  "query": "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,\n                    d.source_format,d.main_path,d.update_sequence,\n                    d.created_at,\n                    d.updated_at,d.deleted_at\n             FROM documents d\n             WHERE d.owner_id=$1 AND d.status='deleting'\n             ORDER BY d.deleted_at DESC,d.id DESC LIMIT $2",
   "describe": {
     "columns": [
       {
@@ -50,21 +50,16 @@
       },
       {
         "ordinal": 9,
-        "name": "settings",
-        "type_info": "Jsonb"
-      },
-      {
-        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "deleted_at",
         "type_info": "Timestamptz"
       }
@@ -87,9 +82,8 @@
       false,
       false,
       false,
-      false,
       true
     ]
   },
-  "hash": "933b5695e073aaced431d27830dbd65a519916e03261357414e1552cd97d08b5"
+  "hash": "1b6621bc5ea3fd0ab5b2efd21ec09056ef9ef4a2c0906dceab3b1df9838bfe3d"
 }

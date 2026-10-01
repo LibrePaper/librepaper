@@ -1813,8 +1813,10 @@
     downloadingSha = sha;
     downloadProblem = "";
     try {
+      let retry = true;
       for (;;) {
-        const label = await history.requestArchive(SLUG, sha, keyHeaders(KEY));
+        const label = await history.requestArchive(SLUG, sha, keyHeaders(KEY), retry);
+        retry = false;
         if (downloadingSha !== sha) return; // superseded by a later request
         if (label.archive_status === "ready") {
           const anchor = document.createElement("a");

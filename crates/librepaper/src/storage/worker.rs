@@ -1,7 +1,7 @@
 //! Background work, in this process, with no queue table.
 //!
-//! There are five kinds of it -- compaction, archives, deletion, account
-//! erasure and the sweep of superseded compaction bases -- and what they
+//! There are six kinds of it -- compaction, archives, deletion, account
+//! erasure, and the two bounded storage sweeps -- and what they
 //! have in common is that none of them needs a row to remember it
 //! (SPEC-server-is-a-log §8.6). Durable state is what survives a restart:
 //!
@@ -12,6 +12,7 @@
 //! | deletion | `documents.status = 'deleting'` |
 //! | account erasure | `accounts.status = 'erasing'` |
 //! | superseded bases | a `document_snapshots.delete_after` in the past |
+//! | orphan objects | object-store keys with no catalogue reference and enough age |
 //!
 //! At startup the worker scans those in bounded pages and enqueues what
 //! it finds, then runs exactly one more full pass from a fresh cursor before
@@ -20,21 +21,21 @@
 //! long ago carries a low id, and its `deleted_at` may be set while the pass
 //! is already past that id, which leaves the work invisible to the rest of
 //! the pass. The unconditional second pass, from a fresh cursor, sees it.
-//! Once both are done, the worker never runs a bare scan again on its own.
-//! Afterwards it is woken by the events that create the state: an idle
-//! deployment issues no queries beyond the lease connection, which is the
-//! last test in §14.2. A full bounded queue sets one coalesced overflow bit;
+//! Once both are done, the worker never runs a bare document scan again on its
+//! own. The two storage sweeps run on bounded periodic deadlines.
+//! Afterwards document work is woken by events that create its state. The
+//! orphan-object sweep is the exception: it runs periodically so blobs left
+//! by refused uploads are eventually reclaimed. A full bounded queue sets one coalesced overflow bit;
 //! when the worker reaches it, the worker walks the durable state again in
 //! bounded pages. Wake-ups therefore remain recoverable without allocating a
 //! waiter per sender or polling an idle database.
 //!
 //! Wake-ups that need a future deadline instead of an immediate task (a
-//! failure's backoff, a deletion's grace period, a superseded base's grace)
-//! go through one bounded, deduplicating map, [`Deadlines`]. The
-//! worker's own `select!` sleeps on the earliest entry in that map; there is
-//! no timer anywhere else, and an idle deployment with nothing failing and
-//! nothing scheduled leaves the map empty, so the worker simply blocks on
-//! `recv()` and issues no query. A map that fills up does not grow past its
+//! failure's backoff, a deletion's grace period, a superseded base's grace,
+//! and the periodic orphan sweep) go through one bounded, deduplicating map,
+//! [`Deadlines`]. The worker's own `select!` sleeps on the earliest entry in
+//! that map; there is no timer anywhere else. When no deadline is scheduled,
+//! the worker blocks on `recv()` and issues no query. A map that fills up does not grow past its
 //! bound: it refuses the new deadline, remembers the earliest time it
 //! refused, and wakes the worker to rescan durable state at that time
 //! instead, which finds the refused work again. That rescan, not the map, is
@@ -46,12 +47,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use loro::LoroDoc;
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::blob::BlobStore;
 use super::collaboration::CollaborationStorage;
-use super::postgres::{PendingWorkCursor, PostgresCatalog};
+use super::postgres::{ArchiveAttach, ArchiveObject, PendingWorkCursor, PostgresCatalog};
 use super::schedule::Deadlines;
 use crate::log::{FlushReason, Registry};
 
@@ -98,12 +100,18 @@ pub enum Task {
     /// same work several times over and defeat the deduplication that keys
     /// a deadline by the task itself.
     SweepSupersededBases,
+    /// One bounded pass over old object-store keys without catalogue
+    /// references. Repeated periodically so a refused upload is reclaimed
+    /// without an operator sweep.
+    SweepOrphans,
 }
 
 /// How many superseded bases one sweep pass takes. The catalogue refuses a
 /// batch outside 1..=500; a pass that fills its batch asks for itself again
 /// rather than raising the bound.
 const SWEEP_BATCH: i64 = 500;
+const ORPHAN_SWEEP_BATCH: usize = 500;
+const ORPHAN_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// What an operator can see of the worker's own overload, for the aggregate
 /// cost snapshot. Counters only: a refusal here is never a lost task, so the
@@ -190,7 +198,36 @@ struct ScanPage {
     superseded_base_due: Option<OffsetDateTime>,
 }
 
-fn enqueue_overflow_scan(handle: &Handle, local: &mut VecDeque<Task>) {
+fn enqueue_orphan_sweep(
+    local: &mut VecDeque<Task>,
+    deadlines: &mut Deadlines,
+    not_before: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
+) {
+    let task = Task::SweepOrphans;
+    if local.contains(&task) || deadlines.waiting(&task, now) {
+        return;
+    }
+    if let Some(due) = not_before.filter(|due| *due > now) {
+        // The orphan task's deadline may itself have been refused because the
+        // bounded map was full. Re-record it after a coalesced rescan rather
+        // than running it early or forgetting it.
+        deadlines.at(task, due);
+    } else {
+        local.push_back(task);
+    }
+}
+
+fn enqueue_overflow_scan(
+    handle: &Handle,
+    local: &mut VecDeque<Task>,
+    deadlines: &mut Deadlines,
+    orphan_not_before: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
+) {
+    if handle.rescan.load(Ordering::Acquire) {
+        enqueue_orphan_sweep(local, deadlines, orphan_not_before, now);
+    }
     // A cursor continuation already walks durable state through the end of
     // this pass. Do not consume the bit yet: it may describe a newer row
     // inserted behind an earlier cursor, which needs a fresh full pass.
@@ -202,10 +239,18 @@ fn enqueue_overflow_scan(handle: &Handle, local: &mut VecDeque<Task>) {
     }
 }
 
-fn enqueue_due_rescan(handle: &Handle, local: &mut VecDeque<Task>, rescan: bool) {
+fn enqueue_due_rescan(
+    handle: &Handle,
+    local: &mut VecDeque<Task>,
+    deadlines: &mut Deadlines,
+    orphan_not_before: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
+    rescan: bool,
+) {
     if !rescan {
         return;
     }
+    enqueue_orphan_sweep(local, deadlines, orphan_not_before, now);
     if local.iter().any(|task| matches!(task, Task::Scan(_))) {
         // A cursor continuation cannot stand in for a fresh full pass.
         handle.rescan.store(true, Ordering::Release);
@@ -423,6 +468,10 @@ pub struct Worker {
     /// grace period, and a superseded base's grace, all in the one place
     /// the worker's `select!` sleeps on.
     deadlines: Deadlines,
+    /// Kept separately because `Deadlines` coalesces refusals across tasks.
+    /// This preserves the orphan sweep's own interval/backoff when its map
+    /// entry is refused and another task's earlier refusal triggers a scan.
+    orphan_sweep_not_before: Option<tokio::time::Instant>,
     /// Whether the one-time startup verification pass (below) is still
     /// owed. Set to `false` the first time a full scan (every category's
     /// cursor reaching its own end) completes, so it fires at most once per
@@ -452,6 +501,7 @@ impl Worker {
                 rx,
                 handle: handle.clone(),
                 deadlines: Deadlines::new(),
+                orphan_sweep_not_before: None,
                 startup: true,
             },
             handle,
@@ -462,6 +512,7 @@ impl Worker {
     /// deadlines that have come due.
     pub async fn run(mut self) {
         self.handle.ask(Task::Scan(PendingWorkCursor::default()));
+        self.handle.ask(Task::SweepOrphans);
         // Scan work stays local to the worker. A page is at most 3 * PAGE
         // tasks, and its continuation is one more task, so startup cannot
         // fill the channel or lose its cursor when live wake-ups saturate it.
@@ -525,8 +576,9 @@ impl Worker {
                                 // definition, not behind the second pass's own
                                 // starting cursor. This fires at most once per
                                 // process -- `startup` is cleared right here --
-                                // so an idle deployment still settles back to
-                                // issuing no queries at all once it is done.
+                                // so document work settles back to waiting for
+                                // events once it is done. The bounded orphan
+                                // sweep continues on its own deadline.
                                 self.startup = false;
                                 local.push_back(Task::Scan(PendingWorkCursor::default()));
                             }
@@ -542,7 +594,13 @@ impl Worker {
             // been the only event naming a task. Restarting a scan is safe:
             // this loop drains all of its pages before receiving more work,
             // so early durable rows cannot starve later cursor pages.
-            enqueue_overflow_scan(&self.handle, &mut local);
+            enqueue_overflow_scan(
+                &self.handle,
+                &mut local,
+                &mut self.deadlines,
+                self.orphan_sweep_not_before,
+                tokio::time::Instant::now(),
+            );
             self.publish();
         }
     }
@@ -572,7 +630,14 @@ impl Worker {
                 local.push_back(task);
             }
         }
-        enqueue_due_rescan(&self.handle, local, due.rescan);
+        enqueue_due_rescan(
+            &self.handle,
+            local,
+            &mut self.deadlines,
+            self.orphan_sweep_not_before,
+            tokio::time::Instant::now(),
+            due.rescan,
+        );
     }
 
     async fn process(&mut self, task: Task) {
@@ -605,6 +670,11 @@ impl Worker {
         match self.execute(task).await {
             Ok(()) => {
                 self.deadlines.clear(&task);
+                if task == Task::SweepOrphans {
+                    let due = tokio::time::Instant::now() + ORPHAN_SWEEP_INTERVAL;
+                    self.orphan_sweep_not_before = Some(due);
+                    self.deadlines.at(task, due);
+                }
             }
             Err(error) => self.failed(task, error),
         }
@@ -613,14 +683,17 @@ impl Worker {
     fn failed(&mut self, task: Task, error: String) {
         let before = self.deadlines.refused();
         let wait = self.deadlines.failed(task, tokio::time::Instant::now());
+        if task == Task::SweepOrphans {
+            self.orphan_sweep_not_before = Some(tokio::time::Instant::now() + wait);
+        }
         if self.deadlines.refused() > before {
             // The map is full and this failure's retry did not fit. The
-            // deadline is not lost: it is folded into the earliest refusal
-            // time, which is when the worker will rescan durable state and
-            // find this task again on its own.
+            // deadline is folded into the earliest refusal time. That wake-up
+            // rescans durable work and reconstructs periodic orphan work from
+            // its separately retained deadline.
             ::log::warn!(
                 "background task {task:?} failed and the retry map is full \
-                 ({} deadlines); durable state will be rescanned: {error}",
+                 ({} deadlines); work will be reconstructed after a rescan: {error}",
                 self.deadlines.len()
             );
         } else {
@@ -703,6 +776,7 @@ impl Worker {
             Task::Delete(document) => self.delete(document).await,
             Task::EraseAccount { account, after } => self.erase_account(account, after).await,
             Task::SweepSupersededBases => self.sweep_superseded_bases().await,
+            Task::SweepOrphans => self.sweep_orphans().await,
         }
     }
 
@@ -729,6 +803,13 @@ impl Worker {
             self.schedule_sweep_at(due);
         }
         Ok(())
+    }
+
+    async fn sweep_orphans(&mut self) -> Result<(), String> {
+        super::maintenance::Maintenance::new(self.catalog.clone(), self.blobs.clone())
+            .delete_orphans(ORPHAN_SWEEP_BATCH, time::Duration::days(7))
+            .await
+            .map(|_| ())
     }
 
     fn schedule_sweep_at(&mut self, due: OffsetDateTime) {
@@ -774,7 +855,7 @@ impl Worker {
         else {
             return Ok(());
         };
-        if label.archive_key.is_some() {
+        if label.archive_key.is_some() || label.archive_requested_at.is_none() {
             return Ok(());
         }
         let document = self
@@ -879,15 +960,40 @@ impl Worker {
             label.document_id,
             projected.projection.digest()
         );
-        let bytes = encoded.bytes.len() as i64;
-        self.blobs
-            .put_new(&key, encoded.bytes, "application/zstd")
+        // Serialize adoption with the orphan sweep. The lock is session-owned
+        // on a direct connection, so neither cancellation nor a small pool
+        // can leave a pooled connection holding it indefinitely.
+        let key_lock =
+            super::maintenance::ObjectKeyLock::acquire(self.catalog.as_ref(), &key).await?;
+        let object = if let Some(existing) = self
+            .catalog
+            .archive_object(label.document_id, &key)
             .await
-            .map_err(|error| error.to_string())?;
-        self.catalog
-            .attach_label_archive(label_id, &key, bytes)
+            .map_err(|error| error.to_string())?
+        {
+            // The catalog row is authoritative across encoder upgrades.
+            existing
+        } else {
+            put_or_adopt_archive(
+                self.blobs.as_ref(),
+                label.document_id,
+                &key,
+                projected.projection.digest_bytes(),
+                encoded,
+            )
+            .await?
+        };
+        match self
+            .catalog
+            .attach_label_archive(label_id, &object)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+        {
+            ArchiveAttach::Attached
+            | ArchiveAttach::AlreadyAttached
+            | ArchiveAttach::RefusedQuota => {}
+        }
+        key_lock.release(&key).await?;
         Ok(())
     }
 
@@ -943,6 +1049,11 @@ impl Worker {
                 return Ok(());
             }
         }
+        let Some(lifecycle_lock) =
+            super::maintenance::BlobLifecycleLock::try_delete(self.catalog.as_ref()).await?
+        else {
+            return Err("backup is copying referenced objects; retry document purge".into());
+        };
         let mut keys: HashSet<String> = HashSet::new();
         for asset in self
             .catalog
@@ -952,6 +1063,12 @@ impl Worker {
         {
             keys.insert(asset);
         }
+        keys.extend(
+            self.catalog
+                .document_archive_keys(document_id)
+                .await
+                .map_err(|error| error.to_string())?,
+        );
         if let Some(base) = self
             .catalog
             .log_base(document_id)
@@ -982,6 +1099,7 @@ impl Worker {
             .finish_document_deletion(document_id)
             .await
             .map_err(|error| error.to_string())?;
+        lifecycle_lock.release().await?;
         // That may have been the last document standing between an erasing
         // account and its completion. Asking is unconditional and cheap --
         // `erase_account` reads the account row first and returns at once
@@ -1067,12 +1185,51 @@ impl Worker {
         // nothing else would ever have completed.
         match self.catalog.finish_account_erasure(account_id).await {
             Ok(_) => Ok(()),
-            // A document appeared between the page above and the count
-            // inside the transaction. Not a failure worth a backoff: the
-            // purge of that document asks for this task again.
+            // Document creation now locks an active owner row through its
+            // insert, so it cannot attach new work after erasure begins. If
+            // this still fires, the durable erasing row remains discoverable
+            // by the next startup scan; do not claim an active document will
+            // naturally be purged by the deletion worker.
             Err(super::postgres::Error::Conflict(_)) => Ok(()),
             Err(error) => Err(error.to_string()),
         }
+    }
+}
+
+/// Write a new immutable archive or adopt bytes left by a worker that crashed
+/// after its object put and before its catalogue transaction committed. The
+/// caller holds the per-key lock across this operation and label attachment.
+async fn put_or_adopt_archive(
+    blobs: &dyn BlobStore,
+    document_id: Uuid,
+    key: &str,
+    tree_digest: [u8; 32],
+    encoded: super::source_archive::EncodedArchive,
+) -> Result<ArchiveObject, String> {
+    let content_digest = encoded.digest;
+    let byte_length = encoded.bytes.len() as i64;
+    match blobs.put_new(key, encoded.bytes, "application/zstd").await {
+        Ok(()) => Ok(ArchiveObject {
+            document_id,
+            storage_key: key.to_string(),
+            tree_digest: Some(tree_digest.to_vec()),
+            content_digest: Some(content_digest.to_vec()),
+            byte_length,
+        }),
+        Err(super::blob::BlobError::Conflict) => {
+            // Never overwrite an immutable object with a newer encoder's
+            // bytes. The existing object itself supplies the recovery digest.
+            let existing = blobs.get(key).await.map_err(|error| error.to_string())?;
+            let digest = Sha256::digest(&existing);
+            Ok(ArchiveObject {
+                document_id,
+                storage_key: key.to_string(),
+                tree_digest: Some(tree_digest.to_vec()),
+                content_digest: Some(digest.to_vec()),
+                byte_length: existing.len() as i64,
+            })
+        }
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -1128,6 +1285,7 @@ pub(crate) fn prove_coverage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::blob::FsStore;
 
     #[tokio::test]
     async fn a_full_queue_keeps_one_rescan_bit_without_waiting_senders() {
@@ -1155,6 +1313,40 @@ mod tests {
         assert!(!handle.take_rescan());
     }
 
+    #[tokio::test]
+    async fn archive_put_conflict_adopts_and_hashes_the_existing_immutable_bytes() {
+        let root = tempfile::tempdir().expect("temporary blob directory");
+        let blobs = FsStore::new(root.path(), false);
+        let key = "documents/test/labels/tree.tar.zst";
+        let old_bytes = b"object written before a worker crash".to_vec();
+        blobs
+            .put_new(key, old_bytes.clone(), "application/zstd")
+            .await
+            .expect("seed the object left by the crashed worker");
+        let new_bytes = b"bytes from a newer encoder".to_vec();
+        let encoded = super::super::source_archive::EncodedArchive {
+            digest: Sha256::digest(&new_bytes).into(),
+            logical_bytes: new_bytes.len() as u64,
+            bytes: new_bytes,
+        };
+
+        let adopted = put_or_adopt_archive(&blobs, Uuid::new_v4(), key, [7; 32], encoded)
+            .await
+            .expect("adopt existing immutable bytes");
+        let expected_digest = Sha256::digest(&old_bytes).to_vec();
+
+        assert_eq!(adopted.byte_length, old_bytes.len() as i64);
+        assert_eq!(
+            adopted.content_digest.as_deref(),
+            Some(expected_digest.as_slice())
+        );
+        assert_eq!(
+            blobs.get(key).await.expect("read original object"),
+            old_bytes,
+            "put conflict must never overwrite the previous bytes"
+        );
+    }
+
     #[test]
     fn overflow_rescan_waits_for_all_cursor_pages() {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -1163,22 +1355,72 @@ mod tests {
             rescan: Arc::new(AtomicBool::new(true)),
             meter: Arc::new(Meter::default()),
         };
+        let mut deadlines = Deadlines::new();
+        let now = tokio::time::Instant::now();
         let mut local = VecDeque::from([Task::Scan(PendingWorkCursor::default())]);
 
         // A continuation means the current full scan still has pages to
         // visit. The overflow bit must survive it, or a newer durable row
         // could be missed after an earlier cursor page keeps returning work.
-        enqueue_overflow_scan(&handle, &mut local);
-        assert_eq!(local.len(), 1);
+        enqueue_overflow_scan(&handle, &mut local, &mut deadlines, None, now);
+        assert_eq!(local.len(), 2);
+        assert!(local.contains(&Task::SweepOrphans));
         assert!(handle.rescan.load(Ordering::Acquire));
 
         local.pop_front();
-        enqueue_overflow_scan(&handle, &mut local);
+        enqueue_overflow_scan(&handle, &mut local, &mut deadlines, None, now);
         assert_eq!(
             local,
-            VecDeque::from([Task::Scan(PendingWorkCursor::default())])
+            VecDeque::from([Task::SweepOrphans, Task::Scan(PendingWorkCursor::default())])
         );
         assert!(!handle.rescan.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn startup_queue_overflow_reconstructs_the_non_durable_orphan_task() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = Handle {
+            tx,
+            rescan: Arc::new(AtomicBool::new(false)),
+            meter: Arc::new(Meter::default()),
+        };
+        handle.ask(Task::Scan(PendingWorkCursor::default()));
+        handle.ask(Task::SweepOrphans);
+        assert!(handle.rescan.load(Ordering::Acquire));
+
+        let mut local = VecDeque::new();
+        let mut deadlines = Deadlines::new();
+        enqueue_overflow_scan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            None,
+            tokio::time::Instant::now(),
+        );
+
+        assert!(local.contains(&Task::SweepOrphans));
+        assert!(local.contains(&Task::Scan(PendingWorkCursor::default())));
+    }
+
+    #[test]
+    fn overflow_rescan_respects_an_orphan_sweeps_waiting_deadline() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = Handle {
+            tx,
+            rescan: Arc::new(AtomicBool::new(true)),
+            meter: Arc::new(Meter::default()),
+        };
+        let now = tokio::time::Instant::now();
+        let due = now + ORPHAN_SWEEP_INTERVAL;
+        let mut deadlines = Deadlines::new();
+        deadlines.at(Task::SweepOrphans, due);
+        let mut local = VecDeque::new();
+
+        enqueue_overflow_scan(&handle, &mut local, &mut deadlines, Some(due), now);
+
+        assert!(!local.contains(&Task::SweepOrphans));
+        assert!(local.contains(&Task::Scan(PendingWorkCursor::default())));
+        assert_eq!(deadlines.next(), Some(due));
     }
 
     #[test]
@@ -1190,10 +1432,12 @@ mod tests {
             meter: Arc::new(Meter::default()),
         };
         let mut local = VecDeque::new();
-        enqueue_due_rescan(&handle, &mut local, true);
+        let mut deadlines = Deadlines::new();
+        let now = tokio::time::Instant::now();
+        enqueue_due_rescan(&handle, &mut local, &mut deadlines, None, now, true);
         assert_eq!(
             local,
-            VecDeque::from([Task::Scan(PendingWorkCursor::default())])
+            VecDeque::from([Task::SweepOrphans, Task::Scan(PendingWorkCursor::default())])
         );
         assert!(!handle.rescan.load(Ordering::Acquire));
 
@@ -1216,20 +1460,106 @@ mod tests {
             );
         }
         deadlines.failed(Task::Archive(Uuid::new_v4()), now - Duration::from_secs(61));
-        enqueue_due_rescan(&handle, &mut local, deadlines.due(now).rescan);
+        let rescan = deadlines.due(now).rescan;
+        enqueue_due_rescan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(now + Duration::from_secs(3600)),
+            now,
+            rescan,
+        );
         assert_eq!(local.len(), 1);
+        assert!(!local.contains(&Task::SweepOrphans));
         assert!(handle.rescan.load(Ordering::Acquire));
 
-        enqueue_overflow_scan(&handle, &mut local);
+        enqueue_overflow_scan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(now + Duration::from_secs(3600)),
+            now,
+        );
         assert_eq!(local.pop_front(), Some(Task::Scan(cursor)));
-        enqueue_overflow_scan(&handle, &mut local);
+        enqueue_overflow_scan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(now + Duration::from_secs(3600)),
+            now,
+        );
         assert_eq!(
             local.pop_front(),
             Some(Task::Scan(PendingWorkCursor::default()))
         );
         assert!(!handle.rescan.load(Ordering::Acquire));
-        enqueue_due_rescan(&handle, &mut local, deadlines.due(now).rescan);
+        let rescan = deadlines.due(now).rescan;
+        enqueue_due_rescan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(now + Duration::from_secs(3600)),
+            now,
+            rescan,
+        );
         assert!(local.is_empty(), "a spent overflow must not rescan forever");
+    }
+
+    #[test]
+    fn orphan_sweep_is_rebuilt_after_coalesced_deadlines_without_running_early() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = Handle {
+            tx,
+            rescan: Arc::new(AtomicBool::new(false)),
+            meter: Arc::new(Meter::default()),
+        };
+        let now = tokio::time::Instant::now();
+        let orphan_due = now + ORPHAN_SWEEP_INTERVAL;
+        let mut deadlines = Deadlines::new();
+        for _ in 0..super::super::schedule::DEADLINES {
+            deadlines.at(
+                Task::Delete(Uuid::new_v4()),
+                now + Duration::from_secs(86400),
+            );
+        }
+        // The map first refuses an unrelated retry due now, then refuses the
+        // orphan deadline an hour out. Only the earlier refusal is retained.
+        deadlines.failed(Task::Archive(Uuid::new_v4()), now - Duration::from_secs(61));
+        deadlines.at(Task::SweepOrphans, orphan_due);
+        let mut local = VecDeque::new();
+
+        // The earlier refusal triggers a rescan. The orphan task must not run
+        // early, and its original deadline must be re-recorded despite the
+        // bounded map still being full.
+        let due = deadlines.due(now);
+        assert!(due.rescan);
+        enqueue_due_rescan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(orphan_due),
+            now,
+            due.rescan,
+        );
+        assert!(!local.contains(&Task::SweepOrphans));
+        assert!(local.contains(&Task::Scan(PendingWorkCursor::default())));
+        assert_eq!(deadlines.next(), Some(orphan_due));
+
+        // When the refused deadline matures, its rescan reconstructs the
+        // non-durable sweep task as well as the ordinary document scan.
+        local.clear();
+        let due = deadlines.due(orphan_due);
+        assert!(due.rescan);
+        enqueue_due_rescan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(orphan_due),
+            orphan_due,
+            due.rescan,
+        );
+        assert!(local.contains(&Task::SweepOrphans));
+        assert!(local.contains(&Task::Scan(PendingWorkCursor::default())));
     }
 
     #[tokio::test]
@@ -1342,11 +1672,11 @@ mod tests {
             .create_document(NewDocument {
                 slug: "erase-me".into(),
                 owner_id: owner.id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "Erase me".into(),
                 source_format: "markdown".into(),
                 main_path: "document.md".into(),
-                settings: serde_json::json!({"version": 1}),
             })
             .await
             .unwrap();

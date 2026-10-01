@@ -81,6 +81,8 @@ impl Server {
             session_generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             policy_editor: self.publishers.allows(&who.id.handle),
+            policy_comment: self.commenters.allows(&who.id.handle),
+            automation: who.automation,
             unowned_publisher: false,
         };
         let stored = room

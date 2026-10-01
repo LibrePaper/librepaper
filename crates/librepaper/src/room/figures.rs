@@ -184,6 +184,10 @@ impl Room {
             principal_key: authorization.principal_key.clone(),
             account_id: authorization.account_id,
             link_hash: authorization.token_hash.map(|hash| hash.to_vec()),
+            session_generation: authorization.session_generation,
+            policy_edit: authorization.policy_edit,
+            policy_comment: authorization.policy_comment,
+            automation: authorization.automation,
         };
         let mut attach = AttachAsset {
             input: NewAsset {

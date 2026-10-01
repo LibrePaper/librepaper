@@ -16,12 +16,12 @@ VALUES ('00000000-0000-0000-0000-000000000002', 'snapshot-lifecycle-test',
 
 -- A current snapshot requires the complete snapshot metadata.
 INSERT INTO document_snapshots (
-    snapshot_key, document_id, base_id, through_update_sequence, vector,
+    snapshot_key, document_id, through_update_sequence, vector,
     snapshot_digest, snapshot_bytes, updated_at, delete_after
 ) VALUES (
     'snapshots/lifecycle/current-1',
     '00000000-0000-0000-0000-000000000002',
-    '00000000-0000-0000-0000-000000000011', 7, decode('0102', 'hex'),
+    7, decode('0102', 'hex'),
     decode(repeat('ab', 32), 'hex'), 1234, '2026-09-20 12:00:00+00', NULL
 );
 
@@ -30,12 +30,12 @@ DO $$
 BEGIN
     BEGIN
         INSERT INTO document_snapshots (
-            snapshot_key, document_id, base_id, through_update_sequence, vector,
+            snapshot_key, document_id, through_update_sequence, vector,
             snapshot_digest, snapshot_bytes, updated_at, delete_after
         ) VALUES (
             'snapshots/lifecycle/current-2',
             '00000000-0000-0000-0000-000000000002',
-            '00000000-0000-0000-0000-000000000012', 8, decode('0304', 'hex'),
+            8, decode('0304', 'hex'),
             decode(repeat('cd', 32), 'hex'), 2345,
             '2026-09-20 12:01:00+00', NULL
         );
@@ -78,21 +78,19 @@ WHERE snapshot_key = 'snapshots/lifecycle/current-1';
 
 DO $$
 DECLARE
-    stored_base uuid;
     stored_sequence bigint;
     stored_vector bytea;
     stored_digest bytea;
     stored_bytes bigint;
     stored_updated_at timestamptz;
 BEGIN
-    SELECT base_id, through_update_sequence, vector, snapshot_digest,
+    SELECT through_update_sequence, vector, snapshot_digest,
            snapshot_bytes, updated_at
-      INTO stored_base, stored_sequence, stored_vector, stored_digest,
+      INTO stored_sequence, stored_vector, stored_digest,
            stored_bytes, stored_updated_at
       FROM document_snapshots
      WHERE snapshot_key = 'snapshots/lifecycle/current-1';
-    IF stored_base IS DISTINCT FROM '00000000-0000-0000-0000-000000000011'
-       OR stored_sequence IS DISTINCT FROM 7
+    IF stored_sequence IS DISTINCT FROM 7
        OR stored_vector IS DISTINCT FROM decode('0102', 'hex')
        OR stored_digest IS DISTINCT FROM decode(repeat('ab', 32), 'hex')
        OR stored_bytes IS DISTINCT FROM 1234
@@ -108,12 +106,12 @@ END;
 $$;
 
 INSERT INTO document_snapshots (
-    snapshot_key, document_id, base_id, through_update_sequence, vector,
+    snapshot_key, document_id, through_update_sequence, vector,
     snapshot_digest, snapshot_bytes, updated_at, delete_after
 ) VALUES (
     'snapshots/lifecycle/current-2',
     '00000000-0000-0000-0000-000000000002',
-    '00000000-0000-0000-0000-000000000012', 8, decode('0304', 'hex'),
+    8, decode('0304', 'hex'),
     decode(repeat('cd', 32), 'hex'), 2345, '2026-09-20 12:03:00+00', NULL
 );
 

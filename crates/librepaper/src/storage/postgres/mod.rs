@@ -26,9 +26,13 @@ pub(crate) use persistence::PersistenceConnection;
 mod proposals;
 mod repository;
 
+#[cfg(test)]
+#[path = "schema_regression_tests.rs"]
+mod schema_regression_tests;
+
 pub use commit::Authority;
 pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCoverage};
-pub use labels::{LabelRecord, NewLabel};
+pub use labels::{ArchiveAttach, ArchiveObject, LabelRecord, NewLabel};
 pub use ownership::WriterLease;
 pub use proposals::{NewProposal, StoredDecision, StoredProposal, StoredProposalOutcome};
 pub use repository::{
@@ -162,8 +166,7 @@ impl PostgresCatalog {
             .snapshot(self.pool.size(), self.pool.num_idle(), self.max_connections)
     }
 
-    /// §8.4's compaction triggers -- rows, then bytes -- as this deployment
-    /// has them configured.
+    /// §8.4's compaction triggers -- rows, then bytes -- used by this deployment.
     ///
     /// `pending_background_work` finds documents already over these lines at
     /// startup; a sequencer reads them so the flush that crosses one asks for
@@ -343,6 +346,608 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn archive_migration_preserves_populated_legacy_objects_without_digests() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        let mut tx = catalog.pool().begin().await.unwrap();
+        let schema = format!("archive_upgrade_{}", uuid::Uuid::now_v7().simple());
+        sqlx::raw_sql(&format!(
+            "CREATE SCHEMA {schema}; SET LOCAL search_path={schema}"
+        ))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+        for migration in [
+            include_str!("../../../migrations/postgres/0001_catalog.sql"),
+            include_str!("../../../migrations/postgres/0002_purge_claim.sql"),
+            include_str!("../../../migrations/postgres/0003_catalog_constraints_indexes.sql"),
+            include_str!("../../../migrations/postgres/0004_archive_accounting.sql"),
+            include_str!("../../../migrations/postgres/0005_document_snapshots.sql"),
+            include_str!("../../../migrations/postgres/0006_operation_outcomes.sql"),
+            include_str!("../../../migrations/postgres/0007_drop_example_ownership.sql"),
+            include_str!("../../../migrations/postgres/0008_proposals_are_pending.sql"),
+            include_str!("../../../migrations/postgres/0009_grant_provenance.sql"),
+        ] {
+            sqlx::raw_sql(migration).execute(&mut *tx).await.unwrap();
+        }
+
+        sqlx::raw_sql(
+            "INSERT INTO accounts(id,kind,handle,display_name,status)
+             VALUES(md5('archive-upgrade-owner')::uuid,'anonymous','owner','Owner','active');
+             INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
+             VALUES(md5('archive-upgrade-document')::uuid,'archive-upgrade',
+                    md5('archive-upgrade-owner')::uuid,'owned','Archive upgrade','active','markdown','main.md');
+             INSERT INTO document_labels
+                 (id,document_id,sequence,source_sequence,vector,frontier,tree_digest,
+                  reason,author_label,archive_key,archive_bytes)
+             VALUES
+                 (md5('archive-upgrade-label-1')::uuid,md5('archive-upgrade-document')::uuid,
+                  1,1,'v1'::bytea,'f1'::bytea,NULL,'restore','Owner','archives/legacy',321),
+                 (md5('archive-upgrade-label-2')::uuid,md5('archive-upgrade-document')::uuid,
+                  2,2,'v2'::bytea,'f2'::bytea,NULL,'restore','Owner','archives/legacy',321);",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../../../migrations/postgres/0010_document_archives.sql"
+        ))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::raw_sql(
+            "DO $$ BEGIN
+               IF (SELECT count(*) FROM document_archives WHERE storage_key='archives/legacy'
+                   AND document_id=md5('archive-upgrade-document')::uuid
+                   AND tree_digest IS NULL AND content_digest IS NULL AND byte_length=321) <> 1 THEN
+                 RAISE EXCEPTION 'legacy archive metadata was not preserved once';
+               END IF;
+               IF (SELECT count(*) FROM document_labels WHERE archive_key='archives/legacy') <> 2 THEN
+                 RAISE EXCEPTION 'legacy label references were not preserved';
+               END IF;
+               IF (SELECT bytes FROM storage_usage WHERE singleton) <> 321 THEN
+                 RAISE EXCEPTION 'legacy archive accounting was not preserved';
+               END IF;
+             END $$;",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+        tx.rollback().await.unwrap();
+        catalog.close().await;
+    }
+
+    async fn authorize_for_test(
+        catalog: &PostgresCatalog,
+        document_id: uuid::Uuid,
+        actor: &MutationAuthorization,
+        require_editor: bool,
+        annotation_path: bool,
+    ) -> Result<()> {
+        if annotation_path {
+            catalog
+                .authorize_document_mutation(document_id, actor, require_editor)
+                .await
+        } else {
+            let authority = Authority {
+                principal_key: actor.principal_key.clone(),
+                account_id: actor.account_id,
+                link_hash: actor.token_hash.map(|hash| hash.to_vec()),
+                session_generation: actor.session_generation,
+                policy_edit: actor.policy_edit,
+                policy_comment: actor.policy_comment,
+                automation: actor.automation,
+            };
+            let rung = if require_editor {
+                crate::log::sequencer::Rung::Editor
+            } else {
+                crate::log::sequencer::Rung::Commenter
+            };
+            match catalog
+                .begin_document_command(document_id, &authority, rung)
+                .await
+            {
+                Ok(tx) => tx.rollback().await.map_err(Error::from),
+                Err(error) => Err(error),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn mutation_authorization_uses_live_grants_sessions_ceilings_and_link_identity() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        truncate(&catalog).await;
+
+        let owner = seed_account(&catalog, "auth-owner").await;
+        let named = seed_account(&catalog, "auth-named").await;
+        let stranger = seed_account(&catalog, "auth-stranger").await;
+        let document = seed_document(&catalog, owner.id, "auth-document").await;
+        let make_actor = |account_id: Option<uuid::Uuid>,
+                          generation,
+                          token_hash,
+                          policy_edit,
+                          policy_comment,
+                          automation| {
+            MutationAuthorization {
+                principal_key: account_id
+                    .map_or_else(|| "visitor:test".into(), |id| id.to_string()),
+                account_id,
+                session_generation: generation,
+                token_hash,
+                policy_edit,
+                policy_comment,
+                automation,
+            }
+        };
+
+        let unrelated = make_actor(
+            Some(stranger.id),
+            Some(stranger.session_generation),
+            None,
+            true,
+            true,
+            false,
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &unrelated, true, false)
+                .await
+                .is_err(),
+            "a publisher ceiling cannot grant an unrelated account editor access"
+        );
+
+        // An account that already has a direct editor grant must keep it when
+        // it also visits through a weaker link.
+        let direct_link_hash = [0x31; 32];
+        let direct_link = catalog
+            .create_share_link(
+                document.id,
+                access::AccessRole::Commenter,
+                direct_link_hash,
+                "reviewer".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        catalog
+            .set_grant(document.id, named.id, access::AccessRole::Editor)
+            .await
+            .unwrap();
+        catalog
+            .pin_link_guest(
+                document.id,
+                named.id,
+                access::AccessRole::Commenter,
+                direct_link_hash,
+            )
+            .await
+            .unwrap();
+        let direct = catalog
+            .grants(document.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|grant| grant.account_id == named.id)
+            .unwrap();
+        assert_eq!(direct.role.as_deref(), Some("editor"));
+        assert!(direct.source_link_hash.is_none());
+        catalog
+            .revoke_share_link(document.id, direct_link.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog
+                .access_role(document.id, Some(named.id), None, OffsetDateTime::now_utc(),)
+                .await
+                .unwrap(),
+            Some(access::AccessRole::Editor),
+            "revoking the weaker link does not remove or downgrade the direct grant"
+        );
+
+        // Once the direct grant is removed, the pinned grant carries no role
+        // of its own. Its rights follow the exact source link as that link is
+        // changed, and disappear when it expires or is revoked.
+        catalog.remove_grant(document.id, named.id).await.unwrap();
+        let link_hash = [0x32; 32];
+        let source_link = catalog
+            .create_share_link(
+                document.id,
+                access::AccessRole::Commenter,
+                link_hash,
+                "reviewer".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        catalog
+            .pin_link_guest(document.id, named.id, access::AccessRole::Reader, link_hash)
+            .await
+            .unwrap();
+        let sourced = catalog
+            .grants(document.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|grant| grant.account_id == named.id)
+            .unwrap();
+        assert!(sourced.role.is_none());
+        assert_eq!(
+            sourced.source_link_hash.as_deref(),
+            Some(link_hash.as_slice())
+        );
+        let named_actor = make_actor(
+            Some(named.id),
+            Some(named.session_generation),
+            None,
+            true,
+            true,
+            false,
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &named_actor, false, true)
+                .await
+                .is_ok()
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &named_actor, true, false)
+                .await
+                .is_err()
+        );
+        let now = OffsetDateTime::now_utc();
+        catalog
+            .replace_share_links(
+                document.id,
+                &[(
+                    "reader".into(),
+                    link_hash,
+                    Vec::new(),
+                    "reviewer".into(),
+                    None,
+                    None,
+                )],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog
+                .access_role(document.id, Some(named.id), None, now)
+                .await
+                .unwrap(),
+            Some(access::AccessRole::Reader),
+            "a pinned account tracks the current role of its source link"
+        );
+        catalog
+            .revoke_share_link(document.id, source_link.id)
+            .await
+            .unwrap();
+        assert!(
+            authorize_for_test(&catalog, document.id, &named_actor, false, false)
+                .await
+                .is_err(),
+            "revoking a source link also revokes its pinned grant"
+        );
+
+        let expiring_hash = [0x33; 32];
+        let expiring_link = catalog
+            .create_share_link(
+                document.id,
+                access::AccessRole::Commenter,
+                expiring_hash,
+                "temporary reviewer".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        catalog
+            .pin_link_guest(
+                document.id,
+                named.id,
+                access::AccessRole::Reader,
+                expiring_hash,
+            )
+            .await
+            .unwrap();
+        let expired_at = now - Duration::seconds(1);
+        sqlx::query("UPDATE share_links SET created_at=$2 WHERE id=$1")
+            .bind(expiring_link.id)
+            .bind(now - Duration::seconds(60))
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        catalog
+            .replace_share_links(
+                document.id,
+                &[(
+                    "commenter".into(),
+                    expiring_hash,
+                    Vec::new(),
+                    "reviewer".into(),
+                    Some(expired_at),
+                    None,
+                )],
+            )
+            .await
+            .unwrap();
+        assert!(
+            authorize_for_test(&catalog, document.id, &named_actor, false, false)
+                .await
+                .is_err(),
+            "an expired source link cannot authorize its pinned grant"
+        );
+
+        // Direct grants and ownership remain subject to the same policy caps
+        // as links. Edit permission implies comment permission, while a
+        // comment-only ceiling lowers an editor grant to the commenter rung.
+        catalog
+            .set_grant(document.id, named.id, access::AccessRole::Editor)
+            .await
+            .unwrap();
+        let comment_only = make_actor(
+            Some(named.id),
+            Some(named.session_generation),
+            None,
+            false,
+            true,
+            false,
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &comment_only, false, false)
+                .await
+                .is_ok()
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &comment_only, true, false)
+                .await
+                .is_err()
+        );
+        let stale = make_actor(
+            Some(named.id),
+            Some(named.session_generation + 1),
+            None,
+            true,
+            true,
+            false,
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &stale, false, true)
+                .await
+                .is_err(),
+            "annotation writes reject a stale account session"
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &stale, true, false)
+                .await
+                .is_err(),
+            "semantic commands reject the same stale account session"
+        );
+
+        let owner_no_edit = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            None,
+            false,
+            true,
+            false,
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &owner_no_edit, true, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &owner_no_edit, false, false)
+                .await
+                .is_err()
+        );
+        let owner_comment_hash = [0x44; 32];
+        catalog
+            .create_share_link(
+                document.id,
+                access::AccessRole::Commenter,
+                owner_comment_hash,
+                "owner fallback".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let owner_comment_link = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            Some(owner_comment_hash),
+            false,
+            true,
+            false,
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &owner_comment_link, false, false)
+                .await
+                .is_ok()
+        );
+        let owner_no_comment = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            None,
+            false,
+            false,
+            false,
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &owner_no_comment, false, true)
+                .await
+                .is_err()
+        );
+
+        // Cached owner identity is attribution only in automation mode. The
+        // same account gets no authority until an editor link is supplied.
+        catalog
+            .set_grant(document.id, owner.id, access::AccessRole::Editor)
+            .await
+            .unwrap();
+        let automation = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            None,
+            true,
+            true,
+            true,
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &automation, true, false)
+                .await
+                .is_err()
+        );
+        let editor_hash = [0x42; 32];
+        catalog
+            .create_share_link(
+                document.id,
+                access::AccessRole::Editor,
+                editor_hash,
+                "agent".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let editor_link_comment_only = make_actor(
+            Some(stranger.id),
+            Some(stranger.session_generation),
+            Some(editor_hash),
+            false,
+            true,
+            false,
+        );
+        assert!(authorize_for_test(
+            &catalog,
+            document.id,
+            &editor_link_comment_only,
+            true,
+            false,
+        )
+        .await
+        .is_err());
+        assert!(authorize_for_test(
+            &catalog,
+            document.id,
+            &editor_link_comment_only,
+            false,
+            false,
+        )
+        .await
+        .is_ok());
+        let automation_link = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            Some(editor_hash),
+            true,
+            true,
+            true,
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &automation_link, true, false)
+                .await
+                .is_ok()
+        );
+
+        sqlx::query!(
+            "UPDATE documents SET ownership_mode='open' WHERE id=$1",
+            document.id
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        let open_visitor = make_actor(None, None, None, true, true, false);
+        assert!(
+            authorize_for_test(&catalog, document.id, &open_visitor, false, false)
+                .await
+                .is_ok()
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &open_visitor, true, false)
+                .await
+                .is_err()
+        );
+        let open_no_comment = make_actor(None, None, None, true, false, false);
+        assert!(
+            authorize_for_test(&catalog, document.id, &open_no_comment, false, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            authorize_for_test(&catalog, document.id, &automation, false, false)
+                .await
+                .is_err(),
+            "automation cannot use open-mode commenting without its link"
+        );
+
+        // Session revocation must wait until a command using that session has
+        // committed, closing the check/use gap at the transaction boundary.
+        let owner_actor = make_actor(
+            Some(owner.id),
+            Some(owner.session_generation),
+            None,
+            true,
+            true,
+            false,
+        );
+        let owner_authority = Authority {
+            principal_key: owner_actor.principal_key.clone(),
+            account_id: owner_actor.account_id,
+            link_hash: None,
+            session_generation: owner_actor.session_generation,
+            policy_edit: owner_actor.policy_edit,
+            policy_comment: owner_actor.policy_comment,
+            automation: owner_actor.automation,
+        };
+        let command_tx = catalog
+            .begin_document_command(
+                document.id,
+                &owner_authority,
+                crate::log::sequencer::Rung::Editor,
+            )
+            .await
+            .unwrap();
+        let mut revocation_tx = catalog.pool().begin().await.unwrap();
+        sqlx::query("SET LOCAL lock_timeout = '25ms'")
+            .execute(&mut *revocation_tx)
+            .await
+            .unwrap();
+        assert!(sqlx::query(
+            "UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1",
+        )
+        .bind(owner.id)
+        .execute(&mut *revocation_tx)
+        .await
+        .is_err());
+        revocation_tx.rollback().await.unwrap();
+        command_tx.commit().await.unwrap();
+        let changed =
+            sqlx::query("UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1")
+                .bind(owner.id)
+                .execute(catalog.pool())
+                .await
+                .unwrap()
+                .rows_affected();
+        assert_eq!(changed, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn operation_outcomes_commit_atomically_and_remain_actor_scoped() {
         let catalog = crate::tests::catalog().await.expect("test database");
         let account = seed_account(&catalog, "outcome").await;
@@ -446,11 +1051,11 @@ mod tests {
             .create_document(NewDocument {
                 slug: format!("slug-{tag}"),
                 owner_id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "A Paper".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: json!({"version":1}),
             })
             .await
             .unwrap()
@@ -503,23 +1108,41 @@ mod tests {
             .create_document(NewDocument {
                 slug: "v3-second".into(),
                 owner_id: account.id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "Same title".into(),
                 source_format: "quarto".into(),
                 main_path: "paper.qmd".into(),
-                settings: json!({"version":1}),
             })
             .await
             .unwrap();
 
         let collaborator = seed_account(&catalog, "v3-collaborator").await;
+        let owner_authority = MutationAuthorization {
+            principal_key: account.handle.clone(),
+            account_id: Some(account.id),
+            session_generation: Some(account.session_generation),
+            token_hash: None,
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
+        };
+        let collaborator_authority = MutationAuthorization {
+            principal_key: collaborator.handle.clone(),
+            account_id: Some(collaborator.id),
+            session_generation: Some(collaborator.session_generation),
+            token_hash: None,
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
+        };
         assert_eq!(
             catalog
                 .set_grant(first.id, collaborator.id, AccessRole::Editor)
                 .await
                 .unwrap()
                 .role,
-            "editor"
+            Some("editor".to_owned())
         );
         assert_eq!(
             catalog
@@ -673,7 +1296,11 @@ mod tests {
         );
 
         assert!(catalog
-            .update_document_identity(second.id, "Transferred", collaborator.id, "owned")
+            .transfer_document_owner(second.id, account.id, collaborator.id, &owner_authority)
+            .await
+            .unwrap());
+        assert!(catalog
+            .update_document_title(second.id, &collaborator_authority, "Transferred")
             .await
             .unwrap());
         assert_eq!(
@@ -689,7 +1316,16 @@ mod tests {
             Some(AccessRole::Owner)
         );
         assert!(catalog
-            .update_document_identity(second.id, "Same title", account.id, "owned")
+            .transfer_document_owner(
+                second.id,
+                collaborator.id,
+                account.id,
+                &collaborator_authority,
+            )
+            .await
+            .unwrap());
+        assert!(catalog
+            .update_document_title(second.id, &owner_authority, "Same title")
             .await
             .unwrap());
 
@@ -724,7 +1360,9 @@ mod tests {
             account_id: Some(collaborator.id),
             session_generation: Some(collaborator.session_generation),
             token_hash: None,
-            policy_editor: false,
+            policy_edit: false,
+            policy_comment: true,
+            automation: false,
         };
         {
             let mut tx = catalog.pool().begin().await.unwrap();
@@ -792,7 +1430,9 @@ mod tests {
             account_id: Some(account.id),
             session_generation: Some(account.session_generation),
             token_hash: None,
-            policy_editor: false,
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
         };
         let reply = {
             let mut tx = catalog.pool().begin().await.unwrap();
@@ -907,11 +1547,11 @@ mod tests {
             .create_document(NewDocument {
                 slug: "v3-erase-document".into(),
                 owner_id: erased.id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "Erase document".into(),
                 source_format: "markdown".into(),
                 main_path: "document.md".into(),
-                settings: json!({"version":1}),
             })
             .await
             .unwrap();
@@ -1092,30 +1732,18 @@ mod tests {
         catalog.close().await;
     }
 
-    /// Two labels naming the same projection name the same archive object,
-    /// and the storage counter that watches `document_labels.archive_key`
-    /// counts that object once no matter how many labels point at it (§8.2,
-    /// §8.5).
-    ///
-    /// The old test asserted this of a maintenance pass,
-    /// `share_duplicate_archives`, that repointed versions written under
-    /// distinct private names at one object after the fact. That pass is
-    /// gone and nothing replaces it: an archive is now named by the digest
-    /// of what it holds from the moment it is written (§8.5), so there is
-    /// nothing left to reclaim after the fact. What is worth testing instead
-    /// is the trigger that makes sharing free: `usage_bytes` must not double
-    /// count a key two labels hold, and must give the bytes back only when
-    /// the last label naming it is gone.
+    /// Two labels naming one object are charged once. The object remains
+    /// catalogued and charged after labels are removed, until document purge.
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn two_labels_naming_the_same_archive_are_charged_once() {
         let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
             .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
-        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+        let mut catalog = PostgresCatalog::connect(PostgresOptions::new(url))
             .await
             .unwrap();
         catalog.migrate().await.unwrap();
-        let _writer = catalog.claim_writer().await.unwrap();
+        let writer = catalog.claim_writer().await.unwrap();
         let tag = new_id().simple().to_string();
         let account = seed_account(&catalog, &format!("archive-{tag}")).await;
         let document = seed_document(&catalog, account.id, &format!("archive-{tag}")).await;
@@ -1133,41 +1761,124 @@ mod tests {
             author_account_id: Some(account.id),
             author_label: "Owner".into(),
         };
-        let (one, two) = {
+        let (one, two, three) = {
             let mut tx = catalog.pool().begin().await.unwrap();
             let one = catalog.insert_label(&mut tx, &label(1)).await.unwrap();
             let two = catalog.insert_label(&mut tx, &label(2)).await.unwrap();
+            let three = catalog.insert_label(&mut tx, &label(3)).await.unwrap();
             tx.commit().await.unwrap();
-            (one, two)
+            (one, two, three)
         };
 
         let before = catalog.usage_bytes(Some(account.id)).await.unwrap();
         let key = format!("documents/{}/labels/shared.tar.zst", document.id);
+        let object = ArchiveObject {
+            document_id: document.id,
+            storage_key: key.clone(),
+            tree_digest: Some(vec![1; 32]),
+            content_digest: Some(vec![2; 32]),
+            byte_length: 500,
+        };
         assert!(catalog
             .request_label_archive(document.id, one.id)
             .await
             .unwrap());
-        assert!(catalog
-            .attach_label_archive(one.id, &key, 500)
-            .await
-            .unwrap());
+        assert_eq!(
+            catalog.attach_label_archive(one.id, &object).await.unwrap(),
+            ArchiveAttach::Attached
+        );
         assert_eq!(
             catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
             500,
             "the first label to name an object is charged for it"
         );
+        // Fill both quotas with this retained object. The NULL digest on the
+        // next label leaves its eventual key unknown during early admission,
+        // so the worker must be allowed to reach the serialized delta check.
+        catalog.policy.owner_bytes = catalog.usage_bytes(Some(account.id)).await.unwrap();
+        catalog.policy.deployment_bytes = catalog.usage_bytes(None).await.unwrap();
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap(),
+            catalog.policy.owner_bytes
+        );
+        assert_eq!(
+            catalog.usage_bytes(None).await.unwrap(),
+            catalog.policy.deployment_bytes
+        );
         assert!(catalog
             .request_label_archive(document.id, two.id)
             .await
             .unwrap());
-        assert!(catalog
-            .attach_label_archive(two.id, &key, 500)
-            .await
-            .unwrap());
+        let pending = catalog.label(document.id, two.id).await.unwrap().unwrap();
+        assert!(pending.tree_digest.is_none());
+        assert!(pending.archive_requested_at.is_some());
+        assert!(pending.archive_error.is_none());
+        // Preserve coverage for reusing an object even after the owner cap
+        // is lowered below the bytes already retained.
+        catalog.policy.owner_bytes = before.saturating_add(100);
+        assert!(catalog.usage_bytes(Some(account.id)).await.unwrap() > catalog.policy.owner_bytes);
+        // A later encoder version may produce different bytes under the same
+        // projection key. The first catalog row remains authoritative.
+        let newer_encoding = ArchiveObject {
+            content_digest: Some(vec![3; 32]),
+            byte_length: 700,
+            ..object.clone()
+        };
+        assert_eq!(
+            catalog
+                .attach_label_archive(two.id, &newer_encoding)
+                .await
+                .unwrap(),
+            ArchiveAttach::Attached
+        );
         assert_eq!(
             catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
             500,
             "a second label naming the same key adds no bytes"
+        );
+        let stored = catalog
+            .archive_object(document.id, &key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.byte_length, 500);
+        assert_eq!(stored.content_digest.as_deref(), Some(&[2; 32][..]));
+
+        catalog.policy.owner_bytes = catalog.usage_bytes(Some(account.id)).await.unwrap();
+        // The same unknown-identity admission must still reach the final
+        // quota gate for a genuinely new object; its positive delta is
+        // refused and leaves a terminal error for an explicit retry.
+        assert!(catalog
+            .request_label_archive(document.id, three.id)
+            .await
+            .unwrap());
+        let new_object = ArchiveObject {
+            document_id: document.id,
+            storage_key: format!("documents/{}/labels/new-object.tar.zst", document.id),
+            tree_digest: Some(vec![4; 32]),
+            content_digest: Some(vec![5; 32]),
+            byte_length: 1,
+        };
+        assert_eq!(
+            catalog
+                .attach_label_archive(three.id, &new_object)
+                .await
+                .unwrap(),
+            ArchiveAttach::RefusedQuota
+        );
+        let refused = catalog.label(document.id, three.id).await.unwrap().unwrap();
+        assert!(refused.archive_requested_at.is_none());
+        assert_eq!(
+            refused.archive_error.as_deref(),
+            Some("storage quota exceeded")
+        );
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap(),
+            catalog.policy.owner_bytes
+        );
+        assert_eq!(
+            catalog.usage_bytes(None).await.unwrap(),
+            catalog.policy.deployment_bytes
         );
         assert_eq!(
             catalog
@@ -1181,29 +1892,151 @@ mod tests {
             "the archive key listing names a shared key once"
         );
 
-        // Removing the first label leaves the object charged, because the
-        // second still names it.
+        // The normalized object is retained even when labels no longer name it.
         sqlx::query!("DELETE FROM document_labels WHERE id=$1", one.id)
             .execute(catalog.pool())
             .await
             .unwrap();
         assert_eq!(
             catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
-            500,
-            "the object is still named by the surviving label"
+            500
         );
 
-        // And removing the last label naming it gives the bytes back.
         sqlx::query!("DELETE FROM document_labels WHERE id=$1", two.id)
             .execute(catalog.pool())
             .await
             .unwrap();
         assert_eq!(
-            catalog.usage_bytes(Some(account.id)).await.unwrap(),
-            before,
-            "nothing names the object any more"
+            catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
+            500
+        );
+        sqlx::query!("DELETE FROM documents WHERE id=$1", document.id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), before);
+
+        drop(writer);
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn concurrent_archive_quota_is_checked_at_attach_and_can_be_retried() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let mut options = PostgresOptions::new(url);
+        options.policy.owner_bytes = 100;
+        let catalog = PostgresCatalog::connect(options).await.unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        let tag = new_id().simple().to_string();
+        let account = seed_account(&catalog, &format!("archive-quota-{tag}")).await;
+        let document = seed_document(&catalog, account.id, &format!("archive-quota-{tag}")).await;
+        let make_label = |sequence: i64| NewLabel {
+            id: new_id(),
+            document_id: document.id,
+            source_sequence: sequence,
+            vector: format!("vector-{sequence}").into_bytes(),
+            frontier: format!("frontier-{sequence}").into_bytes(),
+            tree_digest: None,
+            label: None,
+            reason: "restore".into(),
+            request_id: None,
+            author_account_id: Some(account.id),
+            author_label: "Owner".into(),
+        };
+        let (one, two) = {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            let one = catalog.insert_label(&mut tx, &make_label(1)).await.unwrap();
+            let two = catalog.insert_label(&mut tx, &make_label(2)).await.unwrap();
+            tx.commit().await.unwrap();
+            (one, two)
+        };
+        assert!(catalog
+            .request_label_archive(document.id, one.id)
+            .await
+            .unwrap());
+        assert!(catalog
+            .request_label_archive(document.id, two.id)
+            .await
+            .unwrap());
+        let object = |label: &LabelRecord| ArchiveObject {
+            document_id: document.id,
+            storage_key: format!("documents/{}/labels/{}.tar.zst", document.id, label.id),
+            tree_digest: Some(vec![label.sequence as u8; 32]),
+            content_digest: Some(vec![9; 32]),
+            byte_length: 60,
+        };
+        let one_object = object(&one);
+        let two_object = object(&two);
+        let (one_result, two_result) = tokio::join!(
+            catalog.attach_label_archive(one.id, &one_object),
+            catalog.attach_label_archive(two.id, &two_object),
+        );
+        let one_result = one_result.unwrap();
+        let two_result = two_result.unwrap();
+        assert_ne!(
+            one_result == ArchiveAttach::Attached,
+            two_result == ArchiveAttach::Attached
+        );
+        assert_ne!(
+            one_result == ArchiveAttach::RefusedQuota,
+            two_result == ArchiveAttach::RefusedQuota
+        );
+        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), 60);
+
+        let (refused, attached) = if one_result == ArchiveAttach::RefusedQuota {
+            (&one, &two)
+        } else {
+            (&two, &one)
+        };
+        let refused_record = catalog
+            .label(document.id, refused.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(refused_record.archive_requested_at.is_none());
+        assert_eq!(
+            refused_record.archive_error.as_deref(),
+            Some("storage quota exceeded")
         );
 
+        // Free the successful object's quota. The refused request is terminal
+        // until the client explicitly retries; that retry clears the error.
+        sqlx::query("DELETE FROM document_archives WHERE storage_key=$1")
+            .bind(format!(
+                "documents/{}/labels/{}.tar.zst",
+                document.id, attached.id
+            ))
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        assert!(catalog
+            .request_label_archive(document.id, refused.id)
+            .await
+            .unwrap());
+        let retried = catalog
+            .label(document.id, refused.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(retried.archive_requested_at.is_some());
+        assert!(retried.archive_error.is_none());
+        assert_eq!(
+            catalog
+                .attach_label_archive(refused.id, &object(refused))
+                .await
+                .unwrap(),
+            ArchiveAttach::Attached
+        );
+        assert_eq!(catalog.usage_bytes(Some(account.id)).await.unwrap(), 60);
+
+        sqlx::query!("DELETE FROM documents WHERE id=$1", document.id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -1248,6 +2081,13 @@ mod tests {
             .replace_share_links(document.id, &[link("reader", reader)])
             .await
             .expect("the first save writes the reader's link");
+        let original = catalog
+            .share_links(document.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.token_hash == reader.to_vec())
+            .expect("the first reader link");
 
         catalog
             .replace_share_links(
@@ -1280,7 +2120,11 @@ mod tests {
             .iter()
             .find(|row| row.token_hash == reader.to_vec())
             .expect("the reader's link");
-        assert_eq!(kept.generation, 1, "an untouched link has not been rotated");
+        assert_eq!(kept.id, original.id, "an untouched link keeps its row");
+        assert_eq!(
+            kept.created_at, original.created_at,
+            "an untouched link keeps its age"
+        );
 
         catalog
             .replace_share_links(document.id, &[link("commenter", commenter)])
@@ -2175,6 +3019,10 @@ mod tests {
             principal_key: account.id.to_string(),
             account_id: Some(account.id),
             link_hash: None,
+            session_generation: Some(account.session_generation),
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
         };
         let request_id = uuid::Uuid::new_v4();
         let mut command = SetBodyLabel {

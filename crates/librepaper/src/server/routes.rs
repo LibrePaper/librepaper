@@ -539,7 +539,9 @@ pub(super) fn bundled_documentation(path: &str) -> Option<&'static str> {
         "/skills/librepaper-document/references/editing.md" => Some(include_str!(
             "../../../../skills/librepaper-document/references/editing.md"
         )),
-        "/docs/protocol/room-v2.md" => Some(include_str!("../../../../docs/dev/protocol/room-v2.md")),
+        "/docs/protocol/room-v2.md" => {
+            Some(include_str!("../../../../docs/dev/protocol/room-v2.md"))
+        }
         "/docs/protocol/chat.md" => Some(include_str!("../../../../docs/dev/protocol/chat.md")),
         _ => None,
     }
@@ -1371,8 +1373,9 @@ impl Server {
         // this caller's first never asks the store to write anything.
         let now = crate::util::now_unix();
         if who.id.is_signed_in()
+            && !who.automation
             && !entry.owned_by(&who.id.id)
-            && entry.link_role(&who.link, now).is_some()
+            && !entry.account_grants.contains_key(&who.id.id)
             && !entry
                 .guests
                 .iter()
@@ -1380,10 +1383,12 @@ impl Server {
         {
             // Not a reason to refuse the document: the pin is bookkeeping
             // about the visit, and the visit itself is what matters.
-            let _ = self
-                .store
-                .pin_link_guest(slug, &who.id.id, &who.link, who.role)
-                .await;
+            if let Some(source_link) = entry.live_link(&who.link, now) {
+                let _ = self
+                    .store
+                    .pin_link_guest(slug, &who.id.id, &who.link, source_link.granted())
+                    .await;
+            }
         }
         // And what Recent is made of. Written here rather than asked for
         // by the reader, because this request *is* the open: a separate

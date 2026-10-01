@@ -189,8 +189,10 @@ pub struct PatchRequest {
 pub struct AgentAuthority {
     pub account_id: String,
     pub owner_key: String,
+    pub session_generation: String,
     pub link_hash: String,
     pub policy_editor: bool,
+    pub policy_comment: bool,
     /// Trusted endpoint scope (document/account/link/generation/role). This
     /// binds operation ids to the complete authenticated actor context.
     pub operation_scope: String,
@@ -602,9 +604,11 @@ async fn label_for_request(
     request_id: Uuid,
 ) -> Result<Option<LabelRecord>, crate::storage::postgres::Error> {
     sqlx::query_as::<_, LabelRecord>(
-        "SELECT id,document_id,sequence,source_sequence,vector,frontier,tree_digest,label,reason,\
-         request_id,author_account_id,author_label,created_at,archive_requested_at,archive_key,\
-         archive_bytes,archive_error FROM document_labels WHERE document_id=$1 AND request_id=$2",
+        "SELECT l.id,l.document_id,l.sequence,l.source_sequence,l.vector,l.frontier,l.tree_digest,l.label,l.reason,\
+         l.request_id,l.author_account_id,l.author_label,l.created_at,l.archive_requested_at,l.archive_key,\
+         a.byte_length AS archive_bytes,l.archive_error FROM document_labels l \
+         LEFT JOIN document_archives a ON a.document_id=l.document_id AND a.storage_key=l.archive_key \
+         WHERE l.document_id=$1 AND l.request_id=$2",
     )
     .bind(document_id)
     .bind(request_id)
@@ -654,11 +658,13 @@ impl Room {
 
         let catalog = self.catalog().clone();
         let actor = crate::document::store::MutationActor {
-            account_id: String::new(),
-            owner_key: String::new(),
-            session_generation: String::new(),
+            account_id: authority.account_id.clone(),
+            owner_key: authority.owner_key.clone(),
+            session_generation: authority.session_generation.clone(),
             link_hash: authority.link_hash.clone(),
-            policy_editor: false,
+            policy_editor: authority.policy_editor,
+            policy_comment: authority.policy_comment,
+            automation: true,
             unowned_publisher: false,
         };
         let authorization = super::catalog::mutation_authorization(&actor)
@@ -675,6 +681,10 @@ impl Room {
             },
             account_id: authorization.account_id,
             link_hash: authorization.token_hash.map(Vec::from),
+            session_generation: authorization.session_generation,
+            policy_edit: authorization.policy_edit,
+            policy_comment: authorization.policy_comment,
+            automation: authorization.automation,
         };
 
         let request_id = {

@@ -6,7 +6,7 @@
 // manifest is read through. How the order is then coarsened into what the
 // panel shows is checked in history-calendar.mjs.
 
-import { read, labelOrder, loadWithStatus } from "../../src/lib/history.js";
+import { read, labelOrder, loadWithStatus, requestArchive } from "../../src/lib/history.js";
 
 let failures = 0;
 function check(what, condition) {
@@ -108,6 +108,21 @@ const order = (points) => [...points].sort(labelOrder).map((point) => point.sha)
       point.files["figure.png"].sha === "deadbeef");
     check("and keeps digest too, since nothing needs it hidden",
       point.files["figure.png"].digest === "deadbeef");
+  } finally { globalThis.fetch = originalFetch; }
+}
+
+{
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async url => {
+    urls.push(url);
+    return { ok: true, json: async () => ({ archive_status: "pending" }) };
+  };
+  try {
+    await requestArchive("paper", "abc");
+    await requestArchive("paper", "abc", {}, true);
+    check("ordinary archive polls do not opt into retry", urls[0] === "/api/documents/paper/history/abc?archive=1");
+    check("a fresh archive download can explicitly retry", urls[1] === "/api/documents/paper/history/abc?archive=1&retry=1");
   } finally { globalThis.fetch = originalFetch; }
 }
 

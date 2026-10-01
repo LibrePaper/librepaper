@@ -502,7 +502,7 @@ impl Server {
             return response;
         }
         let label_id = uuid::Uuid::parse_str(sha).expect("checked above");
-        let label = match self.store.catalog.label(room.document_id, label_id).await {
+        let mut label = match self.store.catalog.label(room.document_id, label_id).await {
             Ok(Some(label)) => label,
             Ok(None) => return plain(404, "not found"),
             Err(error) => return refused("read the catalogue", &error.into()),
@@ -510,8 +510,14 @@ impl Server {
         let wants_archive = query.is_some_and(|raw| {
             url::form_urlencoded::parse(raw.as_bytes()).any(|(k, v)| k == "archive" && v != "0")
         });
+        let retry_archive = query.is_some_and(|raw| {
+            url::form_urlencoded::parse(raw.as_bytes()).any(|(k, v)| k == "retry" && v == "1")
+        });
         if wants_archive {
-            if label.archive_key.is_none() && label.archive_requested_at.is_none() {
+            let should_request = label.archive_key.is_none()
+                && ((label.archive_requested_at.is_none() && label.archive_error.is_none())
+                    || (retry_archive && label.archive_error.is_some()));
+            if should_request {
                 if let Err(error) = self
                     .store
                     .catalog
@@ -525,9 +531,18 @@ impl Server {
                 }
                 self.background
                     .ask(crate::storage::worker::Task::Archive(label_id));
+                // An explicit retry clears the old terminal error during
+                // admission. Return the row after that write so the caller
+                // sees pending (or a fast worker's ready result), not the
+                // stale failed state it asked us to retry.
+                label = match self.store.catalog.label(room.document_id, label_id).await {
+                    Ok(Some(label)) => label,
+                    Ok(None) => return plain(404, "not found"),
+                    Err(error) => return refused("read the catalogue", &error.into()),
+                };
             }
             let mut response = write_json(
-                if label.archive_key.is_some() {
+                if label.archive_key.is_some() || label.archive_error.is_some() {
                     200
                 } else {
                     202
@@ -673,7 +688,7 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        let authority = who.document_authority();
+        let authority = who.document_authority(self.ceiling_for(&who.id));
         let label_id = if current {
             // `Room::take_label` rather than a second label command of this
             // module's own: that one had no §7.2 replay lookup, so a retry
@@ -805,7 +820,7 @@ impl Server {
                 assets.push((path.clone(), file.digest.clone()));
             }
         }
-        let authority = current_who.document_authority();
+        let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
         let author_account_id = uuid::Uuid::parse_str(&current_who.id.id).ok();
         let mut command = Restore {
             request_id: uuid::Uuid::new_v4(),

@@ -270,14 +270,15 @@ impl Server {
             };
 
         let request_id = key.scoped_request_id(actor);
-        let authority = who.document_authority();
+        let ceiling = self.ceiling_for(&who.id);
+        let authority = who.document_authority(ceiling);
         // Who is writing, built once and carried whole, the same shape the
         // socket and the REST route build.
         let writer = room::CommentAuthor::new(
             creator.clone(),
             uuid::Uuid::parse_str(&who.id.id).ok(),
             author.clone(),
-            who.mutation_authorization(self.ceiling_for(&who.id).edit),
+            who.mutation_authorization(ceiling),
             who.at_least(Role::Editor),
         );
         let catalog = room.catalog().clone();

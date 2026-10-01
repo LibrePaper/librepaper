@@ -370,9 +370,9 @@ pub(crate) enum AdminCommand {
     /// compaction base or a label archive (§8.5); anything else under the
     /// object store's prefixes is left over from a crash between writing
     /// bytes and committing the row that would have named them. Reclaiming
-    /// it means listing the store, which is why this is a command an
-    /// operator runs after a bug rather than something a boot does.
-    // For cleaning up after a crash and routine cleanup runs inside the server
+    /// it means listing the store. The service reclaims old orphan objects
+    /// in bounded periodic sweeps; this command lets an operator request
+    /// cleanup directly.
     #[command(hide = true)]
     Sweep {
         #[command(flatten)]

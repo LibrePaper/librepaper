@@ -99,13 +99,12 @@ export async function read(slug, sha, headers = {}) {
 }
 
 /// Asks for a version's plain-source archive (room-v2.md "Labels" and
-/// §8.5): the first call with `archive=1` requests one if none is pending or
-/// ready yet, and every call -- this one included -- reports where that
-/// request stands. There is no separate poll endpoint; a caller wanting the
-/// wait to end asks this same question again until `archive_status` reads
-/// `"ready"` or `"failed"`.
-export async function requestArchive(slug, sha, headers = {}) {
-  const response = await fetch(`/api/documents/${slug}/history/${sha}?archive=1`, {
+/// §8.5): the first call requests one if none is pending or ready yet, and
+/// every call reports where that request stands. Polls leave terminal
+/// failures alone; a fresh download can explicitly retry one.
+export async function requestArchive(slug, sha, headers = {}, retry = false) {
+  const query = retry ? "archive=1&retry=1" : "archive=1";
+  const response = await fetch(`/api/documents/${slug}/history/${sha}?${query}`, {
     headers: asked(headers),
     cache: "no-store",
   });

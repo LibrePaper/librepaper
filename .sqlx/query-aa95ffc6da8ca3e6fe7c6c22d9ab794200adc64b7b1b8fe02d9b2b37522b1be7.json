@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT document_id,base_id AS \"base_id!\",\n                      through_update_sequence AS \"through_update_sequence!\",vector AS \"vector!\",\n                      snapshot_key,snapshot_digest AS \"snapshot_digest!\",\n                      snapshot_bytes AS \"snapshot_bytes!\",updated_at AS \"updated_at!\"\n               FROM document_snapshots WHERE document_id=$1 AND delete_after IS NULL",
+  "query": "SELECT document_id,\n                      through_update_sequence AS \"through_update_sequence!\",vector AS \"vector!\",\n                      snapshot_key,snapshot_digest AS \"snapshot_digest!\",\n                      snapshot_bytes AS \"snapshot_bytes!\",updated_at AS \"updated_at!\"\n               FROM document_snapshots WHERE document_id=$1 AND delete_after IS NULL",
   "describe": {
     "columns": [
       {
@@ -10,36 +10,31 @@
       },
       {
         "ordinal": 1,
-        "name": "base_id!",
-        "type_info": "Uuid"
-      },
-      {
-        "ordinal": 2,
         "name": "through_update_sequence!",
         "type_info": "Int8"
       },
       {
-        "ordinal": 3,
+        "ordinal": 2,
         "name": "vector!",
         "type_info": "Bytea"
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "snapshot_key",
         "type_info": "Text"
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "snapshot_digest!",
         "type_info": "Bytea"
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "snapshot_bytes!",
         "type_info": "Int8"
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "updated_at!",
         "type_info": "Timestamptz"
       }
@@ -53,12 +48,11 @@
       false,
       true,
       true,
-      true,
       false,
       true,
       true,
       true
     ]
   },
-  "hash": "fd028f79f359397381a522339969eefefb14b7531df9accbc591971c763aaec1"
+  "hash": "aa95ffc6da8ca3e6fe7c6c22d9ab794200adc64b7b1b8fe02d9b2b37522b1be7"
 }

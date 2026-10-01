@@ -128,11 +128,11 @@ async fn bare_with_config(slug: &str, config: Configuration) -> Option<Bare> {
         .create_document(NewDocument {
             slug: slug.into(),
             owner_id: account.id,
+            owner_session_generation: None,
             ownership_mode: "owned".into(),
             title: "Spike".into(),
             source_format: "markdown".into(),
             main_path: "paper.md".into(),
-            settings: serde_json::json!({}),
         })
         .await
         .expect("create the document row");
@@ -827,6 +827,8 @@ async fn deployment_with_document(slug: &str) -> Option<Deployment> {
         session_generation: account.session_generation.to_string(),
         link_hash: String::new(),
         policy_editor: true,
+        policy_comment: true,
+        automation: false,
         unowned_publisher: false,
     };
     store
@@ -858,6 +860,10 @@ impl Deployment {
             principal_key: self.account_id.to_string(),
             account_id: Some(self.account_id),
             link_hash: None,
+            session_generation: Some(1),
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
         }
     }
 
@@ -876,9 +882,11 @@ impl Deployment {
         MutationAuthorization {
             principal_key: self.account_id.to_string(),
             account_id: Some(self.account_id),
-            session_generation: None,
+            session_generation: Some(1),
             token_hash: None,
-            policy_editor: true,
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
         }
     }
 }
@@ -1247,11 +1255,11 @@ async fn opening_more_documents_than_the_budget_holds_evicts_a_subscribed_entry_
             .create_document(NewDocument {
                 slug: slug.clone(),
                 owner_id: account.id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "Spike".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: serde_json::json!({}),
             })
             .await
             .unwrap();
@@ -1695,11 +1703,11 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
             .create_document(NewDocument {
                 slug: slug.clone(),
                 owner_id: account.id,
+                owner_session_generation: None,
                 ownership_mode: "owned".into(),
                 title: "Sweep".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: serde_json::json!({}),
             })
             .await
             .expect("document row");

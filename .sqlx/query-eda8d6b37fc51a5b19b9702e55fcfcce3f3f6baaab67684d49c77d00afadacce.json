@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE share_links SET revoked_at=now()\n             WHERE document_id=$1 AND id=$2 AND revoked_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eda8d6b37fc51a5b19b9702e55fcfcce3f3f6baaab67684d49c77d00afadacce"
+}

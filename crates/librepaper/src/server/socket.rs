@@ -1023,7 +1023,7 @@ impl Server {
                                         &why,
                                         None,
                                         who.authorship(&author),
-                                        &who.document_authority(),
+                                        &who.document_authority(self.ceiling_for(&who.id)),
                                         request_id,
                                     )
                                     .await;
@@ -1172,7 +1172,7 @@ impl Server {
                                     resume: incoming.resume(),
                                     stored: None,
                                 };
-                                match room.command(&who.document_authority(), &mut command).await {
+                                match room.command(&who.document_authority(self.ceiling_for(&who.id)), &mut command).await {
                                     Ok(stored) => {
                                         announce_proposal(&room, &stored.id.to_string()).await;
                                         json!({
@@ -1284,7 +1284,7 @@ impl Server {
                                     decided: Vec::new(),
                                     carried: Vec::new(),
                                 };
-                                match room.command(&who.document_authority(), &mut command).await {
+                                match room.command(&who.document_authority(self.ceiling_for(&who.id)), &mut command).await {
                                     Ok(stored) => {
                                         announce_proposal(&room, incoming.proposal_id()).await;
                                         json!({
@@ -1417,7 +1417,7 @@ impl Server {
                                     total_hunks: 0,
                                     final_decisions: Vec::new(),
                                 };
-                                match room.command(&who.document_authority(), &mut command).await {
+                                match room.command(&who.document_authority(self.ceiling_for(&who.id)), &mut command).await {
                                     // The merge (and any reverts a partial
                                     // accept needed) was already relayed by
                                     // the sequencer itself, as the source this
@@ -1462,7 +1462,7 @@ impl Server {
                                         catalog: room.catalog().clone(),
                                         id: proposal_id,
                                     };
-                                    match room.command(&who.document_authority(), &mut command).await {
+                                    match room.command(&who.document_authority(self.ceiling_for(&who.id)), &mut command).await {
                                         Ok(discarded) => {
                                             for comment_id in discarded.removed_comments {
                                                 let event = room.prepare_comment_event(&json!({

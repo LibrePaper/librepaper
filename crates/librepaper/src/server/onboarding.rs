@@ -149,6 +149,8 @@ impl Server {
             // private starter set, while ordinary document creation remains
             // governed by that policy at its request boundary.
             policy_editor: true,
+            policy_comment: true,
+            automation: false,
             unowned_publisher: false,
         };
         for (position, starter) in STARTERS.iter().enumerate() {
@@ -217,10 +219,15 @@ impl Server {
         account_id: uuid::Uuid,
         days: u32,
     ) -> Result<(), String> {
+        let owner_session_generation: i64 = actor
+            .session_generation
+            .parse()
+            .map_err(|_| "invalid onboarding session".to_string())?;
         let document = catalog
             .create_document(crate::storage::postgres::NewDocument {
                 slug: slug.to_string(),
                 owner_id: account_id,
+                owner_session_generation: Some(owner_session_generation),
                 ownership_mode: if actor.unowned_publisher {
                     "open".into()
                 } else {
@@ -229,7 +236,6 @@ impl Server {
                 title: starter.title.into(),
                 source_format: starter.format.into(),
                 main_path: starter.main.into(),
-                settings: serde_json::json!({"version":1}),
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -238,9 +244,9 @@ impl Server {
             .iter()
             .map(|(path, bytes)| ((*path).into(), bytes.to_vec()))
             .collect();
-        let (texts, assets) = self
+        let (texts, assets, staged_assets) = self
             .store
-            .sort_and_write_assets(document.id, files)
+            .sort_and_stage_assets(document.id, files)
             .await
             .map_err(|e| e.to_string())?;
         let texts: std::collections::BTreeMap<String, String> = texts.into_iter().collect();
@@ -256,7 +262,9 @@ impl Server {
             starter.source,
             &texts,
             &assets,
+            staged_assets,
             account_id,
+            owner_session_generation,
             &author_label,
             days,
         )

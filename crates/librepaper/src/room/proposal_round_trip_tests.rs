@@ -50,6 +50,10 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         principal_key: account.id.to_string(),
         account_id: Some(account.id),
         link_hash: None,
+        session_generation: Some(account.session_generation),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
     };
     let objects = tempfile::tempdir().unwrap();
     let blobs: Arc<dyn crate::storage::blob::BlobStore> =
@@ -84,6 +88,8 @@ async fn deployment(slug: &str) -> Option<Deployment> {
                 session_generation: account.session_generation.to_string(),
                 link_hash: String::new(),
                 policy_editor: true,
+                policy_comment: true,
+                automation: false,
                 unowned_publisher: false,
             },
         )

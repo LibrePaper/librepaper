@@ -150,13 +150,14 @@ pub(super) async fn handle_pair_request(
                 let mut pending = inner_clone.pending_pairs.lock().await;
                 if let Some(item) = pending.get_mut(&request_id_clone) {
                     if item.expires > Instant::now() {
-                        let (token, expires) = match inner_clone.pairing.issue(&origin_clone, "native dialog") {
-                            Ok(issued) => issued,
-                            Err(_) => {
-                                item.refused = true;
-                                return;
-                            }
-                        };
+                        let (token, expires) =
+                            match inner_clone.pairing.issue(&origin_clone, "native dialog") {
+                                Ok(issued) => issued,
+                                Err(_) => {
+                                    item.refused = true;
+                                    return;
+                                }
+                            };
                         item.token = Some((token, expires));
                     }
                 }
@@ -279,12 +280,7 @@ pub(super) async fn handle_disconnect(
     // against credentials the user believes they have taken back.
     let connections =
         super::super::connections::ConnectionStore::new(&inner.state_home).remove_origin(&origin);
-    inner
-        .previews
-        .lock()
-        .await
-        .stop_origin(&origin)
-        .await;
+    inner.previews.lock().await.stop_origin(&origin).await;
     write_json(
         200,
         &json!({"ok": true, "connections_removed": connections}),

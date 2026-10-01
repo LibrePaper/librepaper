@@ -209,6 +209,7 @@ impl PostgresCatalog {
     /// Moves a proposal's branch to a new tip, conditional on the version the
     /// caller read. An exact already-stored payload is a no-op success for a
     /// resend after a lost acknowledgement.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_proposal_branch(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
