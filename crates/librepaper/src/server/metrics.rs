@@ -56,7 +56,6 @@ pub struct Metrics {
     requests: Vec<AtomicU64>,
     histogram_buckets: Vec<AtomicU64>,
     histogram_sum_micros: Vec<AtomicU64>,
-    histogram_count: Vec<AtomicU64>,
     refusals: Vec<AtomicU64>,
     gauges: RwLock<Vec<(&'static str, f64)>>,
     snapshot_success: AtomicU64,
@@ -75,9 +74,6 @@ impl Default for Metrics {
                 .map(|_| AtomicU64::new(0))
                 .collect(),
             histogram_sum_micros: (0..route_method_count)
-                .map(|_| AtomicU64::new(0))
-                .collect(),
-            histogram_count: (0..route_method_count)
                 .map(|_| AtomicU64::new(0))
                 .collect(),
             refusals: (0..REFUSALS.len()).map(|_| AtomicU64::new(0)).collect(),
@@ -106,11 +102,8 @@ impl Metrics {
             .iter()
             .position(|edge| seconds <= *edge)
             .unwrap_or(HISTOGRAM_EDGES_SECONDS.len());
-        self.histogram_buckets[
-            route_method * (HISTOGRAM_EDGES_SECONDS.len() + 1) + bucket,
-        ]
+        self.histogram_buckets[route_method * (HISTOGRAM_EDGES_SECONDS.len() + 1) + bucket]
             .fetch_add(1, Ordering::Relaxed);
-        self.histogram_count[route_method].fetch_add(1, Ordering::Relaxed);
         self.histogram_sum_micros[route_method].fetch_add(
             elapsed.as_micros().min(u128::from(u64::MAX)) as u64,
             Ordering::Relaxed,
@@ -240,13 +233,20 @@ impl Metrics {
         for route in 0..ROUTES.len() {
             for method in 0..METHODS.len() {
                 let index = route * METHODS.len() + method;
-                let count = self.histogram_count[index].load(Ordering::Relaxed);
-                if count == 0 { continue; }
+                let bucket_counts: [u64; HISTOGRAM_EDGES_SECONDS.len() + 1] =
+                    std::array::from_fn(|bucket| {
+                        self.histogram_buckets
+                            [index * (HISTOGRAM_EDGES_SECONDS.len() + 1) + bucket]
+                            .load(Ordering::Relaxed)
+                    });
+                if bucket_counts.iter().all(|count| *count == 0) { continue; }
                 let mut cumulative = 0;
                 for bucket in 0..HISTOGRAM_EDGES_SECONDS.len() {
-                    cumulative += self.histogram_buckets[index * (HISTOGRAM_EDGES_SECONDS.len() + 1) + bucket].load(Ordering::Relaxed);
+                    let bucket_count = bucket_counts[bucket];
+                    cumulative += bucket_count;
                     out.push_str(&format!("librepaper_http_request_duration_seconds_bucket{{route=\"{}\",method=\"{}\",le=\"{}\"}} {}\n", ROUTES[route], METHODS[method], HISTOGRAM_EDGES_SECONDS[bucket], cumulative));
                 }
+                let count: u64 = bucket_counts.iter().sum();
                 out.push_str(&format!("librepaper_http_request_duration_seconds_bucket{{route=\"{}\",method=\"{}\",le=\"+Inf\"}} {}\n", ROUTES[route], METHODS[method], count));
                 let sum = self.histogram_sum_micros[index].load(Ordering::Relaxed) as f64 / 1_000_000.0;
                 out.push_str(&format!("librepaper_http_request_duration_seconds_sum{{route=\"{}\",method=\"{}\"}} {:.6}\n", ROUTES[route], METHODS[method], sum));
@@ -465,6 +465,7 @@ mod tests {
         let metrics = Metrics::new();
         let started = Instant::now();
         metrics.record_middleware_result("api_status", "GET", 421, started);
+        metrics.update_gauges(&serde_json::json!({"rooms":{"documents":1}}), &crate::config::Configuration::default());
         let text = metrics.render();
         assert!(text.contains("route=\"api_status\",method=\"GET\",status_class=\"4xx\"} 1"));
 
@@ -485,6 +486,51 @@ mod tests {
         let text = metrics.render();
         assert!(text.contains("librepaper_metrics_snapshot_success 0\n"));
         assert!(text.contains(&format!("librepaper_metrics_snapshot_timestamp_seconds {timestamp}\n")));
+    }
+
+    #[test]
+    fn concurrent_histogram_render_keeps_buckets_and_count_consistent() {
+        let metrics = Arc::new(Metrics::new());
+        let workers: Vec<_> = (0..4)
+            .map(|worker| {
+                let metrics = metrics.clone();
+                std::thread::spawn(move || {
+                    for sample in 0..2_000 {
+                        let millis = ((sample + worker) % 30 + 1) as u64;
+                        metrics.record_request("health", "GET", 200, Duration::from_millis(millis));
+                    }
+                })
+            })
+            .collect();
+
+        for _ in 0..100 {
+            let text = metrics.render();
+            let mut cumulative = Vec::new();
+            let mut count = None;
+            let mut total = None;
+            for line in text.lines() {
+                if line.starts_with("librepaper_http_request_duration_seconds_bucket{route=\"health\",method=\"GET\",") {
+                    let value = line.split_whitespace().nth(1).unwrap().parse::<u64>().unwrap();
+                    if line.contains("le=\"+Inf\"") {
+                        total = Some(value);
+                    } else {
+                        cumulative.push(value);
+                    }
+                } else if line.starts_with("librepaper_http_request_duration_seconds_count{route=\"health\",method=\"GET\"}") {
+                    count = Some(line.split_whitespace().nth(1).unwrap().parse::<u64>().unwrap());
+                }
+            }
+            assert!(cumulative.windows(2).all(|pair| pair[0] <= pair[1]));
+            if let (Some(total), Some(count)) = (total, count) {
+                assert_eq!(cumulative.last().copied(), Some(total));
+                assert_eq!(total, count);
+            }
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let text = metrics.render();
+        assert!(text.contains("librepaper_http_request_duration_seconds_count{route=\"health\",method=\"GET\"} 8000"));
     }
 
     #[test]
