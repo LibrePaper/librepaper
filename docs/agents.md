@@ -2,87 +2,42 @@
 title: "Agents"
 ---
 
-Give an agent a LibrePaper link and it can work on the document with that link's permissions. A comment link annotates and suggests; an edit link also changes source. There is no read-only assistant: the document's tool surface admits a commenter at minimum, so a read link would give an agent no tools at all. Every link requires a signed-in account, and signing in does not widen what the link grants.
+No additional subscription is needed. Use the coding agent you already have and are already signed in to: Claude Code, Codex, Pi or opencode. LibrePaper never sees your model or your credentials, and no inference runs on the LibrePaper server.
 
-Connecting an agent is a click in the sidebar, not a prompt you paste. The browser cannot install software or start processes, and asking a language model to do it on the browser's behalf is exactly what a coding agent's permission system is built to refuse. So the local LibrePaper app does it instead: the browser asks the computer directly, and every step is either one command a person types or one button a person presses.
+The [Agent Client Protocol](https://agentclientprotocol.com) (ACP) is how the local app starts your agent and talks to it: it sends your requests and relays the agent's permission requests to the sidebar. The [Model Context Protocol](https://modelcontextprotocol.io) (MCP) is how the agent reaches the document: it gets tools to read, comment, suggest changes and, with edit access, apply them.
 
-## Setup, once per computer
+## The local app
 
-Install the app and pair this browser with it. Click Connect in the sidebar and allow it in the dialog the app shows. On a computer with no display, the app prints a `librepaper local approve` command instead; run it in a terminal. This is the same pairing the local compiler uses, so if you already paired for Quarto or native TeX there is nothing to do.
+A browser cannot start programs on your computer, so the LibrePaper local app does it. It finds the coding agents installed on your computer, starts the one you pick, and hands it the document tools. The same app renders Quarto and Typst with your native tools. Pair it once per browser: click Connect in the Agent sidebar and allow it in the dialog the app shows.
+
+## Install
 
 ```sh
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
 ```
 
-Afterwards the sidebar lists the coding agents actually installed on that machine, because only the local app can read a PATH.
-
-## Starting the assistant
-
-Pick an agent, pick what it may do, and press **Start assistant**. The local app starts a session for it, right inside itself rather than as a separate program, and that session drives the agent you chose. You then work with it in the sidebar: ask for changes in **Chat**, or pick one from **Tasks** with a passage selected.
-
-That is the only way an agent is connected. LibrePaper never writes another tool's configuration and there is no separate terminal mode: the document, the conversation and the review interface are in one place, which is the point.
-
-Bring your own model is literal here: the agent you picked is already installed and already signed in, LibrePaper never sees a model name or a credential, and no inference runs on the document server. The sidebar names the running agent, so the claim is checkable rather than asserted.
-
-The document reaches the session as an MCP server handed to the agent over ACP. While the browser page is open, it silently renews a five-minute token scoped to that document and link. This lets the browser-started local agent work without a second login. A headless CLI session has no browser to renew that token, so it uses `librepaper login`. The model uses `document_read`, `document_propose`, `document_apply`, `document_comment` and `document_result`; document links and tokens are never MCP tool arguments. The session hands its agent an MCP server command that names a private connection rather than a link; the agent starts that command itself, as its own separate process:
-
-```
-librepaper mcp --connection runner-3f7a9c1b2d0e4f5a6b7c
-```
-
-This computer holds what that name means, so a document key never reaches a command line, a shell history or a transcript, and a rotated link is repaired in one place. The record is written by the local app itself, not typed by hand; disconnecting the site from the app drops it, along with everything else that origin registered.
-
-Agents differ in how they reach ACP, and the sidebar says which case yours is rather than leaving you to find out:
-
-| Agent | Route | What the sidebar does |
-|---|---|---|
-| opencode | `opencode acp`, native | Starts it; no adapter, nothing to fetch |
-| Gemini CLI | `gemini --experimental-acp`, native | Starts it |
-| Claude Code | separate npm package | Fetched on first start; the panel says so beforehand |
-| Pi | `npx -y pi-acp` | Same, plus a note in the panel that the adapter's MCP support is incomplete, so the document tools may not reach it |
-| Codex | separate binary | Names the missing adapter instead of hiding the button |
-
-Nothing is fetched without the panel saying so first.
-
-For anything else, including agents LibrePaper has never heard of, tell this computer how to run it:
+## Run
 
 ```sh
+librepaper local start              # start in the background
+librepaper local start --at-login   # also start every time you log in
+librepaper local status             # address, pairings, tools and agents found
+librepaper local stop               # stop it
+
+# Any other ACP agent: everything after -- is its command
 librepaper local agent add myagent --label "My Agent" -- myagent --acp
 ```
 
-It then appears in the sidebar's agent list like any other. `librepaper local agent list` and `remove` manage the declarations. This is a local command rather than a sidebar field on purpose: the browser chooses *which* agent to drive, never *what command* to run, the same rule the build protocol follows by refusing a caller-supplied command.
+## In the document
 
-Declaring an id that is already in the table overrides how that agent is driven rather than adding a second entry for it, so a changed entry point or a locally built adapter wins over the compiled-in default. The table is a starting guess; this computer is the authority.
+The Local button in the document's top bar shows a green dot when the app is connected. Click it for the local app settings.
 
-The browser reports queued work, progress, completion and failures. Follow-up requests can be submitted while a task runs. Cancellation stops active work where supported and never undoes document changes already made. Permission requests from the agent appear in the sidebar with the options the agent itself offered.
+![The Local button in the document's top bar.](../images/agent-local-button.png)
 
-What a task achieved is read from the operation journal, where every receipt the document service issued is recorded. The agent is asked for an answer in prose and nothing else, so no model can report a suggestion it did not create.
+In the Agent sidebar's Chat tab, pick the agent and its access (Comment or Edit), then type a request. Sending starts the agent.
 
-## Skills
+![The Chat tab of the Agent sidebar.](../images/agent-chat.png)
 
-LibrePaper bundles two agent skills and their reference files in the binary, and every deployment serves them over HTTP at `/skills/<name>/SKILL.md`. An agent can read them from there without installing anything.
+The Tasks tab holds ready-made requests: proofread, tighten or rewrite a selected passage, check citations, summarize the document.
 
-- [`librepaper-document`](https://github.com/LibrePaper/librepaper/blob/main/skills/librepaper-document/SKILL.md): read, comment on, and edit through the configured MCP tools.
-- [`librepaper-write`](https://github.com/LibrePaper/librepaper/blob/main/skills/librepaper-write/SKILL.md): proofread, tighten, rewrite, and explain with anchored suggestions an editor reviews.
-
-Neither is needed: the session supplies the writing instructions to the agent it starts. Install them on disk only if you also use those conventions elsewhere.
-
-```sh
-npx skills add LibrePaper/librepaper
-```
-
-The skills teach agents to use LibrePaper's MCP tools. Direct document operations are deliberately not duplicated as shell commands.
-
-## Workflows and review interface
-
-Select a passage to Tighten, Rewrite, or Explain. Address a comment from its thread, or ask the assistant to fix a diagnostic. Requests carry their captured source context and revision. Suggestions use the ordinary review interface, with Accept, Reject, and Refine; refinement updates the existing proposal and refuses changes to a proposal that was already decided or modified elsewhere.
-
-`document_read` provides focused queries for files, headings, source sections, passages, comment threads, bibliography source, and changes since a checkpoint.
-
-Candidate verification uses the browser's renderer on temporary source files. It does not apply the candidate to the collaborative document. A render result belongs to that candidate revision; unavailable renderers or a disconnected browser cannot produce a successful verification.
-
-## Local state and session management
-
-The local app keeps task continuity and writing preferences locally, in the session it runs for that conversation. The browser keeps its assistant history on the same device. The document server relays messages without storing transcripts. Reconnection reconciles known task IDs; it does not blindly repeat uncertain work. Use the panel's New conversation control to clear its history and start a fresh channel, and the sidebar's Stop control to detach the assistant.
-
-See the [assistant protocol](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/protocol/chat.md) and [document operations](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/protocol/room-v2.md).
+![The Tasks tab of the Agent sidebar.](../images/agent-tasks.png)
