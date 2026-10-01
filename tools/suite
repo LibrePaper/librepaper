@@ -43,7 +43,7 @@ suite_browser() {
 		else
 			echo FAILED
 			failed="$failed $(basename "$test")"
-			sed 's/^/    /' "$log" | tail -8
+			sed 's/^/    /' "$log" | tail -40
 		fi
 	done
 	[ -z "$failed" ] || { echo "failed:$failed"; return 1; }
