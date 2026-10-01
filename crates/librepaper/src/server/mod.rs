@@ -67,8 +67,6 @@ mod quota;
 mod reply;
 #[cfg(test)]
 mod restore_http_tests;
-#[cfg(test)]
-mod trim_http_tests;
 mod routes;
 pub mod serve;
 mod sharing;
@@ -77,6 +75,8 @@ mod signin;
 mod socket;
 pub mod socket_budget;
 mod suggestions;
+#[cfg(test)]
+mod trim_http_tests;
 
 pub use reply::*;
 pub use routes::*;
