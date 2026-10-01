@@ -27,7 +27,7 @@ const only = process.argv[2];
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 const rows = (await readFile(lock, "utf8"))
-  .split("\n")
+  .split(/\r?\n/)
   .map((line) => line.replace(/#.*$/, "").trim())
   .filter(Boolean)
   .map((line) => {

@@ -23,7 +23,7 @@ const lockPath = join(root, "assets.lock");
 const lock = await readFile(lockPath, "utf8");
 const expected = new Map([["markdown.wasm", "wasm-markdown"], ["bibliography.wasm", "wasm-bibliography"], ["citations.wasm", "wasm-bibliography"], ["typst.wasm", "wasm-typst"]]);
 const rows = [];
-for (const raw of lock.split("\n")) {
+for (const raw of lock.split(/\r?\n/)) {
   const line = raw.replace(/#.*$/, "").trim();
   if (!line) continue;
   const fields = line.split(/\s+/);
@@ -41,7 +41,7 @@ const sumsText = sumsFile
       return response.text();
     })();
 const sums = new Map();
-for (const line of sumsText.split("\n")) {
+for (const line of sumsText.split(/\r?\n/)) {
   const fields = line.trim().split(/\s+/);
   if (!line.trim()) continue;
   if (fields.length !== 2 || !/^[a-f0-9]{64}$/.test(fields[0])) throw new Error(`invalid SHA256SUMS line: ${line}`);

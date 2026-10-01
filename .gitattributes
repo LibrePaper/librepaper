@@ -1,0 +1,2 @@
+# One line ending everywhere: the lock files are parsed and hashed, and a CRLF checkout on Windows broke both.
+* text=auto eol=lf

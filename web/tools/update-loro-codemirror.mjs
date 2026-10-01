@@ -24,7 +24,7 @@ const repository = (text.match(/^repository\s+(\S+)$/m) || [])[1];
 if (!repository) throw new Error("loro-codemirror.lock does not name a repository");
 
 const paths = text
-  .split("\n")
+  .split(/\r?\n/)
   .map((line) => line.replace(/#.*$/, "").trim())
   .filter((line) => line && !line.startsWith("repository ") && !line.startsWith("commit "))
   .map((line) => line.split(/\s+/)[0]);
@@ -40,7 +40,7 @@ for (const path of paths) {
 
 const width = Math.max(...paths.map((path) => path.length)) + 2;
 const updated = text
-  .split("\n")
+  .split(/\r?\n/)
   .map((line) => {
     if (/^commit\s+/.test(line)) return `commit      ${commit}`;
     const bare = line.replace(/#.*$/, "").trim();

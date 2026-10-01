@@ -60,7 +60,7 @@ async function main() {
   const lock = await readFile(lockPath, "utf8");
 
   // Parse lock file, validate structure.
-  const lines = lock.split("\n");
+  const lines = lock.split(/\r?\n/);
   const outputLines = [];
   let latexLineIndex = -1;
   let latexLineOriginal = "";

@@ -28,7 +28,7 @@ const out = join(root, "web/vendor/loro-codemirror");
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 const lines = (await readFile(lock, "utf8"))
-  .split("\n")
+  .split(/\r?\n/)
   .map((line) => line.replace(/#.*$/, "").trim())
   .filter(Boolean);
 
