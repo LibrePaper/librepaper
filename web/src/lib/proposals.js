@@ -985,7 +985,7 @@ export function createProposals({ session, send, mayEdit }) {
         if (!draft) return;
         draft.opened = true;
         draft.openPending = false;
-        draft.error = "";
+        if (!draft.resolutionBlocked) draft.error = "";
         clearTimeout(draft.retryTimer);
         draft.retryTimer = null;
         draft.retryable = false;
@@ -997,6 +997,11 @@ export function createProposals({ session, send, mayEdit }) {
         // Only treat our current branch as stored when its exact tip matches.
         const currentTip = encodeBase64(encodeFrontiers(draft.branch.frontiers()));
         if (draft.ackTipBytes === currentTip) draft.ackOwn = ownOps(draft);
+        // A delayed status response must not clear or retry a blocked recovery.
+        if (draft.resolutionBlocked) {
+          changed();
+          return;
+        }
         changed();
         if (draft.discarding) {
           const requestId = draft.discardRequestId || crypto.randomUUID();
@@ -1022,6 +1027,11 @@ export function createProposals({ session, send, mayEdit }) {
           draft.baseMoved = false;
         }
         draft.inflight = null;
+        // The resolution frame can precede its update ack; retain the recovery copy.
+        if (draft.resolutionBlocked) {
+          changed();
+          return;
+        }
         draft.error = "";
         if (draft.resolutionPending) finishResolution(draft);
         else if (draft === proposal && ownOps(draft) !== draft.ackOwn) flushDraft(draft);
@@ -1048,6 +1058,15 @@ export function createProposals({ session, send, mayEdit }) {
           item.id === requestId || item.inflight?.requestId === requestId ||
           item.discardRequestId === requestId);
         if (!draft) return;
+        if (draft.resolutionBlocked) {
+          clearTimeout(draft.retryTimer);
+          draft.retryTimer = null;
+          draft.retryable = false;
+          if (draft.openPending && requestId === draft.id) draft.openPending = false;
+          if (draft.inflight?.requestId === requestId) draft.inflight = null;
+          changed();
+          return;
+        }
         if (message.status_unknown === true) {
           draft.error = "the saved proposal outcome has expired; local draft preserved for manual recovery";
           draft.resolutionBlocked = true;
