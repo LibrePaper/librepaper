@@ -3172,6 +3172,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rfd",
  "rmcp",
+ "rustls",
  "serde",
  "serde_json",
  "serde_yaml",
