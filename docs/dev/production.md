@@ -143,6 +143,7 @@ tools/deploy-production deploy-local target/x86_64-unknown-linux-musl/release/li
 - `deploy VERSION` accepts only canonical `vMAJOR.MINOR.PATCH` tags at `v0.0.9` or later. It refuses `v0.0.8` before any remote write because that binary has no metrics endpoint. The default version comes from Cargo.toml and is subject to the same guard.
 - `make site` needs bun; the site is served from `~/librepaper/site` through `compose.override.yaml`
 - `deploy-local BINARY` accepts a previously built Linux musl executable. It uploads the file to a temporary name, compares SHA-256 checksums, then atomically replaces the kit binary and builds `Dockerfile.local`. Supported targets are x86_64 and aarch64. A normal release deployment resets this local-build override.
+- The official deployment sets each publisher's storage quota to 50 MiB and upload limit to 30 per hour through `.env`; these limits apply to both release and local-binary deployments.
 - Domain, redirects, publishers and commenters are constants at the top of `tools/deploy-production`
 - The VPS keeps the kit and `.env` (mode 600) in `~/librepaper`
 
