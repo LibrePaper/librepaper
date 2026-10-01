@@ -137,6 +137,39 @@ function hunkify(deltas, oldText = "") {
   return hunks;
 }
 
+// Replaying a rejection inverse over a local replacement can duplicate the
+// restored base text. Pure insertions inside a nonempty inverse span remain
+// independent (for example, an X typed into a proposed word), while deletions
+// of that span and inserts at a zero-width restoration gap need manual review.
+function overlapsPostTipInverse(published, branch, tip, inverse) {
+  let later;
+  try { later = branch.diff(tip, branch.frontiers(), false); } catch { return true; }
+  for (const [containerId, reverted] of inverse) {
+    if (reverted.type !== "text") continue;
+    const text = published.getContainerById(containerId)?.toString?.();
+    if (typeof text !== "string") return true;
+    const spans = hunkify(reverted.diff, text);
+    const laterText = later.find(([id]) => String(id) === String(containerId))?.[1];
+    if (laterText?.type !== "text") continue;
+    let oldAt = 0;
+    for (const part of laterText.diff) {
+      if (part.retain !== undefined) {
+        oldAt += part.retain;
+      } else if (part.delete !== undefined) {
+        const end = oldAt + part.delete;
+        if (spans.some((span) => span.deleted > 0 && oldAt < span.start + span.deleted && span.start < end)) {
+          return true;
+        }
+        oldAt = end;
+      } else if (part.insert !== undefined && spans.some((span) =>
+        span.deleted === 0 && oldAt === span.start)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /// The hunks of one proposal, in this browser's own UTF-16 basis.
 ///
 /// Both sides compute this and neither sends it: the server counts text in
@@ -642,9 +675,16 @@ export function createProposals({ session, send, mayEdit }) {
           changed();
           return;
         }
-        const before = resolvedBranch.oplogVersion();
         const inverse = resolvedBranch.diff(resolvedTip, resolvedBase, false)
           .filter(([, diff]) => diff.type === "text");
+        if (overlapsPostTipInverse(resolvedBranch, draft.branch, resolvedTip, inverse)) {
+          draft.error = "a local edit overlaps text being restored; draft preserved for manual recovery";
+          draft.resolutionBlocked = true;
+          draft.resolutionPending = null;
+          changed();
+          return;
+        }
+        const before = resolvedBranch.oplogVersion();
         const peer = BigInt(`0x${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`) || 1n;
         resolvedBranch.setPeerId(peer);
         resolvedBranch.applyDiff(inverse);

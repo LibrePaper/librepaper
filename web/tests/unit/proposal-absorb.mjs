@@ -403,6 +403,110 @@ import { createProposals } from "../../src/lib/proposals.js";
   room.import(sourceUpdate);
   assert.equal(proposals.drafting(), false, "the accepted source import completes resolution");
 }
+// A local replacement overlapping the inverse is retained for manual recovery.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "The cat sat.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.delete(4, 3);
+  branchText.insert(4, "tabby");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  branchText.delete(4, 5);
+  branchText.insert(4, "cat");
+  const beforeResolution = branchText.toString();
+  const sendsBeforeResolution = sent.length;
+
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip,
+    resolved_base: open.base });
+  assert.equal(proposals.status().recoveryRequired, true, "overlapping replacement requires recovery");
+  assert.match(proposals.status().error, /local edit overlaps text being restored/);
+  assert.equal(proposals.text("f1").toString(), beforeResolution, "the local replacement remains untouched");
+  assert.equal(sent.length, sendsBeforeResolution, "the unsafe replacement is not auto-published");
+  assert.ok(proposals.recoveryTexts().some((draft) => draft.files.some((file) => file.text === beforeResolution)));
+}
+
+// Restoring text at the zero-width gap of a published deletion also conflicts.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "The cat sat.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.delete(4, 3);
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  branchText.insert(4, "cat");
+
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip,
+    resolved_base: open.base });
+  assert.equal(proposals.status().recoveryRequired, true, "local restoration at the rejected gap requires recovery");
+  assert.equal(proposals.text("f1").toString(), "The cat sat.", "the restored text is left untouched");
+}
+
+// A disjoint local replacement still rebases automatically.
+{
+  const room = new LoroDoc();
+  room.setPeerId(1n);
+  const text = room.getMap("files").setContainer("f1", new LoroText());
+  room.getMap("paths").set("f1", "main.md");
+  text.insert(0, "The cat sat. The dog ran.");
+  room.commit();
+  const sent = [];
+  const proposals = createProposals({ session: { doc: room }, mayEdit: true,
+    send(message) { sent.push(message); return { ok: true }; } });
+  proposals.start();
+  const id = proposals.id();
+  const branchText = proposals.text("f1");
+  branchText.delete(4, 3);
+  branchText.insert(4, "tabby");
+  proposals.flush();
+  const open = sent.at(-1);
+  proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
+    tip: open.base, applied_version: 1 });
+  const update = sent.at(-1);
+  proposals.apply({ type: "proposal-updated", proposal_id: id,
+    request_id: update.request_id, tip: update.tip, applied_version: 2 });
+  branchText.delete(17, 3);
+  branchText.insert(17, "fox");
+
+  proposals.apply({ type: "proposal-decided", proposal_id: id, resolved: true,
+    decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip,
+    resolved_base: open.base });
+  assert.equal(proposals.status().recoveryRequired, false, "a disjoint replacement rebases automatically");
+  assert.notEqual(proposals.id(), id, "the disjoint replacement opens as a residual proposal");
+  assert.equal(proposals.text("f1").toString(), "The cat sat. The fox ran.");
+  assert.equal(sent.at(-1).type, "proposal-open", "the disjoint remainder opens as a fresh proposal");
+}
+
 // A stale rejected span must not be inversed over a coauthor replacement:
 // preserve the full local branch and expose a recovery error instead.
 {
