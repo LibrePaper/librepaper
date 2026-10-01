@@ -371,12 +371,6 @@ fn format_time(value: time::OffsetDateTime) -> String {
     crate::util::format_unix(value.unix_timestamp())
 }
 
-pub(super) fn path_for_file_id(doc: &LoroDoc, file_id: &FileId) -> Option<String> {
-    session::paths_of(doc)
-        .into_iter()
-        .find_map(|(id, path)| (id == file_id.0).then_some(path))
-}
-
 /// The text paired with a stable file id. Paths label files, but two supported
 /// texts may share a raw path until projection gives them distinct names.
 pub(super) fn text_for_file_id(doc: &LoroDoc, file_id: &str) -> Option<String> {
