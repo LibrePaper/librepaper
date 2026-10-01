@@ -2,8 +2,8 @@
 
 Upstream is <https://github.com/loro-dev/loro-codemirror>, MIT. The fork is
 <https://github.com/vincentarelbundock/loro-codemirror>, and it is that
-package's `src/` with four changes to it, plus a test suite of its own at
-`web/tests/unit/loro-codemirror.mjs`.
+package's `src/` with four changes and a presence fix, plus a test suite of
+its own at `web/tests/unit/loro-codemirror.mjs`.
 
 **The source is not in this repository.** `tools/pins fetch` fetches it
 from the fork at the commit `loro-codemirror.lock` pins, verifies every file
@@ -93,6 +93,14 @@ hold the edit. That is a concurrent-edit race rather than a batching fault, and
 nothing in this binding maps positions across it. Imports arrive from the
 network, on their own task, so it is not a sequence CodeMirror produces.
 
+### The presence fix, in `ephemeral.ts`: the name was sent once
+
+The plugin wrote the user record (`<peer>-cm-user`) on the first focus and
+never again, while the caret went out on every move. The store expires entries
+after 30 s and the server relays presence without keeping it, so whoever
+joined later received the caret and no name, and the binding labels a caret
+with no user "unknown". The user record now goes out with every caret.
+
 ### Not in the fork: undo and redo as commands
 
 There was a fifth change here, and it has moved to `web/src/lib/loro-undo.js`,
@@ -146,8 +154,9 @@ than bundled output.
 
 ## What to do with it
 
-The four faults are on the fork's `fix-multi-container-events`, in three
-commits (one and two share one) plus a changeset, at `1c6f377`. That branch is
+The four faults and the presence fix are on the fork's
+`fix-multi-container-events`, in four commits (one and two share one) plus a
+changeset, at `c0ed074`. That branch is
 what this build fetches, so the thing the editor runs and the thing offered
 upstream are the same bytes -- which is the point of fetching rather than
 vendoring.
