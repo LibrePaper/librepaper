@@ -140,7 +140,7 @@
   let me = $state({});
   const backupStatus = $derived(backupStatusStore.status);
   const backupPillGood = $derived(Boolean(
-    backupStatus.paired && backupStatus.data?.enabled && backupStatus.data?.destination
+    backupStatus.paired && backupStatus.data?.enabled && backupStatus.data?.destination_set
     && !backupStatus.data?.error && !backupStatus.data?.needs_login && !backupStatus.error,
   ));
   const backupPillLabel = $derived(!me?.id

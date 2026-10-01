@@ -125,79 +125,87 @@ try {
   await until("existing companion connection flow invoked", () => b.evaluate("window.connectCalls === 1"), 5000);
   await b.evaluate("window.setPairing(true)");
   await until("paired status request", () => b.evaluate("window.backupRequests.length === 1"), 5000);
-  await b.evaluate(resolveStatus(0, { enabled: false, frequency_minutes: 5, destination: "papers", running: false, last_success: null, error: null, projects: 2, needs_login: false }));
+  await b.evaluate(resolveStatus(0, { enabled: false, frequency_minutes: 5, destination_set: true, destination: "papers", running: false, last_success: null, error: null, projects: 2, needs_login: false }));
   await until("backup controls shown", () => b.evaluate("Boolean(document.querySelector('#backup-frequency'))"), 5000);
+  assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled"), false, "an empty folder label does not disable the automatic backup control");
   assert.equal(await b.evaluate("document.querySelector('.backup-status button').disabled"), true, "manual runs stay disabled when automatic backups are off");
+
+  await b.evaluate("void window.refreshBackupStatus()");
+  await until("empty destination label refresh", () => b.evaluate("window.backupRequests.length === 2"), 5000);
+  await b.evaluate(resolveStatus(1, { enabled: true, frequency_minutes: 5, destination_set: true, destination: "", running: false, last_success: 1790800000, error: null, projects: 2, needs_login: false }));
+  await until("enabled backups with empty folder label", () => b.evaluate("document.body.innerText.includes('Selected folder on this computer.')"), 5000);
+  assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled"), false, "empty display labels do not disable the backup switch");
+  assert.equal(await b.evaluate("document.querySelector('.backup-status button').disabled"), false, "empty display labels do not disable Back up now");
 
   await b.evaluate(click("#backup-destination button"));
   await until("native folder request sent", () => b.evaluate("window.backupCalls.some((call) => call.method === 'POST folder')"), 5000);
   assert.equal(await b.evaluate("window.backupCalls.find((call) => call.method === 'POST folder').account_id"), "account-a");
-  await until("folder selection refresh requested", () => b.evaluate("window.backupRequests.length === 2"), 5000);
-  await b.evaluate(resolveStatus(1, { enabled: false, frequency_minutes: 5, destination: "papers", running: false, projects: 2, needs_login: false }));
+  await until("folder selection refresh requested", () => b.evaluate("window.backupRequests.length === 3"), 5000);
+  await b.evaluate(resolveStatus(2, { enabled: false, frequency_minutes: 5, destination_set: true, destination: "papers", running: false, projects: 2, needs_login: false }));
 
   await b.evaluate(`(() => { const input = document.querySelector('#backup-frequency select'); input.value = '15'; input.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   await until("frequency update sent", () => b.evaluate("window.backupCalls.some((call) => call.method === 'PUT' && call.frequency_minutes === 15)"), 5000);
   assert.equal(await b.evaluate("window.backupCalls.find((call) => call.method === 'PUT').enabled"), false);
   assert.equal(await b.evaluate("window.backupCalls.find((call) => call.method === 'PUT').account_id"), "account-a");
-  await until("frequency refresh requested", () => b.evaluate("window.backupRequests.length === 3"), 5000);
-  await b.evaluate(resolveStatus(2, { enabled: false, frequency_minutes: 15, destination: "papers", running: false, projects: 2, needs_login: false }));
+  await until("frequency refresh requested", () => b.evaluate("window.backupRequests.length === 4"), 5000);
+  await b.evaluate(resolveStatus(3, { enabled: false, frequency_minutes: 15, destination_set: true, destination: "papers", running: false, projects: 2, needs_login: false }));
 
   await b.evaluate(click("#backup-enable [role='switch']"));
   await until("automatic backups enabled", () => b.evaluate("window.backupCalls.some((call) => call.method === 'PUT' && call.enabled === true)"), 5000);
   assert.equal(await b.evaluate("window.backupCalls.find((call) => call.method === 'PUT' && call.enabled).frequency_minutes"), 15);
-  await until("enable refresh requested", () => b.evaluate("window.backupRequests.length === 4"), 5000);
-  await b.evaluate(resolveStatus(3, { enabled: true, frequency_minutes: 15, destination: "papers", running: false, last_success: 1790800000, error: null, projects: 2, needs_login: false }));
+  await until("enable refresh requested", () => b.evaluate("window.backupRequests.length === 5"), 5000);
+  await b.evaluate(resolveStatus(4, { enabled: true, frequency_minutes: 15, destination_set: true, destination: "papers", running: false, last_success: 1790800000, error: null, projects: 2, needs_login: false }));
   await until("healthy state shown", () => b.evaluate("document.body.innerText.includes('Last backup')"), 5000);
 
   // A frequency mutation can overlap a status poll. Its follow-up request
   // must finish before Settings releases the mutation lock or stale state can
   // switch automatic backups back off.
   await b.evaluate("void window.refreshBackupStatus()");
-  await until("active status poll", () => b.evaluate("window.backupRequests.length === 5"), 5000);
+  await until("active status poll", () => b.evaluate("window.backupRequests.length === 6"), 5000);
   await b.evaluate(`(() => { const input = document.querySelector('#backup-frequency select'); input.value = '30'; input.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   await until("overlapping frequency mutation", () => b.evaluate("window.backupCalls.some((call) => call.method === 'PUT' && call.frequency_minutes === 30)"), 5000);
-  await b.evaluate(resolveStatus(4, { enabled: false, frequency_minutes: 15, destination: "papers", running: false, last_success: 1790800000, error: null, projects: 2, needs_login: false }));
-  await until("post-mutation follow-up status request", () => b.evaluate("window.backupRequests.length === 6"), 5000);
+  await b.evaluate(resolveStatus(5, { enabled: false, frequency_minutes: 15, destination_set: true, destination: "papers", running: false, last_success: 1790800000, error: null, projects: 2, needs_login: false }));
+  await until("post-mutation follow-up status request", () => b.evaluate("window.backupRequests.length === 7"), 5000);
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled"), true, "the schedule switch stays locked until the queued read completes");
   assert.equal(await b.evaluate("document.querySelector('#backup-frequency select').disabled"), true, "frequency stays locked until the queued read completes");
-  await b.evaluate(resolveStatus(5, { enabled: true, frequency_minutes: 30, destination: "papers", running: false, last_success: 1790800000, error: null, projects: 2, needs_login: false }));
+  await b.evaluate(resolveStatus(6, { enabled: true, frequency_minutes: 30, destination_set: true, destination: "papers", running: false, last_success: 1790800000, error: null, projects: 2, needs_login: false }));
   await until("post-mutation state applied", () => b.evaluate("document.querySelector('#backup-enable [role=switch]').getAttribute('aria-checked') === 'true' && !document.querySelector('#backup-frequency select').disabled"), 5000);
   assert.equal(await b.evaluate("document.querySelector('#backup-frequency select').value"), "30");
 
   await b.evaluate("void window.refreshBackupStatus()");
-  await until("running status poll", () => b.evaluate("window.backupRequests.length === 7"), 5000);
-  await b.evaluate(resolveStatus(6, { enabled: true, frequency_minutes: 30, destination: "papers", running: true, last_success: 1790800000, error: null, projects: 2, needs_login: false }));
+  await until("running status poll", () => b.evaluate("window.backupRequests.length === 8"), 5000);
+  await b.evaluate(resolveStatus(7, { enabled: true, frequency_minutes: 30, destination_set: true, destination: "papers", running: true, last_success: 1790800000, error: null, projects: 2, needs_login: false }));
   await until("running status shown", () => b.evaluate("document.body.innerText.includes('Backing up 2 projects')"), 5000);
   assert.equal(await b.evaluate("document.querySelector('.backup-status button').disabled"), true, "manual runs stay disabled while a run is active");
 
   // A response for account A may finish after the signed-in account changes.
   await b.evaluate("void window.refreshBackupStatus()");
-  await until("in-flight account A poll", () => b.evaluate("window.backupRequests.length === 8"), 5000);
+  await until("in-flight account A poll", () => b.evaluate("window.backupRequests.length === 9"), 5000);
   await b.evaluate("window.setAccount({ id: 'account-b', provider: 'google' })");
-  await until("account B status request", () => b.evaluate("window.backupRequests.length === 9"), 5000);
-  assert.equal(await b.evaluate("window.backupRequests[8].account_id"), "account-b", "status requests follow the signed-in account");
+  await until("account B status request", () => b.evaluate("window.backupRequests.length === 10"), 5000);
+  assert.equal(await b.evaluate("window.backupRequests[9].account_id"), "account-b", "status requests follow the signed-in account");
   await b.evaluate("void window.refreshBackupStatus()");
-  await b.evaluate(resolveStatus(7, { enabled: true, frequency_minutes: 60, destination: "stale-folder", running: false, projects: 99, needs_login: false }));
+  await b.evaluate(resolveStatus(8, { enabled: true, frequency_minutes: 60, destination_set: true, destination: "stale-folder", running: false, projects: 99, needs_login: false }));
   await settle();
   assert.equal(await b.evaluate("document.body.innerText.includes('stale-folder')"), false, "a late response cannot show another account's destination");
-  await b.evaluate(resolveStatus(8, { enabled: false, frequency_minutes: 5, destination: "account-b-folder", running: false, projects: 1, needs_login: false }));
-  await until("queued account B refresh", () => b.evaluate("window.backupRequests.length === 10"), 5000);
+  await b.evaluate(resolveStatus(9, { enabled: false, frequency_minutes: 5, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: false }));
+  await until("queued account B refresh", () => b.evaluate("window.backupRequests.length === 11"), 5000);
   await until("account B settings shown", () => b.evaluate("document.body.innerText.includes('account-b-folder')"), 5000);
   assert.equal(await b.evaluate("document.body.innerText.includes('Backup status unavailable')"), false);
 
   // Companion-reported login errors show the server-specific CLI guidance.
-  await b.evaluate(resolveStatus(9, { enabled: true, frequency_minutes: 30, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
+  await b.evaluate(resolveStatus(10, { enabled: true, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
   await until("CLI login guidance shown", () => b.evaluate("document.body.innerText.includes('librepaper login --server http://127.0.0.1')"), 5000);
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').getAttribute('aria-checked')"), "true", "an enabled schedule stays accessible when credentials expire");
   await b.evaluate(click("#backup-enable [role='switch']"));
   await until("disable sent without CLI credentials", () => b.evaluate("window.backupCalls.some((call) => call.method === 'PUT' && call.account_id === 'account-b' && call.enabled === false)"), 5000);
-  await until("disable status refresh", () => b.evaluate("window.backupRequests.length === 11"), 5000);
-  await b.evaluate(resolveStatus(10, { enabled: false, frequency_minutes: 30, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
+  await until("disable status refresh", () => b.evaluate("window.backupRequests.length === 12"), 5000);
+  await b.evaluate(resolveStatus(11, { enabled: false, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
   await until("disabled schedule retained in login guidance", () => b.evaluate("document.body.innerText.includes('Sign in with the CLI') && !document.querySelector('#backup-enable [role=switch]')"), 5000);
 
   await b.evaluate(click(".setting-status button"));
-  await until("login retry status refresh", () => b.evaluate("window.backupRequests.length === 12"), 5000);
-  await b.evaluate("window.backupRequests[11].reject(new Error('companion offline'))");
+  await until("login retry status refresh", () => b.evaluate("window.backupRequests.length === 13"), 5000);
+  await b.evaluate("window.backupRequests[12].reject(new Error('companion offline'))");
   await until("status error shown", () => b.evaluate("document.body.innerText.includes('companion offline')"), 5000);
   assert.match(await b.evaluate("document.body.innerText"), /Backup status unavailable/);
 

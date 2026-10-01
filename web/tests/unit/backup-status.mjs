@@ -22,11 +22,11 @@ state.setScope("account-a", true);
 assert.equal(requests[0].accountId, "account-a");
 state.setScope("account-b", true);
 assert.equal(requests[1].accountId, "account-b");
-requests[0].resolve({ enabled: true, destination: "folder-a" });
+requests[0].resolve({ enabled: true, destination_set: true, destination: "folder-a" });
 await Promise.resolve();
 assert.equal(state.status.accountId, "account-b", "a late response cannot restore the previous account scope");
 assert.equal(state.status.data, null);
-requests[1].resolve({ enabled: false, destination: "folder-b" });
+requests[1].resolve({ enabled: false, destination_set: true, destination: "folder-b" });
 await Promise.resolve();
 assert.equal(state.status.data.destination, "folder-b");
 
