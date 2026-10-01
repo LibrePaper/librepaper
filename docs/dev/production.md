@@ -153,6 +153,12 @@ To rotate the Grafana password, change it from the Grafana account page, update 
 
 Compose waits for service health during deployment. The deploy then recreates only Prometheus so it reads the newly copied scrape and alert configuration, and the verifier retries temporary Prometheus and Grafana startup failures for up to a minute. It confirms Grafana credentials work and anonymous API access is denied, ensures `/metrics`, `/api/status`, and Prometheus APIs are not public, checks that exactly the LibrePaper, Node Exporter, and PostgreSQL exporter scrape targets are up, and waits for recent LibrePaper samples, a fresh successful snapshot, and `pg_up == 1`. It also validates that the provisioned dashboard has panels.
 
+The deployment script tests use mock SSH and HTTP commands. The persistent Grafana 503 case takes about one minute and is opt-in; run only that case with:
+
+```sh
+LIBREPAPER_TEST_SLOW_DEPLOY=1 node --test --test-name-pattern='persistent Grafana API failures' tools/tests/deploy-production.test.mjs
+```
+
 ## Verify
 
 ```sh
