@@ -77,7 +77,7 @@
   }
 
   async function runNow() {
-    if (!signedIn || !paired || busy) return;
+    if (!signedIn || !paired || busy || !data.enabled || data.running) return;
     busy = "run";
     error = "";
     const requestedAccount = accountId;
@@ -96,7 +96,7 @@
 </script>
 
 <p class="setting-description backups-intro">
-  Save every project owned by this account as ZIP files on this computer. The companion runs the schedule in the background, including while browser tabs are closed. Each project keeps its latest ZIP; backups are retained when you disable this setting or delete a project. Backups do not sync changes back to LibrePaper.
+  Save every project available to this account, including shared projects, as ZIP files on this computer. The companion runs the schedule in the background, including while browser tabs are closed. Each project keeps its latest ZIP; backups are retained when you disable this setting or delete a project. Backups do not sync changes back to LibrePaper.
   <a href="https://librepaper.org/backups.html" target="_blank" rel="noreferrer">Backup guide</a>
 </p>
 
@@ -113,7 +113,7 @@
     <span class="setting-status-dot" aria-hidden="true"></span>
     <div class="setting-status-words">
       <div class="setting-title">Connect LibrePaper Companion</div>
-      <div class="setting-description">Backups run on this computer through the companion. Connecting here uses the existing permission flow.</div>
+      <div class="setting-description">Start <code>librepaper local start</code> in a terminal, then connect. The companion runs the schedule on this computer.</div>
     </div>
     <div class="setting-control"><button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button></div>
   </div>
@@ -125,6 +125,7 @@
       <div class="setting-description">The companion needs a CLI login for this server before it can back up your account.</div>
       <code class="backup-command">{loginCommand}</code>
     </div>
+    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-outline" disabled={backupStatus.loading} onclick={() => void backups.refresh()}>{backupStatus.loading ? "Checking…" : "Retry"}</button></div>
   </div>
 {:else if backupStatus.error}
   <div class="setting-status" data-tone="warn" role="status">
@@ -135,7 +136,7 @@
 {:else if backupStatus.loading && !backupStatus.data}
   <p class="setting-description" role="status">Loading backup status…</p>
 {:else}
-  <SettingRow id="backup-enable" title="Automatic backups" description="Create a fresh ZIP of each owned project on this schedule.">
+  <SettingRow id="backup-enable" title="Automatic backups" description="Create a fresh ZIP of each project available to this account on this schedule.">
     <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked={Boolean(data.enabled)} data-state={data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !destinationSet} onclick={() => void changeSettings(!data.enabled)}>
       <span class="switch-thumb" data-state={data.enabled ? "checked" : "unchecked"}></span>
     </button>
@@ -158,7 +159,7 @@
     {:else}
       <span class="backup-state">Backups are off.</span>
     {/if}
-    <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== "" || !destinationSet} onclick={() => void runNow()}>{busy === "run" ? "Starting…" : "Back up now"}</button>
+    <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== "" || !destinationSet || !data.enabled || data.running} onclick={() => void runNow()}>{busy === "run" ? "Starting…" : "Back up now"}</button>
   </div>
 {/if}
 

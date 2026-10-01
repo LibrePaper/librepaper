@@ -87,9 +87,10 @@ Pseudonymous comments hide identity from other readers, not the operator.
   companion on first visit just for backups.
 - **Local backups:** When paired and signed in, the browser polls the companion for
   account-wide backup status and sends the account ID with backup settings and run
-  requests. The companion uses its CLI login to fetch the account's owned projects
-  and writes ZIPs into the folder you chose with its native picker. The browser
-  never receives that folder's absolute path. ZIP files remain on your computer
+  requests. The companion uses its CLI login to fetch projects available to the
+  account, including shared projects, and writes ZIPs into the folder you chose
+  with its native picker. The browser never receives that folder's absolute
+  path. ZIP files remain on your computer
   when backups are disabled or a project is deleted. See [local backups](backups.html).
 - **Embedded resources:** Published documents fetch images and data from any host
   named, which learns your address, browser and open time. To avoid requests to

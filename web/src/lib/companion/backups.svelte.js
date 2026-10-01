@@ -43,10 +43,15 @@ export function createBackupStatus(bridge = client) {
     try {
       return await request;
     } finally {
-      if (inFlight === request) inFlight = null;
-      if (refreshQueued) {
-        refreshQueued = false;
-        if (requestScope === scope && accountId === current.accountId && current.paired) void refresh();
+      // A scope switch detaches the old request and may already have started
+      // a new one. Only the request that still owns the slot can consume its
+      // queued refresh or clear that slot.
+      if (inFlight === request) {
+        inFlight = null;
+        if (refreshQueued) {
+          refreshQueued = false;
+          if (requestScope === scope && accountId === current.accountId && current.paired) void refresh();
+        }
       }
     }
   }
