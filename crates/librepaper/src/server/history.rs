@@ -970,20 +970,42 @@ impl Server {
             Ok(_) => {}
             Err(error) => return refused("read the catalogue", &error.into()),
         }
-        // Compact to a shallow snapshot and delete the log.
-        let result = crate::storage::worker::compact_document(
-            &self.store.catalog,
-            &self.store.blobs,
-            self.rooms.registry(),
-            &self.background,
-            &self.config,
-            room.document_id,
-            crate::log::sequencer::SnapshotMode::Shallow,
-        )
-        .await;
-        let after = match result {
-            Ok(bytes) => bytes,
-            Err(message) => return write_json(503, &json!({"error": message})),
+        // Compact to a shallow snapshot and delete the log. Retry if a concurrent
+        // edit entered the buffer after the flush; Ok(None) means the document is
+        // ahead of the log, not that compaction succeeded.
+        let mut after = None;
+        for attempt in 0..3 {
+            let result = crate::storage::worker::compact_document(
+                &self.store.catalog,
+                &self.store.blobs,
+                self.rooms.registry(),
+                &self.background,
+                &self.config,
+                room.document_id,
+                crate::log::sequencer::SnapshotMode::Shallow,
+            )
+            .await;
+            match result {
+                Ok(Some(bytes)) => {
+                    after = Some(bytes);
+                    break;
+                }
+                Ok(None) => {
+                    if attempt < 2 {
+                        tokio::task::yield_now().await;
+                    }
+                }
+                Err(message) => return write_json(503, &json!({"error": message})),
+            }
+        }
+        let after = match after {
+            Some(bytes) => bytes,
+            None => {
+                return write_json(
+                    503,
+                    &json!({"error": "the document changed while it was being trimmed; try again"}),
+                )
+            }
         };
         // Drop the attachment cache so comments re-resolve against the shallow document.
         room.forget_comments().await;
@@ -1008,7 +1030,7 @@ impl Server {
         write_json(
             200,
             &json!({
-                "historyBytes": after.unwrap_or(0),
+                "historyBytes": after,
                 "versions": outcome.versions,
                 "versionBytes": outcome.version_bytes,
                 "figures": outcome.figures,
