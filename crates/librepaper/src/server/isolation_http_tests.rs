@@ -75,12 +75,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         config.clone(),
     );
     tokio::spawn(worker.run());
-    let store = Store::open_with_catalog(
-        blobs,
-        config.clone(),
-        catalog.clone(),
-        registry,
-    );
+    let store = Store::open_with_catalog(blobs, config.clone(), catalog.clone(), registry);
     store
         .put_directory_as_actor(
             DocumentInput {
@@ -161,13 +156,7 @@ fn device_bearer(deployment: &Deployment) -> String {
     )
 }
 
-async fn serve(
-    server: Arc<Server>,
-) -> (
-    String,
-    SocketAddr,
-    tokio::sync::oneshot::Sender<()>,
-) {
+async fn serve(server: Arc<Server>) -> (String, SocketAddr, tokio::sync::oneshot::Sender<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let router: Router = server.router();
@@ -177,21 +166,16 @@ async fn serve(
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
-            .with_graceful_shutdown(async {
-                let _ = stopped.await;
-            })
-            .await
-            .unwrap();
+        .with_graceful_shutdown(async {
+            let _ = stopped.await;
+        })
+        .await
+        .unwrap();
     });
     (format!("http://{address}"), address, shutdown)
 }
 
-async fn websocket_status(
-    address: SocketAddr,
-    path: &str,
-    origin: &str,
-    cookie: &str,
-) -> u16 {
+async fn websocket_status(address: SocketAddr, path: &str, origin: &str, cookie: &str) -> u16 {
     let mut socket = TcpStream::connect(address).await.unwrap();
     let request = format!(
         "GET {path} HTTP/1.1\r\n\
@@ -395,22 +379,12 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
     // A WebSocket handshake cannot set the custom client header. Its Origin
     // alone must identify the reader, before upgrade processing begins.
     assert_eq!(
-        websocket_status(
-            address,
-            &format!("/ws/{}", deployment.slug),
-            DOCS,
-            &cookie,
-        )
+        websocket_status(address, &format!("/ws/{}", deployment.slug), DOCS, &cookie)
         .await,
         403
     );
     assert_eq!(
-        websocket_status(
-            address,
-            &format!("/ws/{}", deployment.slug),
-            READER,
-            &cookie,
-        )
+        websocket_status(address, &format!("/ws/{}", deployment.slug), READER, &cookie)
         .await,
         101
     );
