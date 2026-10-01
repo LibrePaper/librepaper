@@ -11,7 +11,7 @@ Connecting an agent is a click in the sidebar, not a prompt you paste. The brows
 Install the app and pair this browser with it. Click Connect in the sidebar and allow it in the dialog the app shows. On a computer with no display, the app prints a `librepaper local approve` command instead; run it in a terminal. This is the same pairing the local compiler uses, so if you already paired for Quarto or native TeX there is nothing to do.
 
 ```sh
-curl -fsSL https://librepaper.org/install.sh | sh
+curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
 ```
 
 Afterwards the sidebar lists the coding agents actually installed on that machine, because only the local app can read a PATH.

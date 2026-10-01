@@ -2,8 +2,9 @@
 
 The official instance at librepaper.org runs `tools/deploy-docker` on an OVHcloud VPS, with DNS at Hover.
 
-- Reader: `https://librepaper.org`; documents: `https://docs.librepaper.org`
-- Redirected to the reader: `www.librepaper.org`, `librepaper.com`, `www.librepaper.com` (the server answers 421 to any other host)
+- Site (landing page and manual): `https://librepaper.org`, built by `make site` and served by Caddy as files
+- App: `https://app.librepaper.org`; documents: `https://docs.librepaper.org`
+- Redirected to the site: `www.librepaper.org`, `librepaper.com`, `www.librepaper.com`
 - Host: OVHcloud VPS, Ubuntu 24.04, BHS, user `ubuntu`, kit in `~/librepaper`
 - Shell: in zsh, run `setopt interactivecomments` first, or the `#` lines in these blocks fail as commands
 - Secrets: `tools/deploy-keys.yaml` (SOPS)
@@ -68,6 +69,7 @@ librepaper.org:
 | Type | Hostname | IP address | Name |
 |---|---|---|---|
 | A | `@` | `VPS_IP` | `librepaper.org` |
+| A | `app` | `VPS_IP` | `app.librepaper.org` |
 | A | `docs` | `VPS_IP` | `docs.librepaper.org` |
 | A | `www` | `VPS_IP` | `www.librepaper.org` |
 
@@ -85,7 +87,7 @@ librepaper.com:
 # nameservers: ns1.hover.com and ns2.hover.com for both domains
 dig +short NS librepaper.org; dig +short NS librepaper.com
 # every name must answer with the VPS address before the first start
-for h in librepaper.org docs.librepaper.org www.librepaper.org librepaper.com www.librepaper.com; do
+for h in librepaper.org app.librepaper.org docs.librepaper.org www.librepaper.org librepaper.com www.librepaper.com; do
   echo "$h $(dig +short "$h")"
 done
 ```
@@ -95,8 +97,8 @@ done
 LibrePaper org, Settings, Developer settings, OAuth Apps.
 
 - Homepage URL: `https://librepaper.org`
-- Callback URL: `https://librepaper.org/auth/callback`, the only one
-- Wildcard matching: off (it would also accept `docs.librepaper.org`, which serves published documents, so a document could catch sign-in codes)
+- Callback URL: `https://app.librepaper.org/auth/callback`, the only one
+- Wildcard matching: off (only that exact URL should ever receive a sign-in code)
 - Device flow: off (`librepaper login` uses the server's own device flow, not GitHub's)
 - Client ID and secret go in SOPS
 
@@ -116,20 +118,22 @@ git add tools/deploy-keys.yaml && git commit -m "Add production secrets"   # val
 From the repository root; rerun to upgrade after a release.
 
 ```sh
-# checks the release, copies the kit, writes .env from SOPS, builds, starts, then verifies
+# builds the site, checks the release, copies the kit, writes .env from SOPS, builds, starts, then verifies
 tools/deploy-production deploy                               # the Cargo.toml version, or: deploy v0.0.8
 HOST=ubuntu@VPS_IP tools/deploy-production deploy            # before DNS resolves
+tools/deploy-production site                                 # landing page and manual only: no release, no restart
 ```
 
+- `make site` needs bun; the site is served from `~/librepaper/site` through `compose.override.yaml`
 - Domain, redirects, publishers and commenters are constants at the top of `tools/deploy-production`
 - The VPS keeps the kit and `.env` (mode 600) in `~/librepaper`
 
 ## Verify
 
 ```sh
-tools/deploy-production verify    # health, the librepaper.com redirect, the last 50 log lines
+tools/deploy-production verify    # app health, the site, the documents host, the librepaper.com redirect, the last 50 log lines
 tools/deploy-production logs      # follow
-LIBREPAPER_SERVER=https://librepaper.org librepaper login
+LIBREPAPER_SERVER=https://app.librepaper.org librepaper login
 ```
 
 ## Backups

@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Deploy the official instance at librepaper.org with tools/deploy-docker; runbook in
-# docs/dev/production.md; secrets from tools/deploy-keys.yaml (SOPS).
-# shellcheck disable=SC2016 # {$DOMAIN} is Caddy syntax and stays literal
+# Deploy the official instance at librepaper.org: static site (make site), the app, and
+# published documents with tools/deploy-docker; runbook in docs/dev/production.md;
+# secrets from tools/deploy-keys.yaml (SOPS).
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 HOST="${HOST:-ubuntu@librepaper.org}"
-DOMAIN=librepaper.org
-REDIRECTS='www.{$DOMAIN}, librepaper.com, www.librepaper.com'
+SITE=librepaper.org       # landing page and manual, from docs/_site (make site)
+APP=app.librepaper.org    # the application: DOMAIN in the kit
+DOCS=docs.librepaper.org  # published documents: DOCS_DOMAIN in the kit
+REDIRECTS='www.librepaper.org, librepaper.com, www.librepaper.com'
 PUBLISHERS=vincentarelbundock
 COMMENTERS=anyone
 ASSET=librepaper-x86_64-unknown-linux-musl.tar.xz
@@ -21,13 +23,26 @@ note() { printf '    %s%s%s\n' "$dim" "$*" "$reset"; }
 die() { printf '%sdeploy-production: %s%s\n' "$red" "$*" "$reset" >&2; exit 1; }
 key() { sops --decrypt --extract "[\"$1\"]" tools/deploy-keys.yaml; }
 
+site_build() {
+	step "Site: make site (app links point at https://$APP)"
+	LIBREPAPER_APP_ORIGIN="https://$APP" make site
+	ok "built docs/_site"
+}
+
+site_sync() {
+	step "Site: docs/_site/ -> $HOST:librepaper/site/"
+	rsync -a --delete --out-format='    %n' docs/_site/ "$HOST:librepaper/site/"
+	ok "synced"
+}
+
 usage() {
 	cat <<'USAGE'
 usage: tools/deploy-production <command>
 
-  deploy [VERSION]   copy the kit, write .env from SOPS, build and start, then verify
+  deploy [VERSION]   build the site, copy the kit, write .env from SOPS, build and start, then verify
                      (VERSION defaults to v + the version in crates/librepaper/Cargo.toml)
-  verify             health, the librepaper.com redirect, the last 50 log lines
+  site               rebuild and upload the landing page and manual only (no release, no restart)
+  verify             app health, the site, the documents host, the librepaper.com redirect, the last 50 log lines
   logs               follow the container logs
   help, -h, --help   show this message
 
@@ -37,14 +52,14 @@ USAGE
 }
 
 verify() {
-	step "Health: https://$DOMAIN/health"
+	step "App: https://$APP/health"
 	local tries=0
 	local max_tries=60
 	local health_ok=false
 	local first_fail=true
 
 	while [ $tries -lt $max_tries ]; do
-		if curl -fs -o /dev/null "https://$DOMAIN/health"; then
+		if curl -fs -o /dev/null "https://$APP/health"; then
 			health_ok=true
 			break
 		fi
@@ -60,20 +75,35 @@ verify() {
 
 	if [ "$health_ok" = false ]; then
 		printf '\n'
-		die "https://$DOMAIN/health did not answer"
+		die "https://$APP/health did not answer"
 	fi
 	if [ "$first_fail" = false ]; then
 		printf '\n'
 	fi
 	ok "answers"
 
+	step "Site: https://$SITE"
+	curl -fs -o /dev/null "https://$SITE/start.html" || die "https://$SITE/start.html did not answer: is the site uploaded?"
+	ok "landing page and manual answer"
+
+	step "Documents: https://$DOCS"
+	local code
+	code=$(curl -s -o /dev/null -w '%{http_code}' "https://$DOCS/")
+	if [ "$code" = "000" ]; then
+		die "https://$DOCS did not answer"
+	elif [ "$code" = "421" ]; then
+		die "the server does not take $DOCS as its documents host (421)"
+	else
+		ok "answers (HTTP $code; it has no page at its root)"
+	fi
+
 	step "Redirect: https://librepaper.com"
 	local location
 	location=$(curl -sI https://librepaper.com | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}')
-	if [ "$location" = "https://$DOMAIN/" ]; then
+	if [ "$location" = "https://$SITE/" ]; then
 		ok "-> $location"
 	else
-		die "librepaper.com redirects to '${location}', expected https://$DOMAIN/"
+		die "librepaper.com redirects to '${location}', expected https://$SITE/"
 	fi
 
 	step "Last 50 log lines"
@@ -101,19 +131,25 @@ deploy() {
 	fi
 	ok "4 keys decrypted (values not shown)"
 
+	site_build
+
 	step "Kit: tools/deploy-docker/ -> $HOST:librepaper/"
 	rsync -a --out-format='    %n' tools/deploy-docker/ "$HOST:librepaper/"
 	ok "synced"
 
-	step "Caddy redirects"
-	printf '\n%s {\n\tredir https://{$DOMAIN}{uri} permanent\n}\n' "$REDIRECTS" | ssh "$HOST" 'cat >> librepaper/Caddyfile'
-	ok "${REDIRECTS//'{$DOMAIN}'/$DOMAIN} -> https://$DOMAIN"
+	site_sync
+
+	step "Caddy: the site, the redirects, and the site volume"
+	printf '\n%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE" | ssh "$HOST" 'cat >> librepaper/Caddyfile'
+	printf '# Written by tools/deploy-production: the static site for Caddy.\nservices:\n  caddy:\n    volumes:\n      - ./site:/srv/site:ro\n' | ssh "$HOST" 'cat > librepaper/compose.override.yaml'
+	ok "$SITE serves docs/_site; $REDIRECTS -> https://$SITE"
 
 	step ".env on the VPS"
 	# shellcheck disable=SC2087 # expanded here on purpose: the secrets exist only on this side
 	ssh "$HOST" 'umask 077; cat > librepaper/.env' <<EOF
 LIBREPAPER_VERSION=$version
-DOMAIN=$DOMAIN
+DOMAIN=$APP
+DOCS_DOMAIN=$DOCS
 ACME_EMAIL=$acme
 POSTGRES_PASSWORD=$postgres
 LIBREPAPER_PUBLISHERS=$PUBLISHERS
@@ -121,7 +157,7 @@ LIBREPAPER_COMMENTERS=$COMMENTERS
 LIBREPAPER_GITHUB_CLIENT_ID=$github_id
 LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret
 EOF
-	ok "wrote librepaper/.env (mode 600, 8 settings)"
+	ok "wrote librepaper/.env (mode 600, 9 settings)"
 
 	step "Containers: build and start"
 	note "docker compose up -d --build"
@@ -134,12 +170,20 @@ EOF
 
 	verify
 
-	printf '\n%sDone: %s is live at https://%s (%ss)%s\n' "$green$bold" "$version" "$DOMAIN" "$SECONDS" "$reset"
+	printf '\n%sDone: %s is live. Site https://%s, app https://%s (%ss)%s\n' "$green$bold" "$version" "$SITE" "$APP" "$SECONDS" "$reset"
 }
 
 case "${1:-help}" in
 	deploy)
 		deploy "${2:-}"
+		;;
+	site)
+		site_build
+		site_sync
+		step "Site: https://$SITE"
+		curl -fs -o /dev/null "https://$SITE/start.html" || die "https://$SITE/start.html did not answer: is the site uploaded?"
+		ok "landing page and manual answer"
+		printf '\n%sDone: site updated at https://%s (%ss)%s\n' "$green$bold" "$SITE" "$SECONDS" "$reset"
 		;;
 	verify)
 		verify
