@@ -377,19 +377,35 @@ pub(super) fn path_for_file_id(doc: &LoroDoc, file_id: &FileId) -> Option<String
         .find_map(|(id, path)| (id == file_id.0).then_some(path))
 }
 
+/// The text paired with a stable file id. Paths label files, but two supported
+/// texts may share a raw path until projection gives them distinct names.
+pub(super) fn text_for_file_id(doc: &LoroDoc, file_id: &str) -> Option<String> {
+    let paths = doc.get_map(session::PATHS);
+    if !matches!(
+        paths.get(file_id),
+        Some(loro::ValueOrContainer::Value(loro::LoroValue::String(_)))
+    ) {
+        return None;
+    }
+    match doc.get_map(session::FILES).get(file_id)? {
+        loro::ValueOrContainer::Container(loro::Container::Text(text)) => Some(text.to_string()),
+        _ => None,
+    }
+}
+
 /// The files a passage could have come from, main first.
 fn source_files(doc: &LoroDoc) -> Vec<(String, String, String)> {
     let main = session::main_path(doc);
     let paths = session::paths_of(doc);
-    let texts = session::texts_of(doc);
     let mut files: Vec<(String, String, String)> = paths
         .into_iter()
-        .filter_map(|(id, path)| texts.get(&path).map(|text| (id, path, text.clone())))
+        .filter_map(|(id, path)| text_for_file_id(doc, &id).map(|text| (id, path, text)))
         .collect();
     files.sort_by(|a, b| {
         (a.1 != main, a.1.as_str())
             .partial_cmp(&(b.1 != main, b.1.as_str()))
             .expect("total order")
+            .then_with(|| a.0.cmp(&b.0))
     });
     files
 }
@@ -544,12 +560,8 @@ pub(crate) fn proposed_from_branch(
     let (at_base, at_tip) =
         crate::room::proposals::sides(doc, &branch, &proposal.branch_bytes).ok()?;
 
-    let base_path = path_for_file_id(&at_base, &target.file_id)?;
-    let mut base_texts = session::texts_of(&at_base);
-    let base_text = base_texts.remove(&base_path)?;
-    let tip_path = path_for_file_id(&at_tip, &target.file_id)?;
-    let mut tip_texts = session::texts_of(&at_tip);
-    let tip_text = tip_texts.remove(&tip_path)?;
+    let base_text = text_for_file_id(&at_base, &target.file_id.0)?;
+    let tip_text = text_for_file_id(&at_tip, &target.file_id.0)?;
     replacement_at_source_span(
         &base_text,
         &tip_text,
@@ -1863,16 +1875,9 @@ impl RefineSuggestion {
         let (at_base, at_tip) =
             crate::room::proposals::sides(head.doc(), &branch, &proposal.branch_bytes)
                 .map_err(|error| CommandError::Conflict(error.to_string()))?;
-        let file_id = FileId(annotation.file_id.clone().unwrap_or_default());
-        let path = path_for_file_id(&at_base, &file_id).ok_or_else(stale)?;
-        let base_text = session::texts_of(&at_base)
-            .get(&path)
-            .cloned()
-            .ok_or_else(stale)?;
-        let tip_text = session::texts_of(&at_tip)
-            .get(&path)
-            .cloned()
-            .ok_or_else(stale)?;
+        let file_id = annotation.file_id.as_deref().ok_or_else(stale)?;
+        let base_text = text_for_file_id(&at_base, file_id).ok_or_else(stale)?;
+        let tip_text = text_for_file_id(&at_tip, file_id).ok_or_else(stale)?;
         // The same offsets `from_suggestion` was given: a UTF-16 offset into
         // the file as it read at the base, and the passage found there.
         let at = annotation.start_utf16.unwrap_or_default().max(0) as usize;
