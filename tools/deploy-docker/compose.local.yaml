@@ -5,3 +5,5 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      args:
+        LIBREPAPER_VERSION: local

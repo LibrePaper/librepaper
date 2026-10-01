@@ -34,7 +34,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: Active sockets are above 80% of the network socket limit
+          summary: Active sockets are above 80% of the deployment socket limit
           description: Review active rooms and client churn before increasing the socket limit.
 
       - alert: HostCpuSaturation
@@ -72,3 +72,12 @@ groups:
         annotations:
           summary: A host or PostgreSQL monitoring exporter is unavailable
           description: Check the exporter container and its network access to the host or PostgreSQL.
+
+      - alert: PostgreSQLExporterCannotConnect
+        expr: pg_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: The PostgreSQL exporter cannot connect to the database
+          description: Check PostgreSQL health and the dedicated librepaper_metrics role credentials.

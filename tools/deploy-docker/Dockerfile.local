@@ -3,6 +3,10 @@
 # directory).
 FROM alpine:3.21
 
+# Accept the base Compose service's release argument; local builds use the
+# literal `local` value and copy the supplied executable below.
+ARG LIBREPAPER_VERSION
+
 RUN apk add --no-cache ca-certificates wget \
 	&& adduser -S -D -H -u 10001 librepaper \
 	&& install -d -o librepaper -g nogroup /var/lib/librepaper /var/backups/librepaper

@@ -49,7 +49,7 @@ services:
     build:
       context: .
       args:
-        LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:?set LIBREPAPER_VERSION in .env}
+        LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:-}
     # Or drop `build:` and pull a published image instead:
     # image: ghcr.io/librepaper/librepaper:${LIBREPAPER_VERSION}
     restart: unless-stopped
