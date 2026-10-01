@@ -92,7 +92,8 @@
     }
   }
 
-  const destinationSet = $derived(Boolean(data.destination));
+  const destinationSet = $derived(Boolean(data.destination_set));
+  const destinationLabel = $derived(typeof data.destination === "string" ? data.destination.trim() : "");
 </script>
 
 <p class="setting-description backups-intro">
@@ -148,7 +149,7 @@
       <span class="switch-thumb" data-state={data.enabled ? "checked" : "unchecked"}></span>
     </button>
   </SettingRow>
-  <SettingRow id="backup-destination" title="Backup folder" description={destinationSet ? `Selected folder: ${data.destination}` : "Choose a folder on this computer for the ZIP files."}>
+  <SettingRow id="backup-destination" title="Backup folder" description={destinationSet ? (destinationLabel ? `Selected folder: ${destinationLabel}` : "Selected folder on this computer.") : "Choose a folder on this computer for the ZIP files."}>
     <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
   </SettingRow>
   <SettingRow id="backup-frequency" title="Frequency" description="How often the companion checks for project changes.">
