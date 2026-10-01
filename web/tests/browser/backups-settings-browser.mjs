@@ -186,12 +186,18 @@ try {
   assert.equal(await b.evaluate("document.body.innerText.includes('Backup status unavailable')"), false);
 
   // Companion-reported login errors show the server-specific CLI guidance.
-  await b.evaluate(resolveStatus(9, { enabled: false, frequency_minutes: 5, destination: null, running: false, projects: 0, needs_login: true }));
+  await b.evaluate(resolveStatus(9, { enabled: true, frequency_minutes: 30, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
   await until("CLI login guidance shown", () => b.evaluate("document.body.innerText.includes('librepaper login --server http://127.0.0.1')"), 5000);
+  assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').getAttribute('aria-checked')"), "true", "an enabled schedule stays accessible when credentials expire");
+  await b.evaluate(click("#backup-enable [role='switch']"));
+  await until("disable sent without CLI credentials", () => b.evaluate("window.backupCalls.some((call) => call.method === 'PUT' && call.account_id === 'account-b' && call.enabled === false)"), 5000);
+  await until("disable status refresh", () => b.evaluate("window.backupRequests.length === 11"), 5000);
+  await b.evaluate(resolveStatus(10, { enabled: false, frequency_minutes: 30, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
+  await until("disabled schedule retained in login guidance", () => b.evaluate("document.body.innerText.includes('Sign in with the CLI') && !document.querySelector('#backup-enable [role=switch]')"), 5000);
 
   await b.evaluate(click(".setting-status button"));
-  await until("login retry status refresh", () => b.evaluate("window.backupRequests.length === 11"), 5000);
-  await b.evaluate("window.backupRequests[10].reject(new Error('companion offline'))");
+  await until("login retry status refresh", () => b.evaluate("window.backupRequests.length === 12"), 5000);
+  await b.evaluate("window.backupRequests[11].reject(new Error('companion offline'))");
   await until("status error shown", () => b.evaluate("document.body.innerText.includes('companion offline')"), 5000);
   assert.match(await b.evaluate("document.body.innerText"), /Backup status unavailable/);
 
