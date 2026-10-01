@@ -86,6 +86,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 uuid = { version = "1", features = ["v7", "serde"] }
 log = "0.4"
 tempfile = "3"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 object_store = { version = "0.14", features = ["aws", "fs"] }
 
 # Native dialogs for the companion's approval and folder prompts, with no
