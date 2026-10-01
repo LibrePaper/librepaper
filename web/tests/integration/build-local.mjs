@@ -122,6 +122,6 @@ client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/jobs") && init.method === "POST") { submissions += 1; throw Object.assign(new Error("response lost"), { name: "Unreachable" }); }
   throw new Error(`unexpected retry request ${url}`);
 } });
-await assert.rejects(client.runBuild({ job: { snapshot: "source", generation: 7 }, tree: { main: "paper.tex", texts: { "paper.tex": "x" }, assets: {} }, builder: "latexmk" }), /response lost/);
+await assert.rejects(client.runBuild({ job: { snapshot: "source", generation: 7 }, tree: { main: "paper.tex", texts: { "paper.tex": "x" }, assets: {} }, builder: "latexmk" }), /not running on this computer/);
 assert.equal(submissions, 1, "v2 requests without an idempotency key are never retried");
 client._testing.reset();

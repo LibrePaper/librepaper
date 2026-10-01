@@ -108,7 +108,7 @@ async function testProbeDenied() {
   setup({ fetchImpl: async () => { throw new Error("Access to the network address space was blocked"); } });
   const status = await local.probe();
   check("a permission-denied fetch classifies as denied", status.state === "denied", status.state);
-  check("denied carries instructions", /local-network access/.test(status.instructions));
+  check("denied carries instructions", /local network access/.test(status.instructions));
 }
 
 async function testProbeIncompatible() {

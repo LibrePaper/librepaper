@@ -734,7 +734,9 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
       // Nothing has answered since the link fired, so nothing is starting.
       if (status.state === "unreachable" && deps.now() - started >= startGraceMs) throw named("Unreachable", status.instructions);
     }
-    throw named("Unreachable", "LibrePaper Companion is running but did not connect. Try connecting again.");
+    throw named("Unreachable", currentStatus.state === "unreachable"
+      ? currentStatus.instructions
+      : "LibrePaper Companion is running but did not connect. Try connecting again.");
   }
 
   // Asked directly first, whatever the last probe said: a stale "unreachable"
