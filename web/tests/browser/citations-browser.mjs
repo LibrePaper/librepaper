@@ -46,6 +46,7 @@ writeFileSync(entry, [
     const oldPairings = localStorage.getItem(pairingKey), oldAddress = localStorage.getItem(addressKey);
     const fetchBefore = globalThis.fetch;
     const zoteroCalls = [];
+    const bibliographyReports = [];
     const baseMeta = [...value.doc.getMap("meta").entries()];
     const host = document.createElement("section");
     document.body.append(host);
@@ -53,6 +54,7 @@ writeFileSync(entry, [
     const editor = createClassComponent({ component: Editor, target: host, props: {
       session: value, format: "markdown", file: main, send: (message) => { sent.push(message); return { ok: true }; },
       analyze: async () => ({ entries: [], diagnostics: [] }),
+      onbibliography: (report) => bibliographyReports.push(report),
     } });
     try {
       configureCompanion({ project: "paper", origin: location.origin });
@@ -113,7 +115,7 @@ writeFileSync(entry, [
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      if (!outbound || !update) throw new Error("tracked Zotero import did not publish a private branch containing both the citation and bibliography: " + JSON.stringify({ text: editor.text(main), updates: sent.filter((message) => message.type === "proposal-update").length }));
+      if (!outbound || !update) throw new Error("tracked Zotero import did not publish a private branch containing both the citation and bibliography: " + JSON.stringify({ text: editor.text(main), updates: sent.filter((message) => message.type === "proposal-update").length, calls: zoteroCalls, reports: bibliographyReports }));
       const projection = projectDirectory(outbound, null);
       const liveProjection = projectDirectory(value.doc, null);
       const jsonUpdates = outbound.exportJsonUpdates(baseVersion, undefined, false);

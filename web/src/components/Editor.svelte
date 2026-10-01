@@ -1074,7 +1074,7 @@
       // With no declared main, projection chooses the first text ID. Keep a
       // newly imported bibliography after the existing projected main.
       id = existingMainId ? `${existingMainId}~${random}` : random;
-    } while (files.has(id) || paths.has(id));
+    } while (files.get(id) !== undefined || paths.get(id) !== undefined);
     const text = new LoroText();
     if (body) text.insert(0, body);
     files.setContainer(id, text);
