@@ -20,16 +20,37 @@ gh release view "$VERSION" --json assets -q '.assets[].name' | grep linux-musl
 
 - The image builds from v0.0.6 on: v0.0.1 to v0.0.3 are Komodoc archives, and v0.0.4 and v0.0.5 never released
 
-## DNS (Hover)
+## VPS (OVHcloud)
 
-Each domain, DNS tab, every record pointing at the VPS IPv4.
-
-- Delete Hover's parking records `A @` and `A *` (the wildcard swallows `docs`); keep `MX` and `mail` if Hover email is in use
-- librepaper.org: `A @`, `A docs`, `A www`
-- librepaper.com: `A @`, `A www`
-- No `AAAA` until `curl -6 https://example.com` works on the VPS (Let's Encrypt prefers IPv6)
+- Order: VPS, Ubuntu 24.04, region BHS; paste your SSH public key at checkout (otherwise the `ubuntu` password arrives by email)
+- IP: the main IPv4 is static (kept across reboots and reinstalls, lost only if the VPS is deleted), so no Additional IP is needed; that product only moves an address between servers
+- Find it: Control Panel, Bare Metal Cloud, Virtual private servers, the VPS, Home tab, IP section (also in the delivery email)
+- Firewall: nothing to open by default; if you enable `ufw` or OVHcloud's Edge Network Firewall, allow 22, 80 and 443 (Caddy needs 80 and 443 for Let's Encrypt)
 
 ```sh
+# on the VPS, once
+sudo apt update && sudo apt upgrade -y
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker ubuntu   # log out and back in
+```
+
+## DNS (Hover)
+
+Once the VPS has its IP, for each of librepaper.org and librepaper.com.
+
+- Nameservers must stay `ns1.hover.com` and `ns2.hover.com`, otherwise the DNS tab has no effect
+- Leave Hover's domain forwarding off: it cannot serve HTTPS, so Caddy does the redirects
+- Sign in at hover.com, click the domain, open the DNS tab
+- Delete the parking records `A @` and `A *` (value `216.40.34.41`): tick them, Bulk edit, Delete; the wildcard swallows `docs`. Keep `MX` and `mail` if Hover email is in use
+- Add a record, type A, IP address = the VPS IPv4, one per hostname:
+  - librepaper.org: `@`, `docs`, `www`
+  - librepaper.com: `@`, `www`
+- No `AAAA` until `curl -6 https://example.com` works on the VPS (Let's Encrypt prefers IPv6)
+- New records usually resolve within minutes; Hover quotes up to 48 hours
+
+```sh
+# nameservers: ns1.hover.com and ns2.hover.com for both domains
+dig +short NS librepaper.org; dig +short NS librepaper.com
 # every name must answer with the VPS address before the first start
 for h in librepaper.org docs.librepaper.org www.librepaper.org librepaper.com www.librepaper.com; do
   echo "$h $(dig +short "$h")"
@@ -52,15 +73,6 @@ sops tools/deploy-keys.yaml   # add the four PRODUCTION_* keys
 ```
 
 - The Postgres password is fixed at first start; changing it later needs an `ALTER ROLE`
-
-## Server (once)
-
-```sh
-# on the VPS
-sudo apt update && sudo apt upgrade -y
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker ubuntu   # log out and back in
-```
 
 ## Deploy and upgrade
 
