@@ -34,7 +34,6 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
             title: "Import asset atomicity".into(),
             source_format: "markdown".into(),
             main_path: "main.md".into(),
-            settings: serde_json::json!({"version": 1}),
         })
         .await
         .expect("create document");

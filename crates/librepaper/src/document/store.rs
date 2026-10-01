@@ -1030,7 +1030,7 @@ impl Store {
 
         // The main file is always text -- it is what a renderer runs on, and
         // a renderer runs on source, not on an asset's bytes. Every other
-        // file is sorted and written by `sort_and_write_assets`.
+        // file is sorted and staged by `sort_and_stage_assets`.
         let (mut texts, assets, staged_assets) =
             self.sort_and_stage_assets(document.id, files).await?;
         texts.insert(0, (value.main.clone(), value.source));

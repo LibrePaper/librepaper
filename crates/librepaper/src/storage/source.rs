@@ -120,7 +120,7 @@ impl SourceStorage {
             .catalog
             .assets_by_digests(document_id, &digests)
             .await?;
-        let mut records: HashMap<_, _> = existing
+        let records: HashMap<_, _> = existing
             .into_iter()
             .map(|asset| {
                 let digest: [u8; 32] = asset
