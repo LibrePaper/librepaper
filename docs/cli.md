@@ -36,6 +36,11 @@ librepaper export c9k ./paper-copy --key URL    # read as share-link holder
 librepaper export c9k ./paper-copy --at "v1"    # historical snapshot
 ```
 
+To keep scheduled local ZIP copies of every project available to the signed-in
+account, including shared projects, use [account backups](backups.html) in the
+browser settings. This uses the companion and its native destination picker
+rather than a one-off CLI export.
+
 ## Operating a deployment
 
 - `librepaper admin serve` starts the server. See `--help` and the [hosting page](host.html) for flags.

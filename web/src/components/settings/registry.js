@@ -14,6 +14,7 @@ const latex = ({ format, mayEdit }) => format === "latex" && mayEdit;
 const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
 const local = (_context) => true;
 const remote = (_context) => true;
+const backups = (_context) => true;
 const projectBinding = ({ format }) => ["typst", "markdown", "quarto"].includes(format);
 // The account is the deployment's, not the document's: whoever is signed in
 // is offered it whatever they happen to have open.
@@ -68,6 +69,15 @@ export const CATEGORIES = [
     note: "The LibrePaper server for this project.",
     entries: [
       { id: "remote-status", says: "Connection", terms: "connected offline server address sync status" },
+    ],
+  },
+  {
+    id: "backups", says: "Backups", offered: backups,
+    note: "Every project owned by this account",
+    entries: [
+      { id: "backup-enable", says: "Automatic backups", terms: "zip archive schedule frequency interval account all projects" },
+      { id: "backup-destination", says: "Backup folder", terms: "destination choose directory folder local companion" },
+      { id: "backup-frequency", says: "Frequency", terms: "minutes schedule interval" },
     ],
   },
   {
