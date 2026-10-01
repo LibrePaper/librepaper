@@ -283,11 +283,7 @@ impl AutomationPeer {
             } else {
                 detail_of(&document)
             };
-            return Err(format!(
-                "could not open document ({}): {}",
-                status,
-                detail
-            ));
+            return Err(format!("could not open document ({}): {}", status, detail));
         }
         Ok(Self {
             link,

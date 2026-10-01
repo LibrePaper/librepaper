@@ -1132,13 +1132,12 @@ mod tests {
                 .await,
             Err(Error::Conflict(message)) if message == "account storage quota exceeded"
         ));
-        let stored: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM document_assets WHERE document_id=$1",
-        )
-        .bind(first.id)
-        .fetch_one(catalog.pool())
-        .await
-        .unwrap();
+        let stored: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM document_assets WHERE document_id=$1")
+                .bind(first.id)
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
         assert_eq!(stored, 0, "a refused multi-file batch is atomic");
         catalog
             .complete_assets(vec![asset(3, 4), asset(4, 4)])
@@ -1189,7 +1188,11 @@ mod tests {
             .discard_unwritten_document(refused_project.id, owner.id)
             .await
             .unwrap());
-        assert!(catalog.document(refused_project.id).await.unwrap().is_none());
+        assert!(catalog
+            .document(refused_project.id)
+            .await
+            .unwrap()
+            .is_none());
 
         // Admissions persist per account: once the account has used two
         // uploads, a third is refused, while another account starts fresh.

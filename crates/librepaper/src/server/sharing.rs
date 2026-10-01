@@ -201,9 +201,7 @@ impl Server {
             role: Role::Reader.as_str().to_string(),
             sealed: seal_link_key(&self.key, &key),
             since: crate::util::timestamp(),
-            until: crate::util::format_unix(
-                crate::util::now_unix() + LINK_DEFAULT_SECONDS,
-            ),
+            until: crate::util::format_unix(crate::util::now_unix() + LINK_DEFAULT_SECONDS),
             ..Default::default()
         };
         let actor = crate::document::store::MutationActor {

@@ -159,7 +159,8 @@ impl SessionRegistry {
                 runtime::run(&peer, config, status, stop).await
             });
         } else {
-            self.renew_agent_token(link, conversation, agent_token).await?;
+            self.renew_agent_token(link, conversation, agent_token)
+                .await?;
         }
         drop(gate);
         self.wait_until_settled(&key).await
@@ -178,8 +179,7 @@ impl SessionRegistry {
         config_hash: &str,
         grant: Option<std::sync::Arc<std::sync::RwLock<String>>>,
         body: F,
-    )
-    where
+    ) where
         F: FnOnce(StatusHandle, StopSignal) -> Fut,
         Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
     {
@@ -224,8 +224,14 @@ impl SessionRegistry {
         // link credentials while preserving the active value on failure.
         AutomationPeer::open_scoped(link.clone(), token.to_string()).await?;
         let key = lifecycle::session_key(link, conversation)?;
-        let sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
-        let Some(Entry::Running { grant: Some(grant), .. }) = sessions.get(&key) else {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(Entry::Running {
+            grant: Some(grant), ..
+        }) = sessions.get(&key)
+        else {
             return Err("the assistant is not running; start it again from the document".into());
         };
         *grant.write().unwrap_or_else(|error| error.into_inner()) = token.to_string();

@@ -99,7 +99,9 @@ pub fn sign_agent_grant(key: &[u8], grant: &AgentGrant) -> Option<String> {
 /// link digest and role are all returned as claims for the server's request
 /// authorization layer to check against current catalogue state.
 pub fn read_agent_grant(key: &[u8], token: &str) -> Option<AgentGrant> {
-    let token = token.strip_prefix(AGENT_GRANT_PREFIX)?.strip_prefix("v1.")?;
+    let token = token
+        .strip_prefix(AGENT_GRANT_PREFIX)?
+        .strip_prefix("v1.")?;
     let (encoded, signature) = token.split_once('.')?;
     if !verifies(key, "agent-grant-v1", encoded, signature) {
         return None;
@@ -130,15 +132,24 @@ fn valid_agent_grant(grant: &AgentGrant, now: i64) -> bool {
     let identity = &grant.identity;
     identity.is_signed_in()
         && !identity.session_generation.is_empty()
-        && matches!(identity.provider.as_str(), PROVIDER_GITHUB | PROVIDER_GOOGLE)
+        && matches!(
+            identity.provider.as_str(),
+            PROVIDER_GITHUB | PROVIDER_GOOGLE
+        )
         && !identity.handle.is_empty()
         && (1..=3).contains(&grant.role)
         && !grant.slug.is_empty()
         && grant.slug.len() <= 128
-        && grant.slug.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+        && grant
+            .slug
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
         && grant.link_hash.len() == 64
         && grant.link_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-        && grant.link_hash.bytes().all(|byte| !byte.is_ascii_uppercase())
+        && grant
+            .link_hash
+            .bytes()
+            .all(|byte| !byte.is_ascii_uppercase())
         && grant.expires_at > now
         && grant.expires_at <= now + AGENT_GRANT_MAX_AGE.as_secs() as i64
 }

@@ -328,7 +328,10 @@ async fn delegated_agent_bearer_stops_working_after_session_revocation() {
         "authorization",
         HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
     );
-    assert!(Server::is_automation(&headers), "the bearer marks automation without its header");
+    assert!(
+        Server::is_automation(&headers),
+        "the bearer marks automation without its header"
+    );
     let arrival = Origins::loopback_only().resolve("localhost").unwrap();
     assert!(deployment
         .server

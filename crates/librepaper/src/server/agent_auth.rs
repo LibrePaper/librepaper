@@ -23,12 +23,18 @@ pub(super) async fn issue(
         || headers.get(header::ORIGIN).is_none()
         || headers.contains_key(header::AUTHORIZATION)
     {
-        return write_json(403, &json!({"error": "agent authorization must be requested by the signed-in document page"}));
+        return write_json(
+            403,
+            &json!({"error": "agent authorization must be requested by the signed-in document page"}),
+        );
     }
 
     let identity = context.identity();
     if !identity.is_signed_in() || !server.provider_configured(&identity) {
-        return write_json(401, &json!({"error": "sign in again to authorize the companion"}));
+        return write_json(
+            401,
+            &json!({"error": "sign in again to authorize the companion"}),
+        );
     }
 
     let (entry, viewer) = match server
@@ -46,8 +52,15 @@ pub(super) async fn issue(
     // the document, but cannot delegate that wider account authority to an
     // automation process.
     let link_hash = server.link_hash(headers, request.uri().query());
-    if link_hash.is_empty() || entry.link_role(&link_hash, crate::util::now_unix()).is_none() {
-        return write_json(403, &json!({"error": "open the document through a live share link to authorize its companion"}));
+    if link_hash.is_empty()
+        || entry
+            .link_role(&link_hash, crate::util::now_unix())
+            .is_none()
+    {
+        return write_json(
+            403,
+            &json!({"error": "open the document through a live share link to authorize its companion"}),
+        );
     }
 
     let delegated_role = automation_role(
@@ -61,8 +74,7 @@ pub(super) async fn issue(
         Role::Commenter => 2,
         Role::Editor | Role::Owner => 3,
     };
-    let expires_at = crate::auth::now_unix()
-        + crate::auth::AGENT_GRANT_MAX_AGE.as_secs() as i64;
+    let expires_at = crate::auth::now_unix() + crate::auth::AGENT_GRANT_MAX_AGE.as_secs() as i64;
     let grant = crate::auth::AgentGrant {
         identity,
         slug,
@@ -71,7 +83,10 @@ pub(super) async fn issue(
         expires_at,
     };
     let Some(token) = crate::auth::sign_agent_grant(&server.key, &grant) else {
-        return write_json(400, &json!({"error": "could not create a scoped companion authorization"}));
+        return write_json(
+            400,
+            &json!({"error": "could not create a scoped companion authorization"}),
+        );
     };
     write_json(
         200,

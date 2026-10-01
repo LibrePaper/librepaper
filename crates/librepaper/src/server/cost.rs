@@ -402,7 +402,10 @@ mod agent_scope_tests {
 
     #[test]
     fn delegated_credentials_are_confined_to_document_and_socket_routes() {
-        assert_eq!(agent_document_slug("/api/documents/paper/tools"), Some("paper"));
+        assert_eq!(
+            agent_document_slug("/api/documents/paper/tools"),
+            Some("paper")
+        );
         assert_eq!(agent_document_slug("/ws/paper"), Some("paper"));
         assert_eq!(agent_document_slug("/api/list"), None);
         assert_eq!(agent_document_slug("/api/account/erase"), None);

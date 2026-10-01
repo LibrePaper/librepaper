@@ -46,8 +46,8 @@ use crate::server::origins::{
 use crate::server::shell::{renderers, ShellFile};
 use crate::util::clean;
 
-mod chat;
 mod agent_auth;
+mod chat;
 #[cfg(test)]
 mod comment_http_tests;
 pub mod cost;
@@ -133,21 +133,21 @@ impl DocumentService {
 }
 
 fn may_read(entry: &IndexEntry, who: &Viewer) -> bool {
-        // A browser session is never inherited by a local agent, and a share
-        // link alone is no longer enough to read. Automation still uses the
-        // account bearer for identity while this branch keeps its authority
-        // bounded by the presented link.
-        if !who.id.is_signed_in() {
-            return false;
-        }
-        if who.automation {
-            return who.bearer
-                && !who.link.is_empty()
-                && entry
-                    .link_role(&who.link, crate::util::now_unix())
-                    .is_some();
-        }
-        entry.readable_by(&who.id.id, &who.link, crate::util::now_unix())
+    // A browser session is never inherited by a local agent, and a share
+    // link alone is no longer enough to read. Automation still uses the
+    // account bearer for identity while this branch keeps its authority
+    // bounded by the presented link.
+    if !who.id.is_signed_in() {
+        return false;
+    }
+    if who.automation {
+        return who.bearer
+            && !who.link.is_empty()
+            && entry
+                .link_role(&who.link, crate::util::now_unix())
+                .is_some();
+    }
+    entry.readable_by(&who.id.id, &who.link, crate::util::now_unix())
 }
 
 fn needs_sign_in(entry: &IndexEntry, who: &Viewer) -> bool {
@@ -405,9 +405,7 @@ pub struct Viewer {
 
 impl Viewer {
     pub fn at_least(&self, wanted: Role) -> bool {
-        self.id.is_signed_in()
-            && (!self.automation || self.bearer)
-            && self.role.at_least(wanted)
+        self.id.is_signed_in() && (!self.automation || self.bearer) && self.role.at_least(wanted)
     }
 
     /// The account this request authenticated, if any.
@@ -1094,12 +1092,13 @@ impl Server {
                 .strip_prefix("Bearer ")
                 .is_some_and(|token| token.starts_with(AGENT_GRANT_PREFIX))
         });
-        delegated || header_of(headers, AUTOMATION_HEADER).is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes"
-            )
-        })
+        delegated
+            || header_of(headers, AUTOMATION_HEADER).is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes"
+                )
+            })
     }
 
     /// Who is asking, and what they may do here. Every gate goes through this,
@@ -1146,9 +1145,9 @@ impl Server {
             self.owner(headers, arrival, &id)
         };
         let mut presented_link = self.link_hash(headers, query);
-        let grant_in_scope = grant.as_ref().is_none_or(|grant| {
-            grant_matches_scope(grant, &entry.slug, &presented_link)
-        });
+        let grant_in_scope = grant
+            .as_ref()
+            .is_none_or(|grant| grant_matches_scope(grant, &entry.slug, &presented_link));
         if !grant_in_scope {
             presented_link.clear();
         }
@@ -2070,12 +2069,18 @@ mod automation_authority_tests {
 
         let mut agent = viewer("github:alice", "alice", "reader-hash");
         agent.automation = true;
-        assert!(needs_sign_in(&entry, &agent), "a browser identity is not an agent bearer");
+        assert!(
+            needs_sign_in(&entry, &agent),
+            "a browser identity is not an agent bearer"
+        );
         assert!(!may_read(&entry, &agent));
         assert!(!agent.at_least(Role::Reader));
         agent.bearer = true;
         assert!(!needs_sign_in(&entry, &agent));
-        assert!(may_read(&entry, &agent), "a signed-in agent remains link-bounded");
+        assert!(
+            may_read(&entry, &agent),
+            "a signed-in agent remains link-bounded"
+        );
         assert!(agent.at_least(Role::Reader));
     }
 
@@ -2097,7 +2102,11 @@ mod automation_authority_tests {
             expires_at: crate::util::now_unix() + 60,
         };
         assert!(grant_matches_scope(&grant, "paper", &"a".repeat(64)));
-        assert!(!grant_matches_scope(&grant, "another-paper", &"a".repeat(64)));
+        assert!(!grant_matches_scope(
+            &grant,
+            "another-paper",
+            &"a".repeat(64)
+        ));
         assert!(!grant_matches_scope(&grant, "paper", &"b".repeat(64)));
         assert_eq!(grant_role_ceiling(1), Role::Reader);
         assert_eq!(grant_role_ceiling(2), Role::Commenter);

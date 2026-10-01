@@ -72,8 +72,14 @@ pub(super) async fn handle_assistant_start(
             Ok(accepted) => accepted,
             Err(response) => return *response,
         };
-    if !body.agent_token.starts_with(crate::auth::AGENT_GRANT_PREFIX) {
-        return write_json(401, &json!({"error": "sign in to authorize the local assistant"}));
+    if !body
+        .agent_token
+        .starts_with(crate::auth::AGENT_GRANT_PREFIX)
+    {
+        return write_json(
+            401,
+            &json!({"error": "sign in to authorize the local assistant"}),
+        );
     }
     // An agent that cannot be driven is reported as such rather than silently
     // replaced by a different one. Which model runs is the user's choice, and
@@ -125,8 +131,14 @@ pub(super) async fn handle_assistant_renew(
             Ok(accepted) => accepted,
             Err(response) => return *response,
         };
-    if !body.agent_token.starts_with(crate::auth::AGENT_GRANT_PREFIX) {
-        return write_json(401, &json!({"error": "sign in again to renew assistant access"}));
+    if !body
+        .agent_token
+        .starts_with(crate::auth::AGENT_GRANT_PREFIX)
+    {
+        return write_json(
+            401,
+            &json!({"error": "sign in again to renew assistant access"}),
+        );
     }
     match inner
         .assistant_sessions

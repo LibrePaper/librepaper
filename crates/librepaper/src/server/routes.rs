@@ -17,10 +17,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents", post(upload))
         .route("/api/documents/{slug}", any(document_detail))
         .route("/api/documents/{slug}/tools", any(tools_list))
-        .route(
-            "/api/documents/{slug}/agent-token",
-            post(agent_auth::issue),
-        )
+        .route("/api/documents/{slug}/agent-token", post(agent_auth::issue))
         .route("/api/documents/{slug}/tools/{name}", any(tool_call))
         .route("/api/documents/{slug}/delete", post(delete_document))
         .route("/api/documents/{slug}/state", get(document_state))

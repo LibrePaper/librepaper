@@ -45,9 +45,15 @@ impl Server {
                 crate::storage::postgres::Error::Conflict(message)
                     if message == "account upload rate exceeded" =>
                 {
-                    write_json(429, &json!({"error": "too many uploads this hour; try later"}))
+                    write_json(
+                        429,
+                        &json!({"error": "too many uploads this hour; try later"}),
+                    )
                 }
-                _ => write_json(503, &json!({"error": "could not check the upload limit", "retryable": true})),
+                _ => write_json(
+                    503,
+                    &json!({"error": "could not check the upload limit", "retryable": true}),
+                ),
             };
         }
         let Some(length) =
