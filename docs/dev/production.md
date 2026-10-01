@@ -39,6 +39,20 @@ curl -fsSL https://get.docker.com | sudo sh
 sudo usermod -aG docker ubuntu   # log out and back in
 ```
 
+## Harden (once)
+
+After `ssh-copy-id` works; keep the current session open until the key login is confirmed.
+
+```sh
+# on the VPS: keys only (00- sorts before cloud-init's 50- file, and sshd keeps the first value)
+printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' | sudo tee /etc/ssh/sshd_config.d/00-keys-only.conf
+sudo sshd -t && sudo systemctl restart ssh
+# from your machine: must still log in with the key
+ssh ubuntu@VPS_IP true
+# on the VPS: security updates, should be active (running)
+systemctl status unattended-upgrades --no-pager
+```
+
 ## DNS (Hover)
 
 Once the VPS has its IP, for each of librepaper.org and librepaper.com.
