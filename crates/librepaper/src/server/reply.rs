@@ -315,6 +315,25 @@ fn accepts_encoding(headers: &HeaderMap, wanted: &str) -> bool {
     explicit.or(wildcard).is_some_and(|quality| quality > 0.0)
 }
 
+/// A strict content security policy for app-origin HTML pages. Script from
+/// the page itself is refused, so a hostile SVG figure opened from a blob URL
+/// the reader created cannot run with the user's session.
+///
+/// `'self'`: the bundled modules under `/assets/`.
+/// `blob:` in script-src and worker-src: the LaTeX engine worker is built from
+/// a blob URL and calls `importScripts` on verified blob URLs; a worker made
+/// from a blob URL inherits this policy.
+/// `'wasm-unsafe-eval'`: the renderers and the CRDT are WebAssembly.
+/// `object-src 'self' blob:`: the reader's PDF figure view is an `<object>` on
+/// a blob URL.
+/// No `'unsafe-inline'`, no `'unsafe-eval'`, no remote host: a page opened from
+/// a blob URL the reader made, such as an SVG figure opened in its own tab,
+/// inherits this policy, so a script inside an uploaded file cannot run with
+/// the reader's session.
+/// `frame-ancestors 'none'`: a hostile site could otherwise iframe a shell page
+/// to phish, since the reader carries a session cookie.
+const SHELL_POLICY: &str = "script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self' blob:; object-src 'self' blob:; base-uri 'none'; frame-ancestors 'none'";
+
 /// Serves one shell file, cached for a year if its bytes never change.
 pub(super) fn write_asset(asset: &ShellFile, headers: &HeaderMap) -> Reply {
     let encoded = asset.brotli.is_some() && accepts_encoding(headers, "br");
@@ -331,15 +350,14 @@ pub(super) fn write_asset(asset: &ShellFile, headers: &HeaderMap) -> Reply {
     if encoded {
         set(&mut response, "content-encoding", "br");
     }
-    // Every shell page -- index, reader, documentation -- is a place a hostile
-    // site could otherwise iframe to phish against, since the reader carries a
-    // session cookie. A document keeps its own CSP, set where it is served,
+    // Every shell page -- index, reader, documentation -- has a strict content
+    // security policy. A document keeps its own CSP, set where it is served,
     // which already names the one origin allowed to frame it.
     if asset.kind.starts_with("text/html") {
         set(
             &mut response,
             "content-security-policy",
-            "frame-ancestors 'none'",
+            SHELL_POLICY,
         );
     }
     privacy_headers(&mut response);
@@ -407,6 +425,39 @@ mod asset_tests {
             assert!(headers.get("content-encoding").is_none());
             assert_eq!(headers.get("vary").unwrap(), "Accept-Encoding");
         }
+    }
+
+    #[test]
+    fn pages_refuse_inline_and_remote_script() {
+        let page = ShellFile {
+            kind: "text/html; charset=utf-8",
+            body: axum::body::Bytes::from_static(b"<!doctype html>"),
+            brotli: None,
+            immutable: false,
+        };
+        let response = write_asset(&page, &HeaderMap::new());
+        let csp = response
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(csp, SHELL_POLICY);
+        // Extract script-src directive and verify it refuses unsafe inline and eval.
+        let script_src = csp
+            .split("; ")
+            .find(|d| d.starts_with("script-src "))
+            .expect("script-src directive present");
+        assert!(!script_src.contains("'unsafe-inline'"));
+        assert!(!script_src.contains("'unsafe-eval'"));
+        assert!(!script_src.contains("https:"));
+        assert!(!script_src.contains("data:"));
+        // Verify frame-ancestors and base-uri are set.
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(csp.contains("base-uri 'none'"));
+        // Verify bundle has no CSP (bundles are not HTML).
+        let bundle_response = write_asset(&bundle(), &HeaderMap::new());
+        assert!(bundle_response.headers().get("content-security-policy").is_none());
     }
 }
 
