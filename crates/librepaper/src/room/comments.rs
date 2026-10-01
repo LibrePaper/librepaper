@@ -53,7 +53,7 @@ use crate::storage::postgres::{
 use crate::util::clean;
 
 use super::annotation::{
-    CommentTarget, DerivedAttachment, FileId, OriginalAnchor, PresentationContext, SourceTextTarget,
+    CommentTarget, DerivedAttachment, OriginalAnchor, PresentationContext, SourceTextTarget,
 };
 use super::locate::{self, Quote};
 use super::{Room, WriteError};

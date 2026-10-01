@@ -107,6 +107,7 @@ impl std::fmt::Display for ProposalError {
 /// Takes a plain `&LoroDoc` rather than a room, so it is called both from a
 /// command's `evaluate` -- against `head.doc()` -- and from the pure tests
 /// below.
+#[cfg(test)]
 pub fn from_suggestion(
     doc: &LoroDoc,
     path: &str,
