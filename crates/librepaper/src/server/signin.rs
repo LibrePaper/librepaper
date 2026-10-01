@@ -657,7 +657,10 @@ mod tests {
         assert!(cookie.contains("; Secure"), "{cookie}");
         assert!(cookie.contains("; HttpOnly"), "{cookie}");
         assert!(cookie.contains("; SameSite=Lax"), "{cookie}");
-        assert!(!cookie.to_ascii_lowercase().contains("; domain="), "{cookie}");
+        assert!(
+            !cookie.to_ascii_lowercase().contains("; domain="),
+            "{cookie}"
+        );
 
         // The host-only cookie belongs to the reader. SameSite does not
         // distinguish its sibling document host, so the request guard must
