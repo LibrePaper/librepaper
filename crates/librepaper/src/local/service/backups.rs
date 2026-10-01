@@ -32,6 +32,10 @@ fn is_login_error(error: &str) -> bool {
         || error.contains("account does not match")
 }
 
+fn is_identity_error(error: &str) -> bool {
+    is_login_error(error) || error.starts_with("could not verify account:")
+}
+
 fn identity_error_disables_schedule(error: &str) -> bool {
     error.contains("account does not match")
 }
@@ -187,35 +191,29 @@ impl BackupManager {
         let mut config = self.config(origin, account_id).await;
         let token_missing = crate::cli::stored_token_at(&inner.state_home, origin).is_empty();
         if !token_missing
-            && config.error.as_deref().is_some_and(is_login_error)
+            && config.error.as_deref().is_some_and(is_identity_error)
             && self.should_recheck_login(&key)
         {
             let verification = verify_account(inner, origin, account_id).await;
-            let refreshed_error = match verification {
-                Ok(_) => Some(None),
-                Err(error) if !is_login_error(&error) => Some(Some(error)),
-                Err(_) => None,
-            };
-            if let Some(refreshed_error) = refreshed_error {
-                let mut state = self.state.lock().await;
-                if let Some(current) = state.configs.get_mut(&key) {
-                    if current.error == config.error
-                        && current.error.as_deref().is_some_and(is_login_error)
-                    {
-                        let previous = std::mem::replace(&mut current.error, refreshed_error);
-                        if let Err(error) = self.persist(&state).await {
-                            if let Some(current) = state.configs.get_mut(&key) {
-                                current.error = previous;
-                            }
-                            if let Some(current) = state.configs.get_mut(&key) {
-                                current.error = Some(error);
-                            }
+            let refreshed_error = verification.err();
+            let mut state = self.state.lock().await;
+            if let Some(current) = state.configs.get_mut(&key) {
+                if current.error == config.error
+                    && current.error.as_deref().is_some_and(is_identity_error)
+                {
+                    let previous = std::mem::replace(&mut current.error, refreshed_error);
+                    if let Err(error) = self.persist(&state).await {
+                        if let Some(current) = state.configs.get_mut(&key) {
+                            current.error = previous;
+                        }
+                        if let Some(current) = state.configs.get_mut(&key) {
+                            current.error = Some(error);
                         }
                     }
                 }
-                if let Some(current) = state.configs.get(&key) {
-                    config = current.clone();
-                }
+            }
+            if let Some(current) = state.configs.get(&key) {
+                config = current.clone();
             }
         }
         json!({
@@ -585,9 +583,7 @@ pub(super) async fn handle_put(
     match inner.backups.configure(inner, origin, &body.account_id, body.enabled, body.frequency_minutes).await {
         Ok(()) => write_json(200, &inner.backups.status(inner, origin, &body.account_id).await),
         Err(error) => {
-            let needs_login = error.contains("not signed in")
-                || error.contains("could not verify account")
-                || error.contains("cached login");
+            let needs_login = is_login_error(&error);
             write_json(400, &json!({"error": error, "needs_login": needs_login}))
         }
     }
@@ -761,7 +757,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct IdentityServerFixture {
-        account_id: String,
+        account_id: std::sync::Mutex<String>,
         available: AtomicBool,
     }
 
@@ -771,7 +767,9 @@ mod tests {
         if fixture.available.load(Ordering::SeqCst) {
             (
                 axum::http::StatusCode::OK,
-                Json(json!({"id": fixture.account_id.clone()})),
+                Json(json!({
+                    "id": fixture.account_id.lock().unwrap().clone()
+                })),
             )
         } else {
             (
@@ -844,7 +842,7 @@ mod tests {
     async fn identity_server_outage_is_not_a_login_error_and_recovers() {
         let account_id = uuid::Uuid::now_v7().to_string();
         let fixture = Arc::new(IdentityServerFixture {
-            account_id: account_id.clone(),
+            account_id: std::sync::Mutex::new(account_id.clone()),
             available: AtomicBool::new(false),
         });
         let app = Router::new()
@@ -860,7 +858,7 @@ mod tests {
         let destination = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path(), cache_home.path()).await;
         crate::cli::store_token_at(&inner.state_home, &origin, "backup-test-token").unwrap();
-        inner.pairing.issue(&origin, "identity outage test").unwrap();
+        let (pairing_token, _) = inner.pairing.issue(&origin, "identity outage test").unwrap();
         {
             let key = BackupConfig::key(&origin, &account_id);
             let mut state = inner.backups.state.lock().await;
@@ -874,12 +872,35 @@ mod tests {
             inner.backups.persist(&state).await.unwrap();
         }
 
-        let error = inner
-            .backups
-            .configure(&inner, &origin, &account_id, true, 5)
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {pairing_token}")).unwrap(),
+        );
+        let response = handle_put(
+            &inner,
+            &headers,
+            Some(&origin),
+            Request::put(format!("{BASE_PATH}/backups"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "account_id": account_id.clone(),
+                        "enabled": true,
+                        "frequency_minutes": 5,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), MAX_JSON_BYTES)
             .await
-            .unwrap_err();
-        assert!(error.contains("HTTP 503"));
+            .unwrap();
+        let put_status: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(put_status["needs_login"], false);
+        assert!(put_status["error"].as_str().unwrap().contains("HTTP 503"));
         {
             let key = BackupConfig::key(&origin, &account_id);
             let mut state = inner.backups.state.lock().await;
@@ -893,12 +914,17 @@ mod tests {
         assert!(status["error"].as_str().unwrap().contains("HTTP 503"));
 
         fixture.available.store(true, Ordering::SeqCst);
-        inner
-            .backups
-            .configure(&inner, &origin, &account_id, true, 5)
-            .await
-            .unwrap();
-        assert_eq!(inner.backups.status(&inner, &origin, &account_id).await["enabled"], true);
+        *fixture.account_id.lock().unwrap() = uuid::Uuid::now_v7().to_string();
+        inner.backups.auth_checks.lock().unwrap().remove(&BackupConfig::key(&origin, &account_id));
+        let status = inner.backups.status(&inner, &origin, &account_id).await;
+        assert_eq!(status["needs_login"], true);
+        assert!(status["error"].as_str().unwrap().contains("account does not match"));
+
+        *fixture.account_id.lock().unwrap() = account_id.clone();
+        inner.backups.auth_checks.lock().unwrap().remove(&BackupConfig::key(&origin, &account_id));
+        let status = inner.backups.status(&inner, &origin, &account_id).await;
+        assert_eq!(status["needs_login"], false);
+        assert_eq!(status["error"], Value::Null);
         server_task.abort();
     }
 
