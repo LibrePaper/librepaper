@@ -95,8 +95,11 @@
      Files panel and the mobile bar still name it. */
   @media (max-width: 600px) {
     nav { gap: var(--spacing); padding-inline: calc(var(--spacing) * 2); }
-    .nav-actions { gap: calc(var(--spacing) * .5); }
-    .nav-identity { gap: var(--spacing); flex-shrink: 0; }
+    /* Let the two groups share the narrow bar. Keeping both at their
+       intrinsic width can make the document itself wider than the phone once
+       a page adds its own view and status controls. */
+    .nav-actions { gap: calc(var(--spacing) * .5); flex-shrink: 1; min-width: 0; }
+    .nav-identity { gap: var(--spacing); flex-shrink: 1; min-width: 0; }
     .nav-trail { display: none; }
   }
 </style>
