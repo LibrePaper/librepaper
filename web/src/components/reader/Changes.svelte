@@ -10,7 +10,7 @@
     proposals = [], comments = [], files = [], tracking = false,
     canTrack = true, canReview = true, selected = "", selectedProposal = "", filters = {},
     recoveryRequired = false, onrecover,
-    authors = [], sessions = [], ontracking, onfilter, onselect,
+    authors = [], sessions = [], ontracking, onfilter = undefined, onselect = undefined,
     onaccept, onreject, onproposalreveal, onproposaldecide, ondiscard,
     onreveal, onproposalpreview,
     identity = "", commentingAs = "Anonymous", canModerate = false,
