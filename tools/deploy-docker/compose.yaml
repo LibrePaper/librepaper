@@ -38,7 +38,7 @@ services:
     # LibrePaper migrates the schema at start-up, so it must not start against
     # a cluster that is still initialising.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U librepaper -d librepaper"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U librepaper -d librepaper"]
       interval: 5s
       timeout: 5s
       retries: 20
