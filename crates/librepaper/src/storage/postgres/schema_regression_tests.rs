@@ -119,7 +119,15 @@ async fn composite_references_reject_cross_document_provenance() {
     .bind(proposal)
     .execute(&mut *tx)
     .await;
-    assert!(suggestion.is_err(), "suggestion must reference a proposal in its document");
+    assert_eq!(
+        suggestion
+            .as_ref()
+            .unwrap_err()
+            .as_database_error()
+            .and_then(|error| error.constraint()),
+        Some("annotations_document_proposal_fkey"),
+        "suggestion must reference a proposal in its document"
+    );
     sqlx::query("ROLLBACK TO SAVEPOINT mismatched_proposal")
         .execute(&mut *tx)
         .await
@@ -148,7 +156,15 @@ async fn composite_references_reject_cross_document_provenance() {
     .bind(link_hash.as_slice())
     .execute(&mut *tx)
     .await;
-    assert!(grant.is_err(), "link grant provenance must stay in its document");
+    assert_eq!(
+        grant
+            .as_ref()
+            .unwrap_err()
+            .as_database_error()
+            .and_then(|error| error.constraint()),
+        Some("grants_source_link_document_fkey"),
+        "link grant provenance must stay in its document"
+    );
     sqlx::query("ROLLBACK TO SAVEPOINT mismatched_link")
         .execute(&mut *tx)
         .await
