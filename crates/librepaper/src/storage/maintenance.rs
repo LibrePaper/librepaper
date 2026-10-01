@@ -320,7 +320,19 @@ impl Maintenance {
                 .filter(|item| item.modified_at.is_some_and(|created| created <= cutoff))
                 .map(|item| item.key.clone())
                 .collect();
+            // Most old document-prefix objects are still referenced. Check
+            // the bounded page in one pooled query before opening any
+            // per-object lock sessions; candidates that looked orphaned are
+            // checked again under their key lock before deletion.
+            let referenced = if prefix == "documents/" {
+                referenced_keys(self.catalog.as_ref(), &keys).await?
+            } else {
+                HashSet::new()
+            };
             for key in candidates {
+                if prefix == "documents/" && referenced.contains(&key) {
+                    continue;
+                }
                 let key_lock = if prefix == "documents/" {
                     let Some(lock) = ObjectKeyLock::try_acquire(self.catalog.as_ref(), &key).await?
                     else {
@@ -330,11 +342,14 @@ impl Maintenance {
                 } else {
                     None
                 };
-                if prefix == "documents/"
-                    && !referenced_keys(self.catalog.as_ref(), std::slice::from_ref(&key))
+                let referenced_after_lock = if prefix == "documents/" {
+                    !referenced_keys(self.catalog.as_ref(), std::slice::from_ref(&key))
                         .await?
                         .is_empty()
-                {
+                } else {
+                    false
+                };
+                if referenced_after_lock {
                     if let Some(lock) = key_lock {
                         lock.release(&key).await?;
                     }

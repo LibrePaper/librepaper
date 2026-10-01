@@ -981,7 +981,7 @@ impl Worker {
                 self.blobs.as_ref(),
                 label.document_id,
                 &key,
-                projected.projection.digest(),
+                projected.projection.digest_bytes(),
                 encoded,
             )
             .await?
