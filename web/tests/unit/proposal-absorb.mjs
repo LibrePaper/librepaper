@@ -585,8 +585,8 @@ import { createProposals } from "../../src/lib/proposals.js";
   assert.ok(recovery.files.some((file) => file.path === "references.bib" && file.text === "@article{a}"),
     "the recovery export preserves identity-only edits even when visible text is unchanged");
 }
-// A late update acknowledgement must not destroy a blocked recovery draft
-// after Editor tracking stops and restarts.
+// A mixed resolution reaches a retained draft while no Editor is tracking it.
+// Late acknowledgements and errors must preserve its recovery export.
 {
   const room = new LoroDoc();
   room.setPeerId(1n);
@@ -611,6 +611,7 @@ import { createProposals } from "../../src/lib/proposals.js";
     tip: open.base, applied_version: 1 });
   const update = sent.at(-1);
   bib.insert(11, "X"); // This text is absent from the unacknowledged update.
+  proposals.stop();
 
   const decode = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
   const { decodeFrontiers } = await import("loro-crdt");
@@ -643,7 +644,6 @@ import { createProposals } from "../../src/lib/proposals.js";
   });
   const recoveryError = proposals.status().error;
   assert.equal(proposals.status().recoveryRequired, true, "the mixed decision blocks for recovery");
-  proposals.stop();
   proposals.start();
 
   proposals.apply({ type: "proposal-opened", proposal_id: id, request_id: id,
@@ -656,6 +656,15 @@ import { createProposals } from "../../src/lib/proposals.js";
   const recovery = proposals.recoveryTexts().find((draft) => draft.id === id);
   assert.ok(recovery?.files.some((file) => file.path === "references.bib" && file.text === "@article{a}X"),
     "the delayed ack keeps the complete declined file available after Editor restart");
+  const sendsBeforeLateError = sent.length;
+  proposals.apply({ type: "error", request_id: id, message: "late update error", retry: true });
+  assert.equal(proposals.status().error, recoveryError, "a late error keeps the recovery explanation");
+  assert.equal(sent.length, sendsBeforeLateError, "a late error does not start a retry");
+  await new Promise((resolve) => setTimeout(resolve, 1600));
+  assert.equal(sent.length, sendsBeforeLateError, "the blocked draft does not emit a delayed retry");
+  const afterLateError = proposals.recoveryTexts().find((draft) => draft.id === id);
+  assert.ok(afterLateError?.files.some((file) => file.path === "references.bib" && file.text === "@article{a}X"),
+    "late acknowledgements and errors retain the exact recovery file");
 }
 // A final rejection received before hydration must remain pending. Once the
 // coauthor's overlapping replacement arrives, re-evaluate against that source
