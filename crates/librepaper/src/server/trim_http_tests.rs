@@ -301,12 +301,22 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
             .unwrap();
     assert!(labels_before >= 1, "the named version is a label");
 
-    // Record owner usage before trim.
+    // Record owner usage and history bytes before trim.
     let usage_before = deployment
         .catalog
         .usage_bytes(Some(deployment.owner_id))
         .await
         .unwrap();
+    let storage_before = deployment
+        .catalog
+        .document_storage_by_owner(deployment.owner_id)
+        .await
+        .unwrap();
+    let history_before = storage_before
+        .iter()
+        .find(|s| s.id == room.document_id)
+        .map(|s| s.history_bytes)
+        .unwrap_or(0);
 
     // Step 6: POST trim.
     let headers = owner_bearer(&deployment);
@@ -341,8 +351,9 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         labels_before,
         "every label should be deleted"
     );
+    let version_bytes = body["versionBytes"].as_i64().unwrap();
     assert_eq!(
-        body["versionBytes"].as_i64().unwrap_or(0),
+        version_bytes,
         archive_bytes,
         "version bytes should match archive byte_length"
     );
@@ -351,11 +362,13 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         1,
         "exactly one figure (figure-a) should be deleted"
     );
+    let figure_bytes = body["figureBytes"].as_i64().unwrap();
     assert_eq!(
-        body["figureBytes"].as_i64().unwrap_or(0),
+        figure_bytes,
         FIGURE_A.len() as i64,
         "figure bytes should be exactly figure-a size"
     );
+    let history_after = body["historyBytes"].as_i64().unwrap();
 
     // Step 8: verify database state.
     let label_count: i64 =
@@ -410,20 +423,18 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
     .unwrap();
     assert!(figure_c_exists, "fresh unreferenced figure-c must be kept");
 
-    // Step 9: verify owner usage decreased by expected amounts.
-    // Expected freed: archive bytes + figure A bytes (B is kept because it's still referenced).
+    // Step 9: verify owner usage decreased by exact amounts.
+    // usage_before - usage_after must equal versionBytes + figureBytes + (history_before - history_after).
     let usage_after = deployment
         .catalog
         .usage_bytes(Some(deployment.owner_id))
         .await
         .unwrap();
-    let expected_freed = archive_bytes + (FIGURE_A.len() as i64);
-    assert!(
-        usage_after <= usage_before - expected_freed,
-        "usage should decrease by at least archive bytes and old unreferenced figure bytes (before: {}, after: {}, expected freed: {})",
-        usage_before,
-        usage_after,
-        expected_freed
+    let history_freed = history_before - history_after;
+    assert_eq!(
+        usage_before - usage_after,
+        version_bytes + figure_bytes + history_freed,
+        "usage change must equal version bytes + figure bytes + history bytes freed"
     );
 
     // Step 10: verify acceptance checks for deleted label and current figure references.
@@ -524,6 +535,41 @@ async fn a_trim_refuses_while_a_suggestion_is_pending() {
         .unwrap();
     tx.commit().await.unwrap();
 
+    // Record state before the trim attempt.
+    let usage_before: i64 = deployment
+        .catalog
+        .usage_bytes(Some(deployment.owner_id))
+        .await
+        .unwrap();
+    let labels_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_labels WHERE document_id=$1")
+            .bind(room.document_id)
+            .fetch_one(deployment.catalog.pool())
+            .await
+            .unwrap();
+    let archives_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_archives WHERE document_id=$1")
+            .bind(room.document_id)
+            .fetch_one(deployment.catalog.pool())
+            .await
+            .unwrap();
+    let assets_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_assets WHERE document_id=$1")
+            .bind(room.document_id)
+            .fetch_one(deployment.catalog.pool())
+            .await
+            .unwrap();
+    let storage_before = deployment
+        .catalog
+        .document_storage_by_owner(deployment.owner_id)
+        .await
+        .unwrap();
+    let history_before = storage_before
+        .iter()
+        .find(|s| s.id == room.document_id)
+        .map(|s| s.history_bytes)
+        .unwrap_or(0);
+
     // Step 3: POST trim.
     let headers = owner_bearer(&deployment);
     let arrival = Origins::loopback_only().resolve("localhost").unwrap();
@@ -559,7 +605,67 @@ async fn a_trim_refuses_while_a_suggestion_is_pending() {
         error_msg
     );
 
-    // Step 5: verify label still exists.
+    // Step 5: verify refusal changed nothing: usage, label count, archive count, asset count,
+    // and history bytes all remain unchanged.
+    let usage_after = deployment
+        .catalog
+        .usage_bytes(Some(deployment.owner_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        usage_after, usage_before,
+        "usage must be unchanged after refused trim"
+    );
+
+    let labels_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_labels WHERE document_id=$1")
+            .bind(room.document_id)
+            .fetch_one(deployment.catalog.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        labels_after, labels_before,
+        "label count must be unchanged after refused trim"
+    );
+
+    let archives_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_archives WHERE document_id=$1")
+            .bind(room.document_id)
+            .fetch_one(deployment.catalog.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        archives_after, archives_before,
+        "archive count must be unchanged after refused trim"
+    );
+
+    let assets_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_assets WHERE document_id=$1")
+            .bind(room.document_id)
+            .fetch_one(deployment.catalog.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        assets_after, assets_before,
+        "asset count must be unchanged after refused trim"
+    );
+
+    let storage_after = deployment
+        .catalog
+        .document_storage_by_owner(deployment.owner_id)
+        .await
+        .unwrap();
+    let history_after = storage_after
+        .iter()
+        .find(|s| s.id == room.document_id)
+        .map(|s| s.history_bytes)
+        .unwrap_or(0);
+    assert_eq!(
+        history_after, history_before,
+        "history bytes must be unchanged after refused trim"
+    );
+
+    // Label still exists.
     let label_exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM document_labels WHERE id=$1)")
             .bind(named.id)
