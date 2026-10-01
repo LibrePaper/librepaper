@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Deploy the official instance at librepaper.org with tools/deploy-docker; runbook in
+# docs/dev/production.md; secrets from tools/deploy-keys.yaml (SOPS).
+# shellcheck disable=SC2016 # {$DOMAIN} is Caddy syntax and stays literal
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+HOST="${HOST:-ubuntu@librepaper.org}"
+DOMAIN=librepaper.org
+REDIRECTS='www.{$DOMAIN}, librepaper.com, www.librepaper.com'
+PUBLISHERS=vincentarelbundock
+COMMENTERS=anyone
+ASSET=librepaper-x86_64-unknown-linux-musl.tar.xz
+
+if [ -t 1 ]; then bold=$'\e[1m' green=$'\e[32m' red=$'\e[31m' dim=$'\e[2m' reset=$'\e[0m'; else bold='' green='' red='' dim='' reset=''; fi
+step() { printf '\n%s==> %s%s\n' "$bold" "$*" "$reset"; }
+ok() { printf '    %s%s%s\n' "$green" "$*" "$reset"; }
+note() { printf '    %s%s%s\n' "$dim" "$*" "$reset"; }
+
+die() { printf '%sdeploy-production: %s%s\n' "$red" "$*" "$reset" >&2; exit 1; }
+key() { sops --decrypt --extract "[\"$1\"]" tools/deploy-keys.yaml; }
+
+usage() {
+	cat <<'USAGE'
+usage: tools/deploy-production <command>
+
+  deploy [VERSION]   copy the kit, write .env from SOPS, build and start, then verify
+                     (VERSION defaults to v + the version in crates/librepaper/Cargo.toml)
+  verify             health, the librepaper.com redirect, the last 50 log lines
+  logs               follow the container logs
+  help, -h, --help   show this message
+
+Environment:
+  HOST=ubuntu@librepaper.org   ssh target (use the IP before DNS resolves)
+USAGE
+}
+
+verify() {
+	step "Health: https://$DOMAIN/health"
+	local tries=0
+	local max_tries=60
+	local health_ok=false
+	local first_fail=true
+
+	while [ $tries -lt $max_tries ]; do
+		if curl -fs -o /dev/null "https://$DOMAIN/health"; then
+			health_ok=true
+			break
+		fi
+		if [ "$first_fail" = true ]; then
+			note "waiting for the server and its certificate (up to 2 minutes)"
+			printf '    '
+			first_fail=false
+		fi
+		printf .
+		sleep 2
+		tries=$((tries + 1))
+	done
+
+	if [ "$health_ok" = false ]; then
+		printf '\n'
+		die "https://$DOMAIN/health did not answer"
+	fi
+	if [ "$first_fail" = false ]; then
+		printf '\n'
+	fi
+	ok "answers"
+
+	step "Redirect: https://librepaper.com"
+	local location
+	location=$(curl -sI https://librepaper.com | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}')
+	if [ "$location" = "https://$DOMAIN/" ]; then
+		ok "-> $location"
+	else
+		die "librepaper.com redirects to '${location}', expected https://$DOMAIN/"
+	fi
+
+	step "Last 50 log lines"
+	ssh "$HOST" 'cd librepaper && docker compose logs --tail 50'
+}
+
+deploy() {
+	local version="${1:-v$(sed -n 's/^version = "\(.*\)"/\1/p' crates/librepaper/Cargo.toml | head -n 1)}"
+
+	printf '%sDeploying %s to %s%s\n' "$bold" "$version" "$HOST" "$reset"
+
+	step "Release $version"
+	curl -fsIL -o /dev/null "https://github.com/LibrePaper/librepaper/releases/download/$version/$ASSET" || die "release $version has no $ASSET"
+	ok "found $ASSET"
+
+	step "Secrets from tools/deploy-keys.yaml"
+	local acme postgres github_id github_secret
+	acme=$(key PRODUCTION_ACME_EMAIL)
+	postgres=$(key PRODUCTION_POSTGRES_PASSWORD)
+	github_id=$(key PRODUCTION_GITHUB_CLIENT_ID)
+	github_secret=$(key PRODUCTION_GITHUB_CLIENT_SECRET)
+
+	if [ -z "$acme" ] || [ -z "$postgres" ] || [ -z "$github_id" ] || [ -z "$github_secret" ]; then
+		die "a PRODUCTION_* key in tools/deploy-keys.yaml is empty"
+	fi
+	ok "4 keys decrypted (values not shown)"
+
+	step "Kit: tools/deploy-docker/ -> $HOST:librepaper/"
+	rsync -a --out-format='    %n' tools/deploy-docker/ "$HOST:librepaper/"
+	ok "synced"
+
+	step "Caddy redirects"
+	printf '\n%s {\n\tredir https://{$DOMAIN}{uri} permanent\n}\n' "$REDIRECTS" | ssh "$HOST" 'cat >> librepaper/Caddyfile'
+	ok "${REDIRECTS//'{$DOMAIN}'/$DOMAIN} -> https://$DOMAIN"
+
+	step ".env on the VPS"
+	# shellcheck disable=SC2087 # expanded here on purpose: the secrets exist only on this side
+	ssh "$HOST" 'umask 077; cat > librepaper/.env' <<EOF
+LIBREPAPER_VERSION=$version
+DOMAIN=$DOMAIN
+ACME_EMAIL=$acme
+POSTGRES_PASSWORD=$postgres
+LIBREPAPER_PUBLISHERS=$PUBLISHERS
+LIBREPAPER_COMMENTERS=$COMMENTERS
+LIBREPAPER_GITHUB_CLIENT_ID=$github_id
+LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret
+EOF
+	ok "wrote librepaper/.env (mode 600, 8 settings)"
+
+	step "Containers: build and start"
+	note "docker compose up -d --build"
+	ssh "$HOST" 'cd librepaper && docker compose up -d --build'
+	ok "running"
+
+	step "Cleanup"
+	ssh "$HOST" 'docker image prune -f'
+	ok "removed replaced images"
+
+	verify
+
+	printf '\n%sDone: %s is live at https://%s (%ss)%s\n' "$green$bold" "$version" "$DOMAIN" "$SECONDS" "$reset"
+}
+
+case "${1:-help}" in
+	deploy)
+		deploy "${2:-}"
+		;;
+	verify)
+		verify
+		;;
+	logs)
+		step "Following logs on $HOST (Ctrl-C to stop)"
+		ssh -t "$HOST" 'cd librepaper && docker compose logs -f --tail 100'
+		;;
+	help | -h | --help)
+		usage
+		;;
+	*)
+		usage >&2
+		exit 2
+		;;
+esac

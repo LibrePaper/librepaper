@@ -113,43 +113,22 @@ git add tools/deploy-keys.yaml && git commit -m "Add production secrets"   # val
 
 ## Deploy and upgrade
 
-From the repository root; rerun with a new `VERSION` to upgrade.
+From the repository root; rerun to upgrade after a release.
 
 ```sh
-VERSION=v0.0.8
-HOST=ubuntu@VPS_IP
-key() { sops --decrypt --extract "[\"$1\"]" tools/deploy-keys.yaml; }
-
-# the kit, then the production redirects (rsync resets the Caddyfile, so append every time)
-rsync -a tools/deploy-docker/ "$HOST:librepaper/"
-ssh "$HOST" 'cat >> librepaper/Caddyfile' <<'EOF'
-
-www.{$DOMAIN}, librepaper.com, www.librepaper.com {
-	redir https://{$DOMAIN}{uri} permanent
-}
-EOF
-
-# .env from SOPS, written on the VPS only
-ssh "$HOST" 'umask 077; cat > librepaper/.env' <<EOF
-LIBREPAPER_VERSION=$VERSION
-DOMAIN=librepaper.org
-ACME_EMAIL=$(key PRODUCTION_ACME_EMAIL)
-POSTGRES_PASSWORD=$(key PRODUCTION_POSTGRES_PASSWORD)
-LIBREPAPER_PUBLISHERS=vincentarelbundock
-LIBREPAPER_COMMENTERS=anyone
-LIBREPAPER_GITHUB_CLIENT_ID=$(key PRODUCTION_GITHUB_CLIENT_ID)
-LIBREPAPER_GITHUB_CLIENT_SECRET=$(key PRODUCTION_GITHUB_CLIENT_SECRET)
-EOF
-
-ssh "$HOST" 'cd librepaper && docker compose up -d --build'
+# checks the release, copies the kit, writes .env from SOPS, builds, starts, then verifies
+tools/deploy-production deploy                               # the Cargo.toml version, or: deploy v0.0.8
+HOST=ubuntu@VPS_IP tools/deploy-production deploy            # before DNS resolves
 ```
+
+- Domain, redirects, publishers and commenters are constants at the top of `tools/deploy-production`
+- The VPS keeps the kit and `.env` (mode 600) in `~/librepaper`
 
 ## Verify
 
 ```sh
-curl -s https://librepaper.org/health
-curl -sI https://librepaper.com | head -3              # 301 to https://librepaper.org/
-ssh "$HOST" 'cd librepaper && docker compose logs --tail 50'
+tools/deploy-production verify    # health, the librepaper.com redirect, the last 50 log lines
+tools/deploy-production logs      # follow
 LIBREPAPER_SERVER=https://librepaper.org librepaper login
 ```
 
