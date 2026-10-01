@@ -997,11 +997,8 @@ impl Server {
             Ok(outcome) => outcome,
             Err(error) => return command_reply("trim history", error),
         };
-        // Update the storage ledger. Look up the owner with
-        // `self.store.catalog.document(room.document_id).await`; on
-        // `Ok(Some(document))` call `.charge(document.owner_id, -(outcome.version_bytes
-        // + outcome.figure_bytes))`; on anything else skip with a note that
-        // the ledger is refreshed from the catalogue at the next admission anyway.
+        // The ledger is a coarse running total, so move it by what was freed.
+        // A failed lookup leaves it alone: admission reloads the owner's total from the catalogue.
         if let Ok(Some(document)) = self.store.catalog.document(room.document_id).await {
             self.rooms.registry().ledger().charge(
                 document.owner_id,
