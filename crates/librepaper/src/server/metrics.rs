@@ -353,9 +353,7 @@ impl Metrics {
                     continue;
                 }
                 let mut cumulative = 0;
-                for (edge, bucket_count) in HISTOGRAM_EDGES_SECONDS
-                    .iter()
-                    .zip(bucket_counts.iter())
+                for (edge, bucket_count) in HISTOGRAM_EDGES_SECONDS.iter().zip(bucket_counts.iter())
                 {
                     cumulative += *bucket_count;
                     out.push_str(&format!("librepaper_http_request_duration_seconds_bucket{{route=\"{route}\",method=\"{method}\",le=\"{edge}\"}} {cumulative}\n"));
