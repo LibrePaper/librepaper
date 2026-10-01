@@ -145,7 +145,6 @@ async fn seed_document(catalog: &PostgresCatalog, owner_id: Uuid, slug: &str) {
             title: "A Paper".into(),
             source_format: "markdown".into(),
             main_path: "paper.md".into(),
-            settings: json!({"version": 1}),
         })
         .await
         .expect("create document");
@@ -1372,7 +1371,7 @@ mod revocation {
 
         // Revoke without going through the route, so no sweep runs.
         sqlx::query(
-            "UPDATE share_links SET revoked_at=now(),generation=generation+1 WHERE document_id=$1",
+            "UPDATE share_links SET revoked_at=now() WHERE document_id=$1",
         )
         .bind(document_id)
         .execute(catalog.pool())
@@ -1472,7 +1471,7 @@ mod revocation {
         assert_eq!(document_update_rows(&catalog, document_id).await, 0);
 
         sqlx::query(
-            "UPDATE share_links SET revoked_at=now(),generation=generation+1 WHERE document_id=$1",
+            "UPDATE share_links SET revoked_at=now() WHERE document_id=$1",
         )
         .bind(document_id)
         .execute(catalog.pool())

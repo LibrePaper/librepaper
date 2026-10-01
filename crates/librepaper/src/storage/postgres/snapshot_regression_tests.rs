@@ -69,6 +69,10 @@ async fn snapshot_migration_preserves_current_evidence_and_legacy_deadlines() {
          VALUES(md5('owner')::uuid,'anonymous','owner','Owner','active');
          INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
          VALUES(md5('document')::uuid,'upgrade',md5('owner')::uuid,'owned','Upgrade','active','markdown','main.md');
+         INSERT INTO annotations(id,document_id,kind,body,author_key,author_label,
+                                 source_sequence,frontier,target_kind)
+         VALUES(md5('annotation')::uuid,md5('document')::uuid,'comment','legacy','owner','Owner',
+                7,'frontier'::bytea,'document');
          INSERT INTO document_bases(document_id,base_id,through_update_sequence,vector,snapshot_key,snapshot_digest,snapshot_bytes,updated_at)
          VALUES(md5('document')::uuid,md5('base')::uuid,7,'vector'::bytea,'current',decode(repeat('ab',32),'hex'),1234,'2026-01-01 UTC');
          INSERT INTO superseded_bases(snapshot_key,document_id,delete_after)
@@ -80,16 +84,25 @@ async fn snapshot_migration_preserves_current_evidence_and_legacy_deadlines() {
     .execute(&mut *tx)
     .await
     .unwrap();
+    // 0011's constraints and dead-column cleanup do not depend on the archive
+    // normalization migration, so exercise them against the complete 0001-0009
+    // catalogue before archive migration 0010 is merged.
+    for migration in [
+        include_str!("../../../migrations/postgres/0006_operation_outcomes.sql"),
+        include_str!("../../../migrations/postgres/0007_drop_example_ownership.sql"),
+        include_str!("../../../migrations/postgres/0008_proposals_are_pending.sql"),
+        include_str!("../../../migrations/postgres/0009_grant_provenance.sql"),
+        include_str!("../../../migrations/postgres/0011_schema_constraints_cleanup.sql"),
+    ] {
+        sqlx::raw_sql(migration).execute(&mut *tx).await.unwrap();
+    }
     sqlx::raw_sql(
         "DO $$ BEGIN
-           IF (SELECT count(*) FROM pg_tables WHERE schemaname=current_schema()) <> 16 THEN
-             RAISE EXCEPTION 'consolidation must leave 16 application tables';
-           END IF;
            IF to_regclass('document_bases') IS NOT NULL OR to_regclass('superseded_bases') IS NOT NULL THEN
              RAISE EXCEPTION 'old snapshot tables remain';
            END IF;
            IF NOT EXISTS (SELECT 1 FROM document_snapshots WHERE snapshot_key='current'
-             AND document_id=md5('document')::uuid AND base_id=md5('base')::uuid
+             AND document_id=md5('document')::uuid
              AND through_update_sequence=7 AND vector='vector'::bytea
              AND snapshot_digest=decode(repeat('ab',32),'hex') AND snapshot_bytes=1234
              AND updated_at='2026-01-01 UTC' AND delete_after IS NULL) THEN
@@ -98,11 +111,49 @@ async fn snapshot_migration_preserves_current_evidence_and_legacy_deadlines() {
            IF (SELECT count(*) FROM document_snapshots WHERE
              ((snapshot_key='retired-1' AND delete_after='2026-01-08 UTC')
                OR (snapshot_key='retired-2' AND delete_after='2026-01-09 UTC'))
-             AND document_id=md5('document')::uuid AND base_id IS NULL
+             AND document_id=md5('document')::uuid
              AND through_update_sequence IS NULL AND vector IS NULL
              AND snapshot_digest IS NULL AND snapshot_bytes IS NULL AND updated_at IS NULL) <> 2 THEN
              RAISE EXCEPTION 'legacy snapshot metadata or deadline changed';
            END IF;
+           IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema=current_schema() AND table_name='document_snapshots' AND column_name='base_id') THEN
+             RAISE EXCEPTION 'unused snapshot base_id remains';
+           END IF;
+           IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema=current_schema()
+               AND ((table_name='accounts' AND column_name='preferences')
+                 OR (table_name='documents' AND column_name='settings')
+                 OR (table_name='share_links' AND column_name='generation'))) THEN
+             RAISE EXCEPTION 'unused catalogue column remains';
+           END IF;
+           IF (SELECT count(*) FROM pg_attribute a
+               JOIN pg_class c ON c.oid=a.attrelid
+               WHERE c.relnamespace=current_schema()::regnamespace
+                 AND c.relname='annotations' AND a.attname IN ('source_sequence','frontier')
+                 AND a.attnotnull) <> 2 THEN
+             RAISE EXCEPTION 'annotation evidence columns are not NOT NULL';
+           END IF;
+           IF NOT EXISTS (SELECT 1 FROM annotations WHERE id=md5('annotation')::uuid
+             AND source_sequence=7 AND frontier='frontier'::bytea) THEN
+             RAISE EXCEPTION 'legacy annotation evidence changed';
+           END IF;
+           BEGIN
+             INSERT INTO annotations(id,document_id,kind,body,author_key,author_label,
+                                     source_sequence,frontier,target_kind)
+             VALUES(md5('missing-evidence')::uuid,md5('document')::uuid,'comment','bad','owner','Owner',
+                    NULL,'frontier'::bytea,'document');
+             RAISE EXCEPTION 'annotation without source_sequence was accepted';
+           EXCEPTION WHEN not_null_violation THEN NULL;
+           END;
+           BEGIN
+             INSERT INTO annotations(id,document_id,kind,body,author_key,author_label,
+                                     source_sequence,frontier,target_kind)
+             VALUES(md5('missing-frontier')::uuid,md5('document')::uuid,'comment','bad','owner','Owner',
+                    1,NULL,'document');
+             RAISE EXCEPTION 'annotation without frontier was accepted';
+           EXCEPTION WHEN not_null_violation THEN NULL;
+           END;
          END $$;"
     ).execute(&mut *tx).await.unwrap();
     tx.rollback().await.unwrap();
@@ -135,7 +186,6 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
             title: "Snapshots".into(),
             source_format: "markdown".into(),
             main_path: "main.md".into(),
-            settings: serde_json::json!({"version": 1}),
         })
         .await
         .unwrap();
@@ -209,15 +259,8 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
         .activate_log_base(document.id, 3, &snapshots[2].3, snapshot(1), grace, false)
         .await
         .is_err());
-    assert_eq!(
-        catalog
-            .log_base(document.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .base_id,
-        second.base.base_id
-    );
+    assert_eq!(catalog.log_base(document.id).await.unwrap().unwrap().snapshot_key,
+        second.base.snapshot_key);
     assert_eq!(
         catalog.log_rows(document.id, 0, None).await.unwrap().len(),
         1
@@ -247,8 +290,8 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
         .activate_log_base(document.id, 4, &snapshots[2].3, snapshot(2), grace, false)
         .await
         .is_err());
-    let retired: (Uuid, i64, Vec<u8>, Vec<u8>, i64, OffsetDateTime) = sqlx::query_as(
-        "SELECT base_id,through_update_sequence,vector,snapshot_digest,snapshot_bytes,delete_after
+    let retired: (i64, Vec<u8>, Vec<u8>, i64, OffsetDateTime) = sqlx::query_as(
+        "SELECT through_update_sequence,vector,snapshot_digest,snapshot_bytes,delete_after
          FROM document_snapshots WHERE snapshot_key=$1",
     )
     .bind(&snapshots[0].0)
@@ -258,7 +301,6 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
     assert_eq!(
         retired,
         (
-            first.base.base_id,
             1,
             snapshots[0].3.clone(),
             snapshots[0].1.to_vec(),
@@ -278,15 +320,8 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
         catalog.superseded_base_keys(document.id).await.unwrap(),
         vec![snapshots[1].0.clone()]
     );
-    assert_eq!(
-        catalog
-            .log_base(document.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .base_id,
-        third.base.base_id
-    );
+    assert_eq!(catalog.log_base(document.id).await.unwrap().unwrap().snapshot_key,
+        third.base.snapshot_key);
     sqlx::query("DELETE FROM documents WHERE id=$1")
         .bind(document.id)
         .execute(catalog.pool())

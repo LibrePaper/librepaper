@@ -1017,7 +1017,6 @@ impl Store {
                     title: value.title.clone(),
                     source_format: value.source_format.clone(),
                     main_path: value.main.clone(),
-                    settings: serde_json::json!({"version":1}),
                 })
                 .await
                 .map_err(source_put_error)?,

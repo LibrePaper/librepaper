@@ -143,7 +143,6 @@ impl Deployment {
                 title: "Trash".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
-                settings: serde_json::json!({}),
             })
             .await
             .expect("create the document row");

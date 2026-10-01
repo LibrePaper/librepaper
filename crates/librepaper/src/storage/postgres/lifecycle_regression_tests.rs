@@ -55,7 +55,6 @@ fn document(owner_id: Uuid, slug: String, generation: Option<i64>) -> NewDocumen
         title: "Lifecycle test".into(),
         source_format: "markdown".into(),
         main_path: "main.md".into(),
-        settings: json!({"version": 1}),
     }
 }
 
