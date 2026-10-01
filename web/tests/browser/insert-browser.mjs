@@ -24,6 +24,7 @@ import { undo as loroUndo } from ${imp("vendor/loro-codemirror/undo.ts")};
 import Editor from ${imp("src/components/Editor.svelte")};
 import InsertMenu from ${imp("src/components/InsertMenu.svelte")};
 import { join as joinSession } from ${imp("src/lib/collab.js")};
+import { projectDirectory } from ${imp("src/lib/projection.js")};
 import { LoroDoc } from "loro-crdt";
 // A change from somebody else, arriving the way one actually does: made on
 // another document and imported. Editing this browser's own document is a
@@ -93,29 +94,32 @@ window.trackedMultiFileInsertCheck=async()=>{
   const chapter=session.addText('chapter.tex','Before AFTER');
   session.setMain(main);
   component.$set({file:chapter,format:'latex'});await tick();await tick();
-  const initial=component.getInsertContext();
-  const rawPath=initial.path;
-  const duplicate=session.addText(rawPath,'DUPLICATE BEFORE');
-  component.releaseInsertContext(initial);
+  const collisionPath='insert-regression-'+Date.now()+'-'+Math.random().toString(36).slice(2)+'.tex';
+  const pairA=session.addText(collisionPath,'COLLISION A');
+  const pairB=session.addText(collisionPath,'COLLISION B');
+  const projected=projectDirectory(session.doc,null);
+  const moved=[...projected.files].find(([path,entry])=>path!==collisionPath&&[pairA,pairB].includes(entry.id));
+  const path=moved?.[0];
+  const targetId=moved?.[1].id;
+  const targetBefore=projected.texts.get(path);
   component.startTracking();await tick();
   view().dispatch({selection:{anchor:7}});
   const context=component.getInsertContext();
   const mainBefore=session.textOf(main).toString();
-  const duplicateBefore=session.textOf(duplicate).toString();
+  const pairABefore=session.textOf(pairA).toString();
+  const pairBBefore=session.textOf(pairB).toString();
   const ok=component.applyInsertResult({text:'TRACKED ',additionalEdits:[{path:'paper-'+Date.now()+'.tex',from:0,to:0,insert:'SETUP '}]},context);
   // The requested main edit uses a path that is not in the tree and must be
-  // refused atomically; retry with the projected suffix for the duplicate.
-  const movedPrefix=rawPath.slice(0,rawPath.lastIndexOf('.'))+' (';
-  const path=context.files.find(file=>file.path.startsWith(movedPrefix))?.path;
-  const projectedBefore=context.files.find(file=>file.path===path)?.text;
+  // refused atomically; retry with the projected suffix for the designated
+  // collision member, chosen by its stable text ID.
   const retry=Boolean(path)&&component.applyInsertResult({text:'TRACKED ',additionalEdits:[{path,from:0,to:0,insert:'% tracked\\n'}]},context);
   const branch=component.getInsertContext();
-  const projectedEdit=branch.files.find(file=>file.path===path)?.text==='% tracked\\n'+projectedBefore;
+  const projectedEdit=branch.files.find(file=>file.path===path)?.text==='% tracked\\n'+targetBefore;
   component.releaseInsertContext(branch);
-  const liveUnchanged=session.textOf(main).toString()===mainBefore&&session.textOf(duplicate).toString()===duplicateBefore&&session.textOf(chapter).toString()==='Before AFTER';
+  const liveUnchanged=session.textOf(main).toString()===mainBefore&&session.textOf(pairA).toString()===pairABefore&&session.textOf(pairB).toString()===pairBBefore&&session.textOf(chapter).toString()==='Before AFTER';
   const shown=view().state.doc.toString();
   component.stopTracking();await tick();
-  return {ok,retry,projectedEdit,liveUnchanged,shown};
+  return {ok,retry,projectedEdit,liveUnchanged,shown,targetId,path};
 };
 window.insertReady=true;
 `);
@@ -200,6 +204,7 @@ try {
   assert.equal(trackedInsert.ok,false,"a missing cross-file target is rejected before either edit is applied");
   assert.equal(trackedInsert.retry,true,"the active tracked branch accepts a valid multi-file insertion");
   assert.equal(trackedInsert.projectedEdit,true,"a projected collision-suffixed target receives the cross-file edit in the branch");
+  assert.match(trackedInsert.path,/ \(2\)\.tex$/,"the edit targets the collision-suffixed projection selected by text ID");
   assert.equal(trackedInsert.liveUnchanged,true,"the tracked Insert and cross-file setup never write into the live document");
   assert.match(trackedInsert.shown,/Before TRACKED AFTER/);
   await evaluate("setupInsert('quarto')");await evaluate("selectInsert(7)");await choose("toc");await until("Quarto TOC",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);await confirm();assert.match((await evaluate("insertState()")).text,/toc: true/);
