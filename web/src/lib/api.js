@@ -85,7 +85,8 @@ export const eraseAccount = () => post("/api/account/erase");
 /// The one door. Which providers this deployment has is the server's business:
 /// this address is a redirect when there is one and a choice when there are
 /// two, so no page has to render a button per provider.
-export const signInHref = () => `/auth/login?next=${encodeURIComponent(location.pathname)}`;
+export const signInHref = (next = location.pathname + location.search) =>
+  `/auth/login?next=${encodeURIComponent(next)}`;
 
 /// Puts a figure on the server and answers with its digest and size. The bytes
 /// go up as they are -- a figure is not JSON and wrapping it in base64 would

@@ -1464,10 +1464,20 @@ export async function agents() {
 /** Start the sidebar assistant, driving the chosen installed agent directly
  * against the document link. The link crosses loopback once, here: no
  * connection name, config file, command line or transcript holds the key. */
-export async function startAssistant({ link = "", conversation = "", chatToken = "", agent = "" } = {}) {
+export async function startAssistant({ link = "", conversation = "", chatToken = "", agentToken = "", agent = "" } = {}) {
   return assistantCall("POST", "assistant", {
     link: String(link || ""), conversation: String(conversation || ""),
-    chat_token: String(chatToken || ""), agent: String(agent || ""),
+    chat_token: String(chatToken || ""), agent_token: String(agentToken || ""), agent: String(agent || ""),
+  });
+}
+
+/** Replace the active runner's short-lived document grant. The browser calls
+ * this while its own session remains active; the companion never receives a
+ * browser cookie and the runner reads the current grant on reconnect. */
+export async function renewAssistant({ link = "", conversation = "", agentToken = "" } = {}) {
+  return assistantCall("POST", "assistant/renew", {
+    link: String(link || ""), conversation: String(conversation || ""),
+    agent_token: String(agentToken || ""),
   });
 }
 

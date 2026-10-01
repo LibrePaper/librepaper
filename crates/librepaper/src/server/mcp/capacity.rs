@@ -110,6 +110,7 @@ mod tests {
             comment_budget: None,
             role: Role::Commenter,
             automation: true,
+            bearer: true,
             auth_failed: false,
         }
     }

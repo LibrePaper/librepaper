@@ -250,6 +250,9 @@ impl Server {
         if who.auth_failed {
             return plain(401, "authentication expired or revoked");
         }
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         // MCP exposes source views, ranges, candidate trees, and source
         // mutations. A commenter is admitted because an anchored suggestion
         // has to be written against the source it quotes; every mutation is
@@ -318,6 +321,9 @@ impl Server {
         };
         if who.auth_failed {
             return plain(401, "authentication expired or revoked");
+        }
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
         }
         if !who.at_least(Role::Commenter) || !self.may_read(&entry, &who) {
             return plain(404, "not found");

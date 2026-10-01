@@ -11,11 +11,12 @@
     <meta property="og:description" content="Read, comment on and edit a LibrePaper document: the source, the rendered paper and the conversation about it, side by side." />
     <meta name="twitter:card" content="summary" />
     <link rel="icon" type="image/svg+xml" href="/assets/librepaper-icon.svg" />
-    <!-- Where this build serves its renderers. The URLs carry a digest of each
+    <!-- The renderer URLs arrive as a JSON data block, not an inline script: the
+         page's policy refuses inline script. The URLs carry a digest of each
          module's bytes and are written in when the page is served, so a module
          cached for a year cannot outlive the loader that speaks to it, and the
          editor never has to ask for them. -->
-    <script>window.LIBREPAPER_MODULES = __MODULES__;</script>
+    <script type="application/json" id="librepaper-modules">__MODULES__</script>
   </head>
   <body>
     <script type="module" src="../src/entries/reader.js"></script>

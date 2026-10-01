@@ -149,6 +149,21 @@ const deferred = () => {
   assert.equal(errors.length, 1);
   assert.equal(errors[0].status, 503);
 
+  // An authorization refusal must reach the reader's sign-in state even if
+  // this browser has an older prepared copy; the cache is only for outages.
+  errors.length = 0;
+  let lookedInCache = false;
+  const boot401 = createReaderBoot({
+    slug: "private",
+    fetcher: async () => ({ ok: false, status: 401 }),
+    whoami: async () => ({}),
+    findLocal: async () => { lookedInCache = true; return { document: { title: "Cached paper" } }; },
+    onError: collectError,
+  });
+  await boot401.start();
+  assert.equal(lookedInCache, false);
+  assert.deepEqual(errors, [{ message: "not found", status: 401 }]);
+
   // A network error (thrown fetch) has no status property.
   errors.length = 0;
   const bootNetwork = createReaderBoot({

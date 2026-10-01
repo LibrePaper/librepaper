@@ -315,6 +315,28 @@ fn accepts_encoding(headers: &HeaderMap, wanted: &str) -> bool {
     explicit.or(wildcard).is_some_and(|quality| quality > 0.0)
 }
 
+/// The policy every shell page is served with: the app's own scripts and
+/// nothing inline.
+///
+/// A page the app opens from a blob URL on this origin inherits this policy,
+/// so a script in it cannot run as the app with the reader's session. The
+/// reader hands images out as data URLs, which open in an opaque origin
+/// whoever opens them, so this is the second line rather than the first: a
+/// blob URL pasted into the address bar inherits no policy at all.
+///
+/// - `'self'`: the bundled modules under `/assets/`.
+/// - The TeX engines and biber run in `web/src/lib/latex/engine-host.js`, a
+///   worker served from this origin. It takes its policy from its own
+///   response, so the engine may `eval` there and the page itself needs
+///   neither `'unsafe-eval'` nor `blob:` scripts.
+/// - `'wasm-unsafe-eval'`: the renderers and the CRDT are WebAssembly, and
+///   they need no `'unsafe-eval'`.
+/// - `object-src 'self' blob:`: the reader's PDF figure view is an `<object>`
+///   on a blob URL.
+/// - `frame-ancestors 'none'`: a hostile site could otherwise iframe a shell
+///   page to phish against, since the reader carries a session cookie.
+const SHELL_POLICY: &str = "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'self' blob:; base-uri 'none'; frame-ancestors 'none'";
+
 /// Serves one shell file, cached for a year if its bytes never change.
 pub(super) fn write_asset(asset: &ShellFile, headers: &HeaderMap) -> Reply {
     let encoded = asset.brotli.is_some() && accepts_encoding(headers, "br");
@@ -331,16 +353,11 @@ pub(super) fn write_asset(asset: &ShellFile, headers: &HeaderMap) -> Reply {
     if encoded {
         set(&mut response, "content-encoding", "br");
     }
-    // Every shell page -- index, reader, documentation -- is a place a hostile
-    // site could otherwise iframe to phish against, since the reader carries a
-    // session cookie. A document keeps its own CSP, set where it is served,
-    // which already names the one origin allowed to frame it.
+    // Every shell page -- index, reader, documentation -- carries the shell
+    // policy. A document keeps its own CSP, set where it is served, which
+    // already names the one origin allowed to frame it.
     if asset.kind.starts_with("text/html") {
-        set(
-            &mut response,
-            "content-security-policy",
-            "frame-ancestors 'none'",
-        );
+        set(&mut response, "content-security-policy", SHELL_POLICY);
     }
     privacy_headers(&mut response);
     if asset.immutable {
@@ -408,6 +425,50 @@ mod asset_tests {
             assert_eq!(headers.get("vary").unwrap(), "Accept-Encoding");
         }
     }
+
+    #[test]
+    fn pages_refuse_inline_and_remote_script() {
+        let page = ShellFile {
+            kind: "text/html; charset=utf-8",
+            body: axum::body::Bytes::from_static(b"<!doctype html>"),
+            brotli: None,
+            immutable: false,
+        };
+        let response = write_asset(&page, &HeaderMap::new());
+        let csp = response
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(csp, SHELL_POLICY);
+        let script_src = csp
+            .split("; ")
+            .find(|d| d.starts_with("script-src "))
+            .expect("the policy names script-src");
+        for refused in [
+            "'unsafe-inline'",
+            "'unsafe-eval'",
+            "blob:",
+            "https:",
+            "data:",
+        ] {
+            assert!(!script_src.contains(refused), "{script_src}");
+        }
+        let worker_src = csp
+            .split("; ")
+            .find(|d| d.starts_with("worker-src "))
+            .expect("the policy names worker-src");
+        assert!(!worker_src.contains("blob:"), "{worker_src}");
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(csp.contains("base-uri 'none'"));
+        // A bundle is not a page, so it carries no policy.
+        let bundle_response = write_asset(&bundle(), &HeaderMap::new());
+        assert!(bundle_response
+            .headers()
+            .get("content-security-policy")
+            .is_none());
+    }
 }
 
 /// Keeps an unlisted link unlisted. The slug is the only thing standing
@@ -430,6 +491,14 @@ pub(super) fn authentication_expired() -> Reply {
     write_json(
         401,
         &json!({"error": "authentication expired or was revoked"}),
+    )
+}
+
+/// A live document link still requires a signed-in account to use.
+pub(super) fn sign_in_to_read() -> Reply {
+    write_json(
+        401,
+        &json!({"error": "sign in to read this shared document"}),
     )
 }
 

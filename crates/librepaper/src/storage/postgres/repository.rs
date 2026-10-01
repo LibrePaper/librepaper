@@ -438,6 +438,42 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
+    /// Admit one account upload request under the deployment's rolling-hour
+    /// limit. The account row serializes checks across processes, and the
+    /// admission row is durable across browser sessions and restarts.
+    pub async fn admit_account_upload(&self, account_id: Uuid) -> Result<()> {
+        let mut tx = self.begin_writer_transaction().await?;
+        let active: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM accounts WHERE id=$1 AND status='active' FOR UPDATE",
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if active.is_none() {
+            return Err(Error::Conflict("account is inactive".into()));
+        }
+        let recent: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM account_upload_admissions WHERE account_id=$1 AND created_at >= now()-interval '1 hour'",
+        )
+        .bind(account_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if recent >= self.policy.asset_uploads_per_hour {
+            return Err(Error::Conflict("account upload rate exceeded".into()));
+        }
+        sqlx::query("INSERT INTO account_upload_admissions(account_id) VALUES($1)")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "DELETE FROM account_upload_admissions WHERE created_at < now()-interval '2 days'",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The name a version written by this account is signed with.
     ///
     /// A signed-in caller's `Identity::id` is this row's id -- the catalogue
@@ -486,6 +522,31 @@ impl PostgresCatalog {
         .await
         .map_err(Error::from)?
         .ok_or_else(|| Error::Conflict("owner account is inactive or session changed".into()))
+    }
+
+    /// Remove a document row created before its first source transaction when
+    /// that transaction is refused. The predicates preserve it if another
+    /// writer has made any durable progress in the meantime.
+    pub async fn discard_unwritten_document(
+        &self,
+        document_id: Uuid,
+        owner_id: Uuid,
+    ) -> Result<bool> {
+        Ok(sqlx::query(
+            r#"DELETE FROM documents d
+               WHERE d.id=$1 AND d.owner_id=$2 AND d.status='active'
+                 AND d.update_sequence=0 AND d.uncompacted_update_bytes=0
+                 AND NOT EXISTS (SELECT 1 FROM document_updates u WHERE u.document_id=d.id)
+                 AND NOT EXISTS (SELECT 1 FROM document_assets a WHERE a.document_id=d.id)
+                 AND NOT EXISTS (SELECT 1 FROM document_archives a WHERE a.document_id=d.id)
+                 AND NOT EXISTS (SELECT 1 FROM document_labels l WHERE l.document_id=d.id)
+               RETURNING d.id"#,
+        )
+        .bind(document_id)
+        .bind(owner_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some())
     }
 
     pub async fn document_by_slug(&self, slug: &str) -> Result<Option<DocumentRecord>> {
@@ -743,17 +804,6 @@ impl PostgresCatalog {
             sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
                 .fetch_one(&mut **tx)
                 .await?;
-        let uploads = sqlx::query_scalar!(
-            r#"SELECT count(*) AS "count!" FROM document_assets a
-               JOIN documents d ON d.id=a.document_id
-               WHERE d.owner_id=$1 AND a.created_at>=now()-interval '1 hour'"#,
-            document.owner_id,
-        )
-        .fetch_one(&mut **tx)
-        .await?;
-        if uploads.saturating_add(new_inputs.len() as i64) > self.policy.asset_uploads_per_hour {
-            return Err(Error::Conflict("account asset upload rate exceeded".into()));
-        }
         let incoming_bytes = new_inputs.iter().fold(0_i64, |total, input| {
             total.saturating_add(input.byte_length)
         });

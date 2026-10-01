@@ -360,14 +360,14 @@ impl PostgresCatalog {
         {
             return Err(Error::Invalid("source identity is invalid".into()));
         }
-        let sequence = sqlx::query_scalar!(
+        let row_state = sqlx::query!(
             r#"UPDATE documents SET update_sequence=update_sequence+1,
                  uncompacted_update_count=uncompacted_update_count+1,
                  uncompacted_update_bytes=uncompacted_update_bytes+octet_length($3::bytea),
                  source_format=COALESCE($4,source_format),main_path=COALESCE($5,main_path),
                  updated_at=now()
                WHERE id=$1 AND update_sequence=$2 AND status='active'
-               RETURNING update_sequence AS "update_sequence!""#,
+               RETURNING update_sequence AS "update_sequence!", owner_id"#,
             document_id,
             row.expected_update_sequence,
             row.update_bytes,
@@ -377,6 +377,21 @@ impl PostgresCatalog {
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| Error::Conflict("document sequence changed".into()))?;
+        // Source updates and assets share one account quota. The document is
+        // already locked by the UPDATE above; taking storage_usage next is the
+        // same lock order used by asset completion and serializes checks for
+        // two documents owned by one account. The new log row is already in
+        // the usage total, so replacements are charged once as retained log
+        // bytes rather than by the project's full source size again.
+        sqlx::query("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+            .fetch_one(&mut **tx)
+            .await?;
+        let owner_usage =
+            super::repository::owner_usage_bytes(&mut **tx, row_state.owner_id).await?;
+        if owner_usage > self.policy.owner_bytes {
+            return Err(Error::Conflict("account storage quota exceeded".into()));
+        }
+        let sequence = row_state.update_sequence;
         sqlx::query!(
             "INSERT INTO document_updates(document_id,update_sequence,update_bytes,vector)
              VALUES($1,$2,$3,$4)",

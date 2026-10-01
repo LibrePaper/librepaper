@@ -133,9 +133,9 @@ Source is edited in CodeMirror 6, bound to the shared document. Each editor keep
 
 A dropped socket loses nothing; comments post via HTTP and reconnect resends the full list. Silent disconnections (NAT expiry, sleep) are detected by periodic polling of connection liveness. Queue depth and transport writes are bounded server-side. Authority is rechecked while a socket is open.
 
-Identity comes from GitHub or Google (browser), or the deployment's device flow (terminal). Both end as a handle (policy-gated) and an id (everything else keys on). Cookies use `__Host-` naming on HTTPS; OAuth uses PKCE and state cookies; logout is POST-only.
+Identity comes from GitHub or Google (browser), or the deployment's device flow (`librepaper login` in a headless terminal). Browser-started local agents receive an automatically renewed five-minute token scoped to the current document and link while the page is open. Both sign-in paths end as a handle (policy-gated) and an id (everything else keys on). Cookies use `__Host-` naming on HTTPS; OAuth uses PKCE and state cookies; logout is POST-only.
 
-Access comes from a grant on an account or a share link. Links name a role (reader, commenter, editor); possession is the grant. Links expire by default. The share dialog offers renewal (new key) and rotation (revoke and mint together). Keys never reach logs; only hashes are recorded.
+Access comes from a grant on an account or a share link. Links name a role (reader, commenter, editor); a signed-in account must present the link to use it. Links expire after 7 days by default. The share dialog offers renewal (new key) and rotation (revoke and mint together). Keys never reach logs; only hashes are recorded.
 
 An editor can make a project available offline while connected. LibrePaper stores application resources, editor modules, project identity and metadata locally, opened from an offline start page. While offline: source edits, file creation/renames, main file choice, cached asset reads, and preview with available dependencies work. Asset uploads need connection. Comments are local drafts and submitted explicitly after reconnecting. Decisions, restores, publishes and sharing changes require server authority and are not queued.
 

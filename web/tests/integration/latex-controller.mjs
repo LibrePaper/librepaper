@@ -509,6 +509,7 @@ function nextProject() {
     constructor(url) {
       this.url = String(url);
       this.messages = [];
+      this.host = null;
       this.onmessage = null;
       this.onerror = null;
       this.dead = false;
@@ -521,6 +522,11 @@ function nextProject() {
     }
     postMessage(message) {
       if (this.dead) throw new Error("posted to a terminated fake engine worker");
+      // The engine host takes the first message and the engine never sees it.
+      if (message.librepaperEngineHost) {
+        this.host = message.librepaperEngineHost;
+        return;
+      }
       this.messages.push(message);
       queueMicrotask(() => {
         if (this.dead) return;
@@ -612,8 +618,12 @@ function nextProject() {
     // Engine loaders are verified first and then assembled into opaque blob
     // workers. The original mirror URL must never be handed to a nested
     // executable worker after verification.
-    const bibtexWorker = engineWorkers.find((w) => w !== xetexWorker && w !== dvipdfmWorker && w.url.startsWith("blob:"));
+    const bibtexWorker = engineWorkers.find((w) => w !== xetexWorker && w !== dvipdfmWorker && w.host?.source?.startsWith("blob:"));
     assert.ok(bibtexWorker, "a fake bibtex engine worker was created from verified bytes");
+    for (const w of engineWorkers) {
+      assert.match(w.url, /engine-host\.js$/, "every engine starts in the same-origin host");
+      assert.ok(w.host.imports && w.host.assets, "the host is told which scripts and assets are verified");
+    }
     assert.ok(
       bibtexWorker.messages.map((m) => m.cmd).includes("loadbundleindex"),
       "the bundled bibtex worker received loadbundleindex",

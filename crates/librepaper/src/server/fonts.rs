@@ -217,7 +217,6 @@ impl Library {
             "cache-control",
             "public, max-age=31536000, immutable",
         );
-        super::set(&mut response, "x-content-type-options", "nosniff");
         response
     }
 }

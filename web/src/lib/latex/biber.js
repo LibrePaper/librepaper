@@ -59,8 +59,13 @@ export async function runBiber(request, { base, release, signal, onProgress } = 
   const runtime = await load(base, release, signal, onProgress);
   checkSignal(signal);
   const url = URL.createObjectURL(new Blob([runtime.worker], { type: 'text/javascript' }));
+  // The host loads the script from `url` asynchronously, so the URL lives
+  // until `finish()`. See `engine-host.js` for why biber starts there.
   let worker;
-  try { worker = new Worker(url); } finally { URL.revokeObjectURL(url); }
+  try {
+    worker = new Worker(new URL('./engine-host.js', import.meta.url));
+    worker.postMessage({ librepaperEngineHost: { source: url } });
+  } catch (error) { URL.revokeObjectURL(url); throw error; }
   return new Promise((resolve, reject) => {
     let finished = false;
     const finish = (error, result) => {
@@ -70,6 +75,7 @@ export async function runBiber(request, { base, release, signal, onProgress } = 
       signal?.removeEventListener('abort', aborted);
       active.delete(stop);
       worker.terminate();
+      URL.revokeObjectURL(url);
       error ? reject(error) : resolve(result);
     };
     const aborted = () => finish(abortError());

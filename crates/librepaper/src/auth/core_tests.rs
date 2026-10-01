@@ -27,6 +27,38 @@ fn credentials_cannot_cross_purposes() {
 }
 
 #[test]
+fn agent_grants_are_short_lived_document_link_scoped_credentials() {
+    let key = [19; 32];
+    let mut identity = Identity::google("42", "alice@example.org", "Alice", "");
+    identity.id = uuid::Uuid::now_v7().to_string();
+    identity.session_generation = "7".into();
+    let grant = AgentGrant {
+        identity: identity.clone(),
+        slug: "paper_1".into(),
+        link_hash: "ab".repeat(32),
+        role: 2,
+        expires_at: now_unix() + 60,
+    };
+    let token = sign_agent_grant(&key, &grant).expect("valid grant signs");
+    assert!(token.starts_with(AGENT_GRANT_PREFIX));
+    assert_eq!(read_agent_grant(&key, &token), Some(grant.clone()));
+    assert!(read_agent_grant(&[20; 32], &token).is_none());
+
+    let mut overlong = grant.clone();
+    overlong.expires_at = now_unix() + AGENT_GRANT_MAX_AGE.as_secs() as i64 + 1;
+    assert!(sign_agent_grant(&key, &overlong).is_none());
+    let mut expired = grant.clone();
+    expired.expires_at = now_unix();
+    assert!(sign_agent_grant(&key, &expired).is_none());
+    let mut invalid_role = grant.clone();
+    invalid_role.role = 4;
+    assert!(sign_agent_grant(&key, &invalid_role).is_none());
+    let mut invalid_link = grant;
+    invalid_link.link_hash = "not-a-digest".into();
+    assert!(sign_agent_grant(&key, &invalid_link).is_none());
+}
+
+#[test]
 fn established_catalog_account_uuid_survives_session_round_trip() {
     let key = [11; 32];
     let mut who = Identity::github("alice", "provider-subject");

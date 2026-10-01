@@ -177,6 +177,7 @@ fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) 
         comment_budget: None,
         role,
         automation: false,
+        bearer: false,
         auth_failed: false,
     }
 }

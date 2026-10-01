@@ -1,0 +1,24 @@
+name: fuzz
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            fuzz
+      - uses: oven-sh/setup-bun@v2
+      - run: cargo install cargo-fuzz --locked
+      - run: tools/suite fuzz
+        env:
+          FUZZ_SECONDS: "20"
+          FUZZ_TARGETS: paths document

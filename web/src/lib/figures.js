@@ -8,12 +8,16 @@
 //
 // Two forms are needed, because the two renderers want different things. Typst
 // takes the bytes and writes the image into the page itself. Markdown produces
-// HTML a browser will fetch from, so it takes a `blob:` URL -- never the route
+// HTML a browser will fetch from, so it takes a data URL -- never the route
 // the bytes came from, which on a private document carries a credential and
-// would put it inside a rendered page.
+// would put it inside a rendered page. A data URL, unlike a blob URL made here,
+// loads in the document frame, which lives on another origin, and an SVG opened
+// from one in a tab of its own runs in an opaque origin rather than as the app.
+// PDFs stay blob URLs: the reader's figure view shows them in an <object>, and
+// browsers render them in a PDF viewer that is isolated from the page.
 
 const bytes = new Map(); // digest -> Uint8Array
-const urls = new Map(); // digest -> blob: URL
+const urls = new Map(); // digest -> data: URL or blob: URL (PDFs only)
 const inFlight = new Map(); // digest -> Promise
 const scopes = new Map();
 let generation = 0;
@@ -53,9 +57,18 @@ async function fetchOne(slug, sha, headers) {
   }
 }
 
-/// What a `blob:` URL for these bytes should claim to be. The store answers
-/// every figure as octet-stream -- it knows a digest and not a filename -- so
-/// the type is worked out here, from the name the document gave it.
+/// Encode bytes as base64, using Buffer in Node and btoa in the browser.
+export function toBase64(bytes) {
+  if (typeof Buffer !== "undefined") return Buffer.from(bytes).toString("base64");
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  return btoa(binary);
+}
+
+/// What MIME type to use for these bytes. The store answers every figure as
+/// octet-stream -- it knows a digest and not a filename -- so the type is
+/// worked out here, from the name the document gave it.
 function typeOf(path) {
   const lower = path.toLowerCase();
   if (lower.endsWith(".png")) return "image/png";
@@ -83,11 +96,17 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
         const body = await fetchOne(slug, sha, headers);
         if (generation !== captured) throw new Error("Asset authorization changed");
         if (!urls.has(key)) {
-          const objectUrl = URL.createObjectURL(new Blob([body], { type: typeOf(path) }));
-          // Blob URLs are recreated on every page load. Keep the immutable
-          // store identity in the fragment, which is ignored by the resource
-          // fetch but available to the injected document agent.
-          urls.set(key, `${objectUrl}#librepaper-asset=${encodeURIComponent(sha)}`);
+          const type = typeOf(path);
+          let url;
+          if (type === "application/pdf") {
+            url = URL.createObjectURL(new Blob([body], { type }));
+          } else {
+            url = `data:${type};base64,${toBase64(body)}`;
+          }
+          // Keep the immutable store identity in the fragment, which is
+          // ignored by the resource fetch but available to the injected
+          // document agent.
+          urls.set(key, `${url}#librepaper-asset=${encodeURIComponent(sha)}`);
         }
         return [path, body, urls.get(key)];
       } catch {
@@ -125,9 +144,13 @@ export function ready(digests, slug = "", headers = {}) {
 
 /// Forgets everything, for a page leaving a document. The blob URLs are
 /// revoked: each one holds its bytes alive in the browser until it is.
+/// Data URLs do not need to be revoked.
 export function release() {
   generation++;
-  for (const url of urls.values()) URL.revokeObjectURL(url.split("#", 1)[0]);
+  for (const url of urls.values()) {
+    const base = url.split("#", 1)[0];
+    if (base.startsWith("blob:")) URL.revokeObjectURL(base);
+  }
   urls.clear();
   bytes.clear();
   inFlight.clear();

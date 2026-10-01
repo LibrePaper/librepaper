@@ -182,7 +182,7 @@ class EngineDriver {
 
   async init() {
     if (this.worker) return;
-    let workerUrl = this.url;
+    let host = { source: this.url };
     if (this.assets && this.workerName) {
       const verified = {};
       await Promise.all(Object.entries(this.assets).map(async ([name, file]) => {
@@ -207,24 +207,6 @@ class EngineDriver {
       // The LaTeXML Emscripten stem is `latexml_wasm`, while the published
       // payload is intentionally named `latexml.wasm`.
       if (assetUrls["latexml.wasm"]) assetUrls["latexml_wasm.wasm"] = assetUrls["latexml.wasm"];
-      const bootstrap = `
-const __librepaperImports = ${JSON.stringify(dependencyUrls)};
-const __librepaperAssets = ${JSON.stringify(assetUrls)};
-const __librepaperNativeImportScripts = self.importScripts.bind(self);
-self.importScripts = (...urls) => __librepaperNativeImportScripts(...urls.map((value) => {
-  const key = String(value).split("/").pop();
-  const resolved = __librepaperImports[value] || __librepaperImports[key];
-  if (!resolved) throw new Error("Unverified LaTeX engine import: " + value);
-  return resolved;
-}));
-self.__librepaperLocateFile = (name) => {
-  const key = String(name).split("/").pop();
-  const resolved = __librepaperAssets[name] || __librepaperAssets[key];
-  if (!resolved) throw new Error("Unverified LaTeX engine asset: " + name);
-  return resolved;
-};
-self.Module = { ...(self.Module || {}), locateFile: self.__librepaperLocateFile };
-`;
       const source = new TextDecoder().decode(verified[this.workerName]);
       const withLocateFile = source.replace(
         /var Module = self\.Module = \{\}/g,
@@ -233,17 +215,21 @@ self.Module = { ...(self.Module || {}), locateFile: self.__librepaperLocateFile 
         /return new URL\(path, self\.location\.href\)\.href;/g,
         "return self.__librepaperLocateFile(path);",
       );
-      workerUrl = URL.createObjectURL(new Blob([bootstrap, withLocateFile], { type: "text/javascript" }));
-      this.blobUrls.push(workerUrl);
+      const sourceUrl = URL.createObjectURL(new Blob([withLocateFile], { type: "text/javascript" }));
+      this.blobUrls.push(sourceUrl);
+      host = { source: sourceUrl, imports: dependencyUrls, assets: assetUrls };
     }
     await new Promise((resolve, reject) => {
-      const worker = new Worker(workerUrl);
+      // Every engine starts in the same-origin host, which loads the verified
+      // script itself; see `engine-host.js` for why the page does not.
+      const worker = new Worker(new URL("./engine-host.js", import.meta.url));
       worker.onmessage = (event) => this._onmessage(event.data, resolve, reject);
       worker.onerror = (event) => {
         const error = new Error(`${this.kind} engine worker error: ${event.message || event}`);
         this._rejectAll(error);
         reject(error);
       };
+      worker.postMessage({ librepaperEngineHost: host });
       this.worker = worker;
     });
     this._tell({ cmd: "settexliveurl", url: this.texliveUrl });

@@ -313,6 +313,17 @@ async fn middleware_inner(
         .authenticated_identity(request.headers(), &arrival)
         .await;
     let identity = authentication.clone().unwrap_or_default();
+    let authorization = origins::header(request.headers(), "authorization");
+    let delegated_agent = authorization
+        .as_deref()
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|token| token.starts_with(crate::auth::AGENT_GRANT_PREFIX));
+    if delegated_agent && authentication.is_ok() && !agent_document_path(&server, &path) {
+        return write_json(
+            403,
+            &json!({"error": "agent token is limited to its document"}),
+        );
+    }
     if !server.cost.admit_request(&network, &identity.id) {
         server.metrics.record_refusal("request_budget");
         let scope = if identity.id.is_empty() {
@@ -375,8 +386,25 @@ async fn middleware_inner(
     }
 }
 
+fn agent_document_path(server: &Server, path: &str) -> bool {
+    agent_document_slug(path).is_some_and(|slug| server.valid_slug(slug))
+}
+
+fn agent_document_slug(path: &str) -> Option<&str> {
+    let slug = path
+        .strip_prefix("/api/documents/")
+        .or_else(|| path.strip_prefix("/ws/"))
+        .and_then(|rest| rest.split('/').next())?;
+    (!slug.is_empty()).then_some(slug)
+}
+
 /// Metadata and range selection precede reading. Range and conditional
 /// requests never fetch the bytes that will not be sent to this caller.
+///
+/// The bytes are whatever someone uploaded, so the answer is never a page:
+/// octet-stream with no sniffing, a download if navigated to, and a sandbox
+/// with no script and an opaque origin if a browser renders it anyway. A
+/// `fetch` reads the body unaffected, which is how the reader takes figures.
 pub(super) async fn blob_response(
     blobs: Arc<dyn crate::storage::blob::BlobStore>,
     key: String,
@@ -453,6 +481,9 @@ pub(super) async fn blob_response(
         StatusCode::OK
     };
     set(&mut response, "content-type", "application/octet-stream");
+    set(&mut response, "x-content-type-options", "nosniff");
+    set(&mut response, "content-disposition", "attachment");
+    set(&mut response, "content-security-policy", "sandbox");
     set(&mut response, "content-length", &(end - start).to_string());
     set(&mut response, "accept-ranges", "bytes");
     set(&mut response, "etag", &etag);
@@ -483,4 +514,62 @@ fn byte_range(value: &str, length: u64) -> Option<(u64, u64)> {
         end.parse::<u64>().ok()?.saturating_add(1).min(length)
     };
     (start < end && start < length).then_some((start, end))
+}
+
+#[cfg(test)]
+mod blob_response_tests {
+    use super::*;
+    use crate::storage::blob::{BlobStore, FsStore};
+
+    /// Stored bytes are someone's upload. Whole or in part, they are never
+    /// answered as something a browser would sniff, display or run.
+    #[tokio::test]
+    async fn stored_bytes_are_never_a_page() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(FsStore::new(directory.path(), false));
+        store
+            .put_new(
+                "figure",
+                b"<svg><script>alert(1)</script></svg>".to_vec(),
+                "image/svg+xml",
+            )
+            .await
+            .unwrap();
+        let mut ranged = HeaderMap::new();
+        ranged.insert(header::RANGE, "bytes=0-3".parse().unwrap());
+        for (headers, status) in [
+            (HeaderMap::new(), StatusCode::OK),
+            (ranged, StatusCode::PARTIAL_CONTENT),
+        ] {
+            let response =
+                blob_response(store.clone(), "figure".into(), "abc", &headers, false).await;
+            assert_eq!(response.status(), status);
+            for (name, value) in [
+                ("content-type", "application/octet-stream"),
+                ("x-content-type-options", "nosniff"),
+                ("content-disposition", "attachment"),
+                ("content-security-policy", "sandbox"),
+            ] {
+                assert_eq!(response.headers()[name], value, "{status}: {name}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod agent_scope_tests {
+    use super::agent_document_slug;
+
+    #[test]
+    fn delegated_credentials_are_confined_to_document_and_socket_routes() {
+        assert_eq!(
+            agent_document_slug("/api/documents/paper/tools"),
+            Some("paper")
+        );
+        assert_eq!(agent_document_slug("/ws/paper"), Some("paper"));
+        assert_eq!(agent_document_slug("/api/list"), None);
+        assert_eq!(agent_document_slug("/api/account/erase"), None);
+        assert_eq!(agent_document_slug("/api/documents"), None);
+        assert_eq!(agent_document_slug("/api/documents/"), None);
+    }
 }
