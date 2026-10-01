@@ -51,6 +51,21 @@ fn run_result_is_current(current: &BackupConfig, run: &BackupConfig) -> bool {
         && current.account_id == run.account_id
 }
 
+fn destination_is_set(destination: &std::path::Path) -> bool {
+    !destination.as_os_str().is_empty()
+}
+
+fn destination_label(destination: &std::path::Path) -> String {
+    if !destination_is_set(destination) {
+        return String::new();
+    }
+    destination
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Selected folder".into())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct BackupConfig {
     origin: String,
@@ -177,32 +192,40 @@ impl BackupManager {
         if !token_missing
             && config.error.as_deref().is_some_and(is_login_error)
             && self.should_recheck_login(&key)
-            && verify_account(inner, origin, account_id).await.is_ok()
         {
-            let mut state = self.state.lock().await;
-            if let Some(current) = state.configs.get_mut(&key) {
-                if current.error == config.error
-                    && current.error.as_deref().is_some_and(is_login_error)
-                {
-                    let previous = current.error.take();
-                    if let Err(error) = self.persist(&state).await {
-                        if let Some(current) = state.configs.get_mut(&key) {
-                            current.error = previous;
-                        }
-                        if let Some(current) = state.configs.get_mut(&key) {
-                            current.error = Some(error);
+            let verification = verify_account(inner, origin, account_id).await;
+            let refreshed_error = match verification {
+                Ok(_) => Some(None),
+                Err(error) if !is_login_error(&error) => Some(Some(error)),
+                Err(_) => None,
+            };
+            if let Some(refreshed_error) = refreshed_error {
+                let mut state = self.state.lock().await;
+                if let Some(current) = state.configs.get_mut(&key) {
+                    if current.error == config.error
+                        && current.error.as_deref().is_some_and(is_login_error)
+                    {
+                        let previous = std::mem::replace(&mut current.error, refreshed_error);
+                        if let Err(error) = self.persist(&state).await {
+                            if let Some(current) = state.configs.get_mut(&key) {
+                                current.error = previous;
+                            }
+                            if let Some(current) = state.configs.get_mut(&key) {
+                                current.error = Some(error);
+                            }
                         }
                     }
                 }
-            }
-            if let Some(current) = state.configs.get(&key) {
-                config = current.clone();
+                if let Some(current) = state.configs.get(&key) {
+                    config = current.clone();
+                }
             }
         }
         json!({
             "enabled": config.enabled,
             "frequency_minutes": config.frequency_minutes,
-            "destination": config.destination.file_name().and_then(|name| name.to_str()).unwrap_or(""),
+            "destination": destination_label(&config.destination),
+            "destination_set": destination_is_set(&config.destination),
             "running": config.running,
             "last_success": config.last_success,
             "error": config.error,
@@ -709,7 +732,16 @@ async fn verify_account(inner: &Inner, origin: &str, account_id: &str) -> Result
         return Err("could not verify account: the server redirected the identity check".into());
     }
     if !response.status().is_success() {
-        return Err("could not verify account: the cached login is no longer valid".into());
+        if matches!(
+            response.status(),
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        ) {
+            return Err("could not verify account: the cached login is no longer valid".into());
+        }
+        return Err(format!(
+            "could not verify account: identity server returned HTTP {}",
+            response.status().as_u16()
+        ));
     }
     let identity: Value = response
         .json()
@@ -820,7 +852,29 @@ mod tests {
     use axum::routing::get;
     use axum::{Json, Router};
     use std::io::Read;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+
+    struct IdentityServerFixture {
+        account_id: String,
+        available: AtomicBool,
+    }
+
+    async fn fixture_identity_status(
+        State(fixture): State<Arc<IdentityServerFixture>>,
+    ) -> (axum::http::StatusCode, Json<Value>) {
+        if fixture.available.load(Ordering::SeqCst) {
+            (
+                axum::http::StatusCode::OK,
+                Json(json!({"id": fixture.account_id.clone()})),
+            )
+        } else {
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "temporarily unavailable"})),
+            )
+        }
+    }
 
     #[test]
     fn identity_must_match_the_requested_signed_in_account() {
@@ -866,6 +920,94 @@ mod tests {
         current = run.clone();
         current.enabled = false;
         assert!(!run_result_is_current(&current, &run));
+    }
+
+    #[test]
+    fn destination_status_handles_roots_and_non_utf8_folder_names() {
+        assert!(!destination_is_set(std::path::Path::new("")));
+        assert!(destination_is_set(std::path::Path::new("/")));
+        assert_eq!(
+            destination_label(std::path::Path::new("/")),
+            "Selected folder"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let path = PathBuf::from(std::ffi::OsString::from_vec(vec![
+                b'/', b't', b'm', b'p', b'/', 0xff,
+            ]));
+            let label = destination_label(&path);
+            assert!(!label.is_empty());
+            assert!(!label.contains('/'));
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_server_outage_is_not_a_login_error_and_recovers() {
+        let account_id = uuid::Uuid::now_v7().to_string();
+        let fixture = Arc::new(IdentityServerFixture {
+            account_id: account_id.clone(),
+            available: AtomicBool::new(false),
+        });
+        let app = Router::new()
+            .route("/api/me", get(fixture_identity_status))
+            .with_state(fixture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server_task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path(), cache_home.path()).await;
+        crate::cli::store_token_at(&inner.state_home, &origin, "backup-test-token").unwrap();
+        inner
+            .pairing
+            .issue(&origin, "identity outage test")
+            .unwrap();
+        {
+            let key = BackupConfig::key(&origin, &account_id);
+            let mut state = inner.backups.state.lock().await;
+            state.configs.insert(
+                key,
+                BackupConfig {
+                    destination: destination.path().to_path_buf(),
+                    ..BackupConfig::new(&origin, &account_id)
+                },
+            );
+            inner.backups.persist(&state).await.unwrap();
+        }
+
+        let error = inner
+            .backups
+            .configure(&inner, &origin, &account_id, true, 5)
+            .await
+            .unwrap_err();
+        assert!(error.contains("HTTP 503"));
+        {
+            let key = BackupConfig::key(&origin, &account_id);
+            let mut state = inner.backups.state.lock().await;
+            state.configs.get_mut(&key).unwrap().error =
+                Some("cached login account does not match the requested account".into());
+            inner.backups.persist(&state).await.unwrap();
+        }
+        let status = inner.backups.status(&inner, &origin, &account_id).await;
+        assert_eq!(status["needs_login"], false);
+        assert!(status["error"].as_str().unwrap().contains("HTTP 503"));
+
+        fixture.available.store(true, Ordering::SeqCst);
+        inner
+            .backups
+            .configure(&inner, &origin, &account_id, true, 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            inner.backups.status(&inner, &origin, &account_id).await["enabled"],
+            true
+        );
+        server_task.abort();
     }
 
     #[test]
