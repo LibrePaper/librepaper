@@ -8,9 +8,10 @@ v0.0.8 binary does not include that listener.
 ```sh
 cd tools/deploy-docker
 cp .env.example .env
-# Set LIBREPAPER_VERSION=v0.0.9, DOMAIN, ACME_EMAIL, LIBREPAPER_PUBLISHERS,
-# all three passwords described below, and both client ID and client secret
-# for GitHub or Google OAuth.
+# Set LIBREPAPER_VERSION=v0.0.9, DOMAIN, ACME_EMAIL, all three passwords
+# described below, and both client ID and client secret for GitHub or Google
+# OAuth. Any account signed in through either configured provider may publish
+# by default; set LIBREPAPER_PUBLISHERS in .env to restrict that access.
 docker compose up -d --build
 ```
 
@@ -24,16 +25,23 @@ with no safe default. The proxy takes a certificate for each over HTTP-01,
 which it cannot do before the `A`/`AAAA` records exist. The server refuses any
 other `Host` with 421.
 
-**Say who may publish.** `LIBREPAPER_PUBLISHERS` has no default and the server
-will not start without it. Publishing requires GitHub or Google, so a
-deployment that admits publishers also needs both the client ID and client
-secret for at least one OAuth provider. For GitHub, the callback is
+**Choose your publisher access.** Docker Compose defaults
+`LIBREPAPER_PUBLISHERS` to `any`, so any account signed in with the configured
+GitHub or Google provider may publish. To restrict publishing, set
+`LIBREPAPER_PUBLISHERS` in `.env` to a GitHub login, a Google account's
+verified address, an `@domain`, or a comma-separated allowlist. Publishing
+requires GitHub or Google OAuth credentials: configure both the client ID and
+client secret for at least one provider. For GitHub, the callback is
 `https://$DOMAIN/auth/callback`; Google's is
 `https://$DOMAIN/auth/callback/google`.
 
 **Decide about retention.** Off by default, which is right for a server whose
 publishers you know and wrong for one strangers may publish to: that is
 durable hosting for whatever they upload. `LIBREPAPER_EXPIRE_AFTER=30d`.
+
+Compose sets admission defaults of 50 MB of retained storage and 30 uploads per
+publisher per hour, including for older downloaded releases. Override them
+with `LIBREPAPER_QUOTA` and `LIBREPAPER_UPLOADS_PER_HOUR` in `.env` when needed.
 
 ## What is where
 

@@ -418,8 +418,8 @@ impl Default for Configuration {
             .to_vec(),
             storage: StorageLimit {
                 total: 5 * 1024 * 1024 * 1024,
-                per_owner: 100 * 1024 * 1024,
-                uploads_per_hour: 500,
+                per_owner: 50 * 1024 * 1024,
+                uploads_per_hour: 30,
             },
             cost: CostPolicy::default(),
             sockets: crate::server::socket_budget::SocketPolicy::default(),
@@ -735,6 +735,14 @@ pub fn default_pending_scratch_bytes(log_quota_bytes: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_defaults_bound_owner_admission() {
+        let config = Configuration::default();
+        assert_eq!(config.storage.per_owner, 50 * 1024 * 1024);
+        assert_eq!(config.storage.uploads_per_hour, 30);
+        assert_eq!(config.storage.total, 5 * 1024 * 1024 * 1024);
+    }
 
     /// A configuration that cannot persist what it admits has to be refused
     /// at startup rather than discovered when the first document fills up.

@@ -7,8 +7,8 @@ LibrePaper limits logical admission; it does not keep a billing-grade count of p
 | Resource | Default | Set with |
 |---|---|---|
 | Document log | 32 MiB | `log_quota_mb` |
-| Owner storage | 100 MiB | `--publisher-storage-limit` |
-| Owner uploads | 500/hour | `--publisher-upload-limit` |
+| Owner storage | 50 MiB | `--publisher-storage-limit` |
+| Owner uploads | 30/hour | `--publisher-upload-limit` |
 | Deployment storage | 5 GiB | `--deployment-storage-limit` |
 | Memory | 512 MiB | `memory_budget_mb` |
 | Pending source | 64 MiB | `pending_mb` |
@@ -61,6 +61,6 @@ For about 1,000 users, the proposed setup is:
 
 Prices checked 2026-09-28: OVH Multi-Zone costs about **CA$2.13 per 100 GiB/month**, versus CA$0.96 for One Zone, before tax. The extra CA$1.16 buys redundancy across three independent zones; requests, retrieval, and egress are free under Canadian terms ([pricing](https://www.ovhcloud.com/en-ca/public-cloud/prices/), [redundancy](https://docs.ovhcloud.com/en/guides/storage-and-backup/object-storage/s3-regions-comparison)). B2 costs **US$6.95/TB-month**, first 10 GB free, with free API calls and egress up to 3× average stored data; further egress normally costs US$0.01/GB ([pricing](https://www.backblaze.com/cloud-storage/pricing)).
 
-This storage plan is not configured or migrated. Verify region availability, S3 integration, and restores first. Fully accommodating 1,000 owners at 100 MiB requires about 98 GiB logical capacity plus physical overhead, so raise the current 5 GiB deployment quota accordingly; benchmark server capacity separately.
+This storage plan is not configured or migrated. Verify region availability, S3 integration, and restores first. Fully accommodating 1,000 owners at 50 MiB requires about 49 GiB logical capacity plus physical overhead, so raise the current 5 GiB deployment quota accordingly; benchmark server capacity separately.
 
 OVH Canada's VPS is a comparison candidate; LibrePaper has not migrated. On 2026-09-28 listed starting prices were CA$6.20/month (VPS-1: 2 vCPU, 4 GB RAM, 40 GB), CA$11.64 (VPS-2: 4 vCPU, 8 GB, 75 GB), and CA$16.83 (VPS-3: 6 vCPU, 12 GB, 100 GB). These promotional or commitment-based prices are not guaranteed renewal quotes. Canadian VPS plans include unlimited traffic to worldwide users; caps apply to certain APAC server locations. Check the final quote, taxes, add-ons, and measured capacity ([OVH Canada VPS pricing](https://www.ovhcloud.com/en-ca/vps/)).
