@@ -23,11 +23,12 @@ use sha2::{Digest, Sha256};
 
 use crate::auth::pseudonym::pseudonym_for;
 use crate::auth::{
-    cookie_name, normalized, now_unix, pkce_verifier, random_token, read_device, read_session,
-    read_visitor, sign_device, sign_session, sign_visitor, Accounts, DeviceOutcome, GithubAccounts,
-    GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache, DEVICE_POLL_INTERVAL,
-    DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE,
-    SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
+    cookie_name, normalized, now_unix, pkce_verifier, random_token, read_agent_grant, read_device,
+    read_session, read_visitor, sign_device, sign_session, sign_visitor, Accounts, DeviceOutcome,
+    GithubAccounts, GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache,
+    AGENT_GRANT_PREFIX, DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX,
+    PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE,
+    VISITOR_COOKIE,
 };
 use crate::config::Configuration;
 use crate::document::render::{title_from_html, title_from_markdown};
@@ -46,6 +47,7 @@ use crate::server::shell::{renderers, ShellFile};
 use crate::util::clean;
 
 mod chat;
+mod agent_auth;
 #[cfg(test)]
 mod comment_http_tests;
 pub mod cost;
@@ -122,13 +124,51 @@ impl DocumentService {
 
     /// Apply the complete read policy to an already-resolved caller.
     fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
+        may_read(entry, who)
+    }
+
+    pub(super) fn needs_sign_in(&self, entry: &IndexEntry, who: &Viewer) -> bool {
+        needs_sign_in(entry, who)
+    }
+}
+
+fn may_read(entry: &IndexEntry, who: &Viewer) -> bool {
+        // A browser session is never inherited by a local agent, and a share
+        // link alone is no longer enough to read. Automation still uses the
+        // account bearer for identity while this branch keeps its authority
+        // bounded by the presented link.
+        if !who.id.is_signed_in() {
+            return false;
+        }
         if who.automation {
-            return !who.link.is_empty()
+            return who.bearer
+                && !who.link.is_empty()
                 && entry
                     .link_role(&who.link, crate::util::now_unix())
                     .is_some();
         }
         entry.readable_by(&who.id.id, &who.link, crate::util::now_unix())
+}
+
+fn needs_sign_in(entry: &IndexEntry, who: &Viewer) -> bool {
+    if who.auth_failed {
+        return false;
+    }
+    (!who.id.is_signed_in() || (who.automation && !who.bearer))
+        && entry
+            .link_role(&who.link, crate::util::now_unix())
+            .is_some()
+}
+
+fn grant_matches_scope(grant: &crate::auth::AgentGrant, slug: &str, link_hash: &str) -> bool {
+    grant.slug == slug && grant.link_hash == link_hash
+}
+
+fn grant_role_ceiling(role: u8) -> Role {
+    match role {
+        1 => Role::Reader,
+        2 => Role::Commenter,
+        _ => Role::Editor,
     }
 }
 
@@ -365,6 +405,9 @@ pub struct Viewer {
     /// This keeps a cached account available for attribution while preventing
     /// its owner or named grants from becoming authority.
     pub automation: bool,
+    /// Automation requests must carry an account credential explicitly;
+    /// browser cookies are not inherited by a local agent process.
+    pub bearer: bool,
     /// A session/bearer was supplied but could not be validated (including a
     /// temporarily unavailable authoritative account lookup). Protected
     /// routes must answer 401/503 rather than silently downgrade it.
@@ -373,7 +416,9 @@ pub struct Viewer {
 
 impl Viewer {
     pub fn at_least(&self, wanted: Role) -> bool {
-        self.role.at_least(wanted)
+        self.id.is_signed_in()
+            && (!self.automation || self.bearer)
+            && self.role.at_least(wanted)
     }
 
     /// The account this request authenticated, if any.
@@ -745,6 +790,9 @@ impl Server {
         if who.auth_failed {
             return Err(authentication_expired());
         }
+        if self.needs_sign_in(entry, who) {
+            return Err(sign_in_to_read());
+        }
         if !who.at_least(rung) || !self.may_read(entry, who) {
             return Err(no_such_document());
         }
@@ -876,7 +924,12 @@ impl Server {
             let Some(token) = bearer else {
                 return Err(AuthenticationFailure::Invalid);
             };
-            if token.starts_with(DEVICE_TOKEN_PREFIX) {
+            if token.starts_with(AGENT_GRANT_PREFIX) {
+                let Some(grant) = read_agent_grant(&self.key, &token) else {
+                    return Err(AuthenticationFailure::Invalid);
+                };
+                (grant.identity, true, false)
+            } else if token.starts_with(DEVICE_TOKEN_PREFIX) {
                 (read_device(&self.key, &token), true, false)
             } else if !self.app.configured() {
                 return Err(AuthenticationFailure::Invalid);
@@ -1048,7 +1101,12 @@ impl Server {
     }
 
     pub fn is_automation(headers: &HeaderMap) -> bool {
-        header_of(headers, AUTOMATION_HEADER).is_some_and(|value| {
+        let delegated = header_of(headers, "authorization").is_some_and(|value| {
+            value
+                .strip_prefix("Bearer ")
+                .is_some_and(|token| token.starts_with(AGENT_GRANT_PREFIX))
+        });
+        delegated || header_of(headers, AUTOMATION_HEADER).is_some_and(|value| {
             matches!(
                 value.trim().to_ascii_lowercase().as_str(),
                 "1" | "true" | "yes"
@@ -1089,13 +1147,23 @@ impl Server {
         // browser's cookies. Keep the account for attribution and policy
         // ceilings, while preventing the cached owner session from widening
         // the link's authority.
-        let automation = Self::is_automation(headers);
+        let grant = header_of(headers, "authorization")
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .filter(|token| token.starts_with(AGENT_GRANT_PREFIX))
+            .and_then(|token| read_agent_grant(&self.key, token));
+        let automation = Self::is_automation(headers) || grant.is_some();
         let key = if automation {
             String::new()
         } else {
             self.owner(headers, arrival, &id)
         };
         let mut presented_link = self.link_hash(headers, query);
+        let grant_in_scope = grant.as_ref().is_none_or(|grant| {
+            grant_matches_scope(grant, &entry.slug, &presented_link)
+        });
+        if !grant_in_scope {
+            presented_link.clear();
+        }
         // A signed-in link holder is pinned after their first visit. On later
         // bare-URL opens, recover only the digest of the still-live link they
         // originally presented; the raw capability is never stored.
@@ -1110,6 +1178,9 @@ impl Server {
         let now = crate::util::now_unix();
         let ceiling = self.ceiling_for(&id);
         let mut role = resolved_role(automation, entry, &id.id, &presented_link, ceiling, now);
+        if let Some(grant) = grant.as_ref().filter(|_| grant_in_scope) {
+            role = role.min(grant_role_ceiling(grant.role));
+        }
         // Legacy rows can carry an owner key from before provider identities
         // existed.  The visitor credential that happens to match that key is
         // useful for attribution, but it is not proof of OAuth ownership and
@@ -1136,6 +1207,7 @@ impl Server {
             comment_budget,
             role,
             automation,
+            bearer: header_of(headers, "authorization").is_some(),
             auth_failed,
         }
     }
@@ -1851,6 +1923,7 @@ mod automation_authority_tests {
             comment_budget: None,
             role: Role::Commenter,
             automation: false,
+            bearer: false,
             auth_failed: false,
         }
     }
@@ -1997,6 +2070,50 @@ mod automation_authority_tests {
             ],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_live_link_needs_a_human_login_and_an_agent_bearer() {
+        let entry = shared_document();
+        let anonymous = viewer("", "", "reader-hash");
+        assert!(needs_sign_in(&entry, &anonymous));
+        assert!(!may_read(&entry, &anonymous));
+        assert!(!anonymous.at_least(Role::Reader));
+
+        let mut agent = viewer("github:alice", "alice", "reader-hash");
+        agent.automation = true;
+        assert!(needs_sign_in(&entry, &agent), "a browser identity is not an agent bearer");
+        assert!(!may_read(&entry, &agent));
+        assert!(!agent.at_least(Role::Reader));
+        agent.bearer = true;
+        assert!(!needs_sign_in(&entry, &agent));
+        assert!(may_read(&entry, &agent), "a signed-in agent remains link-bounded");
+        assert!(agent.at_least(Role::Reader));
+    }
+
+    #[test]
+    fn an_anonymous_request_without_a_live_link_stays_unlisted() {
+        let entry = shared_document();
+        let stranger = viewer("", "", "missing-link");
+        assert!(!needs_sign_in(&entry, &stranger));
+        assert!(!may_read(&entry, &stranger));
+    }
+
+    #[test]
+    fn delegated_grants_bind_document_link_and_role_ceiling() {
+        let grant = crate::auth::AgentGrant {
+            identity: Identity::default(),
+            slug: "paper".into(),
+            link_hash: "a".repeat(64),
+            role: 2,
+            expires_at: crate::util::now_unix() + 60,
+        };
+        assert!(grant_matches_scope(&grant, "paper", &"a".repeat(64)));
+        assert!(!grant_matches_scope(&grant, "another-paper", &"a".repeat(64)));
+        assert!(!grant_matches_scope(&grant, "paper", &"b".repeat(64)));
+        assert_eq!(grant_role_ceiling(1), Role::Reader);
+        assert_eq!(grant_role_ceiling(2), Role::Commenter);
+        assert_eq!(grant_role_ceiling(3), Role::Editor);
     }
 
     /// The property finding 6 of SPEC-security depends on. The agent reads

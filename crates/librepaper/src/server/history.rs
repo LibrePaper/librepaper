@@ -663,13 +663,16 @@ impl Server {
         if cross_site_refused(request.headers(), arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (_entry, who) = match self
+        let (entry, who) = match self
             .entry_viewer(slug, request.headers(), arrival, None)
             .await
         {
             Ok(result) => result,
             Err(response) => return response,
         };
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !who.at_least(Role::Editor) {
             return plain(404, "not found");
         }
@@ -742,13 +745,16 @@ impl Server {
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (_entry, who) = match self
+        let (entry, who) = match self
             .entry_viewer(slug, request.headers(), arrival, None)
             .await
         {
             Ok(result) => result,
             Err(response) => return response,
         };
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !who.at_least(Role::Editor) {
             return plain(404, "not found");
         }
@@ -786,11 +792,14 @@ impl Server {
         };
         // The owner may have transferred the document, or a link may have
         // been revoked, while the request body was being read.
-        let (_current_entry, current_who) =
+        let (current_entry, current_who) =
             match self.entry_viewer(slug, &headers, arrival, None).await {
                 Ok(result) => result,
                 Err(response) => return response,
             };
+        if self.needs_sign_in(&current_entry, &current_who) {
+            return sign_in_to_read();
+        }
         if !current_who.at_least(Role::Editor) {
             return plain(404, "not found");
         }
@@ -867,13 +876,16 @@ impl Server {
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (_entry, who) = match self
+        let (entry, who) = match self
             .entry_viewer(slug, request.headers(), arrival, None)
             .await
         {
             Ok(result) => result,
             Err(response) => return response,
         };
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !who.at_least(Role::Editor) {
             return plain(404, "not found");
         }
@@ -887,11 +899,14 @@ impl Server {
         };
         // The owner may have transferred the document, or a link may have
         // been revoked, while the request body was being read.
-        let (_current_entry, current_who) =
+        let (current_entry, current_who) =
             match self.entry_viewer(slug, &headers, arrival, None).await {
                 Ok(result) => result,
                 Err(response) => return response,
             };
+        if self.needs_sign_in(&current_entry, &current_who) {
+            return sign_in_to_read();
+        }
         if !current_who.at_least(Role::Editor) {
             return plain(404, "not found");
         }

@@ -28,6 +28,9 @@ impl Server {
         let who = self
             .viewer(&entry, request.headers(), arrival, request.uri().query())
             .await;
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !who.at_least(Role::Editor) {
             return write_json(403, &json!({"error":"edit access required"}));
         }

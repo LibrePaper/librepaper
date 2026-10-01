@@ -306,6 +306,9 @@ impl Server {
                 &json!({"error":"authentication expired or was revoked"}),
             )));
         }
+        if self.needs_sign_in(&entry, &who) {
+            return Err(Box::new(sign_in_to_read()));
+        }
         if !self.may_read(&entry, &who) {
             return Err(Box::new(write_json(404, &json!({"error":"not found"}))));
         }

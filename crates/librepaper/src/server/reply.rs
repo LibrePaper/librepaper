@@ -433,6 +433,14 @@ pub(super) fn authentication_expired() -> Reply {
     )
 }
 
+/// A live document link still requires a signed-in account to use.
+pub(super) fn sign_in_to_read() -> Reply {
+    write_json(
+        401,
+        &json!({"error": "sign in to read this shared document"}),
+    )
+}
+
 /// A document this caller may not see. The same answer a document that does
 /// not exist gets, deliberately: an unlisted slug is the only thing standing
 /// between a private document and the public, and a 403 would confirm it.

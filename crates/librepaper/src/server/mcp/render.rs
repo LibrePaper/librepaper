@@ -96,6 +96,9 @@ async fn load_candidate(
     if who.auth_failed {
         return Err(boxed_error(401, "authentication expired or revoked"));
     }
+    if server.needs_sign_in(&entry, &who) {
+        return Err(boxed_error(401, "sign in to read this shared document"));
+    }
     if !server.may_read(&entry, &who) {
         return Err(boxed_error(404, "not found"));
     }
@@ -133,6 +136,9 @@ async fn recheck_renderer(
     let who = server.viewer(&entry, headers, arrival, None).await;
     if who.auth_failed {
         return Err(boxed_error(401, "authentication expired or revoked"));
+    }
+    if server.needs_sign_in(&entry, &who) {
+        return Err(boxed_error(401, "sign in to read this shared document"));
     }
     if !server.may_read(&entry, &who) {
         return Err(boxed_error(404, "not found"));

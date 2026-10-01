@@ -284,6 +284,9 @@ impl Server {
                         &json!({"error": "authentication expired or was revoked"}),
                     );
                 }
+                if self.needs_sign_in(&current_entry, &current_who) {
+                    return sign_in_to_read();
+                }
                 if !self.may_read(&current_entry, &current_who)
                     || (who.at_least(Role::Commenter) && !current_who.at_least(Role::Commenter))
                 {
@@ -922,6 +925,9 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
@@ -972,6 +978,9 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
@@ -1040,6 +1049,9 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
@@ -1270,6 +1282,9 @@ impl Server {
         let viewer = self
             .viewer(&entry, &headers, arrival, query.as_deref())
             .await;
+        if self.needs_sign_in(&entry, &viewer) {
+            return sign_in_to_read();
+        }
         if !self.may_read(&entry, &viewer) {
             return write_json(404, &json!({"error": "not found"}));
         }
@@ -1512,6 +1527,9 @@ impl Server {
             Err(response) => return response,
         };
         let who = self.viewer(&entry, headers, arrival, query).await;
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
         if !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
