@@ -3,13 +3,14 @@
   // list of categories at the left, one category at a time at the right. It
   // opens from the navbar menu, never from the sidebar, and any entry point
   // can open it on a given category -- the status bar's connect link lands
-  // on the local app.
+  // on the companion.
   import { tick } from "svelte";
   import Modal from "../Modal.svelte";
-  import { offered, search } from "./registry.js";
+  import { offered, search, has } from "./registry.js";
   import SettingRow from "./SettingRow.svelte";
   import EditorSettings from "./EditorSettings.svelte";
-  import StorageSettings from "./StorageSettings.svelte";
+  import LatexFilesSettings from "./LatexFilesSettings.svelte";
+  import ProjectFolderSetting from "./ProjectFolderSetting.svelte";
   import QuotaSettings from "./QuotaSettings.svelte";
   import BuildSettings from "./BuildSettings.svelte";
   import IntegrationSettings from "./IntegrationSettings.svelte";
@@ -31,30 +32,28 @@
     // the editor category shows. The reader assembles it; lib/commands.js
     // decides from it what is available.
     commands = {},
-    // The LaTeX project.
+    // The build.
     buildPreferences = {},
     documentId = "",
     userId = "anonymous",
     onbuildpreferences,
-    // The Quarto project and the local app it renders on.
     main = "",
     onbindingid,
     localExecution = false,
     onlocalexecution,
-    options,
     onapplyoptions,
-    // Who is signed in, which is what the account category is about. `{}`
-    // when nobody is, and then that category is not offered at all.
+    // The account and the server.
     account = {},
     remoteConnected = false,
     remoteNote = "",
   } = $props();
 
-  const context = $derived({ format: sourceFormat, mayEdit, signedIn: Boolean(account.provider) });
+  const context = $derived({ format: sourceFormat, mayEdit, signedIn: Boolean(account.provider), tool: buildPreferences.tool });
   const available = $derived(offered(context));
   // The category shown: the one asked for, or the first offered when that is
   // not (the document changed format, or this browser lost the right to edit).
   const shown = $derived(available.find((each) => each.id === category) || available[0]);
+  const row = (id) => Boolean(shown) && has(shown, id, context);
 
   let query = $state("");
   const found = $derived(search(query, context));
@@ -94,45 +93,46 @@
         </header>
         {#if shown.id === "editor"}
           <EditorSettings {keys} {onkeys} {commands} />
-        {:else if shown.id === "storage"}
-          {#if context.signedIn}<QuotaSettings />{/if}
-          {#if context.format === "latex" && mayEdit}<StorageSettings />{/if}
         {:else if shown.id === "render"}
-          <!-- Build preferences are stored per document, and a document has one
-               format, so only that format's subsection is shown. -->
-          <section class="settings-subsection">
-            <h4 class="settings-subhead">{({ latex: "LaTeX", typst: "Typst", markdown: "Markdown", quarto: "Markdown" })[sourceFormat]}</h4>
-            <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
-          </section>
-        {:else if shown.id === "local"}
-          <LocalAppSettings {main} {sourceFormat} {mayEdit} {onbindingid} />
-          <section class="settings-subsection">
-            <h4 class="settings-subhead">Quarto</h4>
-            <IntegrationSettings name="quarto" />
-            {#if context.format === "quarto"}<RenderingSettings {options} {onapplyoptions} />{/if}
-            {#if context.format === "quarto" && context.mayEdit}
-              <SettingRow id="quarto-execution" title="Local code execution" description="Code runs on this computer with your user account's permissions.">
-                <span class="setting-description">Allow paired Quarto documents to run local code</span>
-                <button type="button" role="switch" class="switch local-execution-switch" aria-label="Allow paired Quarto documents to run local code" aria-checked={localExecution} data-state={localExecution ? "checked" : "unchecked"} onclick={() => onlocalexecution?.(!localExecution)}>
-                  <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
-                </button>
-              </SettingRow>
-            {/if}
-          </section>
-          <section class="settings-subsection">
-            <h4 class="settings-subhead">Calepin</h4>
-            <IntegrationSettings name="calepin" />
-          </section>
+          <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
+          {#if row("render-folder")}<ProjectFolderSetting {sourceFormat} {main} {mayEdit} {onbindingid} />{/if}
+          {#if row("render-latex-files")}<LatexFilesSettings />{/if}
+          <!-- A tool that can build this document is configured here, with the
+               rest of the build, rather than on a page of its own. -->
+          {#if row("quarto-status")}
+            <section class="settings-subsection">
+              <h4 class="settings-subhead">Quarto</h4>
+              <IntegrationSettings name="quarto" />
+              {#if row("rendering-profile")}<RenderingSettings options={buildPreferences} {onapplyoptions} />{/if}
+              {#if row("quarto-execution")}
+                <SettingRow id="quarto-execution" title="Local code execution" description="Code runs on this computer with your user account's permissions.">
+                  <span class="setting-description">Allow paired Quarto documents to run local code</span>
+                  <button type="button" role="switch" class="switch local-execution-switch" aria-label="Allow paired Quarto documents to run local code" aria-checked={localExecution} data-state={localExecution ? "checked" : "unchecked"} onclick={() => onlocalexecution?.(!localExecution)}>
+                    <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
+                  </button>
+                </SettingRow>
+              {/if}
+            </section>
+          {/if}
+          {#if row("calepin-status")}
+            <section class="settings-subsection">
+              <h4 class="settings-subhead">Calepin</h4>
+              <IntegrationSettings name="calepin" />
+            </section>
+          {/if}
+        {:else if shown.id === "integrations"}
           <section class="settings-subsection">
             <h4 class="settings-subhead">Zotero</h4>
             <IntegrationSettings name="zotero" />
           </section>
-        {:else if shown.id === "remote"}
-          <RemoteSettings {remoteConnected} {remoteNote} />
+        {:else if shown.id === "local"}
+          <LocalAppSettings />
         {:else if shown.id === "backups"}
           <BackupsSettings {account} />
         {:else if shown.id === "account"}
-          <AccountSettings {account} />
+          <RemoteSettings {remoteConnected} {remoteNote} />
+          {#if row("storage-account")}<QuotaSettings />{/if}
+          {#if row("account-erase")}<AccountSettings {account} />{/if}
         {/if}
       {/if}
     </div>
