@@ -614,7 +614,7 @@ impl BackupManager {
         let mut pending = self.authorizations.lock().await;
         if result.is_ok()
             || result
-                .as_deref()
+                .as_ref()
                 .err()
                 .is_some_and(|error| !error.contains("sign in and approve the code"))
         {
