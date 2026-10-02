@@ -317,7 +317,20 @@ try {
   const resizeNotifications = await tab.evaluate("window.resizeNotifications");
   for (let i = 0; i < 5; i++) await flush();
   assert.equal(await tab.evaluate("window.resizeNotifications"), resizeNotifications, "pane layout settles without a continuing resize loop");
-  assert.equal(await tab.evaluate("document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight"), true, "mobile outline navigation keeps the page inside the viewport");
+  const pageBounds = await tab.evaluate(`(() => {
+    const outside = [...document.querySelectorAll('body *')].flatMap((node) => {
+      const style = getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      if (!node.getClientRects().length || style.display === 'none' || style.visibility === 'hidden'
+          || (rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1)) return [];
+      return [{tag:node.tagName.toLowerCase(),className:typeof node.className === 'string' ? node.className : '',
+        top:rect.top,left:rect.left,right:rect.right,bottom:rect.bottom}];
+    });
+    return {innerWidth,innerHeight,scrollWidth:document.documentElement.scrollWidth,
+      scrollHeight:document.documentElement.scrollHeight,outside:outside.slice(0,15)};
+  })()`);
+  assert.ok(pageBounds.scrollWidth <= pageBounds.innerWidth && pageBounds.scrollHeight <= pageBounds.innerHeight,
+    `mobile outline navigation keeps the page inside the viewport: ${JSON.stringify(pageBounds)}`);
   assert.deepEqual(await tab.evaluate("window.testErrors"), []);
   console.log("outline-browser: five source formats, caret jumps, file switching, live remote updates, empty files, responsive reveal and accessibility passed");
 } finally {
