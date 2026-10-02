@@ -17,8 +17,7 @@ use loro::{LoroDoc, LoroText, LoroValue};
 use serde_json::{json, Map, Value};
 
 fn corpus_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../web/tests/fixtures/projection.json")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web/tests/fixtures/projection.json")
 }
 
 fn strings(value: &Value, key: &str) -> Vec<String> {

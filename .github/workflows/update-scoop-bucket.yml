@@ -1,0 +1,62 @@
+name: Update Scoop Bucket
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Stable release tag to publish (for example v0.0.14)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    if: >
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == 'LibrePaper/librepaper'))
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - id: resolve
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$DISPATCH_TAG" ]]; then
+            TAG="$DISPATCH_TAG"
+            SHA="$(git rev-parse "refs/tags/${TAG}^{commit}" 2>/dev/null || true)"
+          else
+            SHA="$RELEASE_SHA"
+            TAG="${RUN_HEAD_BRANCH#refs/tags/}"
+          fi
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "No stable v-prefixed semver release tag found; skipping."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          elif [[ -z "$SHA" || "$(git rev-parse "refs/tags/${TAG}^{commit}" 2>/dev/null || true)" != "$SHA" ]]; then
+            echo "Release tag does not resolve to the triggering commit; skipping."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update Scoop bucket
+        if: steps.resolve.outputs.proceed == 'true'
+        run: bash scripts/update-scoop-bucket.sh
+        env:
+          LIBREPAPER_RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
+          SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}

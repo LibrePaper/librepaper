@@ -24,13 +24,31 @@ released.
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
 ```
 
-This installer supports Linux and macOS on x86_64 and aarch64. Windows
-installers are not published for v0.0.9. To pin a version, replace
-`releases/latest/download/` with `releases/download/<tag>/`.
+This shell installer supports Linux and macOS on x86_64 and aarch64. On
+Windows, install through Scoop as shown below; its package downloads the
+prebuilt `librepaper-x86_64-pc-windows-msvc.zip` release artifact. To pin the
+shell installer to a version, replace `releases/latest/download/` with
+`releases/download/<tag>/`.
 
 The installer puts the executable on your PATH. In a new terminal, run
 `librepaper local start` to start the companion, then connect it from *Settings*, *Local app* in LibrePaper. The installer
 does not add a desktop shortcut or register the `librepaper://` link handler.
+
+On macOS or Linux, you can also install with Homebrew:
+
+```sh
+brew install vincentarelbundock/tap/librepaper
+```
+
+On Windows, install with Scoop:
+
+```powershell
+scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-bucket
+scoop install librepaper
+```
+
+The sole crates.io package is `librepaper`; install it with Rust's package
+manager using `cargo install librepaper`.
 
 ## Documentation
 

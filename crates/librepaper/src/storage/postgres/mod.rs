@@ -41,7 +41,8 @@ pub use repository::{
     AccountRecord, AssetRecord, DocumentRecord, DocumentStorage, NewAccount, NewAsset, NewDocument,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
+static MIGRATOR: sqlx::migrate::Migrator =
+    sqlx::migrate!("./crates/librepaper/migrations/postgres");
 
 #[derive(Clone, Debug)]
 pub struct PostgresOptions {

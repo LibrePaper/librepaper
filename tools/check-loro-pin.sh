@@ -9,10 +9,10 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
-rust=$(sed -n 's/^loro = "\([0-9.]*\)".*/\1/p' "$root/crates/librepaper/Cargo.toml")
+rust=$(sed -n 's/^loro = "\([0-9.]*\)".*/\1/p' "$root/Cargo.toml")
 npm=$(sed -n 's/.*"loro-crdt": "\([0-9.]*\)".*/\1/p' "$root/web/package.json")
 
-[ -n "$rust" ] || { echo "check-loro-pin: no loro version in crates/librepaper/Cargo.toml" >&2; exit 1; }
+[ -n "$rust" ] || { echo "check-loro-pin: no loro version in Cargo.toml" >&2; exit 1; }
 [ -n "$npm" ]  || { echo "check-loro-pin: no loro-crdt version in web/package.json" >&2; exit 1; }
 
 minor() { echo "$1" | cut -d. -f1,2; }
