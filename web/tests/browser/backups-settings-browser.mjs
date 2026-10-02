@@ -259,7 +259,7 @@ try {
   await until("companion authorization completed", () => b.evaluate("window.backupCalls.some((call) => call.method === 'POST authorize complete' && call.account_id === 'account-b')"), 5000);
   await until("authorization status refresh", () => b.evaluate("window.backupRequests.length === 13"), 5000);
   await b.evaluate(resolveStatus(12, { enabled: false, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: false }));
-  await until("controls unlocked after authorization refresh", () => b.evaluate("Boolean(document.querySelector('#backup-enable [role=switch]') && !document.querySelector('#backup-enable [role=switch]').disabled"), 5000);
+  await until("controls unlocked after authorization refresh", () => b.evaluate("Boolean(document.querySelector('#backup-enable [role=switch]') && !document.querySelector('#backup-enable [role=switch]').disabled)"), 5000);
 
   await b.evaluate(click("#backup-enable [role='switch']"));
   await until("schedule enable after authorization", () => b.evaluate("window.backupCalls.some((call) => call.method === 'PUT' && call.account_id === 'account-b' && call.enabled === true)"), 5000);
