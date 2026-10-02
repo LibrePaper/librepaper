@@ -59,6 +59,7 @@ class Librepaper < Formula
   desc "Browser based document collaboration and review companion"
   homepage "https://github.com/LibrePaper/librepaper"
   version "${version}"
+  license "MIT"
 
   on_macos do
     on_arm do

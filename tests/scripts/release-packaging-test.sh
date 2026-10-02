@@ -104,12 +104,14 @@ for target in \
   grep -Fq "librepaper-$target.tar.xz" "$tmp/capture/Formula/librepaper.rb" || fail "formula missing $target archive"
 done
 grep -Fq "sha256 \"$MOCK_HASH\"" "$tmp/capture/Formula/librepaper.rb" || fail 'formula missing verified archive hashes'
+grep -Fq 'license "MIT"' "$tmp/capture/Formula/librepaper.rb" || fail 'formula missing MIT license metadata'
 [[ -e "$tmp/pushed" ]] || fail 'Homebrew formula was not pushed'
 
 reset_mock
 LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/scripts/update-scoop-bucket.sh" >/dev/null
 [[ -f "$tmp/capture/bucket/librepaper.json" ]] || fail 'Scoop manifest was not generated'
 grep -Fq '"version": "1.2.3"' "$tmp/capture/bucket/librepaper.json" || fail 'manifest has wrong version'
+grep -Fq '"license": "MIT"' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing MIT license metadata'
 grep -Fq 'librepaper-x86_64-pc-windows-msvc.zip' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing Windows archive'
 grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing verified archive hash'
 [[ -e "$tmp/pushed" ]] || fail 'Scoop manifest was not pushed'

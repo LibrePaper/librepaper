@@ -4,6 +4,7 @@ name = "librepaper"
 version = "0.0.14"
 edition = "2021"
 publish = true
+license = "MIT"
 build = "crates/librepaper/build.rs"
 repository = "https://github.com/LibrePaper/librepaper"
 description = "A local-first collaborative paper editor and document server"
@@ -12,6 +13,7 @@ keywords = ["document", "collaboration", "editor"]
 categories = ["command-line-utilities", "web-programming"]
 include = [
     "Cargo.toml",
+    "LICENSE",
     "README.md",
     "crates/librepaper/build.rs",
     "crates/librepaper/src/**",

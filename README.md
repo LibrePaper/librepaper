@@ -87,3 +87,7 @@ See [`docs/asset-mirrors.md`](docs/dev/asset-mirrors.md).
 ## Credits
 
 The typewriter photograph on the landing page is by [Annie Spratt](https://pixabay.com/users/anniespratt-5063125/), from [Pixabay](https://pixabay.com/photos/vintage-typewriter-2168174/).
+
+## License
+
+LibrePaper is distributed under the [MIT License](LICENSE).

@@ -46,6 +46,7 @@ cat > bucket/librepaper.json <<MANIFEST
     "version": "${version}",
     "description": "Browser based document collaboration and review companion",
     "homepage": "https://github.com/LibrePaper/librepaper",
+    "license": "MIT",
     "architecture": {
         "64bit": {
             "url": "${release_url}/${archive}",

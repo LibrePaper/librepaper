@@ -70,7 +70,6 @@ scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-
 scoop install librepaper
 ```
 
-The repository does not currently declare a software license in its package
-manifest or documentation, so both generated package definitions omit the
-license field. Choose and declare the project's license before adding a
-specific grant to either definition.
+LibrePaper is distributed under the MIT License. The package manifest and the
+generated Homebrew and Scoop definitions declare `MIT`; the license text is in
+the repository's root `LICENSE` file.
