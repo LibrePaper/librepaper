@@ -59,7 +59,10 @@ fn cache_home() -> PathBuf {
 
 async fn start_background(port: u16, tool_path: &[PathBuf]) {
     match crate::local::lifecycle::spawn_background(port, tool_path).await {
-        Ok(state) => println!("Companion ready on port {}. Next: Settings → Local app.", state.port),
+        Ok(state) => println!(
+            "Companion ready on port {}. Next: Settings → Local app.",
+            state.port
+        ),
         Err(error) => die(error),
     }
 }
@@ -132,7 +135,10 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     );
     let router = service.router();
 
-    println!("Companion ready on http://127.0.0.1:{port}{}", protocol::BASE_PATH);
+    println!(
+        "Companion ready on http://127.0.0.1:{port}{}",
+        protocol::BASE_PATH
+    );
     println!("Next: Settings → Local app.");
     print_pairings(&pairing);
     println!("Ctrl-C to stop.");

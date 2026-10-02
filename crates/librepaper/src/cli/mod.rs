@@ -52,10 +52,22 @@ pub struct LaunchArgs {
     #[arg(long, help_heading = "Companion")]
     pub at_login: bool,
     /// Port to listen on (default 8763)
-    #[arg(long, value_name = "PORT", hide_default_value = true, env = "LIBREPAPER_LOCAL_PORT", help_heading = "Companion")]
+    #[arg(
+        long,
+        value_name = "PORT",
+        hide_default_value = true,
+        env = "LIBREPAPER_LOCAL_PORT",
+        help_heading = "Companion"
+    )]
     pub port: Option<u16>,
     /// Extra directories searched before PATH for typst, pandoc and calepin
-    #[arg(long, value_name = "DIRS", env = "LIBREPAPER_TOOL_PATH", value_delimiter = ':', help_heading = "Companion")]
+    #[arg(
+        long,
+        value_name = "DIRS",
+        env = "LIBREPAPER_TOOL_PATH",
+        value_delimiter = ':',
+        help_heading = "Companion"
+    )]
     pub tool_path: Vec<PathBuf>,
 }
 
@@ -291,46 +303,42 @@ struct AdvancedConfigFile {
 #[derive(Subcommand)]
 pub(crate) enum Command {
     /// Start the companion (in the background by default)
-    #[command(help_heading = "Companion")]
     Start(LaunchArgs),
     /// Ask the companion to stop cleanly
-    #[command(help_heading = "Companion")]
     Stop,
     /// Show companion status and available tools
-    #[command(help_heading = "Companion")]
     Status {
-        #[arg(long, value_name = "DIRS", env = "LIBREPAPER_TOOL_PATH", value_delimiter = ':')]
+        #[arg(
+            long,
+            value_name = "DIRS",
+            env = "LIBREPAPER_TOOL_PATH",
+            value_delimiter = ':'
+        )]
         tool_path: Vec<PathBuf>,
     },
     /// Manage agents this computer offers to the document sidebar
-    #[command(help_heading = "Companion")]
     Agent {
         #[command(subcommand)]
         command: LocalAgentCommand,
     },
     /// Sign in through a deployment, in a browser
-    #[command(help_heading = "Documents")]
     Login {
         #[command(flatten)]
         deployment: Deployment,
     },
     /// Forget the stored sign-in
-    #[command(help_heading = "Documents")]
     Logout,
     /// Deployment administration and operator commands.
-    #[command(help_heading = "Administration")]
     Admin {
         #[command(subcommand)]
         command: AdminCommand,
     },
     /// List your documents
-    #[command(help_heading = "Documents")]
     List {
         #[command(flatten)]
         deployment: Deployment,
     },
     /// Export a complete independent copy of the project
-    #[command(help_heading = "Documents")]
     Export {
         /// A full slug, or one of the short handles `list` prints
         id: String,
@@ -577,10 +585,30 @@ pub async fn main() {
     let cli = Cli::parse();
     let command = cli.command.unwrap_or(Command::Start(cli.launch));
     match command {
-        Command::Start(args) => crate::local::cli::run(LocalArgs { command: LocalCommand::Start(args) }).await,
-        Command::Stop => crate::local::cli::run(LocalArgs { command: LocalCommand::Stop }).await,
-        Command::Status { tool_path } => crate::local::cli::run(LocalArgs { command: LocalCommand::Status { tool_path } }).await,
-        Command::Agent { command } => crate::local::cli::run(LocalArgs { command: LocalCommand::Agent { command } }).await,
+        Command::Start(args) => {
+            crate::local::cli::run(LocalArgs {
+                command: LocalCommand::Start(args),
+            })
+            .await
+        }
+        Command::Stop => {
+            crate::local::cli::run(LocalArgs {
+                command: LocalCommand::Stop,
+            })
+            .await
+        }
+        Command::Status { tool_path } => {
+            crate::local::cli::run(LocalArgs {
+                command: LocalCommand::Status { tool_path },
+            })
+            .await
+        }
+        Command::Agent { command } => {
+            crate::local::cli::run(LocalArgs {
+                command: LocalCommand::Agent { command },
+            })
+            .await
+        }
         Command::Login { deployment } => login(deployment.server).await,
         Command::Logout => logout(),
         Command::Admin { command } => run_admin(command).await,
@@ -826,7 +854,9 @@ mod socket_policy_tests {
         assert_eq!(configured.launch.port, Some(9123));
         assert_eq!(configured.launch.tool_path, [PathBuf::from("/opt/tools")]);
 
-        assert!(Cli::try_parse_from(["librepaper", "start", "--foreground", "--port", "9123"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["librepaper", "start", "--foreground", "--port", "9123"]).is_ok()
+        );
     }
 
     #[test]
@@ -844,7 +874,9 @@ mod socket_policy_tests {
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
         }
-        assert!(Cli::try_parse_from(["librepaper", "local", "open", "librepaper://connect"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["librepaper", "local", "open", "librepaper://connect"]).is_ok()
+        );
     }
 
     #[test]
