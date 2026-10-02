@@ -27,18 +27,18 @@ fn lists_command(help: &str, command: &str) -> bool {
 #[test]
 fn top_level_help_lists_exactly_the_public_commands() {
     let help = help_of(&["--help"]);
-    for command in ["login", "logout", "list", "export", "local", "admin"] {
+    for command in [
+        "start", "stop", "status", "agent", "login", "logout", "list", "export", "local", "admin",
+    ] {
         assert!(
             lists_command(&help, command),
             "public command {command:?} is absent from top-level help:\n{help}"
         );
     }
-    for command in ["agent", "mcp"] {
-        assert!(
-            !lists_command(&help, command),
-            "{command:?} should not be listed in top-level help:\n{help}"
-        );
-    }
+    assert!(
+        !lists_command(&help, "mcp"),
+        "mcp should not be listed in top-level help:\n{help}"
+    );
 }
 
 #[test]
@@ -57,26 +57,18 @@ fn admin_help_lists_the_admin_commands() {
 }
 
 #[test]
-fn local_help_lists_the_local_commands() {
+fn local_help_lists_only_approval_and_pairing_controls() {
     let help = help_of(&["local", "--help"]);
-    for command in ["start", "stop", "status", "approve", "disconnect", "agent"] {
+    for command in ["approve", "disconnect"] {
         assert!(
             lists_command(&help, command),
             "local command {command:?} is absent from local help:\n{help}"
         );
     }
-    for removed_command in [
-        "launch",
-        "manage",
-        "settings",
-        "doctor",
-        "connections",
-        "startup",
-        "preset",
-    ] {
+    for hidden_command in ["start", "stop", "status", "agent", "open"] {
         assert!(
-            !lists_command(&help, removed_command),
-            "removed command {removed_command:?} should not be listed in local help:\n{help}"
+            !lists_command(&help, hidden_command),
+            "compatibility command {hidden_command:?} should be hidden from local help:\n{help}"
         );
     }
 }
@@ -117,12 +109,17 @@ fn mcp_requires_a_connection_and_rejects_a_bare_link() {
 }
 
 #[test]
-fn local_agent_lists_its_subcommands() {
-    let help = help_of(&["local", "agent", "--help"]);
+fn root_and_legacy_agent_paths_list_their_subcommands() {
+    let help = help_of(&["agent", "--help"]);
+    let legacy_help = help_of(&["local", "agent", "--help"]);
     for command in ["add", "list", "remove"] {
         assert!(
             lists_command(&help, command),
-            "agent command {command:?} is absent from local agent help:\n{help}"
+            "agent command {command:?} is absent from root agent help:\n{help}"
+        );
+        assert!(
+            lists_command(&legacy_help, command),
+            "agent command {command:?} is absent from legacy local agent help:\n{legacy_help}"
         );
     }
 }
@@ -180,16 +177,49 @@ fn export_flags_are_correct() {
 }
 
 #[test]
-fn local_start_flags_are_correct() {
-    let help = help_of(&["local", "start", "--help"]);
+fn root_and_legacy_start_flags_are_correct() {
+    let help = help_of(&["start", "--help"]);
+    let legacy_help = help_of(&["local", "start", "--help"]);
     assert!(
         help.contains("--foreground"),
-        "--foreground missing from local start help:\n{help}"
+        "--foreground missing from root start help:\n{help}"
     );
     assert!(
         help.contains("--at-login"),
-        "--at-login missing from local start help:\n{help}"
+        "--at-login missing from root start help:\n{help}"
     );
+    assert!(help.contains("--port"));
+    assert!(help.contains("--tool-path"));
+    assert!(legacy_help.contains("--foreground"));
+    assert!(legacy_help.contains("--at-login"));
+    assert!(legacy_help.contains("--port"));
+    assert!(legacy_help.contains("--tool-path"));
+}
+
+#[test]
+fn inherited_companion_env_does_not_reject_other_subcommands() {
+    let state_home = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
+        .args(["agent", "list"])
+        .env_remove("LIBREPAPER_SERVER")
+        .env_remove("LIBREPAPER_TOKEN")
+        .env("LIBREPAPER_LOCAL_PORT", "9123")
+        .env("LIBREPAPER_TOOL_PATH", "/tmp")
+        .env("XDG_STATE_HOME", state_home.path())
+        .output()
+        .expect("CLI starts");
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn root_launch_flags_cannot_be_combined_with_other_commands() {
+    for args in [
+        &["--port", "9123", "agent", "list"][..],
+        &["--foreground", "list"][..],
+        &["--at-login", "admin", "serve"][..],
+    ] {
+        assert!(!cli(args).status.success(), "{args:?} should be rejected");
+    }
 }
 
 #[test]

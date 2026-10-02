@@ -27,12 +27,9 @@ pub use tokens::*;
 #[derive(Parser)]
 #[command(name = "librepaper", version = crate::VERSION, about = "launch the companion to connect local tools to documents; host HTML, markdown and typst documents", long_about = None, args_conflicts_with_subcommands = true)]
 #[command(
-    after_help = "Launch the companion with `librepaper` or `librepaper start`, then connect it in Settings → Local app.
+    after_help = "Run `librepaper` or `librepaper start` to launch the companion, then connect it in Settings → Local app.
 
-Commands are grouped as companion controls (start, stop, status, agent), document access (list, export, login, logout), and deployment administration (admin).
-
-Configure sign-in providers and publishing permissions on the server.
-To sign in from this terminal:
+To sign in from this terminal, set the deployment and run `librepaper login`:
 
     export LIBREPAPER_SERVER=https://librepaper.example.org
     librepaper login"
@@ -294,37 +291,46 @@ struct AdvancedConfigFile {
 #[derive(Subcommand)]
 pub(crate) enum Command {
     /// Start the companion (in the background by default)
+    #[command(help_heading = "Companion")]
     Start(LaunchArgs),
     /// Ask the companion to stop cleanly
+    #[command(help_heading = "Companion")]
     Stop,
     /// Show companion status and available tools
+    #[command(help_heading = "Companion")]
     Status {
         #[arg(long, value_name = "DIRS", env = "LIBREPAPER_TOOL_PATH", value_delimiter = ':')]
         tool_path: Vec<PathBuf>,
     },
     /// Manage agents this computer offers to the document sidebar
+    #[command(help_heading = "Companion")]
     Agent {
         #[command(subcommand)]
         command: LocalAgentCommand,
     },
     /// Sign in through a deployment, in a browser
+    #[command(help_heading = "Documents")]
     Login {
         #[command(flatten)]
         deployment: Deployment,
     },
     /// Forget the stored sign-in
+    #[command(help_heading = "Documents")]
     Logout,
     /// Deployment administration and operator commands.
+    #[command(help_heading = "Administration")]
     Admin {
         #[command(subcommand)]
         command: AdminCommand,
     },
     /// List your documents
+    #[command(help_heading = "Documents")]
     List {
         #[command(flatten)]
         deployment: Deployment,
     },
     /// Export a complete independent copy of the project
+    #[command(help_heading = "Documents")]
     Export {
         /// A full slug, or one of the short handles `list` prints
         id: String,
@@ -346,7 +352,7 @@ pub(crate) enum Command {
     // because nobody types it; see `agent`.
     #[command(hide = true)]
     Mcp(agent::McpArgs),
-    /// Local approval and pairing controls; companion commands remain for compatibility
+    /// Approve requests and disconnect paired websites
     Local {
         #[command(subcommand)]
         command: LocalCommand,
@@ -569,7 +575,7 @@ pub struct LocalArgs {
 #[tokio::main]
 pub async fn main() {
     let cli = Cli::parse();
-    let command = cli.command.unwrap_or_else(|| Command::Start(cli.launch));
+    let command = cli.command.unwrap_or(Command::Start(cli.launch));
     match command {
         Command::Start(args) => crate::local::cli::run(LocalArgs { command: LocalCommand::Start(args) }).await,
         Command::Stop => crate::local::cli::run(LocalArgs { command: LocalCommand::Stop }).await,
@@ -601,7 +607,6 @@ pub async fn main() {
                 die(err);
             }
         }
-        Command::Local { command: LocalCommand::Start(args) } => crate::local::cli::run(LocalArgs { command: LocalCommand::Start(args) }).await,
         Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
     }
 }
@@ -856,8 +861,9 @@ mod socket_policy_tests {
             assert!(help.contains(command), "missing {command} in {help}");
         }
         assert!(!help.contains("local start"));
-        let local_help = Cli::command()
-            .find_subcommand("local")
+        let mut root = Cli::command();
+        let local_help = root
+            .find_subcommand_mut("local")
             .unwrap()
             .render_help()
             .to_string();
