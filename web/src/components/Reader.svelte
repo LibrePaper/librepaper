@@ -253,11 +253,7 @@
   let localConnecting = $state(false);
   let quartoLiveSyncTimer = null;
   let calepinSyncTimer = null;
-  // The Quarto profile and parameters this browser previews with, set under
-  // Settings and remembered per document. The format is never chosen here:
-  // it comes from the document's front matter, and older remembered options
-  // that still carry one are ignored.
-  let quartoOptions = $state({ profile: null, parameters: {} });
+  // The binding ID for local rendering, remembered per document.
   let quartoBindingId = $state("");
   const localAppStatus = $derived(companion.status);
 
@@ -424,8 +420,8 @@
   function quartoRenderContext(tree = null) {
     return {
       format: quartoTargetFormat(tree || treeNow()),
-      profiles: (buildPreferences.profile || quartoOptions.profile) ? [buildPreferences.profile || quartoOptions.profile] : [],
-      parameters: { ...(buildPreferences.parameters || quartoOptions.parameters) },
+      profiles: buildPreferences.profile ? [buildPreferences.profile] : [],
+      parameters: { ...buildPreferences.parameters },
     };
   }
 
@@ -1732,8 +1728,8 @@
   // next reconnect. A preview still starting reads the options after its
   // workspace sync, so it picks them up on its own.
   async function applyRenderOptions(next) {
-    quartoOptions = parseRenderOptions({ ...next, format: "default" });
-    setBuildPreferences(updateBuildPreferences(buildScope(), "quarto", { profile: quartoOptions.profile || null, parameters: quartoOptions.parameters || {} }));
+    const options = parseRenderOptions({ ...next, format: "default" });
+    setBuildPreferences(updateBuildPreferences(buildScope(), sourceFormat, { profile: options.profile || null, parameters: options.parameters || {} }));
     if (!quartoLiveActive) return;
     await quartoPreviewController.stop();
     if (quartoLiveActive) await quartoPreviewController.start();
@@ -3845,9 +3841,9 @@
         <span class="connection-dot" class:offline={localAppStatus.state !== "connected"} aria-hidden="true"></span>
         <span>Local</span>
       </button>
-      <button class="connection-pill" type="button" onclick={() => openSettings("remote")}
-              aria-label={`Remote server ${connected ? "connected" : "disconnected"}; open remote settings`}
-              title={connected ? `${peers} people connected. Open remote settings` : `${connectionNote}. Open remote settings`}>
+      <button class="connection-pill" type="button" onclick={() => openSettings("account")}
+              aria-label={`Remote server ${connected ? "connected" : "disconnected"}; open account settings`}
+              title={connected ? `${peers} people connected. Open account settings` : `${connectionNote}. Open account settings`}>
         <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
         <span>Remote</span>
       </button>
@@ -4297,7 +4293,6 @@
                 buildPreferences={buildPreferences} documentId={SLUG} userId={buildUserId} onbuildpreferences={setBuildPreferences}
                 main={previewMain} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
                 {localExecution} onlocalexecution={toggleLocalExecution}
-                options={quartoOptions}
                 onapplyoptions={applyRenderOptions}
                 account={me} />
 

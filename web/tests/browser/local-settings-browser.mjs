@@ -33,7 +33,7 @@ writeFileSync(harness, `
   import LocalAppSettings from ${JSON.stringify(join(root, "web/src/components/settings/LocalAppSettings.svelte"))};
   import IntegrationSettings from ${JSON.stringify(join(root, "web/src/components/settings/IntegrationSettings.svelte"))};
 </script>
-<LocalAppSettings sourceFormat="quarto" main="main.qmd" mayEdit={true} />
+<LocalAppSettings />
 <section id="quarto-section"><IntegrationSettings name="quarto" /></section>
 `);
 
