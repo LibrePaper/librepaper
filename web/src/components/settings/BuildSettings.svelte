@@ -1,5 +1,4 @@
 <script>
-  import { Switch } from "@skeletonlabs/skeleton-svelte";
   import SettingRow from "./SettingRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
@@ -24,10 +23,6 @@
   function scope() { return { origin: globalThis.location?.origin || "", user: userId, document: documentId }; }
   function chooseOutput(output) {
     onpreferences?.(update(scope(), format, { output }));
-  }
-  function chooseProfile(profile) { onpreferences?.(update(scope(), format, { profile: profile.trim() || null })); }
-  function chooseParameters(text) {
-    try { const parameters = text.trim() ? JSON.parse(text) : {}; if (!parameters || Array.isArray(parameters) || typeof parameters !== "object") return; onpreferences?.(update(scope(), format, { parameters })); } catch { /* leave the last valid map */ }
   }
   // "unknown" is nobody having asked yet, not a tool having been found
   // missing. Offering the local rows then is what lets choosing one be the
@@ -121,14 +116,4 @@
       {#each outputChoices as output}<option value={output} disabled={disabledOutput(output)}>{output.toUpperCase()}</option>{/each}
     </select>
   </SettingRow>
-{/if}
-
-{#if format === "quarto" || preferences.tool === "quarto"}
-  <SettingRow id="render-profile" title="Quarto profile" description="Optional profile used by local Quarto builds.">
-    <input class="input input-sm setting-input" aria-label="Quarto profile" value={preferences.profile || ""} onchange={(event) => chooseProfile(event.currentTarget.value)} />
-  </SettingRow>
-  <SettingRow id="render-parameters" title="Quarto parameters" description="JSON object passed as typed Quarto parameters.">
-    <textarea class="textarea setting-input" aria-label="Quarto parameters" rows="3" value={JSON.stringify(preferences.parameters || {}, null, 2)} onchange={(event) => chooseParameters(event.currentTarget.value)}></textarea>
-  </SettingRow>
-  <p class="setting-description">One-shot local builds run in a temporary project copy. Live previews use the explicitly authorized project folder.</p>
 {/if}

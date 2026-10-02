@@ -3,11 +3,6 @@
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
-  let {
-    sourceFormat = "", main = "", mayEdit = false, onbindingid,
-  } = $props();
-  const quarto = $derived(sourceFormat === "quarto");
-  const projectBinding = $derived(["quarto", "typst", "markdown"].includes(sourceFormat));
   const local = $derived(companion.status);
   $effect(() => companion.watch());
   $effect(() => void localBridge.probe());
@@ -18,15 +13,11 @@
   let copying = $state("");
   let doctor = $state("");
   let connectionError = $state("");
-  let folderError = $state("");
   let copyError = $state(false);
-  let choosingFolder = $state(false);
-  let entrypoint = $state("");
   let companionSettings = $state(null);
   let settingsError = $state("");
   let pendingDialogAction = $state("");
 
-  $effect(() => { entrypoint = main; });
   $effect(() => {
     if (!connected) return;
     connectionError = "";
@@ -47,18 +38,6 @@
       connectionError = error?.message || "Could not open the companion permission window.";
     }
     finally { connecting = false; }
-  }
-
-  async function chooseFolder() {
-    if (!mayEdit || choosingFolder) return;
-    folderError = "";
-    choosingFolder = true;
-    try {
-      const result = await localBridge.chooseFolderBinding({ entrypoint: entrypoint.trim() });
-      if (result?.id) onbindingid?.(result.id);
-      entrypoint = result?.entrypoint || entrypoint;
-    } catch (error) { folderError = error?.message || "The companion could not choose a project folder."; }
-    finally { choosingFolder = false; }
   }
 
   async function copy(text, label) {
@@ -126,7 +105,7 @@
   });
 </script>
 
-<p class="setting-description local-intro">Connect LibrePaper to apps and tools installed on this computer, including coding agents, Zotero, Quarto, and local project folders.</p>
+<p class="setting-description local-intro">Connect LibrePaper to apps and tools installed on this computer: coding agents, Zotero, Quarto, and local project folders.</p>
 
 <div id="local-status" class="setting-status" data-tone={tone}>
   <span class="setting-status-dot" aria-hidden="true"></span>
@@ -167,14 +146,6 @@
     <p class="setting-description">The companion is currently available for macOS and Linux only; Windows builds are not published.</p>
     <p class="setting-description">After installation, run <code>librepaper</code> in a terminal and return here to connect. <a href="https://librepaper.org/start.html" target="_blank" rel="noreferrer">Installation help</a></p>
   </section>
-{/if}
-
-{#if connected && projectBinding}
-  <SettingRow id="local-binding" title="Project folder" description="Use a folder on this computer for local builds and previews.">
-    <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder={quarto ? "main.qmd" : sourceFormat === "typst" ? "main.typ" : "main.md"} bind:value={entrypoint} disabled={!mayEdit} />
-    <button type="button" class="btn btn-sm lp-control-outline" disabled={!mayEdit || choosingFolder || !entrypoint.trim()} onclick={() => void chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose folder…"}</button>
-  </SettingRow>
-  {#if folderError}<p class="setting-description local-error" role="alert">{folderError}</p>{/if}
 {/if}
 
 <SettingRow id="local-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change it only if you started the companion on another port.` : "Change it only if you started the companion on another port."}>

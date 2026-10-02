@@ -1,9 +1,10 @@
 <script>
-  // Two things a Quarto project may take when it is previewed here: a profile
-  // and parameters. Both are optional, both are remembered per document in
-  // this browser only, and a project that declares neither needs nothing on
-  // this page. There is no format choice: the live preview is always the
-  // page Quarto renders, in whatever format the document's front matter says.
+  // Two things Quarto may take when it builds a project here: a profile and
+  // parameters. Both are optional, both are kept with this document's build
+  // preferences in this browser only, which is where options comes from. A
+  // project that declares neither needs nothing here. There is no format
+  // choice: the live preview is always the page Quarto renders, in whatever
+  // format the document's front matter says.
   import SettingRow from "./SettingRow.svelte";
   import { parseRenderOptions } from "../../lib/quarto-options.js";
 

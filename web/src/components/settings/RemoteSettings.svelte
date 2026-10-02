@@ -16,13 +16,9 @@
   </div>
 </div>
 
-<SettingRow id="remote-address" title="Server address" description="The server this project is using. Server selection is managed by the project link.">
+<SettingRow id="remote-address" title="Server address" description="The server this project is on. The project link decides which.">
   <code class="setting-value">{address}</code>
 </SettingRow>
-
-<p class="setting-description">
-  The remote server stores and synchronizes this shared project. The Local page describes the companion and services available on this computer.
-</p>
 
 <style>
   .remote-offline :global(.setting-title) { color: var(--color-error-text); }

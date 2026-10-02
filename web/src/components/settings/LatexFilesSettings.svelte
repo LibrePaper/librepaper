@@ -23,7 +23,7 @@
   }
 </script>
 
-<SettingRow id="storage-latex" title="Downloaded LaTeX files"
+<SettingRow id="render-latex-files" title="Downloaded LaTeX files"
             description="{cacheSize === null ? 'Measuring…' : cacheSize < 100_000 ? 'Nothing downloaded yet.' : 'Storage used: ' + megabytes(cacheSize) + '.'} The compiler and packages are kept so later PDF builds are faster; removing them frees the space, and what a build needs downloads again. Your documents are kept.">
   <button type="button" class="btn btn-sm lp-control-outline" onclick={clearCache}>Remove</button>
 </SettingRow>
