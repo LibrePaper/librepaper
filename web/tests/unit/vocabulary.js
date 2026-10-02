@@ -7,11 +7,12 @@
 //
 // Run by `make test`, and by `bun run check`.
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const SRC = join(ROOT, "src");
+const portableRelative = (root, path) => relative(root, path).split(sep).join("/");
 
 // The theme is the one place a colour is written down, and the stylesheet
 // beside it is the one place the application's own shapes are described.
@@ -43,7 +44,7 @@ const complain = (file, line, rule, text) =>
   problems.push(`${file}:${line}  ${rule}\n    ${text.trim().slice(0, 100)}`);
 
 for (const path of files(SRC)) {
-  const name = relative(ROOT, path);
+  const name = portableRelative(ROOT, path);
   if (THEME.has(name) || OUTSIDE.some((each) => each.test(name))) continue;
   if (!/\.(svelte|js|css)$/.test(name)) continue;
   const source = readFileSync(path, "utf8");
@@ -90,7 +91,7 @@ for (const path of files(join(ROOT, "node_modules/@skeletonlabs/skeleton/src")))
 }
 for (const path of files(join(SRC, "styles"))) {
   if (!path.endsWith(".css")) continue;
-  const name = relative(ROOT, path);
+  const name = portableRelative(ROOT, path);
   const source = readFileSync(path, "utf8");
   source.split("\n").forEach((line, index) => {
     for (const found of line.matchAll(/\.([a-zA-Z][\w-]*)/g)) {
@@ -108,7 +109,7 @@ for (const path of files(join(SRC, "styles"))) {
 //    run time. The same is true of every other rune.
 const RUNES = ["state", "derived", "props", "effect", "bindable", "inspect", "host"];
 for (const path of files(SRC)) {
-  const name = relative(ROOT, path);
+  const name = portableRelative(ROOT, path);
   if (!name.endsWith(".svelte")) continue;
   const source = readFileSync(path, "utf8");
   const declaration = source.match(/let\s*\{([^}]*)\}\s*=\s*\$props\(\)/);
