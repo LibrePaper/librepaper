@@ -30,17 +30,24 @@ const update = encode(server.export({ mode: "update" }));
 const vector = encode(server.oplogVersion().encode());
 const peers = new EphemeralStore(30000);
 const remoteKeys = Array.from({length:5}, (_, i) => 'user:remote-tab-' + i);
-for (const [i,key] of remoteKeys.entries()) peers.set(key, {name:["Alex Collaborator","Jordan Editor","Sam Reviewer","Riley Author","Casey Reader"][i],tab:'remote-tab-' + i,color:["#5577bb","#bb5577","#55aa77","#aa7755","#7755aa"][i]});
+const remotePeople = remoteKeys.map((key, i) => [key,{name:["Alex Collaborator","Jordan Editor","Sam Reviewer","Riley Author","Casey Reader"][i],tab:'remote-tab-' + i,color:["#5577bb","#bb5577","#55aa77","#aa7755","#7755aa"][i]}]);
 export function openRoom(slug, {onMessage, onConnected}) {
   window.roomReceive = onMessage;
   window.roomSent = [];
+  const publishPresence = () => {
+    for (const [key, person] of remotePeople) {
+      peers.set(key, person);
+      onMessage({type:"doc-presence", update:encode(peers.encode(key))});
+    }
+  };
+  window.refreshTestPresence = publishPresence;
   queueMicrotask(() => onConnected(true));
   return {
     send(message) {
       window.roomSent.push(message);
       if (message.type === "doc-open") queueMicrotask(() => {
         onMessage({type:"doc-state", protocol:"librepaper.room.v3", vector, durableVector: vector, updates:[update]});
-        for (const key of remoteKeys) onMessage({type:"doc-presence", update:encode(peers.encode(key))});
+        publishPresence();
         onMessage({type:"doc-peers", count:6});
       });
       return {ok:true};
@@ -380,6 +387,8 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".filelist .panel-actions").getBoundingClientRect().bottom <= document.querySelector(".explorer-scroll").getBoundingClientRect().top'), true);
 
   for (const width of [320,390,600,760]) {
+    await b.evaluate('window.refreshTestPresence()');
+    await flush();
     await b.resize(width,844); await flush();
     const header = await b.evaluate(`(() => {
       const toolbar=document.querySelector('nav');
@@ -393,12 +402,14 @@ try {
       const items=[...pills,account,presence].filter(Boolean);
       const boxes=items.map(rect);
       const overlaps=boxes.some((a,i)=>boxes.slice(i+1).some(b=>a.left < b.right-1 && b.left < a.right-1 && a.top < b.bottom-1 && b.top < a.bottom-1));
-      return {width:innerWidth,items:boxes,overlaps,
+      return {width:innerWidth,items:boxes,overlaps,presenceAvatars:presence?.querySelectorAll('.avatar').length||0,presenceMore:presence?.querySelector('.presence-more')?.textContent.trim()||'',
         menus:menuItems.map(n=>{const r=n.getBoundingClientRect();return {text:n.textContent.trim(),visible:!!n.getClientRects().length && getComputedStyle(n).display!=='none' && getComputedStyle(n).visibility!=='hidden' && r.width>0 && r.height>0 && r.left>=0 && r.right<=innerWidth};}),
         faceInMobile:!!mobile?.contains(face), faceVisible:!!face?.getClientRects().length};
     })()`);
     assert.equal(header.overlaps,false,`toolbar controls do not overlap at ${width}px: ${JSON.stringify(header)}`);
     assert.ok(header.items.every(item=>item.width>0 && item.height>0 && item.left>=-1 && item.right<=width+1 && item.top>=0 && item.bottom<=844),`identity and connection controls stay visible and inside the viewport at ${width}px: ${JSON.stringify(header)}`);
+    assert.equal(header.presenceAvatars,3,`three collaborator avatars render at ${width}px: ${JSON.stringify(header)}`);
+    assert.equal(header.presenceMore,'+2',`the crowded presence overflow badge renders at ${width}px: ${JSON.stringify(header)}`);
     for (const label of ['File','View']) assert.equal(header.menus.some(item=>item.visible&&item.text===label),true,`${label} stays visible at ${width}px: ${JSON.stringify(header)}`);
     assert.equal(header.faceInMobile,true,`source/document switch lives in the mobile nav at ${width}px`);
     assert.equal(header.faceVisible,true,`source/document switch is visible at ${width}px`);
