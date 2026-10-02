@@ -8,10 +8,19 @@ pub async fn choose_directory(origin: &str, project: &str) -> Result<PathBuf, St
     let title =
         format!("Allow {origin} to render {project} using this folder (contents are not uploaded)");
 
+    choose_directory_with_title(&title).await
+}
+
+pub async fn choose_backup_directory(origin: &str) -> Result<PathBuf, String> {
+    let title = format!("Choose where to save {origin} backups");
+    choose_directory_with_title(&title).await
+}
+
+async fn choose_directory_with_title(title: &str) -> Result<PathBuf, String> {
     if cfg!(target_os = "macos") || cfg!(windows) {
-        choose_directory_rfd(&title).await
+        choose_directory_rfd(title).await
     } else {
-        choose_directory_portal(&title).await
+        choose_directory_portal(title).await
     }
 }
 

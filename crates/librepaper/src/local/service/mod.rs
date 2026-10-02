@@ -1017,6 +1017,12 @@ async fn dispatch(
         ["backups", "run"] if *method == Method::POST => {
             backups::handle_run(inner, headers, origin, request).await
         }
+        ["backups", "authorize"] if *method == Method::POST => {
+            backups::handle_authorize(inner, headers, origin, request).await
+        }
+        ["backups", "authorize", "complete"] if *method == Method::POST => {
+            backups::handle_authorize_complete(inner, headers, origin, request).await
+        }
         ["bindings", id] if *method == Method::DELETE => {
             handle_binding_revoke(inner, headers, origin, id).await
         }
