@@ -4371,7 +4371,9 @@
      words, so the remote pill is its dot, still named by its aria-label. */
   @media (max-width: 600px) {
     .connection-settings { gap: calc(var(--spacing) * .25); }
-    .connection-pill { min-height: 1.5rem; padding-inline: calc(var(--spacing) * 1.25); }
+    /* The nav has room for controls only when each status stays a compact,
+       named dot. A third status must not force the phone's document to scroll. */
+    .connection-pill { width: 1.5rem; min-width: 1.5rem; min-height: 1.5rem; justify-content: center; padding-inline: 0; }
     .connection-pill > span:not(.connection-dot) { display: none; }
     .local-pill { display: none; }
     /* Nobody else here yet: an empty group would still take a gap. */

@@ -73,7 +73,13 @@ try {
   const url = `http://127.0.0.1:${serverHttp.address().port}/docs/paper`;
   await b.resize(1280,900);
   await b.navigate(url);
-  await until('connection pills',()=>b.evaluate('document.querySelectorAll(".connection-pill").length === 2'),10000);
+  await until('connection controls',()=>b.evaluate(`(() => {
+    const group=document.querySelector('[aria-label="Connection settings"]');
+    return group?.querySelectorAll('.connection-pill').length === 3
+      && Boolean(group.querySelector('.local-pill'))
+      && Boolean([...group.querySelectorAll('.connection-pill')].find(pill => pill.getAttribute('aria-label')?.includes('Remote server')))
+      && Boolean([...group.querySelectorAll('.connection-pill')].find(pill => pill.getAttribute('aria-label')?.includes('open backup settings')));
+  })()`),10000);
   await until('connected remote state',()=>b.evaluate('typeof window.roomConnected === "function" && document.querySelector(\'.connection-pill[aria-label*="Remote"] .connection-dot\')?.classList.contains("offline") === false'),10000);
   const flush = () => b.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const click = async (selector) => { await b.evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); await flush(); };
@@ -100,6 +106,14 @@ try {
   }
 
   await click('[aria-label="Close"]');
+  const backup = await connectionState('open backup settings');
+  assert.equal(backup.visible,true,'Backup pill is visible');
+  assert.equal(backup.offline,true,'Backup pill reports unavailable account backups');
+  await clickPill('open backup settings');
+  await until('Backup settings',()=>b.evaluate('document.querySelector(".backups-intro") && document.querySelector(".settings-category")?.textContent.trim() === "Backups"'),3000);
+  assert.match(await b.evaluate('document.querySelector("[role=status]")?.innerText || ""'),/Sign in to back up an account/,
+    'Backup settings explains that account backups require sign-in');
+  await click('[aria-label="Close"]');
   await clickPill('Remote');
   await until('Remote settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Remote connection"'),3000);
   assert.match(await b.evaluate('document.querySelector("#remote-status").innerText'),/Not connected to the LibrePaper server\./);
@@ -108,18 +122,19 @@ try {
   assert.match(await b.evaluate('document.querySelector("#remote-status").innerText'),/Connected to the LibrePaper server\./);
   await click('[aria-label="Close"]');
 
-  // A phone runs no local app, so the Local pill goes; the Remote pill stays,
-  // shrunk to its dot and named by its aria-label.
+  // A phone runs no local app, so the Local pill goes; Remote and Backup stay,
+  // each shrunk to its dot and named by its aria-label.
   await b.resize(390,844); await flush();
   const pills = await b.evaluate(`Array.from(document.querySelectorAll('.connection-pill')).map(pill => {
     const box=pill.getBoundingClientRect();
     return {name:pill.getAttribute('aria-label'),local:pill.classList.contains('local-pill'),visible:Boolean(pill.getClientRects().length && getComputedStyle(pill).visibility !== 'hidden'),left:box.left,right:box.right};
   })`);
-  assert.equal(pills.length,2,'both connection pills remain in the mobile navbar markup');
+  assert.equal(pills.length,3,'all connection controls remain in the mobile navbar markup');
   for (const pill of pills) {
     assert.equal(pill.visible,!pill.local,`${pill.name} is ${pill.local ? 'hidden' : 'visible'} on mobile`);
     if (!pill.local) assert.ok(pill.left >= -1 && pill.right <= 391,`${pill.name} stays inside the mobile viewport: ${JSON.stringify(pill)}`);
   }
+  assert.ok(pills.find(pill => pill.name.includes('Backup'))?.visible,'Backup remains available in the mobile navbar');
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
   console.log('connections-browser: status pills, settings pages, local install links, and mobile bounds passed');
 } finally { await b?.close(); serverHttp?.close(); rmSync(temp,{recursive:true,force:true}); }
