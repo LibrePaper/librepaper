@@ -100,10 +100,16 @@ try {
   assert.equal(await b.evaluate('Boolean(document.querySelector("#local-status .companion-name")?.textContent.trim())'),true,
     'Local settings shows connection status text');
   assert.equal((await connectionState('Local')).offline,true,'Local pill is red while its app is unavailable');
-  const localSettingsText = await b.evaluate('document.querySelector(".settings-body").innerText');
-  for (const os of ['macOS & Linux','Windows']) {
-    assert.ok(localSettingsText.includes(os),`Local settings includes ${os}`);
-  }
+  const localActions = await b.evaluate(`(() => {
+    const root=document.querySelector('#local-status');
+    const visible=element => Boolean(element?.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
+    const install=root?.querySelector('a[href="https://librepaper.org/install.html"]');
+    const connect=root?.querySelector('button');
+    return { installVisible:visible(install), connectVisible:visible(connect), connectEnabled:Boolean(connect && !connect.disabled) };
+  })()`);
+  assert.equal(localActions.installVisible,true,'Local settings shows a visible companion Install link');
+  assert.equal(localActions.connectVisible,true,'Local settings shows a visible Connect button');
+  assert.equal(localActions.connectEnabled,true,'Local settings Connect button is enabled');
 
   await click('[aria-label="Close"]');
   const backup = await connectionState('open backup settings');
@@ -111,15 +117,17 @@ try {
   assert.equal(backup.offline,true,'Backup pill reports unavailable account backups');
   await clickPill('open backup settings');
   await until('Backup settings',()=>b.evaluate('document.querySelector(".backups-intro") && document.querySelector(".settings-category")?.textContent.trim() === "Backups"'),3000);
-  assert.match(await b.evaluate('document.querySelector(".settings-body .setting-status[role=status]")?.innerText || ""'),/Sign in to back up an account/,
+  assert.match(await b.evaluate('document.querySelector("#backup-connection .setting-description")?.innerText || ""'),/Sign in to load account backup settings/,
     'Backup settings explains that account backups require sign-in');
   await click('[aria-label="Close"]');
   await clickPill('Remote');
   await until('Account settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Account"'),3000);
-  assert.match(await b.evaluate('document.querySelector("#remote-status").innerText'),/Not connected to the LibrePaper server\./);
+  assert.equal(await b.evaluate('document.querySelector("#remote-status [role=status]")?.getAttribute("aria-label")'),"Remote connection disconnected",
+    'Remote settings exposes its disconnected state');
   await b.evaluate('window.roomConnected(true)'); await flush();
   assert.equal((await connectionState('Remote')).offline,false,'Remote pill turns green when connected');
-  assert.match(await b.evaluate('document.querySelector("#remote-status").innerText'),/Connected to the LibrePaper server\./);
+  assert.equal(await b.evaluate('document.querySelector("#remote-status [role=status]")?.getAttribute("aria-label")'),"Remote connection connected",
+    'Remote settings exposes its connected state');
   await click('[aria-label="Close"]');
 
   // A phone runs no local app, so the Local pill goes; Remote and Backup stay,
