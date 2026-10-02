@@ -142,9 +142,9 @@
       {:else if local?.state === "unauthorized" || local?.state === "reachable"}
         The companion is running. Connect to approve access for this site.
       {:else if local?.state === "unreachable"}
-        Nothing answered on this computer. Start the companion with <code>librepaper local start</code> in a terminal, then connect.
+        Nothing answered on this computer. Start the companion with <code>librepaper</code> in a terminal, then connect.
       {:else}
-        Install the companion and start it with <code>librepaper local start</code> to use local tools.
+        Install the companion and start it with <code>librepaper</code> to use local tools.
       {/if}
     </div>
   </div>
@@ -165,7 +165,7 @@
       <div class="command-line"><code>curl --proto '=https' --tlsv1.2 -LsSf {installer} | sh</code><button type="button" class="btn btn-sm lp-control-outline" onclick={() => void copy(`curl --proto '=https' --tlsv1.2 -LsSf ${installer} | sh`, "macOS & Linux")}>{copying === "macOS & Linux" ? "Copied" : "Copy"}</button></div>
     </div>
     <p class="setting-description">The companion is currently available for macOS and Linux only; Windows builds are not published.</p>
-    <p class="setting-description">After installation, run <code>librepaper local start</code> in a terminal and return here to connect. <a href="https://librepaper.org/start.html" target="_blank" rel="noreferrer">Installation help</a></p>
+    <p class="setting-description">After installation, run <code>librepaper</code> in a terminal and return here to connect. <a href="https://librepaper.org/start.html" target="_blank" rel="noreferrer">Installation help</a></p>
   </section>
 {/if}
 

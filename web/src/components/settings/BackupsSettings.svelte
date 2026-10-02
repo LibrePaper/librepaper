@@ -146,7 +146,7 @@
     <span class="setting-status-dot" aria-hidden="true"></span>
     <div class="setting-status-words">
       <div class="setting-title">Connect LibrePaper Companion</div>
-      <div class="setting-description">Start <code>librepaper local start</code> in a terminal, then connect. The companion runs the schedule on this computer.</div>
+      <div class="setting-description">Start <code>librepaper</code> in a terminal, then connect. The companion runs the schedule on this computer.</div>
     </div>
     <div class="setting-control"><button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button></div>
   </div>

@@ -229,10 +229,10 @@ demo-run: $(BIN)
 	@set -e; \
 	(cd web && bun run serve:site -- --port $(SITE_PORT) --strictPort >/dev/null 2>&1) & \
 	site_pid=$$!; companion_pid=; \
-	if $(BIN) local status >/dev/null 2>&1; then \
-		echo "local $$($(BIN) local status | sed -n 2p)  (already running; left alone)"; \
+	if $(BIN) status >/dev/null 2>&1; then \
+		echo "local $$($(BIN) status | sed -n 2p)  (already running; left alone)"; \
 	else \
-		$(BIN) local start --foreground >/dev/null 2>&1 & \
+		$(BIN) start --foreground >/dev/null 2>&1 & \
 		companion_pid=$$!; \
 	fi; \
 	trap "kill $$site_pid $$companion_pid 2>/dev/null || true" EXIT INT TERM; \

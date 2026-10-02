@@ -21,13 +21,13 @@ curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/lib
 ## Run
 
 ```sh
-librepaper local start              # start in the background
-librepaper local start --at-login   # also start every time you log in
-librepaper local status             # address, pairings, tools and agents found
-librepaper local stop               # stop it
+librepaper                           # start in the background
+librepaper --at-login                # also start every time you log in
+librepaper status                    # address, pairings, tools and agents found
+librepaper stop                      # stop it
 
 # Any other ACP agent: everything after -- is its command
-librepaper local agent add myagent --label "My Agent" -- myagent --acp
+librepaper agent add myagent --label "My Agent" -- myagent --acp
 ```
 
 ## In the document

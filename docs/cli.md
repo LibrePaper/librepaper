@@ -2,7 +2,31 @@
 title: "The CLI"
 ---
 
-LibrePaper is a server and a web app. User commands are `login`, `logout`, `list`, and `export`. Two namespaces handle specialized jobs: `admin` for deployment, and `local` for the companion on your machine.
+LibrePaper is a server and a web app. The installed command starts its local companion; user commands also include `login`, `logout`, `list`, and `export`. `admin` operates a deployment.
+
+## The companion
+
+The companion runs native tools (Quarto and Typst rendering) and holds document agents. After installing LibrePaper, run `librepaper` in a terminal to start it in the background. The explicit `start` command does the same thing.
+
+```sh
+librepaper                                      # start in background
+librepaper start                                # explicit equivalent
+librepaper --at-login                           # start now and at login
+librepaper --foreground                        # run in this process
+librepaper --port 8763                          # use a chosen port
+librepaper --tool-path /opt/tools:/usr/local/bin # extra tool search paths
+librepaper status                               # address, pairings, tools, agents
+librepaper stop                                 # stop it
+librepaper agent list                           # list configured agents
+librepaper agent add <id> -- <command>          # add an agent command
+librepaper agent remove <id>                    # remove an agent
+librepaper local approve <code>                 # approve on a no-display machine
+librepaper local disconnect <origin>            # revoke a website pairing
+```
+
+The older `librepaper local start`, `stop`, `status`, and `agent` commands remain available for compatibility. Prefer the root commands shown above.
+
+## Document commands
 
 Pass the server address with a flag or set an environment variable once:
 
@@ -47,28 +71,11 @@ rather than a one-off CLI export.
 - `librepaper admin backup` and `librepaper admin restore` create and restore verified recovery points.
 - Check operational state: `curl http://127.0.0.1:8080/api/status`
 
-## The companion
-
-The companion runs native tools (Quarto and Typst rendering) and holds document agents.
-
-```sh
-librepaper local start                          # start in background
-librepaper local stop                           # stop it
-librepaper local status                         # address, pairings, tools, agents
-librepaper local approve <code>                 # approve on no-display machine
-librepaper local disconnect <origin>            # revoke a website's pairing
-librepaper local agent list                     # list agents; add <id> -- <cmd> adds one
-```
-
-Use `--foreground` to run in this process, `--at-login` to auto-start when you log in, or `--tool-path` (colon-separated dirs) to find tools.
-
-To render a document against a project folder on your disk, choose the folder under *Settings*, *Local app*, *Project folder* in the browser. Permissions and presets are also configured there. Any permission request triggers a dialog on this machine, which no website can click. On a machine with no display, check `companion.log` for the code and run `librepaper local approve <code>` within 5 minutes.
-
 ## Agents
 
 ```sh
-librepaper local agent list       # driven from document sidebar only
-librepaper local agent add <id> -- <command>
+librepaper agent list       # driven from document sidebar only
+librepaper agent add <id> -- <command>
 ```
 
 See [agents page](agents.html).

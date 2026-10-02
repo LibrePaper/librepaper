@@ -31,9 +31,9 @@ then start it:
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
 
 # Start
-librepaper local start              # start in the background
-librepaper local start --at-login   # also start every time you log in
-librepaper local status             # check it is running and found Quarto
+librepaper                           # start in the background
+librepaper --at-login                # also start every time you log in
+librepaper status                    # check it is running and found Quarto
 ```
 
 When the server runs on the machine you browse from, it runs the local app

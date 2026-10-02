@@ -27,7 +27,7 @@ targets = [
 installers = ["shell"]
 install-updater = true
 github-build-setup = "../dist-build-setup.yml"
-install-success-msg = "LibrePaper Companion is installed. In a new terminal, run: librepaper local settings. Then return to your browser."
+install-success-msg = "LibrePaper is installed. In a new terminal, run: librepaper. Then connect it from Settings, Local app in your browser."
 
 [profile.release]
 opt-level = 3

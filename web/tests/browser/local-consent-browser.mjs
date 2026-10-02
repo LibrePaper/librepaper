@@ -1,5 +1,5 @@
 // The one connection, end to end in a real browser against a real
-// `librepaper local start`: the browser asks the local app to connect,
+// `librepaper`: the browser asks the local app to connect,
 // a system dialog appears to approve (or a command-line approve on machines
 // without a display), and the client ends up connected with the hosted binding
 // without anything typed or bound.

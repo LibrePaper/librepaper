@@ -146,7 +146,7 @@ assert.ok(!storage.has("librepaper-local-connections"));
 // the start grace with the explanation, not after the approval wait.
 setup(() => { throw new TypeError("Failed to fetch"); });
 await assert.rejects(local.connectApp(), (error) => error.name === "Unreachable"
-  && /not running on this computer/.test(error.message) && /librepaper local start/.test(error.message));
+  && /not running on this computer/.test(error.message) && /librepaper`/.test(error.message));
 assert.equal(new URL(link).hostname, "connect", "the link is still tried first");
 assert.ok(now >= 15000 && now < 30000, "gives up once the start grace has passed");
 assert.ok(!storage.has("librepaper-local-pending"));
