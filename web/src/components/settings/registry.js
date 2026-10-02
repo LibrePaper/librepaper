@@ -73,7 +73,7 @@ export const CATEGORIES = [
   },
   {
     id: "backups", says: "Backups", offered: backups,
-    note: "Every project owned by this account",
+    note: "Every project available to this account, including shared projects",
     entries: [
       { id: "backup-enable", says: "Automatic backups", terms: "zip archive schedule frequency interval account all projects" },
       { id: "backup-destination", says: "Backup folder", terms: "destination choose directory folder local companion" },

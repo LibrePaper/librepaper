@@ -19,6 +19,7 @@ const entry = join(temporary, "entry.js");
 const harness = join(temporary, "Harness.svelte");
 const statusMock = join(temporary, "status.svelte.js");
 const clientMock = join(temporary, "client.js");
+const apiMock = join(temporary, "api.js");
 
 async function freePort() {
   const probe = createServer();
@@ -34,6 +35,8 @@ writeFileSync(harness, `
   import { backups } from ${JSON.stringify(join(root, "web/src/lib/companion/backups.svelte.js"))};
   let account = $state({ id: "account-a", provider: "github" });
   window.setAccount = (next) => { account = next; };
+  window.setBrowserAccount = (next) => { window.browserAccount = next; };
+  window.browserAccount = { id: "account-a", provider: "github" };
   window.refreshBackupStatus = () => backups.refresh();
   window.resetBackupStatus = () => backups.reset();
 </script>
@@ -43,7 +46,7 @@ writeFileSync(harness, `
 writeFileSync(statusMock, `
 let current = $state.raw({ state: "unreachable" });
 export const companion = { get status() { return current; }, watch() { return () => {}; } };
-window.setPairing = (paired) => { current = { state: paired ? "connected" : "unreachable" }; };
+window.setPairing = (paired) => { window.pairingVersion = (window.pairingVersion || 0) + 1; current = { state: paired ? "connected" : "unreachable", address: "http://127.0.0.1:8763/", instance: "companion-a" }; };
 `);
 
 writeFileSync(clientMock, `
@@ -55,6 +58,16 @@ window.backupStatusRequest = (accountId) => new Promise((resolve, reject) => {
 });
 export function backups(accountId) { return window.backupStatusRequest(accountId); }
 export async function connectApp() { window.connectCalls = (window.connectCalls || 0) + 1; }
+export async function authorizeBackups(accountId, approveCode, isCurrent) {
+  window.backupCalls.push({ method: "POST authorize", account_id: accountId });
+  const pairing = window.pairingVersion || 0;
+  const pairingCurrent = () => pairing === (window.pairingVersion || 0);
+  if (!pairingCurrent() || !isCurrent()) throw new Error("The backup authorization scope changed.");
+  await approveCode("ABCD-EFGH", pairingCurrent);
+  if (pairing !== (window.pairingVersion || 0) || !isCurrent()) throw new Error("The backup authorization scope changed.");
+  window.backupCalls.push({ method: "POST authorize complete", account_id: accountId });
+  return { status: "authorized" };
+}
 export async function chooseBackupFolder(accountId) {
   window.backupCalls.push({ method: "POST folder", account_id: accountId });
 }
@@ -63,6 +76,20 @@ export async function updateBackups(accountId, settings) {
 }
 export async function runBackups(accountId) {
   window.backupCalls.push({ method: "POST run", account_id: accountId });
+}
+`);
+
+writeFileSync(apiMock, `
+export async function me() {
+  if (!window.holdMe) return window.browserAccount;
+  window.meStarted = true;
+  return new Promise((resolve) => { window.releaseMe = () => resolve(window.browserAccount); });
+}
+export async function post(path, body) {
+  window.apiPosts = window.apiPosts || [];
+  window.apiPosts.push({ path, ...body });
+  if (window.apiPostError) throw new Error(window.apiPostError);
+  return {};
 }
 `);
 
@@ -77,6 +104,7 @@ const mockModules = {
   name: "backups-settings-test-mocks",
   enforce: "pre",
   resolveId(source, importer) {
+    if (source.endsWith("/lib/api.js")) return apiMock;
     if (source.endsWith("/lib/companion/status.svelte.js")) return statusMock;
     if (source.endsWith("/lib/companion/client.js") || (source === "./client.js" && importer?.endsWith("/lib/companion/backups.svelte.js"))) return clientMock;
     return null;
@@ -193,23 +221,52 @@ try {
   await until("account B settings shown", () => b.evaluate("document.body.innerText.includes('account-b-folder')"), 5000);
   assert.equal(await b.evaluate("document.body.innerText.includes('Backup status unavailable')"), false);
 
-  // Companion-reported login errors show the server-specific CLI guidance.
+  // Companion-reported authorization errors offer browser approval and keep
+  // the native-selected folder visible as a read-only path.
   await b.evaluate(resolveStatus(10, { enabled: true, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
-  await until("CLI login guidance shown", () => b.evaluate("document.body.innerText.includes('librepaper login --server http://127.0.0.1')"), 5000);
+  await until("browser authorization shown", () => b.evaluate("document.body.innerText.includes('Authorize backups')"), 5000);
+  assert.equal(await b.evaluate("document.querySelector('#backup-destination input').value"), "account-b-folder");
+  assert.equal(await b.evaluate("document.querySelector('#backup-destination input').readOnly"), true);
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').getAttribute('aria-checked')"), "true", "an enabled schedule stays accessible when credentials expire");
+
+  await b.evaluate("window.setBrowserAccount({ id: 'account-b', provider: 'google' }); window.holdMe = true");
+  await b.evaluate(click(".setting-status button"));
+  await until("browser account check pending", () => b.evaluate("window.meStarted === true"), 5000);
+  await b.evaluate("window.setPairing(true); window.releaseMe(); window.holdMe = false");
+  await until("rotated pairing rejected during browser account check", () => b.evaluate("document.body.innerText.includes('backup authorization scope changed')"), 5000);
+  assert.equal(await b.evaluate("window.apiPosts?.length || 0"), 0, "a rotated pairing cannot approve the device code");
+
+  await b.evaluate("window.setBrowserAccount({ id: 'account-a', provider: 'github' })");
+  await b.evaluate(click(".setting-status button"));
+  await until("changed browser identity rejected", () => b.evaluate("document.body.innerText.includes('signed-in browser account changed')"), 5000);
+  assert.equal(await b.evaluate("window.apiPosts?.length || 0"), 0, "a changed browser identity is not approved");
+  await b.evaluate("window.setBrowserAccount({ id: 'account-b', provider: 'google' })");
+
+  await b.evaluate("window.apiPostError = 'approval refused'");
+  await b.evaluate(click(".setting-status button"));
+  await until("browser approval failure shown", () => b.evaluate("document.body.innerText.includes('approval refused')"), 5000);
+  assert.equal(await b.evaluate("window.backupCalls.some((call) => call.method === 'POST authorize complete')"), false, "failed browser approval cannot complete companion authorization");
+  await b.evaluate("window.apiPostError = ''");
+  await b.evaluate(click(".setting-status button"));
+  await until("browser device approval sent", () => b.evaluate("window.apiPosts?.some((call) => call.path === '/api/auth/device/approve')"), 5000);
+  assert.equal(await b.evaluate("window.apiPosts.find((call) => call.path === '/api/auth/device/approve').user_code"), "ABCD-EFGH");
+  await until("companion authorization completed", () => b.evaluate("window.backupCalls.some((call) => call.method === 'POST authorize complete' && call.account_id === 'account-b')"), 5000);
+  await until("authorization status refresh", () => b.evaluate("window.backupRequests.length === 12"), 5000);
+  await b.evaluate(resolveStatus(11, { enabled: true, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: false }));
+
   await b.evaluate(click("#backup-enable [role='switch']"));
-  await until("disable sent without CLI credentials", () => b.evaluate("window.backupCalls.some((call) => call.method === 'PUT' && call.account_id === 'account-b' && call.enabled === false)"), 5000);
-  await until("disable status refresh", () => b.evaluate("window.backupRequests.length === 12"), 5000);
-  await b.evaluate(resolveStatus(11, { enabled: false, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
-  await until("disabled schedule retained in login guidance", () => b.evaluate("document.body.innerText.includes('Sign in with the CLI') && !document.querySelector('#backup-enable [role=switch]')"), 5000);
+  await until("schedule disabled after authorization is needed", () => b.evaluate("window.backupCalls.some((call) => call.method === 'PUT' && call.account_id === 'account-b' && call.enabled === false)"), 5000);
+  await until("disable status refresh", () => b.evaluate("window.backupRequests.length === 13"), 5000);
+  await b.evaluate(resolveStatus(12, { enabled: false, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
+  await until("disabled schedule retained in authorization guidance", () => b.evaluate("document.body.innerText.includes('Authorize backups') && !document.querySelector('#backup-enable [role=switch]')"), 5000);
 
   await b.evaluate(click(".setting-status button"));
-  await until("login retry status refresh", () => b.evaluate("window.backupRequests.length === 13"), 5000);
-  await b.evaluate("window.backupRequests[12].reject(new Error('companion offline'))");
+  await until("authorization retry status refresh", () => b.evaluate("window.backupRequests.length === 14"), 5000);
+  await b.evaluate("window.backupRequests[13].reject(new Error('companion offline'))");
   await until("status error shown", () => b.evaluate("document.body.innerText.includes('companion offline')"), 5000);
   assert.match(await b.evaluate("document.body.innerText"), /Backup status unavailable/);
 
-  console.log("backups-settings-browser: paired-only status, native folder, schedule controls, status errors, and account-scoped stale replies passed");
+  console.log("backups-settings-browser: paired-only status, browser authorization, read-only native folder, schedule controls, status errors, and account-scoped stale replies passed");
 } finally {
   if (b) await b.close();
   server.close();

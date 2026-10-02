@@ -3,6 +3,7 @@
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import { backups } from "../../lib/companion/backups.svelte.js";
+  import { me, post } from "../../lib/api.js";
 
   let { account = {} } = $props();
   const accountId = $derived(typeof account.id === "string" ? account.id : "");
@@ -17,10 +18,11 @@
   let connecting = $state(false);
   let requestScope = 0;
   let lastScope = "";
-  let loginCommand = $derived(`librepaper login --server ${globalThis.location?.origin || "<server>"}`);
+  const pairingAddress = $derived(companion.status.address || "");
+  const pairingInstance = $derived(companion.status.instance || "");
 
   $effect(() => {
-    const nextScope = `${accountId}\u0000${paired}`;
+    const nextScope = `${accountId}\u0000${paired}\u0000${pairingAddress}\u0000${pairingInstance}`;
     backups.setScope(accountId, paired);
     if (nextScope !== lastScope) {
       lastScope = nextScope;
@@ -41,6 +43,36 @@
       if (actionScope === requestScope) error = cause?.message || "Could not connect to LibrePaper Companion.";
     } finally {
       connecting = false;
+    }
+  }
+
+  async function authorize() {
+    if (!signedIn || !paired || busy) return;
+    busy = "authorization";
+    error = "";
+    const requestedAccount = accountId;
+    const requestedProvider = account.provider;
+    const actionScope = requestScope;
+    const address = pairingAddress;
+    const instance = pairingInstance;
+    const isCurrent = () => actionScope === requestScope && accountId === requestedAccount && signedIn && paired
+      && pairingAddress === address && pairingInstance === instance;
+    try {
+      await localBridge.authorizeBackups(requestedAccount, async (userCode, pairingCurrent) => {
+        const browserAccount = await me();
+        if (!pairingCurrent() || !isCurrent()) {
+          throw new Error("The backup authorization scope changed. Retry authorization.");
+        }
+        if (browserAccount?.id !== requestedAccount || browserAccount?.provider !== requestedProvider) {
+          throw new Error("The signed-in browser account changed. Retry backup authorization.");
+        }
+        await post("/api/auth/device/approve", { user_code: userCode });
+      }, isCurrent);
+      if (isCurrent()) await backups.refresh();
+    } catch (cause) {
+      if (isCurrent()) error = cause?.message || "Backup authorization could not be completed.";
+    } finally {
+      if (isCurrent()) busy = "";
     }
   }
 
@@ -122,12 +154,17 @@
   <div class="setting-status" data-tone="warn" role="status">
     <span class="setting-status-dot" aria-hidden="true"></span>
     <div class="setting-status-words">
-      <div class="setting-title">Sign in with the CLI</div>
-      <div class="setting-description">The companion needs a CLI login for this server before it can back up your account.</div>
-      <code class="backup-command">{loginCommand}</code>
+      <div class="setting-title">Authorize backups</div>
+      <div class="setting-description">Connect the companion to this browser account to let it back up your projects.</div>
     </div>
-    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-outline" disabled={backupStatus.loading} onclick={() => void backups.refresh()}>{backupStatus.loading ? "Checking…" : "Retry"}</button></div>
+    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-brand" disabled={busy !== "" || backupStatus.loading} onclick={() => void authorize()}>{busy === "authorization" ? "Authorizing…" : "Authorize backups"}</button></div>
   </div>
+  <SettingRow id="backup-destination" title="Backup folder" description={destinationSet ? (destinationLabel ? `Selected folder: ${destinationLabel}` : "Selected folder on this computer.") : "Choose a folder on this computer for the ZIP files."}>
+    <div class="backup-folder-control">
+      <input class="input input-sm backup-path" aria-label="Selected backup folder" value={destinationLabel} placeholder="No folder selected" readonly />
+      <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
+    </div>
+  </SettingRow>
   {#if data.enabled}
     <SettingRow id="backup-enable" title="Automatic backups are on" description="You can turn off future backups without signing in again. A backup already in progress may finish.">
       <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked="true" data-state="checked" disabled={busy !== ""} onclick={() => void changeSettings(false)}>
@@ -150,7 +187,10 @@
     </button>
   </SettingRow>
   <SettingRow id="backup-destination" title="Backup folder" description={destinationSet ? (destinationLabel ? `Selected folder: ${destinationLabel}` : "Selected folder on this computer.") : "Choose a folder on this computer for the ZIP files."}>
-    <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
+    <div class="backup-folder-control">
+      <input class="input input-sm backup-path" aria-label="Selected backup folder" value={destinationLabel} placeholder="No folder selected" readonly />
+      <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
+    </div>
   </SettingRow>
   <SettingRow id="backup-frequency" title="Frequency" description="How often the companion checks for project changes.">
     <select class="input input-sm backup-frequency" aria-label="Backup frequency" value={Number(data.frequency_minutes) || 5} disabled={busy !== "" || !destinationSet} onchange={(event) => void changeSettings(Boolean(data.enabled), Number(event.currentTarget.value))}>
@@ -176,10 +216,11 @@
 <style>
   .backups-intro { max-width: 48rem; margin-block: 0 calc(var(--spacing) * 3); }
   .backups-intro a { margin-inline-start: .35rem; }
-  .backup-command { display: block; margin-top: calc(var(--spacing) * 1.5); overflow-wrap: anywhere; }
+  .backup-folder-control { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
+  .backup-path { width: min(24rem, 42vw); }
   .backup-frequency { min-width: 8rem; }
   .backup-status { display: flex; align-items: center; justify-content: space-between; gap: calc(var(--spacing) * 3); margin-top: calc(var(--spacing) * 3); }
   .backup-state { color: var(--color-text-secondary); font-size: var(--text-sm); }
   .backup-state.error, .backup-error { color: var(--color-error-text); }
-  @media (max-width: 42rem) { .backup-status { align-items: flex-start; flex-direction: column; } }
+  @media (max-width: 42rem) { .backup-status { align-items: flex-start; flex-direction: column; } .backup-folder-control { align-items: stretch; flex-direction: column; } .backup-path { width: 100%; } }
 </style>

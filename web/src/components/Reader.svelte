@@ -150,7 +150,7 @@
       : backupStatus.error
         ? `Backup status unavailable: ${backupStatus.error}`
         : backupStatus.data?.needs_login
-          ? "Backups unavailable: sign in with the CLI"
+          ? "Backups unavailable: authorize this browser account"
           : backupStatus.data?.error
             ? `Backup error: ${backupStatus.data.error}`
             : backupPillGood ? "Account backups enabled" : backupStatus.data ? "Account backups disabled" : "Backup status unavailable");

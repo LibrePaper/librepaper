@@ -1539,6 +1539,29 @@ export async function chooseBackupFolder(accountId) {
   return response.json();
 }
 
+/** Authorize access through the signed-in browser, retaining the original
+ * companion pairing across the approval round trip. `approveCode` is the one
+ * browser-server request; `isCurrent` checks its account and UI scope. */
+export async function authorizeBackups(accountId, approveCode, isCurrent = () => true) {
+  const pairing = requirePairing();
+  const token = pairing.token;
+  const stillCurrent = () => getPairing()?.token === token && isCurrent();
+  const response = await send("POST", "backups/authorize", {
+    token,
+    jsonBody: { account_id: String(accountId || "") },
+  });
+  const { user_code: userCode, authorization_id: authorizationId } = await response.json();
+  if (!userCode || !authorizationId || !stillCurrent()) throw named("Canceled", "The backup authorization scope changed.");
+  await approveCode(userCode, stillCurrent);
+  if (!stillCurrent()) throw named("Canceled", "The backup authorization scope changed.");
+  const completed = await send("POST", "backups/authorize/complete", {
+    token,
+    jsonBody: { account_id: String(accountId || ""), authorization_id: String(authorizationId) },
+  });
+  if (!stillCurrent()) throw named("Canceled", "The backup authorization scope changed.");
+  return completed.json();
+}
+
 /** Update account-wide backup scheduling. */
 export async function updateBackups(accountId, { enabled, frequency_minutes }) {
   const pairing = requirePairing();
