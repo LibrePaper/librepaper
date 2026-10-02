@@ -156,9 +156,9 @@ pub use storage::blob::{BlobStore, FsStore};
 #[cfg(test)]
 mod tests;
 
-/// The release version, stamped in at build time. Unreleased builds keep the
-/// placeholder.
+/// The release version, stamped in at build time for release artifacts and
+/// derived from the package version for crates.io installs.
 pub const VERSION: &str = match option_env!("LIBREPAPER_VERSION") {
     Some(version) => version,
-    None => "dev",
+    None => concat!("v", env!("CARGO_PKG_VERSION")),
 };

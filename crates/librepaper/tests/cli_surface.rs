@@ -19,6 +19,17 @@ fn help_of(args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+#[test]
+fn version_reports_the_release_version() {
+    let output = cli(&["--version"]);
+    assert!(output.status.success(), "{output:?}");
+    let expected = format!(
+        "librepaper {}",
+        option_env!("LIBREPAPER_VERSION").unwrap_or(concat!("v", env!("CARGO_PKG_VERSION")))
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
+}
+
 fn lists_command(help: &str, command: &str) -> bool {
     help.lines()
         .any(|line| line.split_whitespace().next() == Some(command))

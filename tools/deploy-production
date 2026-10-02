@@ -132,7 +132,7 @@ usage() {
 usage: tools/deploy-production <command>
 
   deploy [VERSION]   deploy a published instrumented release (canonical vMAJOR.MINOR.PATCH, v0.0.9+)
-                     (VERSION defaults to v + the version in crates/librepaper/Cargo.toml)
+                     (VERSION defaults to v + the version in Cargo.toml)
   deploy-local BINARY deploy a previously-built Linux musl executable instead of a release image
   site               rebuild and upload the landing page and manual only (no release, no restart)
   verify             app, monitoring, site, documents, redirect, and logs
@@ -336,7 +336,7 @@ verify_oauth_redirect() {
 }
 
 deploy() {
-	local version="${1:-v$(sed -n 's/^version = "\(.*\)"/\1/p' crates/librepaper/Cargo.toml | head -n 1)}"
+	local version="${1:-v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)}"
 	validate_release_version "$version"
 
 	printf '%sDeploying %s to %s%s\n' "$bold" "$version" "$HOST" "$reset"

@@ -16,7 +16,7 @@ The official instance at librepaper.org runs `tools/deploy-docker` on an OVHclou
 
 ```sh
 # Release the instrumented v0.0.14 build.
-VERSION=v0.0.14                                  # must match crates/librepaper/Cargo.toml
+VERSION=v0.0.14                                  # must match Cargo.toml
 git tag "$VERSION" && git push origin "$VERSION"
 gh run watch                                     # the Release workflow
 gh release view "$VERSION" --json assets -q '.assets[].name' | grep linux-musl

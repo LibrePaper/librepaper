@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use include_dir::{include_dir, Dir, File};
 
-static SHELL: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../web/dist");
+static SHELL: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 const WASM_LOCK: &str = include_str!("../../../../assets.lock");
 
 /// The renderers, which are not in the binary. Each is a release of its own
