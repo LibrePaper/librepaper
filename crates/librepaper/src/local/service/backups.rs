@@ -532,10 +532,7 @@ impl BackupManager {
                 .await
                 .map_err(|error| format!("could not complete account authorization: {error}"))?;
             let status = response.status();
-            let payload: Value = response
-                .json()
-                .await
-                .map_err(|error| format!("could not read account authorization response: {error}"))?;
+            let payload = bounded_auth_json(response).await?;
             if !status.is_success() {
                 return match payload.get("error").and_then(Value::as_str) {
                     Some("authorization_pending") => Err("sign in and approve the code, then retry".into()),
@@ -1299,20 +1296,41 @@ mod tests {
     struct IdentityServerFixture {
         account_id: std::sync::Mutex<String>,
         available: AtomicBool,
+        pause_identity: AtomicBool,
+        identity_started: tokio::sync::Notify,
+        allow_identity: tokio::sync::Notify,
+        oversized_device_token: AtomicBool,
     }
 
     async fn fixture_device_start() -> Json<Value> {
         Json(json!({"device_code":"fixture-device-code","user_code":"ABCD-EFGH"}))
     }
 
-    async fn fixture_device_token() -> Json<Value> {
-        Json(json!({"token":"approved-device-token"}))
+    async fn fixture_device_token(
+        State(fixture): State<Arc<IdentityServerFixture>>,
+    ) -> axum::http::Response<axum::body::Body> {
+        let payload = if fixture.oversized_device_token.load(Ordering::SeqCst) {
+            json!({"token": "x".repeat(MAX_AUTH_RESPONSE_BYTES + 1)})
+        } else {
+            json!({"token":"approved-device-token"})
+        };
+        axum::http::Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(payload.to_string()))
+            .unwrap()
     }
 
-    async fn start_authorization_fixture(account_id: String) -> (String, tokio::task::JoinHandle<()>) {
+    async fn start_authorization_fixture_with_state(
+        account_id: String,
+    ) -> (String, Arc<IdentityServerFixture>, tokio::task::JoinHandle<()>) {
         let fixture = Arc::new(IdentityServerFixture {
             account_id: std::sync::Mutex::new(account_id),
             available: AtomicBool::new(true),
+            pause_identity: AtomicBool::new(false),
+            identity_started: tokio::sync::Notify::new(),
+            allow_identity: tokio::sync::Notify::new(),
+            oversized_device_token: AtomicBool::new(false),
         });
         let app = Router::new()
             .route("/api/auth/device", post(fixture_device_start))
@@ -1324,12 +1342,21 @@ mod tests {
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
+        (origin, fixture, task)
+    }
+
+    async fn start_authorization_fixture(account_id: String) -> (String, tokio::task::JoinHandle<()>) {
+        let (origin, _, task) = start_authorization_fixture_with_state(account_id).await;
         (origin, task)
     }
 
     async fn fixture_identity_status(
         State(fixture): State<Arc<IdentityServerFixture>>,
     ) -> (axum::http::StatusCode, Json<Value>) {
+        if fixture.pause_identity.load(Ordering::SeqCst) {
+            fixture.identity_started.notify_one();
+            fixture.allow_identity.notified().await;
+        }
         if fixture.available.load(Ordering::SeqCst) {
             (
                 axum::http::StatusCode::OK,
@@ -1532,6 +1559,73 @@ mod tests {
         server_task.abort();
     }
 
+    #[tokio::test]
+    async fn replacement_during_identity_verification_cannot_persist_old_token() {
+        let account_id = uuid::Uuid::now_v7().to_string();
+        let (origin, fixture, server_task) =
+            start_authorization_fixture_with_state(account_id.clone()).await;
+        fixture.pause_identity.store(true, Ordering::SeqCst);
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path(), cache_home.path()).await;
+        let (pairing_token, _) = inner.pairing.issue(&origin, "backup authorization race test").unwrap();
+        let (authorization_id, _) = inner.backups
+            .begin_authorization(&inner, &origin, &account_id, &pairing_token)
+            .await
+            .unwrap();
+
+        let completing_inner = inner.clone();
+        let completing_origin = origin.clone();
+        let completing_account = account_id.clone();
+        let completing_id = authorization_id.clone();
+        let completing_pairing = pairing_token.clone();
+        let completion = tokio::spawn(async move {
+            completing_inner.backups
+                .complete_authorization(
+                    &completing_inner,
+                    &completing_origin,
+                    &completing_account,
+                    &completing_id,
+                    &completing_pairing,
+                )
+                .await
+        });
+        fixture.identity_started.notified().await;
+        let _ = inner.backups
+            .begin_authorization(&inner, &origin, &account_id, &pairing_token)
+            .await
+            .unwrap();
+        fixture.allow_identity.notify_one();
+
+        assert!(completion.await.unwrap().unwrap_err().contains("no longer connected"));
+        assert!(crate::cli::stored_token_at(&inner.state_home, &origin).is_empty());
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn browser_authorization_rejects_oversized_device_response() {
+        let account_id = uuid::Uuid::now_v7().to_string();
+        let (origin, fixture, server_task) =
+            start_authorization_fixture_with_state(account_id.clone()).await;
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path(), cache_home.path()).await;
+        let (pairing_token, _) = inner.pairing.issue(&origin, "backup authorization size test").unwrap();
+        let (authorization_id, _) = inner.backups
+            .begin_authorization(&inner, &origin, &account_id, &pairing_token)
+            .await
+            .unwrap();
+        fixture.oversized_device_token.store(true, Ordering::SeqCst);
+
+        assert!(inner.backups
+            .complete_authorization(&inner, &origin, &account_id, &authorization_id, &pairing_token)
+            .await
+            .unwrap_err()
+            .contains("too large"));
+        assert!(crate::cli::stored_token_at(&inner.state_home, &origin).is_empty());
+        server_task.abort();
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn non_utf8_destination_survives_persist_and_reload() {
@@ -1566,6 +1660,10 @@ mod tests {
         let fixture = Arc::new(IdentityServerFixture {
             account_id: std::sync::Mutex::new(account_id.clone()),
             available: AtomicBool::new(false),
+            pause_identity: AtomicBool::new(false),
+            identity_started: tokio::sync::Notify::new(),
+            allow_identity: tokio::sync::Notify::new(),
+            oversized_device_token: AtomicBool::new(false),
         });
         let app = Router::new()
             .route("/api/me", get(fixture_identity_status))
