@@ -5,8 +5,7 @@
 
   // The folder on this computer that live previews build in. It watches the
   // companion's status and never probes for it: opening the Render page must
-  // not make the browser ask for local network access. Until the companion
-  // is connected there is no folder to choose, and the row is not drawn.
+  // not make the browser ask for local network access.
   let { sourceFormat = "", main = "", mayEdit = false, onbindingid } = $props();
   const local = $derived(companion.status);
   $effect(() => companion.watch());
@@ -16,29 +15,33 @@
   let folderError = $state("");
   let choosingFolder = $state(false);
   let entrypoint = $state("");
+  const canChoose = $derived(mayEdit && connected && !choosingFolder);
 
   $effect(() => { entrypoint = main; });
 
   async function chooseFolder() {
-    if (!mayEdit || choosingFolder) return;
+    if (!canChoose) return;
     folderError = "";
     choosingFolder = true;
+    const requestedEntrypoint = entrypoint.trim();
+    const requestedAddress = local?.address || "";
+    const requestedInstance = local?.instance || "";
     try {
-      const result = await localBridge.chooseFolderBinding({ entrypoint: entrypoint.trim() });
-      if (result?.id) onbindingid?.(result.id);
-      entrypoint = result?.entrypoint || entrypoint;
+      const result = await localBridge.chooseFolderBinding({ entrypoint: requestedEntrypoint });
+      if (connected && mayEdit && (local?.address || "") === requestedAddress && (local?.instance || "") === requestedInstance) {
+        if (result?.id) onbindingid?.(result.id);
+        entrypoint = result?.entrypoint || entrypoint;
+      }
     } catch (error) { folderError = error?.message || "The companion could not choose a project folder."; }
     finally { choosingFolder = false; }
   }
 </script>
 
-{#if connected}
-  <SettingRow id="render-folder" title="Project folder" description="Use a folder on this computer for live previews. One-shot builds run in a temporary copy.">
-    <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder={quarto ? "main.qmd" : sourceFormat === "typst" ? "main.typ" : "main.md"} bind:value={entrypoint} disabled={!mayEdit} />
-    <button type="button" class="btn btn-sm lp-control-outline" disabled={!mayEdit || choosingFolder || !entrypoint.trim()} onclick={() => void chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose folder…"}</button>
-  </SettingRow>
-  {#if folderError}<p class="setting-description folder-error" role="alert">{folderError}</p>{/if}
-{/if}
+<SettingRow id="render-folder" title="Project folder" description={connected ? "Use a folder on this computer for live previews. One-shot builds run in a temporary copy." : "Connect the local companion to choose a project folder for live previews. One-shot builds run in a temporary copy."}>
+  <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder={quarto ? "main.qmd" : sourceFormat === "typst" ? "main.typ" : "main.md"} bind:value={entrypoint} disabled={!canChoose} />
+  <button type="button" class="btn btn-sm lp-control-outline" disabled={!canChoose || !entrypoint.trim()} onclick={() => void chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose folder…"}</button>
+</SettingRow>
+{#if folderError}<p class="setting-description folder-error" role="alert">{folderError}</p>{/if}
 
 <style>
   .folder-error { margin-block: calc(var(--spacing) * 2); color: var(--color-error-text); }

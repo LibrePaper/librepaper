@@ -140,6 +140,12 @@ try {
   assert.equal(disconnected.details, 0, "initial view has no collapsed details");
   assert.equal(disconnected.summaries, 0, "initial view has no disclosure summary");
   assert.doesNotMatch(disconnected.text, /Build presets/);
+  assert.equal(await b.evaluate("Boolean(document.querySelector('#local-startup'))"), true, "startup setting stays visible while disconnected");
+  assert.equal(await b.evaluate("Boolean(document.querySelector('#local-startup [role=switch]:disabled'))"), true, "startup is unavailable until companion settings load");
+  assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Quit companion')?.disabled)"), true, "quit stays visible but unavailable while disconnected");
+  assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('#local-address button')].find((button) => button.textContent.trim() === 'Disconnect')?.disabled)"), true, "disconnect stays visible but unavailable while disconnected");
+  assert.equal(await b.evaluate("document.querySelector('#local-doctor')?.disabled"), true, "setup check is unavailable while disconnected");
+  assert.equal(await b.evaluate("Boolean(document.querySelector('#quarto-executable input')?.disabled && document.querySelector('#quarto-arguments input')?.disabled)"), true, "Quarto fields remain unavailable until connected");
 
   // A failed connection request is shown beside Connect, explaining why it happened.
   await b.evaluate("window.setLocalStatus({ state: 'unauthorized', address: 'http://127.0.0.1:8763/', capabilities: null })");
@@ -150,7 +156,7 @@ try {
   // Once connected, the install link gives way to machine controls, and
   // the Quarto section offers its own command.
   await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:8763/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
-  await until("connected settings shown", () => b.evaluate("Boolean(document.querySelector('#quarto-executable')) && Boolean(document.querySelector('#local-startup'))"), 5000);
+  await until("connected settings shown", () => b.evaluate("Boolean(document.querySelector('#quarto-executable')) && document.querySelector('#local-startup [role=switch]')?.disabled === false"), 5000);
   const connectedText = await b.evaluate("document.body.innerText");
   assert.equal(await b.evaluate("document.querySelector('#local-install-help')"), null, "a connected companion needs no install link");
   assert.doesNotMatch(connectedText, /permission window was blocked/);
@@ -176,10 +182,16 @@ try {
   await b.evaluate(`(() => { const input = document.querySelector('[aria-label="Companion address"]'); input.value = 'http://127.0.0.1:9876/'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await b.evaluate(clickText("Save"));
   await until("address saved", () => b.evaluate("window.savedAddress === 'http://127.0.0.1:9876/'"), 5000);
+  await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:9876/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
+  await until("settings loaded at new address", () => b.evaluate("window.settingsCalls >= 2 && document.querySelector('#local-doctor')?.disabled === false"), 5000);
   await b.evaluate(clickSelector("#local-doctor"));
   await until("diagnostic report shown", () => b.evaluate("Boolean(document.querySelector('pre[role=status]'))"), 5000);
   assert.match(await b.evaluate("document.querySelector('pre[role=status]').textContent"), /quarto/);
   assert.equal(await b.evaluate("window.capabilityCalls"), 1, "diagnostics request a fresh local capability report");
+
+  await b.evaluate(`window.setLocalStatus({ state: 'unreachable', address: 'http://127.0.0.1:9876/', capabilities: null })`);
+  await until("disconnected local controls disabled", () => b.evaluate("document.querySelector('#local-startup [role=switch]')?.disabled && [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Quit companion')?.disabled"), 5000);
+  assert.equal(await b.evaluate("Boolean(document.querySelector('#local-startup') && [...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Quit companion'))"), true, "local settings remain visible after disconnect");
 
   console.log("local-settings-browser: install link, failed-popup fallback, inline address editor, and inline diagnostics passed");
 } finally {

@@ -2600,10 +2600,8 @@
   const keys = $derived(prefs.keys);
   const sizes = $derived(prefs.sizes);
 
-  // Settings are not a column: they open as a dialog from the navbar menu, so
-  // the sidebar stays what its icons offer. Every entry point opens the same
-  // dialog on the category it is about. A browser that last left the column
-  // on the old settings tab falls through to the files below.
+  // Settings open as a dialog from the navbar menu or the sidebar. Every entry
+  // point opens the same dialog on the category it is about.
   let settingsOpen = $state(false);
   let settingsCategory = $state("editor");
   function openSettings(category = "editor") {
@@ -4028,6 +4026,8 @@
       {/if}
       <IconButton icon="keyboard" label="Keyboard shortcuts" tone="plain"
                   onclick={() => void runCommand("shortcuts")} />
+      <IconButton icon="settings" label="Settings" tone="plain"
+                  onclick={() => openSettings()} />
     {/snippet}
   </Sidebar>
 
@@ -4282,9 +4282,7 @@
 <CommandPalette bind:open={commandPalette} context={commandContext} apple={APPLE}
                 onrun={(id) => void runCommand(id)} />
 
-<!-- The preferences, opened from the navbar menu rather than the column:
-     the sidebar is for what its icons offer, and a page of settings reads
-     better at the width of the window than in a column beside the text. -->
+<!-- The preferences dialog is shared by the navbar menu and sidebar button. -->
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
                 {sourceFormat} {mayEdit}
                 remoteConnected={connected} remoteNote={connectionNote}

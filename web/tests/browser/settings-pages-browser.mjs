@@ -52,6 +52,7 @@ let current = $state.raw({ state: "connected", address: "http://127.0.0.1:8763/"
   zotero: { available: true, version: "7.0" },
   builders: [{ id: "quarto", available: true, version: "1.6.0", outputs: ["html", "pdf"], operations: [{ kind: "build", workspace_modes: ["snapshot"] }] }],
 } });
+window.setCompanionState = (state) => { current = { ...current, state }; };
 export const companion = {
   get status() { return current; },
   watch() { return () => {}; },
@@ -133,8 +134,8 @@ try {
     await until(`${says} page for ${format}`, () => heading().then((text) => text === says), 5000);
   };
   const subheads = () => b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-body .settings-subhead")].map((node) => node.textContent.trim()))`).then(JSON.parse);
-  const everything = ["render-tool", "render-folder", "render-latex-files", "quarto-status", "quarto-executable", "quarto-arguments",
-    "rendering-profile", "rendering-parameters", "quarto-execution", "calepin-status", "calepin-executable", "zotero-status",
+  const everything = ["render-tool", "render-folder", "render-output", "render-latex-files", "typst-status", "quarto-status", "quarto-executable", "quarto-arguments",
+    "rendering-profile", "rendering-parameters", "quarto-execution", "calepin-status", "calepin-executable", "calepin-arguments", "zotero-status",
     "local-status", "local-address", "local-doctor", "remote-status", "remote-address", "storage-account", "account-erase"];
 
   // The navigation, in order, for a visitor on a Quarto document.
@@ -143,12 +144,12 @@ try {
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
     ["Editor", "Render", "Integrations", "Companion", "Backups", "Account"]);
 
-  // Quarto, whole, on the Render page of a document it builds: where it is
-  // installed beside what this document asks of it.
+  // Render always shows its four sections. Quarto settings remain together
+  // with the browser's build choices and work even without a companion.
   await until("the Quarto rows", () => present(["quarto-executable"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-tool", "render-folder", "quarto-status", "quarto-executable", "quarto-arguments",
-    "rendering-profile", "rendering-parameters", "quarto-execution"]);
-  assert.deepEqual(await subheads(), ["Quarto"]);
+  assert.deepEqual(await present(everything), ["render-tool", "render-folder", "render-output", "render-latex-files", "typst-status", "quarto-status", "quarto-executable", "quarto-arguments",
+    "rendering-profile", "rendering-parameters", "quarto-execution", "calepin-status", "calepin-executable", "calepin-arguments"]);
+  assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
   // The profile and parameters come from the build preferences, so what was
   // stored for this document is what the page opens on.
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').value`), "draft");
@@ -158,15 +159,23 @@ try {
   await until("options applied", () => b.evaluate("window.applied.length === 1"), 5000);
   assert.deepEqual(JSON.parse(await b.evaluate("JSON.stringify(window.applied[0])")).profile, "final");
 
-  // Typst is built by Calepin, not Quarto; LaTeX by neither, and it keeps its
-  // downloaded files here.
+  // The same sections remain visible for Typst and LaTeX. Quarto preferences
+  // stay visible but are disabled where they cannot affect the preview.
   await show("render", "typst", "Render");
   await until("the Calepin rows", () => present(["calepin-executable"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-tool", "render-folder", "calepin-status", "calepin-executable"]);
+  assert.deepEqual(await present(everything), ["render-tool", "render-folder", "render-output", "render-latex-files", "typst-status", "quarto-status", "quarto-executable", "quarto-arguments",
+    "rendering-profile", "rendering-parameters", "quarto-execution", "calepin-status", "calepin-executable", "calepin-arguments"]);
+  assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), true);
   await show("render", "latex", "Render");
   await until("the LaTeX rows", () => present(["render-latex-files"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-tool", "render-latex-files"]);
-  assert.deepEqual(await subheads(), []);
+  assert.deepEqual(await present(everything), ["render-tool", "render-latex-files", "typst-status", "quarto-status", "quarto-executable", "quarto-arguments",
+    "rendering-profile", "rendering-parameters", "quarto-execution", "calepin-status", "calepin-executable", "calepin-arguments"]);
+  assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), true);
+  await show("render", "html", "Render");
+  assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
+  assert.ok((await present(everything)).includes("render-latex-files"));
   // None of that looked for the companion: the Render page must not make the
   // browser ask for local network access just by opening.
   assert.equal(await b.evaluate("window.probeCalls"), 0, "the Render page does not probe for the companion");
@@ -183,9 +192,28 @@ try {
   // A visitor's Account page is the server; storage and erasure need an account.
   await show("account", "quarto", "Account");
   assert.deepEqual(await present(everything), ["remote-status", "remote-address"]);
-  assert.match(await b.evaluate(`document.querySelector("#remote-status").innerText`), /Connected to the LibrePaper server\./);
+  assert.match(await b.evaluate(`document.querySelector('[aria-label^="Remote connection"]').textContent`), /Connected/);
+  assert.match(await b.evaluate(`document.querySelector("#remote-status").textContent`), /Remote connection/);
 
-  console.log("settings-pages-browser: Render carries each builder whole for the formats it builds without probing, Integrations is Zotero, Companion is the connection, and a visitor's Account is the server");
+  // Offline settings stay visible while controls that need the companion are
+  // unavailable. Quarto's browser preferences stay editable offline, while
+  // local build output and integration settings are visibly disabled.
+  await b.evaluate(`window.setCompanionState("unreachable")`);
+  await show("render", "quarto", "Render");
+  assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
+  await until("offline folder and output rows", () => present(["render-folder", "render-output"]).then((found) => found.length === 2), 5000);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Project entrypoint"]').disabled`), true);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Build output"]').disabled`), true);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Executable path"]').disabled`), true);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Arguments"]').disabled`), true);
+  await show("integrations", "zotero", "Integrations");
+  assert.match(await b.evaluate(`document.querySelector('.integration-note').textContent`), /enable its local API/i);
+  assert.match(await b.evaluate(`document.querySelector('.settings-body').textContent`), /Connect the LibrePaper Companion/);
+  assert.equal(await b.evaluate(`document.querySelector('.integration-error') !== null`), false, "Zotero does not load an editable companion config");
+
+  console.log("settings-pages-browser: Render keeps its four sections visible for all formats, browser Quarto options remain editable offline, local controls disable without the companion, and Remote and Zotero explain their status");
 } finally {
   if (b) await b.close();
   server.close();

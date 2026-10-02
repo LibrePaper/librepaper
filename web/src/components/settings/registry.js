@@ -6,23 +6,14 @@
 // document is configured under Render with the rest of the build. Integrations
 // holds the programs that feed a document without building it.
 
-import { buildersFor } from "../../lib/build-catalog.js";
-
 // `offered` answers with the document's format, whether this browser may edit
 // it, whether somebody is signed in, and the build tool chosen for it (`tool`).
 // `terms` are the words somebody might type when looking for a row and not
 // finding its title.
-const editor = ({ mayEdit }) => mayEdit;
-const build = ({ format }) => ["latex", "typst", "markdown", "quarto"].includes(format);
-const latex = ({ format, mayEdit }) => format === "latex" && mayEdit;
-const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
-// A tool's rows are offered where the build catalog says it can build this
-// format.
-const builtBy = (id) => ({ format }) => buildersFor(format).some((builder) => builder.id === id);
-// The profile and parameters are Quarto's, whichever format it is building.
-const quartoOptions = ({ format, tool }) => format === "quarto" || tool === "quarto";
-const projectBinding = ({ format }) => ["typst", "markdown", "quarto"].includes(format);
 const always = (_context) => true;
+const editor = ({ mayEdit }) => mayEdit;
+const build = always;
+const projectBinding = ({ format }) => ["typst", "markdown", "quarto"].includes(format);
 // The account is the deployment's, not the document's: whoever is signed in
 // is offered it whatever they happen to have open.
 const account = ({ signedIn }) => Boolean(signedIn);
@@ -42,16 +33,17 @@ export const CATEGORIES = [
       { id: "render-tool", says: "Build tool", terms: "compiler engine pdflatex xelatex lualatex render browser local companion automatic latex typst markdown quarto" },
       { id: "render-output", says: "Output", terms: "pdf html format preview export", offered: projectBinding },
       { id: "render-folder", says: "Project folder", terms: "quarto typst markdown folder binding entrypoint local", offered: projectBinding },
-      { id: "render-latex-files", says: "Downloaded LaTeX files", terms: "cache clear free space packages compiler storage", offered: latex },
-      { id: "quarto-status", says: "Quarto status", terms: "quarto available version", offered: builtBy("quarto") },
-      { id: "quarto-executable", says: "Quarto executable", terms: "quarto path executable", offered: builtBy("quarto") },
-      { id: "quarto-arguments", says: "Quarto arguments", terms: "quarto arguments options", offered: builtBy("quarto") },
-      { id: "rendering-profile", says: "Quarto profile", terms: "quarto profile render preview", offered: quartoOptions },
-      { id: "rendering-parameters", says: "Quarto parameters", terms: "quarto params parameters json render preview", offered: quartoOptions },
-      { id: "quarto-execution", says: "Quarto local code execution", terms: "quarto run code permission execute", offered: quarto },
-      { id: "calepin-status", says: "Calepin status", terms: "calepin available version", offered: builtBy("calepin") },
-      { id: "calepin-executable", says: "Calepin executable", terms: "calepin path executable", offered: builtBy("calepin") },
-      { id: "calepin-arguments", says: "Calepin arguments", terms: "calepin arguments options", offered: builtBy("calepin") },
+      { id: "render-latex-files", says: "Downloaded LaTeX files", terms: "latex compiler cache clear free space packages storage" },
+      { id: "typst-status", says: "Typst status", terms: "typst available version browser local companion disconnected" },
+      { id: "quarto-status", says: "Quarto status", terms: "quarto available version" },
+      { id: "quarto-executable", says: "Quarto executable", terms: "quarto path executable" },
+      { id: "quarto-arguments", says: "Quarto arguments", terms: "quarto arguments options" },
+      { id: "rendering-profile", says: "Quarto profile", terms: "quarto profile render preview" },
+      { id: "rendering-parameters", says: "Quarto parameters", terms: "quarto params parameters json render preview" },
+      { id: "quarto-execution", says: "Quarto local code execution", terms: "quarto run code permission execute" },
+      { id: "calepin-status", says: "Calepin status", terms: "calepin available version" },
+      { id: "calepin-executable", says: "Calepin executable", terms: "calepin path executable" },
+      { id: "calepin-arguments", says: "Calepin arguments", terms: "calepin arguments options command" },
     ],
   },
   {
@@ -84,7 +76,7 @@ export const CATEGORIES = [
     id: "account", says: "Account", offered: always,
     note: "This account on this deployment, not this document.",
     entries: [
-      { id: "remote-status", says: "Server connection", terms: "connected offline server address sync status remote" },
+      { id: "remote-status", says: "Remote connection", terms: "connected disconnected offline online server address url sync status collaboration" },
       { id: "storage-account", says: "Account storage", terms: "quota usage space used limit bytes", offered: account },
       { id: "account-erase", says: "Erase this account", terms: "erase delete account remove close gdpr right erasure forget", offered: account },
     ],

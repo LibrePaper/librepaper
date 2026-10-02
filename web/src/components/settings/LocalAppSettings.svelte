@@ -15,12 +15,16 @@
   let companionSettings = $state(null);
   let settingsError = $state("");
   let pendingDialogAction = $state("");
+  let settingsRequest = 0;
+  let doctorRequest = 0;
 
   $effect(() => {
     if (!connected) return;
     connectionError = "";
   });
   const connected = $derived(local?.state === "connected");
+  const settingsScope = $derived(connected ? `${address}\n${local?.address || ""}\n${JSON.stringify(local?.instance ?? null)}` : "");
+  function currentSettingsScope() { return settingsScope; }
   const tone = $derived(connected ? "good" : ["denied", "incompatible"].includes(local?.state) ? "warn" : "off");
   const status = $derived(({ unknown: "Companion not connected", unreachable: "Companion not running", denied: "Local network access blocked", reachable: "Companion found", unauthorized: "Companion needs permission", connected: "Companion connected", incompatible: "Companion needs an update" })[local?.state] || "Companion not connected");
 
@@ -37,38 +41,57 @@
   }
 
   async function doctorReport() {
+    if (!connected) return;
+    const scope = currentSettingsScope();
+    const request = ++doctorRequest;
     try {
       const capabilities = await localBridge.capabilities({ rescan: true });
-      doctor = JSON.stringify(capabilities, null, 2);
-    } catch (error) { doctor = error?.message || "Local setup check could not reach the companion."; }
+      if (request === doctorRequest && currentSettingsScope() === scope) doctor = JSON.stringify(capabilities, null, 2);
+    } catch (error) {
+      if (request === doctorRequest && currentSettingsScope() === scope) doctor = error?.message || "Local setup check could not reach the companion.";
+    }
   }
 
   function saveAddress() {
+    settingsRequest++;
+    companionSettings = null;
+    settingsError = "";
+    doctor = "";
     localBridge.setAddress(addressDraft);
     address = addressDraft;
     void localBridge.retry();
   }
 
-  async function loadSettings() {
+  async function loadSettings(scope, request) {
     try {
-      if (connected) {
-        companionSettings = await localBridge.settings();
+      const result = await localBridge.settings();
+      if (request === settingsRequest && currentSettingsScope() === scope) {
+        companionSettings = result;
+        settingsError = "";
       }
     } catch (error) {
-      settingsError = error?.message || "Could not load companion settings.";
+      if (request === settingsRequest && currentSettingsScope() === scope) {
+        settingsError = error?.message || "Could not load companion settings.";
+      }
     }
   }
 
   async function callDialogAction(action) {
+    const scope = currentSettingsScope();
+    const actionRequest = settingsRequest;
     try {
       await action();
-      await loadSettings();
+      if (!scope || actionRequest !== settingsRequest || currentSettingsScope() !== scope) return;
+      const request = ++settingsRequest;
+      companionSettings = null;
+      await loadSettings(scope, request);
     } finally {
       pendingDialogAction = "";
     }
   }
 
   async function toggleStartup(enabled) {
+    if (!connected || !companionSettings?.standalone || companionSettings.startup == null || pendingDialogAction) return;
     pendingDialogAction = "startup";
     try {
       await callDialogAction(() => localBridge.setStartup(enabled));
@@ -78,6 +101,7 @@
   }
 
   async function quitCompanion() {
+    if (!connected || !companionSettings?.standalone || pendingDialogAction) return;
     pendingDialogAction = "quit";
     try {
       await callDialogAction(() => localBridge.quit());
@@ -88,7 +112,13 @@
   }
 
   $effect(() => {
-    void loadSettings();
+    const scope = currentSettingsScope();
+    const request = ++settingsRequest;
+    doctorRequest++;
+    companionSettings = null;
+    settingsError = "";
+    doctor = "";
+    if (scope) void loadSettings(scope, request);
   });
 </script>
 
@@ -132,35 +162,36 @@
 <SettingRow id="local-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change it only if you started the companion on another port.` : "Change it only if you started the companion on another port."}>
   <input aria-label="Companion address" class="input input-sm setting-input" type="url" bind:value={addressDraft} />
   <button type="button" class="btn btn-sm lp-control-outline" disabled={addressDraft === address} onclick={saveAddress}>Save</button>
-  {#if connected}<button type="button" class="btn btn-sm lp-control-outline" onclick={() => void localBridge.disconnect()}>Disconnect</button>{/if}
+  <button type="button" class="btn btn-sm lp-control-outline" disabled={!connected} onclick={() => void localBridge.disconnect()}>Disconnect</button>
 </SettingRow>
 
 {#if settingsError}<p class="setting-description local-error" role="alert">{settingsError}</p>{/if}
 
-{#if connected && companionSettings?.standalone && companionSettings.startup !== null}
-  <SettingRow id="local-startup" title="Start at login" description="Open LibrePaper Companion when you log in.">
-    <button type="button" role="switch" class="switch companion-startup-switch" aria-label="Start at login" aria-checked={companionSettings.startup} data-state={companionSettings.startup ? "checked" : "unchecked"} disabled={pendingDialogAction === "startup"} onclick={() => void toggleStartup(!companionSettings.startup)}>
-      <span class="switch-thumb" data-state={companionSettings.startup ? "checked" : "unchecked"}></span>
+<SettingRow id="local-startup" title="Start at login" description={!connected ? "Connect to check whether startup controls are available." : companionSettings?.standalone === false ? "Available when the companion is installed as a standalone app." : companionSettings?.startup === null ? "Startup preference is unavailable for this companion." : "Open LibrePaper Companion when you log in."}>
+    <button type="button" role="switch" class="switch companion-startup-switch" aria-label="Start at login" aria-checked={companionSettings?.startup === true} data-state={companionSettings?.startup ? "checked" : "unchecked"} disabled={!connected || !companionSettings?.standalone || companionSettings.startup == null || Boolean(pendingDialogAction)} onclick={() => void toggleStartup(!companionSettings.startup)}>
+      <span class="switch-thumb" data-state={companionSettings?.startup ? "checked" : "unchecked"}></span>
     </button>
     {#if pendingDialogAction === "startup"}
       <p class="setting-description">Approve the request in the dialog LibrePaper Companion opened on this computer.</p>
     {/if}
   </SettingRow>
-{/if}
 
-{#if connected && companionSettings?.standalone}
-  <div class="quit-button">
-    <button type="button" class="btn btn-sm lp-control-outline" disabled={pendingDialogAction === "quit"} onclick={() => void quitCompanion()}>
+<div class="quit-button">
+    <button type="button" class="btn btn-sm lp-control-outline" disabled={!connected || !companionSettings?.standalone || Boolean(pendingDialogAction)} onclick={() => void quitCompanion()}>
       {pendingDialogAction === "quit" ? "Confirm on this computer…" : "Quit companion"}
     </button>
+    {#if connected && companionSettings && !companionSettings.standalone}
+      <p class="setting-description">Available when the companion is installed as a standalone app.</p>
+    {:else if !connected}
+      <p class="setting-description">Connect to use this control.</p>
+    {/if}
     {#if pendingDialogAction === "quit"}
       <p class="setting-description">Approve the request in the dialog LibrePaper Companion opened on this computer.</p>
     {/if}
   </div>
-{/if}
 
 <SettingRow title="Check local setup" description="Rescans the tools the companion can find and shows the full report.">
-  <button type="button" class="btn btn-sm lp-control-outline" id="local-doctor" onclick={() => void doctorReport()}>Check</button>
+  <button type="button" class="btn btn-sm lp-control-outline" id="local-doctor" disabled={!connected} onclick={() => void doctorReport()}>Check</button>
 </SettingRow>
 {#if doctor}<pre class="setting-log" role="status">{doctor}</pre>{/if}
 

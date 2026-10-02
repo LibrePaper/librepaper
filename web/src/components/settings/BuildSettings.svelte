@@ -37,6 +37,7 @@
   }
   function disabledOutput(output) {
     if (preferences.backend !== "local") return format === "markdown" || format === "quarto" ? output !== "html" : false;
+    if (local?.state !== "connected") return true;
     const capability = capabilityFor(local?.capabilities, preferences.tool);
     return !capability || !Array.isArray(capability.outputs) || !capability.outputs.includes(output);
   }
@@ -52,7 +53,10 @@
   }
   const outputChoices = $derived.by(() => {
     const supported = supportedOutputs(preferences.backend, preferences.tool);
-    const choices = [...supported];
+    // Keep the output row useful before a local tool has reported its
+    // capabilities. The format defines the safe choices; a selected local
+    // builder can still mark unavailable choices as disabled below.
+    const choices = [...(supported.length ? supported : (format === "typst" ? ["html", "pdf"] : ["html"]))];
     if (preferences.output && !choices.includes(preferences.output)) choices.unshift(preferences.output);
     return choices;
   });
@@ -110,9 +114,9 @@
   <button type="button" class="btn btn-sm lp-control-outline" disabled={local?.state !== "connected"} onclick={rescan}>Rescan</button>
 </SettingRow>{/if}
 
-{#if ["typst", "quarto", "markdown"].includes(format) && outputChoices.length > 1}
+{#if ["typst", "quarto", "markdown"].includes(format)}
   <SettingRow id="render-output" title="Output" description="Choose the preview or export format for this browser.">
-    <select class="select setting-select" aria-label="Build output" value={preferences.output || "html"} onchange={(event) => chooseOutput(event.currentTarget.value)}>
+    <select class="select setting-select" aria-label="Build output" value={preferences.output || "html"} disabled={preferences.backend === "local" && outputChoices.every(disabledOutput)} onchange={(event) => chooseOutput(event.currentTarget.value)}>
       {#each outputChoices as output}<option value={output} disabled={disabledOutput(output)}>{output.toUpperCase()}</option>{/each}
     </select>
   </SettingRow>

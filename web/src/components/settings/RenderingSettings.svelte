@@ -8,7 +8,7 @@
   import SettingRow from "./SettingRow.svelte";
   import { parseRenderOptions } from "../../lib/quarto-options.js";
 
-  let { options, onapplyoptions } = $props();
+  let { options, onapplyoptions, disabled = false } = $props();
 
   let draftProfile = $state("");
   let parametersText = $state("{}");
@@ -85,14 +85,16 @@
     }
   }
 
-  const disabled = $derived(applying);
+  const controlsDisabled = $derived(disabled || applying);
 </script>
+
+{#if disabled}<p class="setting-description options-disabled">Profile and parameter values are kept for a Quarto build. They cannot affect the current document's preview.</p>{/if}
 
 <SettingRow id="rendering-profile" title="Profile"
             description="Leave this empty unless your project has Quarto profiles (files named _quarto-something.yml). Then type the name of the one to preview with, such as “draft” for _quarto-draft.yml.">
   <input class="input setting-input" type="text" value={draftProfile} placeholder="None"
          aria-label="Quarto profile" autocomplete="off" spellcheck="false"
-         oninput={(event) => { draftProfile = event.currentTarget.value; changed(); }} {disabled} />
+         oninput={(event) => { draftProfile = event.currentTarget.value; changed(); }} disabled={controlsDisabled} />
 </SettingRow>
 
 <SettingRow id="rendering-parameters" title="Parameters" stacked
@@ -101,15 +103,19 @@
             placeholder={'{"year": 2026, "region": "north", "draft": true}'}
             aria-label="Quarto parameters" aria-invalid={Boolean(validationError)} spellcheck="false"
             aria-describedby={validationError || applyError ? "rendering-parameters-error" : undefined}
-            oninput={(event) => { parametersText = event.currentTarget.value; changed(); }} {disabled}></textarea>
+            oninput={(event) => { parametersText = event.currentTarget.value; changed(); }} disabled={controlsDisabled}></textarea>
   {#if validationError || applyError}
     <p id="rendering-parameters-error" class="setting-error" role="alert">{validationError || applyError}</p>
   {/if}
 </SettingRow>
 
+<style>
+  .options-disabled { margin-block: calc(var(--spacing) * 3); }
+</style>
+
 <SettingRow title="" description={dirty ? "The preview restarts with the new settings." : ""}>
   <button class="btn btn-sm lp-control-brand" type="button" onclick={() => void apply()}
-          disabled={disabled || !dirty || Boolean(validationError)}>
+          disabled={controlsDisabled || !dirty || Boolean(validationError)}>
     {applying ? "Applying…" : "Apply"}
   </button>
 </SettingRow>

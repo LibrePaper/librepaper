@@ -2,119 +2,81 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const read = (name) => readFile(new URL(`../../src/components/settings/${name}`, import.meta.url), "utf8");
-const registry = await read("registry.js");
+const registryText = await read("registry.js");
 const { offered, search, CATEGORIES } = await import("../../src/components/settings/registry.js");
-const local = await read("LocalAppSettings.svelte");
-const latexFiles = await read("LatexFilesSettings.svelte");
-const folder = await read("ProjectFolderSetting.svelte");
-const rendering = await read("RenderingSettings.svelte");
 const build = await read("BuildSettings.svelte");
 const dialog = await read("SettingsDialog.svelte");
-const reader = await readFile(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
+const folder = await read("ProjectFolderSetting.svelte");
+const latexFiles = await read("LatexFilesSettings.svelte");
+const integration = await read("IntegrationSettings.svelte");
+const rendering = await read("RenderingSettings.svelte");
+const remote = await read("RemoteSettings.svelte");
 
-// Local, integrations, backups and account are offered always;
-// storage and remote no longer exist as categories.
+// Render, Integrations, Companion, Backups and Account remain navigable for
+// every document format and editing state.
 for (const format of ["latex", "typst", "markdown", "quarto", "html", ""]) {
   for (const mayEdit of [true, false]) {
     const ids = offered({ format, mayEdit, signedIn: false }).map((item) => item.id);
-    assert.ok(ids.includes("local"), `${format} (mayEdit=${mayEdit}) offers Companion`);
-    assert.ok(ids.includes("integrations"), `${format} (mayEdit=${mayEdit}) offers Integrations`);
-    assert.ok(ids.includes("account"), `${format} (mayEdit=${mayEdit}) offers Account`);
-    assert.ok(!ids.includes("storage"), `${format} (mayEdit=${mayEdit}) does not offer storage category`);
-    assert.ok(!ids.includes("remote"), `${format} (mayEdit=${mayEdit}) does not offer remote category`);
+    for (const id of ["render", "integrations", "local", "backups", "account"]) {
+      assert.ok(ids.includes(id), `${format} (mayEdit=${mayEdit}) offers ${id}`);
+    }
   }
 }
-assert.match(registry, /id: "local", says: "Companion", offered: always,/);
-assert.match(registry, /id: "integrations", says: "Integrations", offered: always,/);
-for (const query of ["windows setup", "macos", "claude", "zotero", "server address", "companion address"]) {
-  const matches = search(query, { format: "html", mayEdit: false, signedIn: false }) || [];
-  assert.ok(matches.length, `settings search finds ${query}`);
+for (const query of ["windows setup", "zotero", "server address", "remote connection", "disconnected sync", "companion address"]) {
+  assert.ok(search(query, { format: "html", mayEdit: false, signedIn: false })?.length, `settings search finds ${query}`);
 }
-assert.match(registry, /id: "local-address", says: "Companion address"/);
-assert.match(registry, /id: "remote-status"/);
-assert.match(local, /import \* as localBridge from "\.\.\/\.\.\/lib\/companion\/client\.js"/);
-// The panel shows the status rather than keeping its own copy of it: the
-// shared module owns that state, and this panel is one of its watchers.
-assert.match(local, /const local = \$derived\(companion\.status\);/);
-assert.match(local, /\$effect\(\(\) => companion\.watch\(\)\);/);
-assert.doesNotMatch(local, /latex\.local\.(status|address|connect|disconnect|retry|capabilities)/);
-// The project folder is a build question, not a local-app discovery question.
-assert.doesNotMatch(local, /sourceFormat|chooseFolder/);
-assert.match(folder, /id="render-folder"/);
-assert.match(folder, /placeholder=\{quarto \? "main\.qmd" : sourceFormat === "typst" \? "main\.typ" : "main\.md"\}/);
-assert.doesNotMatch(folder, /localBridge\.probe/);
 
-// Engine and browser-cache controls remain specific to LaTeX. This catches
-// accidentally exposing project-wide LaTeX choices in a Quarto document
-// while still requiring the local service controls above.
-assert.match(registry, /const latex = \(\{ format, mayEdit \}\) => format === "latex" && mayEdit;/);
-assert.match(registry, /id: "render", says: "Render", offered: build,/);
-assert.match(registry, /id: "render-latex-files",.*offered: latex }/);
-assert.match(latexFiles, /id="render-latex-files"/);
-// The account's own storage is a row of the Account page, gated on being
-// signed in rather than on the format, and it lives in the settings dialog.
-assert.match(registry, /id: "storage-account",.*offered: account }/);
-assert.doesNotMatch(await readFile(new URL("../../src/components/Nav.svelte", import.meta.url), "utf8"), /QuotaSettings|storage/);
-
-// The Quarto page offers only what the live preview actually reads: a
-// profile and parameters. There is no format picker (the preview is always
-// the page Quarto renders) and no preview link (the app serves no URL).
-assert.match(registry, /id: "quarto-status", says: "Quarto status"/);
-assert.match(registry, /id: "rendering-profile", says: "Quarto profile"/);
-assert.match(registry, /id: "rendering-parameters", says: "Quarto parameters"/);
-assert.match(rendering, /id="rendering-profile"/);
-assert.match(rendering, /id="rendering-parameters"/);
-assert.doesNotMatch(rendering, /Render format|FORMATS/);
-assert.doesNotMatch(rendering, /preview\.url/);
-assert.doesNotMatch(build, /render-profile|render-parameters|chooseProfile|chooseParameters/);
-assert.match(dialog, /<RenderingSettings options=\{buildPreferences\} \{onapplyoptions\} \/>/);
-// The profile and parameters have one editor and one store: buildPreferences.
-assert.doesNotMatch(reader, /quartoOptions/);
-
-// No scope groups in the navigation: every category is a flat entry, and the
-// two that are not this browser's alone say so in a note under their title.
-assert.doesNotMatch(registry, /GROUPS|group:/);
-assert.match(registry, /id: "render",[\s\S]*?note: "Only this browser and user\."/);
-assert.match(registry, /id: "local",[\s\S]*?note: "LibrePaper on this computer"/);
-
-// Choosing a build tool is mostly a browser question -- which engine, which
-// output -- and opening this pane must not make the browser ask to allow the
-// site "access to other apps and services". Nothing here probes on mount;
-// picking a local tool is what looks, and until somebody has looked the local
-// rows are offered rather than greyed out as unavailable.
-assert.doesNotMatch(build, /\$effect\([^)]*localBridge\.probe/);
-assert.match(build, /if \(backend === "local"\) void localBridge\.probe\(\{ force: true \}\);/);
-assert.match(build, /if \(local\?\.state === "unknown"\) return false;/);
-assert.match(build, /unknown: "The local companion has not been looked for yet\."/);
-
-// "Execute code locally" is offered only where a local tool actually runs the
-// document. On LaTeX or HTML it warned about arbitrary code execution and then
-// did nothing, which is a local-app question asked of somebody who never posed
-// one.
-assert.match(reader, /const localExecutionRelevant = \$derived\(\["quarto", "typst"\]\.includes\(sourceFormat\) && mayEdit\);/);
-assert.match(reader, /\{#if localExecutionRelevant\}[\s\S]{0,900}?Execute code locally/);
-
-// A tool that builds the document is configured under Render, whole: its
-// executable beside what this document asks of it, and only for a format it
-// can build. Integrations is for what feeds a document without building it.
 const render = CATEGORIES.find((category) => category.id === "render");
 const renderRows = (context) => render.entries.filter((entry) => !entry.offered || entry.offered(context)).map((entry) => entry.id);
-const expectRows = (context, { with: present = [], without: absent = [] }) => {
-  const rows = renderRows(context);
-  const name = JSON.stringify(context);
-  for (const id of present) assert.ok(rows.includes(id), `${name} offers ${id}`);
-  for (const id of absent) assert.ok(!rows.includes(id), `${name} does not offer ${id}`);
-};
-expectRows({ format: "quarto", mayEdit: true }, {
-  with: ["quarto-status", "quarto-executable", "rendering-profile", "quarto-execution", "render-folder"],
-  without: ["calepin-status", "render-latex-files"],
-});
-expectRows({ format: "markdown", mayEdit: true }, { with: ["quarto-status"], without: ["rendering-profile", "quarto-execution"] });
-expectRows({ format: "markdown", mayEdit: true, tool: "quarto" }, { with: ["rendering-profile", "rendering-parameters"] });
-expectRows({ format: "typst", mayEdit: true }, { with: ["calepin-status", "render-folder"], without: ["quarto-status"] });
-expectRows({ format: "latex", mayEdit: true }, { with: ["render-latex-files"], without: ["quarto-status", "calepin-status", "render-folder"] });
-expectRows({ format: "latex", mayEdit: false }, { without: ["render-latex-files"] });
-const integrations = CATEGORIES.find((category) => category.id === "integrations");
-assert.deepEqual(integrations.entries.map((entry) => entry.id), ["zotero-status"]);
+for (const format of ["latex", "typst", "markdown", "quarto", "html"]) {
+  const rows = renderRows({ format, mayEdit: false });
+  assert.ok(rows.includes("render-latex-files"), `${format} keeps browser-wide LaTeX cache controls visible`);
+  assert.ok(rows.includes("typst-status"), `${format} keeps Typst status visible`);
+  assert.ok(rows.includes("quarto-executable") && rows.includes("calepin-executable"), `${format} keeps both local integration sections visible`);
+}
+for (const format of ["typst", "markdown", "quarto"]) {
+  const rows = renderRows({ format, mayEdit: false });
+  assert.ok(rows.includes("render-folder") && rows.includes("render-output"), `${format} offers its applicable folder and output controls`);
+}
+assert.ok(!renderRows({ format: "latex", mayEdit: false }).includes("render-folder"));
+assert.ok(!renderRows({ format: "html", mayEdit: false }).includes("render-output"));
 
-console.log("settings-quarto: Quarto exposes the shared local pairing and doctor panel without LaTeX controls; the build pane and the local-execution item reach for the companion only when asked; a tool that builds the document is configured under Render, whole");
+// The dialog owns the fixed four-section layout, including for HTML and
+// read-only documents. Quarto preferences stay visible but become disabled
+// outside Quarto or Markdown using Quarto.
+for (const name of ["LaTeX", "Typst", "Quarto", "Calepin"]) {
+  assert.ok(dialog.includes(`<h4 class="settings-subhead">${name}</h4>`), `Render always includes ${name}`);
+}
+assert.match(dialog, /<RenderingSettings options=\{buildPreferences\} \{onapplyoptions\} disabled=\{!quartoOptionsRelevant\} \/>/);
+assert.match(dialog, /const quartoOptionsRelevant = \$derived\(sourceFormat === "quarto" \|\| \(sourceFormat === "markdown" && buildPreferences\.tool === "quarto"\)\);/);
+assert.match(rendering, /disabled=\{controlsDisabled\}/);
+assert.match(dialog, /disabled=\{!quartoExecutionRelevant\}/);
+assert.match(latexFiles, /id="render-latex-files"/);
+assert.match(folder, /id="render-folder"/);
+assert.match(folder, /disabled=\{!canChoose\}/);
+assert.doesNotMatch(folder, /localBridge\.probe/);
+
+// Local build choices do not probe on mount, browser choices stay available,
+// and stale local capabilities cannot enable outputs after disconnect.
+assert.doesNotMatch(build, /\$effect\([^)]*localBridge\.probe/);
+assert.match(build, /if \(backend === "local"\) void localBridge\.probe\(\{ force: true \}\);/);
+assert.match(build, /if \(local\?\.state !== "connected"\) return true;/);
+assert.match(build, /disabled=\{preferences\.backend === "local" && outputChoices\.every\(disabledOutput\)\}/);
+
+// Integration command fields stay rendered; the companion and fresh settings
+// are required before edits apply, and responses are scoped to the connection.
+assert.match(integration, /const showFields = \$derived\(name !== "zotero"\);/);
+assert.match(integration, /const canEdit = \$derived\(isConnected && settingsLoaded && !pendingDialogAction\);/);
+assert.match(integration, /requestId !== loadId[\s\S]{0,260}local\?\.state !== "connected"/);
+assert.match(integration, /if \(requestedName === "zotero"\) settingsLoaded = true;/);
+assert.match(integration, /Zotero library/);
+assert.match(integration, /enable its local API/);
+
+// The account page calls the server Remote connection and shows its state as
+// a compact, accessible pill beside the server address.
+assert.match(registryText, /id: "remote-status", says: "Remote connection"/);
+assert.match(remote, /<SettingRow id="remote-status" title="Remote connection"/);
+assert.match(remote, /role="status" aria-label=\{`Remote connection/);
+assert.match(remote, /remoteConnected \? "Connected" : "Disconnected"/);
+
+console.log("settings-quarto: Render sections and format-specific controls stay available across document types; offline local controls are unavailable while browser preferences remain usable");

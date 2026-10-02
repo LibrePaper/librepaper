@@ -177,6 +177,10 @@
       ["path", "M21 20h-5"], ["path", "M12 20H3"],
       ["path", "M14 2v4"], ["path", "M8 10v4"], ["path", "M16 18v4"],
     ],
+    settings: [
+      ["path", "M10 2h4l.6 2.3 1.7.7 2-1.3 2.8 2.8-1.3 2 .7 1.7L23 11v4l-2.3.6-.7 1.7 1.3 2-2.8 2.8-2-1.3-1.7.7L14 23h-4l-.6-2.3-1.7-.7-2 1.3-2.8-2.8 1.3-2-.7-1.7L1 15v-4l2.3-.6.7-1.7-1.3-2 2.8-2.8 2 1.3 1.7-.7z"],
+      ["circle", { cx: 12, cy: 12, r: 3 }],
+    ],
     // Sharing is about people rather than about a URL, so the control that
     // opens the dialog wears people; copying the link is a `link` inside it.
     users: [

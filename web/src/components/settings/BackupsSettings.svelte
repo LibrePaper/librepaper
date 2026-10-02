@@ -11,6 +11,9 @@
   const paired = $derived(companion.status.state === "connected");
   const backupStatus = $derived(backups.status);
   const data = $derived(backupStatus.data || {});
+  const hasStatus = $derived(signedIn && paired && backupStatus.data !== null && !backupStatus.error);
+  const needsLogin = $derived(hasStatus && Boolean(data.needs_login));
+  const canUseCompanion = $derived(signedIn && paired && backupStatus.data !== null && !backupStatus.error);
   const intervals = [1, 5, 15, 30, 60];
 
   let busy = $state("");
@@ -47,7 +50,7 @@
   }
 
   async function authorize() {
-    if (!signedIn || !paired || busy) return;
+    if (!signedIn || !paired || !needsLogin || busy) return;
     busy = "authorization";
     error = "";
     const requestedAccount = accountId;
@@ -77,7 +80,7 @@
   }
 
   async function changeSettings(enabled, frequency = Number(data.frequency_minutes) || 5) {
-    if (!signedIn || !paired || busy) return;
+    if (!canUseCompanion || busy || (needsLogin && enabled)) return;
     busy = "settings";
     error = "";
     const requestedAccount = accountId;
@@ -93,7 +96,7 @@
   }
 
   async function chooseFolder() {
-    if (!signedIn || !paired || busy) return;
+    if (!canUseCompanion || busy) return;
     busy = "folder";
     error = "";
     const requestedAccount = accountId;
@@ -109,7 +112,7 @@
   }
 
   async function runNow() {
-    if (!signedIn || !paired || busy || !data.enabled || data.running) return;
+    if (!canUseCompanion || needsLogin || busy || !data.enabled || data.running) return;
     busy = "run";
     error = "";
     const requestedAccount = accountId;
@@ -150,7 +153,15 @@
     </div>
     <div class="setting-control"><button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button></div>
   </div>
-{:else if data.needs_login}
+{:else if backupStatus.error}
+  <div class="setting-status" data-tone="warn" role="status">
+    <span class="setting-status-dot" aria-hidden="true"></span>
+    <div class="setting-status-words"><div class="setting-title">Backup status unavailable</div><div class="setting-description">{backupStatus.error}</div></div>
+    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== ""} onclick={() => void backups.refresh()}>Retry</button></div>
+  </div>
+{:else if backupStatus.loading && !backupStatus.data}
+  <p class="setting-description" role="status">Loading backup status…</p>
+{:else if needsLogin}
   <div class="setting-status" data-tone="warn" role="status">
     <span class="setting-status-dot" aria-hidden="true"></span>
     <div class="setting-status-words">
@@ -159,46 +170,28 @@
     </div>
     <div class="setting-control"><button type="button" class="btn btn-sm lp-control-brand" disabled={busy !== "" || backupStatus.loading} onclick={() => void authorize()}>{busy === "authorization" ? "Authorizing…" : "Authorize backups"}</button></div>
   </div>
-  <SettingRow id="backup-destination" title="Backup folder" description={destinationSet ? (destinationLabel ? `Selected folder: ${destinationLabel}` : "Selected folder on this computer.") : "Choose a folder on this computer for the ZIP files."}>
-    <div class="backup-folder-control">
-      <input class="input input-sm backup-path" aria-label="Selected backup folder" value={destinationLabel} placeholder="No folder selected" readonly />
-      <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
-    </div>
-  </SettingRow>
-  {#if data.enabled}
-    <SettingRow id="backup-enable" title="Automatic backups are on" description="You can turn off future backups without signing in again. A backup already in progress may finish.">
-      <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked="true" data-state="checked" disabled={busy !== ""} onclick={() => void changeSettings(false)}>
-        <span class="switch-thumb" data-state="checked"></span>
-      </button>
-    </SettingRow>
-  {/if}
-{:else if backupStatus.error}
-  <div class="setting-status" data-tone="warn" role="status">
-    <span class="setting-status-dot" aria-hidden="true"></span>
-    <div class="setting-status-words"><div class="setting-title">Backup status unavailable</div><div class="setting-description">{backupStatus.error}</div></div>
-    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-outline" onclick={() => void backups.refresh()}>Retry</button></div>
-  </div>
-{:else if backupStatus.loading && !backupStatus.data}
-  <p class="setting-description" role="status">Loading backup status…</p>
-{:else}
+{/if}
+
   <SettingRow id="backup-enable" title="Automatic backups" description="Create a fresh ZIP of each project available to this account on this schedule.">
-    <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked={Boolean(data.enabled)} data-state={data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !destinationSet} onclick={() => void changeSettings(!data.enabled)}>
+    <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked={Boolean(data.enabled)} data-state={data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseCompanion || (needsLogin ? !data.enabled : !destinationSet)} onclick={() => void changeSettings(!data.enabled)}>
       <span class="switch-thumb" data-state={data.enabled ? "checked" : "unchecked"}></span>
     </button>
   </SettingRow>
   <SettingRow id="backup-destination" title="Backup folder" description={destinationSet ? (destinationLabel ? `Selected folder: ${destinationLabel}` : "Selected folder on this computer.") : "Choose a folder on this computer for the ZIP files."}>
     <div class="backup-folder-control">
-      <input class="input input-sm backup-path" aria-label="Selected backup folder" value={destinationLabel} placeholder="No folder selected" readonly />
-      <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
+      <input class="input input-sm backup-path" aria-label="Selected backup folder" value={destinationLabel} placeholder="No folder selected" readonly disabled={!canUseCompanion || busy !== ""} />
+      <button type="button" class="btn btn-sm lp-control-outline" disabled={!canUseCompanion || busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
     </div>
   </SettingRow>
   <SettingRow id="backup-frequency" title="Frequency" description="How often the companion checks for project changes.">
-    <select class="input input-sm backup-frequency" aria-label="Backup frequency" value={Number(data.frequency_minutes) || 5} disabled={busy !== "" || !destinationSet} onchange={(event) => void changeSettings(Boolean(data.enabled), Number(event.currentTarget.value))}>
+    <select class="input input-sm backup-frequency" aria-label="Backup frequency" value={Number(data.frequency_minutes) || 5} disabled={busy !== "" || !destinationSet || !canUseCompanion || needsLogin} onchange={(event) => void changeSettings(Boolean(data.enabled), Number(event.currentTarget.value))}>
       {#each intervals as minutes}<option value={minutes}>{minutes} {minutes === 1 ? "minute" : "minutes"}</option>{/each}
     </select>
   </SettingRow>
   <div class="backup-status" role="status" aria-live="polite">
-    {#if data.error}
+    {#if !hasStatus}
+      <span class="backup-state">{signedIn && paired && backupStatus.loading ? "Loading backup status…" : signedIn && paired && backupStatus.error ? "Backup status unavailable." : "Backup status unavailable until this account is signed in and the companion is connected."}</span>
+    {:else if data.error}
       <span class="backup-state error">Backup error: {data.error}</span>
     {:else if data.running}
       <span class="backup-state">Backing up {Number(data.projects) || 0} projects…</span>
@@ -207,9 +200,8 @@
     {:else}
       <span class="backup-state">Backups are off.</span>
     {/if}
-    <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== "" || !destinationSet || !data.enabled || data.running} onclick={() => void runNow()}>{busy === "run" ? "Starting…" : "Back up now"}</button>
+    <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== "" || !destinationSet || !canUseCompanion || needsLogin || !data.enabled || data.running} onclick={() => void runNow()}>{busy === "run" ? "Starting…" : "Back up now"}</button>
   </div>
-{/if}
 
 {#if error}<p class="setting-description backup-error" role="alert">{error}</p>{/if}
 
