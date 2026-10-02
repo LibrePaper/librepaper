@@ -111,7 +111,7 @@ try {
   assert.equal(backup.offline,true,'Backup pill reports unavailable account backups');
   await clickPill('open backup settings');
   await until('Backup settings',()=>b.evaluate('document.querySelector(".backups-intro") && document.querySelector(".settings-category")?.textContent.trim() === "Backups"'),3000);
-  assert.match(await b.evaluate('document.querySelector("[role=status]")?.innerText || ""'),/Sign in to back up an account/,
+  assert.match(await b.evaluate('document.querySelector(".settings-body .setting-status[role=status]")?.innerText || ""'),/Sign in to back up an account/,
     'Backup settings explains that account backups require sign-in');
   await click('[aria-label="Close"]');
   await clickPill('Remote');
