@@ -14,6 +14,7 @@
 // below is the order it appears in.
 export const nav = [
   { path: "start", label: "Getting started" },
+  { path: "install", label: "Install" },
   {
     path: "authoring/index",
     label: "Authoring",

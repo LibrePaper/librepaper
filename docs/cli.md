@@ -6,7 +6,7 @@ LibrePaper is a server and a web app. The installed command starts its local com
 
 ## The companion
 
-The companion runs native tools (Quarto and Typst rendering) and holds document agents. After installing LibrePaper, run `librepaper` in a terminal to start it in the background. The explicit `start` command does the same thing.
+The companion runs native tools (Quarto and Typst rendering) and holds document agents. After [installing LibrePaper](install.html), run `librepaper` in a terminal to start it in the background. The explicit `start` command does the same thing.
 
 ```sh
 librepaper                                      # start in background

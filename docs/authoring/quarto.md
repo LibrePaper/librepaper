@@ -23,14 +23,9 @@ per document (default: **Quarto preview**):
 
 Quarto preview runs on your own computer, with Quarto and R or Python
 installed there. The LibrePaper local app does the rendering. Install it
-(Linux and macOS; details on the [install page](../start.html#install)),
-then start it:
+from the [install page](../install.html), then start it:
 
 ```sh
-# Install
-curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
-
-# Start
 librepaper                           # start in the background
 librepaper --at-login                # also start every time you log in
 librepaper status                    # check it is running and found Quarto

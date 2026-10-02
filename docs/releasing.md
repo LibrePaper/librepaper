@@ -56,19 +56,7 @@ checksum stops that updater without changing its package repository.
 
 ## Install commands
 
-```sh
-# macOS or Linux
-brew install vincentarelbundock/tap/librepaper
-
-# Rust toolchain
-cargo install librepaper
-```
-
-```powershell
-# Windows
-scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-bucket
-scoop install librepaper
-```
+The user-facing commands for every channel live on the [install page](install.md) only. Update that page when a channel changes.
 
 LibrePaper is distributed under the MIT License. The package manifest and the
 generated Homebrew and Scoop definitions declare `MIT`; the license text is in

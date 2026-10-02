@@ -7,21 +7,15 @@ librepaper --version
 librepaper mcp --help
 ```
 
-If the binary is missing, or present but without `mcp`,
-install a release with the project's installer (Linux and macOS):
+If the binary is missing, or present but without `mcp`, install or upgrade it
+by following the one set of install instructions at
+<https://librepaper.org/install.html> (installer scripts, Homebrew, Scoop and
+Cargo). Fetch that page and use the method that matches how the existing
+binary was installed, or the installer script when there is none.
 
-```sh
-curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
-```
-
-The installer verifies the release archive's checksum and installs into
-`~/.cargo/bin` by default. If that is not on `PATH`, use the full binary path
-in every command rather than editing the user's shell configuration.
-
-- `LIBREPAPER_VERSION` selects a release.
-- `LIBREPAPER_INSTALL_DIR` selects an installation directory.
-- Windows: use the matching executable from the
-  [release page](https://github.com/LibrePaper/librepaper/releases).
+The installer script installs into `~/.cargo/bin` by default. If that is not
+on `PATH`, use the full binary path in every command rather than editing the
+user's shell configuration.
 
 Run `librepaper mcp --help` afterwards. If the installed release still
 does not provide the adapter, **report the version mismatch and stop.** Do

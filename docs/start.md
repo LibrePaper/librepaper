@@ -35,20 +35,7 @@ set up [local backups](backups.html).
 
 ## Install
 
-You do not need the CLI to read, comment on or publish a document. You need it
-to run the local app, which renders Quarto and other native tools for the
-browser, to export a project, or to host your own deployment.
-
-```sh
-curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
-```
-
-This installer supports Linux and macOS on x86_64 and aarch64. Windows
-installers are not published for v0.0.9. To pin a version, replace
-`releases/latest/download/` with `releases/download/<tag>/`.
-
-The installer puts the executable on your PATH. It does not
-add a desktop shortcut or register the `librepaper://` link handler.
+You do not need to install anything to read, comment on or publish a document. The companion, the CLI and a server of your own all come from one binary: see the [install page](install.html).
 
 ## The sandbox
 

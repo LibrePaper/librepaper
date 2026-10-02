@@ -12,11 +12,7 @@ A browser cannot start programs on your computer, so the LibrePaper local app do
 
 ## Install
 
-Linux and macOS; details on the [install page](start.html#install).
-
-```sh
-curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
-```
+Follow the [install page](install.html).
 
 ## Run
 

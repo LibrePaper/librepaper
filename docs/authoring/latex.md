@@ -45,9 +45,9 @@ companion is unavailable, the reader explains that local Biber is required.
 
 The local companion extends the online editor with the tools installed on
 your computer. Documents and collaboration stay in the website. Install the
-companion from the document's **Enable local rendering** settings, then use
-**Open companion** to launch it. The first connection asks permission for
-the named site and document; subsequent connections reuse that permission,
+companion from the [install page](../install.html), then start it with
+`librepaper` in a terminal. The first connection asks permission for the
+named site and document; subsequent connections reuse that permission,
 including after restarting the companion.
 
 *Settings*, *Local app* shows discovered tools, lets you disconnect the

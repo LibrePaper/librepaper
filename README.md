@@ -20,35 +20,7 @@ released.
 
 ## Install
 
-```sh
-curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
-```
-
-This shell installer supports Linux and macOS on x86_64 and aarch64. On
-Windows, install through Scoop as shown below; its package downloads the
-prebuilt `librepaper-x86_64-pc-windows-msvc.zip` release artifact. To pin the
-shell installer to a version, replace `releases/latest/download/` with
-`releases/download/<tag>/`.
-
-The installer puts the executable on your PATH. In a new terminal, run
-`librepaper` to start the companion, then connect it from *Settings*, *Local app* in LibrePaper. The installer
-does not add a desktop shortcut or register the `librepaper://` link handler.
-
-On macOS or Linux, you can also install with Homebrew:
-
-```sh
-brew install vincentarelbundock/tap/librepaper
-```
-
-On Windows, install with Scoop:
-
-```powershell
-scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-bucket
-scoop install librepaper
-```
-
-The sole crates.io package is `librepaper`; install it with Rust's package
-manager using `cargo install librepaper`.
+Follow the [install page](https://librepaper.org/install.html): installer scripts, Homebrew, Scoop and Cargo.
 
 ## Documentation
 
@@ -80,6 +52,7 @@ working. Operators can host their own copy with `--asset-mirror`.
 See [`docs/asset-mirrors.md`](docs/dev/asset-mirrors.md).
 
 - [Getting started](https://librepaper.org/start.html)
+- [Install](https://librepaper.org/install.html)
 - [Running a server](https://librepaper.org/host.html)
 - [Privacy and the LaTeX mirror](https://librepaper.org/host.html#privacy-and-the-latex-mirror)
 - [Building from source](https://librepaper.org/architecture.html#building-from-source)

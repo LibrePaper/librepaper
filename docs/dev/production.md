@@ -24,7 +24,6 @@ gh release view "$VERSION" --json assets -q '.assets[].name' | grep linux-musl
 
 - v0.0.8 does not include the metrics listener. Do not deploy it to the monitoring stack; v0.0.9 is the first release with the listener.
 - v0.0.1 to v0.0.3 are Komodoc archives, and v0.0.4 to v0.0.7 never released
-- Windows binaries and installers are not published; current release targets cover Linux and macOS only.
 
 ## VPS (OVHcloud)
 
