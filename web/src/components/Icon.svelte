@@ -86,6 +86,12 @@
       ["path", "M16 13H8"],
       ["path", "M16 17H8"],
     ],
+    // Lucide's code-xml, for editing the document source.
+    "code-xml": [
+      ["path", "m18 16 4-4-4-4"],
+      ["path", "m6 8-4 4 4 4"],
+      ["path", "m14.5 4-5 16"],
+    ],
     // Lucide's bookmark, for the versions somebody marked to find again. It
     // is drawn filled where the mark is set and hollow where it is not, which
     // is the whole of the state it has to show.

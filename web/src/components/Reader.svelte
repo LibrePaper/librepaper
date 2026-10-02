@@ -3849,9 +3849,9 @@
          Neither is pressed while a panel covers them both. -->
     {#if adapted && (editing || panel === "history")}
       <div class="face-switch" role="group" aria-label="Workspace view">
-        <IconButton icon="book" label="Document" pressed={shown.document}
+        <IconButton icon="eye" label="Document" pressed={shown.document}
                     onclick={() => showMobileView("document")} />
-        <IconButton icon="file-text" label="Source" pressed={shown.source}
+        <IconButton icon="code-xml" label="Source" pressed={shown.source}
                     onclick={() => showMobileView("source")} />
       </div>
     {/if}
