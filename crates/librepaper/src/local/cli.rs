@@ -1,5 +1,4 @@
-//! `librepaper local <command>`: the command line front end for the loopback
-//! service.
+//! `librepaper start` and `local` compatibility commands for the loopback service.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -17,21 +16,17 @@ use crate::util::die;
 
 pub async fn run(args: LocalArgs) {
     match args.command {
-        LocalCommand::Start {
-            foreground,
-            port,
-            tool_path,
-            at_login,
-        } => {
-            if at_login {
+        LocalCommand::Start(args) => {
+            let port = args.port.unwrap_or(0);
+            if args.at_login {
                 if let Err(error) = crate::local::lifecycle::set_startup(true) {
                     die(error);
                 }
             }
-            if foreground {
-                start_foreground(port, tool_path).await
+            if args.foreground {
+                start_foreground(port, args.tool_path).await
             } else {
-                start_background(port, &tool_path).await
+                start_background(port, &args.tool_path).await
             }
         }
         LocalCommand::Stop => stop().await,
@@ -64,7 +59,7 @@ fn cache_home() -> PathBuf {
 
 async fn start_background(port: u16, tool_path: &[PathBuf]) {
     match crate::local::lifecycle::spawn_background(port, tool_path).await {
-        Ok(state) => println!("librepaper local companion ready on port {}", state.port),
+        Ok(state) => println!("Companion ready on port {}. Next: Settings → Local app.", state.port),
         Err(error) => die(error),
     }
 }
@@ -85,7 +80,7 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
         .open(local_dir.join("companion.lock"))
         .unwrap_or_else(|error| die(error));
     if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
-        die("The companion is already running. Use `librepaper local start` to reuse it.");
+        die("The companion is already running. Use `librepaper start` to reuse it.");
     }
     crate::local::lifecycle::clear_stop_request(&state_home);
 
@@ -137,10 +132,8 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     );
     let router = service.router();
 
-    println!(
-        "librepaper local listening on http://127.0.0.1:{port}{}",
-        protocol::BASE_PATH
-    );
+    println!("Companion ready on http://127.0.0.1:{port}{}", protocol::BASE_PATH);
+    println!("Next: Settings → Local app.");
     print_pairings(&pairing);
     println!("Ctrl-C to stop.");
 
@@ -183,14 +176,14 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     }
     service.stop_previews().await;
     pairing.remove_service();
-    println!("librepaper local stopped");
+    println!("Companion stopped");
 }
 
 async fn stop() {
     if let Err(error) = crate::local::lifecycle::stop(&state_home()).await {
         die(error);
     }
-    println!("librepaper local companion stopped");
+    println!("Companion stopped");
 }
 
 async fn open(url: &str) {
@@ -262,7 +255,7 @@ async fn status(tool_path: Vec<PathBuf>) {
             print_pairings(&pairing);
         }
         None => {
-            println!("librepaper local is not running");
+            println!("Companion is not running");
             answering = false;
         }
     }
@@ -369,7 +362,7 @@ async fn approve(code: &str) {
             }
         }
         None => {
-            die("librepaper local is not running");
+            die("Companion is not running");
         }
     }
 }

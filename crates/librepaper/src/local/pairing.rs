@@ -5,7 +5,7 @@
 //! inside, the deployment token cache `crate::cli` keeps under
 //! `<state_home>/librepaper/` -- as two small JSON files:
 //!
-//! - `service.json`: what the running `librepaper local start` printed, so
+//! - `service.json`: what the running `librepaper start` printed, so
 //!   `status`/`doctor`/`disconnect` and a second `start` can find it without
 //!   asking the service itself.
 //! - `pairings.json`: one entry per origin a browser has connected, keyed by
@@ -31,7 +31,7 @@ use crate::auth::{now_unix, random_bytes};
 /// How long a pairing token is good for once issued.
 pub const TOKEN_TTL_SECONDS: i64 = 30 * 24 * 3600;
 
-/// What `librepaper local start` writes about itself, so a later command in a
+/// What `librepaper start` writes about itself, so a later command in a
 /// different process invocation -- `status`, `disconnect`, a second `start`
 /// checking whether one is already live -- can find the running service.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

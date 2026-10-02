@@ -1,6 +1,6 @@
 //! The local app that `librepaper admin serve` runs for the machine it is on.
 //!
-//! The standalone `librepaper local start` exists so a browser on the author's
+//! The standalone `librepaper start` exists so a browser on the author's
 //! machine can hand work to tools installed there, and it asks for a pairing
 //! code and a per-site grant because that browser might be talking to a
 //! deployment anywhere. When the deployment itself runs on this machine, both

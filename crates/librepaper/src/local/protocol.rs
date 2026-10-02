@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 /// Biber jobs of the old browser fallback and is no longer spoken.
 pub const PROTOCOL_VERSIONS: &[u32] = &[2];
 
-/// The default loopback port. Configurable with `librepaper local start
+/// The default loopback port. Configurable with `librepaper start
 /// --port`.
 pub const DEFAULT_PORT: u16 = 8763;
 

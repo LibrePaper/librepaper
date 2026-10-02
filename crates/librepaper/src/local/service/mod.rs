@@ -1,4 +1,4 @@
-//! The loopback HTTP surface `librepaper local start` binds:
+//! The loopback HTTP surface `librepaper start` binds:
 //! every route hangs
 //! under `protocol::BASE_PATH`; nothing else answers on this port.
 //!
@@ -99,7 +99,7 @@ pub trait Runner: Send + Sync {
 
 /// The real runner: native TeX tools on this machine, through package R1b's
 /// `discovery` and `native` modules. `tool_path` is the resolved `--tool-path`
-/// directory list, fixed for the lifetime of one `librepaper local start`.
+/// directory list, fixed for the lifetime of one `librepaper start`.
 pub struct NativeRunner {
     pub tool_path: Vec<PathBuf>,
     binding_store: BindingStore,
