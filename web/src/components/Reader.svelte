@@ -91,7 +91,7 @@
   import { VERBS, motivationFor } from "../lib/annotating.js";
   import InsertMenu from "./InsertMenu.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
-  import PanelRail from "./layout/PanelRail.svelte";
+  import CompactPanelMenu from "./layout/CompactPanelMenu.svelte";
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
   import Agent from "./reader/Agent.svelte";
@@ -4227,17 +4227,11 @@
            controls={previewControls}
            away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || projectUnreadable} />
 
-  <!-- The panels, and only the panels. Which face the main area wears -- the
-       document or its source -- is not a panel, and it rode in this row for
-       want of anywhere else: two buttons that looked like panel icons, at the
-       head of a row that scrolls, saying what you are reading rather than
-       what you could open. It is in the bar above now, beside the file it
-       names. -->
-  <!-- A reader is offered no panels, so there is no row of them: an empty bar
-       along the bottom of the window is a strip of furniture saying nothing. -->
+  <!-- On compact screens, offer the available panels from one menu at the
+       bottom edge. The document/source switch remains in the workspace bar. -->
   {#if compact && tabs.length}
     <nav class="mobile-pane-nav" aria-label="Workspace panels">
-      <PanelRail tabs={tabs} {panel} open={shown.comments} onselect={selectPanel} />
+      <CompactPanelMenu tabs={tabs} {panel} open={shown.comments} onselect={selectPanel} />
     </nav>
   {/if}
 

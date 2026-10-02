@@ -113,12 +113,18 @@ try {
   await b.navigate(url);
   await until("source and files",()=>b.evaluate("document.querySelector('.cm-editor') && document.querySelectorAll('.explorer-row').length > 60"), 10000);
   const flush = () => b.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-  const click = async (selector) => { await b.evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); await flush(); };
+  const click = async (selector) => { await b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'})); node.click(); })()`); await flush(); };
   const clickText = async (selector, label) => {
     await b.evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].find(node => node.textContent.trim().startsWith(${JSON.stringify(label)})).click()`);
     await flush();
   };
-  const nav = (name) => `.mobile-pane-nav [aria-label="${name}"]`;
+  const panelId = (name) => ({ Files:'files', Outline:'outline', Agent:'agent', Collaboration:'collaboration', Changes:'changes', Share:'share', Diagnostics:'diagnostics', History:'history' })[name];
+  const panelMenu = '.explorer-menu[data-state="open"]';
+  const nav = async (name) => {
+    await click('.compact-panels-trigger[aria-label="Panels"]');
+    await until('Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
+    await click(`${panelMenu} [data-panel-id="${panelId(name)}"]`);
+  };
   // Which face the main area wears is chosen in the bar at the top, beside
   // the file it names; the row along the bottom is the panels alone.
   const face = (name) => `.face-switch [aria-label="${name}"]`;
@@ -365,6 +371,64 @@ try {
 
   await b.resize(390,844); await flush();
   await click(face('Document'));
+  const compactNav = await b.evaluate(`(() => {
+    const bar = document.querySelector('.mobile-pane-nav');
+    const trigger = bar?.querySelector('.compact-panels-trigger[aria-label="Panels"]');
+    return { triggers: bar?.querySelectorAll('.compact-panels-trigger').length || 0,
+      children: bar?.children.length || 0, height: trigger?.getBoundingClientRect().height || 0 };
+  })()`);
+  assert.deepEqual(compactNav, {triggers:1,children:1,height:44}, 'mobile panels use one 44px Panels trigger');
+  await click('.compact-panels-trigger[aria-label="Panels"]');
+  await until('compact Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
+  const menuPanels = await b.evaluate(`(() => [...document.querySelectorAll(${JSON.stringify(`${panelMenu} [data-panel-id]`)})].map(node => ({id:node.dataset.panelId,label:node.getAttribute('aria-label'),text:node.textContent.trim()})))()`);
+  assert.deepEqual(menuPanels.map(item => [item.id,item.label,item.text]), [
+    ['files','Files','Files'],['outline','Outline','Outline'],['collaboration','Collaboration','Collaboration'],
+    ['changes','Changes','Changes'],['agent','Agent','Agent'],['history','History','History'],
+    ['share','Share','Share'],['diagnostics','Diagnostics','Diagnostics']
+  ], 'the Panels menu names every allowed workspace panel');
+  await click(`${panelMenu} [data-panel-id="files"]`);
+  await click('.compact-panels-trigger[aria-label="Panels"]');
+  await until('reopened Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
+  assert.equal(await b.evaluate(`document.querySelector(${JSON.stringify(`${panelMenu} [data-panel-id="files"]`)})?.getAttribute('aria-current')`), 'true', 'the selected panel is marked current');
+  // Exercise the menu through actual keyboard input on the browser protocol.
+  await b.evaluate('document.querySelector(\'.compact-panels-trigger[aria-label="Panels"]\').focus()');
+  const key = async (key, code, virtual) => {
+    await b.command('Input.dispatchKeyEvent', {type:'keyDown',key,code,windowsVirtualKeyCode:virtual});
+    await b.command('Input.dispatchKeyEvent', {type:'keyUp',key,code,windowsVirtualKeyCode:virtual});
+    await flush();
+  };
+  await key('Escape','Escape',27);
+  await until('pre-keyboard menu closed', () => b.evaluate(`!document.querySelector(${JSON.stringify(panelMenu)})`), 3000);
+  assert.equal(await b.evaluate('document.activeElement?.matches(\'.compact-panels-trigger[aria-label="Panels"]\')'), true, 'closing the menu restores focus to Panels');
+  await key('Enter','Enter',13);
+  await until('keyboard opened Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
+  await key('ArrowDown','ArrowDown',40);
+  assert.equal(await b.evaluate('document.querySelector(".explorer-menu[data-state=open] [data-highlighted][data-panel-id]")?.dataset.panelId'), 'outline', 'ArrowDown highlights the next panel');
+  await key('Escape','Escape',27);
+  await until('keyboard closed Panels menu', () => b.evaluate(`!document.querySelector(${JSON.stringify(panelMenu)})`), 3000);
+  assert.equal(await b.evaluate('document.activeElement?.matches(\'.compact-panels-trigger[aria-label="Panels"]\')'), true, 'Escape restores focus to Panels');
+  await click('.compact-panels-trigger[aria-label="Panels"]');
+  await until('Panels menu for active close', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
+  await click(`${panelMenu} [data-panel-id="files"]`);
+  assert.equal(await visible('.filelist'), false, 'choosing the active panel returns to the document');
+  for (const [width,height] of [[320,844],[760,844],[320,420]]) {
+    await b.resize(width, height); await flush();
+    await click('.compact-panels-trigger[aria-label="Panels"]');
+    await until(`Panels menu at ${width}px`, () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
+    const menuBounds = await b.evaluate(`(() => { const menu=document.querySelector(${JSON.stringify(panelMenu)}); const items=document.querySelector('.compact-panels-items'); const rect=menu.getBoundingClientRect();
+      return {left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,width:innerWidth,height:innerHeight,
+        itemScrollHeight:items?.scrollHeight||0,itemClientHeight:items?.clientHeight||0}; })()`);
+    assert.ok(menuBounds.left >= -1 && menuBounds.right <= width + 1, `menu fits horizontally at ${width}px: ${JSON.stringify(menuBounds)}`);
+    assert.ok(menuBounds.top >= -1 && menuBounds.bottom <= height + 1, `menu fits vertically at ${width}x${height}: ${JSON.stringify(menuBounds)}`);
+    if (height < 500) {
+      assert.ok(menuBounds.itemScrollHeight > menuBounds.itemClientHeight, 'the menu items scroll in a short viewport: ' + JSON.stringify(menuBounds));
+      const scrollMoved = await b.evaluate(`(() => { const items=document.querySelector('.compact-panels-items'); items.scrollTop=items.scrollHeight; return items.scrollTop>0; })()`);
+      assert.equal(scrollMoved, true, 'the menu items can scroll in a short viewport');
+    }
+    await click('body');
+  }
+  await b.resize(390,844); await flush();
+  await click(face('Document'));
   assert.equal(await visible('.viewport'),true);
   assert.equal(await visible('.editorpane'),false);
   assert.equal(await visible('.sidebar'),false);
@@ -375,7 +439,7 @@ try {
   assert.equal(await visible('.viewport'),false);
   assert.equal(await b.evaluate('document.querySelector(".cm-editor") === window.savedEditor'), true);
   assert.ok(Math.abs(await b.evaluate('document.querySelector(".cm-scroller").scrollTop') - sourceTop) < 2);
-  await click(nav('Files'));
+  await nav('Files');
   assert.equal(await visible('.filelist'),true);
   assert.equal(await visible('.editorpane'),false);
   await click('.explorer-row[title="chapter-1.html"]');
@@ -384,7 +448,7 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".viewport iframe") === window.savedFrame'), true);
   assert.equal(await b.evaluate('window.savedFrame.contentWindow.scrollY'),800);
 
-  await click(nav('Agent'));
+  await nav('Agent');
   await until('agent replies',()=>b.evaluate('document.querySelectorAll(".agent-panel .chat-message").length === 40'),10000);
   await b.evaluate('Array.from(document.querySelectorAll(".agent-tabs [role=tab]")).find(node=>node.textContent.trim()==="Chat").click()');
   await flush();
@@ -395,7 +459,7 @@ try {
   })()`);
   await flush();
   await click(face('Source'));
-  await click(nav('Agent'));
+  await nav('Agent');
   assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-form textarea").value'), 'An unsent thought');
   assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-transcript").scrollTop'),100);
   await bounded();

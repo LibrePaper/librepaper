@@ -200,19 +200,26 @@ try {
 
   const flush = () => tab.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   const visible = (selector) => tab.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); return Boolean(node?.getClientRects().length && getComputedStyle(node).display !== 'none' && getComputedStyle(node).visibility !== 'hidden'); })()`);
-  const click = async (selector) => { await tab.evaluate(`document.querySelector(${JSON.stringify(selector)})?.click()`); await flush(); };
-  const mobileNav = (label) => `.mobile-pane-nav [aria-label=${JSON.stringify(label)}]`;
+  const click = async (selector) => { await tab.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); node?.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'})); node?.click(); })()`); await flush(); };
+  const mobileNav = async (label) => {
+    const id = ({Files:'files',Outline:'outline',Agent:'agent',Collaboration:'collaboration',Changes:'changes',Share:'share',Diagnostics:'diagnostics',History:'history'})[label];
+    await click('.compact-panels-trigger[aria-label="Panels"]');
+    await until('Panels menu', () => tab.evaluate('Boolean(document.querySelector(\'.explorer-menu[data-state="open"]\'))'), 3000);
+    await click(`.explorer-menu[data-state="open"] [data-panel-id="${id}"]`);
+  };
   const waitOutline = async () => until("document outline", () => tab.evaluate("Boolean(document.querySelector('.outline'))"), 10000);
   const waitHeading = async (title) => until(`outline heading ${title}`, () => tab.evaluate(`Boolean([...document.querySelectorAll('.outline .outline-heading')].find(node => node.textContent.trim().includes(${JSON.stringify(title)})))`), 5000);
   const openOutline = async () => {
     if (await visible('.outline')) return;
     const desktop = await visible('.sidebar-activity [aria-label="Outline"]');
-    await click(desktop ? '.sidebar-activity [aria-label="Outline"]' : mobileNav("Outline"));
+    if (desktop) await click('.sidebar-activity [aria-label="Outline"]');
+    else await mobileNav('Outline');
     await waitOutline();
   };
   const openFiles = async () => {
     const desktop = await visible('.sidebar-activity [aria-label="Files"]');
-    await click(desktop ? '.sidebar-activity [aria-label="Files"]' : mobileNav("Files"));
+    if (desktop) await click('.sidebar-activity [aria-label="Files"]');
+    else await mobileNav('Files');
   };
   const openFile = async (path) => {
     await openFiles();
@@ -306,7 +313,7 @@ try {
   await tab.resize(390, 844);
   await flush();
   await openFile("notes.md");
-  await click(mobileNav("Outline"));
+  await mobileNav("Outline");
   await waitOutline();
   await clickHeading("Markdown heading");
   assert.equal(await tab.evaluate("document.querySelector('main.reader')?.classList.contains('mobile-source')"), true, "mobile outline jump reveals source");

@@ -746,21 +746,12 @@ main.reader.adapted .mobile-pane-nav {
   left: 0;
   display: flex;
   align-items: center;
-  gap: var(--spacing);
-  overflow-x: auto;
-  overscroll-behavior: contain;
   height: calc(var(--spacing) * 14 + env(safe-area-inset-bottom));
   padding: var(--spacing) calc(var(--spacing) * 2) max(var(--spacing), env(safe-area-inset-bottom));
   border-top: 1px solid var(--color-pane-edge);
   background: var(--color-shell);
 }
-.mobile-pane-nav > * { flex-shrink: 0; }
-/* The row of panels a phone gets in place of the rail beside the column. It
-   is only ever touched, so it is sized for a finger rather than for a
-   pointer: the 44px a thumb needs, where the rail beside a mouse gets the
-   32px that reads better in a column. Which face the main area wears is not
-   in here: that is the pair in the bar at the top. */
-.mobile-pane-nav :where(.icon-control) { width: 2.75rem; height: 2.75rem; }
+/* The compact panel menu owns its scrolling and sizes its trigger for touch. */
 main.reader .sidebar, main.reader .editorpane, main.reader .viewport, main.reader .latexpane {
   min-height: 0;
   overscroll-behavior: contain;
