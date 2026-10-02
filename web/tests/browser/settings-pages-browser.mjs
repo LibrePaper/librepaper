@@ -37,13 +37,12 @@ writeFileSync(harness, `
   let open = $state(false);
   let category = $state("render");
   let sourceFormat = $state("quarto");
-  let buildPreferences = $state({ selection: "tool", backend: "local", tool: "quarto", profile: "draft", parameters: { year: 2026 } });
   window.show = (page, format) => { category = page; sourceFormat = format; open = true; };
   window.applied = [];
 </script>
-<SettingsDialog bind:open bind:category {sourceFormat} mayEdit={true} main="main.qmd"
-                {buildPreferences} documentId="doc" userId="user"
-                onapplyoptions={(next) => { window.applied.push(next); buildPreferences = { ...buildPreferences, ...next }; }}
+<SettingsDialog bind:open bind:category {sourceFormat} mayEdit={true} userId="user"
+                onbuildpreferences={(format, next) => { window.applied.push(next); }}
+                onquartooptions={(next) => { window.applied.push(next); }}
                 remoteConnected={true} />
 `);
 
@@ -147,8 +146,9 @@ try {
     }
     await b.resize(1280, 900);
   };
-  const everything = ["render-tool", "render-folder", "render-output", "render-latex-files", "typst-status", "quarto-status", "quarto-executable", "quarto-arguments",
-    "rendering-profile", "rendering-parameters", "quarto-execution", "calepin-status", "calepin-executable", "calepin-arguments", "zotero-status",
+  const everything = ["render-local", "render-latex-engine", "render-latex-files", "render-typst-tool", "calepin-status", "calepin-executable", "calepin-arguments",
+    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments",
+    "rendering-profile", "rendering-parameters", "zotero-status",
     "local-status", "local-address", "local-doctor", "remote-status", "remote-address", "storage-account", "account-erase"];
 
   // The navigation, in order, for a visitor on a Quarto document.
@@ -157,44 +157,40 @@ try {
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
     ["Editor", "Render", "Integrations", "Companion", "Backups", "Account"]);
 
-  // Render always shows its four sections. Quarto settings remain together
-  // with the browser's build choices and work even without a companion.
+  // Render always shows three sections with global build options visible for all formats.
   await until("the Quarto rows", () => present(["quarto-executable"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-tool", "render-folder", "render-output", "render-latex-files", "typst-status", "quarto-status", "quarto-executable", "quarto-arguments",
-    "rendering-profile", "rendering-parameters", "quarto-execution", "calepin-status", "calepin-executable", "calepin-arguments"]);
-  assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
-  assert.equal(await b.evaluate(`document.querySelector(".settings-group-title")?.textContent.trim()`), "Current document");
+  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "render-typst-tool", "calepin-status", "calepin-executable", "calepin-arguments",
+    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments",
+    "rendering-profile", "rendering-parameters"]);
+  assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  assert.equal(await b.evaluate(`document.querySelector(".settings-group-title") === null`), true);
   await capture("render-connected");
   if (screenshotDir) {
     await b.evaluate("document.querySelector('.settings-body').scrollTop = document.querySelector('.settings-body').scrollHeight");
     await capture("render-tools");
     await b.evaluate("document.querySelector('.settings-body').scrollTop = 0");
   }
-  // The profile and parameters come from the build preferences, so what was
-  // stored for this document is what the page opens on.
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').value`), "draft");
-  assert.match(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').value`), /"year": 2026/);
-  await b.evaluate(`(() => { const input = document.querySelector('[aria-label="Quarto profile"]'); input.value = "final"; input.dispatchEvent(new Event("input", { bubbles: true })); })()`);
-  await b.evaluate(`document.querySelector("#rendering-save").click()`);
-  await until("options applied", () => b.evaluate("window.applied.length === 1"), 5000);
-  assert.deepEqual(JSON.parse(await b.evaluate("JSON.stringify(window.applied[0])")).profile, "final");
+  // Quarto profile and parameters are stored globally, not per document.
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').value`), "");
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').value`), "");
 
-  // The same sections remain visible for Typst and LaTeX. Quarto preferences
-  // stay visible but are disabled where they cannot affect the preview.
+  // The same sections remain visible for all formats.
   await show("render", "typst", "Render");
   await until("the Calepin rows", () => present(["calepin-executable"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-tool", "render-folder", "render-output", "render-latex-files", "typst-status", "quarto-status", "quarto-executable", "quarto-arguments",
-    "rendering-profile", "rendering-parameters", "quarto-execution", "calepin-status", "calepin-executable", "calepin-arguments"]);
-  assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), true);
+  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "render-typst-tool", "calepin-status", "calepin-executable", "calepin-arguments",
+    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments",
+    "rendering-profile", "rendering-parameters"]);
+  assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
   await show("render", "latex", "Render");
   await until("the LaTeX rows", () => present(["render-latex-files"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-tool", "render-latex-files", "typst-status", "quarto-status", "quarto-executable", "quarto-arguments",
-    "rendering-profile", "rendering-parameters", "quarto-execution", "calepin-status", "calepin-executable", "calepin-arguments"]);
-  assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), true);
+  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "render-typst-tool", "calepin-status", "calepin-executable", "calepin-arguments",
+    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments",
+    "rendering-profile", "rendering-parameters"]);
+  assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
   await show("render", "html", "Render");
-  assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
+  assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   assert.ok((await present(everything)).includes("render-latex-files"));
   // None of that looked for the companion: the Render page must not make the
   // browser ask for local network access just by opening.
@@ -218,20 +214,19 @@ try {
   assert.match(await b.evaluate(`document.querySelector("#remote-status .setting-status-pill")?.textContent`), /Connected/);
   assert.match(await b.evaluate(`document.querySelector("#remote-status").textContent`), /Remote connection/);
 
-  // Offline settings stay visible while controls that need the companion are
-  // unavailable. Quarto's browser preferences stay editable offline, while
-  // local build output and integration settings are visibly disabled.
+  // Offline settings stay visible. Build tool selections are available globally,
+  // while integration settings for local tools are disabled.
   await b.evaluate(`window.setCompanionState("unreachable")`);
   await show("render", "quarto", "Render");
   await capture("render-offline");
-  assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
-  await until("offline folder and output rows", () => present(["render-folder", "render-output"]).then((found) => found.length === 2), 5000);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Project entrypoint"]').disabled`), true);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Build output"]').disabled`), true);
+  assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  await until("offline render settings", () => present(["render-latex-engine"]).then((found) => found.length === 1), 5000);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="LaTeX engine"]').disabled`), false);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Typst renderer"]').disabled`), false);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Executable path"]').disabled`), true);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Arguments"]').disabled`), true);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Executable path"]')?.disabled`), true);
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Arguments"]')?.disabled`), true);
   await show("integrations", "zotero", "Integrations");
   assert.match(await b.evaluate(`document.querySelector('.integration-note').textContent`), /local API/i);
   assert.match(await b.evaluate(`document.querySelector('.integration-note').textContent`), /Settings/i);
@@ -244,7 +239,7 @@ try {
   await show("backups", "quarto", "Backups");
   await capture("backups-offline");
 
-  console.log("settings-pages-browser: Render keeps its four sections visible for all formats, browser Quarto options remain editable offline, local controls disable without the companion, and Remote and Zotero explain their status");
+  console.log("settings-pages-browser: Render shows three sections with global format options visible for all documents, Quarto settings remain editable offline, local integration controls disable without the companion, and Remote and Zotero explain their status");
 } finally {
   if (b) await b.close();
   server.close();

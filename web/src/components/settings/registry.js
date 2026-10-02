@@ -2,17 +2,15 @@
 // The dialog draws its navigation from this and searches it; what a category
 // shows is a component beside this file.
 //
-// Build preferences and downloaded LaTeX files live in this browser. Local
-// folder paths, companion settings, and integrations live on this computer.
+// Global build preferences and downloaded LaTeX files live in this browser.
+// Local tool settings and integrations live on this computer.
 
 // `offered` answers with the document's format, whether this browser may edit
-// it, whether somebody is signed in, and the build tool chosen for it (`tool`).
-// `terms` are the words somebody might type when looking for a row and not
-// finding its title.
+// it, and whether somebody is signed in. `terms` are the words somebody might
+// type when looking for a row and not finding its title.
 const always = (_context) => true;
 const editor = ({ mayEdit }) => mayEdit;
 const build = always;
-const projectBinding = ({ format }) => ["typst", "markdown", "quarto"].includes(format);
 // The account is the deployment's, not the document's: whoever is signed in
 // is offered it whatever they happen to have open.
 const account = ({ signedIn }) => Boolean(signedIn);
@@ -29,20 +27,20 @@ export const CATEGORIES = [
   {
     id: "render", says: "Render", offered: build,
     entries: [
-      { id: "render-tool", says: "Build tool", terms: "compiler engine pdflatex xelatex lualatex render browser local companion automatic latex typst markdown quarto" },
-      { id: "render-output", says: "Output", terms: "pdf html format preview export", offered: projectBinding },
-      { id: "render-folder", says: "Project folder", terms: "quarto typst markdown folder binding entrypoint local", offered: projectBinding },
+      { id: "render-local", says: "Local tools", terms: "companion connect install rescan available connection status" },
+      { id: "render-latex-engine", says: "LaTeX engine", terms: "engine pdflatex xelatex automatic compiler" },
       { id: "render-latex-files", says: "Downloaded LaTeX files", terms: "latex compiler cache clear free space packages storage" },
-      { id: "typst-status", says: "Typst status", terms: "typst available version browser local companion disconnected" },
+      { id: "render-typst-tool", says: "Typst renderer", terms: "typst browser calepin render tool" },
+      { id: "calepin-status", says: "Calepin status", terms: "calepin available version" },
+      { id: "calepin-executable", says: "Calepin executable", terms: "calepin path executable" },
+      { id: "calepin-arguments", says: "Calepin arguments", terms: "calepin arguments options command" },
+      { id: "render-markdown-tool", says: "Markdown renderer", terms: "markdown browser pandoc quarto render tool" },
+      { id: "render-quarto-tool", says: "Quarto renderer", terms: "quarto browser local render tool" },
       { id: "quarto-status", says: "Quarto status", terms: "quarto available version" },
       { id: "quarto-executable", says: "Quarto executable", terms: "quarto path executable" },
       { id: "quarto-arguments", says: "Quarto arguments", terms: "quarto arguments options" },
       { id: "rendering-profile", says: "Quarto profile", terms: "quarto profile render preview" },
       { id: "rendering-parameters", says: "Quarto parameters", terms: "quarto params parameters json render preview" },
-      { id: "quarto-execution", says: "Quarto local code execution", terms: "quarto run code permission execute" },
-      { id: "calepin-status", says: "Calepin status", terms: "calepin available version" },
-      { id: "calepin-executable", says: "Calepin executable", terms: "calepin path executable" },
-      { id: "calepin-arguments", says: "Calepin arguments", terms: "calepin arguments options command" },
     ],
   },
   {

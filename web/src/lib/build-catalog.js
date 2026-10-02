@@ -7,8 +7,8 @@
 // here, `engines` is the browser engine choice, and no surface that is about
 // LaTeX may look for the companion on its behalf.
 export const BUILDERS = Object.freeze([
-  { id: "tex", label: "pdfLaTeX / XeLaTeX", formats: ["latex"], backend: ["browser"], engines: ["pdflatex", "xelatex"] },
-  { id: "typst", label: "Typst", formats: ["typst"], backend: ["browser", "local"], engines: [] },
+  { id: "tex", label: "LaTeX", formats: ["latex"], backend: ["browser"], engines: ["pdflatex", "xelatex"] },
+  { id: "typst", label: "Typst", formats: ["typst"], backend: ["browser"], engines: [] },
   { id: "calepin", label: "Calepin", formats: ["typst"], backend: ["local"], engines: [] },
   { id: "markdown", label: "Markdown", formats: ["markdown", "quarto"], backend: ["browser"], engines: [] },
   { id: "pandoc", label: "Pandoc", formats: ["markdown"], backend: ["local"], engines: [] },

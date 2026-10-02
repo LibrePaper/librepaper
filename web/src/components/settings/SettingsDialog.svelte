@@ -6,21 +6,17 @@
   import { tick } from "svelte";
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
-  import SettingRow from "./SettingRow.svelte";
-  import StatusPill from "./StatusPill.svelte";
   import EditorSettings from "./EditorSettings.svelte";
   import LatexFilesSettings from "./LatexFilesSettings.svelte";
-  import ProjectFolderSetting from "./ProjectFolderSetting.svelte";
   import QuotaSettings from "./QuotaSettings.svelte";
   import BuildSettings from "./BuildSettings.svelte";
+  import LocalToolsSetting from "./LocalToolsSetting.svelte";
   import IntegrationSettings from "./IntegrationSettings.svelte";
   import RenderingSettings from "./RenderingSettings.svelte";
   import LocalAppSettings from "./LocalAppSettings.svelte";
   import AccountSettings from "./AccountSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
   import BackupsSettings from "./BackupsSettings.svelte";
-  import { companion } from "../../lib/companion/status.svelte.js";
-  import { capabilityFor } from "../../lib/build-catalog.js";
 
   let {
     open = $bindable(false),
@@ -34,29 +30,17 @@
     // the editor category shows. The reader assembles it; lib/commands.js
     // decides from it what is available.
     commands = {},
-    // The build.
-    buildPreferences = {},
-    documentId = "",
+    // The renderers, chosen per format for every document in this browser.
     userId = "anonymous",
     onbuildpreferences,
-    main = "",
-    onbindingid,
-    localExecution = false,
-    onlocalexecution,
-    onapplyoptions,
+    onquartooptions,
     // The account and the server.
     account = {},
     remoteConnected = false,
     remoteNote = "",
   } = $props();
 
-  const context = $derived({ format: sourceFormat, mayEdit, signedIn: Boolean(account.provider), tool: buildPreferences.tool });
-  const local = $derived(companion.status);
-  $effect(() => companion.watch());
-  const canBuildCurrentFormat = $derived(["latex", "typst", "markdown", "quarto"].includes(sourceFormat));
-  const quartoOptionsRelevant = $derived(sourceFormat === "quarto" || (sourceFormat === "markdown" && buildPreferences.tool === "quarto"));
-  const quartoExecutionRelevant = $derived(sourceFormat === "quarto" && mayEdit);
-  const typstLocal = $derived(capabilityFor(local?.capabilities, "typst"));
+  const context = $derived({ format: sourceFormat, mayEdit, signedIn: Boolean(account.provider) });
   const available = $derived(offered(context));
   // The category shown: the one asked for, or the first offered when that is
   // not (the document changed format, or this browser lost the right to edit).
@@ -102,51 +86,26 @@
         {#if shown.id === "editor"}
           <EditorSettings {keys} {onkeys} {commands} />
         {:else if shown.id === "render"}
-          {#if canBuildCurrentFormat}
-            <h4 class="settings-group-title">Current document</h4>
-            <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
-            {#if row("render-folder")}<ProjectFolderSetting {sourceFormat} {main} {mayEdit} {onbindingid} />{/if}
-          {:else}
-            <SettingRow id="render-tool" title="Build tool" description="Build choices apply to LaTeX, Typst, Markdown, and Quarto documents.">
-              <span class="setting-description">No build tool applies to this document.</span>
-            </SettingRow>
-          {/if}
+          <LocalToolsSetting />
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4><span class="settings-scope">This browser</span></div>
-            {#if sourceFormat !== "latex"}<p class="setting-description render-section-note">Downloaded compiler files shared across documents.</p>{/if}
+            <BuildSettings format="latex" {userId} onpreferences={onbuildpreferences} />
             <LatexFilesSettings />
           </section>
 
           <section class="settings-subsection">
-            <div class="settings-section-title"><h4 class="settings-subhead">Typst</h4></div>
-            {#if sourceFormat !== "typst"}<p class="setting-description render-section-note">Browser build choices and local companion status.</p>{/if}
-            <SettingRow id="typst-status" title="Typst availability" description="Build Typst documents in this browser or with the Companion.">
-              {#if local?.state === "connected"}
-                <StatusPill label={typstLocal?.available ? `Local available${typstLocal.version ? ` · ${typstLocal.version}` : ""}` : "Local unavailable"} tone={typstLocal?.available ? "good" : "warn"} />
-              {:else}
-                <StatusPill label={({ unknown: "Not checked", unreachable: "Disconnected", denied: "Access denied", unauthorized: "Connect site", reachable: "Connect site", incompatible: "Update Companion" })[local?.state] || "Status unavailable"} tone={local?.state === "unreachable" || local?.state === "denied" || local?.state === "incompatible" ? "warn" : "neutral"} />
-              {/if}
-            </SettingRow>
-          </section>
-
-          <section class="settings-subsection">
-            <div class="settings-section-title"><h4 class="settings-subhead">Quarto</h4></div>
-            <IntegrationSettings name="quarto" />
-            <RenderingSettings options={buildPreferences} {onapplyoptions} scopeKey={`${documentId}\u0000${sourceFormat}`} disabled={!quartoOptionsRelevant} />
-            <SettingRow id="quarto-execution" title="Local code execution" description="Code runs on this computer with your user account's permissions.">
-              <span class="setting-description">Allow paired Quarto documents to run local code</span>
-              <button type="button" role="switch" class="switch local-execution-switch" aria-label="Allow paired Quarto documents to run local code" aria-checked={localExecution} data-state={localExecution ? "checked" : "unchecked"} disabled={!quartoExecutionRelevant} onclick={() => onlocalexecution?.(!localExecution)}>
-                <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
-              </button>
-            </SettingRow>
-            {#if !quartoExecutionRelevant}<p class="setting-description render-section-note">Local code execution can be changed from an editable Quarto document.</p>{/if}
-          </section>
-
-          <section class="settings-subsection">
-            <div class="settings-section-title"><h4 class="settings-subhead">Calepin</h4><span class="settings-scope">This computer</span></div>
-            {#if sourceFormat !== "typst"}<p class="setting-description render-section-note">Builds Typst documents through the local companion.</p>{/if}
+            <div class="settings-section-title"><h4 class="settings-subhead">Typst and Calepin</h4></div>
+            <BuildSettings format="typst" {userId} onpreferences={onbuildpreferences} />
             <IntegrationSettings name="calepin" />
+          </section>
+
+          <section class="settings-subsection">
+            <div class="settings-section-title"><h4 class="settings-subhead">Markdown and Quarto</h4></div>
+            <BuildSettings format="markdown" {userId} onpreferences={onbuildpreferences} />
+            <BuildSettings format="quarto" {userId} onpreferences={onbuildpreferences} />
+            <IntegrationSettings name="quarto" />
+            <RenderingSettings {userId} {onquartooptions} />
           </section>
         {:else if shown.id === "integrations"}
           <section class="settings-subsection">
@@ -166,7 +125,3 @@
     </div>
   </div>
 </Modal>
-
-<style>
-  .render-section-note { margin-block: calc(var(--spacing) * 3); }
-</style>

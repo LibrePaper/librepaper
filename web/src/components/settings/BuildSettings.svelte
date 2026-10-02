@@ -1,129 +1,75 @@
 <script>
+  // Which renderer builds every document of one format in this browser. The
+  // choice is global: it is read for the format, not for the document open.
   import SettingRow from "./SettingRow.svelte";
-  import StatusPill from "./StatusPill.svelte";
   import * as localBridge from "../../lib/companion/client.js";
-  import { companion } from "../../lib/companion/status.svelte.js";
-  import { buildersFor, capabilityFor, supportsOperation } from "../../lib/build-catalog.js";
-  import { update } from "../../lib/build-preferences.js";
+  import { read, update } from "../../lib/build-preferences.js";
 
-  let { format = "", documentId = "", userId = "anonymous", preferences = {}, onpreferences } = $props();
-  const local = $derived(companion.status);
-  $effect(() => companion.watch());
-  const builders = $derived(buildersFor(format));
-  const localBuilders = $derived(builders.filter((entry) => entry.backend.includes("local")));
-  // This pane is not itself a question about the companion. Most of what it
-  // offers -- which browser engine, which output -- needs nothing local, and
-  // opening it to choose pdfLaTeX must not make the browser ask this person
-  // to allow the site "access to other apps and services". So it does not
-  // probe when it mounts. Choosing a local tool does (`chooseOption`), and so
-  // do the buttons below; until then the local rows say only that nobody has
-  // looked yet.
-  const browserBuilders = $derived(builders.filter((entry) => entry.backend.includes("browser")));
-  const selected = $derived(preferences.selection === "tool" ? (preferences.tool === "tex" && preferences.engine ? `${preferences.backend || "browser"}:tex:${preferences.engine}` : optionValue(preferences.backend || "browser", preferences.tool || "")) : "automatic");
+  let { format, userId = "anonymous", onpreferences } = $props();
 
-  function scope() { return { origin: globalThis.location?.origin || "", user: userId, document: documentId }; }
-  function chooseOutput(output) {
-    onpreferences?.(update(scope(), format, { output }));
+  const browser = (tool) => ({ selection: "tool", backend: "browser", tool });
+  const local = (tool) => ({ selection: "tool", backend: "local", tool });
+  // The browser compiler ships pdfTeX and XeTeX only, so those are the
+  // engines; the first choice of each row is what an untouched preference means.
+  const ROWS = {
+    latex: {
+      id: "render-latex-engine", title: "Engine", label: "LaTeX engine",
+      description: "Automatic follows a % !TEX program line, then the packages the document loads.",
+      choices: [
+        { value: "automatic", says: "Automatic", patch: { selection: "automatic" } },
+        { value: "pdflatex", says: "pdfLaTeX", patch: { ...browser("tex"), engine: "pdflatex" } },
+        { value: "xelatex", says: "XeLaTeX", patch: { ...browser("tex"), engine: "xelatex" } },
+      ],
+      chosen: (preference) => preference.selection === "tool" && ["pdflatex", "xelatex"].includes(preference.engine) ? preference.engine : "automatic",
+    },
+    typst: {
+      id: "render-typst-tool", title: "Render with", label: "Typst renderer",
+      description: "Calepin runs on this computer once local code execution is on for the document.",
+      choices: [
+        { value: "browser", says: "Browser", patch: browser("typst") },
+        { value: "calepin", says: "Calepin (local)", patch: local("calepin") },
+      ],
+      chosen: (preference) => preference.backend === "local" && preference.tool === "calepin" ? "calepin" : "browser",
+    },
+    markdown: {
+      id: "render-markdown-tool", title: "Markdown files", label: "Markdown renderer",
+      description: "Pandoc and Quarto run on this computer through the companion.",
+      choices: [
+        { value: "browser", says: "Browser", patch: browser("markdown") },
+        { value: "pandoc", says: "Pandoc (local)", patch: local("pandoc") },
+        { value: "quarto", says: "Quarto (local)", patch: local("quarto") },
+      ],
+      chosen: (preference) => preference.backend === "local" && ["pandoc", "quarto"].includes(preference.tool) ? preference.tool : "browser",
+    },
+    quarto: {
+      id: "render-quarto-tool", title: "Quarto files", label: "Quarto renderer",
+      description: "Quarto runs on this computer once local code execution is on for the document.",
+      choices: [
+        { value: "browser", says: "Browser", patch: browser("markdown") },
+        { value: "quarto", says: "Quarto (local)", patch: local("quarto") },
+      ],
+      chosen: (preference) => preference.backend === "local" && preference.tool === "quarto" ? "quarto" : "browser",
+    },
+  };
+
+  const row = $derived(ROWS[format]);
+  const scope = () => ({ origin: globalThis.location?.origin || "", user: userId });
+  let preference = $state({});
+  $effect.pre(() => { preference = read(scope(), format); });
+
+  function choose(value) {
+    const choice = row.choices.find((each) => each.value === value);
+    preference = update(scope(), format, choice.patch);
+    onpreferences?.(format, preference);
+    // Choosing a local tool is the gesture that may reach the companion, so
+    // the Local tools row can then say whether that tool is there.
+    if (choice.patch.backend === "local") void localBridge.probe({ force: true });
   }
-  // "unknown" is nobody having asked yet, not a tool having been found
-  // missing. Offering the local rows then is what lets choosing one be the
-  // gesture that looks -- greying them out before the question has been put
-  // would make the pane impossible to get out of without a probe it is not
-  // entitled to make.
-  function disabled(entry) {
-    if (!entry.backend.includes("local")) return false;
-    if (local?.state === "unknown") return false;
-    const capability = capabilityFor(local?.capabilities, entry.id);
-    return capability?.available !== true || !supportsOperation(local?.capabilities, entry.id, "build", "snapshot");
-  }
-  function disabledOutput(output) {
-    if (preferences.backend !== "local") return format === "markdown" || format === "quarto" ? output !== "html" : false;
-    if (local?.state !== "connected") return true;
-    const capability = capabilityFor(local?.capabilities, preferences.tool);
-    return !capability || !Array.isArray(capability.outputs) || !capability.outputs.includes(output);
-  }
-  const statusLabel = $derived(({ unknown: "Not checked", unreachable: "Disconnected", denied: "Access blocked", reachable: "Needs approval", unauthorized: "Needs approval", incompatible: "Update needed", connected: "Connected" })[local?.state] || "Not checked");
-  const statusTone = $derived(({ denied: "error", unauthorized: "warn", incompatible: "warn", reachable: "warn", connected: "good" })[local?.state] || "neutral");
-  const statusMessage = $derived(local?.state === "denied" || local?.state === "unreachable" ? local.instructions : ({ unknown: "Choose a local tool to check availability.", reachable: "Connect this site to use local tools.", unauthorized: "Reconnect this site to use local tools.", incompatible: "Update the companion to use local tools.", connected: "" })[local?.state] || "");
-  function version(entry) { return capabilityFor(local?.capabilities, entry.id)?.version; }
-  function engineLabel(engine) { return engine === "pdflatex" ? "pdfLaTeX" : engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"; }
-  const savedMissing = $derived(preferences.selection === "tool" && preferences.tool && !builders.some((entry) => entry.id === preferences.tool) ? preferences.tool : "");
-  // What the chosen builder can produce. A local tool answers for itself; in
-  // the browser only Typst offers the paged output beside the flow one.
-  function supportedOutputs(backend, tool) {
-    if (backend === "local") return capabilityFor(local?.capabilities, tool)?.outputs || [];
-    return format === "typst" ? ["pdf", "html"] : ["html"];
-  }
-  const outputChoices = $derived.by(() => {
-    const supported = supportedOutputs(preferences.backend, preferences.tool);
-    // Keep the output row useful before a local tool has reported its
-    // capabilities. The format defines the safe choices; a selected local
-    // builder can still mark unavailable choices as disabled below.
-    const choices = [...(supported.length ? supported : (format === "typst" ? ["html", "pdf"] : ["html"]))];
-    if (preferences.output && !choices.includes(preferences.output)) choices.unshift(preferences.output);
-    return choices;
-  });
-  function optionValue(backend, id) { return `${backend}:${id}`; }
-  function chooseOption(value) {
-    if (value === "automatic") {
-      onpreferences?.(update(scope(), format, { selection: "automatic", backend: "auto" }));
-      return;
-    }
-    const [backend, id, ...rest] = value.split(":");
-    const engine = id === "tex" ? rest[0] : "";
-    const tool = id;
-    // HTML is every format's default output, so a tool starts on HTML unless
-    // it is one that cannot produce a flow page at all.
-    const outputs = supportedOutputs(backend, tool);
-    const output = !outputs.length || outputs.includes("html") ? "html" : outputs[0];
-    const next = update(scope(), format, { selection: "tool", backend, tool, output, ...(engine ? { engine } : {}) });
-    onpreferences?.(next);
-    // Asking for a tool on this computer is asking for the local app: this is
-    // the moment the pane may reach loopback, and the capabilities that come
-    // back fill in the version and the outputs this tool really has.
-    if (backend === "local") void localBridge.probe({ force: true });
-  }
-  async function rescan() { try { await localBridge.capabilities({ rescan: true }); } catch { /* status explains failure */ } }
-  async function connect() { try { await localBridge.connectApp(); } catch { /* local status carries instructions */ } }
 </script>
 
-<SettingRow id="render-tool" title={format === "latex" ? "Compiler" : "Build tool"} scope="This browser" description="Choose the tool for this document’s builds.">
-  <select class="select setting-select" aria-label={format === "latex" ? "Compiler" : "Build tool"} value={selected}
-          onchange={(event) => {
-            chooseOption(event.currentTarget.value);
-          }}>
-    <option value="automatic">Automatic</option>
-    {#if browserBuilders.length}<optgroup label="Browser">
-      {#each browserBuilders as entry (entry.id)}
-        {#if entry.engines.length}
-          {#each entry.engines as engine}<option value={`browser:${entry.id}:${engine}`}>{engineLabel(engine)}</option>{/each}
-        {:else}<option value={optionValue("browser", entry.id)}>{entry.label}</option>{/if}
-      {/each}
-    </optgroup>{/if}
-    {#if localBuilders.length}<optgroup label="Local companion">
-      {#each localBuilders as entry (entry.id)}
-        <option value={optionValue("local", entry.id)} disabled={disabled(entry)}>{entry.label}{version(entry) ? ` (${version(entry)})` : ""}{disabled(entry) ? (local?.state === "connected" ? " (unavailable)" : " (connect companion)") : ""}</option>
-      {/each}
-    </optgroup>{/if}
-    {#if savedMissing}<option value={`local:${savedMissing}`} disabled>{savedMissing} (unavailable)</option>{/if}
+<SettingRow id={row.id} title={row.title} description={row.description}>
+  <select class="select setting-select" aria-label={row.label} value={row.chosen(preference)}
+          onchange={(event) => choose(event.currentTarget.value)}>
+    {#each row.choices as choice (choice.value)}<option value={choice.value}>{choice.says}</option>{/each}
   </select>
 </SettingRow>
-
-<!-- LaTeX has no local builder to configure, and nothing else about it is
-     local either, so this pane says nothing about the companion for it. -->
-{#if format !== "latex"}<SettingRow title="Local tools" scope="This computer" description={statusMessage}>
-  <StatusPill label={statusLabel} tone={statusTone} />
-  <!-- Nothing here can open the companion; the status line says how to start
-       it. Before anybody has looked, the only thing to offer is the looking. -->
-  {#if ["unreachable", "denied", "unauthorized", "reachable"].includes(local?.state)}<button type="button" class="btn btn-sm lp-control-brand" onclick={connect}>Connect</button>{/if}
-  {#if local?.state !== "connected"}<a class="btn btn-sm lp-control-outline" href="https://librepaper.org/install.html" target="_blank" rel="noreferrer">Install companion</a>{/if}
-  <button type="button" class="btn btn-sm lp-control-outline" disabled={local?.state !== "connected"} onclick={rescan}>Rescan</button>
-</SettingRow>{/if}
-
-{#if ["typst", "quarto", "markdown"].includes(format)}
-  <SettingRow id="render-output" title="Output" scope="This browser" description="Preview and export format.">
-    <select class="select setting-select" aria-label="Build output" value={preferences.output || "html"} disabled={preferences.backend === "local" && outputChoices.every(disabledOutput)} onchange={(event) => chooseOutput(event.currentTarget.value)}>
-      {#each outputChoices as output}<option value={output} disabled={disabledOutput(output)}>{output.toUpperCase()}</option>{/each}
-    </select>
-  </SettingRow>
-{/if}

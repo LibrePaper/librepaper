@@ -1,14 +1,12 @@
 <script>
-  // Two things Quarto may take when it builds a project here: a profile and
-  // parameters. Both are optional, both are kept with this document's build
-  // preferences in this browser only, which is where options comes from. A
-  // project that declares neither needs nothing here. There is no format
-  // choice: the live preview is always the page Quarto renders, in whatever
-  // format the document's front matter says.
+  // The profile and parameters every Quarto build in this browser takes.
+  // Both are optional; a project that declares neither needs nothing here.
+  import { untrack } from "svelte";
   import SettingRow from "./SettingRow.svelte";
   import { parseRenderOptions } from "../../lib/quarto-options.js";
+  import { readQuartoOptions } from "../../lib/build-preferences.js";
 
-  let { options, onapplyoptions, disabled = false, scopeKey = "" } = $props();
+  let { userId = "anonymous", onquartooptions } = $props();
 
   let draftProfile = $state("");
   let parametersText = $state("{}");
@@ -16,8 +14,7 @@
   let applyError = $state("");
   let applying = $state(false);
   let dirty = $state(false);
-  let observedOptions = null;
-  let observedScopeKey;
+  let applied = $state(false);
   let applyRequest = 0;
 
   function parametersOf(value) {
@@ -35,24 +32,11 @@
     applied = false;
   }
 
-  // Sync a newly loaded selection while the draft is still pristine. Once the
-  // person starts typing, a reload must not erase what they typed.
-  $effect(() => {
-    const source = options;
-    if (source === observedOptions) return;
-    observedOptions = source;
-    if (!dirty) syncOptions(source);
-  });
-
-  // A parent echo of the options just saved is not a new request context.
-  // Only a document/format scope change cancels pending work and resets drafts.
-  $effect(() => {
-    const key = scopeKey;
-    if (key === observedScopeKey) return;
-    observedScopeKey = key;
-    applyRequest++;
-    applying = false;
-    syncOptions(options);
+  // Read when the page is drawn, and again for another person; a draft
+  // somebody is typing is not overwritten.
+  $effect.pre(() => {
+    const options = readQuartoOptions({ origin: globalThis.location?.origin || "", user: userId });
+    untrack(() => { if (!dirty) syncOptions(options); });
   });
 
   function parseDraft() {
@@ -84,10 +68,8 @@
     parseDraft();
   }
 
-  let applied = $state(false);
-
   async function apply() {
-    if (disabled || applying) return;
+    if (applying) return;
     const next = parseDraft();
     if (!next) return;
     applying = true;
@@ -95,7 +77,7 @@
     const request = ++applyRequest;
     applyError = "";
     try {
-      await onapplyoptions?.(next);
+      await onquartooptions?.(next);
       if (request === applyRequest) {
         syncOptions(next);
         applied = true;
@@ -107,13 +89,11 @@
     }
   }
 
-  const controlsDisabled = $derived(disabled || applying);
+  const controlsDisabled = $derived(applying);
 </script>
 
-{#if disabled}<p class="setting-description options-disabled">Profile and parameter values are kept for a Quarto build. They cannot affect the current document's preview.</p>{/if}
-
 <SettingRow id="rendering-profile" title="Profile" scope="This browser"
-            description="Optional Quarto profile for this document, such as draft for _quarto-draft.yml.">
+            description="Optional Quarto profile, such as draft for _quarto-draft.yml.">
   <input class="input setting-input" type="text" value={draftProfile} placeholder="None"
          aria-label="Quarto profile" autocomplete="off" spellcheck="false"
          oninput={(event) => { draftProfile = event.currentTarget.value; changed(); }} disabled={controlsDisabled} />
@@ -130,10 +110,6 @@
     <p id="rendering-parameters-error" class="setting-error" role="alert">{validationError || applyError}</p>
   {/if}
 </SettingRow>
-
-<style>
-  .options-disabled { margin-block: calc(var(--spacing) * 3); }
-</style>
 
 <SettingRow title="" description={dirty ? "The preview restarts after saving." : ""}>
   <div class="setting-actions">

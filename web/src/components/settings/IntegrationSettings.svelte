@@ -146,7 +146,7 @@
 
 {#if settingsError}<p class="setting-description integration-error" role="alert">{settingsError}</p>{/if}
 
-{#if name !== "zotero"}<SettingRow id={`${name}-status`} title="Status" description="" scope={name === "quarto" ? "This computer" : undefined}>
+{#if name !== "zotero"}<SettingRow id={`${name}-status`} title="Status" description="" scope="This computer">
   {#if !isConnected}
     <StatusPill label="Companion disconnected" tone="neutral" accessibleLabel={`Connect the local companion to configure ${name}.`} />
   {:else if name !== "zotero" && !settingsLoaded && !settingsError}

@@ -139,7 +139,7 @@ try {
   assert.doesNotMatch(disconnected.text, /curl|librepaper-installer/, "the settings page carries no install command of its own");
   assert.equal(disconnected.details, 0, "initial view has no collapsed details");
   assert.equal(disconnected.summaries, 0, "initial view has no disclosure summary");
-  assert.doesNotMatch(disconnected.text, /Build presets/);
+  assert.doesNotMatch(disconnected.text, /Build presets|Current document/);
   assert.equal(await b.evaluate("Boolean(document.querySelector('#local-startup'))"), true, "startup setting stays visible while disconnected");
   assert.equal(await b.evaluate("Boolean(document.querySelector('#local-startup [role=switch]:disabled'))"), true, "startup is unavailable until companion settings load");
   assert.equal(await b.evaluate("document.querySelector('#local-startup').innerText.includes('Unknown')"), true, "unloaded startup preference is visibly unknown");

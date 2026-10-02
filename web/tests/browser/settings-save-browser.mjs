@@ -22,14 +22,11 @@ import RenderingSettings from ${JSON.stringify(join(root, "web/src/components/se
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 let resolveSave, component;
-let mode = "echo";
-const initial = { profile: "", parameters: {} };
+let mode = "success";
 component = createClassComponent({ component: RenderingSettings, target: document.body, props: {
-  options: initial, scopeKey: "doc-a:quarto",
-  onapplyoptions: (next) => {
+  userId: "user",
+  onquartooptions: () => {
     if (mode === "failure") return Promise.reject(new Error("Save failed"));
-    if (mode === "scope") return new Promise((resolve) => { resolveSave = resolve; });
-    component.$set({ options: next });
     return new Promise((resolve) => { resolveSave = resolve; });
   },
 } });
@@ -43,10 +40,9 @@ window.settingsSaveCheck = async () => {
 
   edit('{"first": 1}'); await clickSave();
   if (text(save()) !== "Saving…") throw new Error("save did not enter Saving state");
-  await flush(); // let the parent echo its new options before resolving
   resolveSave(); await flush();
   if (!document.querySelector('.setting-feedback[role="status"]') || !text(document.querySelector('.setting-feedback')).includes("Saved"))
-    throw new Error("successful echoed options did not show Saved");
+    throw new Error("a successful save did not show Saved");
   if (field().disabled || text(save()) === "Saving…") throw new Error("successful save left controls pending");
   edit('{"first": 2}'); await flush();
   if (save().disabled) throw new Error("editing after save did not enable Save");
@@ -56,11 +52,6 @@ window.settingsSaveCheck = async () => {
   if (!document.querySelector('[role="alert"]') || document.querySelector('.setting-feedback[role="status"]'))
     throw new Error("failed save did not show only an error");
 
-  mode = "scope"; edit('{"first": 3}'); await clickSave();
-  component.$set({ scopeKey: "doc-b:quarto", options: initial }); await flush();
-  resolveSave(); await flush();
-  if (document.querySelector('.setting-feedback[role="status"]')) throw new Error("late save showed success in a new scope");
-  if (!save().disabled) throw new Error("scope change did not discard the old draft");
   component.$destroy();
   return true;
 };
@@ -97,7 +88,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("settings save component", () => tab.evaluate("Boolean(window.settingsSaveCheck)"));
   assert.equal(await tab.evaluate("window.settingsSaveCheck()"), true);
-  console.log("settings save: echo, failure, edit reset and scope cancellation");
+  console.log("settings save: saving, failure and edit reset");
 } finally {
   await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
 }

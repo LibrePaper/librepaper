@@ -1,4 +1,4 @@
-// Which tool builds this document, and with what.
+// Which tool builds documents of each format, and with what.
 //
 // Build selection is deliberately browser-local: the collaborative session
 // supplies source files and never this preference, so two people reading the
@@ -75,7 +75,7 @@ export function createBuildSettings({
   let previousUser = "";
   let observedSession = null;
 
-  const scope = (user) => ({ origin, user, document: slug });
+  const scope = (user) => ({ origin, user });
 
   const engineSettings = (preference) => ({
     ...preference,

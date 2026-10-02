@@ -71,7 +71,8 @@
   import Grip from "./Grip.svelte";
   import { parseRenderOptions } from "../lib/quarto-options.js";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
-  import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
+  import ProjectFolderSetting from "./settings/ProjectFolderSetting.svelte";
+  import { anonymousIdentity, read as readBuildPreferences, update as updateBuildPreferences, writeQuartoOptions } from "../lib/build-preferences.js";
   import LatexStatus from "./LatexStatus.svelte";
   import PreviewStatus from "./PreviewStatus.svelte";
   import Avatar from "./Avatar.svelte";
@@ -406,6 +407,25 @@
     navigationGeneration += 1;
     if (typstOutput === "html") await calepinPreviewController.stop();
     void paintPreview();
+  }
+
+  // Markdown and Quarto share one output choice, made for the visit like the
+  // others. Pages need a local tool; the preview says so when none is chosen.
+  async function setMarkdownOutput(format) {
+    const next = format === "html" ? "html" : "pdf";
+    if (markdownOutput === next) return;
+    setBuildPreferences(updateBuildPreferences(buildScope(), sourceFormat, { output: next }));
+    navigationGeneration += 1;
+    renderers.cancelPreview({ keepWarm: true });
+    framePreview?.clear();
+    deliveredKind = "";
+    everPainted = false;
+    everPaintedShown = false;
+    renderStatus.resetFailure();
+    clearTimeout(previewTimer);
+    previewTimer = null;
+    await tick();
+    if (!readerDisposed) void paintPreview();
   }
 
   function quartoTargetFormat(tree = treeNow()) {
@@ -1721,14 +1741,17 @@
     });
   });
 
-  // The profile and parameters, applied from Settings: kept for this
-  // document, and the live preview -- which reads them only as it starts --
-  // restarted so the page shows the new ones rather than the old until the
-  // next reconnect. A preview still starting reads the options after its
+  // The profile and parameters, applied from Settings: kept for every Quarto
+  // build in this browser, and the live preview -- which reads them only as
+  // it starts -- restarted so the page shows the new ones rather than the
+  // old until the next reconnect. A preview still starting reads the options after its
   // workspace sync, so it picks them up on its own.
   async function applyRenderOptions(next) {
     const options = parseRenderOptions({ ...next, format: "default" });
-    setBuildPreferences(updateBuildPreferences(buildScope(), sourceFormat, { profile: options.profile || null, parameters: options.parameters || {} }));
+    writeQuartoOptions(buildScope(), { profile: options.profile || null, parameters: options.parameters || {} });
+    if (sourceFormat === "markdown" || sourceFormat === "quarto") {
+      setBuildPreferences(readBuildPreferences(buildScope(), sourceFormat));
+    }
     if (!quartoLiveActive) return;
     await quartoPreviewController.stop();
     if (quartoLiveActive) await quartoPreviewController.start();
@@ -2128,6 +2151,7 @@
   const buildPreferences = $derived(buildSettings.state.preferences);
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
+  const markdownOutput = $derived(buildPreferences.output === "pdf" ? "pdf" : "html");
   const quartoPreviewMode = $derived(buildSettings.state.quartoPreviewMode);
   const typstPreviewMode = $derived(buildSettings.state.typstPreviewMode);
   const buildScope = () => buildSettings.scopeFor(buildUserId);
@@ -2604,6 +2628,7 @@
   // point opens the same dialog on the category it is about.
   let settingsOpen = $state(false);
   let settingsCategory = $state("editor");
+  let projectFolderOpen = $state(false);
   function openSettings(category = "editor") {
     // The editor category carries the shortcut table, and the table greys what
     // the source cannot currently do, so the editor is asked before the page
@@ -2854,10 +2879,12 @@
     if (value === "format-pdf") {
       if (displayedFormat === "latex") return void setLatexOutput("pdf");
       if (displayedFormat === "typst") return void setTypstOutput("pdf");
+      if (["markdown", "quarto"].includes(displayedFormat)) return void setMarkdownOutput("pdf");
     }
     if (value === "format-html") {
       if (displayedFormat === "latex") return void setLatexOutput("html");
       if (displayedFormat === "typst") return void setTypstOutput("html");
+      if (["markdown", "quarto"].includes(displayedFormat)) return void setMarkdownOutput("html");
     }
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
     if (value === "preview-latex-html") return void setLatexOutput("html");
@@ -2875,9 +2902,10 @@
   // The Files panel is mounted on its first visit and draws the name field it
   // focuses, so the panel is opened and the DOM given a turn before the panel
   // is asked.
-  const FILE_COMMANDS = ["new-file", "new-folder", "upload", "offline", "download-pdf", "download-html", "download-docx", "download", "share", "history", "compile", "settings"];
+  const FILE_COMMANDS = ["new-file", "new-folder", "upload", "offline", "download-pdf", "download-html", "download-docx", "download", "share", "history", "compile", "project-folder", "settings"];
   async function chooseFileCommand(value) {
     if (value === "settings") return openSettings("editor");
+    if (value === "project-folder") return void (projectFolderOpen = true);
     if (value === "compile") return compileNow();
     if (value === "offline") return makeAvailableOffline();
     if (value === "download") return downloadTree();
@@ -3706,6 +3734,9 @@
   {#if mayEdit && sourceFormat === "latex" && compilesHere}
     <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">Compile now</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
   {/if}
+  {#if mayEdit && ["typst", "markdown", "quarto"].includes(sourceFormat)}
+    <Menu.Item value="project-folder" class="menuitem">Project folder…</Menu.Item>
+  {/if}
   <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">Settings…</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
 {/snippet}
 
@@ -3733,8 +3764,8 @@
 {/snippet}
 
 {#snippet previewItems()}
-  {@const selectedFormat = displayedFormat === "latex" ? latexOutput : displayedFormat === "typst" ? typstOutput : displayedFormat === "quarto" ? (quartoTargetFormat() === "pdf" ? "pdf" : "html") : "html"}
-  {@const selectableFormat = ["latex", "typst"].includes(displayedFormat)}
+  {@const selectedFormat = displayedFormat === "latex" ? latexOutput : displayedFormat === "typst" ? typstOutput : ["markdown", "quarto"].includes(displayedFormat) ? markdownOutput : "html"}
+  {@const selectableFormat = ["latex", "typst", "markdown", "quarto"].includes(displayedFormat)}
   <div class="menu-section-label">Format</div>
   <Menu.Item value="format-html" class="menuitem" disabled={!selectableFormat}>
     <span class="menuitem-check">{selectedFormat === "html" ? "✓" : ""}</span>HTML
@@ -4287,11 +4318,14 @@
                 {sourceFormat} {mayEdit}
                 remoteConnected={connected} remoteNote={connectionNote}
                 {keys} onkeys={setKeys} commands={commandContext}
-                buildPreferences={buildPreferences} documentId={SLUG} userId={buildUserId} onbuildpreferences={setBuildPreferences}
-                main={previewMain} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
-                {localExecution} onlocalexecution={toggleLocalExecution}
-                onapplyoptions={applyRenderOptions}
+                userId={buildUserId}
+                onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
+                onquartooptions={applyRenderOptions}
                 account={me} />
+
+<Modal bind:open={projectFolderOpen} title="Project folder">
+  <ProjectFolderSetting {sourceFormat} main={previewMain} {mayEdit} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }} />
+</Modal>
 
 <Modal bind:open={localExecutionConsent} title="Run this document's code on this computer?"
   description="{LOCAL_EXECUTION_WARNING} Only turn this on for a document whose authors you trust."

@@ -6,7 +6,6 @@ const registryText = await read("registry.js");
 const { offered, search, CATEGORIES } = await import("../../src/components/settings/registry.js");
 const build = await read("BuildSettings.svelte");
 const dialog = await read("SettingsDialog.svelte");
-const folder = await read("ProjectFolderSetting.svelte");
 const latexFiles = await read("LatexFilesSettings.svelte");
 const integration = await read("IntegrationSettings.svelte");
 const rendering = await read("RenderingSettings.svelte");
@@ -31,41 +30,44 @@ const render = CATEGORIES.find((category) => category.id === "render");
 const renderRows = (context) => render.entries.filter((entry) => !entry.offered || entry.offered(context)).map((entry) => entry.id);
 for (const format of ["latex", "typst", "markdown", "quarto", "html"]) {
   const rows = renderRows({ format, mayEdit: false });
+  assert.ok(rows.includes("render-local"), `${format} keeps local tools status visible`);
+  assert.ok(rows.includes("render-latex-engine"), `${format} keeps LaTeX engine selection visible`);
   assert.ok(rows.includes("render-latex-files"), `${format} keeps browser-wide LaTeX cache controls visible`);
-  assert.ok(rows.includes("typst-status"), `${format} keeps Typst status visible`);
+  assert.ok(rows.includes("render-typst-tool"), `${format} keeps Typst tool selection visible`);
   assert.ok(rows.includes("quarto-executable") && rows.includes("calepin-executable"), `${format} keeps both local integration sections visible`);
 }
-for (const format of ["typst", "markdown", "quarto"]) {
-  const rows = renderRows({ format, mayEdit: false });
-  assert.ok(rows.includes("render-folder") && rows.includes("render-output"), `${format} offers its applicable folder and output controls`);
-}
 assert.ok(!renderRows({ format: "latex", mayEdit: false }).includes("render-folder"));
-assert.ok(!renderRows({ format: "html", mayEdit: false }).includes("render-output"));
+assert.ok(!renderRows({ format: "latex", mayEdit: false }).includes("render-output"));
 
-// The dialog owns the fixed four-section layout, including for HTML and
-// read-only documents. Quarto preferences stay visible but become disabled
-// outside Quarto or Markdown using Quarto.
-for (const name of ["LaTeX", "Typst", "Quarto", "Calepin"]) {
+// The dialog shows a fixed layout with sections for LaTeX, Typst and Calepin,
+// and Markdown and Quarto. All sections stay visible regardless of the current
+// document format.
+for (const name of ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]) {
   assert.ok(dialog.includes(`<h4 class="settings-subhead">${name}</h4>`), `Render always includes ${name}`);
 }
-assert.match(dialog, /<RenderingSettings options=\{buildPreferences\} \{onapplyoptions\} scopeKey=\{`\$\{documentId\}\\u0000\$\{sourceFormat\}`\} disabled=\{!quartoOptionsRelevant\} \/>/);
-assert.match(dialog, /<h4 class="settings-group-title">Current document<\/h4>/);
+assert.match(dialog, /<RenderingSettings \{userId\} \{onquartooptions\} \/>/);
+assert.doesNotMatch(dialog, /h4 class="settings-group-title">/);
 assert.match(dialog, /<span class="settings-scope">This browser<\/span>/);
-assert.match(dialog, /<span class="settings-scope">This computer<\/span>/);
-assert.match(dialog, /const quartoOptionsRelevant = \$derived\(sourceFormat === "quarto" \|\| \(sourceFormat === "markdown" && buildPreferences\.tool === "quarto"\)\);/);
+assert.doesNotMatch(dialog, /quartoOptionsRelevant/);
 assert.match(rendering, /disabled=\{controlsDisabled\}/);
-assert.match(dialog, /disabled=\{!quartoExecutionRelevant\}/);
+assert.doesNotMatch(dialog, /quartoExecutionRelevant/);
 assert.match(latexFiles, /id="render-latex-files"/);
-assert.match(folder, /id="render-folder"/);
-assert.match(folder, /disabled=\{!canChoose\}/);
-assert.doesNotMatch(folder, /localBridge\.probe/);
+assert.doesNotMatch(dialog, /render-folder/);
 
-// Local build choices do not probe on mount, browser choices stay available,
-// and stale local capabilities cannot enable outputs after disconnect.
-assert.doesNotMatch(build, /\$effect\([^)]*localBridge\.probe/);
-assert.match(build, /if \(backend === "local"\) void localBridge\.probe\(\{ force: true \}\);/);
-assert.match(build, /if \(local\?\.state !== "connected"\) return true;/);
-assert.match(build, /disabled=\{preferences\.backend === "local" && outputChoices\.every\(disabledOutput\)\}/);
+// Build settings are global and do not probe on mount. Selecting a local tool
+// does probe. LaTeX engine, Typst tool, Markdown tool, and Quarto tool
+// selections all present the correct options.
+assert.doesNotMatch(build, /\$effect\([^)]*probe/);
+assert.match(build, /void localBridge\.probe\(\{ force: true \}\)/);
+assert.match(build, /id: "render-latex-engine"/);
+assert.deepEqual([...build.matchAll(/value: "(\w+)", says/g)].map((match) => match[1]), [
+  "automatic", "pdflatex", "xelatex",
+  "browser", "calepin",
+  "browser", "pandoc", "quarto",
+  "browser", "quarto",
+]);
+assert.doesNotMatch(build, /lualatex/i);
+for (const format of ["latex", "typst", "markdown", "quarto"]) assert.match(dialog, new RegExp(`<BuildSettings format="${format}"`));
 
 // Integration command fields stay rendered; the companion and fresh settings
 // are required before edits apply, and responses are scoped to the connection.

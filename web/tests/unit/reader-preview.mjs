@@ -121,3 +121,9 @@ assert.match(frameSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*
 // clears the old payload/export and paints an explicit empty state.
 assert.match(previewSource, /if \(!String\(source\.texts\?\.\[source\.main\] \?\? ""\)\.trim\(\)\) \{/);
 assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);
+// Project folder setting is shown in the File menu for typst, markdown, and quarto.
+assert.match(readerSource, /\{#if mayEdit && \["typst", "markdown", "quarto"\]\.includes\(sourceFormat\)\}[\s\S]*?<Menu\.Item value="project-folder"[\s\S]*?Project folder/);
+// HTML/PDF output format choice for markdown and quarto in View menu.
+assert.match(readerSource, /\{@const selectableFormat = \["latex", "typst", "markdown", "quarto"\]\.includes\(displayedFormat\)\}/);
+assert.match(readerSource, /async function setMarkdownOutput\(format\)/);
+

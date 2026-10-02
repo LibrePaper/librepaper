@@ -1,5 +1,7 @@
-// Per-browser build preferences. These values never enter collaborative state.
-const PREFIX = "librepaper-build-v2";
+// Per-browser build preferences: one per format for each person in this
+// browser, shared by every document of that format. These values never enter
+// collaborative state.
+const PREFIX = "librepaper-build-v3";
 const ANONYMOUS_KEY = `${PREFIX}:anonymous-id`;
 let anonymousId;
 
@@ -16,15 +18,15 @@ export function anonymousIdentity() {
     return (anonymousId = value);
   } catch { return (anonymousId = "anonymous"); }
 }
-function key({ origin = globalThis.location?.origin || "", user = "anonymous", document = "" } = {}) {
-  return `${PREFIX}:${JSON.stringify([String(origin), String(user || "anonymous"), String(document)])}`;
+function key({ origin = globalThis.location?.origin || "", user = "anonymous" } = {}, what = "") {
+  return `${PREFIX}:${JSON.stringify([String(origin), String(user || "anonymous"), String(what)])}`;
 }
 
 /// HTML for every format. A preview is read on a screen, and a flow page
 /// reflows to the pane it is read in, arrives faster than a paged compile, and
 /// is what the annotation layer can place a highlight in. A paged PDF is what
 /// LaTeX and Typst are ultimately for, so it stays one choice away in the
-/// build settings -- but it is a choice, not the starting point.
+/// View menu -- but it is a choice, not the starting point.
 export function defaults(format = "") { return { ...DEFAULTS, format, output: "html" }; }
 
 /// And the starting point is where every visit starts. Unlike the tool and the
@@ -35,10 +37,37 @@ export function defaults(format = "") { return { ...DEFAULTS, format, output: "h
 /// read back -- opening a project is always opening it on HTML, and PDF lasts
 /// as long as the visit that asked for it.
 
+// The Quarto profile and parameters. Markdown rendered by Quarto takes the
+// same ones as a Quarto document, so they are kept once, beside the formats.
+const QUARTO_OPTIONS = "quarto-options";
+const takesQuartoOptions = (format) => format === "markdown" || format === "quarto";
+
+export function readQuartoOptions(scope) {
+  try {
+    const value = JSON.parse(storage()?.getItem(key(scope, QUARTO_OPTIONS)) || "null");
+    if (value && typeof value === "object") return { profile: value.profile || null, parameters: value.parameters || {} };
+  } catch { /* unreadable: the defaults */ }
+  return { profile: null, parameters: {} };
+}
+
+export function writeQuartoOptions(scope, { profile, parameters } = {}) {
+  const value = { profile: profile || null, parameters: parameters || {} };
+  try { storage()?.setItem(key(scope, QUARTO_OPTIONS), JSON.stringify(value)); } catch { /* private mode/quota */ }
+  return value;
+}
+
+function withQuartoOptions(scope, format, preference) {
+  return takesQuartoOptions(format) ? { ...preference, ...readQuartoOptions(scope) } : preference;
+}
+
 export function read(scope, format = "") {
+  return withQuartoOptions(scope, format, stored(scope, format));
+}
+
+function stored(scope, format) {
   const fallback = defaults(format);
   try {
-    const raw = storage()?.getItem(key(scope));
+    const raw = storage()?.getItem(key(scope, format));
     if (!raw) return fallback;
     const value = JSON.parse(raw);
     if (!value || typeof value !== "object") return fallback;
@@ -53,20 +82,25 @@ export function read(scope, format = "") {
       result.backend = result.backend === "local" ? "browser" : result.backend;
       if (result.tool !== "tex") { result.tool = "tex"; }
     }
+    // Nor has Typst: the local choice is Calepin.
+    if (format === "typst" && result.backend === "local" && result.tool === "typst") result.backend = "browser";
     return result;
   } catch { return fallback; }
 }
 
-export function write(scope, next) {
+function write(scope, format, next) {
   const value = { ...next };
   delete value.user;
   // The output is the visit's, not the browser's: what is stored leaves it
   // out, and what is handed back keeps it, because the caller is about to
-  // render with the choice that was just made.
-  const stored = { ...value };
-  delete stored.output;
-  try { storage()?.setItem(key(scope), JSON.stringify(stored)); } catch { /* private mode/quota */ }
-  return value;
+  // render with the choice that was just made. The Quarto options have their
+  // own record.
+  const kept = { ...value };
+  delete kept.output;
+  delete kept.profile;
+  delete kept.parameters;
+  try { storage()?.setItem(key(scope, format), JSON.stringify(kept)); } catch { /* private mode/quota */ }
+  return withQuartoOptions(scope, format, value);
 }
 
 export function update(scope, format, patch) {
@@ -78,7 +112,5 @@ export function update(scope, format, patch) {
     delete next.engine;
     next.backend = "auto";
   }
-  return write(scope, next);
+  return write(scope, format, next);
 }
-
-export function storageKey(scope) { return key(scope); }
