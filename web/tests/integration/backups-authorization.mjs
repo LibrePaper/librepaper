@@ -9,9 +9,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { createServer } from "node:net";
 import { deploymentBinary, startDeployment } from "../helpers/deployment.mjs";
 
@@ -33,9 +33,9 @@ const stateHome = join(temporary, "state");
 const origin = deployment.base;
 const pairingToken = "integration-browser-pairing-token";
 const accountId = deployment.accountId;
+const backupDestination = join(temporary, "backup-destination");
 const env = {
   ...process.env,
-  HOME: temporary,
   XDG_STATE_HOME: stateHome,
   XDG_CACHE_HOME: join(temporary, "cache"),
   XDG_CONFIG_HOME: join(temporary, "config"),
@@ -53,8 +53,8 @@ await new Promise((done, fail) => listener.close((error) => error ? fail(error) 
 
 const cli = (...args) => exec(binary, ["local", ...args], { env, timeout: 20000 });
 const localBase = `http://127.0.0.1:${port}/librepaper/local`;
-const api = (path, body, token = pairingToken) => fetch(`${localBase}${path}`, {
-  method: "POST",
+const api = (path, body, token = pairingToken, method = "POST") => fetch(`${localBase}${path}`, {
+  method,
   headers: {
     Origin: origin,
     Authorization: `Bearer ${token}`,
@@ -65,10 +65,17 @@ const api = (path, body, token = pairingToken) => fetch(`${localBase}${path}`, {
 
 let companionStarted = false;
 try {
+  const project = await deployment.publish({
+    title: "Authorization Backup Project",
+    source: "# Authorization Backup Project\n\nThis project must appear in the real backup archive.\n",
+    source_format: "markdown",
+  });
+
   // Pairing state mirrors the companion's persisted format. It contains only
   // a hash of this test token, just like a consented browser pairing.
   const localState = join(stateHome, "librepaper", "local");
   await mkdir(localState, { recursive: true });
+  await mkdir(backupDestination, { recursive: true });
   await writeFile(join(localState, "pairings.json"), JSON.stringify({
     [origin]: {
       token_sha256: createHash("sha256").update(pairingToken).digest("hex"),
@@ -78,11 +85,30 @@ try {
       label: "backup authorization integration",
     },
   }), { mode: 0o600 });
+  // The native folder chooser cannot be driven in this headless test. Seed
+  // the same persisted setting the chooser creates, disabled until the new
+  // device credential has been approved.
+  await writeFile(join(localState, "backups.json"), JSON.stringify([{
+    origin,
+    account_id: accountId,
+    enabled: false,
+    frequency_minutes: 5,
+    destination: backupDestination,
+    last_attempt: null,
+    last_success: null,
+    error: null,
+    projects: 0,
+    updated: 0,
+    run_generation: 0,
+    revision: 0,
+  }]), { mode: 0o600 });
 
   await cli("start", "--port", String(port));
   companionStarted = true;
   const health = await fetch(`${localBase}/health`);
   assert.equal(health.status, 200, "the isolated companion is running");
+  assert.equal(existsSync(join(stateHome, "librepaper", "tokens.json")), false,
+    "the companion starts without a cached CLI token");
 
   const unauthenticated = await api("/backups/authorize", { account_id: accountId }, "");
   assert.equal(unauthenticated.status, 401, "starting authorization requires the paired browser token");
@@ -100,11 +126,23 @@ try {
 
   const approved = await fetch(`${origin}/api/auth/device/approve`, {
     method: "POST",
-    headers: { Cookie: deployment.cookie, Origin: origin, "Content-Type": "application/json" },
+    headers: {
+      Cookie: deployment.cookie,
+      Origin: origin,
+      "Content-Type": "application/json",
+      "X-LibrePaper-Client": "shell",
+    },
     body: JSON.stringify({ user_code: request.user_code }),
   });
   assert.equal(approved.status, 200, `signed-in approval: ${await approved.clone().text()}`);
   assert.deepEqual(await approved.json(), { approved: true });
+
+  const otherAccountId = "00000000-0000-7000-8000-000000000001";
+  const mismatched = await api("/backups/authorize/complete", {
+    account_id: otherAccountId,
+    authorization_id: request.authorization_id,
+  });
+  assert.equal(mismatched.status, 400, "an authorization cannot be completed for a different account");
 
   const completed = await api("/backups/authorize/complete", {
     account_id: accountId,
@@ -113,6 +151,26 @@ try {
   assert.equal(completed.status, 200, `authorization completion: ${await completed.clone().text()}`);
   const status = await completed.json();
   assert.equal(status.needs_login, false, "the approved device grant is stored for this account");
+  assert.ok(!JSON.stringify(status).includes("token"), "completion returns status, never the device token");
+  const tokenPath = join(stateHome, "librepaper", "tokens.json");
+  const tokens = JSON.parse(await readFile(tokenPath, "utf8"));
+  assert.equal(typeof tokens[origin], "string", "the device token is cached under this server origin");
+  assert.ok(tokens[origin].length > 0);
+  assert.ok(!JSON.stringify(request).includes(tokens[origin]), "the device token was never returned to the browser");
+  assert.ok(!JSON.stringify(status).includes(tokens[origin]), "the completion response does not expose the cached token");
+
+  const replay = await api("/backups/authorize/complete", {
+    account_id: accountId,
+    authorization_id: request.authorization_id,
+  });
+  assert.equal(replay.status, 400, "a completed authorization cannot be replayed");
+
+  const enabled = await api("/backups", {
+    account_id: accountId,
+    enabled: true,
+    frequency_minutes: 5,
+  }, pairingToken, "PUT");
+  assert.equal(enabled.status, 200, `enable scheduled backup: ${await enabled.clone().text()}`);
 
   // Restart the actual process so persistence is exercised across a fresh
   // service instance, with no CLI token cache in this XDG state directory.
@@ -120,15 +178,40 @@ try {
   companionStarted = false;
   await cli("start", "--port", String(port));
   companionStarted = true;
-  const persisted = await fetch(`${localBase}/backups?account=${encodeURIComponent(accountId)}`, {
+  const statusAfterRestart = await fetch(`${localBase}/backups?account=${encodeURIComponent(accountId)}`, {
     headers: { Origin: origin, Authorization: `Bearer ${pairingToken}` },
   });
-  assert.equal(persisted.status, 200, `backup status after restart: ${await persisted.clone().text()}`);
-  assert.equal((await persisted.json()).needs_login, false, "the backup remains authorized after restart");
-  assert.equal(await readFile(join(stateHome, "librepaper", "tokens.json"), "utf8").then(() => true, () => false), false,
-    "device authorization is not stored as a CLI login token");
+  assert.equal(statusAfterRestart.status, 200, `backup status after restart: ${await statusAfterRestart.clone().text()}`);
+  assert.equal((await statusAfterRestart.json()).needs_login, false, "the backup remains authorized after restart");
+  assert.deepEqual(JSON.parse(await readFile(tokenPath, "utf8")), tokens,
+    "the approved token remains cached under the same server origin after restart");
 
-  console.log("backups-authorization: real signed-in approval, companion credential isolation, and restart persistence passed");
+  const deadline = Date.now() + 30000;
+  let finished;
+  while (Date.now() < deadline) {
+    const response = await fetch(`${localBase}/backups?account=${encodeURIComponent(accountId)}`, {
+      headers: { Origin: origin, Authorization: `Bearer ${pairingToken}` },
+    });
+    assert.equal(response.status, 200, `scheduled backup status: ${await response.clone().text()}`);
+    finished = await response.json();
+    if (finished.last_success && finished.projects === 1 && !finished.running) break;
+    if (finished.error) throw new Error(`scheduled backup failed: ${finished.error}`);
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  assert.ok(finished?.last_success && finished.projects === 1 && !finished.running,
+    "the scheduler writes a real project backup archive");
+
+  const normalizedOrigin = `${new URL(origin).protocol}//${new URL(origin).hostname.toLowerCase()}:${new URL(origin).port}`;
+  const namespace = createHash("sha256").update(`${normalizedOrigin}\0${accountId}`).digest("hex");
+  const archiveDirectory = join(backupDestination, "librepaper-backups", namespace);
+  const archiveNames = await readdir(archiveDirectory);
+  const archiveName = archiveNames.find((name) => name.endsWith(".zip"));
+  assert.ok(archiveName, "a ZIP archive is present in the scoped backup directory");
+  const archive = await exec("unzip", ["-p", join(archiveDirectory, archiveName), project.main || "main.md"]);
+  assert.match(archive.stdout, /This project must appear in the real backup archive\./,
+    "the ZIP contains the deployed project's source");
+
+  console.log("backups-authorization: signed-in device approval, account and replay rejection, credential isolation, restart persistence, and real ZIP backup passed");
 } finally {
   if (companionStarted) await cli("stop").catch(() => {});
   await deployment.stop();
