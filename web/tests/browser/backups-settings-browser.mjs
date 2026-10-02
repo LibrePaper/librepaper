@@ -229,6 +229,12 @@ try {
   assert.equal(await b.evaluate("document.querySelector('#backup-destination input').readOnly"), true);
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').getAttribute('aria-checked')"), "true", "an enabled schedule stays accessible when credentials expire");
 
+  await b.evaluate(click("#backup-enable [role='switch']"));
+  await until("disable allowed while browser authorization is needed", () => b.evaluate("window.backupCalls.some((call) => call.method === 'PUT' && call.account_id === 'account-b' && call.enabled === false)"), 5000);
+  await until("expired-authorization disable refresh", () => b.evaluate("window.backupRequests.length === 12"), 5000);
+  await b.evaluate(resolveStatus(11, { enabled: false, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
+  await until("disabled schedule remains available for authorization", () => b.evaluate("document.body.innerText.includes('Authorize backups') && !document.querySelector('#backup-enable [role=switch]')"), 5000);
+
   await b.evaluate("window.setBrowserAccount({ id: 'account-b', provider: 'google' }); window.holdMe = true");
   await b.evaluate(click(".setting-status button"));
   await until("browser account check pending", () => b.evaluate("window.meStarted === true"), 5000);
@@ -251,18 +257,24 @@ try {
   await until("browser device approval sent", () => b.evaluate("window.apiPosts?.some((call) => call.path === '/api/auth/device/approve')"), 5000);
   assert.equal(await b.evaluate("window.apiPosts.find((call) => call.path === '/api/auth/device/approve').user_code"), "ABCD-EFGH");
   await until("companion authorization completed", () => b.evaluate("window.backupCalls.some((call) => call.method === 'POST authorize complete' && call.account_id === 'account-b')"), 5000);
-  await until("authorization status refresh", () => b.evaluate("window.backupRequests.length === 12"), 5000);
-  await b.evaluate(resolveStatus(11, { enabled: true, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: false }));
+  await until("authorization status refresh", () => b.evaluate("window.backupRequests.length === 13"), 5000);
+  await b.evaluate(resolveStatus(12, { enabled: false, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: false }));
+  await until("controls unlocked after authorization refresh", () => b.evaluate("Boolean(document.querySelector('#backup-enable [role=switch]') && !document.querySelector('#backup-enable [role=switch]').disabled"), 5000);
 
   await b.evaluate(click("#backup-enable [role='switch']"));
-  await until("schedule disabled after authorization is needed", () => b.evaluate("window.backupCalls.some((call) => call.method === 'PUT' && call.account_id === 'account-b' && call.enabled === false)"), 5000);
-  await until("disable status refresh", () => b.evaluate("window.backupRequests.length === 13"), 5000);
-  await b.evaluate(resolveStatus(12, { enabled: false, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
-  await until("disabled schedule retained in authorization guidance", () => b.evaluate("document.body.innerText.includes('Authorize backups') && !document.querySelector('#backup-enable [role=switch]')"), 5000);
+  await until("schedule enable after authorization", () => b.evaluate("window.backupCalls.some((call) => call.method === 'PUT' && call.account_id === 'account-b' && call.enabled === true)"), 5000);
+  await until("enable refresh completes", () => b.evaluate("window.backupRequests.length === 14"), 5000);
+  await b.evaluate(resolveStatus(13, { enabled: true, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: false }));
+  await until("enabled switch unlocked before next action", () => b.evaluate("document.querySelector('#backup-enable [role=switch]').getAttribute('aria-checked') === 'true' && !document.querySelector('#backup-enable [role=switch]').disabled"), 5000);
 
-  await b.evaluate(click(".setting-status button"));
-  await until("authorization retry status refresh", () => b.evaluate("window.backupRequests.length === 14"), 5000);
-  await b.evaluate("window.backupRequests[13].reject(new Error('companion offline'))");
+  await b.evaluate(click("#backup-enable [role='switch']"));
+  await until("schedule disabled after refresh settled", () => b.evaluate("window.backupCalls.filter((call) => call.method === 'PUT' && call.account_id === 'account-b' && call.enabled === false).length === 2"), 5000);
+  await until("disable refresh completes", () => b.evaluate("window.backupRequests.length === 15"), 5000);
+  await b.evaluate(resolveStatus(14, { enabled: false, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: false }));
+
+  await b.evaluate("void window.refreshBackupStatus()");
+  await until("status error refresh requested", () => b.evaluate("window.backupRequests.length === 16"), 5000);
+  await b.evaluate("window.backupRequests[15].reject(new Error('companion offline'))");
   await until("status error shown", () => b.evaluate("document.body.innerText.includes('companion offline')"), 5000);
   assert.match(await b.evaluate("document.body.innerText"), /Backup status unavailable/);
 
