@@ -18,7 +18,7 @@
 //! works but not fully.
 //!
 //! The built-in table below is a starting guess, not the limit.
-//! `librepaper local agent add` declares any ACP-speaking command as an agent
+//! `librepaper agent add` declares any ACP-speaking command as an agent
 //! this machine offers, which is how an agent LibrePaper has never heard of
 //! gets driven from the sidebar, and how a changed entry point is corrected
 //! without waiting for a release. That declaration is deliberately a local
@@ -145,7 +145,7 @@ fn kind(id: &str) -> Option<&'static Kind> {
 
 /* ------------------------------------------------ Agents this machine adds */
 
-/// An ACP agent the user declared with `librepaper local agent add`. This is
+/// An ACP agent the user declared with `librepaper agent add`. This is
 /// the general answer for any agent not in the built-in table, including one
 /// that does not exist yet.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

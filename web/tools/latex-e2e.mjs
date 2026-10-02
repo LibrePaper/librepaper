@@ -114,7 +114,7 @@ async function main() {
     delete env.DISPLAY;
     delete env.WAYLAND_DISPLAY;
     let log = "";
-    local = spawn(BINARY, ["local", "start", "--foreground", "--port", "8763"], { stdio: ["ignore", "ignore", "pipe"], env });
+    local = spawn(BINARY, ["start", "--foreground", "--port", "8763"], { stdio: ["ignore", "ignore", "pipe"], env });
     local.stderr.on("data", (data) => { log += data; });
     const base = "http://127.0.0.1:8763/librepaper/local";
     await until("local app ready", async () => {

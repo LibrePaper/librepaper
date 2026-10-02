@@ -91,7 +91,7 @@ async function testProbeUnreachable() {
   const { now } = setup({ fetchImpl: async () => { throw new TypeError("fetch failed"); } });
   const status = await local.probe();
   check("a network failure classifies as unreachable", status.state === "unreachable", status.state);
-  check("unreachable carries instructions", /librepaper local start/.test(status.instructions));
+  check("unreachable carries instructions", /librepaper`/.test(status.instructions));
 
   let calls = 0;
   local._testing.inject({ fetch: async () => { calls += 1; throw new TypeError("fetch failed"); } });

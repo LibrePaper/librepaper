@@ -204,7 +204,7 @@ targets = [
 installers = ["shell", "powershell"]
 install-updater = true
 github-build-setup = "../dist-build-setup.yml"
-install-success-msg = "LibrePaper Companion is installed. In a new terminal, run: librepaper local start. Then return to your browser."
+install-success-msg = "LibrePaper Companion is installed. In a new terminal, run: librepaper. Then return to your browser."
 
 [profile.release]
 opt-level = 3

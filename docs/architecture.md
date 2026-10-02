@@ -10,7 +10,7 @@ title: "Architecture"
 | The server | Identity, authority, durability, live relay, review decisions |
 | The author's machine | Quarto, Typst to HTML, Zotero |
 
-Typesetting runs in WebAssembly modules in the browser. The deployment never compiles documents or stores compilers. LaTeX engines and TeX Live packages are fetched from an HTTPS mirror (configurable). Authority is decided server-side on every request, never inferred from the browser. The optional companion app (`librepaper local start`) handles Quarto (code execution) and Typst to self-contained HTML; it reaches Zotero read-only and never runs TeX.
+Typesetting runs in WebAssembly modules in the browser. The deployment never compiles documents or stores compilers. LaTeX engines and TeX Live packages are fetched from an HTTPS mirror (configurable). Authority is decided server-side on every request, never inferred from the browser. The optional companion app (`librepaper`) handles Quarto (code execution) and Typst to self-contained HTML; it reaches Zotero read-only and never runs TeX.
 
 When account backups are enabled, the companion authenticates to the selected
 server with the CLI login, fetches every project available to that account,
@@ -152,7 +152,7 @@ Local persistence and remote durability are separate; the interface reports both
 
 ## Companion app
 
-`librepaper local start` runs a loopback service executing tools on the author's machine. Discovery resolves local tools to absolute paths.
+`librepaper` runs a loopback service executing tools on the author's machine. Discovery resolves local tools to absolute paths.
 
 The companion handles two cases the browser cannot: Quarto (code execution) and Calepin (self-contained HTML from Typst with embedded images). It reaches Zotero read-only. Everything else compiles in the browser. Typst produces PDF there; LaTeX and Biber are WebAssembly only.
 

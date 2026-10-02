@@ -443,7 +443,7 @@ pub async fn serve(options: ServeOptions) {
     instance.fonts = fonts;
     // The local app for this machine: only a browser on this host can reach
     // it, and it lives under the deployment's private state so it shares
-    // nothing with a standalone `librepaper local start`. Failing to start it
+    // nothing with a standalone `librepaper start`. Failing to start it
     // is a warning, not a death: the deployment serves documents regardless.
     let local = if options.no_local {
         None

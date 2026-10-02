@@ -24,23 +24,30 @@ await writeFile(join(tools, "xdg-open"), '#!/bin/sh\nprintf "%s" "$1" > "$LIBREP
 const env = { ...process.env, HOME: root, XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"), XDG_CONFIG_HOME: join(root, "config"), PATH: `${tools}:${process.env.PATH}`, LIBREPAPER_TEST_OPENED: opened };
 delete env.DISPLAY;
 delete env.WAYLAND_DISPLAY;
-delete env.LIBREPAPER_LOCAL_PORT; delete env.LIBREPAPER_LOCAL_CODE;
-const cli = (...args) => exec(binary, ["local", ...args], { env, timeout: 20000 });
+delete env.LIBREPAPER_LOCAL_CODE;
+const cli = (...args) => exec(binary, args, { env, timeout: 20000 });
+const legacy = (...args) => exec(binary, ["local", ...args], { env, timeout: 20000 });
 const listener = createServer();
 await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
 const port = listener.address().port;
 await new Promise((resolve) => listener.close(resolve));
+env.LIBREPAPER_LOCAL_PORT = String(port);
 const base = `http://127.0.0.1:${port}/librepaper/local`;
 const site = "https://papers.example";
 const returnUrl = `${site}/docs/paper`;
 const state = async () => JSON.parse(await readFile(join(env.XDG_STATE_HOME, "librepaper/local/service.json"), "utf8"));
 try {
-  await cli("start", "--port", String(port));
+  await cli();
   const first = await state();
-  await cli("start", "--port", String(port));
-  assert.equal((await state()).pid, first.pid, "start is idempotent");
-  await cli("start", "--port", String(port), "--at-login");
-  assert.match(await readFile(join(env.XDG_CONFIG_HOME, "autostart/librepaper-local.desktop"), "utf8"), /local start/);
+  await cli();
+  assert.equal((await state()).pid, first.pid, "repeated bare invocation reuses the running companion");
+  await cli("start");
+  assert.equal((await state()).pid, first.pid, "explicit start reuses the running companion");
+  await cli("--at-login");
+  const desktopEntry = await readFile(join(env.XDG_CONFIG_HOME, "autostart/librepaper-local.desktop"), "utf8");
+  assert.match(desktopEntry, /^Exec=.* start$/m);
+  assert.doesNotMatch(desktopEntry, /local start/);
+  await cli("status");
 
   const request = randomBytes(24).toString("base64url");
   const verifier = randomBytes(32).toString("base64url");
@@ -48,7 +55,7 @@ try {
   // `local open` sends the pairing request to the companion. Depending on
   // whether the test environment has a display, approval either opens the
   // browser handoff directly or prints a one-time code for `local approve`.
-  const opening = cli("open", `librepaper://connect?${new URLSearchParams({ origin: site, request, challenge, return: returnUrl })}`).then(() => null, (error) => error);
+  const opening = legacy("open", `librepaper://connect?${new URLSearchParams({ origin: site, request, challenge, return: returnUrl })}`).then(() => null, (error) => error);
   const log = join(env.XDG_STATE_HOME, "librepaper/local/companion.log");
   let approvalCode;
   let target;
@@ -62,7 +69,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   if (approvalCode) {
-    await cli("approve", approvalCode);
+    await legacy("approve", approvalCode);
     for (let attempt = 0; attempt < 30; attempt++) {
       try { target = await readFile(opened, "utf8"); if (target) break; } catch {}
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -98,14 +105,18 @@ try {
   // `start` is the replacement sequence and exercises the same instance
   // change and permission persistence.
   await cli("stop");
-  await cli("start", "--port", String(port));
+  await assert.rejects(cli("status"), "root status reports the stopped companion");
+  await cli("start");
   assert.notEqual((await state()).instance, first.instance);
   assert.equal((await caps()).status, 200, "permission survives restart");
   await cli("stop");
   await assert.rejects(fetch(`${base}/health`));
-  await assert.rejects(cli("open", "https://evil.example/"));
+  await assert.rejects(legacy("open", "https://evil.example/"));
   await assert.rejects(fetch(`${base}/health`), "invalid link does not start companion");
-  console.log("companion-lifecycle: background start, at-login, deep-link consent, quit authorization, restart and stop passed");
+  await legacy("start");
+  await legacy("status");
+  await legacy("stop");
+  console.log("companion-lifecycle: bare and explicit start, at-login, deep-link consent, quit authorization, root status/stop, legacy aliases and restart passed");
 } finally {
   await cli("stop").catch(() => {});
   await rm(root, { recursive: true, force: true });

@@ -68,7 +68,7 @@ cat > bucket/librepaper.json <<MANIFEST
         }
     },
     "notes": [
-        "LibrePaper's Windows companion is installed as librepaper.exe. Start it with: librepaper local start",
+        "LibrePaper's Windows companion is installed as librepaper.exe. Start it with: librepaper",
         "Upgrade with: scoop update librepaper"
     ]
 }

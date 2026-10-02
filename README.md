@@ -31,7 +31,7 @@ shell installer to a version, replace `releases/latest/download/` with
 `releases/download/<tag>/`.
 
 The installer puts the executable on your PATH. In a new terminal, run
-`librepaper local start` to start the companion, then connect it from *Settings*, *Local app* in LibrePaper. The installer
+`librepaper` to start the companion, then connect it from *Settings*, *Local app* in LibrePaper. The installer
 does not add a desktop shortcut or register the `librepaper://` link handler.
 
 On macOS or Linux, you can also install with Homebrew:
@@ -57,8 +57,8 @@ in each format, sharing and review, the CLI, and running a server of your own.
 Its source is in [`docs/`](docs/), and `make site` builds it.
 
 The ordinary CLI covers `login`, `logout`, `list`, and one-shot `export`.
-`admin` operates a deployment, `local` operates the companion on your own
-computer, and `mcp` serves a document's tools to an agent.
+The root commands operate the companion on your computer, `admin` operates a
+deployment, and `mcp` serves a document's tools to an agent.
 
 LibrePaper Companion can also keep scheduled ZIP copies of every project
 available to your signed-in account, including shared projects. See the

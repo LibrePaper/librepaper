@@ -1,6 +1,6 @@
 //! Local assistant execution and durable task state.
 //!
-//! The companion (`local start`) is the only thing that ever runs a session:
+//! The companion (`start`) is the only thing that ever runs a session:
 //! `registry::SessionRegistry` spawns one supervised tokio task per
 //! (document, conversation) pair and drives `runtime::run` inside it,
 //! directly in the companion's own process. There is no separate runner

@@ -25,17 +25,50 @@ pub use documents::*;
 pub use tokens::*;
 
 #[derive(Parser)]
-#[command(name = "librepaper", version = crate::VERSION, about = "host HTML, markdown and typst documents that readers can annotate", long_about = None)]
+#[command(name = "librepaper", version = crate::VERSION, about = "launch the companion to connect local tools to documents; host HTML, markdown and typst documents", long_about = None, args_conflicts_with_subcommands = true)]
 #[command(
-    after_help = "Configure sign-in providers and publishing permissions on the server.
-To sign in from this terminal:
+    after_help = "Run `librepaper` or `librepaper start` to launch the companion, then connect it in Settings → Local app.
+
+To sign in from this terminal, set the deployment and run `librepaper login`:
 
     export LIBREPAPER_SERVER=https://librepaper.example.org
     librepaper login"
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+    /// Companion launch options. With no command, `librepaper` launches it.
+    #[command(flatten)]
+    launch: LaunchArgs,
+}
+
+/// Shared options for the default launch and explicit `start` aliases.
+#[derive(Args, Clone, Debug, Default)]
+pub struct LaunchArgs {
+    /// Run in the foreground of this process instead of in the background
+    #[arg(long, help_heading = "Companion")]
+    pub foreground: bool,
+    /// Also start the companion every time you log in
+    #[arg(long, help_heading = "Companion")]
+    pub at_login: bool,
+    /// Port to listen on (default 8763)
+    #[arg(
+        long,
+        value_name = "PORT",
+        hide_default_value = true,
+        env = "LIBREPAPER_LOCAL_PORT",
+        help_heading = "Companion"
+    )]
+    pub port: Option<u16>,
+    /// Extra directories searched before PATH for typst, pandoc and calepin
+    #[arg(
+        long,
+        value_name = "DIRS",
+        env = "LIBREPAPER_TOOL_PATH",
+        value_delimiter = ':',
+        help_heading = "Companion"
+    )]
+    pub tool_path: Vec<PathBuf>,
 }
 
 /// Deployment credentials: server URL and optional authentication token.
@@ -269,6 +302,25 @@ struct AdvancedConfigFile {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// Start the companion (in the background by default)
+    Start(LaunchArgs),
+    /// Ask the companion to stop cleanly
+    Stop,
+    /// Show companion status and available tools
+    Status {
+        #[arg(
+            long,
+            value_name = "DIRS",
+            env = "LIBREPAPER_TOOL_PATH",
+            value_delimiter = ':'
+        )]
+        tool_path: Vec<PathBuf>,
+    },
+    /// Manage agents this computer offers to the document sidebar
+    Agent {
+        #[command(subcommand)]
+        command: LocalAgentCommand,
+    },
     /// Sign in through a deployment, in a browser
     Login {
         #[command(flatten)]
@@ -308,8 +360,7 @@ pub(crate) enum Command {
     // because nobody types it; see `agent`.
     #[command(hide = true)]
     Mcp(agent::McpArgs),
-    /// The local app: run native tools on this machine for the jobs the
-    /// browser editor cannot do itself
+    /// Approve requests and disconnect paired websites
     Local {
         #[command(subcommand)]
         command: LocalCommand,
@@ -456,36 +507,14 @@ pub(crate) enum ModerationCommand {
     },
 }
 
-/// `librepaper local <command>`. See `crate::local::cli`.
+/// `librepaper local <command>` compatibility commands. See `crate::local::cli`.
 #[derive(Subcommand, Clone, Debug)]
 pub enum LocalCommand {
     /// Start the companion (in the background by default, or in this process with --foreground)
-    Start {
-        /// Run in the foreground of this process instead of in the background
-        #[arg(long)]
-        foreground: bool,
-        /// Port to listen on (default 8763)
-        #[arg(
-            long,
-            value_name = "PORT",
-            default_value_t = 0,
-            hide_default_value = true,
-            env = "LIBREPAPER_LOCAL_PORT"
-        )]
-        port: u16,
-        /// Extra directories searched before PATH for typst, pandoc and calepin, colon-separated
-        #[arg(
-            long,
-            value_name = "DIRS",
-            env = "LIBREPAPER_TOOL_PATH",
-            value_delimiter = ':'
-        )]
-        tool_path: Vec<PathBuf>,
-        /// Also start the companion every time you log in; turn it off on the settings page
-        #[arg(long)]
-        at_login: bool,
-    },
+    #[command(hide = true)]
+    Start(LaunchArgs),
     /// Ask a running companion to stop cleanly.
+    #[command(hide = true)]
     Stop,
     /// Launch the companion and open a validated local connection link.
     /// The operating system runs this for `librepaper://` links; it is not
@@ -493,6 +522,7 @@ pub enum LocalCommand {
     #[command(hide = true)]
     Open { url: String },
     /// Whether the service is running, its address, code and pairings, and which native tools were found
+    #[command(hide = true)]
     Status {
         /// Extra directories searched before PATH for typst, pandoc and calepin, colon-separated
         #[arg(
@@ -514,6 +544,7 @@ pub enum LocalCommand {
         origin: String,
     },
     /// Teach this computer an ACP agent the sidebar can drive
+    #[command(hide = true)]
     Agent {
         #[command(subcommand)]
         command: LocalAgentCommand,
@@ -527,7 +558,7 @@ pub enum LocalCommand {
 pub enum LocalAgentCommand {
     /// Declare an agent. Everything after `--` is the command that speaks the
     /// Agent Client Protocol on stdio, for example:
-    /// `librepaper local agent add opencode --label opencode -- opencode acp`
+    /// `librepaper agent add opencode --label opencode -- opencode acp`
     Add {
         /// Short lower-case id, shown in the sidebar's agent list.
         id: String,
@@ -552,7 +583,32 @@ pub struct LocalArgs {
 #[tokio::main]
 pub async fn main() {
     let cli = Cli::parse();
-    match cli.command {
+    let command = cli.command.unwrap_or(Command::Start(cli.launch));
+    match command {
+        Command::Start(args) => {
+            crate::local::cli::run(LocalArgs {
+                command: LocalCommand::Start(args),
+            })
+            .await
+        }
+        Command::Stop => {
+            crate::local::cli::run(LocalArgs {
+                command: LocalCommand::Stop,
+            })
+            .await
+        }
+        Command::Status { tool_path } => {
+            crate::local::cli::run(LocalArgs {
+                command: LocalCommand::Status { tool_path },
+            })
+            .await
+        }
+        Command::Agent { command } => {
+            crate::local::cli::run(LocalArgs {
+                command: LocalCommand::Agent { command },
+            })
+            .await
+        }
         Command::Login { deployment } => login(deployment.server).await,
         Command::Logout => logout(),
         Command::Admin { command } => run_admin(command).await,
@@ -773,6 +829,80 @@ pub fn server_or_die(server: Option<String>) -> String {
 #[cfg(test)]
 mod socket_policy_tests {
     use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn companion_launch_default_flags_and_explicit_start_parse() {
+        let bare = Cli::try_parse_from(["librepaper"]).unwrap();
+        assert!(bare.command.is_none());
+        assert!(!bare.launch.foreground);
+        assert!(!bare.launch.at_login);
+        assert!(bare.launch.port.is_none());
+
+        let configured = Cli::try_parse_from([
+            "librepaper",
+            "--foreground",
+            "--at-login",
+            "--port",
+            "9123",
+            "--tool-path",
+            "/opt/tools",
+        ])
+        .unwrap();
+        assert!(configured.launch.foreground);
+        assert!(configured.launch.at_login);
+        assert_eq!(configured.launch.port, Some(9123));
+        assert_eq!(configured.launch.tool_path, [PathBuf::from("/opt/tools")]);
+
+        assert!(
+            Cli::try_parse_from(["librepaper", "start", "--foreground", "--port", "9123"]).is_ok()
+        );
+    }
+
+    #[test]
+    fn companion_commands_and_hidden_compatibility_paths_parse() {
+        for args in [
+            vec!["librepaper", "stop"],
+            vec!["librepaper", "status"],
+            vec!["librepaper", "agent", "list"],
+            vec!["librepaper", "local", "start", "--foreground"],
+            vec!["librepaper", "local", "stop"],
+            vec!["librepaper", "local", "status"],
+            vec!["librepaper", "local", "agent", "list"],
+            vec!["librepaper", "local", "approve", "123456"],
+            vec!["librepaper", "local", "disconnect", "https://paper.example"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+        assert!(
+            Cli::try_parse_from(["librepaper", "local", "open", "librepaper://connect"]).is_ok()
+        );
+    }
+
+    #[test]
+    fn launch_options_are_isolated_to_bare_launch_and_help_hides_legacy_controls() {
+        for args in [
+            ["librepaper", "--port", "9123", "list"],
+            ["librepaper", "--foreground", "admin", "serve"],
+            ["librepaper", "--at-login", "agent", "list"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        let help = Cli::command().render_help().to_string();
+        for command in ["start", "stop", "status", "agent", "login", "list", "admin"] {
+            assert!(help.contains(command), "missing {command} in {help}");
+        }
+        assert!(!help.contains("local start"));
+        let mut root = Cli::command();
+        let local_help = root
+            .find_subcommand_mut("local")
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(local_help.contains("approve"));
+        assert!(local_help.contains("disconnect"));
+        assert!(!local_help.contains("start"));
+    }
 
     #[test]
     fn moderation_cli_requires_actor_and_reason_for_reversible_actions() {

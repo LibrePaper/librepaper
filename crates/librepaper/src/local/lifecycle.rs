@@ -74,7 +74,6 @@ pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<Servic
     let executable = super::paths::current_executable()?;
     let mut command = Command::new(executable);
     command.args([
-        "local",
         "start",
         "--foreground",
         "--port",
@@ -457,7 +456,7 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
         let executable = super::paths::current_executable()?;
         write_startup_file(
             &file,
-            format!("[Desktop Entry]\nType=Application\nName=LibrePaper companion\nExec={} local start\nTerminal=false\n", desktop_quote(&executable)),
+            format!("[Desktop Entry]\nType=Application\nName=LibrePaper companion\nExec={} start\nTerminal=false\n", desktop_quote(&executable)),
         )
     }
     #[cfg(target_os = "macos")]
@@ -473,7 +472,7 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
         let path = html_escape::encode_text(&executable.to_string_lossy()).into_owned();
         write_startup_file(
             &file,
-            format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>Label</key><string>com.librepaper.local</string><key>ProgramArguments</key><array><string>{path}</string><string>local</string><string>start</string></array><key>RunAtLoad</key><true/></dict></plist>"),
+            format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>Label</key><string>com.librepaper.local</string><key>ProgramArguments</key><array><string>{path}</string><string>start</string></array><key>RunAtLoad</key><true/></dict></plist>"),
         )
     }
     #[cfg(windows)]
@@ -490,7 +489,7 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
                 "/t",
                 "REG_SZ",
                 "/d",
-                &format!("\"{}\" local start", executable.display()),
+                &format!("\"{}\" start", executable.display()),
                 "/f",
             ]);
         } else {

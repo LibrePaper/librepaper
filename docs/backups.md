@@ -8,7 +8,7 @@ the signed-in account, including shared projects. Open a project, choose
 companion if needed, authorize it with your signed-in browser account, choose a
 destination folder, and enable automatic backups. Authorization uses the
 browser's existing sign-in; no separate CLI login is needed. Start the local
-companion with `librepaper local start` if it is not already running.
+companion with `librepaper` if it is not already running.
 The companion must be running on this computer; it continues the schedule
 while browser tabs are closed.
 
