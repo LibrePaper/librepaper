@@ -1,7 +1,7 @@
 # LibrePaper: the command line and the server, one binary.
 [package]
 name = "librepaper"
-version = "0.0.18"
+version = "0.0.19"
 edition = "2021"
 publish = true
 license = "MIT"
