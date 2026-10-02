@@ -81,7 +81,7 @@ const cacheHome = join(temporary, "cache");
 const appEnv = { ...process.env, XDG_STATE_HOME: stateHome, XDG_CACHE_HOME: cacheHome, HOME: temporary };
 delete appEnv.DISPLAY;
 delete appEnv.WAYLAND_DISPLAY;
-const app = spawn(binary, ["local", "start", "--foreground", "--port", String(appPort)], { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
+const app = spawn(binary, ["start", "--foreground", "--port", String(appPort)], { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
 let appLog = "";
 app.stdout.on("data", (chunk) => (appLog += chunk));
 app.stderr.on("data", (chunk) => (appLog += chunk));

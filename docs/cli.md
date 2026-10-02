@@ -26,9 +26,11 @@ librepaper local disconnect <origin>            # revoke a website pairing
 
 The older `librepaper local start`, `stop`, `status`, and `agent` commands remain available for compatibility. Prefer the root commands shown above.
 
+To render a document against a project folder on your disk, choose the folder under *Settings*, *Local app*, *Project folder* in the browser. Permissions and presets are also configured there. Any permission request triggers a dialog on this machine, which no website can click. On a machine with no display, check `companion.log` for the code and run `librepaper local approve <code>` within 5 minutes.
+
 ## Document commands
 
-Pass the server address with a flag or set an environment variable once:
+For commands that contact your LibrePaper server, such as `login`, `list`, and `export`, pass its address with a flag or set an environment variable once:
 
 ```sh
 librepaper <COMMAND> --server https://librepaper.arelbundock.com

@@ -44,7 +44,9 @@ try {
   await cli("start");
   assert.equal((await state()).pid, first.pid, "explicit start reuses the running companion");
   await cli("--at-login");
-  assert.match(await readFile(join(env.XDG_CONFIG_HOME, "autostart/librepaper-local.desktop"), "utf8"), /librepaper start/);
+  const desktopEntry = await readFile(join(env.XDG_CONFIG_HOME, "autostart/librepaper-local.desktop"), "utf8");
+  assert.match(desktopEntry, /^Exec=.* start$/m);
+  assert.doesNotMatch(desktopEntry, /local start/);
   await cli("status");
 
   const request = randomBytes(24).toString("base64url");
