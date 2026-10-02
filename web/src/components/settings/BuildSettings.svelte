@@ -106,7 +106,7 @@
   <!-- Nothing here can open the companion; the status line says how to start
        it. Before anybody has looked, the only thing to offer is the looking. -->
   {#if ["unreachable", "denied", "unauthorized", "reachable"].includes(local?.state)}<button type="button" class="btn btn-sm lp-control-brand" onclick={connect}>Connect</button>{/if}
-  {#if local?.state !== "connected"}<a class="btn btn-sm lp-control-outline" href="https://github.com/LibrePaper/librepaper/releases/latest" target="_blank" rel="noreferrer">Install companion</a>{/if}
+  {#if local?.state !== "connected"}<a class="btn btn-sm lp-control-outline" href="https://librepaper.org/install.html" target="_blank" rel="noreferrer">Install companion</a>{/if}
   <button type="button" class="btn btn-sm lp-control-outline" disabled={local?.state !== "connected"} onclick={rescan}>Rescan</button>
 </SettingRow>{/if}
 
