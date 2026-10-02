@@ -3142,7 +3142,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "ab_glyph",
  "agent-client-protocol",
