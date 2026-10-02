@@ -1,0 +1,43 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Fetch pinned browser inputs
+        run: |
+          bun web/tools/fetch-loro-codemirror.mjs
+          bun web/tools/fetch-modules.mjs
+
+      - name: Build embedded browser app
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Build and check the Windows binary
+        shell: pwsh
+        run: |
+          cargo build --locked -p librepaper --bin librepaper
+          if ($LASTEXITCODE -ne 0) {
+            throw "cargo build exited with code $LASTEXITCODE"
+          }
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches.Groups[1].Value
+          $expected = "librepaper v$version"
+          $actual = (& target/debug/librepaper.exe --version).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "librepaper.exe --version exited with code $LASTEXITCODE"
+          }
+          if ($actual -ne $expected) {
+            throw "Expected '$expected', got '$actual'"
+          }
