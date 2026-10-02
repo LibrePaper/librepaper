@@ -111,18 +111,22 @@
     ]);
     if (!narrow) list.push({ key: "owner", label: "Owner", sortable: true, width: 210, min: 120 });
     if (!trash && !narrow) list.push({ key: "files", label: "Files", sortable: true, width: 90, min: 60 });
-    list.push({
-      key: "updated",
-      label: trash ? "Deleted" : place === "recent" ? "Opened" : "Updated",
-      sortable: true,
-      width: 130,
-      min: 90,
-      class: "col-when",
-    });
+    if (!narrow) {
+      list.push({
+        key: "updated",
+        label: trash ? "Deleted" : place === "recent" ? "Opened" : "Updated",
+        sortable: true,
+        width: 130,
+        min: 90,
+        class: "col-when",
+      });
+    }
     list.push({
       key: "actions",
       label: "",
-      width: trash ? 88 : 150,
+      // A phone still has every row action, arranged in a compact two-by-two
+      // group rather than taking the title's entire line.
+      width: narrow ? 76 : trash ? 88 : 150,
       resizable: false,
       align: "right",
     });
@@ -709,9 +713,9 @@
       <input class="input project-search" type="search" placeholder="Search projects"
              aria-label="Search projects by title or file" bind:value={search} />
       {#if me.can_publish}
-        <button type="button" class="btn btn-sm nav-new lp-control-brand" onclick={() => askName()}>
+        <button type="button" class="btn btn-sm nav-new lp-control-brand" aria-label="New project" onclick={() => askName()}>
           <Icon name="file-plus" size={16} />
-          New project
+          <span class="nav-new-label">New project</span>
         </button>
       {/if}
     {/snippet}
@@ -841,6 +845,11 @@
               {#if place === "trash" && doc.purge_due}
                 <span>Deleted for good {since(doc.purge_due)}</span>
               {/if}
+              {#if narrow}
+                <span class="mobile-updated" title={isoDay(place === "recent" ? doc.opened_at : doc.updated_at)}>
+                  {since(place === "recent" ? doc.opened_at : doc.updated_at)}
+                </span>
+              {/if}
             </span>
           {:else if column.key === "owner"}
             <!-- Who it belongs to. Yours says so rather than saying nothing:
@@ -874,25 +883,27 @@
                    offered on somebody else's too. Deleting is one of these
                    rather than something the selection toolbar alone can do:
                    throwing one project away should not need a mode. -->
-              {#if mine(doc)}
-                <IconButton icon="pencil" title="Rename" label="Rename {doc.title}" onclick={() => askRename(doc)} />
-              {/if}
-              <IconButton icon="git-fork" title="Fork" label="Fork {doc.title}"
-                          disabled={forking === doc.slug} onclick={() => askFork(doc)} />
-              {#if mine(doc)}
-                <IconButton icon="trash" colour="lp-text-muted lp-hover-error"
-                            title="Move to trash" label="Move {doc.title} to the trash" onclick={() => askDelete(doc)} />
-              {/if}
-              <IconButton
-                icon="star"
-                tone="plain"
-                size="btn-icon-sm"
-                colour={doc.favorite ? "lp-text-warning" : "lp-text-muted"}
-                filled={doc.favorite}
-                pressed={doc.favorite}
-                label={doc.favorite ? "Remove from favorites" : "Add to favorites"}
-                onclick={() => star(doc)}
-              />
+              <span class="project-actions">
+                {#if mine(doc)}
+                  <IconButton icon="pencil" title="Rename" label="Rename {doc.title}" onclick={() => askRename(doc)} />
+                {/if}
+                <IconButton icon="git-fork" title="Fork" label="Fork {doc.title}"
+                            disabled={forking === doc.slug} onclick={() => askFork(doc)} />
+                {#if mine(doc)}
+                  <IconButton icon="trash" colour="lp-text-muted lp-hover-error"
+                              title="Move to trash" label="Move {doc.title} to the trash" onclick={() => askDelete(doc)} />
+                {/if}
+                <IconButton
+                  icon="star"
+                  tone="plain"
+                  size="btn-icon-sm"
+                  colour={doc.favorite ? "lp-text-warning" : "lp-text-muted"}
+                  filled={doc.favorite}
+                  pressed={doc.favorite}
+                  label={doc.favorite ? "Remove from favorites" : "Add to favorites"}
+                  onclick={() => star(doc)}
+                />
+              </span>
             {/if}
           {/if}
         {/snippet}
@@ -1080,14 +1091,32 @@
 
   .owner-name { font-size: var(--text-sm); }
   .trash-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing)); }
+  .project-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing)); }
 
-  /* The two columns a phone has no room for: the listing is read there to
-     find a project, and neither how many files it has nor who owns it is how
-     anyone finds one. The day it changed stays, because on a narrow screen
-     that is the only thing left distinguishing one row from another. Sorting
-     by the hidden ones still works from a wider window. */
+  /* The metadata columns a phone has no room for: the listing is read there
+     to find a project, and neither how many files it has nor who owns it is
+     how anyone finds one. The day moves beneath the title at this width, where
+     it distinguishes rows without taking a fixed table column. */
   @media (max-width: 760px) {
-    .projects { padding-inline: calc(var(--spacing) * 3); }
-    .project-search { width: 9rem; }
+    /* The landing rail is navigation, not the Reader's collapsible panel.
+       Put its five destinations in a compact row below the list, while the
+       list keeps the remaining workspace height and its own vertical scroll. */
+    .workspace { flex-direction: column; overflow-x: hidden; }
+    .workspace :global(.sidebar),
+    .workspace :global(.sidebar.collapsed) { order: 2; flex: 0 0 auto; width: 100%; border-right: 0; }
+    .workspace :global(.sidebar .sidebar-activity) { flex-direction: row; align-items: center; gap: calc(var(--spacing) * 2); min-height: var(--librepaper-activity); padding-inline: calc(var(--spacing) * 2); }
+    .workspace :global(.sidebar .activity-sections) { display: flex; flex: 1 1 auto; flex-direction: row; justify-content: space-between; overflow-x: auto; overflow-y: hidden; }
+    .workspace :global(.sidebar .activity-bottom) { flex: none; flex-direction: row; margin-top: 0; }
+
+    .projects { width: 100%; max-width: 100%; padding-inline: calc(var(--spacing) * 3); }
+    .project-search { width: min(9rem, 32vw); }
+    .nav-new { width: 2rem; padding-inline: 0; }
+    .nav-new-label { display: none; }
+
+    /* Keep every action, but use a two-by-two group so project titles still
+       receive a useful share of a phone-width row. The time moves beneath the
+       title, preserving the information without another fixed column. */
+    .project-actions { display: inline-grid; grid-template-columns: repeat(2, 2rem); gap: calc(var(--spacing)); }
+    :global(.projects-table .mobile-updated) { display: inline; }
   }
 </style>

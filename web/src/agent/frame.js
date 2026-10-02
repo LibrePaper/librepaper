@@ -685,22 +685,67 @@ import { createMathTypesetter } from "../lib/math.js";
   // the bar from the last selection goes away as soon as the new one starts.
   //
   // `selectionchange` still speaks for the keyboard, which has no drag: a
-  // selection extended with shift and the arrows reports as it grows.
+  // selection extended with shift and the arrows reports as it grows. Android
+  // can apply the final range just after a long-press or selection-handle
+  // gesture ends, though. The second timer is deliberately armed on the next
+  // task, after the browser has had that chance; a subsequent selectionchange
+  // replaces it with the ordinary debounce. Neither path cancels the native
+  // gesture, so Android keeps its Copy toolbar.
   let dragging = false;
+  let touchDragging = false;
+  let finalSelectionTimer = null;
   function beginDrag() {
     dragging = true;
     clearTimeout(selectionTimer);
+    clearTimeout(finalSelectionTimer);
     post({ type: "selection", selector: null });
+  }
+  function beginTouchDrag() {
+    touchDragging = true;
+    beginDrag();
   }
   function endDrag(delay) {
     dragging = false;
     scheduleSelection(delay);
   }
+  function endTouchDrag() {
+    if (!touchDragging) return;
+    endDrag(120);
+    clearTimeout(finalSelectionTimer);
+    finalSelectionTimer = setTimeout(() => {
+      touchDragging = false;
+      scheduleSelection(120);
+    }, 0);
+  }
+  const touchPointer = (event) => event.pointerType === "touch";
 
-  document.addEventListener("mousedown", beginDrag);
-  document.addEventListener("mouseup", () => endDrag(0));
-  document.addEventListener("touchstart", beginDrag, { passive: true });
-  document.addEventListener("touchend", () => endDrag(120), { passive: true });
+  // Compatibility mouse events follow a touch Pointer Event in some Android
+  // engines. Keep them from replacing the touch debounce with mouseup's
+  // immediate capture, while preserving ordinary mouse selection unchanged.
+  document.addEventListener("mousedown", () => {
+    if (!touchDragging) beginDrag();
+  });
+  document.addEventListener("mouseup", () => {
+    if (!touchDragging) endDrag(0);
+  });
+  // Pointer Events identify the touch that Android turns into a long press or
+  // a draggable selection handle. Keep Touch Events as a fallback for older
+  // engines, including their cancellation path when the browser takes over.
+  if (typeof PointerEvent === "function") {
+    document.addEventListener("pointerdown", (event) => {
+      if (touchPointer(event)) beginTouchDrag();
+    }, { passive: true });
+    document.addEventListener("pointerup", (event) => {
+      if (touchPointer(event)) endTouchDrag();
+    }, { passive: true });
+    document.addEventListener("pointercancel", (event) => {
+      if (touchPointer(event)) endTouchDrag();
+    }, { passive: true });
+  } else {
+    document.addEventListener("touchstart", beginTouchDrag, { passive: true });
+    document.addEventListener("touchend", endTouchDrag, { passive: true });
+    document.addEventListener("touchcancel", endTouchDrag, { passive: true });
+  }
   document.addEventListener("selectionchange", () => {
     if (!dragging) scheduleSelection(80);
   });
