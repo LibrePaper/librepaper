@@ -27,7 +27,7 @@ export const CATEGORIES = [
   {
     id: "render", says: "Render", offered: build,
     entries: [
-      { id: "render-local", says: "Local tools", terms: "companion connect install rescan available connection status" },
+      { id: "render-local", says: "Companion", terms: "companion connect install running status local tools" },
       { id: "render-latex-engine", says: "LaTeX engine", terms: "engine pdflatex xelatex automatic compiler" },
       { id: "render-latex-files", says: "Downloaded LaTeX files", terms: "latex compiler cache clear free space packages storage" },
       { id: "render-typst-tool", says: "Typst renderer", terms: "typst browser calepin render tool" },
@@ -47,6 +47,7 @@ export const CATEGORIES = [
     id: "integrations", says: "Integrations", offered: always,
     note: "This computer",
     entries: [
+      { id: "integrations-companion", says: "Companion", terms: "companion connect install running status" },
       { id: "zotero-status", says: "Zotero", terms: "zotero available version citations bibliography library references" },
     ],
   },

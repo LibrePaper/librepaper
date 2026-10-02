@@ -1,6 +1,7 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import StatusPill from "./StatusPill.svelte";
+  import CompanionBlock from "./CompanionBlock.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
@@ -13,9 +14,7 @@
   let addressSaving = $state(false);
   let addressSaved = $state(false);
   let addressSavedScope = "";
-  let connecting = $state(false);
   let doctor = $state("");
-  let connectionError = $state("");
   let companionSettings = $state(null);
   let settingsError = $state("");
   let pendingDialogAction = $state("");
@@ -32,28 +31,9 @@
     if (addressSaved && addressSavedScope && scope !== addressSavedScope) addressSaved = false;
   });
 
-  $effect(() => {
-    if (!connected) return;
-    connectionError = "";
-  });
   const connected = $derived(local?.state === "connected");
   const settingsScope = $derived(connected ? `${address}\n${local?.address || ""}\n${JSON.stringify(local?.instance ?? null)}` : "");
   function currentSettingsScope() { return settingsScope; }
-  const status = $derived(({ unknown: "Unknown", unreachable: "Disconnected", denied: "Access blocked", reachable: "Needs approval", unauthorized: "Needs approval", connected: "Connected", incompatible: "Update needed" })[local?.state] || "Unknown");
-  const statusTone = $derived(connected ? "good" : ["denied", "incompatible"].includes(local?.state) ? "warn" : "neutral");
-  const statusDescription = $derived(({ denied: "Allow local network access for this site in your browser settings.", incompatible: "Update the companion to continue.", unauthorized: "Approve access in the companion.", reachable: "Approve access in the companion.", unreachable: "Start the companion on this computer.", connected: "Local tools are ready." })[local?.state] || "Connect to the companion on this computer.");
-
-  async function pair() {
-    if (connecting) return;
-    connectionError = "";
-    connecting = true;
-    try {
-      await localBridge.connectApp();
-    } catch (error) {
-      connectionError = error?.message || "Could not open the companion permission window.";
-    }
-    finally { connecting = false; }
-  }
 
   async function doctorReport() {
     if (!connected) return;
@@ -172,22 +152,7 @@
 
 <p class="setting-description local-intro">Connect apps and tools on this computer, including coding agents, Zotero, and Quarto.</p>
 
-<SettingRow id="local-status" title="Local tools" description={statusDescription}>
-  <div class="setting-actions">
-    <StatusPill label={status} tone={statusTone} accessibleLabel={`Companion ${status.toLowerCase()}`} />
-    {#if local?.state !== "connected"}
-      <button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={pair}>{connecting ? "Connecting…" : "Connect"}</button>
-    {/if}
-  </div>
-</SettingRow>
-{#if connectionError}<p class="setting-description local-error" role="alert">{connectionError}</p>{/if}
-
-{#if !connected}
-  <section id="local-install-help" class="local-install" aria-label="Install LibrePaper Companion">
-    <h4 class="settings-subhead">Install LibrePaper Companion</h4>
-    <p class="setting-description">Follow the <a href="https://librepaper.org/install.html" target="_blank" rel="noreferrer">install instructions</a> for macOS, Linux and Windows. Then run <code>librepaper</code> in a terminal and return here to connect.</p>
-  </section>
-{/if}
+<CompanionBlock id="local-status" />
 
 <SettingRow id="local-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change only when using another port.` : "Change only when using another port."}>
   <div class="setting-actions">
@@ -229,8 +194,6 @@
 
 <style>
   .local-intro { max-width: 42rem; margin-block: 0 calc(var(--spacing) * 3); }
-  .local-install { display: grid; gap: calc(var(--spacing) * 3); margin-block: calc(var(--spacing) * 4); }
-  .local-error { margin-block: calc(var(--spacing) * 2); color: var(--color-error-text); }
   .companion-startup-switch { appearance: none; border: 0; padding: 0; cursor: pointer; }
   .companion-startup-switch[data-state="unknown"] { background: var(--color-subtle); }
   .companion-startup-switch[data-state="unknown"] .switch-thumb { visibility: hidden; }

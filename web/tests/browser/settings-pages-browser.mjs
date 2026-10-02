@@ -148,7 +148,7 @@ try {
   };
   const everything = ["render-local", "render-latex-engine", "render-latex-files", "render-typst-tool", "calepin-status", "calepin-executable", "calepin-arguments",
     "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments",
-    "rendering-profile", "rendering-parameters", "zotero-status",
+    "rendering-profile", "rendering-parameters", "integrations-companion", "zotero-status",
     "local-status", "local-address", "local-doctor", "remote-status", "remote-address", "storage-account", "account-erase"];
 
   // The navigation, in order, for a visitor on a Quarto document.
@@ -178,15 +178,13 @@ try {
   await show("render", "typst", "Render");
   await until("the Calepin rows", () => present(["calepin-executable"]).then((found) => found.length === 1), 5000);
   assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "render-typst-tool", "calepin-status", "calepin-executable", "calepin-arguments",
-    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments",
-    "rendering-profile", "rendering-parameters"]);
+    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments", "rendering-profile", "rendering-parameters"]);
   assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
   await show("render", "latex", "Render");
   await until("the LaTeX rows", () => present(["render-latex-files"]).then((found) => found.length === 1), 5000);
   assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "render-typst-tool", "calepin-status", "calepin-executable", "calepin-arguments",
-    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments",
-    "rendering-profile", "rendering-parameters"]);
+    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments", "rendering-profile", "rendering-parameters"]);
   assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
   await show("render", "html", "Render");
@@ -199,7 +197,7 @@ try {
   // Zotero feeds a document without building it.
   await show("integrations", "quarto", "Integrations");
   await capture("zotero");
-  assert.deepEqual(await present(everything), ["zotero-status"]);
+  assert.deepEqual(await present(everything), ["integrations-companion", "zotero-status"]);
   assert.deepEqual(await subheads(), ["Zotero"]);
 
   // The Companion page is the connection and the machine, not the tools.
@@ -230,7 +228,7 @@ try {
   await show("integrations", "zotero", "Integrations");
   assert.match(await b.evaluate(`document.querySelector('.integration-note').textContent`), /local API/i);
   assert.match(await b.evaluate(`document.querySelector('.integration-note').textContent`), /Settings/i);
-  assert.match(await b.evaluate(`document.querySelector('.settings-body').textContent`), /Companion disconnected|Requires Companion/i);
+  assert.match(await b.evaluate(`document.querySelector('.settings-body').textContent`), /Companion|Not running/i);
   assert.equal(await b.evaluate(`document.querySelector('.integration-error') !== null`), false, "Zotero does not load an editable companion config");
 
   await capture("zotero-offline");

@@ -97,7 +97,7 @@ try {
   assert.equal((await connectionState('Remote')).offline,true,'Remote pill turns red while disconnected');
   await clickPill('Local');
   await until('Companion settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Companion"'),3000);
-  assert.equal(await b.evaluate('Boolean(document.querySelector("#local-status .setting-title")?.textContent.trim())'),true,
+  assert.equal(await b.evaluate('Boolean(document.querySelector("#local-status .companion-name")?.textContent.trim())'),true,
     'Local settings shows connection status text');
   assert.equal((await connectionState('Local')).offline,true,'Local pill is red while its app is unavailable');
   const localSettingsText = await b.evaluate('document.querySelector(".settings-body").innerText');

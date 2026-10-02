@@ -1,6 +1,7 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import StatusPill from "./StatusPill.svelte";
+  import CompanionBlock from "./CompanionBlock.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import { backups } from "../../lib/companion/backups.svelte.js";
@@ -19,7 +20,6 @@
 
   let busy = $state("");
   let error = $state("");
-  let connecting = $state(false);
   let saved = $state(false);
   let requestScope = 0;
   let lastScope = "";
@@ -37,20 +37,6 @@
       saved = false;
     }
   });
-
-  async function connect() {
-    if (connecting) return;
-    connecting = true;
-    error = "";
-    const actionScope = requestScope;
-    try {
-      await localBridge.connectApp();
-    } catch (cause) {
-      if (actionScope === requestScope) error = cause?.message || "Could not connect to LibrePaper Companion.";
-    } finally {
-      connecting = false;
-    }
-  }
 
   async function authorize() {
     if (!signedIn || !paired || !needsLogin || busy) return;
@@ -152,10 +138,7 @@
     <StatusPill label="Signed out" />
   </SettingRow>
 {:else if !paired}
-  <SettingRow id="backup-connection" title="Companion connection" description="Start the companion on this computer, then connect to schedule backups." scope="This computer">
-    <StatusPill label="Disconnected" />
-    <button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button>
-  </SettingRow>
+  <CompanionBlock id="backup-connection" needs="backups" />
 {:else if backupStatus.error}
   <div class="setting-status" data-tone="warn" role="alert">
     <span class="setting-status-dot" aria-hidden="true"></span>

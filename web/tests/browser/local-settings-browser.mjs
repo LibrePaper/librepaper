@@ -132,7 +132,7 @@ try {
     text: document.body.innerText,
     details: document.querySelectorAll('details').length,
     summaries: document.querySelectorAll('summary').length,
-    install: document.querySelector('#local-install-help a')?.href,
+    install: document.querySelector('#local-status a[href*="install"]')?.href,
   })`);
   const disconnected = JSON.parse(initial);
   assert.equal(disconnected.install, "https://librepaper.org/install.html", "the install section links to the one install page");
@@ -159,7 +159,7 @@ try {
   await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:8763/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
   await until("connected settings shown", () => b.evaluate("Boolean(document.querySelector('#quarto-executable')) && document.querySelector('#local-startup [role=switch]')?.disabled === false"), 5000);
   const connectedText = await b.evaluate("document.body.innerText");
-  assert.equal(await b.evaluate("document.querySelector('#local-install-help')"), null, "a connected companion needs no install link");
+  assert.equal(await b.evaluate("document.querySelector('#local-status a[href*=\"install\"]')"), null, "a connected companion needs no install link");
   assert.doesNotMatch(connectedText, /permission window was blocked/);
   assert.doesNotMatch(connectedText, /Build presets|Available tools/);
   assert.match(connectedText, /Available · 1\.6\.0/);

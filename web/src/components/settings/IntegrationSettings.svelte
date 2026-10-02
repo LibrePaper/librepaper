@@ -148,7 +148,7 @@
 
 {#if name !== "zotero"}<SettingRow id={`${name}-status`} title="Status" description="" scope="This computer">
   {#if !isConnected}
-    <StatusPill label="Companion disconnected" tone="neutral" accessibleLabel={`Connect the local companion to configure ${name}.`} />
+    <StatusPill label="Not checked" tone="neutral" accessibleLabel={`Connect the local companion to configure ${name}.`} />
   {:else if name !== "zotero" && !settingsLoaded && !settingsError}
     <StatusPill label="Loading settings…" />
   {:else if capability?.available}
@@ -179,7 +179,7 @@
   {/if}
 {#if name === "zotero"}
   <SettingRow id="zotero-status" title="Zotero library" description="Use your local Zotero library for citations and references.">
-    <StatusPill label={!isConnected ? "Companion disconnected" : capability?.available ? (capability.version ? `Available · ${capability.version}` : "Available") : capability ? "Unavailable" : "Availability unknown"} tone={!isConnected ? "neutral" : capability?.available ? "good" : "warn"} />
+    <StatusPill label={!isConnected ? "Not checked" : capability?.available ? (capability.version ? `Available · ${capability.version}` : "Available") : capability ? "Unavailable" : "Availability unknown"} tone={!isConnected ? "neutral" : capability?.available ? "good" : "warn"} />
     {#if isConnected && capability?.note}<span class="setting-description">{capability.note}</span>{/if}
   </SettingRow>
   <p class="setting-description integration-note">Enable Zotero’s local API in Settings → Advanced → “Allow other applications on this computer to communicate with Zotero”.</p>

@@ -10,7 +10,7 @@
   import LatexFilesSettings from "./LatexFilesSettings.svelte";
   import QuotaSettings from "./QuotaSettings.svelte";
   import BuildSettings from "./BuildSettings.svelte";
-  import LocalToolsSetting from "./LocalToolsSetting.svelte";
+  import CompanionBlock from "./CompanionBlock.svelte";
   import IntegrationSettings from "./IntegrationSettings.svelte";
   import RenderingSettings from "./RenderingSettings.svelte";
   import LocalAppSettings from "./LocalAppSettings.svelte";
@@ -86,7 +86,7 @@
         {#if shown.id === "editor"}
           <EditorSettings {keys} {onkeys} {commands} />
         {:else if shown.id === "render"}
-          <LocalToolsSetting />
+          <CompanionBlock id="render-local" needs="Calepin, Pandoc and Quarto" />
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4><span class="settings-scope">This browser</span></div>
@@ -108,6 +108,8 @@
             <RenderingSettings {userId} {onquartooptions} />
           </section>
         {:else if shown.id === "integrations"}
+          <CompanionBlock id="integrations-companion" needs="Zotero" />
+
           <section class="settings-subsection">
             <h4 class="settings-subhead">Zotero</h4>
             <IntegrationSettings name="zotero" />
