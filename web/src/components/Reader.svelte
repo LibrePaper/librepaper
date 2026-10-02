@@ -2902,7 +2902,6 @@
   // The Files panel is mounted on its first visit and draws the name field it
   // focuses, so the panel is opened and the DOM given a turn before the panel
   // is asked.
-  const FILE_COMMANDS = ["new-file", "new-folder", "upload", "offline", "download-pdf", "download-html", "download-docx", "download", "share", "history", "compile", "project-folder", "settings"];
   async function chooseFileCommand(value) {
     if (value === "settings") return openSettings("editor");
     if (value === "project-folder") return void (projectFolderOpen = true);
@@ -2964,12 +2963,6 @@
     const opening = showPanel(name);
     if (width <= 760) showMobileView("sidebar");
     return opening;
-  }
-
-  // The one menu a narrow screen has stands in for all of them.
-  function chooseCompactCommand(value) {
-    if (FILE_COMMANDS.includes(value)) return void chooseFileCommand(value);
-    return chooseViewCommand(value);
   }
 
   /* ------------------------------------------------------------------- boot */
@@ -3827,9 +3820,19 @@
     {/if}
   </div>
 {/snippet}
+{#snippet faceSwitch()}
+  <div class="face-switch" role="group" aria-label="Workspace view">
+    <IconButton icon="eye" label="Document" pressed={shown.document}
+                onclick={() => showMobileView("document")} />
+    {#if editing || panel === "history"}
+      <IconButton icon="code-xml" label="Source" pressed={shown.source}
+                  onclick={() => showMobileView("source")} />
+    {/if}
+  </div>
+{/snippet}
 {#snippet previewStatusControl()}
   {#if sourceFormat === "quarto" && mayEdit && !localExecution}
-    <button class="btn btn-sm lp-control-brand" onclick={() => (localExecutionConsent = true)}>Turn on local execution</button>
+    <button class="btn btn-sm lp-control-brand reader-local-execution" aria-label="Turn on local execution" title="Turn on local execution" onclick={() => (localExecutionConsent = true)}><span class="execution-full">Turn on local execution</span><span class="execution-short">Run</span></button>
   {:else}
     <PreviewStatus label={previewStatusLabel} busy={previewBusy || localConnecting}
       tone={previewProblem && !localConnecting ? "error" : "neutral"}>
@@ -3838,22 +3841,12 @@
   {/if}
 {/snippet}
 
-<Nav {me}>
+<Nav {me} reader>
   {#snippet tools()}
-    <!-- The two faces of the one thing this bar already names. On a wide
-         window the choice is the layout menu and the split; on a narrow one
-         only one face fits at a time, so it becomes a pair of buttons, and it
-         belongs up here rather than at the foot of the window: it says what
-         you are looking at, which is what the rest of this bar says, while
-         the row along the bottom is a list of panels to open beside it.
-         Neither is pressed while a panel covers them both. -->
-    {#if adapted && (editing || panel === "history")}
-      <div class="face-switch" role="group" aria-label="Workspace view">
-        <IconButton icon="eye" label="Document" pressed={shown.document}
-                    onclick={() => showMobileView("document")} />
-        <IconButton icon="code-xml" label="Source" pressed={shown.source}
-                    onclick={() => showMobileView("source")} />
-      </div>
+    <!-- Between 761px and the split's narrow point, the face choice stays in
+         the top bar. Compact widths put it beside the panel menu below. -->
+    {#if adapted && !compact && (editing || panel === "history")}
+      {@render faceSwitch()}
     {/if}
     <!-- How the last build went. This stood in a band across the top of the
          preview pane, which was a second bar under this one, present on every
@@ -3894,11 +3887,9 @@
          downloads, sharing, history and settings all belong to the project
          whatever pane is on screen, so it stays put when the document pane is
          hidden. -->
-    <div class="desktop-workspace-menu">
-      <MenubarMenu id="file" label="File" onselect={(command) => void chooseFileCommand(command)}>
-        {@render fileItems()}
-      </MenubarMenu>
-    </div>
+    <MenubarMenu id="file" label="File" onselect={(command) => void chooseFileCommand(command)}>
+      {@render fileItems()}
+    </MenubarMenu>
     {#if editing && mayEdit}
       <MenubarMenu id="edit" label="Edit" disabled={!editor || !!mergeTarget || !!shownFigure}
                    onopen={refreshEditAvailability}
@@ -3915,18 +3906,10 @@
       <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} disabled={!mayEdit || !editor} />
     {/if}
     {#if editing}
-      <div class="desktop-workspace-menu">
-        <MenubarMenu id="view" label="View" onselect={chooseViewCommand}>
-          {@render viewItems()}
-        </MenubarMenu>
-      </div>
-    {/if}
-    <div class="compact-workspace-menu">
-      <MenubarMenu id="compact" label="Menu" aria-label="File and view" onselect={chooseCompactCommand}>
-        {@render fileItems()}
-        {#if editing}<hr class="hr my-1" />{@render viewItems()}{/if}
+      <MenubarMenu id="view" label="View" onselect={chooseViewCommand}>
+        {@render viewItems()}
       </MenubarMenu>
-    </div>
+    {/if}
   {/snippet}
   {#snippet children()}
     <span id="docTitle" class="nav-document truncate" title={toolbarPath || doc.title || ""}>
@@ -4227,11 +4210,12 @@
            controls={previewControls}
            away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || projectUnreadable} />
 
-  <!-- On compact screens, offer the available panels from one menu at the
-       bottom edge. The document/source switch remains in the workspace bar. -->
-  {#if compact && tabs.length}
+  <!-- On compact screens the document/source choice lives beside the panel
+       menu at the bottom edge, leaving the top bar for project controls. -->
+  {#if compact}
     <nav class="mobile-pane-nav" aria-label="Workspace panels">
-      <CompactPanelMenu tabs={tabs} {panel} open={shown.comments} onselect={selectPanel} />
+      {@render faceSwitch()}
+      <CompactPanelMenu tabs={tabs} {panel} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()} />
     </nav>
   {/if}
 
@@ -4371,7 +4355,8 @@
     color: var(--color-text-secondary);
     font-size: var(--text-sm);
   }
-  .compact-workspace-menu { display: none; }
+  .execution-short { display: none; }
+  .mobile-pane-nav { justify-content: space-between; gap: var(--spacing); }
   /* The two faces read as one control with one of them chosen, rather than as
      two buttons that happen to be next to each other: a tray around the pair,
      and the tint the pressed icon already wears marking which is in front. */
@@ -4381,23 +4366,21 @@
   @media (max-width: 760px) {
     .face-switch :global(.icon-control) { width: 2.5rem; height: 2.5rem; }
   }
-  .connection-settings { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .5); }
-  .connection-pill { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .75); min-height: 1.75rem; padding: 0 calc(var(--spacing) * 2); border: 1px solid var(--color-border); border-radius: 999px; background: var(--color-subtle); color: var(--color-text-secondary); font: inherit; font-size: var(--text-xs); cursor: pointer; }
+  .connection-settings { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); }
+  .connection-pill { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .75); min-height: 1.75rem; padding: 0 calc(var(--spacing) * 2); border: 1px solid var(--color-border); border-radius: 999px; background: var(--color-subtle); color: var(--color-text-secondary); font: inherit; font-size: var(--text-xs); cursor: pointer; }
   .connection-pill:hover { background: var(--color-row-hover); color: var(--color-text); }
   .connection-pill:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
   .connection-dot { width: .5rem; height: .5rem; flex: 0 0 .5rem; border-radius: 50%; background: var(--color-success-solid); }
   .connection-dot.offline { background: var(--color-error-solid); }
-  /* A phone runs no local app, so its pill goes; and the bar has no room for
-     words, so the remote pill is its dot, still named by its aria-label. */
+  /* Narrow windows keep all three connection controls as named status dots. */
   @media (max-width: 600px) {
     .connection-settings { gap: 0; }
     .connection-pill { min-height: 1.5rem; padding-inline: calc(var(--spacing) * 1.25); }
     .connection-pill > span:not(.connection-dot) { display: none; }
-    .local-pill { display: none; }
     /* Nobody else here yet: an empty group would still take a gap. */
     .presence:empty { display: none; }
   }
-  .presence { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-text-secondary); font-size: var(--text-xs); }
+  .presence { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-divider); color: var(--color-text-secondary); font-size: .65rem; }
   .preview-status-details { display: grid; gap: calc(var(--spacing) * 2); justify-items: start; }
@@ -4406,8 +4389,12 @@
   .menu-section-label { padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5) calc(var(--spacing) * 0.5) calc(var(--spacing) * 7); color: var(--color-text-secondary); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
   .preview-status-details :global(.latex-status) { display: flex; }
   @media (max-width: 600px) {
-    .desktop-workspace-menu { display: none; }
-    .compact-workspace-menu { display: block; }
+    .reader-local-execution { padding-inline: .5rem; }
+    .reader-local-execution .execution-full { display: none; }
+    .reader-local-execution .execution-short { display: inline; }
+  }
+  @media (max-width: 760px) {
+    :global(main.reader.adapted .sidebar-activity) { display: none; }
   }
   /* The bar over a selection: one row of icons, with the swatches unfolding
      beneath Highlight when its marked colour strip is pressed. */

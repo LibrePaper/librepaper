@@ -18,6 +18,9 @@
 body {
   background: var(--color-shell);
 }
+@media (max-width: 760px) {
+  :root:has(body > nav.reader-nav) { --librepaper-bar: 6rem; }
+}
 body > nav {
   position: sticky;
   top: 0;

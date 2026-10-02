@@ -18,7 +18,7 @@ const entry = join(temp, "entry.js");
 const room = join(temp, "room.js");
 const out = join(temp, "build");
 writeFileSync(room, `
-import { LoroDoc, LoroText } from "loro-crdt";
+import { LoroDoc, LoroText, EphemeralStore } from "loro-crdt";
 const encode = b => btoa(String.fromCharCode(...b));
 const server = new LoroDoc();
 const files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
@@ -28,6 +28,9 @@ for (let i = 0; i < 70; i++) { const file = new LoroText(); file.insert(0, 'chap
 server.commit();
 const update = encode(server.export({ mode: "update" }));
 const vector = encode(server.oplogVersion().encode());
+const peers = new EphemeralStore(30000);
+const remoteKeys = Array.from({length:5}, (_, i) => 'user:remote-tab-' + i);
+for (const [i,key] of remoteKeys.entries()) peers.set(key, {name:["Alex Collaborator","Jordan Editor","Sam Reviewer","Riley Author","Casey Reader"][i],tab:'remote-tab-' + i,color:["#5577bb","#bb5577","#55aa77","#aa7755","#7755aa"][i]});
 export function openRoom(slug, {onMessage, onConnected}) {
   window.roomReceive = onMessage;
   window.roomSent = [];
@@ -35,7 +38,11 @@ export function openRoom(slug, {onMessage, onConnected}) {
   return {
     send(message) {
       window.roomSent.push(message);
-      if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", protocol:"librepaper.room.v3", vector, durableVector: vector, updates:[update]}));
+      if (message.type === "doc-open") queueMicrotask(() => {
+        onMessage({type:"doc-state", protocol:"librepaper.room.v3", vector, durableVector: vector, updates:[update]});
+        for (const key of remoteKeys) onMessage({type:"doc-presence", update:encode(peers.encode(key))});
+        onMessage({type:"doc-peers", count:6});
+      });
       return {ok:true};
     },
     sendLive(message) { window.roomSent.push(message); return {ok:true}; },
@@ -73,9 +80,9 @@ globalThis.fetch = async (url, init = {}) => {
     if (path.endsWith('/capabilities')) return Response.json({builders:[]});
     return Response.json({});
   }
-  if (path.endsWith('/me')) return Response.json({name:'Tester',providers:[]});
+  if (path.endsWith('/me')) return Response.json({name:'Very Long Tester Account Name',handle:'tester-handle',provider:'github',providers:[]});
   if (path.endsWith('/config')) return Response.json({ extensions: ['.html', '.md'], text_extensions: ['.html', '.md'], asset_extensions: ['.png'], derived_extensions: [] });
-  if (path === '/api/documents/paper') return Response.json({title:'Responsive',created_at:'test',role:'editor',source_format:'html',docs_origin:location.origin,can_moderate:true,can_see_sharing:true});
+  if (path === '/api/documents/paper') return Response.json({title:'A deliberately long responsive workspace title',created_at:'test',role:'editor',source_format:'html',docs_origin:location.origin,can_moderate:true,can_see_sharing:true});
   if (path.endsWith('/frame')) return Response.json({token:'frame-token',until:9999999999});
   if (path.endsWith('/chat')) return Response.json({id:'chat', token:'private'});
   if (path.includes('/comments')) return { ok:true, json:async()=>({comments:[]}) };
@@ -125,8 +132,8 @@ try {
     await until('Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
     await click(`${panelMenu} [data-panel-id="${panelId(name)}"]`);
   };
-  // Which face the main area wears is chosen in the bar at the top, beside
-  // the file it names; the row along the bottom is the panels alone.
+  // Narrow windows put the face switch beside the bottom menu; an adapted
+  // split above the compact breakpoint keeps it in the top bar.
   const face = (name) => `.face-switch [aria-label="${name}"]`;
   const visible = (selector) => b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); return Boolean(node?.getClientRects().length && getComputedStyle(node).visibility !== 'hidden'); })()`);
   const bounded = async () => {
@@ -222,6 +229,9 @@ try {
     return {background:style.backgroundColor, shadow:style.boxShadow}; })()`);
   assert.notEqual(menuChrome.background, 'rgba(0, 0, 0, 0)', 'the menu is opaque: ' + JSON.stringify(menuChrome));
   assert.notEqual(menuChrome.shadow, 'none', 'the menu keeps its shadow');
+  await click('body');
+  await clickText('.menubar-item', 'View');
+  await until('view menu', () => b.evaluate('Boolean(document.querySelector(".explorer-menu[data-state=open]"))'), 3000);
   await click('body');
 
   await click('.sidebar-activity [aria-label="Collaboration"]');
@@ -369,15 +379,52 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".explorer-scroll").scrollTop'), filesTop);
   assert.equal(await b.evaluate('document.querySelector(".filelist .panel-actions").getBoundingClientRect().bottom <= document.querySelector(".explorer-scroll").getBoundingClientRect().top'), true);
 
+  for (const width of [320,390,600,760]) {
+    await b.resize(width,844); await flush();
+    const header = await b.evaluate(`(() => {
+      const toolbar=document.querySelector('nav');
+      const menuItems=[...document.querySelectorAll('.menubar-item')];
+      const account=toolbar?.querySelector('.account');
+      const pills=[...toolbar?.querySelectorAll('.connection-pill')||[]];
+      const presence=toolbar?.querySelector('.presence');
+      const face=document.querySelector('.face-switch');
+      const mobile=document.querySelector('.mobile-pane-nav');
+      const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}};
+      const items=[...pills,account,presence].filter(Boolean);
+      const boxes=items.map(rect);
+      const overlaps=boxes.some((a,i)=>boxes.slice(i+1).some(b=>a.left < b.right-1 && b.left < a.right-1 && a.top < b.bottom-1 && b.top < a.bottom-1));
+      return {width:innerWidth,items:boxes,overlaps,
+        menus:menuItems.map(n=>{const r=n.getBoundingClientRect();return {text:n.textContent.trim(),visible:!!n.getClientRects().length && getComputedStyle(n).display!=='none' && getComputedStyle(n).visibility!=='hidden' && r.width>0 && r.height>0 && r.left>=0 && r.right<=innerWidth};}),
+        faceInMobile:!!mobile?.contains(face), faceVisible:!!face?.getClientRects().length};
+    })()`);
+    assert.equal(header.overlaps,false,`toolbar controls do not overlap at ${width}px: ${JSON.stringify(header)}`);
+    assert.ok(header.items.every(item=>item.width>0 && item.height>0 && item.left>=-1 && item.right<=width+1 && item.top>=0 && item.bottom<=844),`identity and connection controls stay visible and inside the viewport at ${width}px: ${JSON.stringify(header)}`);
+    for (const label of ['File','View']) assert.equal(header.menus.some(item=>item.visible&&item.text===label),true,`${label} stays visible at ${width}px: ${JSON.stringify(header)}`);
+    assert.equal(header.faceInMobile,true,`source/document switch lives in the mobile nav at ${width}px`);
+    assert.equal(header.faceVisible,true,`source/document switch is visible at ${width}px`);
+    for (const label of ['File','View']) {
+      await clickText('.menubar-item',label);
+      await until(`${label} menu opens at ${width}px`,()=>b.evaluate('Boolean(document.querySelector(".explorer-menu[data-state=open]"))'),3000);
+      await click('body');
+    }
+  }
+  await b.resize(900,900); await flush();
+  assert.equal(await b.evaluate('Boolean(document.querySelector(".face-switch")?.closest("nav:not(.mobile-pane-nav)"))'),true,'the source/document switch returns to the top toolbar above 760px');
   await b.resize(390,844); await flush();
   await click(face('Document'));
   const compactNav = await b.evaluate(`(() => {
     const bar = document.querySelector('.mobile-pane-nav');
     const trigger = bar?.querySelector('.compact-panels-trigger[aria-label="Panels"]');
     return { triggers: bar?.querySelectorAll('.compact-panels-trigger').length || 0,
-      children: bar?.children.length || 0, height: trigger?.getBoundingClientRect().height || 0 };
+      face: Boolean(bar?.querySelector('.face-switch')),
+      faceLabels: [...bar?.querySelectorAll('.face-switch button')||[]].map(button=>button.getAttribute('aria-label')),
+      height: trigger?.getBoundingClientRect().height || 0 };
   })()`);
-  assert.deepEqual(compactNav, {triggers:1,children:1,height:44}, 'mobile panels use one 44px Panels trigger');
+  assert.equal(compactNav.triggers,1,'mobile panels have one Panels trigger');
+  assert.equal(compactNav.face,true,'mobile nav includes the source/document switch beside Panels');
+  assert.deepEqual(compactNav.faceLabels,['Document','Source'],'both mobile workspace faces remain available');
+  assert.equal(compactNav.height,44,'mobile Panels trigger is 44px tall');
+  assert.equal(await b.evaluate('document.querySelector(".compact-panels-trigger[aria-label=Panels]").innerText.trim()'),'Panels', 'the icon has a visible Panels label');
   await click('.compact-panels-trigger[aria-label="Panels"]');
   await until('compact Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
   const menuPanels = await b.evaluate(`(() => [...document.querySelectorAll(${JSON.stringify(`${panelMenu} [data-panel-id]`)})].map(node => ({id:node.dataset.panelId,label:node.getAttribute('aria-label'),text:node.textContent.trim()})))()`);
@@ -386,6 +433,23 @@ try {
     ['changes','Changes','Changes'],['agent','Agent','Agent'],['history','History','History'],
     ['share','Share','Share'],['diagnostics','Diagnostics','Diagnostics']
   ], 'the Panels menu names every allowed workspace panel');
+  const workspaceActions = await b.evaluate(`(() => {
+    const menu=document.querySelector(${JSON.stringify(panelMenu)});
+    return ['settings','home','docs'].map(action=>{const node=menu.querySelector('[data-workspace-action="'+action+'"]');return {action,tag:node?.tagName,role:node?.getAttribute('role'),href:node?.getAttribute('href'),label:node?.textContent.trim()}});
+  })()`);
+  assert.deepEqual(workspaceActions.map(item=>item.action),['settings','home','docs'],'Settings, Home and Docs follow the panel controls');
+  assert.equal(workspaceActions[0].role,'menuitem','Settings keeps the menu item semantics');
+  assert.ok(workspaceActions[1].tag==='A' && workspaceActions[1].href==='/','Home remains a native link');
+  assert.ok(workspaceActions[2].tag==='A' && workspaceActions[2].href==='/documentation','Docs remains a native link');
+  const workspaceOrder = await b.evaluate(`(() => [...document.querySelector(${JSON.stringify(panelMenu)}).querySelectorAll('[data-panel-id],[data-workspace-action]')].map(node=>node.dataset.panelId||node.dataset.workspaceAction))()`);
+  assert.deepEqual(workspaceOrder.slice(-3),['settings','home','docs'],'workspace links are below the panels in order');
+  assert.equal(await b.evaluate(`(() => {const menu=document.querySelector(${JSON.stringify(panelMenu)});const settings=menu.querySelector('[data-workspace-action=settings]');return settings?.previousElementSibling?.matches('[role=separator]')})()`),true,'a separator divides panel controls from workspace links');
+  await click(`${panelMenu} [data-workspace-action="settings"]`);
+  await until('Settings dialog opened from Panels',()=>b.evaluate('Boolean(document.querySelector("[role=dialog]"))'),3000);
+  await b.evaluate('document.querySelector("[role=dialog]")?.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
+  await flush();
+  await click('.compact-panels-trigger[aria-label="Panels"]');
+  await until('Panels reopened after Settings',()=>b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`),3000);
   await click(`${panelMenu} [data-panel-id="files"]`);
   await click('.compact-panels-trigger[aria-label="Panels"]');
   await until('reopened Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
@@ -408,22 +472,49 @@ try {
   await until('keyboard closed Panels menu', () => b.evaluate(`!document.querySelector(${JSON.stringify(panelMenu)})`), 3000);
   assert.equal(await b.evaluate('document.activeElement?.matches(\'.compact-panels-trigger[aria-label="Panels"]\')'), true, 'Escape restores focus to Panels');
   await click('.compact-panels-trigger[aria-label="Panels"]');
-  await until('Panels menu for active close', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
+  await until('Panels menu for active selection', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
   await click(`${panelMenu} [data-panel-id="files"]`);
-  assert.equal(await visible('.filelist'), false, 'choosing the active panel returns to the document');
-  for (const [width,height] of [[320,844],[760,844],[320,420]]) {
+  assert.equal(await visible('.filelist'), true, 'choosing the active Files panel keeps it open');
+  assert.equal(await b.evaluate(`!document.querySelector(${JSON.stringify(panelMenu)})`),true,'choosing a panel closes the menu');
+  await click(face('Document'));
+  assert.equal(await visible('.filelist'), false, 'the face switch returns from Files to the document');
+  assert.equal(await visible('.viewport'), true, 'the document face is visible after leaving Files');
+  for (const [width,height] of [[320,844],[760,844],[320,420],[390,844]]) {
     await b.resize(width, height); await flush();
     await click('.compact-panels-trigger[aria-label="Panels"]');
     await until(`Panels menu at ${width}px`, () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
+    if (process.env.LIBREPAPER_COMPACT_SCREENSHOT) {
+      const screenshot = await b.command('Page.captureScreenshot', {format:'png'});
+      writeFileSync(process.env.LIBREPAPER_COMPACT_SCREENSHOT, Buffer.from(screenshot.data,'base64'));
+    }
     const menuBounds = await b.evaluate(`(() => { const menu=document.querySelector(${JSON.stringify(panelMenu)}); const items=document.querySelector('.compact-panels-items'); const rect=menu.getBoundingClientRect();
-      return {left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,width:innerWidth,height:innerHeight,
+      const bar=document.querySelector('.mobile-pane-nav').getBoundingClientRect();
+      const topBar=document.querySelector('.menubar')?.closest('nav')?.getBoundingClientRect();
+      return {left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,width:innerWidth,height:innerHeight,barTop:bar.top,barBottom:bar.bottom,topBarBottom:topBar?.bottom,
         itemScrollHeight:items?.scrollHeight||0,itemClientHeight:items?.clientHeight||0}; })()`);
     assert.ok(menuBounds.left >= -1 && menuBounds.right <= width + 1, `menu fits horizontally at ${width}px: ${JSON.stringify(menuBounds)}`);
     assert.ok(menuBounds.top >= -1 && menuBounds.bottom <= height + 1, `menu fits vertically at ${width}x${height}: ${JSON.stringify(menuBounds)}`);
+    assert.ok(menuBounds.top >= menuBounds.topBarBottom && menuBounds.top-menuBounds.topBarBottom <= 16 && Math.abs(menuBounds.bottom-menuBounds.barTop) <= 8,
+      `menu fills the space between the top toolbar and bottom nav at ${width}x${height}: ${JSON.stringify(menuBounds)}`);
     if (height < 500) {
       assert.ok(menuBounds.itemScrollHeight > menuBounds.itemClientHeight, 'the menu items scroll in a short viewport: ' + JSON.stringify(menuBounds));
-      const scrollMoved = await b.evaluate(`(() => { const items=document.querySelector('.compact-panels-items'); items.scrollTop=items.scrollHeight; return items.scrollTop>0; })()`);
-      assert.equal(scrollMoved, true, 'the menu items can scroll in a short viewport');
+      await b.evaluate(`(() => {const items=document.querySelector('.compact-panels-items');items.scrollTop=0;const r=items.getBoundingClientRect();window.scrollTarget={x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+      const point=await b.evaluate('window.scrollTarget');
+      await b.command('Input.dispatchMouseEvent',{type:'mouseWheel',x:point.x,y:point.y,deltaX:0,deltaY:500});
+      await flush();
+      assert.ok(await b.evaluate('document.querySelector(".compact-panels-items").scrollTop>0'),'a wheel gesture scrolls the menu items in a short viewport');
+      await b.evaluate('document.querySelector(".compact-panels-items").scrollTop=0');
+      await b.command('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:1});
+      await b.command('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:point.x,y:point.y}]});
+      await b.command('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:point.x,y:point.y-180}]});
+      await b.command('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+      await flush();
+      assert.ok(await b.evaluate('document.querySelector(".compact-panels-items").scrollTop>0'),'a touch gesture scrolls the menu items in a short viewport');
+      await b.command('Emulation.setTouchEmulationEnabled',{enabled:false});
+      await b.evaluate('document.querySelector(".compact-panels-items").scrollTop=0');
+      await b.command('Input.dispatchMouseEvent',{type:'mouseWheel',x:point.x,y:point.y,deltaX:0,deltaY:5000});
+      await flush();
+      assert.ok(await b.evaluate(`(() => {const doc=[...document.querySelectorAll(${JSON.stringify(`${panelMenu} [data-workspace-action]`)})].find(node=>node.dataset.workspaceAction==='docs');const clip=document.querySelector('.compact-panels-items').getBoundingClientRect();const r=doc.getBoundingClientRect();const x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;const hit=document.elementFromPoint(x,y);return r.top>=clip.top-1 && r.bottom<=clip.bottom+1 && (hit===doc || doc.contains(hit))})()`), 'Docs is visible inside the menu scrollport after a real scroll');
     }
     await click('body');
   }

@@ -16,7 +16,7 @@
   // Page-specific tools may include compact global state, such as the
   // Reader's connection and presence indicator. Pane-specific state stays
   // with the pane it describes.
-  let { me = {}, children, menus, tools } = $props();
+  let { me = {}, children, menus, tools, reader = false } = $props();
 </script>
 
 <!-- The way past the bar. Every page puts twenty-odd controls between the
@@ -26,7 +26,7 @@
      invisible otherwise, which is the only time anyone needs it. -->
 <a class="skip-link" href="#main">Skip to content</a>
 
-<nav class="flex items-center justify-between gap-4">
+<nav class="flex items-center justify-between gap-4" class:reader-nav={reader}>
   <div class="nav-identity flex min-w-0 items-center gap-3">
     <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
       <Logo />
@@ -75,7 +75,7 @@
   .skip-link:focus { top: calc(var(--spacing) * 2); outline: 2px solid var(--color-on-brand); outline-offset: 2px; }
   /* The button is the circle: no box of its own, a ring on hover so it reads
      as something to press, and the focus outline every icon control wears. */
-  :global(.account) { display: inline-grid; place-items: center; padding: 0; border: 0; background: none; border-radius: 50%; cursor: pointer; line-height: 0; }
+  :global(.account) { display: inline-grid; flex: none; place-items: center; padding: 0; border: 0; background: none; border-radius: 50%; cursor: pointer; line-height: 0; }
   :global(.account:hover), :global(.account[data-state="open"]) { box-shadow: 0 0 0 2px var(--color-border); }
   /* Who the menu belongs to: a label above the one action, not an action. */
   .account-who { padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2) calc(var(--spacing) * 0.5); font-size: var(--text-xs); color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -99,7 +99,23 @@
        intrinsic width can make the document itself wider than the phone once
        a page adds its own view and status controls. */
     .nav-actions { gap: 0; flex-shrink: 1; min-width: 0; }
+    .reader-nav .nav-actions { gap: var(--spacing); flex-shrink: 0; }
     .nav-identity { gap: var(--spacing); flex-shrink: 1; min-width: 0; }
     .nav-trail { display: none; }
+  }
+  @media (max-width: 760px) {
+    :global(body:has(> nav.reader-nav) > nav.reader-nav) {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+      height: var(--librepaper-bar);
+      padding: 0 calc(var(--spacing) * 2);
+      gap: 0 var(--spacing);
+    }
+    .reader-nav .nav-identity { display: contents; }
+    .reader-nav .nav-identity > a { grid-area: 1 / 1; }
+    .reader-nav .nav-trail { grid-area: 1 / 2; }
+    .reader-nav .nav-actions { grid-area: 1 / 3; min-width: 0; }
+    .reader-nav :global(.menubar) { grid-area: 2 / 1 / 3 / 4; width: 100%; justify-content: space-between; }
   }
 </style>

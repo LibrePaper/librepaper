@@ -78,7 +78,7 @@ try {
   b = await browser("chromium", join(temp, "profile"), 19000 + Math.floor(Math.random() * 1000));
   await b.resize(1400, 900);
   await b.navigate(`http://127.0.0.1:${serverHttp.address().port}/docs/paper`);
-  await until("the bar", () => b.evaluate('document.querySelectorAll(".menubar-item").length >= 5'), 10000);
+  await until("the bar", () => b.evaluate('["file", "edit", "insert", "view"].every(id => document.querySelector(`[data-menubar="${id}"]`))'), 10000);
 
   const flush = () => b.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   const centre = (name) => b.evaluate(`(() => { const r = document.querySelector('[data-menubar=${JSON.stringify(name)}]').getBoundingClientRect(); return {x: r.left + r.width/2, y: r.top + r.height/2}; })()`);
