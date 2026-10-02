@@ -94,42 +94,27 @@ assert.match(build, /unknown: "The local companion has not been looked for yet\.
 assert.match(reader, /const localExecutionRelevant = \$derived\(\["quarto", "typst"\]\.includes\(sourceFormat\) && mayEdit\);/);
 assert.match(reader, /\{#if localExecutionRelevant\}[\s\S]{0,900}?Execute code locally/);
 
-// Behavior checks on offered rows per context.
+// A tool that builds the document is configured under Render, whole: its
+// executable beside what this document asks of it, and only for a format it
+// can build. Integrations is for what feeds a document without building it.
 const render = CATEGORIES.find((category) => category.id === "render");
 const renderRows = (context) => render.entries.filter((entry) => !entry.offered || entry.offered(context)).map((entry) => entry.id);
-for (const format of ["quarto", "markdown", "typst", "latex"]) {
-  const context = { format, mayEdit: true };
+const expectRows = (context, { with: present = [], without: absent = [] }) => {
   const rows = renderRows(context);
-  if (format === "quarto") {
-    assert.ok(rows.includes("quarto-status"), "Quarto format includes quarto-status");
-    assert.ok(rows.includes("quarto-executable"), "Quarto format includes quarto-executable");
-    assert.ok(rows.includes("rendering-profile"), "Quarto format includes rendering-profile");
-    assert.ok(rows.includes("quarto-execution"), "Quarto format includes quarto-execution");
-    assert.ok(rows.includes("render-folder"), "Quarto format includes render-folder");
-    assert.ok(!rows.includes("calepin-status"), "Quarto format does not include calepin-status");
-    assert.ok(!rows.includes("render-latex-files"), "Quarto format does not include render-latex-files");
-  }
-  if (format === "markdown") {
-    assert.ok(rows.includes("quarto-status"), "Markdown format includes quarto-status");
-    assert.ok(!rows.includes("rendering-profile"), "Markdown format without tool does not include rendering-profile");
-    assert.ok(!rows.includes("quarto-execution"), "Markdown format does not include quarto-execution");
-  }
-  if (format === "typst") {
-    assert.ok(rows.includes("calepin-status"), "Typst format includes calepin-status");
-    assert.ok(rows.includes("render-folder"), "Typst format includes render-folder");
-    assert.ok(!rows.includes("quarto-status"), "Typst format does not include quarto-status");
-  }
-  if (format === "latex") {
-    assert.ok(rows.includes("render-latex-files"), "LaTeX format includes render-latex-files");
-    assert.ok(!rows.includes("quarto-status"), "LaTeX format does not include quarto-status");
-    assert.ok(!rows.includes("calepin-status"), "LaTeX format does not include calepin-status");
-    assert.ok(!rows.includes("render-folder"), "LaTeX format does not include render-folder");
-  }
-}
-// With tool specified for markdown, includes rendering options.
-const mdWithQuarto = renderRows({ format: "markdown", mayEdit: true, tool: "quarto" });
-assert.ok(mdWithQuarto.includes("rendering-profile"), "Markdown with Quarto tool includes rendering-profile");
+  const name = JSON.stringify(context);
+  for (const id of present) assert.ok(rows.includes(id), `${name} offers ${id}`);
+  for (const id of absent) assert.ok(!rows.includes(id), `${name} does not offer ${id}`);
+};
+expectRows({ format: "quarto", mayEdit: true }, {
+  with: ["quarto-status", "quarto-executable", "rendering-profile", "quarto-execution", "render-folder"],
+  without: ["calepin-status", "render-latex-files"],
+});
+expectRows({ format: "markdown", mayEdit: true }, { with: ["quarto-status"], without: ["rendering-profile", "quarto-execution"] });
+expectRows({ format: "markdown", mayEdit: true, tool: "quarto" }, { with: ["rendering-profile", "rendering-parameters"] });
+expectRows({ format: "typst", mayEdit: true }, { with: ["calepin-status", "render-folder"], without: ["quarto-status"] });
+expectRows({ format: "latex", mayEdit: true }, { with: ["render-latex-files"], without: ["quarto-status", "calepin-status", "render-folder"] });
+expectRows({ format: "latex", mayEdit: false }, { without: ["render-latex-files"] });
 const integrations = CATEGORIES.find((category) => category.id === "integrations");
-assert.deepEqual(integrations.entries.map((e) => e.id), ["zotero-status"], "Integrations category contains only zotero-status");
+assert.deepEqual(integrations.entries.map((entry) => entry.id), ["zotero-status"]);
 
 console.log("settings-quarto: Quarto exposes the shared local pairing and doctor panel without LaTeX controls; the build pane and the local-execution item reach for the companion only when asked; a tool that builds the document is configured under Render, whole");

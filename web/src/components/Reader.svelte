@@ -253,7 +253,6 @@
   let localConnecting = $state(false);
   let quartoLiveSyncTimer = null;
   let calepinSyncTimer = null;
-  // The binding ID for local rendering, remembered per document.
   let quartoBindingId = $state("");
   const localAppStatus = $derived(companion.status);
 

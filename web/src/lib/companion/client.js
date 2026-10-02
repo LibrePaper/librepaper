@@ -370,7 +370,7 @@ function requirePairing() {
 function instructionsFor(state) {
   switch (state) {
     case "unreachable":
-      return `LibrePaper Companion is not running on this computer (nothing answered at ${address()}). Run \`librepaper\` in a terminal, then try again. Not installed? See Local companion settings.`;
+      return `LibrePaper Companion is not running on this computer (nothing answered at ${address()}). Run \`librepaper\` in a terminal, then try again. Not installed? See Companion settings.`;
     case "denied":
       return "Your browser blocked this site from reaching LibrePaper Companion on this computer. Allow local network access for this site in the browser's site settings, then try again.";
     case "unauthorized":

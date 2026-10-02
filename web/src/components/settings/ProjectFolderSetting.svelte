@@ -3,11 +3,13 @@
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
+  // The folder on this computer that live previews build in. It watches the
+  // companion's status and never probes for it: opening the Render page must
+  // not make the browser ask for local network access. Until the companion
+  // is connected there is no folder to choose, and the row is not drawn.
   let { sourceFormat = "", main = "", mayEdit = false, onbindingid } = $props();
   const local = $derived(companion.status);
   $effect(() => companion.watch());
-  // The companion pane handles probing; showing this pane should not trigger
-  // a local network access request on its own.
   const quarto = $derived(sourceFormat === "quarto");
   const connected = $derived(local?.state === "connected");
 

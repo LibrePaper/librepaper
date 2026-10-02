@@ -33,7 +33,7 @@ comparison instead. A checkpoint's actor identifies who recorded the event,
 not necessarily who authored every changed passage; uncertain authorship is
 shown as unknown.
 
-Signed-in owners choose their display timezone in Storage settings. A
+Signed-in owners choose their display timezone in Account settings. A
 deployment's storage limits still apply to what a project holds in total.
 
 The changes are also listed as prose, folded away under the count, and the

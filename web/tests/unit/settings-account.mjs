@@ -28,14 +28,13 @@ assert.match(api, /export const eraseAccount = \(\) => post\("\/api\/account\/er
 assert.match(account, /import \{ eraseAccount \} from "\.\.\/\.\.\/lib\/api\.js";/);
 assert.doesNotMatch(account, /fetch\(/);
 
-// Behavior checks: offered category and rows by context.
+// The same, asked of the registry itself: a visitor gets the page with the
+// server on it and nothing else, and signing in is all it takes for the rest.
 const accountCategory = CATEGORIES.find((category) => category.id === "account");
 const accountRows = (context) => accountCategory.entries.filter((entry) => !entry.offered || entry.offered(context)).map((entry) => entry.id);
-// Unsigned browsers see remote-status but no erasure.
-const unsigned = accountRows({ signedIn: false, format: "", mayEdit: false });
-assert.ok(unsigned.includes("account"), "Account category is offered to unsigned browsers");
-assert.deepEqual(unsigned, ["remote-status"], "Unsigned browser sees only remote-status");
-// Signed-in browsers see erasure and storage.
+const visitor = { signedIn: false, format: "", mayEdit: false };
+assert.ok(offered(visitor).some((category) => category.id === "account"), "the Account page is offered to a visitor");
+assert.deepEqual(accountRows(visitor), ["remote-status"], "a visitor sees only the server");
 const signed = accountRows({ signedIn: true, format: "", mayEdit: false });
 assert.ok(signed.includes("account-erase"), "Signed-in browser includes account-erase");
 assert.ok(signed.includes("storage-account"), "Signed-in browser includes storage-account");
