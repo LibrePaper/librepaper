@@ -37,7 +37,7 @@
   }
 </script>
 
-<SettingRow id="render-folder" title="Project folder" description={connected ? "Use a folder on this computer for live previews. One-shot builds run in a temporary copy." : "Connect the local companion to choose a project folder for live previews. One-shot builds run in a temporary copy."}>
+<SettingRow id="render-folder" title="Project folder" scope="This computer" description={connected ? "Folder used for live previews; one-shot builds use a temporary copy." : "Connect the companion to choose a live preview folder."}>
   <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder={quarto ? "main.qmd" : sourceFormat === "typst" ? "main.typ" : "main.md"} bind:value={entrypoint} disabled={!canChoose} />
   <button type="button" class="btn btn-sm lp-control-outline" disabled={!canChoose || !entrypoint.trim()} onclick={() => void chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose folder…"}</button>
 </SettingRow>

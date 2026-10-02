@@ -7,7 +7,7 @@ import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,8 @@ import { browser, until } from "../../tools/browser-driver.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-settings-pages-"));
+const screenshotDir = process.env.SETTINGS_SCREENSHOT_DIR;
+if (screenshotDir) mkdirSync(screenshotDir, { recursive: true });
 const output = join(temporary, "build");
 const entry = join(temporary, "entry.js");
 const harness = join(temporary, "Harness.svelte");
@@ -104,7 +106,7 @@ await build({
   build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "check.js", cssFileName: "check" }, rollupOptions: { output: { codeSplitting: false } } },
 });
 
-const page = `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/check.css"><title>settings pages check</title></head><body><script type="module" src="/check.js"></script></body></html>`;
+const page = `<!doctype html><html data-theme="librepaper"><head><meta charset="utf-8"><link rel="stylesheet" href="/check.css"><title>settings pages check</title></head><body><script type="module" src="/check.js"></script></body></html>`;
 const server = createServer((request, response) => {
   if (request.url === "/check.js") {
     response.setHeader("content-type", "text/javascript");
@@ -134,6 +136,17 @@ try {
     await until(`${says} page for ${format}`, () => heading().then((text) => text === says), 5000);
   };
   const subheads = () => b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-body .settings-subhead")].map((node) => node.textContent.trim()))`).then(JSON.parse);
+  const capture = async (name) => {
+    if (!screenshotDir) return;
+    for (const [size, width] of [["desktop", 1280], ["mobile", 390]]) {
+      await b.resize(width, 900);
+      await b.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      const shot = await b.command("Page.captureScreenshot", { format: "png" });
+      writeFileSync(join(screenshotDir, `${name}-${size}.png`), Buffer.from(shot.data, "base64"));
+      assert.equal(await b.evaluate("document.querySelector('.settings-body').scrollWidth <= document.querySelector('.settings-body').clientWidth + 1"), true, `${name} fits ${size} width`);
+    }
+    await b.resize(1280, 900);
+  };
   const everything = ["render-tool", "render-folder", "render-output", "render-latex-files", "typst-status", "quarto-status", "quarto-executable", "quarto-arguments",
     "rendering-profile", "rendering-parameters", "quarto-execution", "calepin-status", "calepin-executable", "calepin-arguments", "zotero-status",
     "local-status", "local-address", "local-doctor", "remote-status", "remote-address", "storage-account", "account-erase"];
@@ -150,12 +163,19 @@ try {
   assert.deepEqual(await present(everything), ["render-tool", "render-folder", "render-output", "render-latex-files", "typst-status", "quarto-status", "quarto-executable", "quarto-arguments",
     "rendering-profile", "rendering-parameters", "quarto-execution", "calepin-status", "calepin-executable", "calepin-arguments"]);
   assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
+  assert.equal(await b.evaluate(`document.querySelector(".settings-group-title")?.textContent.trim()`), "Current document");
+  await capture("render-connected");
+  if (screenshotDir) {
+    await b.evaluate("document.querySelector('.settings-body').scrollTop = document.querySelector('.settings-body').scrollHeight");
+    await capture("render-tools");
+    await b.evaluate("document.querySelector('.settings-body').scrollTop = 0");
+  }
   // The profile and parameters come from the build preferences, so what was
   // stored for this document is what the page opens on.
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').value`), "draft");
   assert.match(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').value`), /"year": 2026/);
   await b.evaluate(`(() => { const input = document.querySelector('[aria-label="Quarto profile"]'); input.value = "final"; input.dispatchEvent(new Event("input", { bubbles: true })); })()`);
-  await b.evaluate(`[...document.querySelectorAll(".settings-body button")].find((node) => node.textContent.trim() === "Apply").click()`);
+  await b.evaluate(`document.querySelector("#rendering-save").click()`);
   await until("options applied", () => b.evaluate("window.applied.length === 1"), 5000);
   assert.deepEqual(JSON.parse(await b.evaluate("JSON.stringify(window.applied[0])")).profile, "final");
 
@@ -182,17 +202,20 @@ try {
 
   // Zotero feeds a document without building it.
   await show("integrations", "quarto", "Integrations");
+  await capture("zotero");
   assert.deepEqual(await present(everything), ["zotero-status"]);
   assert.deepEqual(await subheads(), ["Zotero"]);
 
   // The Companion page is the connection and the machine, not the tools.
   await show("local", "quarto", "Companion");
+  await capture("companion");
   assert.deepEqual(await present(everything), ["local-status", "local-address", "local-doctor"]);
 
   // A visitor's Account page is the server; storage and erasure need an account.
   await show("account", "quarto", "Account");
+  await capture("account");
   assert.deepEqual(await present(everything), ["remote-status", "remote-address"]);
-  assert.match(await b.evaluate(`document.querySelector('[aria-label^="Remote connection"]').textContent`), /Connected/);
+  assert.match(await b.evaluate(`document.querySelector("#remote-status .setting-status-pill")?.textContent`), /Connected/);
   assert.match(await b.evaluate(`document.querySelector("#remote-status").textContent`), /Remote connection/);
 
   // Offline settings stay visible while controls that need the companion are
@@ -200,6 +223,7 @@ try {
   // local build output and integration settings are visibly disabled.
   await b.evaluate(`window.setCompanionState("unreachable")`);
   await show("render", "quarto", "Render");
+  await capture("render-offline");
   assert.deepEqual(await subheads(), ["LaTeX", "Typst", "Quarto", "Calepin"]);
   await until("offline folder and output rows", () => present(["render-folder", "render-output"]).then((found) => found.length === 2), 5000);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Project entrypoint"]').disabled`), true);
@@ -209,9 +233,16 @@ try {
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Executable path"]').disabled`), true);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Arguments"]').disabled`), true);
   await show("integrations", "zotero", "Integrations");
-  assert.match(await b.evaluate(`document.querySelector('.integration-note').textContent`), /enable its local API/i);
-  assert.match(await b.evaluate(`document.querySelector('.settings-body').textContent`), /Connect the LibrePaper Companion/);
+  assert.match(await b.evaluate(`document.querySelector('.integration-note').textContent`), /local API/i);
+  assert.match(await b.evaluate(`document.querySelector('.integration-note').textContent`), /Settings/i);
+  assert.match(await b.evaluate(`document.querySelector('.settings-body').textContent`), /Companion disconnected|Requires Companion/i);
   assert.equal(await b.evaluate(`document.querySelector('.integration-error') !== null`), false, "Zotero does not load an editable companion config");
+
+  await capture("zotero-offline");
+  await show("local", "quarto", "Companion");
+  await capture("companion-offline");
+  await show("backups", "quarto", "Backups");
+  await capture("backups-offline");
 
   console.log("settings-pages-browser: Render keeps its four sections visible for all formats, browser Quarto options remain editable offline, local controls disable without the companion, and Remote and Zotero explain their status");
 } finally {

@@ -8,7 +8,7 @@
   const modalEditor = $derived(keys === "vim" || keys === "emacs");
 </script>
 
-<SettingRow id="editor-keys" title="Keys" description="Standard keys, or the motions and commands of Vim or Emacs, in the source pane.">
+<SettingRow id="editor-keys" title="Keys" description="Choose standard, Vim or Emacs keys for the source pane.">
   <select class="select setting-select" aria-label="Editor keys" value={keys}
           onchange={(event) => onkeys?.(event.currentTarget.value)}>
     <option value="default">Standard</option>
@@ -22,6 +22,6 @@
      the next thing anybody does after changing it. Stacked, because a table is
      not a control that fits beside a sentence. -->
 <SettingRow id="editor-shortcuts" stacked title="Keyboard shortcuts"
-            description="What the keyboard does in this workspace. Press ? at any time to see this without opening the settings.">
+            description="Press ? to view shortcuts without opening settings.">
   <ShortcutTable context={commands} {modalEditor} />
 </SettingRow>

@@ -142,6 +142,7 @@ try {
   assert.doesNotMatch(disconnected.text, /Build presets/);
   assert.equal(await b.evaluate("Boolean(document.querySelector('#local-startup'))"), true, "startup setting stays visible while disconnected");
   assert.equal(await b.evaluate("Boolean(document.querySelector('#local-startup [role=switch]:disabled'))"), true, "startup is unavailable until companion settings load");
+  assert.equal(await b.evaluate("document.querySelector('#local-startup').innerText.includes('Unknown')"), true, "unloaded startup preference is visibly unknown");
   assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Quit companion')?.disabled)"), true, "quit stays visible but unavailable while disconnected");
   assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('#local-address button')].find((button) => button.textContent.trim() === 'Disconnect')?.disabled)"), true, "disconnect stays visible but unavailable while disconnected");
   assert.equal(await b.evaluate("document.querySelector('#local-doctor')?.disabled"), true, "setup check is unavailable while disconnected");
@@ -161,7 +162,7 @@ try {
   assert.equal(await b.evaluate("document.querySelector('#local-install-help')"), null, "a connected companion needs no install link");
   assert.doesNotMatch(connectedText, /permission window was blocked/);
   assert.doesNotMatch(connectedText, /Build presets|Available tools/);
-  assert.match(connectedText, /Version 1\.6\.0/);
+  assert.match(connectedText, /Available · 1\.6\.0/);
   assert.match(connectedText, /Quit companion/);
 
   // A custom command is split into arguments, quotes kept together.
@@ -182,6 +183,7 @@ try {
   await b.evaluate(`(() => { const input = document.querySelector('[aria-label="Companion address"]'); input.value = 'http://127.0.0.1:9876/'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await b.evaluate(clickText("Save"));
   await until("address saved", () => b.evaluate("window.savedAddress === 'http://127.0.0.1:9876/'"), 5000);
+  await until("address save feedback shown", () => b.evaluate("document.querySelector('#local-address-feedback')?.textContent.trim() === 'Saved'"), 5000);
   await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:9876/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
   await until("settings loaded at new address", () => b.evaluate("window.settingsCalls >= 2 && document.querySelector('#local-doctor')?.disabled === false"), 5000);
   await b.evaluate(clickSelector("#local-doctor"));

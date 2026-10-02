@@ -5,12 +5,12 @@
   // takes the whole width below the words instead.
   //
   // The `id` is what the search in the navigation scrolls to.
-  let { id = undefined, title, description = "", stacked = false, children } = $props();
+  let { id = undefined, title, description = "", scope = "", stacked = false, children } = $props();
 </script>
 
 <div class="setting-row" class:stacked {id}>
   <div class="setting-words">
-    <div class="setting-title">{title}</div>
+    <div class="setting-title-line"><span class="setting-title">{title}</span>{#if scope}<span class="setting-scope">{scope}</span>{/if}</div>
     {#if description}<div class="setting-description">{description}</div>{/if}
   </div>
   <div class="setting-control">{@render children?.()}</div>

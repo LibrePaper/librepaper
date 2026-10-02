@@ -7,6 +7,7 @@
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
   import SettingRow from "./SettingRow.svelte";
+  import StatusPill from "./StatusPill.svelte";
   import EditorSettings from "./EditorSettings.svelte";
   import LatexFilesSettings from "./LatexFilesSettings.svelte";
   import ProjectFolderSetting from "./ProjectFolderSetting.svelte";
@@ -102,6 +103,7 @@
           <EditorSettings {keys} {onkeys} {commands} />
         {:else if shown.id === "render"}
           {#if canBuildCurrentFormat}
+            <h4 class="settings-group-title">Current document</h4>
             <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
             {#if row("render-folder")}<ProjectFolderSetting {sourceFormat} {main} {mayEdit} {onbindingid} />{/if}
           {:else}
@@ -111,23 +113,27 @@
           {/if}
 
           <section class="settings-subsection">
-            <h4 class="settings-subhead">LaTeX</h4>
-            {#if sourceFormat !== "latex"}<p class="setting-description render-section-note">These downloaded files are browser-wide and can be cleared from any document.</p>{/if}
+            <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4><span class="settings-scope">This browser</span></div>
+            {#if sourceFormat !== "latex"}<p class="setting-description render-section-note">Downloaded compiler files shared across documents.</p>{/if}
             <LatexFilesSettings />
           </section>
 
           <section class="settings-subsection">
-            <h4 class="settings-subhead">Typst</h4>
-            {#if sourceFormat !== "typst"}<p class="setting-description render-section-note">Typst settings apply when the current document is a Typst document.</p>{/if}
-            <SettingRow id="typst-status" title="Browser and local tools" description="Typst can build in this browser. A local Typst builder may also be available when a companion is connected.">
-              <span class="setting-description" role="status">{local?.state === "connected" ? (typstLocal?.available ? `Local Typst available${typstLocal.version ? ` (version ${typstLocal.version})` : ""}.` : "Typst is not available from the connected companion.") : ({ unknown: "Local companion has not been checked.", unreachable: "Local companion is disconnected.", denied: "Local companion access is unavailable.", unauthorized: "Connect this site to check local tools.", reachable: "Connect this site to check local tools.", incompatible: "Update the local companion to check local tools." })[local?.state] || "Local companion status unavailable."}</span>
+            <div class="settings-section-title"><h4 class="settings-subhead">Typst</h4></div>
+            {#if sourceFormat !== "typst"}<p class="setting-description render-section-note">Browser build choices and local companion status.</p>{/if}
+            <SettingRow id="typst-status" title="Typst availability" description="Build Typst documents in this browser or with the Companion.">
+              {#if local?.state === "connected"}
+                <StatusPill label={typstLocal?.available ? `Local available${typstLocal.version ? ` · ${typstLocal.version}` : ""}` : "Local unavailable"} tone={typstLocal?.available ? "good" : "warn"} />
+              {:else}
+                <StatusPill label={({ unknown: "Not checked", unreachable: "Disconnected", denied: "Access denied", unauthorized: "Connect site", reachable: "Connect site", incompatible: "Update Companion" })[local?.state] || "Status unavailable"} tone={local?.state === "unreachable" || local?.state === "denied" || local?.state === "incompatible" ? "warn" : "neutral"} />
+              {/if}
             </SettingRow>
           </section>
 
           <section class="settings-subsection">
-            <h4 class="settings-subhead">Quarto</h4>
+            <div class="settings-section-title"><h4 class="settings-subhead">Quarto</h4></div>
             <IntegrationSettings name="quarto" />
-            <RenderingSettings options={buildPreferences} {onapplyoptions} disabled={!quartoOptionsRelevant} />
+            <RenderingSettings options={buildPreferences} {onapplyoptions} scopeKey={`${documentId}\u0000${sourceFormat}`} disabled={!quartoOptionsRelevant} />
             <SettingRow id="quarto-execution" title="Local code execution" description="Code runs on this computer with your user account's permissions.">
               <span class="setting-description">Allow paired Quarto documents to run local code</span>
               <button type="button" role="switch" class="switch local-execution-switch" aria-label="Allow paired Quarto documents to run local code" aria-checked={localExecution} data-state={localExecution ? "checked" : "unchecked"} disabled={!quartoExecutionRelevant} onclick={() => onlocalexecution?.(!localExecution)}>
@@ -138,8 +144,8 @@
           </section>
 
           <section class="settings-subsection">
-            <h4 class="settings-subhead">Calepin</h4>
-            {#if sourceFormat !== "typst"}<p class="setting-description render-section-note">Calepin builds Typst documents through the local companion.</p>{/if}
+            <div class="settings-section-title"><h4 class="settings-subhead">Calepin</h4><span class="settings-scope">This computer</span></div>
+            {#if sourceFormat !== "typst"}<p class="setting-description render-section-note">Builds Typst documents through the local companion.</p>{/if}
             <IntegrationSettings name="calepin" />
           </section>
         {:else if shown.id === "integrations"}

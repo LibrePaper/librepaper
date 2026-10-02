@@ -1,5 +1,6 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
+  import StatusPill from "./StatusPill.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import { buildersFor, capabilityFor, supportsOperation } from "../../lib/build-catalog.js";
@@ -41,7 +42,9 @@
     const capability = capabilityFor(local?.capabilities, preferences.tool);
     return !capability || !Array.isArray(capability.outputs) || !capability.outputs.includes(output);
   }
-  const statusMessage = $derived(["unreachable", "denied"].includes(local?.state) ? local.instructions : ({ unknown: "The local companion has not been looked for yet.", reachable: "Local companion is running; connect this site.", unauthorized: "Connect this site to use local tools.", incompatible: "Update the local companion to use these tools.", connected: "Local companion connected." })[local?.state] || "");
+  const statusLabel = $derived(({ unknown: "Not checked", unreachable: "Disconnected", denied: "Access blocked", reachable: "Needs approval", unauthorized: "Needs approval", incompatible: "Update needed", connected: "Connected" })[local?.state] || "Not checked");
+  const statusTone = $derived(({ denied: "error", unauthorized: "warn", incompatible: "warn", reachable: "warn", connected: "good" })[local?.state] || "neutral");
+  const statusMessage = $derived(local?.state === "denied" || local?.state === "unreachable" ? local.instructions : ({ unknown: "Choose a local tool to check availability.", reachable: "Connect this site to use local tools.", unauthorized: "Reconnect this site to use local tools.", incompatible: "Update the companion to use local tools.", connected: "" })[local?.state] || "");
   function version(entry) { return capabilityFor(local?.capabilities, entry.id)?.version; }
   function engineLabel(engine) { return engine === "pdflatex" ? "pdfLaTeX" : engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"; }
   const savedMissing = $derived(preferences.selection === "tool" && preferences.tool && !builders.some((entry) => entry.id === preferences.tool) ? preferences.tool : "");
@@ -62,7 +65,10 @@
   });
   function optionValue(backend, id) { return `${backend}:${id}`; }
   function chooseOption(value) {
-    if (value === "automatic") return onpreferences?.(update(scope(), format, { selection: "automatic", backend: "auto" }));
+    if (value === "automatic") {
+      onpreferences?.(update(scope(), format, { selection: "automatic", backend: "auto" }));
+      return;
+    }
     const [backend, id, ...rest] = value.split(":");
     const engine = id === "tex" ? rest[0] : "";
     const tool = id;
@@ -81,7 +87,7 @@
   async function connect() { try { await localBridge.connectApp(); } catch { /* local status carries instructions */ } }
 </script>
 
-<SettingRow id="render-tool" title={format === "latex" ? "Compiler" : "Build tool"} description="Build choices belong to this browser and user. Collaborators cannot change them.">
+<SettingRow id="render-tool" title={format === "latex" ? "Compiler" : "Build tool"} scope="This browser" description="Choose the tool for this document’s builds.">
   <select class="select setting-select" aria-label={format === "latex" ? "Compiler" : "Build tool"} value={selected}
           onchange={(event) => {
             chooseOption(event.currentTarget.value);
@@ -96,7 +102,7 @@
     </optgroup>{/if}
     {#if localBuilders.length}<optgroup label="Local companion">
       {#each localBuilders as entry (entry.id)}
-        <option value={optionValue("local", entry.id)} disabled={disabled(entry)}>{entry.label}{version(entry) ? ` (${version(entry)})` : ""}{disabled(entry) ? " (unavailable)" : ""}</option>
+        <option value={optionValue("local", entry.id)} disabled={disabled(entry)}>{entry.label}{version(entry) ? ` (${version(entry)})` : ""}{disabled(entry) ? (local?.state === "connected" ? " (unavailable)" : " (connect companion)") : ""}</option>
       {/each}
     </optgroup>{/if}
     {#if savedMissing}<option value={`local:${savedMissing}`} disabled>{savedMissing} (unavailable)</option>{/if}
@@ -105,8 +111,8 @@
 
 <!-- LaTeX has no local builder to configure, and nothing else about it is
      local either, so this pane says nothing about the companion for it. -->
-{#if format !== "latex"}<SettingRow title="Local tools" description="Refresh installed tools.">
-  <span class="setting-description" role="status">{statusMessage}</span>
+{#if format !== "latex"}<SettingRow title="Local tools" scope="This computer" description={statusMessage}>
+  <StatusPill label={statusLabel} tone={statusTone} />
   <!-- Nothing here can open the companion; the status line says how to start
        it. Before anybody has looked, the only thing to offer is the looking. -->
   {#if ["unreachable", "denied", "unauthorized", "reachable"].includes(local?.state)}<button type="button" class="btn btn-sm lp-control-brand" onclick={connect}>Connect</button>{/if}
@@ -115,7 +121,7 @@
 </SettingRow>{/if}
 
 {#if ["typst", "quarto", "markdown"].includes(format)}
-  <SettingRow id="render-output" title="Output" description="Choose the preview or export format for this browser.">
+  <SettingRow id="render-output" title="Output" scope="This browser" description="Preview and export format.">
     <select class="select setting-select" aria-label="Build output" value={preferences.output || "html"} disabled={preferences.backend === "local" && outputChoices.every(disabledOutput)} onchange={(event) => chooseOutput(event.currentTarget.value)}>
       {#each outputChoices as output}<option value={output} disabled={disabledOutput(output)}>{output.toUpperCase()}</option>{/each}
     </select>

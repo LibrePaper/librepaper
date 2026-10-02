@@ -1,5 +1,6 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
+  import StatusPill from "./StatusPill.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import { backups } from "../../lib/companion/backups.svelte.js";
@@ -19,6 +20,7 @@
   let busy = $state("");
   let error = $state("");
   let connecting = $state(false);
+  let saved = $state(false);
   let requestScope = 0;
   let lastScope = "";
   const pairingAddress = $derived(companion.status.address || "");
@@ -32,6 +34,7 @@
       requestScope += 1;
       busy = "";
       error = "";
+      saved = false;
     }
   });
 
@@ -52,6 +55,7 @@
   async function authorize() {
     if (!signedIn || !paired || !needsLogin || busy) return;
     busy = "authorization";
+    saved = false;
     error = "";
     const requestedAccount = accountId;
     const requestedProvider = account.provider;
@@ -82,12 +86,16 @@
   async function changeSettings(enabled, frequency = Number(data.frequency_minutes) || 5) {
     if (!canUseCompanion || busy || (needsLogin && enabled)) return;
     busy = "settings";
+    saved = false;
     error = "";
     const requestedAccount = accountId;
     const actionScope = requestScope;
     try {
       await localBridge.updateBackups(requestedAccount, { enabled, frequency_minutes: frequency });
-      if (actionScope === requestScope) await backups.refresh();
+      if (actionScope === requestScope) {
+        await backups.refresh();
+        if (actionScope === requestScope && !backups.status.error) saved = true;
+      }
     } catch (cause) {
       if (actionScope === requestScope) error = cause?.message || "Backup settings could not be saved.";
     } finally {
@@ -98,6 +106,7 @@
   async function chooseFolder() {
     if (!canUseCompanion || busy) return;
     busy = "folder";
+    saved = false;
     error = "";
     const requestedAccount = accountId;
     const actionScope = requestScope;
@@ -114,6 +123,7 @@
   async function runNow() {
     if (!canUseCompanion || needsLogin || busy || !data.enabled || data.running) return;
     busy = "run";
+    saved = false;
     error = "";
     const requestedAccount = accountId;
     const actionScope = requestScope;
@@ -132,29 +142,22 @@
 </script>
 
 <p class="setting-description backups-intro">
-  Save every project available to this account, including shared projects, as ZIP files on this computer. The companion runs the schedule in the background, including while browser tabs are closed. Each project keeps its latest ZIP; backups are retained when you disable this setting or delete a project. Backups do not sync changes back to LibrePaper.
+  Save this account’s projects, including shared projects, as ZIP files on this computer; the companion runs the schedule in the background.
   <a href="https://librepaper.org/backups.html" target="_blank" rel="noreferrer">Backup guide</a>
 </p>
+<p class="setting-description backup-retention">Each project keeps its latest ZIP, even after backups are turned off or the project is deleted. Backups do not sync changes to LibrePaper.</p>
 
 {#if !signedIn}
-  <div class="setting-status" data-tone="off" role="status">
-    <span class="setting-status-dot" aria-hidden="true"></span>
-    <div class="setting-status-words">
-      <div class="setting-title">Sign in to back up an account</div>
-      <div class="setting-description">Account-wide backups are available after you sign in to this LibrePaper server.</div>
-    </div>
-  </div>
+  <SettingRow id="backup-connection" title="Account connection" description="Sign in to load account backup settings." scope="Your account">
+    <StatusPill label="Signed out" />
+  </SettingRow>
 {:else if !paired}
-  <div class="setting-status" data-tone="off" role="status">
-    <span class="setting-status-dot" aria-hidden="true"></span>
-    <div class="setting-status-words">
-      <div class="setting-title">Connect LibrePaper Companion</div>
-      <div class="setting-description">Start <code>librepaper</code> in a terminal, then connect. The companion runs the schedule on this computer.</div>
-    </div>
-    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button></div>
-  </div>
+  <SettingRow id="backup-connection" title="Companion connection" description="Start the companion on this computer, then connect to schedule backups." scope="This computer">
+    <StatusPill label="Disconnected" />
+    <button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button>
+  </SettingRow>
 {:else if backupStatus.error}
-  <div class="setting-status" data-tone="warn" role="status">
+  <div class="setting-status" data-tone="warn" role="alert">
     <span class="setting-status-dot" aria-hidden="true"></span>
     <div class="setting-status-words"><div class="setting-title">Backup status unavailable</div><div class="setting-description">{backupStatus.error}</div></div>
     <div class="setting-control"><button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== ""} onclick={() => void backups.refresh()}>Retry</button></div>
@@ -172,19 +175,22 @@
   </div>
 {/if}
 
-  <SettingRow id="backup-enable" title="Automatic backups" description="Create a fresh ZIP of each project available to this account on this schedule.">
-    <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked={Boolean(data.enabled)} data-state={data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseCompanion || (needsLogin ? !data.enabled : !destinationSet)} onclick={() => void changeSettings(!data.enabled)}>
-      <span class="switch-thumb" data-state={data.enabled ? "checked" : "unchecked"}></span>
+  <SettingRow id="backup-enable" title="Automatic backups" description={!hasStatus ? "Schedule status is unknown." : needsLogin ? "Authorize to enable backups." : !destinationSet ? "Choose a backup folder to enable the schedule." : "Create a ZIP of each account project on this schedule."} scope="Your account">
+    {#if !hasStatus}<StatusPill label="Unknown" />{/if}
+    <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked={Boolean(data.enabled)} aria-describedby={!hasStatus ? "backup-enable-state" : undefined} data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseCompanion || (needsLogin ? !data.enabled : !destinationSet)} onclick={() => void changeSettings(!data.enabled)}>
+      <span class="switch-thumb" data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"}></span>
     </button>
+    {#if !hasStatus}<span id="backup-enable-state" class="sr-only">Unknown</span>{/if}
   </SettingRow>
-  <SettingRow id="backup-destination" title="Backup folder" description={destinationSet ? (destinationLabel ? `Selected folder: ${destinationLabel}` : "Selected folder on this computer.") : "Choose a folder on this computer for the ZIP files."}>
-    <div class="backup-folder-control">
-      <input class="input input-sm backup-path" aria-label="Selected backup folder" value={destinationLabel} placeholder="No folder selected" readonly disabled={!canUseCompanion || busy !== ""} />
+  <SettingRow id="backup-destination" title="Backup folder" description="ZIP files are stored here." scope="This computer">
+    <div class="backup-folder-control setting-actions">
+      <input class="input input-sm setting-input backup-path" aria-label="Selected backup folder" value={destinationLabel} placeholder="No folder selected" readonly disabled={!canUseCompanion || busy !== ""} />
       <button type="button" class="btn btn-sm lp-control-outline" disabled={!canUseCompanion || busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
     </div>
   </SettingRow>
-  <SettingRow id="backup-frequency" title="Frequency" description="How often the companion checks for project changes.">
-    <select class="input input-sm backup-frequency" aria-label="Backup frequency" value={Number(data.frequency_minutes) || 5} disabled={busy !== "" || !destinationSet || !canUseCompanion || needsLogin} onchange={(event) => void changeSettings(Boolean(data.enabled), Number(event.currentTarget.value))}>
+  <SettingRow id="backup-frequency" title="Frequency" description={!hasStatus ? "Saved frequency is unknown." : "How often the companion checks for changes."} scope="Your account">
+    <select class="input input-sm setting-select backup-frequency" aria-label="Backup frequency" value={hasStatus ? Number(data.frequency_minutes) || 5 : ""} disabled={busy !== "" || !destinationSet || !canUseCompanion || needsLogin} onchange={(event) => void changeSettings(Boolean(data.enabled), Number(event.currentTarget.value))}>
+      {#if !hasStatus}<option value="" disabled>Unknown</option>{/if}
       {#each intervals as minutes}<option value={minutes}>{minutes} {minutes === 1 ? "minute" : "minutes"}</option>{/each}
     </select>
   </SettingRow>
@@ -202,15 +208,19 @@
     {/if}
     <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== "" || !destinationSet || !canUseCompanion || needsLogin || !data.enabled || data.running} onclick={() => void runNow()}>{busy === "run" ? "Starting…" : "Back up now"}</button>
   </div>
+  {#if saved && !busy && !error && !backupStatus.error}<p class="setting-feedback" role="status">Saved</p>{/if}
 
 {#if error}<p class="setting-description backup-error" role="alert">{error}</p>{/if}
 
 <style>
   .backups-intro { max-width: 48rem; margin-block: 0 calc(var(--spacing) * 3); }
   .backups-intro a { margin-inline-start: .35rem; }
+  .backup-retention { max-width: 48rem; margin-block: 0 calc(var(--spacing) * 3); }
   .backup-folder-control { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
-  .backup-path { width: min(24rem, 42vw); }
+  .backup-path { width: 14rem; }
   .backup-frequency { min-width: 8rem; }
+  .backup-enable-switch[data-state="unknown"] { background: var(--color-subtle); }
+  .backup-enable-switch[data-state="unknown"] .switch-thumb { visibility: hidden; }
   .backup-status { display: flex; align-items: center; justify-content: space-between; gap: calc(var(--spacing) * 3); margin-top: calc(var(--spacing) * 3); }
   .backup-state { color: var(--color-text-secondary); font-size: var(--text-sm); }
   .backup-state.error, .backup-error { color: var(--color-error-text); }

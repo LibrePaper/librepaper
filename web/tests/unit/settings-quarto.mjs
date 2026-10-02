@@ -11,6 +11,7 @@ const latexFiles = await read("LatexFilesSettings.svelte");
 const integration = await read("IntegrationSettings.svelte");
 const rendering = await read("RenderingSettings.svelte");
 const remote = await read("RemoteSettings.svelte");
+const statusPill = await read("StatusPill.svelte");
 
 // Render, Integrations, Companion, Backups and Account remain navigable for
 // every document format and editing state.
@@ -47,7 +48,10 @@ assert.ok(!renderRows({ format: "html", mayEdit: false }).includes("render-outpu
 for (const name of ["LaTeX", "Typst", "Quarto", "Calepin"]) {
   assert.ok(dialog.includes(`<h4 class="settings-subhead">${name}</h4>`), `Render always includes ${name}`);
 }
-assert.match(dialog, /<RenderingSettings options=\{buildPreferences\} \{onapplyoptions\} disabled=\{!quartoOptionsRelevant\} \/>/);
+assert.match(dialog, /<RenderingSettings options=\{buildPreferences\} \{onapplyoptions\} scopeKey=\{`\$\{documentId\}\\u0000\$\{sourceFormat\}`\} disabled=\{!quartoOptionsRelevant\} \/>/);
+assert.match(dialog, /<h4 class="settings-group-title">Current document<\/h4>/);
+assert.match(dialog, /<span class="settings-scope">This browser<\/span>/);
+assert.match(dialog, /<span class="settings-scope">This computer<\/span>/);
 assert.match(dialog, /const quartoOptionsRelevant = \$derived\(sourceFormat === "quarto" \|\| \(sourceFormat === "markdown" && buildPreferences\.tool === "quarto"\)\);/);
 assert.match(rendering, /disabled=\{controlsDisabled\}/);
 assert.match(dialog, /disabled=\{!quartoExecutionRelevant\}/);
@@ -70,13 +74,15 @@ assert.match(integration, /const canEdit = \$derived\(isConnected && settingsLoa
 assert.match(integration, /requestId !== loadId[\s\S]{0,260}local\?\.state !== "connected"/);
 assert.match(integration, /if \(requestedName === "zotero"\) settingsLoaded = true;/);
 assert.match(integration, /Zotero library/);
-assert.match(integration, /enable its local API/);
+assert.match(integration, /local API/);
 
 // The account page calls the server Remote connection and shows its state as
 // a compact, accessible pill beside the server address.
 assert.match(registryText, /id: "remote-status", says: "Remote connection"/);
 assert.match(remote, /<SettingRow id="remote-status" title="Remote connection"/);
-assert.match(remote, /role="status" aria-label=\{`Remote connection/);
-assert.match(remote, /remoteConnected \? "Connected" : "Disconnected"/);
+assert.match(remote, /StatusPill/);
+assert.match(statusPill, /tone = "neutral"/);
+assert.match(statusPill, /role="status" aria-label=\{accessibleLabel \|\| label\}/);
+assert.match(statusPill, /aria-hidden="true"/);
 
 console.log("settings-quarto: Render sections and format-specific controls stay available across document types; offline local controls are unavailable while browser preferences remain usable");

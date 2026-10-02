@@ -1,5 +1,6 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
+  import StatusPill from "./StatusPill.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
@@ -12,6 +13,7 @@
   let savedPath = $state("");
   let savedArgs = $state([]);
   let settingsLoaded = $state(false);
+  let savedFeedback = $state(false);
   let loadId = 0;
 
   const local = $derived(companion.status);
@@ -26,6 +28,7 @@
     settingsLoaded = false;
     pendingDialogAction = false;
     settingsError = "";
+    savedFeedback = false;
     if (requestedName === "zotero") settingsLoaded = true;
     else if (connected) void loadSettings(requestId, requestedName, address, instance);
     else {
@@ -107,6 +110,7 @@
   async function apply(path, args) {
     if (!canEdit || pendingDialogAction) return;
     pendingDialogAction = true;
+    savedFeedback = false;
     const requestId = loadId;
     try {
       const integration = await localBridge.setIntegration(name, { path, args });
@@ -114,6 +118,7 @@
         show(integration);
         settingsLoaded = true;
         settingsError = "";
+        savedFeedback = true;
       }
     } catch (error) {
       if (requestId === loadId && isConnected) {
@@ -141,40 +146,43 @@
 
 {#if settingsError}<p class="setting-description integration-error" role="alert">{settingsError}</p>{/if}
 
-<SettingRow id={`${name}-status`} title="Status" description="">
+{#if name !== "zotero"}<SettingRow id={`${name}-status`} title="Status" description="" scope={name === "quarto" ? "This computer" : undefined}>
   {#if !isConnected}
-    <span class="setting-description">Connect the local companion to configure {name}.</span>
+    <StatusPill label="Companion disconnected" tone="neutral" accessibleLabel={`Connect the local companion to configure ${name}.`} />
   {:else if name !== "zotero" && !settingsLoaded && !settingsError}
-    <span class="setting-description">Loading {name} settings…</span>
+    <StatusPill label="Loading settings…" />
   {:else if capability?.available}
-    <span class="setting-description">{capability.version ? `Version ${capability.version}` : `${name} available`}</span>
+    <StatusPill label={capability.version ? `Available · ${capability.version}` : "Available"} tone="good" />
   {:else}
-    <span class="setting-description">{capability?.note || `${name} not found on this computer`}</span>
+    <StatusPill label={capability ? "Unavailable" : "Availability unknown"} tone="warn" />
+    {#if capability?.note}<span class="setting-description">{capability.note}</span>{/if}
   {/if}
-</SettingRow>
+</SettingRow>{/if}
 
   {#if showFields}
-    <SettingRow id={`${name}-executable`} title="Executable" description="Path to the executable or folder containing it. Leave blank to use PATH.">
-      <input class="input input-sm setting-input" type="text" aria-label="Executable path" placeholder="Found on PATH" bind:value={editingPath} disabled={!canEdit} />
+    <SettingRow id={`${name}-executable`} title="Executable" description="Executable path; leave blank to use PATH.">
+      <input class="input input-sm setting-input" type="text" aria-label="Executable path" placeholder="Found on PATH" bind:value={editingPath} oninput={() => savedFeedback = false} disabled={!canEdit} />
     </SettingRow>
 
-    <SettingRow id={`${name}-arguments`} title="Arguments" description="Added to every run, e.g. --log-level warning.">
-      <input class="input input-sm setting-input" type="text" aria-label="Arguments" placeholder="--quiet" bind:value={editingArgs} disabled={!canEdit} />
+    <SettingRow id={`${name}-arguments`} title="Arguments" description="Added to each run, e.g. --log-level warning.">
+      <input class="input input-sm setting-input" type="text" aria-label="Arguments" placeholder="--quiet" bind:value={editingArgs} oninput={() => savedFeedback = false} disabled={!canEdit} />
     </SettingRow>
 
-    <div class="integration-actions">
-      <button type="button" class="btn btn-sm lp-control-brand" disabled={!canEdit || unchanged} onclick={() => void apply(editingPath.trim() || null, quoteAwareSplit(editingArgs))}>Save</button>
+    <div class="setting-actions integration-actions">
+      <button type="button" class="btn btn-sm lp-control-brand" disabled={!canEdit || unchanged} onclick={() => void apply(editingPath.trim() || null, quoteAwareSplit(editingArgs))}>{pendingDialogAction ? "Saving…" : "Save"}</button>
       <button type="button" class="btn btn-sm lp-control-outline" disabled={!canEdit || isDefault} onclick={() => void apply(null, [])}>Reset to default</button>
+      {#if savedFeedback}<span class="setting-feedback" role="status">Saved</span>{/if}
     </div>
     {#if pendingDialogAction}
       <p class="setting-description">Approve the change in the dialog LibrePaper Companion opened on this computer.</p>
     {/if}
   {/if}
 {#if name === "zotero"}
-  <SettingRow title="Zotero library" description="Use your local Zotero library to add citations and references to documents.">
-    <span class="setting-description">{isConnected ? (capability?.available ? (capability.version ? `Zotero ${capability.version} detected.` : "Zotero detected.") : capability?.note || "Zotero is not available on this computer.") : "Connect the LibrePaper Companion on this computer to use Zotero."}</span>
+  <SettingRow id="zotero-status" title="Zotero library" description="Use your local Zotero library for citations and references.">
+    <StatusPill label={!isConnected ? "Companion disconnected" : capability?.available ? (capability.version ? `Available · ${capability.version}` : "Available") : capability ? "Unavailable" : "Availability unknown"} tone={!isConnected ? "neutral" : capability?.available ? "good" : "warn"} />
+    {#if isConnected && capability?.note}<span class="setting-description">{capability.note}</span>{/if}
   </SettingRow>
-  <p class="setting-description integration-note">To connect Zotero, enable its local API in Zotero Settings &gt; Advanced &gt; “Allow other applications on this computer to communicate with Zotero”.</p>
+  <p class="setting-description integration-note">Enable Zotero’s local API in Settings → Advanced → “Allow other applications on this computer to communicate with Zotero”.</p>
 {/if}
 
 <style>

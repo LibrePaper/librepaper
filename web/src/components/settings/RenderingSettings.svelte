@@ -8,7 +8,7 @@
   import SettingRow from "./SettingRow.svelte";
   import { parseRenderOptions } from "../../lib/quarto-options.js";
 
-  let { options, onapplyoptions, disabled = false } = $props();
+  let { options, onapplyoptions, disabled = false, scopeKey = "" } = $props();
 
   let draftProfile = $state("");
   let parametersText = $state("{}");
@@ -17,6 +17,8 @@
   let applying = $state(false);
   let dirty = $state(false);
   let observedOptions = null;
+  let observedScopeKey;
+  let applyRequest = 0;
 
   function parametersOf(value) {
     const parameters = value?.parameters;
@@ -30,6 +32,7 @@
     validationError = "";
     applyError = "";
     dirty = false;
+    applied = false;
   }
 
   // Sync a newly loaded selection while the draft is still pristine. Once the
@@ -39,6 +42,17 @@
     if (source === observedOptions) return;
     observedOptions = source;
     if (!dirty) syncOptions(source);
+  });
+
+  // A parent echo of the options just saved is not a new request context.
+  // Only a document/format scope change cancels pending work and resets drafts.
+  $effect(() => {
+    const key = scopeKey;
+    if (key === observedScopeKey) return;
+    observedScopeKey = key;
+    applyRequest++;
+    applying = false;
+    syncOptions(options);
   });
 
   function parseDraft() {
@@ -66,22 +80,30 @@
   function changed() {
     dirty = true;
     applyError = "";
+    applied = false;
     parseDraft();
   }
+
+  let applied = $state(false);
 
   async function apply() {
     if (disabled || applying) return;
     const next = parseDraft();
     if (!next) return;
     applying = true;
+    applied = false;
+    const request = ++applyRequest;
     applyError = "";
     try {
       await onapplyoptions?.(next);
-      syncOptions(next);
+      if (request === applyRequest) {
+        syncOptions(next);
+        applied = true;
+      }
     } catch (error) {
-      applyError = error?.message || "Could not apply these settings.";
+      if (request === applyRequest) applyError = error?.message || "Could not save these settings.";
     } finally {
-      applying = false;
+      if (request === applyRequest) applying = false;
     }
   }
 
@@ -90,15 +112,15 @@
 
 {#if disabled}<p class="setting-description options-disabled">Profile and parameter values are kept for a Quarto build. They cannot affect the current document's preview.</p>{/if}
 
-<SettingRow id="rendering-profile" title="Profile"
-            description="Leave this empty unless your project has Quarto profiles (files named _quarto-something.yml). Then type the name of the one to preview with, such as “draft” for _quarto-draft.yml.">
+<SettingRow id="rendering-profile" title="Profile" scope="This browser"
+            description="Optional Quarto profile for this document, such as draft for _quarto-draft.yml.">
   <input class="input setting-input" type="text" value={draftProfile} placeholder="None"
          aria-label="Quarto profile" autocomplete="off" spellcheck="false"
          oninput={(event) => { draftProfile = event.currentTarget.value; changed(); }} disabled={controlsDisabled} />
 </SettingRow>
 
-<SettingRow id="rendering-parameters" title="Parameters" stacked
-            description="Leave this empty unless the document declares params: in its front matter. Then give the values to preview with, as JSON: a name in quotes, a colon, and a value.">
+<SettingRow id="rendering-parameters" title="Parameters" stacked scope="This browser"
+            description="Optional JSON values for params declared in the document’s front matter.">
   <textarea class="textarea setting-textarea" rows="4" value={parametersText}
             placeholder={'{"year": 2026, "region": "north", "draft": true}'}
             aria-label="Quarto parameters" aria-invalid={Boolean(validationError)} spellcheck="false"
@@ -113,9 +135,12 @@
   .options-disabled { margin-block: calc(var(--spacing) * 3); }
 </style>
 
-<SettingRow title="" description={dirty ? "The preview restarts with the new settings." : ""}>
-  <button class="btn btn-sm lp-control-brand" type="button" onclick={() => void apply()}
+<SettingRow title="" description={dirty ? "The preview restarts after saving." : ""}>
+  <div class="setting-actions">
+  <button id="rendering-save" class="btn btn-sm lp-control-brand" type="button" onclick={() => void apply()}
           disabled={controlsDisabled || !dirty || Boolean(validationError)}>
-    {applying ? "Applying…" : "Apply"}
+    {applying ? "Saving…" : "Save"}
   </button>
+  {#if applied}<span class="setting-feedback" role="status">Saved</span>{/if}
+  </div>
 </SettingRow>

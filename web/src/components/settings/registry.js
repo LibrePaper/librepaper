@@ -2,9 +2,8 @@
 // The dialog draws its navigation from this and searches it; what a category
 // shows is a component beside this file.
 //
-// Build preferences belong to this browser and user; a tool that builds the
-// document is configured under Render with the rest of the build. Integrations
-// holds the programs that feed a document without building it.
+// Build preferences and downloaded LaTeX files live in this browser. Local
+// folder paths, companion settings, and integrations live on this computer.
 
 // `offered` answers with the document's format, whether this browser may edit
 // it, whether somebody is signed in, and the build tool chosen for it (`tool`).
@@ -21,6 +20,7 @@ const account = ({ signedIn }) => Boolean(signedIn);
 export const CATEGORIES = [
   {
     id: "editor", says: "Editor", offered: editor,
+    note: "This browser",
     entries: [
       { id: "editor-keys", says: "Keys", terms: "vim emacs keymap keyboard bindings modal source standard" },
       { id: "editor-shortcuts", says: "Keyboard shortcuts", terms: "shortcut shortcuts keys keyboard chord binding hotkey accelerator palette command undo redo find" },
@@ -28,7 +28,6 @@ export const CATEGORIES = [
   },
   {
     id: "render", says: "Render", offered: build,
-    note: "Only this browser and user.",
     entries: [
       { id: "render-tool", says: "Build tool", terms: "compiler engine pdflatex xelatex lualatex render browser local companion automatic latex typst markdown quarto" },
       { id: "render-output", says: "Output", terms: "pdf html format preview export", offered: projectBinding },
@@ -48,14 +47,14 @@ export const CATEGORIES = [
   },
   {
     id: "integrations", says: "Integrations", offered: always,
-    note: "Programs on this computer that LibrePaper works with.",
+    note: "This computer",
     entries: [
       { id: "zotero-status", says: "Zotero", terms: "zotero available version citations bibliography library references" },
     ],
   },
   {
     id: "local", says: "Companion", offered: always,
-    note: "LibrePaper on this computer",
+    note: "This computer",
     entries: [
       { id: "local-status", says: "Connection", terms: "connect disconnect retry status install installer setup linux macos windows allow site agent claude codex pi opencode zotero quarto companion" },
       { id: "local-address", says: "Companion address", terms: "address port url localhost host version disconnect" },
@@ -65,7 +64,7 @@ export const CATEGORIES = [
   },
   {
     id: "backups", says: "Backups", offered: always,
-    note: "Every project available to this account, including shared projects",
+    note: "Your account",
     entries: [
       { id: "backup-enable", says: "Automatic backups", terms: "zip archive schedule frequency interval account all projects" },
       { id: "backup-destination", says: "Backup folder", terms: "destination choose directory folder local companion" },
@@ -74,7 +73,7 @@ export const CATEGORIES = [
   },
   {
     id: "account", says: "Account", offered: always,
-    note: "This account on this deployment, not this document.",
+    note: "Your account",
     entries: [
       { id: "remote-status", says: "Remote connection", terms: "connected disconnected offline online server address url sync status collaboration" },
       { id: "storage-account", says: "Account storage", terms: "quota usage space used limit bytes", offered: account },
