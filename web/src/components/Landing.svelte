@@ -51,6 +51,7 @@
   let place = $state(placeFromUrl());
   let sortBy = $state("updated");
   let ascending = $state(false);
+  const compactSort = $derived(`${sortBy}:${ascending ? "asc" : "desc"}`);
   let naming = $state(false);
   let name = $state("");
   let format = $state(FORMATS[0].id);
@@ -281,6 +282,12 @@
       sortBy = column;
       ascending = column === "title" || column === "owner";
     }
+  }
+
+  function chooseCompactSort(value) {
+    const [column, direction] = value.split(":");
+    sortBy = column;
+    ascending = direction === "asc";
   }
 
   // A star is the account's, not the browser's, so it is a request and not a
@@ -726,7 +733,7 @@
          choose fills the page rather than a column. `shown.comments` false is
          what the reader's own collapsed column is, so the width here and the
          width there are the same width. -->
-    <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }}
+    <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }} compactLabels={narrow}
              resizable={false} label="Projects" onselectpanel={goTo}
              badges={trashed.length ? { trash: { counts: [{ tone: "warnings", of: trashed.length }] } } : {}}>
       {#snippet controls()}{/snippet}
@@ -734,6 +741,24 @@
 
     <section class="projects">
       <h1 class="place-heading">{PLACE_NAMES[place]}</h1>
+
+      {#if narrow && ["projects", "shared", "favorites"].includes(place)}
+        <div class="compact-sort">
+          <label for="project-sort">Sort</label>
+          <select id="project-sort" class="select" value={compactSort}
+                  onchange={(event) => chooseCompactSort(event.currentTarget.value)}>
+            <option value="updated:desc">Updated: newest first</option>
+            <option value="updated:asc">Updated: oldest first</option>
+            <option value="title:asc">Title: A–Z</option>
+            <option value="title:desc">Title: Z–A</option>
+            {#if sortBy === "owner"}
+              <option value={`owner:${ascending ? "asc" : "desc"}`}>Owner: {ascending ? "A–Z" : "Z–A"}</option>
+            {:else if sortBy === "files"}
+              <option value={`files:${ascending ? "asc" : "desc"}`}>Files: {ascending ? "fewest first" : "most first"}</option>
+            {/if}
+          </select>
+        </div>
+      {/if}
 
       <!-- Where a project comes from, for an account that has not made one
            yet. It is above the list rather than in it: a template is
@@ -1038,6 +1063,7 @@
   .toolbar { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-height: 2rem; }
   .toolbar .row-count { color: var(--color-text-secondary); font-size: var(--text-sm); }
   .selection-count { font-size: var(--text-sm); font-weight: 600; }
+  .compact-sort { display: none; }
 
   /* Rows, not boxes. The separators are the faintest thing that still reads
      as a row, because everything on this page was outlined before and the
@@ -1098,6 +1124,9 @@
      how anyone finds one. The day moves beneath the title at this width, where
      it distinguishes rows without taking a fixed table column. */
   @media (max-width: 760px) {
+    .compact-sort { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
+    .compact-sort label { font-size: var(--text-sm); font-weight: 600; }
+    .compact-sort select { width: auto; min-width: 0; max-width: 100%; }
     /* The landing rail is navigation, not the Reader's collapsible panel.
        Put its five destinations in a compact row below the list, while the
        list keeps the remaining workspace height and its own vertical scroll. */

@@ -61,7 +61,7 @@ export const tabsFor = (who) => {
 export const PROJECT_TABS = [
   { id: "projects", says: "Projects", icon: "folder" },
   { id: "recent", says: "Recent", icon: "history" },
-  { id: "shared", says: "Shared with me", icon: "users" },
+  { id: "shared", says: "Shared with me", compactLabel: "Shared", icon: "users" },
   { id: "favorites", says: "Favorites", icon: "star" },
   // Last, and after a gap the stylesheet puts there: the trash is a place you
   // go on purpose, and never the one you land on next to Favorites by being

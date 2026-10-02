@@ -31,6 +31,9 @@
     size = null,
     colour = null,
     filled = false,
+    // Optional visible text inside the button. `label` remains the full
+    // accessible name.
+    visibleLabel = null,
     onclick,
   } = $props();
 
@@ -41,7 +44,7 @@
     plain: "",
   };
   const preset = $derived(TONES[tone] ?? (pressed === true ? TONES.tonal : TONES.plain));
-  const classes = $derived(`btn-icon icon-control ${size ? "" : "icon-standard"} ${tone === "plain" || (tone === null && pressed !== true) ? "icon-plain" : ""} ${size ?? ""} ${preset} ${colour ?? ""}`);
+  const classes = $derived(`btn-icon icon-control ${visibleLabel ? "has-compact-label" : ""} ${size ? "" : "icon-standard"} ${tone === "plain" || (tone === null && pressed !== true) ? "icon-plain" : ""} ${size ?? ""} ${preset} ${colour ?? ""}`);
 </script>
 
 <Tooltip openDelay={400} closeDelay={100} positioning={{ placement: "bottom" }}>
@@ -52,6 +55,7 @@
       {#if href}
         <a {...attributes} {href} class={classes} aria-label={label}>
           <Icon name={icon} {filled} />
+          {#if visibleLabel}<span class="compact-label" aria-hidden="true">{visibleLabel}</span>{/if}
         </a>
       {:else}
         <button
@@ -66,6 +70,7 @@
           {onclick}
         >
           <Icon name={icon} {filled} />
+          {#if visibleLabel}<span class="compact-label" aria-hidden="true">{visibleLabel}</span>{/if}
         </button>
       {/if}
     {/snippet}
@@ -76,3 +81,7 @@
     </Tooltip.Content>
   </Tooltip.Positioner>
 </Tooltip>
+
+<style>
+  .compact-label { display: block; max-width: 100%; overflow: hidden; color: inherit; font-size: 10px; font-weight: 500; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+</style>
