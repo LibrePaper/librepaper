@@ -65,7 +65,7 @@ const api = (path, body, token = pairingToken, method = "POST") => fetch(`${loca
 
 let companionStarted = false;
 try {
-  const project = await deployment.publish({
+  await deployment.publish({
     title: "Authorization Backup Project",
     source: "# Authorization Backup Project\n\nThis project must appear in the real backup archive.\n",
     source_format: "markdown",
@@ -165,15 +165,8 @@ try {
   });
   assert.equal(replay.status, 400, "a completed authorization cannot be replayed");
 
-  const enabled = await api("/backups", {
-    account_id: accountId,
-    enabled: true,
-    frequency_minutes: 5,
-  }, pairingToken, "PUT");
-  assert.equal(enabled.status, 200, `enable scheduled backup: ${await enabled.clone().text()}`);
-
   // Restart the actual process so persistence is exercised across a fresh
-  // service instance, with no CLI token cache in this XDG state directory.
+  // service instance. The token came from browser approval, not a CLI login.
   await cli("stop");
   companionStarted = false;
   await cli("start", "--port", String(port));
@@ -185,6 +178,13 @@ try {
   assert.equal((await statusAfterRestart.json()).needs_login, false, "the backup remains authorized after restart");
   assert.deepEqual(JSON.parse(await readFile(tokenPath, "utf8")), tokens,
     "the approved token remains cached under the same server origin after restart");
+
+  const enabled = await api("/backups", {
+    account_id: accountId,
+    enabled: true,
+    frequency_minutes: 5,
+  }, pairingToken, "PUT");
+  assert.equal(enabled.status, 200, `enable scheduled backup: ${await enabled.clone().text()}`);
 
   const deadline = Date.now() + 30000;
   let finished;
@@ -207,7 +207,7 @@ try {
   const archiveNames = await readdir(archiveDirectory);
   const archiveName = archiveNames.find((name) => name.endsWith(".zip"));
   assert.ok(archiveName, "a ZIP archive is present in the scoped backup directory");
-  const archive = await exec("unzip", ["-p", join(archiveDirectory, archiveName), project.main || "main.md"]);
+  const archive = await exec("unzip", ["-p", join(archiveDirectory, archiveName), "main.md"]);
   assert.match(archive.stdout, /This project must appear in the real backup archive\./,
     "the ZIP contains the deployed project's source");
 
