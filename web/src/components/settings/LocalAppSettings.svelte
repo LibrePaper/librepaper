@@ -10,10 +10,8 @@
   let address = $state(localBridge.address());
   let addressDraft = $state(localBridge.address());
   let connecting = $state(false);
-  let copying = $state("");
   let doctor = $state("");
   let connectionError = $state("");
-  let copyError = $state(false);
   let companionSettings = $state(null);
   let settingsError = $state("");
   let pendingDialogAction = $state("");
@@ -21,12 +19,10 @@
   $effect(() => {
     if (!connected) return;
     connectionError = "";
-    copyError = false;
   });
   const connected = $derived(local?.state === "connected");
   const tone = $derived(connected ? "good" : ["denied", "incompatible"].includes(local?.state) ? "warn" : "off");
   const status = $derived(({ unknown: "Companion not connected", unreachable: "Companion not running", denied: "Local network access blocked", reachable: "Companion found", unauthorized: "Companion needs permission", connected: "Companion connected", incompatible: "Companion needs an update" })[local?.state] || "Companion not connected");
-  const installer = "https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh";
 
   async function pair() {
     if (connecting) return;
@@ -38,15 +34,6 @@
       connectionError = error?.message || "Could not open the companion permission window.";
     }
     finally { connecting = false; }
-  }
-
-  async function copy(text, label) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copyError = false;
-      copying = label;
-      setTimeout(() => { if (copying === label) copying = ""; }, 1500);
-    } catch { copyError = true; }
   }
 
   async function doctorReport() {
@@ -134,17 +121,11 @@
   </div>
 </div>
 {#if connectionError}<p class="setting-description local-error" role="alert">{connectionError}</p>{/if}
-{#if copyError}<p class="setting-description local-error" role="status">Copy failed. Select and copy the command manually.</p>{/if}
 
 {#if !connected}
   <section id="local-install-help" class="local-install" aria-label="Install LibrePaper Companion">
     <h4 class="settings-subhead">Install LibrePaper Companion</h4>
-    <div class="install-option">
-      <div class="setting-title">macOS &amp; Linux</div>
-      <div class="command-line"><code>curl --proto '=https' --tlsv1.2 -LsSf {installer} | sh</code><button type="button" class="btn btn-sm lp-control-outline" onclick={() => void copy(`curl --proto '=https' --tlsv1.2 -LsSf ${installer} | sh`, "macOS & Linux")}>{copying === "macOS & Linux" ? "Copied" : "Copy"}</button></div>
-    </div>
-    <p class="setting-description">The companion is currently available for macOS and Linux only; Windows builds are not published.</p>
-    <p class="setting-description">After installation, run <code>librepaper</code> in a terminal and return here to connect. <a href="https://librepaper.org/start.html" target="_blank" rel="noreferrer">Installation help</a></p>
+    <p class="setting-description">Follow the <a href="https://librepaper.org/install.html" target="_blank" rel="noreferrer">install instructions</a> for macOS, Linux and Windows. Then run <code>librepaper</code> in a terminal and return here to connect.</p>
   </section>
 {/if}
 
@@ -188,14 +169,10 @@
 <style>
   .local-intro { max-width: 42rem; margin-block: 0 calc(var(--spacing) * 3); }
   .local-install { display: grid; gap: calc(var(--spacing) * 3); margin-block: calc(var(--spacing) * 4); }
-  .install-option { display: grid; gap: calc(var(--spacing) * 1.5); }
-  .command-line { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-width: 0; }
-  .command-line code { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; padding: calc(var(--spacing) * 2); border-radius: var(--radius-container); background: var(--color-subtle); }
   .local-error { margin-block: calc(var(--spacing) * 2); color: var(--color-error-text); }
   .companion-startup-switch { appearance: none; border: 0; padding: 0; cursor: pointer; }
   .companion-startup-switch:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
   .quit-button { display: grid; gap: calc(var(--spacing) * 2); }
   .local-help { margin-top: calc(var(--spacing) * 3); }
   .setting-log { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-  @media (max-width: 700px) { .command-line { align-items: stretch; flex-direction: column; } }
 </style>

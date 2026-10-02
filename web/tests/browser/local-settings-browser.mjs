@@ -126,16 +126,17 @@ try {
   await b.navigate(`http://127.0.0.1:${port}/`);
   await until("local settings mounted", () => b.evaluate("Boolean(document.querySelector('#local-status'))"), 10000);
 
-  // An unreachable companion exposes the two install paths. Connection details
-  // are expanded when needed.
+  // An unreachable companion links to the install page instead of carrying
+  // commands. Connection details are expanded when needed.
   const initial = await b.evaluate(`JSON.stringify({
     text: document.body.innerText,
     details: document.querySelectorAll('details').length,
     summaries: document.querySelectorAll('summary').length,
+    install: document.querySelector('#local-install-help a')?.href,
   })`);
   const disconnected = JSON.parse(initial);
-  assert.match(disconnected.text, /macOS & Linux/);
-  assert.match(disconnected.text, /Windows/);
+  assert.equal(disconnected.install, "https://librepaper.org/install.html", "the install section links to the one install page");
+  assert.doesNotMatch(disconnected.text, /curl|librepaper-installer/, "the settings page carries no install command of its own");
   assert.equal(disconnected.details, 0, "initial view has no collapsed details");
   assert.equal(disconnected.summaries, 0, "initial view has no disclosure summary");
   assert.doesNotMatch(disconnected.text, /Build presets/);
@@ -146,12 +147,12 @@ try {
   await b.evaluate(clickText("Connect"));
   await until("popup failure shown", () => b.evaluate("document.body.innerText.includes('permission window was blocked')"), 5000);
 
-  // Once connected, the install commands give way to machine controls, and
+  // Once connected, the install link gives way to machine controls, and
   // the Quarto section offers its own command.
   await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:8763/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
   await until("connected settings shown", () => b.evaluate("Boolean(document.querySelector('#quarto-executable')) && Boolean(document.querySelector('#local-startup'))"), 5000);
   const connectedText = await b.evaluate("document.body.innerText");
-  assert.doesNotMatch(connectedText, /macOS & Linux|Windows/);
+  assert.equal(await b.evaluate("document.querySelector('#local-install-help')"), null, "a connected companion needs no install link");
   assert.doesNotMatch(connectedText, /permission window was blocked/);
   assert.doesNotMatch(connectedText, /Build presets|Available tools/);
   assert.match(connectedText, /Version 1\.6\.0/);
@@ -180,7 +181,7 @@ try {
   assert.match(await b.evaluate("document.querySelector('pre[role=status]').textContent"), /quarto/);
   assert.equal(await b.evaluate("window.capabilityCalls"), 1, "diagnostics request a fresh local capability report");
 
-  console.log("local-settings-browser: install commands, failed-popup fallback, inline address editor, and inline diagnostics passed");
+  console.log("local-settings-browser: install link, failed-popup fallback, inline address editor, and inline diagnostics passed");
 } finally {
   if (b) await b.close();
   server.close();
