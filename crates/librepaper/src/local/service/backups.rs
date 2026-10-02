@@ -1201,7 +1201,7 @@ async fn verify_account_with_token(
         .map_err(|error| format!("could not verify account: {error}"))?;
     let response = client
         .get(format!("{}/api/me", origin.trim_end_matches('/')))
-        .bearer_auth(&token)
+        .bearer_auth(token)
         .send()
         .await
         .map_err(|error| format!("could not verify account: {error}"))?;
