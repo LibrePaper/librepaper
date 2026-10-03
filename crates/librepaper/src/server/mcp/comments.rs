@@ -10,78 +10,8 @@
 
 use super::*;
 use crate::room::agent::OperationKey;
+use crate::room::proposals::{pending_proposal, validate_existing_action};
 use crate::room::{self, Comment};
-
-pub(crate) fn validate_existing_action(
-    action: &str,
-    comment_id: &str,
-    comment: Option<&Comment>,
-    supplied_version: &str,
-    current_version: Option<&str>,
-    author: &str,
-    editor: bool,
-) -> Result<(), Failure> {
-    if comment_id.is_empty() {
-        return Err(Failure::new(
-            "invalid_params",
-            "comment_id is required for this action",
-        ));
-    }
-    let comment = comment.ok_or_else(|| Failure::new("not_found", "comment does not exist"))?;
-    if supplied_version.is_empty() {
-        return Err(Failure::new(
-            "invalid_params",
-            "expected_version is required for this action",
-        ));
-    }
-    if current_version != Some(supplied_version) {
-        return Err(Failure::new("conflict", "comment version changed"));
-    }
-    let own = !author.is_empty() && comment.author == author;
-    // `proposed` and `outcome` are presentation projections that `room` never
-    // fills in on a served comment, so nothing here may consult them: the
-    // predicates that did refused every real stored suggestion. What a
-    // suggestion is, is a comment whose motivation is `editing` carrying a
-    // proposal id; whether that proposal is still open is the proposal row's
-    // own `status`, checked by `pending_proposal` once it is loaded and
-    // fenced again by the command itself at commit time.
-    let suggestion = comment.motivation == "editing" && !comment.proposal.is_empty();
-    match action {
-        "refine" if !(editor || (own && suggestion && !comment.resolved)) => Err(Failure::new(
-            "permission_changed",
-            "only the suggestion author or an editor may refine a pending suggestion",
-        )),
-        "reject" if !editor || !suggestion || comment.resolved => Err(Failure::new(
-            "permission_changed",
-            "editor access is required to reject a suggestion",
-        )),
-        "delete" | "resolve" if !(editor || own) => Err(Failure::new(
-            "permission_changed",
-            "only the comment author or an editor may change this comment",
-        )),
-        _ => Ok(()),
-    }
-}
-
-/// The proposal a suggestion comment names, refused unless it is still open.
-///
-/// The comment row says a suggestion exists; only the proposal row says
-/// whether anyone has already decided it. A resolved or superseded proposal
-/// is a conflict rather than a permission failure: the caller read a state
-/// that has since moved, which is exactly what `expected_version` reports
-/// everywhere else.
-pub(crate) async fn pending_proposal(
-    catalog: &crate::storage::postgres::PostgresCatalog,
-    comment: &Comment,
-) -> Result<crate::storage::postgres::StoredProposal, Failure> {
-    let proposal_id = parse_uuid(&comment.proposal, "proposal")?;
-    // A decided proposal is deleted, so a row that exists is still open.
-    catalog
-        .proposal(proposal_id)
-        .await
-        .map_err(|error| Failure::new("unavailable", error.to_string()))?
-        .ok_or_else(|| Failure::new("not_found", "proposal does not exist"))
-}
 
 /// The id a newly created annotation gets, for a comment and for a suggestion
 /// alike.

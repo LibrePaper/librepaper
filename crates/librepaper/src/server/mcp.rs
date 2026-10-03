@@ -112,6 +112,12 @@ impl Failure {
     }
 }
 
+impl From<crate::room::proposals::ActionRefusal> for Failure {
+    fn from(refusal: crate::room::proposals::ActionRefusal) -> Self {
+        Self::new(refusal.code, refusal.message)
+    }
+}
+
 /// What a document tool call answers with once it has been dispatched: the
 /// same plain shape whether the tool ran and produced a structured result or
 /// was refused for a reason the caller can act on (a stale operation key, a

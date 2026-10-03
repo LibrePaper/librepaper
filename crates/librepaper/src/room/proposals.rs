@@ -1717,6 +1717,100 @@ impl Command for DecideProposalHunk {
     }
 }
 
+/// Why an action on an existing comment or its proposal was refused: a stable
+/// machine-readable code and a sentence for the caller. The transport that
+/// asked decides how to present it.
+#[derive(Debug)]
+pub struct ActionRefusal {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl ActionRefusal {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+pub fn validate_existing_action(
+    action: &str,
+    comment_id: &str,
+    comment: Option<&super::Comment>,
+    supplied_version: &str,
+    current_version: Option<&str>,
+    author: &str,
+    editor: bool,
+) -> Result<(), ActionRefusal> {
+    if comment_id.is_empty() {
+        return Err(ActionRefusal::new(
+            "invalid_params",
+            "comment_id is required for this action",
+        ));
+    }
+    let comment = comment.ok_or_else(|| ActionRefusal::new("not_found", "comment does not exist"))?;
+    if supplied_version.is_empty() {
+        return Err(ActionRefusal::new(
+            "invalid_params",
+            "expected_version is required for this action",
+        ));
+    }
+    if current_version != Some(supplied_version) {
+        return Err(ActionRefusal::new("conflict", "comment version changed"));
+    }
+    let own = !author.is_empty() && comment.author == author;
+    // `proposed` and `outcome` are presentation projections that `room` never
+    // fills in on a served comment, so nothing here may consult them: the
+    // predicates that did refused every real stored suggestion. What a
+    // suggestion is, is a comment whose motivation is `editing` carrying a
+    // proposal id; whether that proposal is still open is the proposal row's
+    // own `status`, checked by `pending_proposal` once it is loaded and
+    // fenced again by the command itself at commit time.
+    let suggestion = comment.motivation == "editing" && !comment.proposal.is_empty();
+    match action {
+        "refine" if !(editor || (own && suggestion && !comment.resolved)) => Err(ActionRefusal::new(
+            "permission_changed",
+            "only the suggestion author or an editor may refine a pending suggestion",
+        )),
+        "reject" if !editor || !suggestion || comment.resolved => Err(ActionRefusal::new(
+            "permission_changed",
+            "editor access is required to reject a suggestion",
+        )),
+        "delete" | "resolve" if !(editor || own) => Err(ActionRefusal::new(
+            "permission_changed",
+            "only the comment author or an editor may change this comment",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The proposal a suggestion comment names, refused unless it is still open.
+///
+/// The comment row says a suggestion exists; only the proposal row says
+/// whether anyone has already decided it. A resolved or superseded proposal
+/// is a conflict rather than a permission failure: the caller read a state
+/// that has since moved, which is exactly what `expected_version` reports
+/// everywhere else.
+pub async fn pending_proposal(
+    catalog: &crate::storage::postgres::PostgresCatalog,
+    comment: &super::Comment,
+) -> Result<crate::storage::postgres::StoredProposal, ActionRefusal> {
+    let proposal_id = parse_uuid(&comment.proposal, "proposal")?;
+    // A decided proposal is deleted, so a row that exists is still open.
+    catalog
+        .proposal(proposal_id)
+        .await
+        .map_err(|error| ActionRefusal::new("unavailable", error.to_string()))?
+        .ok_or_else(|| ActionRefusal::new("not_found", "proposal does not exist"))
+}
+
+fn parse_uuid(value: &str, what: &str) -> Result<Uuid, ActionRefusal> {
+    Uuid::parse_str(value)
+        .map_err(|_| ActionRefusal::new("invalid_params", format!("{what} must be a UUID")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

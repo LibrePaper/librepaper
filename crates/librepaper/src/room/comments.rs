@@ -1151,7 +1151,7 @@ fn replay_of(row: &AnnotationRecord) -> Result<NewAnnotation, CommandError> {
 /// Who is writing, as every annotation command needs them.
 ///
 /// Not another principal model, and not a widening of one: these are exactly
-/// the answers a [`crate::server::Viewer`] already gives, kept distinct
+/// the answers a `server::Viewer` already gives, kept distinct
 /// because they *are* distinct, and grouped only so they stop travelling as
 /// four positional arguments in an order nothing but the compiler enforced.
 ///

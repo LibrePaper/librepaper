@@ -986,7 +986,7 @@ fn received(rx: &mut tokio::sync::mpsc::Receiver<crate::storage::outgoing::Outgo
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
-    use crate::server::mcp::comments::{pending_proposal, validate_existing_action};
+    use crate::room::proposals::{pending_proposal, validate_existing_action};
 
     let Some(deployment) = deployment("anchor-mcp-gate").await else {
         return;
