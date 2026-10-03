@@ -18,7 +18,7 @@ const run = promisify(execFile);
 // Runs a same-origin fetch from inside a page so the visitor cookie the
 // landing page issued that browser (HttpOnly, so node can't read it) rides
 // along automatically -- the anonymous-upload ownership this deployment
-// actually uses. See crates/librepaper/src/server/signin.rs VISITOR_COOKIE
+// actually uses. See crates/librepaper-server/src/server/signin.rs VISITOR_COOKIE
 // and owner() in server/mod.rs.
 async function pageRequest(tab, path, method = "GET", body) {
   const script = `(async () => {

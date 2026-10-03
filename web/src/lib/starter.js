@@ -5,7 +5,7 @@
 // knows the formats, and how a name and an author become text in each one.
 //
 // Keep the extensions in step with `main_path_for` in
-// crates/librepaper/src/document/render.rs.
+// crates/librepaper-document/src/document/render.rs.
 
 export const FORMATS = [
   { id: "markdown", name: "Markdown", extension: "md" },

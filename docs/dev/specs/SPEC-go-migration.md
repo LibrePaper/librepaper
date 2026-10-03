@@ -30,7 +30,7 @@ This document is a plan, not a commitment that Go will improve build time. No pe
 - `main.rs` delegates to `librepaper::main()`. CLI parsing and command dispatch live in [`crates/librepaper/src/cli/mod.rs`](../../../crates/librepaper/src/cli/mod.rs); the async `main` dispatches `Command::List` to `list_documents`.
 - The current `list` implementation lives in [`crates/librepaper/src/cli/documents.rs`](../../../crates/librepaper/src/cli/documents.rs). It makes an authenticated HTTP request, derives short IDs from configuration, and prints aligned rows.
 - The CLI currently also launches the local companion by default and directly dispatches deployment administration, storage backup/restore, moderation, export and MCP commands. It is not a remote-only command crate.
-- Companion code is under [`crates/librepaper/src/local/`](../../../crates/librepaper/src/local/). Its `protocol.rs` defines JSON-shaped request/response types. The HTTP service is `local/service/`; local launch/embedding is in `local/cli.rs`, `local/lifecycle.rs` and `local/embedded.rs`.
+- Companion code is under [`crates/librepaper-companion/src/local/`](../../../crates/librepaper-companion/src/local/). Its `protocol.rs` defines JSON-shaped request/response types. The HTTP service is `local/service/`; local launch/embedding is in `local/cli.rs`, `local/lifecycle.rs` and `local/embedded.rs`.
 - The local service currently embeds assistant session state and routes. Assistant and automation modules refer to one another. Moving either one in isolation will require an explicit boundary.
 - The Rust document model and collaboration implementation use Loro. Local backup/export code also names Rust projection/archive types. These are not simple CLI leaf dependencies.
 - The release configuration currently targets Linux x86_64 musl, Linux ARM64 musl, macOS x86_64/ARM64, and Windows MSVC. See `Cargo.toml` package metadata and release configuration. These target names do not prove that a Go C archive can be built and linked for them.
@@ -293,7 +293,7 @@ Keep `admin serve`, storage backup/restore, moderation and sweep Rust-owned in t
 
 ### Stage 8 — Companion leaf utilities, then jobs and previews
 
-Treat the companion as a coherent service migration anchored at [`local/protocol.rs`](../../../crates/librepaper/src/local/protocol.rs), the JSON/HTTP seam. First migrate leaf utilities such as tool discovery, diagnostics normalization, safe builder planning, and agent detection where their inputs/outputs are already data-shaped. Then migrate job/preview service behavior in larger slices.
+Treat the companion as a coherent service migration anchored at [`local/protocol.rs`](../../../crates/librepaper-companion/src/local/protocol.rs), the JSON/HTTP seam. First migrate leaf utilities such as tool discovery, diagnostics normalization, safe builder planning, and agent detection where their inputs/outputs are already data-shaped. Then migrate job/preview service behavior in larger slices.
 
 The parity surface includes protocol version negotiation, loopback binding, host/DNS-rebinding protections, CORS and pairing, bearer/origin scope, project grants, workspace staging, path traversal and symlink safety, file/count/size limits, cancellation, per-project generations, queue limits, job status, expiry/reaping, persisted recovery records, previews, tool discovery/cache invalidation, process environment, output/log bounds, and native engine behavior.
 
@@ -305,7 +305,7 @@ Approval and folder dialogs are OS-specific and currently Rust-owned. For an int
 
 ### Stage 9 — Move assistant and automation together
 
-Assistant and automation are coupled today. Move them together or first extract a stable language-neutral service contract. Relevant Rust code is under [`assistant/`](../../../crates/librepaper/src/assistant/) and [`automation/`](../../../crates/librepaper/src/automation/); local service routes and state also embed the assistant registry.
+Assistant and automation are coupled today. Move them together or first extract a stable language-neutral service contract. Relevant Rust code is under [`assistant/`](../../../crates/librepaper-companion/src/assistant/) and [`automation/`](../../../crates/librepaper-companion/src/automation/); local service routes and state also embed the assistant registry.
 
 Preserve:
 

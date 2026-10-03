@@ -14,6 +14,12 @@ mods=$(cd "$src" && for e in *; do
     case $e in lib.rs | main.rs | tests) ;; *) echo "${e%.rs}" ;; esac
 done)
 
+nmods=$(echo "$mods" | grep -c .)
+if [ "$nmods" -lt 2 ]; then
+    echo "facade has no cross-module edges (modules left: $(echo $mods))"
+    exit 0
+fi
+
 # Number of references from module $1 to module $2.
 count() {
     if [ -d "$src/$1" ]; then path=$src/$1; else path=$src/$1.rs; fi

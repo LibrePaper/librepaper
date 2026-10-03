@@ -128,13 +128,14 @@ jobs:
       # library, and not in `tests/`: every one of its items is a claim about
       # `Sequencer`'s internals, and an external test file cannot build a
       # `Sequencer` at all. So it runs here, with the rest of `--lib`.
-      # The engine owns the catalogue and the log, the facade the room and the
-      # server: both run the same ignored suite against the same database.
+      # The engine owns the catalogue and the log, room and server the rest:
+      # all three run the same ignored suite against the same database.
       - run: |
           export LIBREPAPER_TEST_POSTGRES_URL=postgresql://postgres:librepaper-local@127.0.0.1:5432/lp_lib
           skips="--skip typing_throughput_release_benchmark --skip compaction_cost_release_benchmark --skip concurrent_compaction_release_benchmark --skip update_import_cost_probe --skip batched_import_cost_probe --skip active_document_capacity_benchmark --skip mixed_traffic_capacity_benchmark --skip reconnect_burst_capacity_benchmark --skip maintenance_backlog_capacity_benchmark --skip benchmark_shared_fanout --skip real_quarto_pdf_preview_publishes_complete_pdf_bytes --skip real_quarto_render_reports_success_and_retains_a_failure_log"
           cargo test -p librepaper-engine --lib -- --ignored --test-threads=1 $skips
-          cargo test -p librepaper --lib -- --ignored --test-threads=1 $skips
+          cargo test -p librepaper-room --lib -- --ignored --test-threads=1 $skips
+          cargo test -p librepaper-server --lib -- --ignored --test-threads=1 $skips
       - run: >-
           LIBREPAPER_TEST_POSTGRES_URL=postgresql://postgres:librepaper-local@127.0.0.1:5432/lp_gates
           cargo test -p librepaper --test deployment_gates -- --ignored --test-threads=1
@@ -171,7 +172,7 @@ jobs:
       # coverage task in docs/architecture/building.md#test-suites. This runs
       # the separate render/failure-log integration test below.
       - run: >-
-          cargo test -p librepaper --lib
+          cargo test -p librepaper-companion --lib
           real_quarto_render_reports_success_and_retains_a_failure_log
           -- --ignored --test-threads=1
 

@@ -1,7 +1,7 @@
 //! Label lookups shared by annotation export.
 //!
 //! `document_labels` replaces checkpoints (SPEC-server-is-a-log §8.2), and
-//! `crate::server::history::label_wire` is what a client actually sees of
+//! `librepaper_server::server::history::label_wire` is what a client actually sees of
 //! one: `sha` (the label's id), `sequence`, `at`, `by`, `label`, `reason`,
 //! `tree_sha`, `frontier` and `archive_status`. Deliberately absent is
 //! `source_sequence` -- the `document_updates` row a label or a comment's

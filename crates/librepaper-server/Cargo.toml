@@ -1,0 +1,51 @@
+# The HTTP service: routes, sockets, sign-in and the document origin.
+[package]
+name = "librepaper-server"
+version.workspace = true
+edition.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[lib]
+doctest = false
+
+[dependencies]
+librepaper-base = { path = "../librepaper-base" }
+librepaper-document = { path = "../librepaper-document" }
+librepaper-engine = { path = "../librepaper-engine" }
+librepaper-room = { path = "../librepaper-room" }
+ttf-parser.workspace = true
+tokio.workspace = true
+axum.workspace = true
+http-body-util.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+hmac.workspace = true
+rand.workspace = true
+regex.workspace = true
+time.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+loro.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+log.workspace = true
+chacha20poly1305.workspace = true
+
+[dev-dependencies]
+# `start_paused` and `advance`, so the deadline tests move a clock instead of
+# waiting on one. Test builds only.
+tokio = { workspace = true, features = ["test-util"] }
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
+tempfile.workspace = true
+# A font file for the tests to put in a library.
+typst-assets.workspace = true
+# Test-only: check that the family names our ttf-parser code extracts match
+# the compiler's.
+typst.workspace = true

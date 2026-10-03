@@ -549,40 +549,48 @@ async fn run_admin(command: AdminCommand) {
             storage,
         } => {
             let config = service.configuration();
-            crate::server::serve::serve(crate::server::serve::ServeOptions {
-                bind,
-                port,
-                storage: storage.options(),
-                github_client_id: service.github_client_id,
-                google_client_id: service.google_client_id,
-                publishers: service.publishers,
-                commenters: service.commenters,
-                simulate_activity: service.simulate_activity,
-                origin: service.origin,
-                docs_origin: service.docs_origin,
-                site_origin: service.site_origin,
-                expire_after: service.expire_after,
-                expire_from: service.expire_from,
-                asset_mirror: service.asset_mirror,
-                typst_fonts: service.typst_fonts,
-                start_local: (!service.no_local).then(|| -> crate::server::serve::StartLocal {
-                    Box::new(|base| {
-                        Box::pin(async move {
-                            let app =
-                                librepaper_companion::local::embedded::start(&base, Vec::new())
+            librepaper_server::server::serve::serve(
+                librepaper_server::server::serve::ServeOptions {
+                    bind,
+                    port,
+                    storage: storage.options(),
+                    github_client_id: service.github_client_id,
+                    google_client_id: service.google_client_id,
+                    publishers: service.publishers,
+                    commenters: service.commenters,
+                    simulate_activity: service.simulate_activity,
+                    origin: service.origin,
+                    docs_origin: service.docs_origin,
+                    site_origin: service.site_origin,
+                    expire_after: service.expire_after,
+                    expire_from: service.expire_from,
+                    asset_mirror: service.asset_mirror,
+                    typst_fonts: service.typst_fonts,
+                    start_local: (!service.no_local).then(
+                        || -> librepaper_server::server::serve::StartLocal {
+                            Box::new(|base| {
+                                Box::pin(async move {
+                                    let app = librepaper_companion::local::embedded::start(
+                                        &base,
+                                        Vec::new(),
+                                    )
                                     .await?;
-                            let stopper = app.clone();
-                            Ok(crate::server::serve::LocalApp {
-                                address: app.address.clone(),
-                                stop: Box::new(move || {
-                                    Box::pin(async move { stopper.stop().await })
-                                }),
+                                    let stopper = app.clone();
+                                    Ok(librepaper_server::server::serve::LocalApp {
+                                        address: app.address.clone(),
+                                        stop: Box::new(move || {
+                                            Box::pin(async move { stopper.stop().await })
+                                        }),
+                                    })
+                                })
                             })
-                        })
-                    })
-                }),
-                config,
-            })
+                        },
+                    ),
+                    load_shell: librepaper_shell::load_shell,
+                    latex_release: librepaper_shell::latex_release(),
+                    config,
+                },
+            )
             .await
         }
         AdminCommand::Backup {

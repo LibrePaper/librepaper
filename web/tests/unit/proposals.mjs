@@ -3,7 +3,7 @@ import { LoroDoc, LoroText } from "loro-crdt";
 import { createProposals, locateProposalHunk, markContention } from "../../src/lib/proposals.js";
 
 // This test asserts that the browser groups hunks exactly as the server does.
-// The server's grouping is in crates/librepaper/src/document/hunks.rs.
+// The server's grouping is in crates/librepaper-document/src/document/hunks.rs.
 // A mismatch means "decline the second hunk" reverts something else.
 
 const AUTHOR = 2n;

@@ -436,7 +436,7 @@ async fn lease_loss_during_buffered_typing_refuses_the_flush_and_the_log_is_cons
 // the egress byte accounting (`CostMeter::socket_bytes` and the socket
 // budget's per-state charge) specifically so that a deployment with nothing
 // open costs nothing. Searching this codebase for what is left running on a
-// clock (`grep -n 'tokio::time::interval' crates/librepaper/src/server/serve.rs`)
+// clock (`grep -n 'tokio::time::interval' crates/librepaper-server/src/server/serve.rs`)
 // finds exactly two tickers: an hourly retention janitor (not spawned unless
 // `--expire-after` is set, and irrelevant here since it is not spawned), and
 // the one-second-per-tick §8.6 sweeper, which this test reproduces directly
