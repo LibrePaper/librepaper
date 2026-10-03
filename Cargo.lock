@@ -3161,6 +3161,7 @@ dependencies = [
  "html-escape",
  "http-body-util",
  "include_dir",
+ "librepaper-shell",
  "log",
  "loro",
  "md5",
@@ -3196,6 +3197,15 @@ dependencies = [
  "x11rb",
  "zip",
  "zstd",
+]
+
+[[package]]
+name = "librepaper-shell"
+version = "0.0.20"
+dependencies = [
+ "axum",
+ "include_dir",
+ "serde_json",
 ]
 
 [[package]]
