@@ -59,48 +59,10 @@ fn strip_tags(text: &str) -> String {
     out
 }
 
-/// The five named entities a title is likely to carry, plus numeric ones. A
-/// title is not the place for a full entity table.
+/// Decodes every named and numeric character reference in a title, with the
+/// full HTML entity table. Text that is not a reference is left alone.
 pub fn decode_entities(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find('&') {
-        out.push_str(&rest[..start]);
-        let after = &rest[start..];
-        match after.find(';') {
-            Some(end) if end <= 10 => {
-                let entity = &after[1..end];
-                let decoded = match entity {
-                    "amp" => Some('&'),
-                    "lt" => Some('<'),
-                    "gt" => Some('>'),
-                    "quot" => Some('"'),
-                    "apos" | "#39" => Some('\''),
-                    "nbsp" => Some(' '),
-                    number if number.starts_with("#x") || number.starts_with("#X") => {
-                        u32::from_str_radix(&number[2..], 16)
-                            .ok()
-                            .and_then(char::from_u32)
-                    }
-                    number if number.starts_with('#') => {
-                        number[1..].parse::<u32>().ok().and_then(char::from_u32)
-                    }
-                    _ => None,
-                };
-                match decoded {
-                    Some(c) => out.push(c),
-                    None => out.push_str(&after[..=end]),
-                }
-                rest = &after[end + 1..];
-            }
-            _ => {
-                out.push('&');
-                rest = &after[1..];
-            }
-        }
-    }
-    out.push_str(rest);
-    out
+    html_escape::decode_html_entities(text).into_owned()
 }
 
 /// One line of whitespace-separated words: a `<title>` broken over three lines
@@ -162,5 +124,11 @@ mod tests {
         assert_eq!(decode_entities("a & b"), "a & b");
         assert_eq!(decode_entities("&unknown;"), "&unknown;");
         assert_eq!(decode_entities("&#x2014;"), "—");
+    }
+
+    #[test]
+    fn the_full_named_entity_table_decodes() {
+        assert_eq!(decode_entities("caf&eacute;"), "caf\u{e9}");
+        assert_eq!(decode_entities("a&mdash;b"), "a\u{2014}b");
     }
 }
