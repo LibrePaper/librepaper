@@ -937,6 +937,55 @@ const gate = () => {
   }
 }
 
+// If a referenced baseline expires while this socket is still active, ask
+// for the document again using the session's current vector. A local edit
+// made while the fetch is pending remains in the document and is advertised
+// by that retry.
+{
+  const { head } = sourceLog();
+  const held = gate();
+  const entered = gate();
+  const sent = [];
+  let ambientOpenCalls = 0;
+  const previousOpen = globalThis.open;
+  globalThis.open = () => {
+    ambientOpenCalls += 1;
+    return { window: true };
+  };
+  const joiner = createProjectSession({
+    send: (message) => sent.push(message),
+    onState: () => {},
+    presenceId: () => "active-restart-baseline",
+    fetchReference: async () => {
+      entered.resolve();
+      await held.promise;
+      const error = new Error("that baseline is gone");
+      error.restartBaseline = true;
+      throw error;
+    },
+  });
+  try {
+    const startPromise = joiner.start({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()),
+      ref: "https://example.test/base", digest: "0".repeat(64), updates: [],
+    });
+    await entered.promise;
+    const localId = joiner.addText("local.md", "offline edit");
+    held.resolve();
+    await startPromise;
+    const retries = sent.filter((message) => message.type === "doc-open");
+    assert.equal(retries.length, 1);
+    assert.equal(retries[0].protocol, "librepaper.room.v3");
+    assert.equal(joiner.textOf(localId).toString(), "offline edit");
+    assert.equal(VersionVector.decode(decode(retries[0].vector)).compare(joiner.doc.oplogVersion()), 0);
+    assert.equal(ambientOpenCalls, 0);
+  } finally {
+    joiner.leave();
+    if (previousOpen === undefined) delete globalThis.open;
+    else globalThis.open = previousOpen;
+  }
+}
+
 // A digest that does not match is still an integrity failure for whoever is
 // connected. On a connection that has gone it is nobody's failure: the check
 // is skipped rather than raised at the join that replaced it.

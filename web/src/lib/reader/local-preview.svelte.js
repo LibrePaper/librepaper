@@ -34,7 +34,7 @@ function etagToSha(etag) {
 
 /** @param {{
  * local: LocalPreviewClient, publish: (payload: LocalPreviewPayload) => unknown,
- * treeNow: () => LocalPreviewTree, entrypointOf: (tree: LocalPreviewTree) => string,
+ * treeNow: () => LocalPreviewTree | Promise<LocalPreviewTree>, entrypointOf: (tree: LocalPreviewTree) => string,
  * optionsOf: (tree: LocalPreviewTree) => LocalPreviewOptions,
  * jobOf?: (tree: LocalPreviewTree) => LocalPreviewJob,
  * engine: string, label?: string, isDisposed?: () => boolean,
@@ -60,7 +60,7 @@ export function createLocalPreview({
   onEnded,
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (timer) => clearTimeout(timer),
-} = {}) {
+}) {
   // What the page draws. Owned here rather than mirrored into the page
   // through callbacks: these are facts about a preview, the preview is this
   // module, and a mirror is one more thing that can disagree.

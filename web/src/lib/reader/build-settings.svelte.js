@@ -16,7 +16,7 @@
 import { read as readPreferences } from "../build-preferences.js";
 import * as defaultLatex from "../latex.js";
 
-/** @typedef {{ selection?: string, backend?: string, tool?: string, output?: string, engine?: string, format?: string, [key: string]: unknown }} BuildPreference */
+/** @typedef {{ selection: string, backend: string, tool?: string, output?: string, engine?: string, format: string, [key: string]: unknown }} BuildPreference */
 /** @typedef {ReturnType<typeof import("../collab.js").join>} BuildSession */
 
 /** @param {{ slug: string, origin: string, read?: typeof readPreferences, latex?: typeof defaultLatex, interrupt?: (next: BuildPreference | null) => void, paint?: () => void }} options */

@@ -31,11 +31,12 @@ import { named } from "../latex/errors.js";
 /** @typedef {{ entrypoint?: string, binding?: string, bindingId?: string, idempotencyKey?: string, id?: string, inputDigest?: string, inputRevision?: string, generation?: number, deadlineSeconds?: number, snapshot?: string, [key: string]: unknown }} CompanionJob */
 /** @typedef {{ main: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array | ArrayBuffer | string>, digests?: Record<string, string>, files?: Record<string, unknown> }} CompanionTree */
 /** @typedef {{ path: string, sha256: string, size: number }} ManifestFile */
-/** @typedef {{ signal?: AbortSignal, onProgress?: (progress: { done: number, total: number, scope?: string }) => void, onLog?: (line: string) => void }} BuildCallbacks */
+/** @typedef {{ signal?: AbortSignal, onProgress?: (progress: { done: number, total: number, scope?: string, stage?: string }) => void, onLog?: (line: string) => void }} BuildCallbacks */
 /** @typedef {{ status: string, exit?: number, stage?: string, log_tail?: string, outputs?: Record<string, { size: number, sha256: string }>, diagnostics?: unknown[], provenance?: Record<string, unknown>, error?: string }} CompanionJobStatus */
-/** @typedef {{ binding_id: string, main: string, format: string, profile?: string | null, parameters?: Record<string, unknown>, policy?: string, idempotency_key?: string | null, execution_mode?: string, render_scope?: string, data_inputs?: string[], shared_inventory_complete?: boolean }} QuartoJobDetails */
+/** @typedef {{ binding_id: string, main: string, format: string, profile?: string | null, parameters?: Record<string, string | number | boolean | null>, policy?: string, idempotency_key?: string | null, execution_mode?: string, render_scope?: string, data_inputs?: string[], shared_inventory_complete?: boolean }} QuartoJobDetails */
 /** @typedef {{ main: string, format: string, binding_id: string }} CalepinJobDetails */
 /** @typedef {{ protocol: number, kind: string, project: string | null, origin: string, snapshot: string, generation: number, manifest: ManifestFile[], quarto: QuartoJobDetails, [key: string]: unknown }} QuartoRequestBody */
+/** @typedef {{ protocol: number, kind: string, project: string | null, origin: string, snapshot: string, generation: number, manifest: ManifestFile[], options: { deadline_seconds: number }, workspace?: { mode: "bound" | "snapshot", binding_id: string }, [key: string]: unknown }} JobEnvelope */
 
 /** @param {unknown} timer */
 function unrefTimer(timer) {
@@ -513,6 +514,7 @@ let addressSpaceSupported = true;
 
 async function healthFetch(addr) {
   const url = addr + LOCAL_BASE + "health";
+  /** @type {LocalRequestInit} */
   const init = {
     method: "GET",
     mode: "cors",
@@ -1034,6 +1036,7 @@ export function quartoRequest({ job = {}, entrypoint, format = "html", profile =
   const sourceDigest = inputDigest || job.inputDigest || "";
   if (sourceDigest) safeSha256(sourceDigest, "shared tree digest");
   if (Object.keys(parameters || {}).length > 128) throw new Error("too many Quarto parameters");
+  /** @type {Record<string, string | number | boolean | null>} */
   const publicParameters = {};
   for (const [key, value] of Object.entries(parameters || {})) {
     if (key.length > 128 || !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(key)) throw new Error(`invalid Quarto parameter: ${key}`);
@@ -1116,6 +1119,7 @@ async function buildCalepinForm({ job = {}, tree, options = {} }) {
   }
   const binding = boundedString(job.binding || job.bindingId || "", "binding");
   if (!/^[A-Za-z0-9._:-]+$/.test(binding)) throw new Error("invalid Calepin binding");
+  /** @type {JobEnvelope & { engine: "calepin", calepin: CalepinJobDetails }} */
   const request = {
     ...jobEnvelope({ job, manifest, inputRevision: options.inputRevision }),
     engine: "calepin",
@@ -1389,30 +1393,39 @@ async function collectQuartoOutputs(id, status, pairing, options, { onProgress, 
 /** Start a live preview on either engine. For `quarto` this produces the
  * Quarto preview JSON; for `calepin`, `options` is the
  * `{ entrypoint, format }` pair validated by `calepinOptions`. */
-/** @param {{ engine?: string, job?: CompanionJob, tree: CompanionTree, options?: RenderOptions }} [input] @returns {Promise<{ id: string, url: string }>} */
-export async function startLocalPreview({ engine = "quarto", job = {}, tree, options = {} } = {}) {
+/** @param {{ engine?: string, job?: CompanionJob, tree: CompanionTree, options?: RenderOptions }} input @returns {Promise<{ id: string, url: string }>} */
+export async function startLocalPreview({ engine = "quarto", job = {}, tree, options = {} }) {
   const pairing = requirePairing();
   const form = engine === "calepin"
     ? await buildCalepinForm({ job, tree, options: { ...options, livePreview: true } })
     : await buildQuartoForm({ job, tree, options: { ...options, livePreview: true } });
   const jobPart = form.get("job");
   if (!(jobPart instanceof Blob)) throw new Error("local preview request is missing its job manifest");
+  /** @type {JobEnvelope & { quarto?: QuartoJobDetails, calepin?: CalepinJobDetails }} */
   const built = JSON.parse(await jobPart.text());
   // Unconditionally protocol 2, like `runBuild`: a pairing only exists after
   // a health check that refused anything below it (see `probe`), and the
   // bridge has no other shape to decode a preview from. The version guard
   // this replaced defaulted to 1 when the status was unset, which produced a
   // request nothing could answer.
-  const /** @type {QuartoJobDetails | CalepinJobDetails} */ details = built.quarto || built.calepin;
   const builder = engine === "calepin" ? "calepin" : "quarto";
+  const details = engine === "calepin" ? built.calepin : built.quarto;
+  if (!details) throw new Error(`local preview request is missing ${builder} job details`);
   const output = details.format || options.format || "html";
   const entrypoint = details.main || options.entrypoint;
+  const previewOptions = engine === "quarto" && built.quarto
+    ? {
+        ...(built.quarto.profile ? { profile: built.quarto.profile } : {}),
+        parameters: built.quarto.parameters || {},
+        policy: built.quarto.policy || "project-defaults",
+      }
+    : {};
   const request = {
     protocol: 2, kind: "preview", project: built.project, origin: built.origin,
     snapshot: built.snapshot, generation: built.generation, builder,
     workspace: { mode: "bound", binding_id: details.binding_id }, entrypoint, output,
     manifest: built.manifest,
-    options: engine === "quarto" ? { ...(details.profile ? { profile: details.profile } : {}), parameters: details.parameters || {}, policy: details.policy || "project-defaults" } : {},
+    options: previewOptions,
   };
   const source = await sourceSnapshot(built.snapshot, entrypoint, built.manifest);
   if (source) request.source = source;
@@ -1522,7 +1535,7 @@ async function buildWorkspaceForm(tree) {
 // through the job queue. Same file layout as a job's multipart body, but the
 // JSON part is named `manifest` (a bare array) rather than `job`.
 /** @param {{ tree: CompanionTree }} input */
-export async function syncWorkspace({ tree } = {}) {
+export async function syncWorkspace({ tree }) {
   const pairing = requirePairing();
   const form = await buildWorkspaceForm(tree);
   const response = await send("PUT", `workspace?${new URLSearchParams({ project: String(current.project) })}`, { token: pairing.token, formBody: form });

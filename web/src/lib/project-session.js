@@ -35,7 +35,7 @@ import { createGeneration } from "./reader/generation.js";
 /** @typedef {ProjectFile | { kind: "folder", id: string, path: string }} ProjectEntry */
 /** @typedef {{ main: string, texts: Record<string, string>, digests: Record<string, string>, files: Record<string, {kind: "text", id: string} | {kind: "asset", sha: string}> }} ProjectTree */
 /** @typedef {{ text_extensions?: string[], asset_extensions?: string[], derived_extensions?: string[], max_path?: number, [key: string]: unknown }} ProjectRules */
-/** @typedef {{ target: string, path?: string[] }} ProjectEvent */
+/** @typedef {import("loro-crdt").LoroEvent} ProjectEvent */
 
 // Keep each JSON WebSocket frame comfortably below the server's one-megabyte
 // receive limit. Base64 expands the binary update by a third, and the JSON
@@ -176,6 +176,7 @@ export function createProjectSession({
   // The four maps that are the directory itself. A change to any of them is a
   // change to the file list; a change under one of them is not, because a
   // file's text sits inside `files`.
+  /** @type {Set<import("loro-crdt").ContainerID>} */
   const directory = new Set([files.id, paths.id, assets.id, meta.id]);
   /** @type {EphemeralStore<{ [key: string]: PresenceState }>} */
   const store = new EphemeralStore(30000);
@@ -403,6 +404,11 @@ export function createProjectSession({
     localPending,
     localError,
     joined,
+  });
+  const openMessage = () => ({
+    type: "doc-open",
+    vector: encode(doc.oplogVersion().encode()),
+    protocol: "librepaper.room.v3",
   });
   try {
     persister = persistence?.open?.(doc, {
@@ -969,7 +975,7 @@ export function createProjectSession({
       const roots = new Set(["files", "paths", "assets", "meta"]);
       const unsub = doc.subscribe((eventBatch) => {
         const relevantEvents = eventBatch.events.filter(
-          (event) => roots.has(event.path?.[0]) || directory.has(event.target),
+          (event) => (typeof event.path?.[0] === "string" && roots.has(event.path[0])) || directory.has(event.target),
         );
         if (relevantEvents.length > 0) {
           watcher(relevantEvents);
@@ -1054,15 +1060,7 @@ export function createProjectSession({
       // it can be base64'd for the wire -- spreading it straight into the
       // encoder threw "not iterable", which is what made opening a document
       // fail before it had sent anything.
-      return {
-        type: "doc-open",
-        vector: encode(doc.oplogVersion().encode()),
-        // The protocol string carries the version now; there is no separate
-        // `version`/`schema_version` field to keep in step with it. A server
-        // that cannot speak this protocol answers with upgrade-required
-        // before this socket can send an update (§6.1).
-        protocol: "librepaper.room.v3",
-      };
+      return openMessage();
     },
 
     /// The server's answer to `doc-open`: either everything (§6.2 step 3),
@@ -1117,7 +1115,7 @@ export function createProjectSession({
             // now joining instead.
             if (!speaksForThisJoin(stale)) return;
             if (error?.restartBaseline) {
-              send(open());
+              send(openMessage());
               return;
             }
             throw error;
