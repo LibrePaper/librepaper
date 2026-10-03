@@ -58,6 +58,7 @@ tools/deploy-assets publish              # check, smoke, probe, upload
   - `OVH_S3_ENDPOINT`, `OVH_S3_REGION`, `OVH_S3_USER`, `OVH_S3_SECRET`
   - `OVH_S3_ARN` (`arn:aws:s3:::BUCKET`) names the bucket
   - overridden by `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+  - set `S3_PUBLIC_BASE_URL` to the public HTTPS bucket URL when overriding `S3_ENDPOINT` or `S3_REGION`; publish probes use it for object and private-listing checks
 - One-time: create an S3 user in the OVH console, not the bucket; `publish` creates it so the user owns it (only the owner can set CORS)
 - `publish` does, in order:
   1. check mirror: modules match their pins; LaTeX directory matches its manifest, nothing missing or extra
