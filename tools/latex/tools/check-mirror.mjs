@@ -12,31 +12,35 @@
 //     node check-mirror.mjs <mirror dir>            every <id>/ inside it
 //     node check-mirror.mjs <release dir>           one release
 //     node check-mirror.mjs <release URL>           <asset-mirror>latex/<id>/
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { basename, resolve } from "node:path";
+import { basename, relative, resolve, sep } from "node:path";
+import { validateReleaseShape } from "./release-shape.mjs";
 
 const base = process.argv[2];
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const ID = /^[a-f0-9]{64}$/;
 
-function checkShape(release) {
-  if (release.format !== 2) throw new Error(`unsupported release format: ${release.format}`);
-  if (!release.engines?.pdftex?.worker) throw new Error("no complete pdfTeX engine in the release");
-  if (!release.bundles) throw new Error(`release ${release.id} has no bundles; this mirror ships bundled releases only`);
-  return release;
-}
+const safeAssetPath = (url, what) => {
+  if (typeof url !== "string" || !url || url.startsWith("/") || /[\\%?#:\0]/.test(url) ||
+      url.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`${what} has an unsafe relative path`);
+  }
+  return url;
+};
 
 /// One release directory on disk: MANIFEST.json hashes to the directory name,
 /// release.json is complete, and every engine file and bundle is present with
 /// matching size and digest.
 async function checkDirectory(directory) {
-  const root = resolve(directory);
-  const inside = (path, what) => {
-    if (!path.startsWith(root + "/")) throw new Error(`${what} escapes the release directory`);
-    return path;
+  const root = await realpath(resolve(directory));
+  const inside = async (path, what) => {
+    const actual = await realpath(path);
+    const rel = relative(root, actual);
+    if (!rel || rel === ".." || rel.startsWith(`..${sep}`)) throw new Error(`${what} escapes the release directory`);
+    return actual;
   };
-  const release = checkShape(JSON.parse(await readFile(resolve(root, "release.json"), "utf8")));
+  const release = validateReleaseShape(JSON.parse(await readFile(resolve(root, "release.json"), "utf8")));
   if (ID.test(basename(root))) {
     let manifest;
     try {
@@ -53,7 +57,8 @@ async function checkDirectory(directory) {
     for (const file of spec.files || []) {
       const info = release.files?.[file];
       if (!info) throw new Error(`engine ${name}: file ${file} is absent from release.json`);
-      const bytes = await readFile(inside(resolve(root, info.url), `asset path ${info.url}`));
+      const url = safeAssetPath(info.url, `asset path ${info.url}`);
+      const bytes = await readFile(await inside(resolve(root, url), `asset path ${info.url}`));
       if (bytes.length !== info.size || sha256(bytes) !== info.sha256) {
         throw new Error(`engine ${name}: digest or size mismatch: ${info.url}`);
       }
@@ -65,7 +70,8 @@ async function checkDirectory(directory) {
   // disk -- independent of `release.files`, which only proves the engine
   // files landed intact, not that bundles.json still agrees with the tars
   // beside it.
-  const indexBytes = await readFile(inside(resolve(root, release.bundles.index), "bundle index"));
+  const indexPath = safeAssetPath(release.bundles.index, "bundle index");
+  const indexBytes = await readFile(await inside(resolve(root, indexPath), "bundle index"));
   if (sha256(indexBytes) !== release.bundles.sha256) {
     throw new Error(`bundle index digest mismatch: ${release.bundles.index}`);
   }
@@ -77,7 +83,7 @@ async function checkDirectory(directory) {
   }
   for (let i = 0; i < bundleEntries.length; i += 32) {
     await Promise.all(bundleEntries.slice(i, i + 32).map(async ([name, bundle]) => {
-      const path = inside(resolve(root, bundleDir + bundle.url), `bundle path ${bundle.url}`);
+      const path = await inside(resolve(root, safeAssetPath(bundleDir + bundle.url, `bundle path ${bundle.url}`)), `bundle path ${bundle.url}`);
       let bytes;
       try {
         bytes = await readFile(path);
@@ -98,9 +104,21 @@ async function checkDirectory(directory) {
 try {
   if (!base) throw new Error("usage: check-mirror.mjs <mirror dir | release dir | release URL>");
   if (/^https?:\/\//.test(base)) {
-    const response = await fetch(`${base.replace(/\/$/, "")}/release.json`, { signal: AbortSignal.timeout(30000) });
+    const releaseUrl = new URL(`${base.replace(/\/$/, "")}/release.json`);
+    const response = await fetch(releaseUrl, { signal: AbortSignal.timeout(30000), redirect: "manual" });
     if (!response.ok) throw new Error(`release.json returned HTTP ${response.status}`);
-    const release = checkShape(await response.json());
+    const release = validateReleaseShape(await response.json());
+    const workerUrl = new URL(safeAssetPath(release.files[release.engines.pdftex.worker].url, "pdfTeX worker"), releaseUrl);
+    if (workerUrl.origin !== releaseUrl.origin || !workerUrl.pathname.startsWith(releaseUrl.pathname.slice(0, releaseUrl.pathname.lastIndexOf("/") + 1))) {
+      throw new Error("pdfTeX worker URL escapes the release directory");
+    }
+    const workerResponse = await fetch(workerUrl, { signal: AbortSignal.timeout(30000), redirect: "manual" });
+    if (!workerResponse.ok) throw new Error(`pdfTeX worker returned HTTP ${workerResponse.status}`);
+    const worker = Buffer.from(await workerResponse.arrayBuffer());
+    const workerRecord = release.files[release.engines.pdftex.worker];
+    if (worker.length !== workerRecord.size || sha256(worker) !== workerRecord.sha256) {
+      throw new Error("pdfTeX worker payload does not match release.json");
+    }
     console.log(`LaTeX release ready: ${base} (${release.id}, format ${release.format})`);
   } else {
     const root = resolve(base);

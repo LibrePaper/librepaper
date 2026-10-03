@@ -14,6 +14,7 @@ import { Transform } from "node:stream";
 import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { validateReleaseShape } from "./latex/tools/release-shape.mjs";
 
 const runFile = promisify(execFile);
 const HASH = /(?:^|[./_-])[a-f0-9]{64}(?=$|[./_-])/i;
@@ -219,11 +220,8 @@ async function validateLatexReleases(root, files, expected) {
     if (!expected.get(`${id}/release.json`)) throw new Error(`${label} is missing release.json`);
     let release;
     try { release = JSON.parse((await readFile(join(root, id, "release.json"))).toString("utf8")); } catch { throw new Error(`${label} release.json is invalid JSON`); }
-    if (release?.format !== 2) throw new Error(`${label} release.json must use format 2`);
+    validateReleaseShape(release);
     if (release.id !== id) throw new Error(`${label} release.json id does not match its directory`);
-    if (!release.files || typeof release.files !== "object" || Array.isArray(release.files)) {
-      throw new Error(`${label} has no files map`);
-    }
     const releaseRoot = join(root, id);
     const referenced = new Set([`${id}/MANIFEST.json`, `${id}/release.json`]);
     const reference = (rel, size, sha256, what) => {
