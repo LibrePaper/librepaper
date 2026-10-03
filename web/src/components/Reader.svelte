@@ -3825,7 +3825,7 @@
     <IconButton icon="eye" label="Document" pressed={shown.document}
                 onclick={() => showMobileView("document")} />
     {#if editing || panel === "history"}
-      <IconButton icon="code-xml" label="Source" pressed={shown.source}
+      <IconButton icon="writing-hand" label="Source" pressed={shown.source}
                   onclick={() => showMobileView("source")} />
     {/if}
   </div>

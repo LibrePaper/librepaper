@@ -1,12 +1,11 @@
 <script>
-  // The icons the shell uses, from Lucide, drawn as shapes rather than fetched
-  // as a font or a sprite: a few small paths cost less than either, and an
-  // icon that is part of the bundle cannot arrive after the button it belongs
-  // to. See styles/lucide-LICENSE.txt.
+  // The shell's Lucide icons, plus the original writing-hand icon below, are
+  // drawn as shapes rather than fetched as a font or sprite: a few small paths
+  // cost less than either, and an icon in the bundle cannot arrive after its
+  // button. See styles/lucide-LICENSE.txt for the Lucide icons.
   //
-  // The geometry is Lucide's own, rounded corners included. Redrawing a
-  // rounded rectangle as a square-cornered path is what made these look like
-  // icons from two different sets.
+  // Lucide geometry keeps its rounded corners. Redrawing a rounded rectangle
+  // as a square-cornered path is what made these look like icons from two sets.
   const ICONS = {
     menu: [["path", "M4 6h16"], ["path", "M4 12h16"], ["path", "M4 18h16"]],
     "more-horizontal": [["circle", { cx: 5, cy: 12, r: 1 }], ["circle", { cx: 12, cy: 12, r: 1 }], ["circle", { cx: 19, cy: 12, r: 1 }]],
@@ -102,6 +101,13 @@
     pencil: [
       ["path", "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"],
       ["path", "m15 5 4 4"],
+    ],
+    // Original outline of a hand holding a diagonal pencil for the editor.
+    "writing-hand": [
+      ["path", "m11 10 4-7a1.5 1.5 0 0 1 2.6 1.5L14 11"],
+      ["path", "m9 14-2 5 4-3"],
+      ["path", "M21 21h-6a5 5 0 0 1-4-2l-3-4a2 2 0 0 1 .4-2.8l3.2-2.4a2 2 0 0 1 2.4 3.2l-2 1.5"],
+      ["path", "m16 10 3 2a4 4 0 0 1 2 3.5V17"],
     ],
     // Lucide's file-plus, for adding one.
     "file-plus": [
