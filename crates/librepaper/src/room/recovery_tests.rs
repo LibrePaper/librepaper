@@ -85,7 +85,7 @@ async fn connect(url: String) -> Arc<PostgresCatalog> {
             .expect("connect to the throwaway database"),
     );
     catalog.migrate().await.expect("apply the current schema");
-    crate::tests::reset(&catalog).await;
+    crate::testing::reset(&catalog).await;
     catalog
 }
 

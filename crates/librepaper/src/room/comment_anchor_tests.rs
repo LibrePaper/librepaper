@@ -36,7 +36,7 @@ struct Deployment {
 }
 
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let catalog = crate::tests::catalog().await?;
+    let catalog = crate::testing::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let account = catalog
         .create_account(crate::storage::postgres::NewAccount {

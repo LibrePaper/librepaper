@@ -49,7 +49,7 @@ struct Deployment {
 /// this file is to catch a mismatch between that wiring and the comment
 /// path, which a smaller fixture could hide.
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let catalog = crate::tests::catalog().await?;
+    let catalog = crate::testing::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let owner = catalog
         .create_account(NewAccount {

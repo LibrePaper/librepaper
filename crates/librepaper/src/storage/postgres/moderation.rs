@@ -380,7 +380,7 @@ mod tests {
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn hidden_projects_do_not_consume_public_pages_and_still_expire() {
         let catalog = test_catalog().await;
-        crate::tests::reset(&catalog).await;
+        crate::testing::reset(&catalog).await;
         let owner = Uuid::now_v7();
         let hidden_id = Uuid::now_v7();
         let visible_id = Uuid::now_v7();
@@ -460,7 +460,7 @@ mod tests {
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn retention_maintenance_pages_reach_a_hidden_document_after_200_rows() {
         let catalog = test_catalog().await;
-        crate::tests::reset(&catalog).await;
+        crate::testing::reset(&catalog).await;
         let owner = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO accounts(id,kind,handle,display_name,status)

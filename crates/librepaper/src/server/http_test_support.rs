@@ -30,7 +30,7 @@ pub(super) async fn deployment(
     publishers: &str,
     commenters: &str,
 ) -> Option<Deployment> {
-    let catalog = crate::tests::catalog().await?;
+    let catalog = crate::testing::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let owner = catalog
         .create_account(NewAccount {

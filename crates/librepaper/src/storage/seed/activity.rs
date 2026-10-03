@@ -769,7 +769,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn activity_simulation_keeps_the_authenticated_session_generation() {
-        let Some(catalog) = crate::tests::catalog().await else {
+        let Some(catalog) = crate::testing::catalog().await else {
             return;
         };
         let _writer = catalog.claim_writer().await.unwrap();
@@ -824,7 +824,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn activity_simulation_accepts_text_only_documents_with_a_valid_session() {
-        let Some(catalog) = crate::tests::catalog().await else {
+        let Some(catalog) = crate::testing::catalog().await else {
             return;
         };
         let _writer = catalog.claim_writer().await.unwrap();

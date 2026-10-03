@@ -329,7 +329,7 @@ mod tests {
     /// into every id it creates, for a test that is scoped to its own rows
     /// and would rather not race a truncate against whatever else is running.
     async fn truncate(catalog: &PostgresCatalog) {
-        crate::tests::reset(catalog).await;
+        crate::testing::reset(catalog).await;
     }
 
     async fn seed_account(catalog: &PostgresCatalog, tag: &str) -> AccountRecord {
@@ -951,7 +951,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn operation_outcomes_commit_atomically_and_remain_actor_scoped() {
-        let catalog = crate::tests::catalog().await.expect("test database");
+        let catalog = crate::testing::catalog().await.expect("test database");
         let account = seed_account(&catalog, "outcome").await;
         let document = seed_document(&catalog, account.id, "outcome").await;
         let receipt = OperationReceipt {

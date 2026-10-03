@@ -1614,7 +1614,7 @@ mod tests {
                 .unwrap(),
         );
         catalog.migrate().await.unwrap();
-        crate::tests::reset(&catalog).await;
+        crate::testing::reset(&catalog).await;
         let _writer = catalog.claim_writer().await.unwrap();
         let directory = tempfile::tempdir().unwrap();
         let blobs: Arc<dyn BlobStore> =

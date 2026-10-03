@@ -20,7 +20,7 @@ async fn catalog() -> PostgresCatalog {
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
     let catalog = catalog().await;
-    crate::tests::reset(&catalog).await;
+    crate::testing::reset(&catalog).await;
     let _writer = catalog.claim_writer().await.unwrap();
     let tag = Uuid::now_v7();
     let account = catalog
@@ -139,7 +139,7 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
     options.policy.owner_bytes = 40;
     let catalog = PostgresCatalog::connect(options).await.unwrap();
     catalog.migrate().await.unwrap();
-    crate::tests::reset(&catalog).await;
+    crate::testing::reset(&catalog).await;
     let _writer = catalog.claim_writer().await.unwrap();
     let tag = Uuid::now_v7();
     let account = catalog
@@ -217,7 +217,7 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
     let catalog = catalog().await;
-    crate::tests::reset(&catalog).await;
+    crate::testing::reset(&catalog).await;
     let _writer = catalog.claim_writer().await.unwrap();
     let tag = Uuid::now_v7();
     let account = catalog

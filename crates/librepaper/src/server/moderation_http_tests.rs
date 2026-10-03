@@ -95,10 +95,10 @@ async fn deployment_mode_with_policy(
         options.policy = policy;
         let catalog = Arc::new(PostgresCatalog::connect(options).await.unwrap());
         catalog.migrate().await.unwrap();
-        crate::tests::reset(&catalog).await;
+        crate::testing::reset(&catalog).await;
         Some(catalog)
     } else {
-        crate::tests::catalog().await
+        crate::testing::catalog().await
     }?;
     let writer = catalog.claim_writer().await.unwrap();
     let account = catalog

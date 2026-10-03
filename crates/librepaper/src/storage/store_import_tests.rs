@@ -12,7 +12,7 @@ use librepaper_base::config::Configuration;
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes_them() {
-    let catalog = crate::tests::catalog().await.expect("test database");
+    let catalog = crate::testing::catalog().await.expect("test database");
     let _writer = catalog.claim_writer().await.expect("claim writer lease");
     let owner = catalog
         .create_account(NewAccount {
@@ -184,7 +184,7 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
-    let catalog = crate::tests::catalog().await.expect("test database");
+    let catalog = crate::testing::catalog().await.expect("test database");
     let _writer = catalog.claim_writer().await.expect("claim writer lease");
     let owner = catalog
         .create_account(NewAccount {
