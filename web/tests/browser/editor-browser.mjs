@@ -367,6 +367,8 @@ window.collabCacheCheck = async () => {
     const result = {
       recovered,
       prepared: manifest?.document?.title,
+      preparedSlug: manifest?.document?.slug,
+      preparedCreatedAt: manifest?.document?.created_at,
       files: recreated.list().length,
       main: recreated.mainId() === newMain,
       preview: recreated.tree().texts["main.md"],
@@ -912,6 +914,8 @@ try {
   const cache = await evaluate("collabCacheCheck()");
   assert.equal(cache.recovered, "new offline server");
   assert.equal(cache.prepared, "Cached paper");
+  assert.equal(cache.preparedSlug, "cache-upgrade");
+  assert.equal(cache.preparedCreatedAt, "first-creation");
   assert.equal(cache.files, 1);
   assert.equal(cache.main, true);
   assert.equal(cache.preview, "edited reseeded");

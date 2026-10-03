@@ -18,7 +18,7 @@ export function capturePreviewTree(tree) {
     files: Object.fromEntries(Object.entries(tree.files || {}).map(([path, entry]) => [path, { ...entry }])),
     settings: tree.settings ? { ...tree.settings } : undefined,
     assets: Object.fromEntries(Object.entries(tree.assets || {}).map(([path, bytes]) => [path, new Uint8Array(bytes).slice()])),
-    urls: { ...tree.urls },
+    urls: { ...(tree.urls || {}) },
   };
 }
 
@@ -36,9 +36,13 @@ export function candidateTree(candidate) {
   if (!sources || typeof sources !== "object" || Array.isArray(sources)) {
     throw new Error("Candidate source files are required.");
   }
+  /** @type {Record<string, {kind: "asset"|"text", sha: string, size: number}>} */
   const files = {};
+  /** @type {Record<string, string>} */
   const texts = {};
+  /** @type {Record<string, Uint8Array>} */
   const assets = {};
+  /** @type {Record<string, string>} */
   const digests = {};
   for (const [path, raw] of Object.entries(manifest)) {
     if (!validPath(path) || !raw || typeof raw !== "object") {
@@ -78,7 +82,7 @@ export function candidateTree(candidate) {
 // The server always sends a candidate reference (`request.candidate`): a
 // manifest plus the source files the agent client fetched over authenticated
 // same-origin requests, never inline edits carried in the chat frame itself.
-/** @param {{request: {candidate?: {main?: string, files?: Record<string, object>, texts?: Record<string, string>, settings?: object, base_revision?: string, revision?: string}, base_revision?: string, revision?: string}, tree?: {main?: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array>, digests?: Record<string, string>, files?: Record<string, object>}, render: (tree: object, title: string) => Promise<{html?: string|null, pdf?: Uint8Array|null, diagnostics?: object[], provenance?: {engine?: string}, ok?: boolean}>, title?: (tree: object) => Promise<string>, digest?: (tree: object) => Promise<string>}} options */
+/** @param {{request: {candidate?: {main?: string, files?: Record<string, {kind?: string, sha?: string, size?: number}>, texts?: Record<string, string>, settings?: object, base_revision?: string, revision?: string, dependency_hash?: string, settings_hash?: string}, base_revision?: string, revision?: string}, tree?: {main?: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, digests?: Record<string, string>, files?: Record<string, {sha?: string}>}, render: (tree: object, title: string) => Promise<{html?: string|null, pdf?: Uint8Array|null, diagnostics?: {severity: string, message: string, file?: string, line?: number, column?: number}[], provenance?: {engine?: string}, ok?: boolean}>, title?: (tree: object) => Promise<string>, digest?: (tree: object) => Promise<string>}} options */
 export async function previewCandidate({ request, tree: sourceTree, render, title = async (_tree) => "", digest = snapshotDigest }) {
   const referenced = request?.candidate;
   if (!referenced) throw new Error("Candidate reference is required.");

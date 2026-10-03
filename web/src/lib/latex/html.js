@@ -7,7 +7,7 @@ const DEADLINE_MS = 240_000;
 
 /** @typedef {{url: string, sha256: string, size: number}} LatexAsset */
 /** @typedef {{worker: string, files?: string[]}} LatexEngineSpec */
-/** @typedef {{format: number, id: string, files: Record<string, LatexAsset>, bundles?: {index: string, sha256: string}, engines: {latexml?: LatexEngineSpec}}} LatexRelease */
+/** @typedef {{format: number, id: string, digest?: string, files: Record<string, LatexAsset>, bundles?: {index: string, sha256: string}, engines: {latexml?: LatexEngineSpec}}} LatexRelease */
 
 function superseded() {
   return Object.assign(new Error("Preview superseded"), { name: "Superseded" });
@@ -21,7 +21,7 @@ function projectPath(path) {
   return path;
 }
 
-/** @param {{makeEngine?: typeof createEngine, request?: (input: string|URL, init?: RequestInit) => Promise<Response>, verified?: (release: LatexRelease,url: string,metadata: {sha256: string,size: number}) => Promise<Response>, deadline?: number}} [options] */
+/** @param {{makeEngine?: typeof createEngine, request?: (input: string|URL, init?: RequestInit) => Promise<Response>, verified?: typeof fetchVerified, deadline?: number}} [options] */
 export function createHtmlCompiler({
   makeEngine = createEngine,
   request = (input, init) => fetch(input, init),
@@ -30,8 +30,10 @@ export function createHtmlCompiler({
 } = {}) {
   let engine = null;
   let engineKey = null;
+  /** @type {LatexRelease|null} */
   let pinned = null;
   let pinnedBase = null;
+  /** @type {{base: string, pending: Promise<LatexRelease>}|null} */
   let pinnedRequest = null;
   let queued = null;
   let running = false;

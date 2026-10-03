@@ -12,8 +12,13 @@ const REQUIRED_EXPORTS = [
 /** @param {RendererWasm} wasm @param {string} name @returns {RendererFunction} */
 function functionExport(wasm, name) {
   const value = wasm[name];
-  if (typeof value !== "function") throw new Error(`renderer export ${name} is unavailable`);
+  if (!isRendererFunction(value)) throw new Error(`renderer export ${name} is unavailable`);
   return value;
+}
+
+/** @param {WebAssembly.ExportValue} value @returns {value is RendererFunction} */
+function isRendererFunction(value) {
+  return typeof value === "function";
 }
 
 // Keep the ABI check at the module boundary. This makes a stale or wrong
@@ -22,8 +27,8 @@ function functionExport(wasm, name) {
 /** @param {WebAssembly.Exports} wasm @param {string} [url] @returns {RendererWasm} */
 export function validateExports(wasm, url = "renderer") {
   const missing = REQUIRED_EXPORTS.filter((name) => {
-    if (name === "memory") return !(wasm[name] && wasm[name].buffer instanceof ArrayBuffer);
-    return typeof wasm[name] !== "function";
+    if (name === "memory") return !(wasm[name] instanceof WebAssembly.Memory);
+    return !isRendererFunction(wasm[name]);
   });
   if (missing.length) {
     throw new Error(`incompatible renderer module ${url}: missing or invalid exports: ${missing.join(", ")}`);

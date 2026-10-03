@@ -421,7 +421,9 @@ function stemOf(main) {
   return String(main || "main.tex").split("/").pop().replace(/\.[^./]+$/, "");
 }
 
+/** @param {Record<string, string|Uint8Array|ArrayBuffer>} raw @returns {Record<string, string|Uint8Array>} */
 function normalizeOutputs(raw) {
+  /** @type {Record<string, string|Uint8Array>} */
   const out = {};
   for (const [path, bytes] of Object.entries(raw || {})) {
     out[path] = bytes instanceof Uint8Array ? bytes : bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
@@ -654,6 +656,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   checkpoint();
 
   const stem = stemOf(tree.main);
+  /** @type {Record<string, string|Uint8Array>} */
   let outputs = {};
   let finalLog = "";
   let lastPdf = null;

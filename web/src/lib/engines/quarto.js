@@ -173,17 +173,21 @@ function inlineOccurrence(line, path, lineNumber, occurrence) {
   return matches;
 }
 
+/** @typedef {{id: string, path: string, label: string, language: string, info: string, options: Record<string, unknown>, code: string, rawCode: string, source: string, sourceStart: number, sourceEnd: number, startLine: number, endLine: number, codeStart: number, codeEnd: number, span: {start: number, end: number}, ambiguous?: boolean, source_sha256?: string, source_ambiguous?: boolean}} QuartoCell */
+/** @param {string} source @param {{path?: string}} [options] */
 export function parseQuarto(source, { path = "main.qmd" } = {}) {
   source = String(source ?? "");
   const lines = source.split("\n");
   const offsets = lineOffsets(source);
   const frontMatter = parseFrontMatter(source);
+  /** @type {QuartoCell[]} */
   const cells = [];
   const divs = [];
   const inlineExpressions = [];
   const includes = [];
   const inlineRecords = [];
   const headings = [];
+  /** @type {{severity: string, message: string, line: number, column: number, cell?: string}[]} */
   const diagnostics = [...frontMatter.diagnostics];
   const stack = [];
   let fence = null;

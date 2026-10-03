@@ -33,6 +33,7 @@ if (drawer) {
   // The two things a reader expects of something covering the page that a
   // <details> does not do by itself.
   addEventListener("keydown", (event) => {
+    if (!(event instanceof KeyboardEvent)) return;
     if (event.key === "Escape" && drawer.open && !wide.matches) {
       drawer.open = false;
       drawer.querySelector("summary")?.focus();
@@ -76,7 +77,7 @@ if (rail) {
     // Scrolling the rail directly rather than calling scrollIntoView, which
     // would also move the page the reader has just arrived at.
     const current = rail.querySelector("a[aria-current]");
-    if (current) {
+    if (current instanceof HTMLElement) {
       const offset = current.offsetTop - rail.clientHeight / 2;
       if (offset > 0) rail.scrollTop = offset;
     }
@@ -114,6 +115,7 @@ const expanded = lightbox?.querySelector("img");
 
 if (dialog && expanded) {
   for (const thumbnail of document.querySelectorAll(".prose img")) {
+    if (!(thumbnail instanceof HTMLImageElement)) continue;
     thumbnail.tabIndex = 0;
     thumbnail.setAttribute("role", "button");
     thumbnail.setAttribute("aria-label", `Expand image: ${thumbnail.alt || "documentation image"}`);
@@ -124,6 +126,7 @@ if (dialog && expanded) {
     };
     thumbnail.addEventListener("click", open);
     thumbnail.addEventListener("keydown", (event) => {
+      if (!(event instanceof KeyboardEvent)) return;
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         open();

@@ -85,6 +85,7 @@ function typeOf(path) {
 /// A figure that cannot be fetched is left out rather than failing the render:
 /// the rest of the document is still worth showing, and the image is broken in
 /// the page, which is what a missing figure looks like everywhere else.
+/** @param {string} slug @param {Record<string, string>} digests @param {HeadersInit} [headers] @param {{strict?: boolean}} [options] @returns {Promise<{assets: Record<string, Uint8Array>, urls: Record<string, string>, missing: string[]}>} */
 export async function gather(slug, digests, headers = {}, { strict = false } = {}) {
   const wanted = Object.entries(digests || {});
   const got = await Promise.all(
@@ -113,8 +114,11 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
       }
     }),
   );
+  /** @type {Record<string, Uint8Array>} */
   const assets = {};
+  /** @type {Record<string, string>} */
   const where = {};
+  /** @type {string[]} */
   const missing = [];
   for (const one of got) {
     if (!one) continue;

@@ -99,7 +99,8 @@ export function hardenBundleModeSource(source) {
   return hardened;
 }
 
-/** @param {{kind: string, url: string, base?: string, texliveUrl?: string, format?: string|null, release?: object|null, assets?: Record<string, object>|null, workerName?: string|null, onProgress?: (progress: object) => void, onDownload?: (download: object) => void}} options */
+/** @typedef {{url: string, sha256: string, size: number, gz?: boolean}} EngineFormat */
+/** @param {{kind: string, url: string, base?: string, texliveUrl?: string, format?: EngineFormat|null, release?: object|null, assets?: Record<string, object>|null, workerName?: string|null, onProgress?: (progress: object) => void, onDownload?: (download: object) => void}} options */
 export function createEngine({ kind, url, base, texliveUrl, format, release, assets, workerName, onProgress, onDownload }) {
   return new EngineDriver(kind, url, base, texliveUrl, format, release, assets, workerName, onProgress, onDownload);
 }

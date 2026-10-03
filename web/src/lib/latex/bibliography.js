@@ -210,10 +210,9 @@ export function inspect({ stem, outputs = {}, log = "", tree = {} }) {
 /// none of those -- reuses it exactly.
 /** @param {{kind?: string, controlBytes?: string|Uint8Array, files?: Record<string, string|number|Uint8Array|ArrayBuffer>, engine?: string, release?: string, tool?: string|{name?: string,version?: string,backend?: string}}} input */
 export async function identity({ kind, controlBytes, files = {}, engine, release, tool }) {
-  /** @type {[string, Uint8Array][]} */
   const entries = Object.entries(files)
-    .map(([path, bytes]) => [path, bytesOrEmpty(bytes)])
-    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    .map(([path, value]) => ({ path, bytes: bytesOrEmpty(value) }))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
   const toolTag =
     tool == null ? "" : typeof tool === "string" ? tool : `${tool.name || ""}:${tool.version || ""}:${tool.backend || ""}`;
@@ -225,7 +224,7 @@ export async function identity({ kind, controlBytes, files = {}, engine, release
   const control = bytesOrEmpty(controlBytes);
   parts.push(encoder.encode(`control:${control.length}\n`));
   parts.push(control);
-  for (const [path, bytes] of entries) {
+  for (const { path, bytes } of entries) {
     parts.push(encoder.encode(`\nfile:${path}:${bytes.length}\n`));
     parts.push(bytes);
   }

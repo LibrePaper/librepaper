@@ -16,6 +16,7 @@
 
 import { authHeaders } from "./api.js";
 
+/** @param {string} slug @param {{onMessage: (message: object) => void, onConnected: (connected: boolean) => void, onSourceChanged?: (digest?: string|null) => void, key?: string}} options */
 export function openRoom(slug, { onMessage, onConnected, onSourceChanged, key = "" }) {
   let socket = null;
   let backoff = 500;

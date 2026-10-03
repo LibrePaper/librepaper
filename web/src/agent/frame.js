@@ -667,7 +667,7 @@ import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
   document.addEventListener("keydown", (event) => {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target instanceof Element ? event.target : null;
-    if (target?.isContentEditable || target?.closest?.("input,textarea,select,[contenteditable]")) return;
+    if (target && ((target instanceof HTMLElement && target.isContentEditable) || target.closest("input,textarea,select,[contenteditable]"))) return;
     if (event.key === "Escape") {
       post({ type: "disarm" });
       return;

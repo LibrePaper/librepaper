@@ -580,15 +580,22 @@ async function collectOutputs(engine, stem, inputs) {
 
 const worker = new Worker2();
 
+/** @typedef {{postMessage(message: object, transfer?: Transferable[]): void}} WorkerPoster */
+/** @type {WorkerPoster} */
+const workerPoster = /** @type {WorkerPoster} */ (/** @type {unknown} */ (self));
+
 self.onmessage = async (event) => {
   const message = event.data;
   const { id } = message ?? {};
   try {
     const reply = await worker.handle(message);
-    const __transfer = "__transfer" in reply ? reply.__transfer : [];
-    const { __transfer: _transfer, ...rest } = reply;
-    self.postMessage({ id, ...rest }, __transfer ?? []);
+    if ("__transfer" in reply) {
+      const { __transfer, ...rest } = reply;
+      workerPoster.postMessage({ id, ...rest }, __transfer ?? []);
+    } else {
+      workerPoster.postMessage({ id, ...reply }, []);
+    }
   } catch (error) {
-    self.postMessage({ id, failed: String(error?.message || error) });
+    workerPoster.postMessage({ id, failed: String(error?.message || error) });
   }
 };

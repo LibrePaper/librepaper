@@ -14,17 +14,19 @@
 
 export const DIAGNOSTIC_DELAY = 400;
 
+/** @typedef {{severity: string, message: string, file?: string, line?: number, column?: number, end_line?: number, end_column?: number, hints?: string[], code?: string}} RenderDiagnostic */
+
 /// `paint(list)` is called with what should be on the screen. `now`,
 /// `setTimer` and `clearTimer` are injectable so a test can run a session in
 /// no time at all.
-/** @param {{delay?: number, paint: (list: object[]) => void, now?: () => number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout}} [options] */
+/** @param {{delay?: number, paint: (list: RenderDiagnostic[]) => void, now?: () => number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout}} options */
 export function painter({
   delay = DIAGNOSTIC_DELAY,
   paint,
   now = () => Date.now(),
   setTimer = setTimeout,
   clearTimer = clearTimeout,
-} = {}) {
+}) {
   let quietSince = now();
   let timer = null;
 
@@ -47,7 +49,7 @@ export function painter({
     },
 
     /// A render finished. `page` is whether it produced one.
-    /** @param {{page: boolean, diagnostics?: object[]}} result */
+    /** @param {{page: boolean, diagnostics?: RenderDiagnostic[]}} result */
     rendered({ page, diagnostics = [] }) {
       if (page) {
         // A successful render clears every diagnostic the moment it lands,

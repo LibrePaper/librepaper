@@ -59,7 +59,6 @@ const scholarly = new Set(['theorem','lemma','proposition','definition','proof',
  * @property {string} [mainPath]
  * @property {Selection} [selection]
  * @property {InsertFile[]} [files]
- * @property {object[]} [bibliography]
  * @property {string} [targetId]
  */
 
@@ -139,10 +138,6 @@ const slug = value => plain(value).trim().replace(/[^\p{L}\p{N}_.:-]+/gu, '-').r
  */
 const url = value => { const s=plain(value).trim(); if (/^(?:javascript|data|vbscript):/i.test(s)) throw Error('Use a project path or an http, https, or mailto link.'); return s.replace(/[\s<>"()]/g,c=>encodeURIComponent(c)); };
 
-/**
- * @param {InsertContext} [c={}]
- * @returns {InsertContext & {text: string; selection: Selection; files: {path: string; text: string}[]}}
- */
 /** @param {InsertContext} [c] @returns {NormalizedInsertContext} */
 function context(c = {}) { const text=plain(c.text); const selection=c.selection || {from:text.length,to:text.length,text:''}; const files=(c.files || []).map(file=>typeof file==='string'?{path:file,text:''}:file); return {...c, text, selection, files}; }
 /**
@@ -446,11 +441,12 @@ function buildMarkdown(id,o,c) {
  */
 export function buildInsertion(id, options = {}, input = {}) {
   const c=context(input), available=insertionAvailability(id,c);if(!available.enabled)throw Error(available.reason);
-  const draft={...options, inMath: insertSyntaxContext(c)==='math'};
-  const o={...draft,
-    ...(draft.level!==undefined?{level:Number(draft.level)}:{}),
-    ...(draft.rows!==undefined?{rows:Number(draft.rows)}:{}),
-    ...(draft.columns!==undefined?{columns:Number(draft.columns)}:{}),
+  const {level: draftLevel, rows: draftRows, columns: draftColumns, ...draftOptions} = options;
+  /** @type {InsertOptions} */
+  const o={...draftOptions, inMath: insertSyntaxContext(c)==='math',
+    ...(draftLevel!==undefined?{level:Number(draftLevel)}:{}),
+    ...(draftRows!==undefined?{rows:Number(draftRows)}:{}),
+    ...(draftColumns!==undefined?{columns:Number(draftColumns)}:{}),
   };
   /** @type {[string, number][]} */
   const numericValidations = [['rows',100],['columns',30],['level',6]];
