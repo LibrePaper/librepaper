@@ -1,0 +1,44 @@
+---
+title: "{{title}}"
+author: "{{author}}"
+format: html
+bibliography: references.bib
+bibliography-style: apa
+---
+
+## Abstract
+
+This is a placeholder abstract. Replace this text with a summary of your research, findings, or main argument.
+
+## Introduction
+
+This is the introduction section. Present the background and context for your work. You can cite other authors, such as the foundational work by Smith [@smith2020].
+
+## Methods
+
+Describe your methodology or approach in this section. Include relevant details about your process, tools, or theoretical framework.
+
+## Results
+
+Present your findings in this section. The equation below shows an important relationship:
+
+$$
+y = mx + b
+$$
+
+The results can be summarized in a table:
+
+| Variable | Value | Unit |
+| --- | --- | --- |
+| Sample size | 100 | |
+| Mean | 42.5 | units |
+| Std Dev | 5.2 | units |
+
+## Discussion
+
+Interpret your results in the context of existing literature. Discuss the implications, limitations, and potential future directions for this work.
+
+## References
+
+::: {#refs}
+:::

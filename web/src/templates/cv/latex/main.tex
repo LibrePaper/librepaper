@@ -1,0 +1,66 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{booktabs}
+
+\geometry{margin=0.75in}
+
+\pagestyle{empty}
+
+% Small command for entries
+\newcommand{\entry}[4]{
+  \noindent \textbf{#1} \hfill \textit{#2}\\
+  \noindent #3 \hfill #4\\[0.25em]
+}
+
+\begin{document}
+
+\begin{center}
+\Large\textbf{{{author}}}\\
+\small email@example.com | +1 (555) 123-4567 | city, state
+\end{center}
+
+\vspace{0.5em}
+
+\section*{Education}
+
+\entry{Ph.D. in Field of Study}{2020}
+{University Name}{City, State}
+
+\entry{B.S. in Undergraduate Major}{2015}
+{University Name}{City, State}
+
+\section*{Positions}
+
+\entry{Senior Position}{2021--present}
+{Company or Institution}{City, State}
+
+\entry{Junior Position}{2019--2021}
+{Company or Institution}{City, State}
+
+\section*{Publications}
+
+\entry{Article Title}{2023}
+{Journal Name, Volume 10, Pages 1--15}{}
+
+\entry{Another Publication}{2022}
+{Conference Proceedings, Pages 100--110}{}
+
+\section*{Grants and Awards}
+
+\entry{Award Name}{2023}
+{Awarding Organization}{}
+
+\entry{Fellowship}{2020}
+{Funding Organization}{}
+
+\section*{Skills}
+
+\noindent
+\begin{tabular}{ll}
+  Languages & English, Spanish, French \\
+  Technical & Python, R, SQL, LaTeX \\
+  Tools & Git, Data analysis, Statistical modeling \\
+\end{tabular}
+
+\end{document}

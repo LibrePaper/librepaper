@@ -1,0 +1,47 @@
+---
+title: "{{title}}"
+author: "{{author}}"
+format: html
+---
+
+## Problem 1 (10 points)
+
+Solve for $x$ in the following equation:
+
+$$2x + 5 = 13$$
+
+**(a)** Show all steps of your work.
+
+[Space for your answer]
+
+**(b)** Verify your answer by substituting back into the original equation.
+
+[Space for your answer]
+
+## Problem 2 (10 points)
+
+Prove the following statement:
+
+**(a)** State the hypothesis.
+
+[Space for your answer]
+
+**(b)** Provide a complete proof or counterexample.
+
+[Space for your answer]
+
+## Problem 3 (10 points)
+
+Answer the following questions:
+
+**(a)** What is the significance of this concept?
+
+[Space for your answer]
+
+**(b)** How does it connect to what we learned previously?
+
+[Space for your answer]
+
+**(c)** Can you provide a real-world example?
+
+[Space for your answer]
