@@ -4,7 +4,20 @@ import { keyHeaders, me as defaultWhoami } from "../api.js";
 import { preparedProject } from "../offline-projects.js";
 import { createGeneration } from "./generation.js";
 
+/** @typedef {{ name?: string, handle?: string, provider?: string, [key: string]: unknown }} ReaderIdentity */
+/** @typedef {{ title?: string, docs_origin?: string, document_id?: string, created_at?: string, role?: string, can_edit?: boolean, can_moderate?: boolean, can_see_sharing?: boolean, [key: string]: unknown }} ReaderDocument */
+/** @typedef {Error & { status?: number }} ReaderBootError */
 
+
+/** @param {{
+ * slug: string, key?: string, fetcher?: typeof fetch,
+ * whoami?: () => Promise<ReaderIdentity>,
+ * findLocal?: (query: { server?: string, slug: string }) => Promise<{ document: ReaderDocument } | null>,
+ * onIdentity?: (identity: ReaderIdentity) => void,
+ * onDocument?: (document: ReaderDocument) => void,
+ * onError?: (error: ReaderBootError) => void,
+ * }} options
+ */
 export function createReaderBoot({
   slug,
   key = "",
@@ -28,8 +41,7 @@ export function createReaderBoot({
         signal: controller.signal,
       });
       if (!response.ok) {
-        const failure = new Error("not found");
-        failure.status = response.status;
+        const failure = Object.assign(new Error("not found"), { status: response.status });
         throw failure;
       }
       const document_ = await response.json();

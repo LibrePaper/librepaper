@@ -1,11 +1,16 @@
 import * as diagnosticsRule from "../diagnostics.js";
 import { diagnosticContext } from "../assistant-review.js";
 
+/** @typedef {{ file?: string, line?: number, column?: number, message: string, severity: string, [key: string]: unknown }} RenderDiagnostic */
+
 // Owns the three diagnostic streams shown by the reader. Render diagnostics
 // have their own delayed-paint policy; bibliography and local-tool diagnostics
 // are merged into the latest visible result without duplicating entries.
+/** @param {{ active: () => boolean, local: () => RenderDiagnostic[], update: (items: RenderDiagnostic[]) => void, deliver: (items: RenderDiagnostic[]) => void, painterOptions?: { delay?: number, now?: () => number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout } }} options */
 export function createRenderDiagnostics({ active, local, update, deliver, painterOptions = {} }) {
+  /** @type {RenderDiagnostic[]} */
   let rendered = [];
+  /** @type {RenderDiagnostic[]} */
   let bibliography = [];
 
   function refresh() {
@@ -37,6 +42,7 @@ export function createRenderDiagnostics({ active, local, update, deliver, painte
     // A source parse finds them without a compiler, so there is nothing to
     // wait for and they are painted at once.
     render,
+    /** @param {{ diagnostics?: RenderDiagnostic[] } | null} result @param {{ main?: string, texts?: Record<string, string> }} request */
     bibliography(result, request) {
       bibliography = (result?.diagnostics || []).map((item) =>
         diagnosticContext(item, { main: request?.main || "", texts: request?.texts || {} }, ""));

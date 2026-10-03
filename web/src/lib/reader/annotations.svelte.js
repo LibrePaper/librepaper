@@ -118,6 +118,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     repaint();
   }
 
+  /** @param {{ exact: string, prefix?: string, suffix?: string, position?: number | null, render_digest?: string }} selection @param {{ motivation: string, body: string, proposed?: string, color?: string }} input @param {string} creator */
   function comment(selection, { motivation, body, proposed, color }, creator) {
     const temp_id = crypto.randomUUID();
     const editingFields = motivation === "editing" ? { proposed: proposed ?? "" } : {};

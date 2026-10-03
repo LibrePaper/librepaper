@@ -24,6 +24,26 @@
 import { bytesOf, toArrayBuffer } from "../bytes.js";
 import { named } from "../latex/errors.js";
 
+/** @typedef {{ targetAddressSpace?: "loopback" } & RequestInit} LocalRequestInit */
+/** @typedef {{ fetch: (input: RequestInfo | URL, init?: LocalRequestInit) => Promise<Response>, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, localNetworkPermission: () => Promise<PermissionState | null>, replaceHash: (hash: string) => void, launchLink: (url: string) => void }} CompanionDeps */
+/** @typedef {{ token: string }} Pairing */
+/** @typedef {{ entrypoint?: string, format?: string, profile?: string | null, parameters?: Record<string, string | number | boolean | null>, policy?: string, kind?: string, inputRevision?: string, inputDigest?: string, renderScope?: string, executionMode?: string, dataInputs?: string[], livePreview?: boolean, [key: string]: unknown }} RenderOptions */
+/** @typedef {{ entrypoint?: string, binding?: string, bindingId?: string, idempotencyKey?: string, id?: string, inputDigest?: string, inputRevision?: string, generation?: number, deadlineSeconds?: number, snapshot?: string, [key: string]: unknown }} CompanionJob */
+/** @typedef {{ main: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array | ArrayBuffer | string>, digests?: Record<string, string>, files?: Record<string, unknown> }} CompanionTree */
+/** @typedef {{ path: string, sha256: string, size: number }} ManifestFile */
+/** @typedef {{ signal?: AbortSignal, onProgress?: (progress: { done: number, total: number, scope?: string }) => void, onLog?: (line: string) => void }} BuildCallbacks */
+/** @typedef {{ status: string, exit?: number, stage?: string, log_tail?: string, outputs?: Record<string, { size: number, sha256: string }>, diagnostics?: unknown[], provenance?: Record<string, unknown>, error?: string }} CompanionJobStatus */
+/** @typedef {{ binding_id: string, main: string, format: string, profile?: string | null, parameters?: Record<string, unknown>, policy?: string, idempotency_key?: string | null, execution_mode?: string, render_scope?: string, data_inputs?: string[], shared_inventory_complete?: boolean }} QuartoJobDetails */
+/** @typedef {{ main: string, format: string, binding_id: string }} CalepinJobDetails */
+/** @typedef {{ protocol: number, kind: string, project: string | null, origin: string, snapshot: string, generation: number, manifest: ManifestFile[], quarto: QuartoJobDetails, [key: string]: unknown }} QuartoRequestBody */
+
+/** @param {unknown} timer */
+function unrefTimer(timer) {
+  if (timer !== null && typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") {
+    timer.unref();
+  }
+}
+
 export const DEFAULT_ADDRESS = "http://127.0.0.1:8763/";
 export const QUARTO_JOB_KINDS = Object.freeze(["render", "refresh", "frozen"]);
 
@@ -64,7 +84,7 @@ function realWait(ms, signal) {
 
 function defaultDeps() {
   return {
-    fetch: (...args) => globalThis.fetch(...args),
+    fetch: (input, init) => globalThis.fetch(input, init),
     storage: typeof localStorage !== "undefined" ? localStorage : null,
     now: () => Date.now(),
     wait: realWait,
@@ -75,7 +95,7 @@ function defaultDeps() {
     async localNetworkPermission() {
       if (typeof navigator === "undefined" || !navigator.permissions?.query) return null;
       for (const name of ["loopback-network", "local-network-access"]) {
-        try { return (await navigator.permissions.query({ name })).state; } catch { /* not this browser's name */ }
+        try { return (await navigator.permissions.query({ name: /** @type {PermissionName} */ (name) })).state; } catch { /* not this browser's name */ }
       }
       return null;
     },
@@ -94,11 +114,12 @@ function defaultDeps() {
       frame.src = url;
       window.document.body.appendChild(frame);
       const timer = setTimeout(() => frame.remove(), 3000);
-      timer.unref?.();
+      unrefTimer(timer);
     },
   };
 }
 
+/** @type {CompanionDeps} */
 let deps = defaultDeps();
 
 export const _testing = {
@@ -177,7 +198,9 @@ function validAddress(value) {
 function randomUrlToken(bytes = 18) {
   const values = new Uint8Array(bytes);
   crypto.getRandomValues(values);
-  return btoa(String.fromCharCode(...values)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  let binary = "";
+  for (const value of values) binary += String.fromCharCode(value);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
 async function sha256Hex(value) {
@@ -320,6 +343,7 @@ export function setBindingId(id) {
 
 let current = { project: null, origin: "", active: true };
 
+/** @param {{ project?: string | null, origin?: string, active?: boolean }} [options] */
 export function configure({ project, origin, active = true } = {}) {
   const previousOrigin = current.origin;
   cancelAutoReconnect();
@@ -440,7 +464,7 @@ function scheduleAutoReconnect() {
     await probe().catch(() => {});
     scheduleAutoReconnect();
   }, RECONNECT_INTERVAL_MS);
-  autoReconnectTimer.unref?.();
+  unrefTimer(autoReconnectTimer);
 }
 
 export function status() {
@@ -553,6 +577,7 @@ async function throwOnFailure(response) {
 /// every failure the SPEC names: a network failure is `Unreachable`, a 401
 /// drops the pairing and is `Unauthorized`, any other non-2xx is `Refused`
 /// with the server's own message when it gave one.
+/** @param {string} method @param {string} path @param {{ token?: string, jsonBody?: unknown, formBody?: FormData, signal?: AbortSignal }} [options] */
 async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
   engage();
   const scope = pairingKey();
@@ -707,6 +732,7 @@ export function connectApp(options = {}) {
   return connectionAttempt;
 }
 
+/** @param {{ timeoutMs?: number, pollMs?: number, startGraceMs?: number, signal?: AbortSignal }} [options] */
 async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGraceMs = START_GRACE_MS, signal } = {}) {
   const { origin } = current;
   if (!origin) throw named("Unauthorized", "Open LibrePaper before connecting the companion.");
@@ -957,6 +983,7 @@ function safeSize(value) {
   return value;
 }
 
+/** @param {string} kind @param {string | undefined} policy */
 function quartoPolicy(kind, policy) {
   if (!QUARTO_JOB_KINDS.includes(kind)) throw new Error(`unsupported Quarto job kind: ${kind}`);
   const allowed = ["project-defaults", "refresh-computations", "frozen"];
@@ -971,6 +998,7 @@ function quartoPolicy(kind, policy) {
 // alongside it, `buildCalepinForm` layers `engine`/`calepin` the same way,
 // and `kind` stays the value the Rust `JobRequest` already deserializes
 // today for both.
+/** @param {{ job: CompanionJob, manifest: ManifestFile[], inputRevision?: string }} input */
 function jobEnvelope({ job, manifest, inputRevision }) {
   return {
     protocol: 2,
@@ -989,6 +1017,7 @@ function jobEnvelope({ job, manifest, inputRevision }) {
 }
 
 /** Build the JSON part of a Quarto request without accepting shell fragments. */
+/** @param {{ job?: CompanionJob, entrypoint?: string, format?: string, profile?: string | null, parameters?: Record<string, string | number | boolean | null>, policy?: string, kind?: string, inputRevision?: string, inputDigest?: string, files?: ManifestFile[] }} [options] */
 export function quartoRequest({ job = {}, entrypoint, format = "html", profile = null, parameters = {}, policy, kind = "render", inputRevision = "", inputDigest = "", files = [] } = {}) {
   const main = relativePath(entrypoint || job.entrypoint || "");
   if (!main.endsWith(".qmd") && !main.endsWith(".md")) throw new Error("Quarto entrypoint must be a .qmd or .md file");
@@ -1049,6 +1078,7 @@ export function quartoRequest({ job = {}, entrypoint, format = "html", profile =
 // Turn a shared tree's `texts`/`assets` maps into `[relativePath, bytes]`
 // pairs, validating and de-duplicating paths the same way for every caller
 // that walks a tree -- the Quarto job/preview form, and `syncWorkspace`.
+/** @param {CompanionTree} tree @returns {Array<[string, Uint8Array]>} */
 function collectTreeFiles(tree) {
   const files = [];
   const seen = new Set();
@@ -1068,6 +1098,7 @@ export const CALEPIN_FORMATS = Object.freeze(["html", "pdf"]);
 /** Validate the Calepin-specific options (`entrypoint`, `format`), the same
  * way `quartoRequest` validates a Quarto job's shape before anything is
  * built from the tree. */
+/** @param {{ entrypoint?: string, format?: string }} [options] */
 function calepinOptions({ entrypoint, format = "html" } = {}) {
   const main = relativePath(entrypoint || "");
   if (!main.endsWith(".typ")) throw new Error("Calepin entrypoint must be a .typ file");
@@ -1075,6 +1106,7 @@ function calepinOptions({ entrypoint, format = "html" } = {}) {
   return { main, format: String(format) };
 }
 
+/** @param {{ job?: CompanionJob, tree: CompanionTree, options?: RenderOptions }} input */
 async function buildCalepinForm({ job = {}, tree, options = {} }) {
   const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
@@ -1095,12 +1127,14 @@ async function buildCalepinForm({ job = {}, tree, options = {} }) {
   return formOf(request, files);
 }
 
+/** @param {{ job?: CompanionJob, tree: CompanionTree, options?: RenderOptions }} input */
 async function buildQuartoForm({ job, tree, options = {} }) {
   if (options.renderScope === "project") {
     throw new Error("Quarto website and book project renders are not supported; render one document instead");
   }
   const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
+  /** @type {QuartoRequestBody} */
   const request = quartoRequest({
     job, entrypoint: options.entrypoint || tree?.main, format: options.format || "html",
     profile: options.profile, parameters: options.parameters, policy: options.policy,
@@ -1131,6 +1165,7 @@ async function buildQuartoForm({ job, tree, options = {} }) {
   return formOf(request, files);
 }
 
+/** @param {Array<[string, Uint8Array]>} files @returns {Promise<ManifestFile[]>} */
 async function manifestOf(files) {
   const manifest = [];
   for (const [path, bytes] of files) {
@@ -1185,12 +1220,14 @@ async function submitAndAwait(pairing, form, signal) {
   return { id: submitted.id, status };
 }
 
+/** @param {string} id @param {string} token @param {string} name @param {CompanionJobStatus} status */
 async function fetchOutput(id, token, name, status) {
   if (!status.outputs?.[name]) return null;
   const response = await send("GET", `jobs/${id}/files/${encodeURIComponent(name)}`, { token });
   return bytesOfResponse(response);
 }
 
+/** @param {string} id @param {string} token @param {string} name @param {CompanionJobStatus} status */
 async function fetchVerifiedOutput(id, token, name, status) {
   const descriptor = status.outputs?.[name];
   if (!descriptor) return null;
@@ -1206,14 +1243,28 @@ async function fetchVerifiedOutput(id, token, name, status) {
   return bytes;
 }
 
+/** @param {Uint8Array} bytes */
 function base64Of(bytes) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
-  return typeof btoa === "function" ? btoa(binary) : Buffer.from(bytes).toString("base64");
+  if (typeof btoa === "function") return btoa(binary);
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let encoded = "";
+  for (let index = 0; index < bytes.length; index += 3) {
+    const first = bytes[index];
+    const second = bytes[index + 1];
+    const third = bytes[index + 2];
+    encoded += alphabet[first >> 2];
+    encoded += alphabet[((first & 3) << 4) | ((second ?? 0) >> 4)];
+    encoded += second === undefined ? "=" : alphabet[((second & 15) << 2) | ((third ?? 0) >> 6)];
+    encoded += third === undefined ? "=" : alphabet[third & 63];
+  }
+  return encoded;
 }
 
 // -------------------------------------------------------------- jobs
 
+/** @param {{ job?: CompanionJob, tree: CompanionTree, builder: string, engine?: string, output?: string, options?: Record<string, unknown>, bindingId?: string }} input @param {BuildCallbacks} [callbacks] */
 export async function runBuild({ job = {}, tree, builder, engine, output = "pdf", options = {}, bindingId = "" }, { signal, onProgress } = {}) {
   // A pairing only exists after a health check that refused anything below
   // protocol 2 (see `probe`), so the build request needs no version guard.
@@ -1237,6 +1288,7 @@ export async function runBuild({ job = {}, tree, builder, engine, output = "pdf"
   return { ok: jobStatus.status === "done" && jobStatus.exit === 0 && artifact != null, kind: output, pdf: output === "pdf" ? artifact : null, artifact, log: log ? new TextDecoder().decode(log) : "", diagnostics: jobStatus.diagnostics || [], exit: jobStatus.exit, error: jobStatus.error, provenance: { ...(jobStatus.provenance || {}), backend: "local", builder } };
 }
 
+/** @param {string} id @param {CompanionJobStatus} status @param {Pairing} pairing @param {{ format?: string, policy?: string, inputRevision?: string }} options @param {BuildCallbacks} [callbacks] @param {CompanionJob} [job] */
 async function collectQuartoOutputs(id, status, pairing, options, { onProgress, onLog } = {}, job = {}) {
   if (status.log_tail) for (const line of String(status.log_tail).split("\n")) onLog?.(line);
   const format = options.format || "html";
@@ -1349,18 +1401,21 @@ async function collectQuartoOutputs(id, status, pairing, options, { onProgress, 
 /** Start a live preview on either engine. For `quarto` this produces the
  * Quarto preview JSON; for `calepin`, `options` is the
  * `{ entrypoint, format }` pair validated by `calepinOptions`. */
+/** @param {{ engine?: string, job?: CompanionJob, tree: CompanionTree, options?: RenderOptions }} [input] @returns {Promise<{ id: string, url: string }>} */
 export async function startLocalPreview({ engine = "quarto", job = {}, tree, options = {} } = {}) {
   const pairing = requirePairing();
   const form = engine === "calepin"
     ? await buildCalepinForm({ job, tree, options: { ...options, livePreview: true } })
     : await buildQuartoForm({ job, tree, options: { ...options, livePreview: true } });
-  const built = JSON.parse(await form.get("job").text());
+  const jobPart = form.get("job");
+  if (!(jobPart instanceof Blob)) throw new Error("local preview request is missing its job manifest");
+  const built = JSON.parse(await jobPart.text());
   // Unconditionally protocol 2, like `runBuild`: a pairing only exists after
   // a health check that refused anything below it (see `probe`), and the
   // bridge has no other shape to decode a preview from. The version guard
   // this replaced defaulted to 1 when the status was unset, which produced a
   // request nothing could answer.
-  const details = built.quarto || built.calepin || {};
+  const /** @type {QuartoJobDetails | CalepinJobDetails} */ details = built.quarto || built.calepin;
   const builder = engine === "calepin" ? "calepin" : "quarto";
   const output = details.format || options.format || "html";
   const entrypoint = details.main || options.entrypoint;
@@ -1376,10 +1431,12 @@ export async function startLocalPreview({ engine = "quarto", job = {}, tree, opt
   const response = await send("POST", "previews", { token:pairing.token, jsonBody:request });
   return response.json();
 }
+/** @param {string} id @returns {Promise<void>} */
 export async function stopLocalPreview(id) {
   const pairing = requirePairing();
   await send("DELETE", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
 }
+/** @param {string} id @returns {Promise<{ state?: string, log_tail?: string }>} */
 export async function localPreviewStatus(id) {
   const pairing = requirePairing();
   const response = await send("GET", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
@@ -1431,6 +1488,7 @@ function kindHeaderOf(response) {
 // rather than re-fetching bytes nothing needs. A 404 means the preview has
 // not produced a first render yet, which the poller treats as "not yet" --
 // distinguished by `name` from every other failure, none of which are.
+/** @param {string} id @param {{ etag?: string | null }} [options] @returns {Promise<{kind?: "html" | "pdf", html?: string, bytes?: Uint8Array, etag?: string | null, rendering?: boolean}>} */
 export async function localPreviewPage(id, { etag } = {}) {
   const pairing = requirePairing();
   const addr = address();
@@ -1461,6 +1519,7 @@ export async function localPreviewPage(id, { etag } = {}) {
 }
 // -------------------------------------------------------------- workspace sync
 
+/** @param {CompanionTree} tree */
 async function buildWorkspaceForm(tree) {
   const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
@@ -1474,10 +1533,11 @@ async function buildWorkspaceForm(tree) {
 // `quarto preview` running there sees the current files, without going
 // through the job queue. Same file layout as a job's multipart body, but the
 // JSON part is named `manifest` (a bare array) rather than `job`.
+/** @param {{ tree: CompanionTree }} input */
 export async function syncWorkspace({ tree } = {}) {
   const pairing = requirePairing();
   const form = await buildWorkspaceForm(tree);
-  const response = await send("PUT", `workspace?${new URLSearchParams({ project: current.project })}`, { token: pairing.token, formBody: form });
+  const response = await send("PUT", `workspace?${new URLSearchParams({ project: String(current.project) })}`, { token: pairing.token, formBody: form });
   return response.json();
 }
 

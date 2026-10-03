@@ -3,6 +3,19 @@
 // available for the next navigation, while every transfer hands the frame a
 // fresh PDF buffer so replay cannot observe a detached one.
 
+/** @typedef {{ kind: "html", html: string, sha?: string, presentation?: "document" } | { kind: "pdf", sha: string | null, bytes: Uint8Array }} FramePreviewContent */
+/** @typedef {FramePreviewContent & { generation: number }} FramePreviewPayload */
+/** @typedef {{ kind: "html", html: string, sha?: string, presentation?: "document" } | { kind: "pdf", sha?: string | null, bytes: Uint8Array | ArrayBuffer }} FramePreviewInput */
+/** @typedef {{ type: "preview", html?: string, pdf?: ArrayBuffer, frameGeneration: number, presentation?: "document" }} FrameMessage */
+
+/** @param {{
+ * slug: string, getDocsOrigin: () => string | null, framePath: () => string,
+ * setSource: (source: string) => void,
+ * send: (message: FrameMessage, transfer?: Transferable[]) => void,
+ * onNavigate?: (navigation: { epoch: number, kind: string }) => void,
+ * onDelivered?: (payload: FramePreviewPayload) => void,
+ * }} options
+ */
 export function createFramePreview({
   slug,
   getDocsOrigin,
@@ -18,6 +31,7 @@ export function createFramePreview({
   let generation = 0;
   let source = null;
   let framedSource = null;
+  /** @type {FramePreviewPayload | null} */
   let latest = null;
   let contentGeneration = 0;
   let deliveredGeneration = 0;
@@ -47,6 +61,7 @@ export function createFramePreview({
     return first;
   }
 
+  /** @param {FramePreviewInput | null | undefined} payload @returns {FramePreviewContent | null} */
   function normalize(payload) {
     if (!payload || (payload.kind !== "pdf" && payload.kind !== "html")) return null;
     if (payload.kind === "html") return {
@@ -58,6 +73,7 @@ export function createFramePreview({
     return { kind: "pdf", sha: payload.sha || null, bytes: bytes.slice() };
   }
 
+  /** @param {FramePreviewPayload | null} [payload] */
   function deliver(payload = latest) {
     const payloadKind = payload?.kind === "html" ? "raw" : payload?.kind;
     try {
@@ -78,13 +94,14 @@ export function createFramePreview({
     return true;
   }
 
+  /** @param {FramePreviewInput} payload */
   function publish(payload) {
     if (disposed) return false;
     const normalized = normalize(payload);
     if (!normalized) return false;
-    normalized.generation = ++contentGeneration;
-    latest = normalized;
-    return deliver(normalized);
+    const published = { ...normalized, generation: ++contentGeneration };
+    latest = published;
+    return deliver(published);
   }
 
   function clear() {
