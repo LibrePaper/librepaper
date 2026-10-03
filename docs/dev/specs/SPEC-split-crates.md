@@ -1,6 +1,6 @@
-# Proposed: Split the single crate into workspace sub-crates
+# Split the single crate into workspace sub-crates
 
-**Status:** Proposed
+**Status:** Implemented
 
 **Date:** 2026-10-03
 
@@ -67,21 +67,20 @@ Bottom-up, with the external dependencies that land in each:
 | `librepaper-document` | `document` without `store.rs`, plus `results`, `quarto` | 4.0k | loro |
 | `librepaper-engine` | `log`, `storage`, `document/store.rs` as `engine::store`, the `annotation` and `outgoing` data types from `room` | 30k | loro, sqlx, object_store, zstd, tar |
 | `librepaper-room` | `room`, `agent_query`, the proposal validators from `server::mcp::comments` | 18k | loro |
-| `librepaper-shell` | `server/shell.rs` only: the `include_dir!` of the built browser app | 0.1k | include_dir |
-| `librepaper-server` | the rest of `server` | 27k | axum, rmcp, tokio-tungstenite |
+| `librepaper-shell` | the `include_dir!` of the built browser app and the loader that reads it; depends on `base`, which owns `ShellFile`, `content_type` and `renderers` | 0.1k | include_dir |
+| `librepaper-server` | the rest of `server`; depends on `base`, `document`, `engine` and `room`, not on `shell` or `companion` | 27k | axum, rmcp, tokio-tungstenite |
 | `librepaper-companion` | `local`, `assistant`, `automation`, plus the credential helpers and `Local*` clap types from `cli` | 28k | axum, agent-client-protocol, rmcp, the Linux dialog stack, rfd |
 | `librepaper` | `lib.rs` facade re-exports, `cli`, `seed`, `main.rs`, `tests/`, the whole-stack benchmarks | 7k | clap |
-| `librepaper-testing` | not a crate: the shared Postgres harness is `engine::testing`, compiled always (it needs the catalogue types, so a crate beside `engine` would be a cycle), and the one fixture moved to `web/tests/fixtures/quarto` | 0.2k | sqlx |
+| (no testing crate) | not a crate: the shared Postgres harness is `engine::testing`, compiled always (it needs the catalogue types, so a crate beside `engine` would be a cycle), and the one fixture moved to `web/tests/fixtures/quarto` | 0.2k | sqlx |
 
 Dependency graph, which must stay acyclic and is enforced by Cargo:
 
 ```text
 librepaper ──┬──> server ──┬──> room ──> engine ──> document ──> base
-             │             ├──> shell
              │             └──> engine, document, base
              ├──> companion ──> document, base
              ├──> room, engine, document, base
-             └──> shell
+             └──> shell ──> base
 ```
 
 `companion` and `server` share nothing above `document`. An edit under `local/` recompiles `companion` and relinks the binary; `engine`, `room` and `server` are untouched. An edit under `server/` leaves `companion`, `room` and `engine` alone. An edit under `storage/` recompiles `engine`, `room`, `server` and the facade, which is the worst case and still skips 32k lines of companion code and runs the untouched crates' dependents in parallel where the graph allows.
@@ -131,7 +130,7 @@ Each item is a move or an inversion that the current single crate accepts today,
 
 ### Into `shell`
 
-- `server/shell.rs` becomes the whole crate: the `include_dir!` static, the `include_str!` of `assets.lock` and `ShellFile`. `server` depends on it. The facade keeps `pub use librepaper_shell::ShellFile`.
+- `server/shell.rs` becomes the whole crate: the `include_dir!` static, the `include_str!` of `assets.lock` and the loader. `ShellFile`, `content_type` and `renderers` live in `base::shell` and the shell crate re-exports them (see Outcome); `server` does not depend on the shell crate. The facade keeps `pub use librepaper_shell::ShellFile`.
 - Its `build.rs` resolves `web/dist` and passes it to the code as `LIBREPAPER_SHELL_DIST` (`include_dir!("$LIBREPAPER_SHELL_DIST")`), watches every file under it, and copies `assets.lock` into `OUT_DIR`. Nothing else.
 
 ### Stays in the facade crate
@@ -314,3 +313,20 @@ Test binaries go from eight to roughly fifteen. nextest lists tests by running e
 - [cargo package, included files](https://doc.rust-lang.org/cargo/reference/manifest.html#the-exclude-and-include-fields): only files under the package root are packaged.
 - [sqlx offline mode](https://docs.rs/sqlx/latest/sqlx/macro.query.html#offline-mode): `.sqlx` per crate, `SQLX_OFFLINE_DIR`.
 - `SPEC-go-migration.md`: the proposal this one replaces as the answer to compile time.
+
+## Outcome
+
+Implemented 2026-10-03, in the stages above. The final graph:
+
+```text
+librepaper ──┬──> server ──┬──> room ──> engine ──> document ──> base
+             │             └──> engine, document, base
+             ├──> companion ──> document, base
+             ├──> shell ──> base
+             └──> room, engine, document, base
+```
+
+- `librepaper` is the facade: `lib.rs` re-exports, `cli`, `main.rs`, `tests/`. `tools/module-matrix` has no cross-module edges left to count.
+- Shell inversion: `ShellFile`, `content_type` and `renderers` moved to `base::shell`, and `librepaper-shell` re-exports them. `ServeOptions` carries `load_shell` and `latex_release`, which the facade fills from `librepaper_shell`. A rebuilt `web/dist` recompiles the shell crate and relinks the binary, and does not recompile `server`.
+- There is no testing crate: the Postgres harness is `engine::testing`.
+- The server's `build.rs` sets `LIBREPAPER_DOCS` and `LIBREPAPER_SKILLS`; the facade's keeps only the `LIBREPAPER_VERSION` rerun line.

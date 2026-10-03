@@ -49,7 +49,7 @@ dedicated disposable database and select one test by name:
 
 ```sh
 LIBREPAPER_TEST_POSTGRES_URL='postgresql://postgres:password@127.0.0.1:5432/librepaper_test' \
-  cargo test -p librepaper --lib server::history_frontier_tests::delegated_agent_bearer_stops_working_after_session_revocation -- --ignored --test-threads=1 --exact
+  cargo test -p librepaper-server --lib server::history_frontier_tests::delegated_agent_bearer_stops_working_after_session_revocation -- --ignored --test-threads=1 --exact
 ```
 
 The log and catalogue tests live in `librepaper-engine`, the room and server tests in `librepaper`: run the same command with `-p librepaper-engine` for the former.
