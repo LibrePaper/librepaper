@@ -57,19 +57,13 @@ export function createPassageTrace({
       const state_ = now();
       return !stale() && state_.source === source && state_.visible === visible;
     };
+    if (!current()) return;
     const traced = lost.map((comment) => passages.tracedBy(comment, paths()));
     let points = Array(lost.length).fill(null);
-    if (passages.wentAtMany) {
-      try {
-        points = await passages.wentAtMany(slug, traced, list, keyHeaders(key));
-      } catch {
-        if (!stale()) last = null;
-      }
-    } else {
-      // Test seams and older adapters can still supply the one-comment API.
-      for (const [index, item] of traced.entries()) {
-        points[index] = await passages.wentAt(slug, item, list, keyHeaders(key));
-      }
+    try {
+      points = await passages.wentAtMany(slug, traced, list, keyHeaders(key), undefined, current);
+    } catch {
+      if (!stale()) last = null;
     }
     if (!current()) return;
     for (const [index, comment] of lost.entries()) {

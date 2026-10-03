@@ -145,7 +145,7 @@ export function tracedBy(comment, paths) {
 /// so inspect them in order and return the first loss. Returns that entry, or null
 /// when there is nothing to say: no history to look in, or a passage that
 /// turns out still to be there.
-export async function wentAtMany(slug, tracedList, labels, headers = {}, atSource = sourceTextAt) {
+export async function wentAtMany(slug, tracedList, labels, headers = {}, atSource = sourceTextAt, isCurrent = () => true) {
   const answers = Array(tracedList.length).fill(null);
   if (!labels?.length) return answers;
 
@@ -155,12 +155,8 @@ export async function wentAtMany(slug, tracedList, labels, headers = {}, atSourc
   const groups = new Map();
   for (const [index, traced] of tracedList.entries()) {
     if (!traced?.frontier) continue;
-    let ownText;
-    try {
-      ownText = await atSource(slug, MOMENT + traced.frontier, { file_id: traced.file_id }, headers);
-    } catch {
-      continue;
-    }
+    const ownText = await atSource(slug, MOMENT + traced.frontier, { file_id: traced.file_id }, headers);
+    if (!isCurrent()) return answers;
     if (typeof ownText !== "string" || !holds(ownText, traced.selector)) continue;
     const created = Date.parse(traced.created);
     if (!Number.isFinite(created)) continue;
@@ -175,12 +171,8 @@ export async function wentAtMany(slug, tracedList, labels, headers = {}, atSourc
   const newest = labels.at(-1);
   const active = new Map();
   for (const [fileId, candidates] of groups) {
-    let newestText;
-    try {
-      newestText = await atSource(slug, newest.sha, { file_id: fileId }, headers);
-    } catch {
-      continue;
-    }
+    const newestText = await atSource(slug, newest.sha, { file_id: fileId }, headers);
+    if (!isCurrent()) return answers;
     if (typeof newestText !== "string") continue;
     const stillPresent = new Set(candidates
       .filter(({ traced }) => holds(newestText, traced.selector))
@@ -205,12 +197,8 @@ export async function wentAtMany(slug, tracedList, labels, headers = {}, atSourc
         active.delete(fileId);
         continue;
       }
-      let text;
-      try {
-        text = await atSource(slug, point.sha, { file_id: fileId }, headers);
-      } catch {
-        text = null;
-      }
+      const text = await atSource(slug, point.sha, { file_id: fileId }, headers);
+      if (!isCurrent()) return answers;
       if (typeof text !== "string") {
         const unresolved = new Set(eligible.map(({ index }) => index));
         const remaining = candidates.filter(({ index }) => !unresolved.has(index));

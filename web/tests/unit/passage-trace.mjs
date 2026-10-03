@@ -34,7 +34,10 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
     loadLabels,
     passages: {
       tracedBy: realPassages.tracedBy,
-      wentAt: async (_slug, traced) => { calls.push(`went:${traced.selector.exact}`); return { sha: "sha-1" }; },
+      wentAtMany: async (_slug, traced) => traced.map((item) => {
+        calls.push(`went:${item.selector.exact}`);
+        return { sha: "sha-1" };
+      }),
       sourceTextAt: async () => "old source",
       replacementAt: async () => "what stands there now",
       ...passages,
@@ -111,7 +114,10 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   const { trace } = build({
     current: () => state,
     passages: {
-      wentAt: async () => { state = { source: 2, visible: "visible" }; return { sha: "sha-1" }; },
+      wentAtMany: async (_slug, traced) => {
+        state = { source: 2, visible: "visible" };
+        return traced.map(() => ({ sha: "sha-1" }));
+      },
     },
   });
   await trace.trace({ comments: [orphan("a")], tree, labels: [{ sha: "sha-1" }] });
@@ -127,9 +133,9 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   const { trace } = build({
     current: () => state,
     passages: {
-      wentAt: async (_slug, comment) => {
+      wentAtMany: async (_slug, traced) => {
         if (first) { first = false; await held; }
-        return { sha: `sha-${comment.id}` };
+        return traced.map((item) => ({ sha: `sha-${item.selector.exact}` }));
       },
     },
   });
@@ -165,7 +171,7 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   const { trace } = build({
     current: () => state,
     passages: {
-      wentAt: async () => { attempts++; throw new Error("that label is gone"); },
+      wentAtMany: async () => { attempts++; throw new Error("that label is gone"); },
     },
   });
   const comments = [orphan("a")];
@@ -183,7 +189,7 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   const { trace } = build({
     current: () => state,
     passages: {
-      wentAt: async () => ({ sha: "lost-at" }),
+      wentAtMany: async (_slug, traced) => traced.map(() => ({ sha: "lost-at" })),
       replacementAt: async () => { replacements++; throw new Error("comparison unavailable"); },
     },
   });
