@@ -206,7 +206,7 @@ pub struct Server {
     /// Days of invented history to write for each starter document a new
     /// account is given, or nothing. A demonstration deployment asks for one;
     /// every other deployment keeps the honest history of a document
-    /// published once. See `crate::seed::activity`.
+    /// published once. See `crate::storage::seed::activity`.
     pub simulate_activity: Option<u32>,
     /// The terminals waiting to be signed in. In memory only: a restart
     /// forgets them, and a `login` that was mid-flight starts again.

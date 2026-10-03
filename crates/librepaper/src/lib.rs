@@ -39,7 +39,6 @@ mod private_files;
 mod quarto;
 mod results;
 mod room;
-mod seed;
 mod server;
 mod storage;
 mod tls;

@@ -37,7 +37,7 @@ pub struct ServeOptions {
     /// Write each new account's starter documents as though they had been
     /// typed over this many days, so the history panel has something in it on a
     /// demonstration deployment. The operations are real; only the clock is
-    /// invented. See `crate::seed::activity`.
+    /// invented. See `crate::storage::seed::activity`.
     pub simulate_activity: Option<u32>,
     /// The reader origin browsers reach this deployment on, and the origin
     /// documents are served from. Without the first, the deployment answers on

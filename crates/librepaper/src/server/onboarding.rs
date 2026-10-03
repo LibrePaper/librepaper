@@ -254,7 +254,7 @@ impl Server {
             name if name.is_empty() => actor.owner_key.clone(),
             name => name,
         };
-        crate::seed::activity::simulate(
+        crate::storage::seed::activity::simulate(
             catalog.clone(),
             document.id,
             slug,

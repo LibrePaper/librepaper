@@ -106,7 +106,7 @@ pub(crate) struct ServiceFlags {
     /// Write each new account's starter documents as though they had been
     /// typed over this many days, so a demonstration deployment has a history
     /// panel with something in it. The operations are real; only the clock is
-    /// invented. See `crate::seed::activity`.
+    /// invented. See `crate::storage::seed::activity`.
     #[arg(
         long = "simulate-activity",
         env = "LIBREPAPER_SIMULATE_ACTIVITY",
