@@ -25,7 +25,7 @@
 //! never a sibling module of the same crate, so nothing needed widening to
 //! reach them.
 //!
-//! Reused rather than rebuilt: [`super::tests::Outbox`], the causally-linked
+//! Reused rather than rebuilt: [`crate::log::tests::Outbox`], the causally-linked
 //! batch source `log/tests.rs` already has (three of its methods gained a
 //! `pub(super)` and it gained two read-only accessors, `text` and `vector`,
 //! and one export variant, `export_from`, so this module could use it
@@ -41,7 +41,7 @@
 //! the switch is compiled out of a release build.
 //!
 //! Everything here needs `LIBREPAPER_TEST_POSTGRES_URL` and is `#[ignore]`d
-//! by default, the same convention as `room/comment_anchor_tests.rs` and
+//! by default, the same convention as `comment_anchor_tests.rs` and
 //! `storage/postgres/mod.rs`. An explicitly selected test fails if the
 //! variable is missing. Point it at a throwaway database, not
 //! `librepaper_sqlx` (what the sqlx macros check schemas against) or
@@ -66,8 +66,8 @@ use uuid::Uuid;
 
 use futures_util::future::BoxFuture;
 
-use super::tests::Outbox;
-use super::*;
+use crate::log::tests::Outbox;
+use crate::log::*;
 use crate::config::Configuration;
 use crate::document::session;
 use crate::storage::store::{DocumentInput, MutationActor, Store};
@@ -396,21 +396,21 @@ async fn housekeeping_re_asks_for_a_compaction_whose_ask_was_lost() {
     bare.catalog.close().await;
 }
 
-fn subscriber() -> crate::room::Sender {
-    crate::room::Sender::channel(64, 1 << 20, None, None).0
+fn subscriber() -> crate::storage::outgoing::Sender {
+    crate::storage::outgoing::Sender::channel(64, 1 << 20, None, None).0
 }
 
-fn editor_subscription() -> (crate::room::Sender, crate::storage::outgoing::Receiver) {
-    crate::room::Sender::channel(64, 1 << 20, None, None)
+fn editor_subscription() -> (crate::storage::outgoing::Sender, crate::storage::outgoing::Receiver) {
+    crate::storage::outgoing::Sender::channel(64, 1 << 20, None, None)
 }
 
 fn queued_frames(rx: &mut crate::storage::outgoing::Receiver) -> Vec<serde_json::Value> {
     let mut frames = Vec::new();
     while let Ok(queued) = rx.try_recv() {
         let text = match queued.into_parts().0 {
-            crate::room::Outgoing::Text(text) => text,
-            crate::room::Outgoing::SharedText(text) => text.to_string(),
-            crate::room::Outgoing::Close(_) => continue,
+            crate::storage::outgoing::Outgoing::Text(text) => text,
+            crate::storage::outgoing::Outgoing::SharedText(text) => text.to_string(),
+            crate::storage::outgoing::Outgoing::Close(_) => continue,
         };
         frames.push(serde_json::from_str(&text).expect("a JSON frame"));
     }

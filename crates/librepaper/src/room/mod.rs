@@ -59,6 +59,8 @@ mod message;
 pub(crate) use crate::storage::outgoing;
 #[cfg(test)]
 mod proposal_round_trip_tests;
+#[cfg(test)]
+mod recovery_tests;
 pub(crate) mod proposals;
 pub(crate) mod resolve;
 pub(crate) mod text;

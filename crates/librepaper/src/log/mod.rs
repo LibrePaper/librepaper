@@ -27,11 +27,9 @@ pub mod frame;
 pub mod ledger;
 pub mod pending;
 pub(crate) mod recorded;
-#[cfg(test)]
-mod recovery;
 pub mod sequencer;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::collections::HashMap;
 use std::sync::Arc;
