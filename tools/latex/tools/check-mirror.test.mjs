@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,7 @@ const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 let mirror;
 let release;
 let id;
+let remoteServer;
 function asset(url, content) {
   const bytes = Buffer.from(content);
   mkdirSync(join(release, url, ".."), { recursive: true });
@@ -70,14 +72,59 @@ function check(expected, message, target = mirror) {
   assert.equal(result.status, expected, result.stderr || result.stdout);
   if (message) assert.match(result.stderr, message);
 }
+function checkAsync(expected, message, target) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [checker, target], { encoding: "utf8" });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (status) => {
+      try {
+        assert.equal(status, expected, stderr || stdout);
+        if (message) assert.match(stderr, message);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
 try {
   build();
   check(0);
   check(0, undefined, release); // a single release directory
+  let corruptWorker = false;
+  remoteServer = createServer((request, response) => {
+    const path = new URL(request.url, "http://localhost").pathname;
+    if (path === `/${id}/release.json`) return response.end(readFileSync(join(release, "release.json")));
+    if (path === `/${id}/worker.js`) return response.end(corruptWorker ? "corrupt" : readFileSync(join(release, "worker.js")));
+    response.writeHead(404).end();
+  });
+  remoteServer.listen(0, "127.0.0.1");
+  await new Promise((resolve, reject) => {
+    remoteServer.once("listening", resolve);
+    remoteServer.once("error", reject);
+  });
+  const remote = `http://127.0.0.1:${remoteServer.address().port}/${id}/`;
+  await checkAsync(0, undefined, remote);
+  corruptWorker = true;
+  await checkAsync(1, /worker payload does not match/, remote);
+  await new Promise((resolve, reject) => remoteServer.close((error) => error ? reject(error) : resolve()));
+  remoteServer = null;
   build((entry) => { entry.format = 1; });
   check(1, /unsupported release format/);
   build((entry) => { delete entry.engines.pdftex; });
-  check(1, /no complete pdfTeX/);
+  check(1, /pdfTeX worker specification/);
+  build((entry) => { entry.engines.pdftex.files = []; });
+  check(1, /pdfTeX engine has no valid worker inventory/);
+  build((entry) => { entry.engines.xetex = { worker: "xetex.worker.js", files: [] }; });
+  check(1, /engine xetex has no valid worker inventory/);
+  build((entry) => { entry.files["worker.js"].size = 0; });
+  check(1, /non-empty file record/);
+  build((entry) => { entry.files["worker.js"].url = "..%2foutside.js"; });
+  check(1, /unsafe relative path/);
   build((entry) => { entry.bundles = null; });
   check(1, /has no bundles/);
   build();
@@ -86,6 +133,12 @@ try {
   build();
   writeFileSync(join(release, "worker.js"), "broken");
   check(1, /digest or size mismatch/);
+  build();
+  const outside = join(directory, "outside-worker.js");
+  writeFileSync(outside, "worker");
+  rmSync(join(release, "worker.js"));
+  symlinkSync(outside, join(release, "worker.js"));
+  check(1, /escapes the release directory/);
 
   // The directory name is the SHA-256 of MANIFEST.json.
   build();
@@ -113,7 +166,8 @@ try {
   rmSync(join(release, "bundles", coreBundle.url));
   check(1, new RegExp(`bundle "${coreName}".*is missing from the mirror`));
 
-  console.log("mirror preflight: legacy format, missing engines, missing bundles, missing assets, corruption, a wrong release id and bundle index/tar mismatches rejected");
+  console.log("mirror preflight: release shape, worker payloads, path containment, missing assets, corruption, and bundle mismatches checked");
 } finally {
+  if (remoteServer) await new Promise((resolve) => remoteServer.close(resolve));
   rmSync(directory, { recursive: true, force: true });
 }

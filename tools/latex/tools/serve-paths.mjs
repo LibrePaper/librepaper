@@ -25,7 +25,7 @@ export function resolveLocalFile(root, encodedRelative) {
 export function mirrorTarget(base, encodedSuffix) {
   let suffix;
   try { suffix = decodeURIComponent(encodedSuffix); } catch { return null; }
-  if (!suffix || suffix.includes("\0") || suffix.includes("\\") || suffix.startsWith("/") ||
+  if (!suffix || /[%?#:\0\\]/.test(suffix) || suffix.startsWith("/") ||
       suffix.split("/").some((part) => !part || part === "." || part === "..")) return null;
   let origin;
   try { origin = new URL(base); } catch { return null; }

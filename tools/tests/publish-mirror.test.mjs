@@ -24,13 +24,16 @@ async function writeLatexRelease(source, assets = {}, label = "release") {
   await writeFile(join(dir, "MANIFEST.json"), manifest);
   await writeFile(join(dir, "bundles", "bundles.json"), index);
   const files = { "bundles.json": { url: "bundles/bundles.json", size: index.length, sha256: sha256(index) } };
+  const worker = Buffer.from("pdftex worker");
+  await writeFile(join(dir, "worker.js"), worker);
+  files["worker.js"] = { url: "worker.js", size: worker.length, sha256: sha256(worker) };
   for (const [name, bytes] of Object.entries(assets)) {
     await mkdir(join(dir, name, ".."), { recursive: true });
     await writeFile(join(dir, name), bytes);
     files[name] = { url: name, size: bytes.length, sha256: sha256(bytes) };
   }
   await writeFile(join(dir, "release.json"), JSON.stringify({
-    format: 2, id, engines: {}, files,
+    format: 2, id, engines: { pdftex: { worker: "worker.js", files: ["worker.js"] } }, files,
     bundles: { index: "bundles/bundles.json", count: 0, sha256: sha256(index) },
   }));
   return { id, dir };
@@ -184,14 +187,17 @@ test("LaTeX preflight verifies release files, index, and relative bundle records
     core: { url: `b/${bundleHash}/bundle.tar`, size: bundleBytes.length, sha256: bundleHash },
   } }));
   const assetBytes = Buffer.from("engine js");
+  const workerBytes = Buffer.from("pdftex worker");
   await mkdir(join(dir, "bundles", "b", bundleHash), { recursive: true });
   await writeFile(join(dir, "MANIFEST.json"), manifest);
   await writeFile(join(dir, "bundles", "bundles.json"), indexBytes);
   await writeFile(join(dir, "bundles", "b", bundleHash, "bundle.tar"), bundleBytes);
   await writeFile(join(dir, "engine.js"), assetBytes);
+  await writeFile(join(dir, "worker.js"), workerBytes);
   await writeFile(join(dir, "release.json"), JSON.stringify({
-    format: 2, id,
+    format: 2, id, engines: { pdftex: { worker: "worker.js", files: ["worker.js"] } },
     files: {
+      "worker.js": { url: "worker.js", size: workerBytes.length, sha256: sha256(workerBytes) },
       engine: { url: "engine.js", size: assetBytes.length, sha256: sha256(assetBytes) },
       "bundles.json": { url: "bundles/bundles.json", size: indexBytes.length, sha256: sha256(indexBytes) },
     },
@@ -199,8 +205,8 @@ test("LaTeX preflight verifies release files, index, and relative bundle records
   }));
   try {
     const result = await preflightMirror({ dir: root, prefix: "latex" });
-    assert.equal(result.count, 5);
-    assert.equal(result.bytes, manifest.length + bundleBytes.length + indexBytes.length + assetBytes.length +
+    assert.equal(result.count, 6);
+    assert.equal(result.bytes, manifest.length + bundleBytes.length + indexBytes.length + workerBytes.length + assetBytes.length +
       (await stat(join(dir, "release.json"))).size);
 
     // An unlisted file in a release is an orphan.
@@ -231,8 +237,14 @@ test("LaTeX preflight verifies release files, index, and relative bundle records
     await writeFile(join(dir, "engine.js"), assetBytes);
     const release = JSON.parse(await readFile(join(dir, "release.json"), "utf8"));
     await writeFile(join(dir, "release.json"), JSON.stringify({ ...release, format: 1 }));
-    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /must use format 2/);
-    await writeFile(join(dir, "release.json"), JSON.stringify({ ...release, files: { engine: { url: "../escape.js", size: 1, sha256: "0".repeat(64) } } }));
+    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /unsupported release format/);
+    await writeFile(join(dir, "release.json"), JSON.stringify({ ...release, engines: { pdftex: { worker: "worker.js", files: [] } } }));
+    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /no complete pdfTeX engine/);
+    await writeFile(join(dir, "release.json"), JSON.stringify({ ...release, engines: { pdftex: { worker: "worker.js", files: ["worker.js"] } },
+      files: { ...release.files, "worker.js": { ...release.files["worker.js"], size: 0 } } }));
+    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /non-empty file record/);
+    await writeFile(join(dir, "release.json"), JSON.stringify({ ...release, files: { ...release.files,
+      engine: { url: "../escape.js", size: 1, sha256: "0".repeat(64) } } }));
     await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /unsafe URL/);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -295,8 +307,8 @@ test("successful S3 publishing gzips payloads, skips transport files, and upload
   const records = async () => (await readFile(log, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
   try {
     const result = await publish({ dir: source, prefix: "latex", env, output: () => {} });
-    assert.equal(result.count, 10);
-    assert.equal(result.uploaded, 10);
+    assert.equal(result.count, 11);
+    assert.equal(result.uploaded, 11);
     const entries = await records();
     assert.ok(entries.every((entry) => ["s3 sync", "s3 sync done", "s3api head-object"].includes(entry.command)));
     const puts = entries.filter((entry) => entry.command === "s3 sync");
