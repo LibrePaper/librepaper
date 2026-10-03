@@ -563,7 +563,18 @@ async fn run_admin(command: AdminCommand) {
                 expire_from: service.expire_from,
                 asset_mirror: service.asset_mirror,
                 typst_fonts: service.typst_fonts,
-                no_local: service.no_local,
+                start_local: (!service.no_local).then(|| -> crate::server::serve::StartLocal {
+                    Box::new(|base| {
+                        Box::pin(async move {
+                            let app = crate::local::embedded::start(&base, Vec::new()).await?;
+                            let stopper = app.clone();
+                            Ok(crate::server::serve::LocalApp {
+                                address: app.address.clone(),
+                                stop: Box::new(move || Box::pin(async move { stopper.stop().await })),
+                            })
+                        })
+                    })
+                }),
                 config,
             })
             .await
