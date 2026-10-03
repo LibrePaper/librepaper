@@ -12,6 +12,10 @@ use std::collections::HashMap;
 
 use include_dir::{include_dir, Dir, File};
 
+// The data type and the two pure functions live in librepaper-base, so the
+// server does not depend on this crate; the paths stay as consumers spell them.
+pub use librepaper_base::shell::{content_type, renderers, ShellFile};
+
 static SHELL: Dir<'static> = include_dir!("$LIBREPAPER_SHELL_DIST");
 const WASM_LOCK: &str = include_str!(concat!(env!("OUT_DIR"), "/assets.lock"));
 
@@ -21,42 +25,6 @@ const WASM_LOCK: &str = include_str!(concat!(env!("OUT_DIR"), "/assets.lock"));
 /// cached for a year, so the URL has to change whenever the module does. The
 /// reader page is told the current URLs when it is served.
 const MODULES: &[&str] = &["markdown", "bibliography", "citations", "typst"];
-
-pub fn content_type(name: &str) -> &'static str {
-    match name.rsplit('.').next() {
-        Some("html") => "text/html; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        // `.mjs` as well as `.js`: pdf.js ships its worker under that
-        // extension and the bundler emits it under that extension, and a
-        // module worker served as `application/octet-stream` is refused by
-        // the browser before it runs a line.
-        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
-        Some("json") => "application/json; charset=utf-8",
-        Some("map") => "application/json; charset=utf-8",
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("svg") => "image/svg+xml",
-        Some("wasm") => "application/wasm",
-        Some("woff2") => "font/woff2",
-        Some("txt") | Some("md") => "text/plain; charset=utf-8",
-        _ => "application/octet-stream",
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ShellFile {
-    pub kind: &'static str,
-    pub body: axum::body::Bytes,
-    /// A precompressed HTTP representation of `body`, when the build supplied
-    /// one, so serving a bundle costs no compression work per request.
-    pub brotli: Option<axum::body::Bytes>,
-    /// A file whose bytes never change under this name, so it can be cached
-    /// for a year rather than five minutes. Everything the bundler names for
-    /// its own contents is one.
-    pub immutable: bool,
-}
-
-impl ShellFile {}
 
 fn file(name: &str) -> Option<&'static [u8]> {
     SHELL.get_file(name).map(File::contents)
@@ -141,19 +109,6 @@ fn modules_json(mirror: &str, lock: &str) -> Result<String, String> {
     Ok(serde_json::Value::Object(modules)
         .to_string()
         .replace('<', "\\u003c"))
-}
-
-/// The source formats this process can render in a reader, and so offer an
-/// editor for. Markdown and typst are rendered by modules the browser loads
-/// from the asset mirror; HTML needs no module at all, its renderer being the
-/// identity.
-pub fn renderers() -> Vec<String> {
-    vec![
-        "markdown".to_string(),
-        "quarto".to_string(),
-        "html".to_string(),
-        "typst".to_string(),
-    ]
 }
 
 /// Everything the server answers with, ready to serve.

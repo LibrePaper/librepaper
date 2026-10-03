@@ -8,5 +8,6 @@ pub mod auth;
 pub mod config;
 pub mod http;
 pub mod private_files;
+pub mod shell;
 pub mod tls;
 pub mod util;

@@ -12,6 +12,7 @@ build = "build.rs"
 doctest = false
 
 [dependencies]
+librepaper-base = { path = "../librepaper-base" }
 axum.workspace = true
 include_dir.workspace = true
 serde_json.workspace = true

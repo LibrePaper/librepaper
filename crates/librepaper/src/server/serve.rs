@@ -1,5 +1,6 @@
 //! `librepaper admin serve`: the whole service in this process.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::io::IsTerminal;
 use std::net::SocketAddr;
@@ -13,13 +14,13 @@ use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
 use librepaper_base::auth::{session_key_file, GithubApp, GoogleApp, Policy};
 use librepaper_base::config::Configuration;
+use librepaper_base::shell::ShellFile;
 use librepaper_base::util::die;
 use librepaper_document::document::retention::{
     describe_seconds, parse_expire_from, parse_retention,
 };
 use librepaper_engine::storage::store::Store;
 use librepaper_engine::storage::{open_storage, StorageOptions};
-use librepaper_shell::load_shell;
 
 /// With no --port, serve takes the first free port in this range, so a second
 /// deployment on the same machine, or a port something else has already
@@ -79,6 +80,13 @@ pub struct ServeOptions {
     /// Quarto documents for an editor whose browser is on this host. The
     /// caller supplies it so the server does not depend on the service.
     pub start_local: Option<StartLocal>,
+    /// Loads the compiled-in shell for the validated asset mirror. The caller
+    /// supplies it so the server does not depend on the shell crate, whose
+    /// input is a build output; it runs where the server used to call it, after
+    /// the mirror is validated.
+    pub load_shell: fn(&str) -> Result<HashMap<String, ShellFile>, String>,
+    /// The pinned LaTeX release, supplied by the caller for the same reason.
+    pub latex_release: &'static str,
     pub config: Configuration,
 }
 
@@ -303,7 +311,7 @@ pub async fn serve(options: ServeOptions) {
     // Read before anything is opened or a port is claimed: a mirror value
     // which cannot work is a typo the operator is still standing in front of.
     let assets = validate_asset_mirror(&options.asset_mirror).unwrap_or_else(|err| die(err));
-    let latex = format!("{assets}latex/{}/", librepaper_shell::latex_release());
+    let latex = format!("{assets}latex/{}/", options.latex_release);
     // Likewise the site. It becomes a destination a browser is sent to, so it
     // is an absolute http(s) origin or it is a mistake -- a bare host would
     // be read as a path on this deployment and send a signed-out reader to a
@@ -383,7 +391,7 @@ pub async fn serve(options: ServeOptions) {
     }
 
     let config = Arc::new(options.config);
-    let shell = load_shell(&assets).unwrap_or_else(|err| die(err));
+    let shell = (options.load_shell)(&assets).unwrap_or_else(|err| die(err));
     let secrets = &deployment_paths.secrets;
     let key_path = secrets.join("session.key");
     let key = session_key_file(&key_path, key_path.exists()).unwrap_or_else(|err| die(err));
@@ -521,7 +529,7 @@ pub async fn serve(options: ServeOptions) {
     if assets == librepaper_base::config::DEFAULT_ASSET_MIRROR {
         println!(
             "  the project mirror promises only releases carried by this build (latex {})",
-            librepaper_shell::latex_release()
+            options.latex_release
         );
     }
     if let Some(local) = &local {

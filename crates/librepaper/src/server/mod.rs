@@ -44,7 +44,7 @@ use librepaper_engine::storage::store::{
     random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
     Role, Store,
 };
-use librepaper_shell::{renderers, ShellFile};
+use librepaper_base::shell::{renderers, ShellFile};
 
 mod agent_auth;
 mod chat;

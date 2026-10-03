@@ -581,6 +581,8 @@ async fn run_admin(command: AdminCommand) {
                         })
                     })
                 }),
+                load_shell: librepaper_shell::load_shell,
+                latex_release: librepaper_shell::latex_release(),
                 config,
             })
             .await
