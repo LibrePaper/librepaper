@@ -29,7 +29,15 @@ async function runnerFixture(withNextest = false) {
 }
 
 function runTarget(directory, log, values = {}) {
-  return execFileSync(make, ["--no-print-directory", "-f", makefile, "test-rust"], {
+  return execFileSync(make, [
+    "--no-print-directory",
+    "-f",
+    makefile,
+    "SHELL=/bin/sh",
+    "WEB=",
+    "SOURCES=",
+    "test-rust",
+  ], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     env: {
