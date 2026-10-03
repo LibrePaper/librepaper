@@ -426,7 +426,7 @@ mod tests {
         assert_eq!(public.len(), 1);
         assert_eq!(public[0].id, visible_id);
         let owned = catalog
-            .visible_documents(Some(owner), None, 1)
+            .visible_documents(Some(owner), None, 1, false)
             .await
             .unwrap();
         assert_eq!(owned.len(), 1);

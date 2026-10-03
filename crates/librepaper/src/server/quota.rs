@@ -91,6 +91,11 @@ impl Server {
             Ok(usage) => usage,
             Err(reply) => return reply,
         };
+        let ids: Vec<uuid::Uuid> = usage.documents.iter().map(|d| d.id).collect();
+        let templates = match self.store.catalog.template_ids(&ids).await {
+            Ok(templates) => templates,
+            Err(error) => return write_json(503, &json!({"error": error.to_string()})),
+        };
         let documents = usage
             .documents
             .iter()
@@ -102,6 +107,7 @@ impl Server {
                     "figureBytes": d.figure_bytes,
                     "archiveBytes": d.archive_bytes,
                     "historyBytes": d.history_bytes,
+                    "template": templates.contains(&d.id),
                 })
             })
             .collect::<Vec<_>>();

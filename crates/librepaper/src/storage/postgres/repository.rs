@@ -636,6 +636,7 @@ impl PostgresCatalog {
         account_id: Option<Uuid>,
         before: Option<(OffsetDateTime, Uuid)>,
         limit: i64,
+        include_templates: bool,
     ) -> Result<Vec<DocumentRecord>> {
         if !(1..=200).contains(&limit) {
             return Err(Error::Invalid("document page limit must be 1..=200".into()));
@@ -651,6 +652,7 @@ impl PostgresCatalog {
                  FROM documents d
                  WHERE d.owner_id=$1 AND d.status='active'
                    AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)
+                   AND ($5 OR NOT EXISTS (SELECT 1 FROM document_templates t WHERE t.document_id=d.id))
                    AND (d.updated_at,d.id) <
                        (COALESCE($2::timestamptz,'infinity'),
                         COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
@@ -661,6 +663,7 @@ impl PostgresCatalog {
                  JOIN documents d ON d.id=g.document_id AND d.status='active'
                  WHERE g.account_id=$1
                    AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)
+                   AND ($5 OR NOT EXISTS (SELECT 1 FROM document_templates t WHERE t.document_id=d.id))
                    AND (g.source_link_hash IS NULL OR EXISTS (
                      SELECT 1 FROM share_links l
                      WHERE l.document_id=g.document_id
@@ -685,9 +688,67 @@ impl PostgresCatalog {
         .bind(before.map(|value| value.0))
         .bind(before.map(|value| value.1))
         .bind(limit)
+        .bind(include_templates)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
+    }
+
+    /// Make a document a custom template. Idempotent.
+    pub async fn mark_template(&self, document_id: Uuid) -> Result<()> {
+        sqlx::query!(
+            "INSERT INTO document_templates(document_id) VALUES ($1)
+             ON CONFLICT (document_id) DO NOTHING",
+            document_id,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// This owner's active templates, most recently changed first. A template
+    /// in the trash is not offered, and comes back when it is restored.
+    pub async fn templates_by_owner(
+        &self,
+        owner_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<DocumentRecord>> {
+        if !(1..=200).contains(&limit) {
+            return Err(Error::Invalid("document page limit must be 1..=200".into()));
+        }
+        sqlx::query_as!(
+            DocumentRecord,
+            "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
+                    d.source_format,d.main_path,d.update_sequence,
+                    d.created_at,
+                    d.updated_at,d.deleted_at
+             FROM documents d
+             JOIN document_templates t ON t.document_id=d.id
+             WHERE d.owner_id=$1 AND d.status='active'
+               AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)
+             ORDER BY d.updated_at DESC,d.id DESC LIMIT $2",
+            owner_id,
+            limit,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    /// Which of these documents are templates, for the rows that show the
+    /// flag (the storage list and the trash).
+    pub async fn template_ids(
+        &self,
+        document_ids: &[Uuid],
+    ) -> Result<std::collections::HashSet<Uuid>> {
+        Ok(sqlx::query_scalar!(
+            "SELECT document_id FROM document_templates WHERE document_id=ANY($1)",
+            document_ids,
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .collect())
     }
 
     pub async fn document_counts_by_owner(&self, owner_id: Uuid) -> Result<(i64, i64)> {

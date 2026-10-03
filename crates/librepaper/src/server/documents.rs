@@ -1286,6 +1286,28 @@ impl Server {
         arrival: &Arrival,
         slug: &str,
     ) -> Reply {
+        self.copy_project(request, arrival, slug, false).await
+    }
+
+    /// Copy a project into a custom template: a fork that must be named and
+    /// is then marked, so it leaves the project listing and is offered when
+    /// starting a new project. Every check is the fork's.
+    pub(super) async fn handle_template(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+    ) -> Reply {
+        self.copy_project(request, arrival, slug, true).await
+    }
+
+    async fn copy_project(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+        as_template: bool,
+    ) -> Reply {
         let headers = request.headers().clone();
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
@@ -1308,6 +1330,9 @@ impl Server {
         let asked = asked.trim().to_string();
         if asked.chars().count() > 200 {
             return write_json(400, &json!({"error": "that name is too long"}));
+        }
+        if as_template && asked.is_empty() {
+            return write_json(400, &json!({"error": "give the template a name"}));
         }
         let entry = match self.checked_entry(slug).await {
             Ok(Some(entry)) => entry,
@@ -1453,10 +1478,26 @@ impl Server {
             )
             .await
         {
-            Ok(made) => write_json(
-                200,
-                &json!({"slug": made.slug, "title": made.title, "url": format!("/docs/{}", made.slug)}),
-            ),
+            Ok(made) => {
+                if as_template {
+                    let marked = match uuid::Uuid::parse_str(&made.storage_id) {
+                        Ok(id) => self.store.catalog.mark_template(id).await.is_ok(),
+                        Err(_) => false,
+                    };
+                    if !marked {
+                        // An unmarked copy would sit in the project list under
+                        // a name meant for a template; send it to the trash
+                        // rather than leave it there.
+                        eprintln!("could not mark {} as a template", made.slug);
+                        let _ = self.store.begin_delete(&made.slug).await;
+                        return write_json(503, &json!({"error": "could not save the template"}));
+                    }
+                }
+                write_json(
+                    200,
+                    &json!({"slug": made.slug, "title": made.title, "url": format!("/docs/{}", made.slug)}),
+                )
+            }
             Err(PutError::Quota { status, message }) => {
                 // A failed create can leave its new, empty document row; keep
                 // the upload counted to bound those side effects.
@@ -1470,6 +1511,33 @@ impl Server {
                 // storage error reached the request, so keep the admission.
                 eprintln!("could not fork {slug}: {error:?}");
                 write_json(500, &json!({"error": "could not copy that project"}))
+            }
+        }
+    }
+
+    /// The custom templates this account owns, as ordinary project rows.
+    pub(super) async fn handle_templates(&self, headers: &HeaderMap, arrival: &Arrival) -> Reply {
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let who = match self.publisher(headers, arrival).await {
+            Ok(who) => who,
+            Err(response) => return response,
+        };
+        if who.id.is_empty() {
+            return write_json(401, &json!({"error": "sign in"}));
+        }
+        match self.store.templates_page(&who.id).await {
+            Ok(entries) => {
+                let templates: Vec<Value> = entries
+                    .iter()
+                    .map(|entry| self.listing_row(entry, &who))
+                    .collect();
+                write_json(200, &json!({"templates": templates}))
+            }
+            Err(error) => {
+                eprintln!("could not query templates: {error}");
+                write_json(503, &json!({"error": "catalogue temporarily unavailable"}))
             }
         }
     }
@@ -1492,6 +1560,20 @@ impl Server {
         }
         match self.store.trashed_page(&who.id, 200).await {
             Ok(rows) => {
+                let ids: Vec<uuid::Uuid> = rows
+                    .iter()
+                    .filter_map(|(entry, _)| uuid::Uuid::parse_str(&entry.storage_id).ok())
+                    .collect();
+                let templates = match self.store.catalog.template_ids(&ids).await {
+                    Ok(templates) => templates,
+                    Err(error) => {
+                        eprintln!("could not query the trash: {error}");
+                        return write_json(
+                            503,
+                            &json!({"error": "catalogue temporarily unavailable"}),
+                        );
+                    }
+                };
                 let documents: Vec<Value> = rows
                     .iter()
                     .map(|(entry, due)| {
@@ -1500,6 +1582,8 @@ impl Server {
                         // "6 days left" without knowing what the grace is.
                         row["deleted_at"] = json!(entry.updated_at);
                         row["purge_due"] = json!(due);
+                        row["template"] = json!(uuid::Uuid::parse_str(&entry.storage_id)
+                            .is_ok_and(|id| templates.contains(&id)));
                         row
                     })
                     .collect();
