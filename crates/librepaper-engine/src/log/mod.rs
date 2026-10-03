@@ -217,9 +217,6 @@ impl Registry {
             admitting.remove(&document_id);
         }
     }
-        self.admitting.lock().await.remove(&document_id);
-        Ok(sequencer)
-    }
 
     /// The sequencer for this document if it is already resident, and no
     /// admission if it is not. What a sweep and a cost report ask.
