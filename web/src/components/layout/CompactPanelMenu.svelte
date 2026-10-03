@@ -64,7 +64,6 @@
 >
   <Menu.Trigger class="btn btn-sm lp-control-outline compact-panels-trigger" aria-label="Panels">
     <Icon name="menu" size="1.25rem" />
-    <span>Panels</span>
   </Menu.Trigger>
   <ExplorerMenu>
     <div class="compact-panels-items" use:sizeMenu>
@@ -113,11 +112,12 @@
 <style>
   :global(.compact-panels-trigger) {
     display: inline-flex;
-    min-height: 2.75rem;
+    flex: none;
+    width: 2.75rem;
+    height: 2.75rem;
     align-items: center;
     justify-content: center;
-    gap: calc(var(--spacing) * 2);
-    padding-inline: calc(var(--spacing) * 3);
+    padding-inline: 0;
   }
 
   .compact-panels-items {

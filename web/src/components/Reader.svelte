@@ -4214,8 +4214,8 @@
        menu at the bottom edge, leaving the top bar for project controls. -->
   {#if compact}
     <nav class="mobile-pane-nav" aria-label="Workspace panels">
-      {@render faceSwitch()}
       <CompactPanelMenu tabs={tabs} {panel} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()} />
+      {@render faceSwitch()}
     </nav>
   {/if}
 
@@ -4356,7 +4356,7 @@
     font-size: var(--text-sm);
   }
   .execution-short { display: none; }
-  .mobile-pane-nav { justify-content: space-between; gap: var(--spacing); }
+  .mobile-pane-nav { justify-content: flex-start; gap: var(--spacing); }
   /* The two faces read as one control with one of them chosen, rather than as
      two buttons that happen to be next to each other: a tray around the pair,
      and the tint the pressed icon already wears marking which is in front. */

@@ -426,16 +426,22 @@ try {
   const compactNav = await b.evaluate(`(() => {
     const bar = document.querySelector('.mobile-pane-nav');
     const trigger = bar?.querySelector('.compact-panels-trigger[aria-label="Panels"]');
+    const faceSwitch = bar?.querySelector('.face-switch');
+    const triggerRect = trigger?.getBoundingClientRect();
+    const faceRect = faceSwitch?.getBoundingClientRect();
     return { triggers: bar?.querySelectorAll('.compact-panels-trigger').length || 0,
       face: Boolean(bar?.querySelector('.face-switch')),
       faceLabels: [...bar?.querySelectorAll('.face-switch button')||[]].map(button=>button.getAttribute('aria-label')),
-      height: trigger?.getBoundingClientRect().height || 0 };
+      height: triggerRect?.height || 0,
+      immediatelyLeft: Boolean(trigger && faceSwitch && trigger.compareDocumentPosition(faceSwitch) & Node.DOCUMENT_POSITION_FOLLOWING
+        && triggerRect.right <= faceRect.left && faceRect.left - triggerRect.right <= parseFloat(getComputedStyle(bar).gap) + 1) };
   })()`);
   assert.equal(compactNav.triggers,1,'mobile panels have one Panels trigger');
   assert.equal(compactNav.face,true,'mobile nav includes the source/document switch beside Panels');
   assert.deepEqual(compactNav.faceLabels,['Document','Source'],'both mobile workspace faces remain available');
   assert.equal(compactNav.height,44,'mobile Panels trigger is 44px tall');
-  assert.equal(await b.evaluate('document.querySelector(".compact-panels-trigger[aria-label=Panels]").innerText.trim()'),'Panels', 'the icon has a visible Panels label');
+  assert.equal(compactNav.immediatelyLeft,true,'the icon trigger sits immediately left of the face switch');
+  assert.equal(await b.evaluate('document.querySelector(".compact-panels-trigger[aria-label=Panels]").innerText.trim()'),'','the Panels trigger is icon only');
   await click('.compact-panels-trigger[aria-label="Panels"]');
   await until('compact Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
   const menuPanels = await b.evaluate(`(() => [...document.querySelectorAll(${JSON.stringify(`${panelMenu} [data-panel-id]`)})].map(node => ({id:node.dataset.panelId,label:node.getAttribute('aria-label'),text:node.textContent.trim()})))()`);
