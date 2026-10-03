@@ -70,9 +70,13 @@ cmd_check() {
 }
 
 cmd_smoke() {
+  local mirror_checked=0
+  if [ "${1:-}" = --prechecked ]; then mirror_checked=1; fi
   make --no-print-directory dist/librepaper
   node tools/latex/tools/check-mirror.test.mjs
-  node tools/latex/tools/check-mirror.mjs "$MIRROR"
+  if [ "$mirror_checked" = 0 ]; then
+    node tools/latex/tools/check-mirror.mjs "$MIRROR"
+  fi
 
   # The smoke runs a real deployment, so it needs PostgreSQL, psql and openssl.
   # Without LIBREPAPER_TEST_POSTGRES_URL it starts a throwaway container and
@@ -164,7 +168,7 @@ cmd_publish() {
 
   # Stage 3/6: compile the LaTeX tutorial in Chromium against this mirror.
   printf '%s\n' "publish: 3/6 smoke test"
-  cmd_smoke
+  cmd_smoke --prechecked
 
   if [ "$DRY_RUN" = 1 ]; then
     printf '%s\n' "publish: dry-run complete"

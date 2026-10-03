@@ -15,7 +15,9 @@ test('SQLX database rejects invalid names and the persistent dev database before
   const marker = join(root, 'docker-called');
   await mkdir(bin);
   const docker = join(bin, 'docker');
-  await writeFile(docker, `#!${process.execPath}\nrequire('node:fs').writeFileSync(process.env.DOCKER_MARKER, 'called');\n`);
+  await writeFile(docker, `#!${process.execPath}
+require('node:fs').writeFileSync(process.env.DOCKER_MARKER, 'called');
+`);
   await chmod(docker, 0o755);
 
   try {
