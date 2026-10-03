@@ -28,7 +28,6 @@ hex.workspace = true
 time.workspace = true
 loro.workspace = true
 uuid.workspace = true
-log.workspace = true
 
 [dev-dependencies]
 # `start_paused` and `advance`, so the deadline tests move a clock instead of

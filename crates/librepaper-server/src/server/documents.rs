@@ -78,7 +78,7 @@ impl Server {
             let (entries, next) = match self.store.maintenance_page(before, 200).await {
                 Ok(page) => page,
                 Err(error) => {
-                    eprintln!("could not enumerate documents for retention: {error}");
+                    tracing::warn!("could not enumerate documents for retention: {error}");
                     return removed;
                 }
             };
@@ -91,7 +91,7 @@ impl Server {
                         // The janitor runs unattended: a document whose index entry
                         // could not be rewritten is left for the next pass.
                         if let Err(err) = self.delete_document(&entry.slug).await {
-                            eprintln!("could not expire {}: {err}", entry.slug);
+                            tracing::warn!("could not expire {}: {err}", entry.slug);
                             continue;
                         }
                         removed += 1;
@@ -515,7 +515,7 @@ impl Server {
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    eprintln!("warning: could not read {key} before republishing it: {error}");
+                    tracing::warn!("could not read {key} before republishing it: {error}");
                 }
             }
         }
@@ -590,7 +590,7 @@ impl Server {
             match self.mint_read_link(&key, &who).await {
                 Ok(url) => Value::String(url),
                 Err(error) => {
-                    eprintln!("warning: could not mint the read link of {key}: {error:?}");
+                    tracing::warn!("could not mint the read link of {key}: {error:?}");
                     Value::Null
                 }
             }
@@ -1224,7 +1224,7 @@ impl Server {
         let payload = match serde_json::to_value(response) {
             Ok(payload) => payload,
             Err(error) => {
-                eprintln!("could not serialize project snapshot for {slug}: {error}");
+                tracing::warn!("could not serialize project snapshot for {slug}: {error}");
                 return write_json(500, &json!({"error": "could not read project snapshot"}));
             }
         };
@@ -1260,7 +1260,7 @@ impl Server {
                 &json!({"deleted": slug, "title": entry.title, "objects_removed": removed}),
             ),
             Err(error) => {
-                eprintln!("could not remove {slug}: {error}");
+                tracing::warn!("could not remove {slug}: {error}");
                 write_json(500, &json!({"error": "could not remove the document"}))
             }
         }
@@ -1324,7 +1324,7 @@ impl Server {
             Ok(()) => write_json(200, &json!({"slug": slug, "title": title})),
             Err(error) if error == "ownership changed" => write_json(409, &json!({"error": error})),
             Err(error) => {
-                eprintln!("could not rename {slug}: {error}");
+                tracing::warn!("could not rename {slug}: {error}");
                 write_json(500, &json!({"error": "could not rename the project"}))
             }
         }
@@ -1526,7 +1526,7 @@ impl Server {
                 if let Some(admission) = upload_admission {
                     let _ = self.store.catalog.cancel_upload_admission(admission).await;
                 }
-                eprintln!("could not read {slug} to fork it: {error}");
+                tracing::warn!("could not read {slug} to fork it: {error}");
                 return write_json(503, &json!({"error": "could not read that project"}));
             }
         };
@@ -1687,7 +1687,7 @@ impl Server {
             Err(PutError::Storage(error)) => {
                 // The command may have committed before this ambiguous
                 // storage error reached the request, so keep the admission.
-                eprintln!("could not fork {slug}: {error:?}");
+                tracing::warn!("could not fork {slug}: {error:?}");
                 write_json(500, &json!({"error": "could not copy that project"}))
             }
         }
@@ -1740,7 +1740,7 @@ impl Server {
                 write_json(200, &body)
             }
             Err(error) => {
-                eprintln!("could not query templates: {error}");
+                tracing::warn!("could not query templates: {error}");
                 write_json(503, &json!({"error": "catalogue temporarily unavailable"}))
             }
         }
@@ -1771,7 +1771,7 @@ impl Server {
                 let templates = match self.store.catalog.template_ids(&ids).await {
                     Ok(templates) => templates,
                     Err(error) => {
-                        eprintln!("could not query the trash: {error}");
+                        tracing::warn!("could not query the trash: {error}");
                         return write_json(
                             503,
                             &json!({"error": "catalogue temporarily unavailable"}),
@@ -1794,7 +1794,7 @@ impl Server {
                 write_json(200, &json!({"documents": documents}))
             }
             Err(error) => {
-                eprintln!("could not query the trash: {error}");
+                tracing::warn!("could not query the trash: {error}");
                 write_json(503, &json!({"error": "catalogue temporarily unavailable"}))
             }
         }
@@ -1851,7 +1851,7 @@ impl Server {
                 write_json(404, &json!({"error": "not found"}))
             }
             Err(error) => {
-                eprintln!("could not restore {slug}: {error:?}");
+                tracing::warn!("could not restore {slug}: {error:?}");
                 write_json(500, &json!({"error": "could not restore the project"}))
             }
         }
@@ -1912,7 +1912,7 @@ impl Server {
                 write_json(200, &json!({"slug": slug, "shared_hidden": shared_hidden}))
             }
             Err(error) => {
-                eprintln!("could not update shared visibility for {slug}: {error:?}");
+                tracing::warn!("could not update shared visibility for {slug}: {error:?}");
                 write_json(500, &json!({"error": "could not save that"}))
             }
         }
@@ -1967,7 +1967,7 @@ impl Server {
         match done {
             Ok(starred) => write_json(200, &json!({"slug": slug, "favorite": starred})),
             Err(error) => {
-                eprintln!("could not mark {slug}: {error:?}");
+                tracing::warn!("could not mark {slug}: {error:?}");
                 write_json(500, &json!({"error": "could not save that"}))
             }
         }

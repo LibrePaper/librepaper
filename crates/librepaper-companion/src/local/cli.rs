@@ -272,7 +272,7 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
         .with_graceful_shutdown(shutdown)
         .await
     {
-        eprintln!("error: {err}");
+        tracing::error!("{err}");
     }
 
     if let Some(task) = v6_task {
