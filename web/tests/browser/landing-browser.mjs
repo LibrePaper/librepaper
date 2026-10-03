@@ -27,6 +27,7 @@ try {
     import Landing from ${JSON.stringify(join(root, "web/src/components/Landing.svelte"))};
     import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
     window.testCalls = [];
+    window.failShared = false;
     const docs = ${JSON.stringify(documents)};
     const trash = [{ slug: 'gone', title: 'Old project', role: 'owner', updated_at: '2026-09-10T12:00:00Z', purge_due: '2026-10-10T12:00:00Z' }];
     globalThis.fetch = async (url, init = {}) => {
@@ -42,6 +43,12 @@ try {
       if (match && match[2] === 'favorite') {
         const doc = docs.find(item => item.slug === match[1]);
         if (doc) doc.favorite = init.method === 'POST';
+        return Response.json({ ok: true });
+      }
+      if (match && match[2] === 'shared') {
+        if (window.failShared) return Response.json({ error: 'could not save shared preference' }, { status: 500 });
+        const doc = docs.find(item => item.slug === match[1]);
+        if (doc) doc.shared_hidden = init.method === 'DELETE';
         return Response.json({ ok: true });
       }
       if (match && match[2] === 'rename') {
@@ -147,14 +154,38 @@ try {
   await flush();
   assert.equal(await tab.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(trigger("owned"))})`), true, "Escape returns focus to the trigger");
 
-  // Shared work can be forked or starred, but cannot be renamed or trashed.
+  // Shared work can be removed from this personal list, forked or starred,
+  // but cannot be renamed or trashed.
+  await tab.resize(390, 850);
+  await flush();
+  await click('.rail-item button[aria-label="Shared with me"]');
+  await until("shared projects", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(trigger("shared"))}))`));
   await click(trigger("shared"));
   const sharedActions = await menuActions();
-  assert.deepEqual(sharedActions.sort(), ["favorite", "fork"], "shared project offers only fork and favorite");
+  assert.deepEqual(sharedActions.sort(), ["favorite", "fork", "hide-shared"], "shared project offers remove, fork and favorite");
   await click('.explorer-menu[data-state="open"] [data-project-action="favorite"]');
   await until("favorite saved", () => tab.evaluate("testCalls.some(call => call.path === '/api/documents/shared/favorite' && call.method === 'POST')"));
+
+  // A failed request leaves the project in Shared. A successful one hides it
+  // and offers an immediate Undo; the preference can also be cleared from
+  // All projects after navigating away.
+  await tab.evaluate("window.failShared = true");
   await click(trigger("shared"));
   assert.equal(await tab.evaluate("document.querySelector('.explorer-menu[data-state=open] [data-project-action=favorite] .menuitem-label')?.textContent"), "Remove from favorites", "favorite state is reflected in its action");
+  await click('.explorer-menu[data-state="open"] [data-project-action="hide-shared"]');
+  await until("failed shared visibility request", () => tab.evaluate("testCalls.some(call => call.path === '/api/documents/shared/shared' && call.method === 'DELETE')"));
+  await flush();
+  assert.equal(await tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(trigger("shared"))}))`), true, "failed removal leaves the shared project visible");
+  await tab.evaluate("window.failShared = false");
+  await click(trigger("shared"));
+  await click('.explorer-menu[data-state="open"] [data-project-action="hide-shared"]');
+  await until("shared project removed", () => tab.evaluate(`!document.querySelector(${JSON.stringify(trigger("shared"))})`));
+  assert.equal(await tab.evaluate("testCalls.some(call => call.path === '/api/documents/shared/shared' && call.method === 'DELETE')"), true, "remove sends DELETE to the shared preference endpoint");
+  await until("shared removal undo", () => tab.evaluate("[...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Undo')"));
+  await tab.evaluate("[...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Undo').click()");
+  await flush();
+  await until("shared project restored by undo", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(trigger("shared"))}))`));
+  assert.equal(await tab.evaluate("testCalls.some(call => call.path === '/api/documents/shared/shared' && call.method === 'POST')"), true, "Undo restores the shared preference with POST");
   await key("Escape");
   await flush();
 

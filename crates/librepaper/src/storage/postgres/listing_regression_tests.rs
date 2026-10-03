@@ -92,6 +92,88 @@ async fn removing_an_unopened_favorite_preserves_the_mark_invariant() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_marks() {
+    let catalog = test_catalog().await;
+    let writer = catalog.claim_writer().await.unwrap();
+    let owner = account(&catalog).await;
+    let viewer = account(&catalog).await;
+    let other_viewer = account(&catalog).await;
+    let document = document(&catalog, owner, "owned").await;
+    catalog
+        .set_grant(document, viewer, AccessRole::Reader)
+        .await
+        .unwrap();
+
+    catalog.set_favorite(viewer, document, true).await.unwrap();
+    catalog.mark_opened(viewer, document).await.unwrap();
+    let before = catalog
+        .marks_for_documents(viewer, &[document])
+        .await
+        .unwrap()
+        .remove(0);
+    assert!(catalog
+        .set_shared_hidden(viewer, document, true)
+        .await
+        .unwrap());
+    let hidden = catalog
+        .marks_for_documents(viewer, &[document])
+        .await
+        .unwrap();
+    assert_eq!(hidden.len(), 1);
+    assert!(hidden[0].shared_hidden);
+    assert_eq!(hidden[0].favorited_at, before.favorited_at);
+    assert_eq!(hidden[0].opened_at, before.opened_at);
+    // Hiding affects only this viewer's listing preference; it neither
+    // removes the underlying grant nor another account's marks.
+    assert_eq!(
+        catalog
+            .access_role(document, Some(viewer), None, time::OffsetDateTime::now_utc())
+            .await
+            .unwrap(),
+        Some(AccessRole::Reader)
+    );
+    assert!(catalog
+        .visible_documents(Some(viewer), None, 200)
+        .await
+        .unwrap()
+        .iter()
+        .any(|row| row.id == document));
+    assert!(!catalog
+        .marks_for_documents(other_viewer, &[document])
+        .await
+        .unwrap()
+        .iter()
+        .any(|mark| mark.shared_hidden));
+
+    // Removing the star must retain a hidden-only mark and its open time.
+    assert!(!catalog
+        .set_favorite(viewer, document, false)
+        .await
+        .unwrap());
+    let hidden_only = catalog
+        .marks_for_documents(viewer, &[document])
+        .await
+        .unwrap();
+    assert_eq!(hidden_only.len(), 1);
+    assert!(hidden_only[0].shared_hidden);
+    assert!(hidden_only[0].favorited_at.is_none());
+    assert_eq!(hidden_only[0].opened_at, before.opened_at);
+
+    assert!(!catalog
+        .set_shared_hidden(viewer, document, false)
+        .await
+        .unwrap());
+    assert!(catalog
+        .marks_for_documents(viewer, &[document])
+        .await
+        .unwrap()
+        .is_empty());
+    drop(writer);
+    catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_paging() {
     let catalog = test_catalog().await;
     let writer = catalog.claim_writer().await.unwrap();
