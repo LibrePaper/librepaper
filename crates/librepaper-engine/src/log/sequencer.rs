@@ -772,58 +772,29 @@ struct Inner {
     /// it from one that needs it.
     base_vector: VersionVector,
     has_base: bool,
-    /// What each principal has left of its update allowance (§5 step 2).
-    /// Keyed by `ingest`'s `principal_key` and not by its `peer_key`: the
-    /// bound is on whoever is behind the socket, so one person with four
-    /// tabs open, or one reconnecting in a loop, is still one person.
-    rate: HashMap<String, Bucket>,
+    /// When `ingest` last dropped the principals whose allowance had refilled
+    /// from the sequencer's `rate` limiter.
+    rate_pruned: Instant,
 }
 
-/// §9.1's per-principal bound, as the token bucket the spec asks for.
-///
-/// A bucket and not a counter reset on a wall-clock boundary, which is what
-/// this was before: a boundary hands the whole allowance back at once, so a
-/// caller spending all of it just before the turn and all of it again just
-/// after gets twice the bound inside a fraction of a second -- and a client
-/// stuck in a resend loop, the workload this bound exists for, is exactly
-/// the one that keeps hitting the boundary.
-struct Bucket {
-    /// Fractional so the refill is smooth: rounding to whole tokens would
-    /// make the effective rate depend on how often the principal calls.
-    tokens: f64,
-    /// Monotonic, unlike the `now_unix()` this used to read: a clock step
-    /// backwards would otherwise freeze a bucket or hand out a free refill.
-    updated: Instant,
-}
+/// The clock the per-principal limiter reads. Governor's own in production;
+/// a hand-stepped one in tests, so that time passing and time not passing
+/// can both be asserted without sleeping.
+#[cfg(not(test))]
+type RateClock = governor::clock::DefaultClock;
+#[cfg(test)]
+type RateClock = governor::clock::FakeRelativeClock;
 
-impl Bucket {
-    /// A bucket nobody has spent from is full, which is why a principal with
-    /// no entry and a principal at capacity are the same thing. See where
-    /// `ingest` drops the full ones.
-    fn full(capacity: f64, now: Instant) -> Self {
-        Self {
-            tokens: capacity,
-            updated: now,
-        }
-    }
+/// §9.1's per-principal bound: one GCRA cell per principal, bursting to the
+/// whole per-minute allowance and refilling continuously.
+type PrincipalRate = governor::RateLimiter<
+    String,
+    governor::state::keyed::DashMapStateStore<String>,
+    RateClock,
+>;
 
-    fn is_full(&self, capacity: f64) -> bool {
-        self.tokens >= capacity
-    }
-
-    /// Credits whatever the elapsed time is worth, then reports whether a
-    /// whole token was there to spend.
-    fn take(&mut self, capacity: f64, per_second: f64, now: Instant) -> bool {
-        let elapsed = now.saturating_duration_since(self.updated).as_secs_f64();
-        self.tokens = (self.tokens + elapsed * per_second).min(capacity);
-        self.updated = now;
-        if self.tokens < 1.0 {
-            return false;
-        }
-        self.tokens -= 1.0;
-        true
-    }
-}
+/// How often `ingest` drops the principals whose allowance has refilled.
+const RATE_PRUNE_EVERY: Duration = Duration::from_secs(1);
 
 impl Inner {
     /// Refuses a caller when this process no longer holds the writer lease.
@@ -977,20 +948,16 @@ pub struct Sequencer {
     /// path that enforces it, rather than by a `#[cfg(test)]` shortcut that
     /// would let a test see something the running server cannot.
     gap_check: std::sync::atomic::AtomicBool,
-    /// When this sequencer was built, as the origin `rate_clock` counts
-    /// from.
-    created: Instant,
-    /// What `ingest`'s token buckets read as "now", in nanoseconds after
-    /// `created`, or zero for the live monotonic clock. Every ingest reads
-    /// it, in production and in a test alike, and in production it is always
-    /// zero because the only thing that writes it is `set_rate_clock` --
-    /// the same shape, and for the same reason, as `gap_check` above.
-    ///
-    /// It exists because the two claims worth making about a bucket are that
-    /// time passing refills it and that time NOT passing does not, and the
-    /// only other way to make either of them is to sleep through real
-    /// seconds and hope the machine was not busy.
-    rate_clock: std::sync::atomic::AtomicU64,
+    /// What each principal has left of its update allowance (§5 step 2),
+    /// or `None` when the configured allowance is zero and every update is
+    /// refused. Keyed by `ingest`'s `principal_key` and not by its
+    /// `peer_key`: the bound is on whoever is behind the socket, so one
+    /// person with four tabs open, or one reconnecting in a loop, is still
+    /// one person.
+    rate: Option<PrincipalRate>,
+    /// The limiter's clock, which a test steps by hand.
+    #[cfg(test)]
+    rate_clock: RateClock,
     /// Where §8.4's "the sequencer schedules compaction on the in-process
     /// worker" goes.
     ///
@@ -1091,6 +1058,17 @@ impl Sequencer {
         has_base: bool,
         compaction: Arc<std::sync::OnceLock<crate::storage::worker::Handle>>,
     ) -> Self {
+        let rate_clock = RateClock::default();
+        let rate = std::num::NonZeroU32::new(
+            u32::try_from(config.session.updates_per_minute.max(0)).unwrap_or(u32::MAX),
+        )
+        .map(|per_minute| {
+            governor::RateLimiter::new(
+                governor::Quota::per_minute(per_minute),
+                governor::state::keyed::DashMapStateStore::default(),
+                rate_clock.clone(),
+            )
+        });
         Self {
             document_id,
             slug,
@@ -1118,7 +1096,7 @@ impl Sequencer {
                 uncompacted_count,
                 base_vector,
                 has_base,
-                rate: HashMap::new(),
+                rate_pruned: Instant::now(),
             }),
             catalog,
             blobs,
@@ -1128,8 +1106,9 @@ impl Sequencer {
             transaction: tokio::sync::Mutex::new(()),
             deployment_peer_key,
             gap_check: std::sync::atomic::AtomicBool::new(true),
-            created: Instant::now(),
-            rate_clock: std::sync::atomic::AtomicU64::new(0),
+            rate,
+            #[cfg(test)]
+            rate_clock,
             compaction,
         }
     }
@@ -1143,23 +1122,11 @@ impl Sequencer {
             .store(enforced, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// What the rate buckets call "now". See the field doc on `rate_clock`.
-    fn rate_now(&self) -> Instant {
-        match self.rate_clock.load(std::sync::atomic::Ordering::Relaxed) {
-            0 => Instant::now(),
-            pinned => self.created + Duration::from_nanos(pinned),
-        }
-    }
-
-    /// Puts that "now" at a fixed point after this sequencer was built, so a
-    /// test can hold it still or step it. `Duration::ZERO` hands the buckets
-    /// back to the live clock, which is where production leaves them.
+    /// Moves the rate limiter's clock forward, so a test can spend an
+    /// allowance and then let a chosen amount of time refill it.
     #[cfg(test)]
-    pub fn set_rate_clock(&self, since_creation: Duration) {
-        self.rate_clock.store(
-            since_creation.as_nanos() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+    pub fn advance_rate_clock(&self, by: Duration) {
+        self.rate_clock.advance(by);
     }
 
     // -- section 5: the typing path -------------------------------------
@@ -1250,25 +1217,22 @@ impl Sequencer {
         // this bound exists for does. What the caller passes as the
         // principal is what decides how much a rotation is worth, and
         // `run_socket` chooses it there.
-        let capacity = self.config.session.updates_per_minute.max(0) as f64;
-        let per_second = capacity / 60.0;
-        let rate_now = self.rate_now();
-        if !inner.rate.contains_key(principal_key) {
-            // Admitting a principal is the only place this map can grow, so
-            // it is the only place the growth has to be paid for. A bucket
-            // that has refilled to capacity is indistinguishable from no
-            // entry at all -- both start the next update from
-            // `Bucket::full` -- so those entries hold no state and are
-            // dropped here instead of by a timer. The pass is over one entry
-            // per principal that has ever touched THIS document, and it runs
-            // only when a new one arrives, never on the typing path.
-            inner.rate.retain(|_, bucket| !bucket.is_full(capacity));
-        }
-        let bucket = inner
-            .rate
-            .entry(principal_key.to_string())
-            .or_insert_with(|| Bucket::full(capacity, rate_now));
-        if !bucket.take(capacity, per_second, rate_now) {
+        let admitted = match &self.rate {
+            Some(rate) => {
+                // Admitting a principal is the only place the limiter's
+                // map can grow, so the principals whose allowance has
+                // refilled are dropped here, at most once a second, instead
+                // of by a timer. A refilled principal is indistinguishable
+                // from one never seen, so nothing is lost.
+                if inner.rate_pruned.elapsed() >= RATE_PRUNE_EVERY {
+                    rate.retain_recent();
+                    inner.rate_pruned = Instant::now();
+                }
+                rate.check_key(&principal_key.to_string()).is_ok()
+            }
+            None => false,
+        };
+        if !admitted {
             return retryable(
                 &inner,
                 "too many updates; slow down and they will be accepted",

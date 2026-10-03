@@ -376,7 +376,8 @@ async fn a_batch_carrying_no_changes_is_acknowledged_without_becoming_a_row() {
 /// it is charged per PEER and not per socket, and that one peer's spending
 /// is not charged to another.
 ///
-/// The bucket's clock is pinned for the whole case (`set_rate_clock`), so
+/// The limiter reads a fake clock that only moves when the test calls
+/// `advance_rate_clock`, so
 /// nothing here turns on how long the loop below takes to run. It used to
 /// turn on exactly that: a fixed window reset on a wall-clock minute
 /// boundary, and a loop that straddled one saw its allowance handed back
@@ -388,7 +389,6 @@ async fn a_peer_past_its_minute_allowance_is_refused_retryably_and_others_are_no
     let config = Configuration::default();
     let allowance = config.session.updates_per_minute;
     let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
-    sequencer.set_rate_clock(Duration::from_secs(1));
     let mut outbox = Outbox::new();
 
     for sent in 1..=allowance {
@@ -456,14 +456,13 @@ async fn a_peer_past_its_minute_allowance_is_refused_retryably_and_others_are_no
 ///
 /// The clock is pinned rather than slept through, so "no time passed"
 /// really is no time and "one second passed" really is one second. See
-/// `Sequencer::set_rate_clock`.
+/// `Sequencer::advance_rate_clock`.
 #[tokio::test]
 async fn an_exhausted_allowance_comes_back_only_as_the_bucket_refills() {
     let config = Configuration::default();
     let allowance = config.session.updates_per_minute;
     let a_second_of_it = allowance / 60;
     let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
-    sequencer.set_rate_clock(Duration::from_secs(1));
 
     let mut outbox = Outbox::new();
     for sent in 1..=allowance {
@@ -496,7 +495,7 @@ async fn an_exhausted_allowance_comes_back_only_as_the_bucket_refills() {
     }
 
     // One second buys one second's worth. Not a boundary's worth.
-    sequencer.set_rate_clock(Duration::from_secs(2));
+    sequencer.advance_rate_clock(Duration::from_secs(1));
     let mut after_a_second = Outbox::new();
     for sent in 1..=a_second_of_it {
         let outcome = sequencer
@@ -529,7 +528,7 @@ async fn an_exhausted_allowance_comes_back_only_as_the_bucket_refills() {
     );
 
     // And the refusal really is temporary: a full period restores the lot.
-    sequencer.set_rate_clock(Duration::from_secs(62));
+    sequencer.advance_rate_clock(Duration::from_secs(61));
     let mut later = Outbox::new();
     let welcome_back = sequencer
         .ingest(1, "account:writer", "account:writer", 1, later.edit())
@@ -545,10 +544,9 @@ async fn reconnecting_under_a_new_peer_key_does_not_refill_an_allowance() {
     let config = Configuration::default();
     let allowance = config.session.updates_per_minute;
     let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
-    // Pinned so that the time the loop below takes cannot itself refill the
-    // bucket. What this case is about is who the allowance belongs to, not
-    // how fast it comes back.
-    sequencer.set_rate_clock(Duration::from_secs(1));
+    // The fake clock never moves in this case, so the time the loop below
+    // takes cannot itself refill the allowance. What it is about is who the
+    // allowance belongs to, not how fast it comes back.
     let mut outbox = Outbox::new();
 
     // A socket's peer key is its socket id, because `client_seq` counts per
@@ -895,7 +893,6 @@ async fn a_refused_batch_is_never_acknowledged_and_its_peer_recovers_through_a_g
     let allowance = config.session.updates_per_minute;
     let catalog = Arc::new(FakeCatalog::empty());
     let sequencer = bare_sequencer(catalog.clone());
-    sequencer.set_rate_clock(Duration::from_secs(1));
 
     let (tx, mut rx) = Sender::channel(4096, 1 << 20, None, None);
     sequencer
@@ -936,7 +933,7 @@ async fn a_refused_batch_is_never_acknowledged_and_its_peer_recovers_through_a_g
     // nothing about what happens to a peer that is allowed to keep sending
     // after a refusal -- which it is, because a retryable refusal does not
     // close the socket.
-    sequencer.set_rate_clock(Duration::from_secs(62));
+    sequencer.advance_rate_clock(Duration::from_secs(61));
 
     let gapped_seq = allowance + 2;
     let gapped = sequencer
