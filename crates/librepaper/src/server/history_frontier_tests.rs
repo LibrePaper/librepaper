@@ -10,9 +10,9 @@
 //! on its `original_anchor`, and read the source at that exact position
 //! back through `GET .../history/frontier:<that>`.
 //!
-//! Needs `LIBREPAPER_TEST_POSTGRES_URL` and is skipped without it, like the
-//! rest of the catalogue coverage (`grep -rl LIBREPAPER_TEST_POSTGRES_URL
-//! crates/librepaper/src`).
+//! This PostgreSQL test is ignored during ordinary runs. Explicitly selecting
+//! it requires `LIBREPAPER_TEST_POSTGRES_URL` to point to a disposable
+//! database and a serial run (`--test-threads=1`).
 
 use std::sync::Arc;
 
@@ -303,6 +303,7 @@ async fn a_comments_own_frontier_reads_back_through_the_history_route() {
 }
 
 #[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn delegated_agent_bearer_stops_working_after_session_revocation() {
     let Some(deployment) = deployment("agent-session-revocation").await else {
         return;

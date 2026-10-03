@@ -1606,9 +1606,8 @@ mod tests {
     async fn an_erasing_account_is_finished_only_once_its_documents_are_gone() {
         use super::super::postgres::{NewAccount, NewDocument, PostgresOptions};
 
-        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
-            return;
-        };
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1");
         let catalog = Arc::new(
             PostgresCatalog::connect(PostgresOptions::new(url))
                 .await

@@ -41,8 +41,9 @@
 //! the switch is compiled out of a release build.
 //!
 //! Everything here needs `LIBREPAPER_TEST_POSTGRES_URL` and is `#[ignore]`d
-//! without it, the same convention as `room/comment_anchor_tests.rs` and
-//! `storage/postgres/mod.rs`. Point it at a throwaway database, not
+//! by default, the same convention as `room/comment_anchor_tests.rs` and
+//! `storage/postgres/mod.rs`. An explicitly selected test fails if the
+//! variable is missing. Point it at a throwaway database, not
 //! `librepaper_sqlx` (what the sqlx macros check schemas against) or
 //! `librepaper` (a real local deployment):
 //! `docker exec librepaper-postgres psql -U postgres -c 'CREATE DATABASE lp_spike'`.
@@ -107,7 +108,8 @@ async fn bare(slug: &str) -> Option<Bare> {
 }
 
 async fn bare_with_config(slug: &str, config: Configuration) -> Option<Bare> {
-    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1");
     let catalog = connect(url).await;
     let writer = catalog
         .claim_writer()
@@ -788,7 +790,8 @@ const MAIN: &str = "paper.md";
 const PAPER: &str = "# A paper\n\nOne paragraph a reader can quote.\n";
 
 async fn deployment_with_document(slug: &str) -> Option<Deployment> {
-    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1");
     let catalog = connect(url).await;
     let _writer = catalog.claim_writer().await.unwrap();
     let account = catalog
@@ -1166,7 +1169,9 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
     // in for PostgreSQL being reachable again, or an operator checking from
     // elsewhere, since this test's own connection is the one that is gone.
     let verify = PostgresCatalog::connect(PostgresOptions::new(
-        std::env::var("LIBREPAPER_TEST_POSTGRES_URL").unwrap(),
+        std::env::var("LIBREPAPER_TEST_POSTGRES_URL").expect(
+            "set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1",
+        ),
     ))
     .await
     .unwrap();
@@ -1214,8 +1219,8 @@ fn blake3_or_zero(head_hex: &str) -> Box<[u8; 32]> {
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn opening_more_documents_than_the_budget_holds_evicts_a_subscribed_entry_and_rebuilds_on_demand(
 ) {
-    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok();
-    let Some(url) = url else { return };
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1");
     let catalog = connect(url).await;
     let _writer = catalog.claim_writer().await.unwrap();
     let objects = tempfile::tempdir().unwrap();
@@ -1672,9 +1677,8 @@ async fn a_command_that_produces_no_source_names_the_last_row_and_records_no_aft
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
-    let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
-        return;
-    };
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1");
     let catalog = connect(url).await;
     let _writer = catalog.claim_writer().await.expect("writer lease");
     let account = catalog

@@ -98,7 +98,9 @@ jobs:
           for db in lp_lib lp_gates; do
             createdb -h 127.0.0.1 -U postgres "$db"
           done
-      # Quarto-dependent ignored tests run in the separate quarto-toolchains job.
+      # Quarto-dependent ignored tests run in the separate quarto-toolchains job
+      # or remain manual; the PDF-preview coverage gap and reproduction path are
+      # tracked in docs/architecture/building.md#test-suites.
       # The recovery spike of 14.1 lives in `src/log/recovery.rs`, inside the
       # library, and not in `tests/`: every one of its items is a claim about
       # `Sequencer`'s internals, and an external test file cannot build a
@@ -149,8 +151,10 @@ jobs:
           mold bubblewrap texlive-latex-base texlive-latex-recommended
       - run: make pins web/dist/index.html
       - run: python -m pip install jupyter ipython nbformat
-      # The PDF preview test repeatedly terminates this runner; it remains in
-      # `tools/suite external` for manual full-suite coverage.
+      # The PDF-preview test repeatedly terminates this runner (cause
+      # unconfirmed), so it remains in `tools/suite external`; see the open
+      # coverage task in docs/architecture/building.md#test-suites. This runs
+      # the separate render/failure-log integration test below.
       - run: >-
           cargo test -p librepaper --lib
           real_quarto_render_reports_success_and_retains_a_failure_log

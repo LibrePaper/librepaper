@@ -72,6 +72,12 @@ use loro::{ExportMode, LoroDoc, VersionVector};
 use serde_json::json;
 use uuid::Uuid;
 
+fn test_database_url() -> String {
+    std::env::var("LIBREPAPER_TEST_POSTGRES_URL").expect(
+        "set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1",
+    )
+}
+
 // -- shared fixtures -------------------------------------------------------
 
 /// A throwaway, leaked-temp-directory blob store. Nothing in either test
@@ -221,9 +227,7 @@ fn decode_or_default(bytes: &[u8]) -> VersionVector {
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
 async fn lease_loss_during_buffered_typing_refuses_the_flush_and_the_log_is_consistent_after_re_admission(
 ) {
-    let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
-        return;
-    };
+    let url = test_database_url();
 
     let blobs = blobs();
     let config = Arc::new(Configuration::default());
@@ -583,9 +587,7 @@ mod idle {
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
     async fn idle_deployment_issues_no_queries_beyond_the_lease_keepalive() {
-        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
-            return;
-        };
+        let url = test_database_url();
 
         let blobs = blobs();
         let config = Arc::new(Configuration::default());
@@ -1147,9 +1149,7 @@ mod revocation {
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
     async fn authority_revoked_mid_buffer_flushes_the_buffer_and_closes_only_that_socket() {
-        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
-            return;
-        };
+        let url = test_database_url();
         let slug = "authority-revoked-mid-buffer";
         let Deployed {
             catalog,
@@ -1327,9 +1327,7 @@ mod revocation {
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
     async fn revocation_noticed_by_an_inbound_frame_flushes_the_buffer_too() {
-        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
-            return;
-        };
+        let url = test_database_url();
         let slug = "authority-revoked-by-frame";
         let Deployed {
             catalog,
@@ -1433,9 +1431,7 @@ mod revocation {
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
     async fn inbound_revocation_closes_and_departs_after_flush_failure_then_retries_buffer() {
-        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
-            return;
-        };
+        let url = test_database_url();
         let slug = "authority-revoked-flush-retry";
         let Deployed {
             catalog,
@@ -1600,9 +1596,7 @@ mod comment_traversal {
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn every_comment_is_reachable_over_http_and_hello_carries_only_a_page() {
-        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
-            return;
-        };
+        let url = test_database_url();
         let catalog = Arc::new(connected(&url).await);
         truncate(&catalog).await;
         let owner_id = seed_account(&catalog, "traversal-owner").await;
@@ -1939,9 +1933,7 @@ mod moved_routes {
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
     async fn the_listing_and_document_detail_answer_from_the_router() {
-        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
-            return;
-        };
+        let url = super::test_database_url();
         let slug = "moved-routes";
         let Deployed {
             base,

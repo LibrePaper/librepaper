@@ -1032,7 +1032,8 @@ mod served_policy_tests {
     use super::*;
 
     async fn deployment() -> Option<(Server, Arrival)> {
-        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1");
         let catalog = Arc::new(
             crate::storage::postgres::PostgresCatalog::connect(
                 crate::storage::postgres::PostgresOptions::new(url),

@@ -20,7 +20,7 @@
 //! timeout, never a bare sleep for the deletion grace period itself.
 //!
 //! Every test needs `LIBREPAPER_TEST_POSTGRES_URL` and is `#[ignore]`d
-//! without it, the same convention as `log/recovery.rs` and
+//! by default, the same convention as `log/recovery.rs` and
 //! `server/comment_http_tests.rs`. Point it at a throwaway database:
 //! `docker exec librepaper-postgres psql -U postgres -c 'CREATE DATABASE lp_worker_spike'`.
 //! Every test truncates the tables it uses and claims the single writer
@@ -74,7 +74,8 @@ struct Deployment {
 }
 
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1");
     Some(deployment_over(connect(url).await, slug).await)
 }
 
@@ -86,7 +87,8 @@ async fn deployment(slug: &str) -> Option<Deployment> {
 /// leaves exactly one connection doing every scan, which is what makes
 /// severing it deterministic.
 async fn deployment_with_one_connection(slug: &str) -> Option<(Deployment, i32)> {
-    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1");
     let mut options = PostgresOptions::new(url);
     options.max_connections = 2;
     let deployment = deployment_over(connect_with(options).await, slug).await;
