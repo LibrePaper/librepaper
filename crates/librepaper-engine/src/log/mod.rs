@@ -141,52 +141,82 @@ impl Registry {
     }
 
     /// The sequencer for this document, admitting it if it is not resident.
+    ///
+    /// One slot per document id serialises admission. A slot is removed from
+    /// `admitting` when its admission finishes, success or failure, but only
+    /// while the map still holds that same slot. Callers that queued on a
+    /// removed slot find it empty and start over, so a failed admission can
+    /// never run alongside a second admission through a replacement slot.
     pub async fn get(&self, document_id: Uuid, slug: &str) -> sequencer::Result<Arc<Sequencer>> {
-        if let Some(existing) = self.resident.lock().await.get(&document_id) {
-            return Ok(existing.clone());
-        }
-        let slot = {
-            let mut admitting = self.admitting.lock().await;
-            admitting
-                .entry(document_id)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)))
-                .clone()
-        };
-        let mut admitted = slot.lock().await;
-        if let Some(existing) = admitted.as_ref() {
-            return Ok(existing.clone());
-        }
-        if let Some(existing) = self.resident.lock().await.get(&document_id) {
-            *admitted = Some(existing.clone());
-            return Ok(existing.clone());
-        }
-        let admission = Sequencer::admit(
-            document_id,
-            slug.to_string(),
-            self.catalog.clone(),
-            self.blobs.clone(),
-            self.config.clone(),
-            self.budget.clone(),
-            self.pending.clone(),
-            self.deployment_peer_key.clone(),
-            self.ledger.clone(),
-            self.compaction.clone(),
-        )
-        .await;
-        let sequencer = match admission {
-            Ok(sequencer) => Arc::new(sequencer),
-            Err(error) => {
-                // A failed admission must not leave its slot behind: ids that
-                // never admit (unknown documents) would otherwise accumulate.
-                self.admitting.lock().await.remove(&document_id);
-                return Err(error);
+        loop {
+            if let Some(existing) = self.resident.lock().await.get(&document_id) {
+                return Ok(existing.clone());
             }
-        };
-        self.resident
-            .lock()
-            .await
-            .insert(document_id, sequencer.clone());
-        *admitted = Some(sequencer.clone());
+            let slot = {
+                let mut admitting = self.admitting.lock().await;
+                admitting
+                    .entry(document_id)
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)))
+                    .clone()
+            };
+            let mut admitted = slot.lock().await;
+            if let Some(existing) = admitted.as_ref() {
+                return Ok(existing.clone());
+            }
+            let current = self
+                .admitting
+                .lock()
+                .await
+                .get(&document_id)
+                .is_some_and(|held| Arc::ptr_eq(held, &slot));
+            if !current {
+                drop(admitted);
+                continue;
+            }
+            if let Some(existing) = self.resident.lock().await.get(&document_id) {
+                *admitted = Some(existing.clone());
+                return Ok(existing.clone());
+            }
+            let admission = Sequencer::admit(
+                document_id,
+                slug.to_string(),
+                self.catalog.clone(),
+                self.blobs.clone(),
+                self.config.clone(),
+                self.budget.clone(),
+                self.pending.clone(),
+                self.deployment_peer_key.clone(),
+                self.ledger.clone(),
+                self.compaction.clone(),
+            )
+            .await;
+            let sequencer = match admission {
+                Ok(sequencer) => Arc::new(sequencer),
+                Err(error) => {
+                    self.release_slot(document_id, &slot).await;
+                    return Err(error);
+                }
+            };
+            self.resident
+                .lock()
+                .await
+                .insert(document_id, sequencer.clone());
+            *admitted = Some(sequencer.clone());
+            self.release_slot(document_id, &slot).await;
+            return Ok(sequencer);
+        }
+    }
+
+    /// Removes `slot` from `admitting` only if it is still the mapped slot.
+    async fn release_slot(&self, document_id: Uuid, slot: &Admission) {
+        let mut admitting = self.admitting.lock().await;
+        if admitting
+            .get(&document_id)
+            .is_some_and(|held| Arc::ptr_eq(held, slot))
+        {
+            admitting.remove(&document_id);
+        }
+    }
         self.admitting.lock().await.remove(&document_id);
         Ok(sequencer)
     }
