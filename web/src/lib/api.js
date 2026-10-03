@@ -67,8 +67,9 @@ export const me = () => get("/api/me").catch(() => ({}));
 /// deployment that is its own front page answers with nothing, and the
 /// signed-out reader lands there instead.
 export async function signOut(site = "") {
+  // Somebody who signs out is a stranger again, so no document may run code
+  // on this computer until it is allowed afresh.
   revokeAll();
-  // Somebody who signs out is a stranger again, so no document may run code on this computer until it is allowed afresh.
   // A GET can be forced onto a signed-in reader cross-site, so signing out is
   // a POST carrying the same header every other state change does.
   await fetch("/auth/logout", { method: "POST", headers: SHELL_HEADERS }).catch(() => {});

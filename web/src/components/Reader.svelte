@@ -355,10 +355,13 @@
   // permission. A companion that cannot be reached leaves the choice standing
   // and says why in Diagnostics, rather than silently undoing what was just
   // asked for.
+  //
+  // Only the dialog grants. Every other caller, a retry button or the sync
+  // below, reaches this with a permission already on record or not at all.
   async function startLocalExecution() {
     localExecutionConsent = false;
+    if (!granted(executionScope())) return;
     localExecution = true;
-    grant(executionScope());
     if (!localExecutionRelevant) return;
     if (sourceFormat === "quarto") {
       await setQuartoPreviewMode("quarto");
@@ -4334,8 +4337,8 @@
 </Modal>
 
 <Modal bind:open={localExecutionConsent} title="Run this document's code on this computer?"
-  confirm={{ label: "Run code on this computer", onclick: () => void startLocalExecution() }}>
-  <p class="effect-warning" style="font-weight: 600;">Quarto or Calepin will run the code in this document on your computer.</p>
+  confirm={{ label: "Run code on this computer", onclick: () => { grant(executionScope()); void startLocalExecution(); } }}>
+  <p class="execution-warning">Quarto or Calepin will run the code in this document on your computer.</p>
   <p>Code in this document will run with your account's access to your files, network, and credentials. Anyone who can edit this document now or later can change that code, and it will run the next time the preview builds.</p>
   <p>Only allow this if you trust the document's owner and everyone who can edit it.</p>
   <p>This permission is remembered for this document in this browser until you turn it off or sign out.</p>
@@ -4381,6 +4384,7 @@
 <Toasts />
 
 <style>
+  .execution-warning { color: var(--color-warning-text); font-weight: 600; }
   .nav-document {
     display: block;
     max-width: min(38vw, 20rem);

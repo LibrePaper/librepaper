@@ -16,7 +16,7 @@ librepaper status                    # check it is running and found Quarto
 
 ## Preview and output
 
-Markdown preview renders the source as Markdown in the browser with front matter dropped and code chunks shown verbatim. No code runs. Quarto fenced divs such as callouts, columns, and tabsets are shown as code blocks; unsupported shortcodes are treated the same way. This is the fallback when no local app is paired.
+Markdown preview renders the source as Markdown in the browser with front matter dropped and code chunks shown verbatim. No code runs. Quarto fenced divs such as callouts, columns, and tabsets are shown as code blocks; unsupported shortcodes are treated the same way. This is the default for every document until you allow Quarto to run it (see Trust).
 
 Quarto preview produces HTML, RevealJS, or PDF. DOCX is available only as an export. LibrePaper previews one document at a time; website and book project renders are not supported.
 
@@ -26,8 +26,9 @@ Nothing rendered is ever uploaded. The server holds only the `.qmd` source and i
 
 - Quarto runs with your user account: your files, installed packages and the network. LibrePaper does not sandbox it.
 - Pairing asks once per site in a native dialog. Pairing alone runs nothing.
-- Each document starts Quarto separately, after a warning that its code runs on your computer.
-- Anyone with editor access can change that code, so start Quarto only on documents whose editors you trust.
+- Every document starts on the browser preview. Quarto runs only after you choose View > Execute code locally and accept the warning, one document at a time.
+- Anyone with editor access can change that code at any time, so allow it only on documents whose owner and editors you trust.
+- The permission is remembered for that document in this browser until you turn it off or sign out.
 
 ## Publishing a project
 

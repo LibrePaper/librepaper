@@ -146,8 +146,8 @@ try {
     }
     await b.resize(1280, 900);
   };
-  const everything = ["render-local", "render-latex-engine", "render-latex-files", "render-typst-tool", "calepin-status", "calepin-executable", "calepin-arguments",
-    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments",
+  const everything = ["render-local", "render-latex-engine", "render-latex-files", "calepin-status", "calepin-executable", "calepin-arguments",
+    "render-markdown-tool", "quarto-status", "quarto-executable", "quarto-arguments",
     "rendering-profile", "rendering-parameters", "integrations-companion", "zotero-status",
     "local-status", "local-address", "local-doctor", "remote-status", "remote-address", "storage-account", "account-erase"];
 
@@ -159,8 +159,8 @@ try {
 
   // Render always shows three sections with global build options visible for all formats.
   await until("the Quarto rows", () => present(["quarto-executable"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "render-typst-tool", "calepin-status", "calepin-executable", "calepin-arguments",
-    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments",
+  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "calepin-status", "calepin-executable", "calepin-arguments",
+    "render-markdown-tool", "quarto-status", "quarto-executable", "quarto-arguments",
     "rendering-profile", "rendering-parameters"]);
   assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   assert.equal(await b.evaluate(`document.querySelector(".settings-group-title") === null`), true);
@@ -177,14 +177,14 @@ try {
   // The same sections remain visible for all formats.
   await show("render", "typst", "Render");
   await until("the Calepin rows", () => present(["calepin-executable"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "render-typst-tool", "calepin-status", "calepin-executable", "calepin-arguments",
-    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments", "rendering-profile", "rendering-parameters"]);
+  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "calepin-status", "calepin-executable", "calepin-arguments",
+    "render-markdown-tool", "quarto-status", "quarto-executable", "quarto-arguments", "rendering-profile", "rendering-parameters"]);
   assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
   await show("render", "latex", "Render");
   await until("the LaTeX rows", () => present(["render-latex-files"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "render-typst-tool", "calepin-status", "calepin-executable", "calepin-arguments",
-    "render-markdown-tool", "render-quarto-tool", "quarto-status", "quarto-executable", "quarto-arguments", "rendering-profile", "rendering-parameters"]);
+  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "calepin-status", "calepin-executable", "calepin-arguments",
+    "render-markdown-tool", "quarto-status", "quarto-executable", "quarto-arguments", "rendering-profile", "rendering-parameters"]);
   assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
   await show("render", "html", "Render");
