@@ -288,7 +288,9 @@ function nextProject() {
   const gate = new Promise((resolve) => {
     release = resolve;
   });
-  worker().texReplies = [
+  const activeWorker = worker();
+  const messagesBefore = activeWorker.messages.length;
+  activeWorker.texReplies = [
     async () => {
       await gate;
       return { status: 0, pdf: PDF, synctex: null, log: "", outputs: {} };
@@ -296,7 +298,7 @@ function nextProject() {
   ];
 
   const running = latex.compile(tree("main.tex", "running"));
-  await tick(3);
+  await until(() => activeWorker.messages.slice(messagesBefore).some((message) => message.cmd === "tex"));
   const queued = latex.compile(tree("main.tex", "queued"));
 
   latex.cancel();
@@ -312,27 +314,33 @@ function nextProject() {
 // ============================================================================
 {
   const project = nextProject();
-  // Hold the fake clock inside budget through release loading, worker setup,
-  // staging and the first TeX pass; advance beyond it before pass two.
-  let calls = 0;
-  const fakeNow = () => (calls++ < 6 ? 0 : latex.DEADLINE_MS + 1000);
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, now: fakeNow });
+  // Advance the fake clock when the first pass resolves, independently of how
+  // many setup operations run before that RPC.
+  let clock = 0;
+  const fakeNow = () => clock;
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, now: fakeNow, deadlineMs: 1000 });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   // Always asks for a rerun, so the loop's next-iteration deadline check --
   // not `MAX_PASSES` -- is what has to stop it.
-  const texBefore = worker().messages.filter((m) => m.cmd === "tex").length;
-  worker().texReplies = [{ status: 0, pdf: PDF, synctex: null, log: "Rerun to get cross-references right.", outputs: {} }];
-  const result = await latex.compile(tree("main.tex", "never converges"));
+  const previousWorker = worker();
+  FakeWorker.nextTexReplies = [async () => {
+    clock = 1001;
+    return { status: 0, pdf: PDF, synctex: null, log: "Rerun to get cross-references right.", outputs: {} };
+  }];
+  const compiling = latex.compile(tree("main.tex", "never converges"));
+  const deadlineWorker = await untilWorker(previousWorker);
+  await untilMessage(deadlineWorker, (message) => message.cmd === "tex");
+  const result = await compiling;
   assert.equal(result.ok, false);
   assert.equal(result.failure.kind, "timeout");
   assert.equal(
-    worker().messages.filter((m) => m.cmd === "tex").length - texBefore,
+    deadlineWorker.messages.filter((m) => m.cmd === "tex").length,
     1,
     "stopped after the deadline, not after 8 passes",
   );
 
-  latex._testing.inject({ now: () => Date.now() });
+  latex._testing.inject({ now: () => Date.now(), deadlineMs: latex.DEADLINE_MS });
 }
 
 // A hung release fetch cannot hold the queued job behind the same pending
@@ -506,18 +514,20 @@ latex._testing.inject({ deadlineMs: latex.DEADLINE_MS });
   const staleGate = new Promise((resolve) => {
     releaseStale = resolve;
   });
-  worker().texReplies = [
+  const staleWorker = worker();
+  const staleMessagesBefore = staleWorker.messages.length;
+  staleWorker.texReplies = [
     async () => {
       await staleGate;
       return { status: 0, pdf: PDF, synctex: null, log: "stale", outputs: {} };
     },
   ];
   const stale = latex.compile(tree("main.tex", "stale"));
-  await tick(3);
-  latex.cancel(); // `stale` rejects now; its worker call keeps running in the background
+  await until(() => staleWorker.messages.slice(staleMessagesBefore).some((message) => message.cmd === "tex"));
+  latex.cancel(); // `stale` rejects now; its eventual response is discarded
   await assert.rejects(stale, (error) => error.name === "Superseded");
 
-  worker().texReplies = [{ status: 0, pdf: PDF, synctex: null, log: "fresh", outputs: {} }];
+  FakeWorker.nextTexReplies = [{ status: 0, pdf: PDF, synctex: null, log: "fresh", outputs: {} }];
   const fresh = await latex.compile(tree("main.tex", "fresh"));
   assert.equal(fresh.ok, true);
   assert.equal(latex.status().lastResult.job.generation, fresh.job.generation);
