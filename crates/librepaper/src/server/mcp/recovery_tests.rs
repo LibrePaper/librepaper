@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::room::Rooms;
+use librepaper_room::room::Rooms;
 use crate::server::origins::Origins;
 use librepaper_base::auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
 use librepaper_base::config::Configuration;
@@ -363,7 +363,7 @@ async fn committed_suggestions_deletes_and_applies_survive_a_lost_mcp_response()
         .server
         .comment_author(&commenter, &arrival, &batch_viewer.id);
     let actor = super::actor_scope(&deployment.slug, &batch_viewer, &author);
-    let parent_key: crate::room::agent::OperationKey =
+    let parent_key: librepaper_room::room::agent::OperationKey =
         serde_json::from_value(operation(&batch_epoch)).unwrap();
     let child_key = parent_key.batch_child(&actor, 0);
     let parent_arguments = json!({

@@ -1,7 +1,7 @@
 //! Ephemeral assistant channel state and bounded relay policy.
 
 use super::*;
-use crate::room::Outgoing;
+use librepaper_room::room::Outgoing;
 use rand::RngCore;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};

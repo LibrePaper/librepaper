@@ -1013,7 +1013,7 @@ pub async fn thread_page(
 /// server, and a helper that collects would be exactly that shape again if
 /// production code could reach it. What it is for is checking that the
 /// traversal loses nothing and repeats nothing.
-#[cfg(test)]
+// Not under `cfg(test)`: `Room::all_comments`, which the server tests use, calls it.
 pub(crate) async fn walk_all(
     catalog: &PostgresCatalog,
     document_id: Uuid,

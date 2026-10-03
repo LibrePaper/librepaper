@@ -18,7 +18,7 @@ use std::sync::Arc;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::room::{Message as RoomMessage, Rooms};
+use librepaper_room::room::{Message as RoomMessage, Rooms};
 use librepaper_base::auth::{GithubApp, Identity, Policy, PROVIDER_GITHUB};
 use librepaper_base::config::Configuration;
 use librepaper_engine::log::Registry;
@@ -480,7 +480,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
                         author_label: "Commenter".into(),
                         color: None,
                         proposal_id: None,
-                        original_anchor: crate::room::OriginalAnchor {
+                        original_anchor: librepaper_room::room::OriginalAnchor {
                             source_sequence: 1,
                             frontier: vec![1, 2, 3],
                             target: librepaper_engine::storage::annotation::CommentTarget::Document,
@@ -522,7 +522,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
         assert_eq!(payload["state"]["total"], json!(page as i64 + 1));
         let rows = payload["comments"].as_array().unwrap();
         assert!(
-            rows.len() <= crate::room::comments::COMMENT_PAGE_MAX,
+            rows.len() <= librepaper_room::room::comments::COMMENT_PAGE_MAX,
             "a page is a page",
         );
         for row in rows {
@@ -596,7 +596,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
     // comment behind it went with it. It is now one page of one row.
     sqlx::query("UPDATE annotations SET body=repeat('x', $2) WHERE id=$1")
         .bind(Uuid::parse_str(&last).unwrap())
-        .bind((crate::room::comments::PAGE_BYTES_MAX * 2) as i32)
+        .bind((librepaper_room::room::comments::PAGE_BYTES_MAX * 2) as i32)
         .execute(deployment.catalog.pool())
         .await
         .unwrap();

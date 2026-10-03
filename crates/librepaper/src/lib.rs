@@ -25,7 +25,6 @@ mod cli;
 pub use librepaper_base::config;
 // The log lives in librepaper-engine; the path stays as consumers spell it.
 pub use librepaper_engine::log;
-mod room;
 mod server;
 
 pub use cli::main;
@@ -81,7 +80,7 @@ pub mod projection {
 /// file the author uploaded, so both of its inputs come from outside and its
 /// index arithmetic runs between a UTF-8 file and UTF-16 offsets.
 pub mod locate {
-    pub use crate::room::locate::{flatten, is_html, locate, Candidate, Quote};
+    pub use librepaper_room::room::locate::{flatten, is_html, locate, Candidate, Quote};
 }
 
 /// The range `locate` returns, as a comment stores it.
@@ -147,7 +146,7 @@ pub use librepaper_base::util::now_unix;
 pub use librepaper_engine::storage::blob::{BlobStore, FsStore};
 pub use librepaper_engine::storage::store::Store;
 pub use librepaper_shell::ShellFile;
-pub use room::{Room, Rooms};
+pub use librepaper_room::room::{Room, Rooms};
 pub use server::Server;
 
 /// The release version, stamped in at build time for release artifacts and

@@ -112,7 +112,7 @@ impl Server {
     /// cursor is a position, not a permission.
     async fn comment_page_reply(
         &self,
-        room: &Arc<crate::room::Room>,
+        room: &Arc<librepaper_room::room::Room>,
         query: Option<&str>,
         author: &str,
         may_edit: bool,
@@ -127,10 +127,10 @@ impl Server {
         let limit = values
             .get("limit")
             .and_then(|raw| raw.parse::<usize>().ok())
-            .unwrap_or(crate::room::comments::COMMENT_PAGE_DEFAULT);
+            .unwrap_or(librepaper_room::room::comments::COMMENT_PAGE_DEFAULT);
         let after = match values.get("cursor") {
             Some(raw) => {
-                match crate::room::comments::decode_cursor(raw, room.document_id, None, may_edit) {
+                match librepaper_room::room::comments::decode_cursor(raw, room.document_id, None, may_edit) {
                     Ok(position) => Some(position),
                     Err(error) => return write_json(400, &json!({"error": error.to_string()})),
                 }
@@ -151,11 +151,11 @@ impl Server {
                     "version": 1,
                     "protocol": "librepaper.comments.v1",
                     "comments": views,
-                    "next_cursor": page.next.map(|at| crate::room::comments::encode_cursor(
+                    "next_cursor": page.next.map(|at| librepaper_room::room::comments::encode_cursor(
                         room.document_id, None, may_edit, at)),
                     "complete": page.complete,
                     "oversize": page.oversize,
-                    "state": crate::room::comments::comment_state_json(&state),
+                    "state": librepaper_room::room::comments::comment_state_json(&state),
                 }),
             ),
             Err(error) => refused("read comments", &error),
@@ -210,9 +210,9 @@ impl Server {
         let limit = values
             .get("limit")
             .and_then(|raw| raw.parse::<usize>().ok())
-            .unwrap_or(crate::room::comments::THREAD_PAGE_DEFAULT);
+            .unwrap_or(librepaper_room::room::comments::THREAD_PAGE_DEFAULT);
         let after = match values.get("cursor") {
-            Some(raw) => match crate::room::comments::decode_cursor(
+            Some(raw) => match librepaper_room::room::comments::decode_cursor(
                 raw,
                 room.document_id,
                 Some(comment_id),
@@ -234,7 +234,7 @@ impl Server {
                     "protocol": "librepaper.comments.v1",
                     "comment_id": comment,
                     "replies": page.replies,
-                    "next_cursor": page.next.map(|at| crate::room::comments::encode_cursor(
+                    "next_cursor": page.next.map(|at| librepaper_room::room::comments::encode_cursor(
                         room.document_id, Some(comment_id), may_edit, at)),
                     "complete": page.complete,
                     "oversize": page.oversize,
@@ -486,16 +486,16 @@ impl Server {
             (parsed.main.clone(), parsed.files.clone())
         } else if let Some(existing) = existing.as_ref().filter(|_| mine) {
             let main = if !parsed.source_format.is_empty()
-                && crate::room::format_from_path(&existing.main) != parsed.source_format
+                && librepaper_room::room::format_from_path(&existing.main) != parsed.source_format
             {
-                crate::room::main_path_for("", &parsed.source_format)
+                librepaper_room::room::main_path_for("", &parsed.source_format)
             } else {
                 existing.main.clone()
             };
             (main, Vec::new())
         } else {
             (
-                crate::room::main_path_for("", &parsed.source_format),
+                librepaper_room::room::main_path_for("", &parsed.source_format),
                 Vec::new(),
             )
         };
@@ -1168,7 +1168,7 @@ impl Server {
         let (comments, page) = match room
             .comment_page(
                 None,
-                crate::room::comments::COMMENT_PAGE_DEFAULT,
+                librepaper_room::room::comments::COMMENT_PAGE_DEFAULT,
                 &author,
                 may_edit,
             )
@@ -1177,11 +1177,11 @@ impl Server {
             Ok(both) => both,
             Err(error) => return refused("read snapshot comments", &error),
         };
-        let mut comment_state = crate::room::comments::comment_state_json(&state);
+        let mut comment_state = librepaper_room::room::comments::comment_state_json(&state);
         comment_state["complete"] = json!(page.complete);
         comment_state["next_cursor"] = json!(page
             .next
-            .map(|at| crate::room::comments::encode_cursor(room.document_id, None, may_edit, at)));
+            .map(|at| librepaper_room::room::comments::encode_cursor(room.document_id, None, may_edit, at)));
         let tree_sha = projected.projection.digest();
         let main = projected.projection.main.clone();
         let files = projected.projection.files.clone();

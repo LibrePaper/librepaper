@@ -689,7 +689,7 @@ pub(super) async fn dispatch(
             let Ok(body) = to_bytes(request.into_body(), 1 << 14).await else {
                 return write_json(413, &json!({"error": "that is too much body for a code"}));
             };
-            let source = crate::room::rate_key(&client_address(
+            let source = librepaper_room::room::rate_key(&client_address(
                 peer,
                 &headers,
                 &server.config.cost.trusted_proxies,
@@ -1060,7 +1060,7 @@ mod served_policy_tests {
             config.clone(),
             "policy".into(),
         );
-        let rooms = crate::room::Rooms::new(
+        let rooms = librepaper_room::room::Rooms::new(
             catalog.clone(),
             blobs.clone(),
             config.clone(),

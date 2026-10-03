@@ -331,7 +331,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         .with_head(|doc| doc.oplog_frontiers().encode())
         .await
         .unwrap();
-    let expected_frontier = crate::room::encode_update(&head_frontier);
+    let expected_frontier = librepaper_room::room::encode_update(&head_frontier);
     let restore_request = Request::builder()
         .method("POST")
         .uri(format!("/api/documents/{}/restore", deployment.slug))

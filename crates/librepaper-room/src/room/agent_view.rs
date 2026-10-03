@@ -17,7 +17,7 @@ impl Room {
     /// behind an `Arc` (§4.3), so a capture shares it rather than cloning
     /// every file's text out of it. Only `tree_digest` costs anything here,
     /// and it is the projection's own content digest, computed once.
-    pub(crate) async fn agent_query_snapshot(
+    pub async fn agent_query_snapshot(
         &self,
     ) -> Result<crate::room::agent_query::QuerySnapshot, crate::room::agent::AgentError> {
         if let Some(why) = self.unreadable().await {
@@ -51,7 +51,7 @@ impl Room {
     /// whole-collection digest: an agent that keeps paging across a change
     /// is told its cursor no longer matches rather than being handed two
     /// different collections interleaved.
-    pub(crate) async fn thread_query_page(
+    pub async fn thread_query_page(
         &self,
         author: &str,
         editor: bool,
@@ -85,7 +85,7 @@ impl Room {
 
     /// One comment and a bounded window of its replies, shaped as the
     /// `thread` query's `id` form returns them.
-    pub(crate) async fn thread_reply_window(
+    pub async fn thread_reply_window(
         &self,
         comment_id: Uuid,
         author: &str,

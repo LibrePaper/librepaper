@@ -1,7 +1,7 @@
 //! MCP annotation actions.
 //!
 //! Under SPEC-server-is-a-log §7 every effect here is a semantic command
-//! (`crate::room::{AddComment, AddReply, ResolveComment, DeleteComment,
+//! (`librepaper_room::room::{AddComment, AddReply, ResolveComment, DeleteComment,
 //! RefineSuggestion, RejectSuggestion}`), run through `room.command`. A
 //! comment's anchor is no longer built here and handed down: `AddComment`
 //! relocates the quoted words against head itself (§7.1), which is what
@@ -9,9 +9,9 @@
 //! module would have to guess about.
 
 use super::*;
-use crate::room;
-use crate::room::agent::OperationKey;
-use crate::room::proposals::{pending_proposal, validate_existing_action};
+use librepaper_room::room;
+use librepaper_room::room::agent::OperationKey;
+use librepaper_room::room::proposals::{pending_proposal, validate_existing_action};
 
 /// The id a newly created annotation gets, for a comment and for a suggestion
 /// alike.
@@ -470,7 +470,7 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::room::Comment;
+    use librepaper_room::room::Comment;
 
     /// A suggestion shaped the way `room::comments` actually serves one:
     /// a proposal id and nothing in the `proposed`/`outcome` projections.

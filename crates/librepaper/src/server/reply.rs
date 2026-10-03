@@ -518,7 +518,7 @@ pub(super) fn no_such_document() -> Reply {
 /// 507 to 413 or make a permanent refusal look worth retrying. `what` names
 /// the operation for the log: the storage context a failure carries is
 /// written there and never sent to a client.
-pub(super) fn refused(what: &str, error: &crate::room::WriteError) -> Reply {
+pub(super) fn refused(what: &str, error: &librepaper_room::room::WriteError) -> Reply {
     refused_with(what, error, &[])
 }
 
@@ -528,7 +528,7 @@ pub(super) fn refused(what: &str, error: &crate::room::WriteError) -> Reply {
 /// retry.
 pub(super) fn refused_with(
     what: &str,
-    error: &crate::room::WriteError,
+    error: &librepaper_room::room::WriteError,
     fields: &[(&str, Value)],
 ) -> Reply {
     if let Some(context) = error.log_context() {
@@ -547,7 +547,7 @@ pub(super) fn refused_with(
 /// What a socket peer is sent for a refused write, with the correlation
 /// fields the room protocol promises. The same variant-driven mapping as the
 /// HTTP side, so a refusal reads the same whichever way a client asked.
-pub(super) fn socket_refusal(error: &crate::room::WriteError, request_id: &str) -> Value {
+pub(super) fn socket_refusal(error: &librepaper_room::room::WriteError, request_id: &str) -> Value {
     let mut payload = json!({
         "type": "error",
         "message": error.client_message(),
@@ -563,7 +563,7 @@ pub(super) fn socket_refusal(error: &crate::room::WriteError, request_id: &str) 
 
 /// A refused semantic command, classified once (§7.1, §7.2).
 ///
-/// [`WriteError`](crate::room::WriteError) already owns the status, the retry
+/// [`WriteError`](librepaper_room::room::WriteError) already owns the status, the retry
 /// advice and the message a client may see; a `CommandError` converts into
 /// one. The single thing that conversion cannot carry is the digest a
 /// `StaleSelection` hands back, and each transport spells that in its own
@@ -572,15 +572,15 @@ pub(super) fn socket_refusal(error: &crate::room::WriteError, request_id: &str) 
 /// how storage context was leaking into replies.
 pub(super) fn classify_command(
     error: librepaper_engine::log::CommandError,
-) -> (crate::room::WriteError, Option<String>) {
+) -> (librepaper_room::room::WriteError, Option<String>) {
     match error {
         librepaper_engine::log::CommandError::StaleSelection { digest } => (
-            crate::room::WriteError::Conflict(
+            librepaper_room::room::WriteError::Conflict(
                 "current project identity is required; refresh before annotating".into(),
             ),
             Some(digest),
         ),
-        other => (crate::room::WriteError::from(other), None),
+        other => (librepaper_room::room::WriteError::from(other), None),
     }
 }
 
@@ -615,7 +615,7 @@ pub(super) fn command_refusal_value(
 /// A refused room read or write as an error frame: the message, the status
 /// and the retry advice the variant decides, and the context it carries
 /// written to the log rather than sent.
-pub(super) fn refusal_value(what: &str, error: &crate::room::WriteError) -> Value {
+pub(super) fn refusal_value(what: &str, error: &librepaper_room::room::WriteError) -> Value {
     if let Some(context) = error.log_context() {
         eprintln!("warning: {what}: {context}");
     }

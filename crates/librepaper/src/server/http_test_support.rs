@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::room::Rooms;
+use librepaper_room::room::Rooms;
 use crate::server::Server;
 use librepaper_base::auth::{GithubApp, Policy};
 use librepaper_base::config::Configuration;

@@ -643,7 +643,7 @@ fn receipt_from_label(request: &PatchRequest, label: &LabelRecord) -> AgentRecei
 }
 
 impl Room {
-    pub(crate) async fn apply_agent_request<F, Fut>(
+    pub async fn apply_agent_request<F, Fut>(
         &self,
         request: PatchRequest,
         authority: AgentAuthority,

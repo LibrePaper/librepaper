@@ -510,7 +510,7 @@ impl Room {
     /// comment count: a comment nobody has read on this process is not
     /// remembered, so it is not re-resolved and nothing is broadcast about
     /// it. Whoever pages it in next resolves it then.
-    pub(crate) async fn reattach_comments(
+    pub async fn reattach_comments(
         &self,
     ) -> Result<Vec<(String, DerivedAttachment)>, SequencerError> {
         let held: Vec<(

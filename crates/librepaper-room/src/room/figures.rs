@@ -117,7 +117,7 @@ impl Room {
     /// figure still proves its own bytes, because trusting a caller's claim
     /// that "this is the same as before" is exactly the shortcut an immutable
     /// store cannot take.
-    pub(crate) async fn put_asset_authorized(
+    pub async fn put_asset_authorized(
         &self,
         body: Vec<u8>,
         actor: &librepaper_engine::storage::store::MutationActor,

@@ -1,6 +1,6 @@
 //! MCP document tools. MCP owns transport; rooms own effects and durability.
 use super::*;
-use crate::room::agent_query::{QueryBudget, QuerySnapshot};
+use librepaper_room::room::agent_query::{QueryBudget, QuerySnapshot};
 use hmac::{Hmac, Mac};
 use serde::Serialize;
 
@@ -112,8 +112,8 @@ impl Failure {
     }
 }
 
-impl From<crate::room::proposals::ActionRefusal> for Failure {
-    fn from(refusal: crate::room::proposals::ActionRefusal) -> Self {
+impl From<librepaper_room::room::proposals::ActionRefusal> for Failure {
+    fn from(refusal: librepaper_room::room::proposals::ActionRefusal) -> Self {
         Self::new(refusal.code, refusal.message)
     }
 }
@@ -658,7 +658,7 @@ impl Server {
         arrival: &Arrival,
         queries: &[Value],
         view: &mut View,
-        room: Option<&crate::room::Room>,
+        room: Option<&librepaper_room::room::Room>,
     ) -> Result<(), Failure> {
         let wanted: Vec<&serde_json::Map<String, Value>> = queries
             .iter()
@@ -685,14 +685,14 @@ impl Server {
         let author = self.mcp_author(headers, arrival, who, actor);
         let editor = who.at_least(Role::Editor);
         for query in wanted {
-            let fingerprint = crate::room::agent_query::query_fingerprint(query);
+            let fingerprint = librepaper_room::room::agent_query::query_fingerprint(query);
             // Where this query continues, if it is a continuation. The
             // cursor is validated in full against the snapshot afterwards;
             // this only decides which rows to read.
             let at = query
                 .get("cursor")
                 .and_then(Value::as_str)
-                .and_then(crate::room::agent_query::peek_cursor)
+                .and_then(librepaper_room::room::agent_query::peek_cursor)
                 .and_then(|peeked| peeked.at);
             let thread = match query.get("id").and_then(Value::as_str) {
                 Some(id) => Some(comments::parse_uuid(id, "id")?),
@@ -700,7 +700,7 @@ impl Server {
             };
             let after = match at.as_deref() {
                 Some(raw) => Some(
-                    crate::room::comments::decode_cursor(raw, room.document_id, thread, editor)
+                    librepaper_room::room::comments::decode_cursor(raw, room.document_id, thread, editor)
                         .map_err(|error| Failure::new("invalid_params", error.to_string()))?,
                 ),
                 None => None,
@@ -720,7 +720,7 @@ impl Server {
         // Read after the windows, so a change that happened while they
         // were being read is reflected here and refuses the next
         // continuation rather than letting it interleave collections.
-        view.snapshot.comment_revision = crate::room::comments::comment_revision(
+        view.snapshot.comment_revision = librepaper_room::room::comments::comment_revision(
             &room
                 .comment_state(editor)
                 .await
@@ -748,7 +748,7 @@ impl Server {
         // Opened at most once per request and reused below for every
         // comment_id lookup and for `prepare_thread_windows`, rather than
         // reopening it per query.
-        let mut room: Option<std::sync::Arc<crate::room::Room>> = None;
+        let mut room: Option<std::sync::Arc<librepaper_room::room::Room>> = None;
         for query in &mut queries {
             if matches!(
                 query["kind"].as_str(),
@@ -864,7 +864,7 @@ impl Server {
         };
         let snapshot = view.snapshot;
         let (snapshot, query_result) = tokio::task::spawn_blocking(move || {
-            let result = crate::room::agent_query::read(
+            let result = librepaper_room::room::agent_query::read(
                 &snapshot,
                 &queries,
                 QueryBudget {
@@ -976,7 +976,7 @@ fn validate_selection_revision(view: &View, query: &Value) -> Result<(), Failure
 
 fn locate_comment_selection(
     view: &View,
-    comment: &crate::room::Comment,
+    comment: &librepaper_room::room::Comment,
 ) -> Result<(String, usize, usize), Failure> {
     let source = comment
         .source()
@@ -1019,26 +1019,26 @@ fn locate_comment_selection(
 }
 
 fn locate_selection(view: &View, selection: &Value) -> Result<(String, usize, usize), Failure> {
-    let quote = crate::room::locate::Quote {
+    let quote = librepaper_room::room::locate::Quote {
         exact: selection["exact"].as_str().unwrap_or_default(),
         prefix: selection["prefix"].as_str().unwrap_or_default(),
         suffix: selection["suffix"].as_str().unwrap_or_default(),
     };
     let tree = operations::tree_of_view(view)?;
-    let candidates: Vec<crate::room::locate::Candidate<'_>> = tree
+    let candidates: Vec<librepaper_room::room::locate::Candidate<'_>> = tree
         .files
         .iter()
-        .map(|(path, file)| crate::room::locate::Candidate {
+        .map(|(path, file)| librepaper_room::room::locate::Candidate {
             file_id: file.file_id,
             path,
             text: file.text,
         })
         .collect();
-    let target = crate::room::locate::locate(&candidates, &quote).map_err(|failure| {
+    let target = librepaper_room::room::locate::locate(&candidates, &quote).map_err(|failure| {
         let code = match failure {
-            crate::room::locate::Failure::Empty => "invalid_range",
-            crate::room::locate::Failure::NotFound => "not_found",
-            crate::room::locate::Failure::Ambiguous => "ambiguous_range",
+            librepaper_room::room::locate::Failure::Empty => "invalid_range",
+            librepaper_room::room::locate::Failure::NotFound => "not_found",
+            librepaper_room::room::locate::Failure::Ambiguous => "ambiguous_range",
         };
         Failure::new(code, failure.message())
     })?;
@@ -1149,7 +1149,7 @@ mod selection_tests {
     fn comment_selection_follows_its_resolved_range_and_original_file() {
         let text = "😀 same words; same words";
         let view = view_of("renamed.typ", text);
-        let mut comment: crate::room::Comment = serde_json::from_value(json!({
+        let mut comment: librepaper_room::room::Comment = serde_json::from_value(json!({
             "id":"comment", "original_anchor":{"source_sequence":42,"frontier":"","kind":"source_text","target":{
                 "file_id":"f1","start_utf16":0,"end_utf16":10,"start_side":"left","end_side":"right",
                 "exact":"same words","prefix":"","suffix":""

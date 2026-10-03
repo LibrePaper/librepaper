@@ -107,7 +107,7 @@ async fn a_restore_keeps_what_it_replaced() {
         .with_head(|doc| doc.oplog_frontiers().encode())
         .await
         .unwrap();
-    let expected_frontier = crate::room::encode_update(&head_frontier);
+    let expected_frontier = librepaper_room::room::encode_update(&head_frontier);
     let request = Request::builder()
         .method("POST")
         .uri(format!("/api/documents/{}/restore", deployment.slug))
@@ -195,7 +195,7 @@ async fn a_restore_keeps_what_it_replaced() {
         .with_head(|doc| doc.oplog_frontiers().encode())
         .await
         .unwrap();
-    let expected_frontier_again = crate::room::encode_update(&head_frontier_again);
+    let expected_frontier_again = librepaper_room::room::encode_update(&head_frontier_again);
     let request_again = Request::builder()
         .method("POST")
         .uri(format!("/api/documents/{}/restore", deployment.slug))

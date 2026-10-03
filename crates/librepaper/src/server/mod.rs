@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::room::{
+use librepaper_room::room::{
     decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
     Sender,
 };
@@ -493,7 +493,7 @@ impl Viewer {
     /// id this request authenticated, or none at all for a visitor or a
     /// link-bounded caller. Automation is included deliberately: its cached
     /// account is attribution, even though the link is what bounds authority.
-    pub fn attribution(&self) -> crate::room::Attribution {
+    pub fn attribution(&self) -> librepaper_room::room::Attribution {
         self.attributed_as(if self.key.is_empty() {
             &self.id.handle
         } else {
@@ -504,8 +504,8 @@ impl Viewer {
     /// The same account with a display string the caller has already chosen:
     /// a comment pseudonym, a link label. The display never becomes the
     /// account id and the account id never becomes the display.
-    pub fn attributed_as(&self, display: &str) -> crate::room::Attribution {
-        crate::room::Attribution::account(&self.id.id, display)
+    pub fn attributed_as(&self, display: &str) -> librepaper_room::room::Attribution {
+        librepaper_room::room::Attribution::account(&self.id.id, display)
     }
 
     /// What a version this caller writes is signed with.
@@ -518,7 +518,7 @@ impl Viewer {
     ///
     /// `pseudonym` is what the caller is known as when there is no account
     /// behind them -- a visitor digest, a link -- and stands unchanged.
-    pub fn authorship(&self, pseudonym: &str) -> crate::room::Attribution {
+    pub fn authorship(&self, pseudonym: &str) -> librepaper_room::room::Attribution {
         let display = if !self.id.is_signed_in() {
             pseudonym
         } else if self.id.name.is_empty() {
@@ -526,7 +526,7 @@ impl Viewer {
         } else {
             &self.id.name
         };
-        crate::room::Attribution::account(&self.id.id, display)
+        librepaper_room::room::Attribution::account(&self.id.id, display)
     }
 }
 
@@ -1507,7 +1507,7 @@ impl Server {
         // Who is writing, built once from the viewer and carried whole. The
         // things it holds used to travel as positional arguments through
         // every command constructor below.
-        let writer = crate::room::CommentAuthor::new(
+        let writer = librepaper_room::room::CommentAuthor::new(
             creator,
             uuid::Uuid::parse_str(&id.id).ok(),
             author,
@@ -1555,7 +1555,7 @@ impl Server {
         room: &Room,
         command: RoomCommand,
         authority: &librepaper_engine::storage::postgres::Authority,
-        author: &crate::room::CommentAuthor,
+        author: &librepaper_room::room::CommentAuthor,
     ) -> Result<Value, Value> {
         let catalog = self.store.catalog.clone();
         let config = &self.config;
@@ -1583,7 +1583,7 @@ impl Server {
                     .then(|| hex::decode(&render_digest).ok())
                     .flatten()
                     .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
-                let mut new_comment = crate::room::AddComment::new(
+                let mut new_comment = librepaper_room::room::AddComment::new(
                     catalog.clone(),
                     document_id,
                     id,
@@ -1616,7 +1616,7 @@ impl Server {
             } => {
                 let id =
                     uuid::Uuid::parse_str(&request_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
-                let mut add_reply = crate::room::AddReply::new(
+                let mut add_reply = librepaper_room::room::AddReply::new(
                     catalog.clone(),
                     document_id,
                     id,
@@ -1639,7 +1639,7 @@ impl Server {
                 resolved,
                 ..
             } => {
-                let mut resolve = crate::room::ResolveComment::new(
+                let mut resolve = librepaper_room::room::ResolveComment::new(
                     catalog.clone(),
                     document_id,
                     comment_id,
@@ -1655,7 +1655,7 @@ impl Server {
             }
             RoomCommand::Delete { comment_id, .. } => {
                 let parsed_id = comment_id;
-                let mut delete = crate::room::DeleteComment::new(
+                let mut delete = librepaper_room::room::DeleteComment::new(
                     catalog.clone(),
                     document_id,
                     parsed_id,
@@ -1681,7 +1681,7 @@ impl Server {
                     Ok(found) => found,
                     Err(error) => return Err(read_error_value(error)),
                 };
-                let mut refine = crate::room::RefineSuggestion::new(
+                let mut refine = librepaper_room::room::RefineSuggestion::new(
                     catalog.clone(),
                     document_id,
                     parsed_id,
@@ -1714,19 +1714,19 @@ impl Server {
         catalog: &librepaper_engine::storage::postgres::PostgresCatalog,
         document_id: uuid::Uuid,
         comment_id: uuid::Uuid,
-    ) -> Result<(uuid::Uuid, i64, String, String, String), crate::room::WriteError> {
+    ) -> Result<(uuid::Uuid, i64, String, String, String), librepaper_room::room::WriteError> {
         let comment = self
             .comment_row(catalog, document_id, comment_id)
             .await?
-            .ok_or_else(|| crate::room::WriteError::Conflict("unknown comment".into()))?;
+            .ok_or_else(|| librepaper_room::room::WriteError::Conflict("unknown comment".into()))?;
         let proposal_id = uuid::Uuid::parse_str(&comment.proposal).map_err(|_| {
-            crate::room::WriteError::Conflict("that comment has no suggestion".into())
+            librepaper_room::room::WriteError::Conflict("that comment has no suggestion".into())
         })?;
         let proposal = catalog
             .proposal(proposal_id)
             .await
-            .map_err(|error| crate::room::WriteError::Storage(error.to_string()))?
-            .ok_or_else(|| crate::room::WriteError::Conflict("unknown suggestion".into()))?;
+            .map_err(|error| librepaper_room::room::WriteError::Storage(error.to_string()))?
+            .ok_or_else(|| librepaper_room::room::WriteError::Conflict("unknown suggestion".into()))?;
         // The passage as the comment currently has it anchored, which is
         // what `RefineSuggestion` relocates from -- not anything the wire
         // message carries, since `Command::Refine` names only the new
@@ -1738,7 +1738,7 @@ impl Server {
                 target.suffix.clone(),
             ),
             None => {
-                return Err(crate::room::WriteError::Conflict(
+                return Err(librepaper_room::room::WriteError::Conflict(
                     "that comment has no source passage".into(),
                 ))
             }
@@ -1755,7 +1755,7 @@ impl Server {
         catalog: &librepaper_engine::storage::postgres::PostgresCatalog,
         document_id: uuid::Uuid,
         comment_id: uuid::Uuid,
-    ) -> Result<Option<crate::room::Comment>, crate::room::WriteError> {
+    ) -> Result<Option<librepaper_room::room::Comment>, librepaper_room::room::WriteError> {
         // An indexed `(id, document_id)` read. It used to walk the whole
         // document's comments and pick one out of the result, which cost
         // the collection to answer a question about one row and could not
@@ -1764,7 +1764,7 @@ impl Server {
         // The failure is kept rather than flattened away: an unavailable
         // database answering "unknown comment" tells a client to stop, when
         // the one thing it should do is try again.
-        crate::room::comments::one(catalog, document_id, comment_id, true).await
+        librepaper_room::room::comments::one(catalog, document_id, comment_id, true).await
     }
 }
 /// Where the manual lives. It is a static site, deployed separately from this
@@ -1797,7 +1797,7 @@ pub(super) fn command_reply(what: &str, error: librepaper_engine::log::CommandEr
 /// message, the status and the retry advice all come from the variant -- so
 /// a comment lookup that failed because storage is away is told apart from
 /// one that found nothing, on the transport as well as in the code.
-fn read_error_value(error: crate::room::WriteError) -> Value {
+fn read_error_value(error: librepaper_room::room::WriteError) -> Value {
     refusal_value("annotation lookup", &error)
 }
 
@@ -1810,12 +1810,12 @@ mod comment_lookup_tests {
     /// the comment is unknown.
     #[test]
     fn a_failed_read_is_not_an_unknown_comment() {
-        let missing = read_error_value(crate::room::WriteError::Conflict("unknown comment".into()));
+        let missing = read_error_value(librepaper_room::room::WriteError::Conflict("unknown comment".into()));
         assert_eq!(missing["message"], json!("unknown comment"));
         assert!(missing.get("retryable").is_none());
 
         let unavailable =
-            read_error_value(crate::room::WriteError::Storage("connection reset".into()));
+            read_error_value(librepaper_room::room::WriteError::Storage("connection reset".into()));
         assert_eq!(
             unavailable["message"],
             json!("storage temporarily unavailable")

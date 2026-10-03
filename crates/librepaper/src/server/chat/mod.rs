@@ -6,7 +6,7 @@
 //! reconnect reconciliation on the user's computer.
 
 use super::*;
-use crate::room::Outgoing;
+use librepaper_room::room::Outgoing;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::OnceLock;

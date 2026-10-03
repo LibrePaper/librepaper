@@ -426,7 +426,7 @@ pub async fn serve(options: ServeOptions) {
         config.clone(),
         peer_key,
     );
-    let rooms = crate::room::Rooms::new(
+    let rooms = librepaper_room::room::Rooms::new(
         catalog.clone(),
         blobs.clone(),
         config.clone(),

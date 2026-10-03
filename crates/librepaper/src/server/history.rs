@@ -425,7 +425,7 @@ fn label_wire(row: &librepaper_engine::storage::postgres::LabelRecord) -> Value 
         "label": row.label,
         "reason": row.reason,
         "tree_sha": row.tree_digest.as_ref().map(hex::encode),
-        "frontier": crate::room::encode_update(&row.frontier),
+        "frontier": librepaper_room::room::encode_update(&row.frontier),
         "archive_status": if row.archive_key.is_some() {
             "ready"
         } else if row.archive_error.is_some() {
@@ -565,7 +565,7 @@ impl Server {
                     &json!({"error": "a live moment has no archive to request"}),
                 );
             }
-            let Some(frontier_bytes) = crate::room::decode_update(encoded) else {
+            let Some(frontier_bytes) = librepaper_room::room::decode_update(encoded) else {
                 return write_json(400, &json!({"error": "the frontier is not base64"}));
             };
             let Ok(frontier) = loro::Frontiers::decode(&frontier_bytes) else {
@@ -881,7 +881,7 @@ impl Server {
             .get("expected_frontier")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let Some(expected_frontier) = crate::room::decode_update(expected) else {
+        let Some(expected_frontier) = librepaper_room::room::decode_update(expected) else {
             return write_json(
                 400,
                 &json!({"error": "expected_frontier is required and must be base64"}),

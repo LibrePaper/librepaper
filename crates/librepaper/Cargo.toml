@@ -109,6 +109,8 @@ librepaper-base = { path = "../librepaper-base" }
 librepaper-document = { path = "../librepaper-document" }
 # The log, the PostgreSQL catalogue and the blob store.
 librepaper-engine = { path = "../librepaper-engine" }
+# One live document: the room, its comments, proposals and anchoring.
+librepaper-room = { path = "../librepaper-room" }
 # The local app, the assistant and the automation peer.
 librepaper-companion = { path = "../librepaper-companion" }
 # The command line.

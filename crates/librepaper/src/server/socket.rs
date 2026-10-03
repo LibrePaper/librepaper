@@ -2,10 +2,10 @@
 //! sends and receives, and the reauthorisation that runs while it is open.
 
 use super::*;
-use crate::room::proposals::{
+use librepaper_room::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };
-use crate::room::Room;
+use librepaper_room::room::Room;
 use librepaper_engine::log::sequencer::Ingested;
 use librepaper_engine::log::CommandError;
 use librepaper_engine::storage::outgoing::OutgoingSink;
@@ -515,17 +515,17 @@ impl Server {
             Ok(state) => match room
                 .comment_page(
                     None,
-                    crate::room::comments::COMMENT_PAGE_DEFAULT,
+                    librepaper_room::room::comments::COMMENT_PAGE_DEFAULT,
                     &author,
                     may_edit,
                 )
                 .await
             {
                 Ok((comments, page)) => {
-                    let mut state = crate::room::comments::comment_state_json(&state);
+                    let mut state = librepaper_room::room::comments::comment_state_json(&state);
                     state["complete"] = json!(page.complete);
                     state["next_cursor"] = json!(page.next.map(|at| {
-                        crate::room::comments::encode_cursor(room.document_id, None, may_edit, at)
+                        librepaper_room::room::comments::encode_cursor(room.document_id, None, may_edit, at)
                     }));
                     json!({"type": "hello", "comments": comments, "state": state})
                 }
@@ -1124,9 +1124,9 @@ impl Server {
                                 CommandError::Sequencer(error) => (error.to_string(), None),
                             };
                             let stale = message
-                                == crate::room::proposals::ProposalError::Stale.to_string();
+                                == librepaper_room::room::proposals::ProposalError::Stale.to_string();
                             let retry = message
-                                == crate::room::proposals::ProposalError::UnknownBase.to_string();
+                                == librepaper_room::room::proposals::ProposalError::UnknownBase.to_string();
                             let mut payload = json!({
                                 "type": "error",
                                 "message": message,
@@ -1168,7 +1168,7 @@ impl Server {
                                 {
                                     proposal_outcome_json(&outcome, incoming.request_id())
                                 } else {
-                                let base = crate::room::decode_update(incoming.base())
+                                let base = librepaper_room::room::decode_update(incoming.base())
                                     .and_then(|bytes| loro::Frontiers::decode(&bytes).ok());
                                 let Some(base) = base else {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
@@ -1234,13 +1234,13 @@ impl Server {
                                 let base = if incoming.base().is_empty() {
                                     Some(None)
                                 } else {
-                                    crate::room::decode_update(incoming.base())
+                                    librepaper_room::room::decode_update(incoming.base())
                                         .and_then(|bytes| loro::Frontiers::decode(&bytes).ok())
                                         .map(Some)
                                 };
                                 let (Some(branch), Some(tip), Some(base)) = (
-                                    crate::room::decode_update(incoming.update()),
-                                    crate::room::decode_update(incoming.tip())
+                                    librepaper_room::room::decode_update(incoming.update()),
+                                    librepaper_room::room::decode_update(incoming.tip())
                                         .and_then(|bytes| loro::Frontiers::decode(&bytes).ok()),
                                     base,
                                 ) else {
@@ -1333,7 +1333,7 @@ impl Server {
                                 }
                             }
                             "proposal-decide" => {
-                                let Some(against) = crate::room::decode_update(incoming.tip()) else {
+                                let Some(against) = librepaper_room::room::decode_update(incoming.tip()) else {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
                                         json!({"type":"error","message":"a decision must say which version it was made against","request_id":incoming.request_id()}).to_string(),
                                     )).await;

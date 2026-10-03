@@ -1,7 +1,7 @@
 //! HTTP endpoints used by the writing assistant.
 
 use super::*;
-use crate::room::{self, OriginalAnchor};
+use librepaper_room::room::{self, OriginalAnchor};
 use serde::Deserialize;
 
 fn assistant_capabilities(role: Role) -> Value {

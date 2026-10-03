@@ -1,0 +1,38 @@
+# One live document: the room, its comments, proposals and anchoring.
+[package]
+name = "librepaper-room"
+version.workspace = true
+edition.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+librepaper-base = { path = "../librepaper-base" }
+librepaper-document = { path = "../librepaper-document" }
+librepaper-engine = { path = "../librepaper-engine" }
+tokio.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+base64.workspace = true
+hex.workspace = true
+time.workspace = true
+loro.workspace = true
+uuid.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+# `start_paused` and `advance`, so the deadline tests move a clock instead of
+# waiting on one. Test builds only.
+tokio = { workspace = true, features = ["test-util"] }
+sqlx.workspace = true
+tempfile.workspace = true
+regex.workspace = true
+html-escape.workspace = true
+# Test-only: render markdown in the locate corpus test.
+comrak.workspace = true

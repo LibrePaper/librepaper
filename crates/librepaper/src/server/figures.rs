@@ -179,7 +179,7 @@ impl Server {
             Ok(true) => {}
             Ok(false) => return plain(404, "not found"),
             Err(error) => {
-                let refusal = crate::room::WriteError::from(error);
+                let refusal = librepaper_room::room::WriteError::from(error);
                 return plain(refusal.status(), &refusal.client_message());
             }
         }

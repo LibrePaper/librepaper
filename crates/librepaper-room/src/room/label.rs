@@ -158,7 +158,7 @@ impl Room {
     /// "Unknown editor". `display` is what the caller already knew to show --
     /// a pseudonym, a link label -- and stands when the catalogue cannot
     /// answer.
-    pub(crate) async fn signed_by(&self, account_id: &str, display: &str) -> Attribution {
+    pub async fn signed_by(&self, account_id: &str, display: &str) -> Attribution {
         let name = match Uuid::parse_str(account_id) {
             Ok(id) => self.catalog().account_display_name(id).await,
             Err(_) => String::new(),
@@ -214,7 +214,7 @@ impl Room {
     /// MCP variant that stores compact recovery evidence in the label's own
     /// transaction. The retained value is a receipt, not the label's source
     /// snapshot or any comment text.
-    pub(crate) async fn take_label_reporting_receipt(
+    pub async fn take_label_reporting_receipt(
         &self,
         reason: &str,
         label: Option<String>,

@@ -35,8 +35,8 @@ use librepaper_engine::log::{FlushReason, Ingested, Registry, Sequencer};
 use librepaper_engine::storage::blob::BlobStore;
 use librepaper_engine::storage::postgres::{Authority, PostgresCatalog};
 
-pub(crate) mod agent;
-pub(crate) mod agent_query;
+pub mod agent;
+pub mod agent_query;
 mod agent_view;
 pub use librepaper_engine::storage::annotation;
 mod catalog;
@@ -45,7 +45,7 @@ mod command;
 mod comment_anchor_tests;
 #[cfg(test)]
 mod comment_paging_tests;
-pub(crate) mod comments;
+pub mod comments;
 pub(crate) mod error;
 mod figures;
 pub(crate) mod label;
@@ -60,7 +60,7 @@ mod message;
 pub(crate) use librepaper_engine::storage::outgoing;
 #[cfg(test)]
 mod proposal_round_trip_tests;
-pub(crate) mod proposals;
+pub mod proposals;
 #[cfg(test)]
 mod recovery_tests;
 pub(crate) mod resolve;
@@ -590,15 +590,15 @@ impl Room {
 
     /// How many anchors this room is currently remembering, for the test
     /// that checks the cache does not grow with the document.
-    #[cfg(test)]
-    pub(crate) async fn attachment_cache_len(&self) -> usize {
+    // Not under `cfg(test)`: the server crate's tests use it, like engine::testing.
+    pub async fn attachment_cache_len(&self) -> usize {
         self.attachments.lock().await.ids().len()
     }
 
     /// Every comment, by walking every page. Test-only: see
     /// [`comments::walk_all`].
-    #[cfg(test)]
-    pub(crate) async fn all_comments(&self, editor: bool) -> Result<Vec<Comment>, WriteError> {
+    // Not under `cfg(test)`: the server crate's tests use it, like engine::testing.
+    pub async fn all_comments(&self, editor: bool) -> Result<Vec<Comment>, WriteError> {
         let mut comments = comments::walk_all(&self.catalog, self.document_id, editor).await?;
         self.attach(&mut comments).await;
         Ok(comments)
