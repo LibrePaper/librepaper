@@ -79,9 +79,12 @@ fn history_of(doc: &LoroDoc) -> Vec<u8> {
 
 fn main() {
     let source = prose();
-    println!("prose: {} characters of the repository's own docs\n", source.chars().count());
+    println!(
+        "source corpus: {} Unicode characters from the repository's docs; longer samples repeat it\n",
+        source.chars().count()
+    );
 
-    println!("== 7.1 export modes, one author, 300 KB");
+    println!("== 7.1 export modes, one author, 300,000 appended Unicode characters");
     let doc = typed(&source, 300_000, 1);
     let history = history_of(&doc);
     let snapshot = doc.export(ExportMode::Snapshot).expect("a snapshot");
@@ -98,10 +101,12 @@ fn main() {
         );
     }
 
-    println!("\n== 7.2 every keystroke kept, against thinning it");
+    println!(
+        "\n== 7.2 append-only typing (no replacements or deletions), compared with a shallow snapshot"
+    );
     for (label, chars, authors) in [
-        ("drafted, 1 author", 100_000, 1),
-        ("revised, 3 authors", 100_000, 3),
+        ("appended, 1 author", 100_000, 1),
+        ("appended, 3 authors", 100_000, 3),
     ] {
         let doc = typed(&source, chars, authors);
         let kept = zstd3(&history_of(&doc));
@@ -112,7 +117,7 @@ fn main() {
                 .expect("a shallow snapshot"),
         );
         println!(
-            "  {label:20} history {:>8}  thinned {:>8}  -> {}",
+            "  {label:20} history bytes {:>8}  snapshot bytes {:>8}  -> {}",
             kept,
             thinned,
             if kept < thinned {
