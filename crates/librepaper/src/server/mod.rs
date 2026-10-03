@@ -43,8 +43,8 @@ use crate::room::{
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
 };
-use librepaper_shell::{renderers, ShellFile};
 use crate::util::clean;
+use librepaper_shell::{renderers, ShellFile};
 
 mod agent_auth;
 mod chat;

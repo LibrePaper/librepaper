@@ -14,3 +14,4 @@ doctest = false
 [dependencies]
 axum.workspace = true
 include_dir.workspace = true
+serde_json.workspace = true

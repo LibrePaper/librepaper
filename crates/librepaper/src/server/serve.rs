@@ -11,10 +11,10 @@ use crate::config::Configuration;
 use crate::document::retention::{describe_seconds, parse_expire_from, parse_retention};
 use crate::document::store::Store;
 use crate::server::origins::{Origins, DOCS_PREFIX};
-use librepaper_shell::load_shell;
 use crate::server::Server;
 use crate::storage::{open_storage, StorageOptions};
 use crate::util::die;
+use librepaper_shell::load_shell;
 
 /// With no --port, serve takes the first free port in this range, so a second
 /// deployment on the same machine, or a port something else has already

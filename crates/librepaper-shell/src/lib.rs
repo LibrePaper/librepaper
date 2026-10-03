@@ -225,8 +225,7 @@ mod shell_tests {
     const MIRROR: &str = "https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/";
 
     fn shell() -> HashMap<String, ShellFile> {
-        load_shell(MIRROR)
-            .expect("the shell is embedded in the binary")
+        load_shell(MIRROR).expect("the shell is embedded in the binary")
     }
 
     fn lock(sha: &str) -> String {

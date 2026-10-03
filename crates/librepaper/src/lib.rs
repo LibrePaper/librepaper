@@ -148,8 +148,8 @@ pub mod worker {
 // authenticated the same way a signed-in owner and a share-link guest are.
 pub use auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
 pub use document::store::Store;
-pub use room::{Room, Rooms};
 pub use librepaper_shell::ShellFile;
+pub use room::{Room, Rooms};
 pub use server::Server;
 pub use storage::blob::{BlobStore, FsStore};
 
