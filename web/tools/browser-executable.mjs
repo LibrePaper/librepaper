@@ -13,7 +13,7 @@ function executable(candidate, pathValue = process.env.PATH || "") {
   for (const path of paths) {
     try {
       accessSync(path, constants.X_OK);
-      if (statSync(path).isFile()) return path;
+      if (statSync(path).isFile()) return resolve(path);
     } catch {}
   }
   return null;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { requireChromiumExecutable, resolveChromiumExecutable } from "../../tools/browser-executable.mjs";
@@ -32,6 +32,24 @@ try {
   assert.throws(() => resolveChromiumExecutable({ PATH: path, LIBREPAPER_CHROMIUM: "missing-chrome" }),
     /LIBREPAPER_CHROMIUM does not name an executable/,
     "a bad explicit path fails instead of silently selecting another binary");
+
+  const originalDirectory = process.cwd();
+  const workingDirectory = join(directory, "working-directory");
+  const relativeBin = join(workingDirectory, "bin");
+  mkdirSync(relativeBin);
+  const relativeChromium = join(relativeBin, "chromium");
+  writeFileSync(relativeChromium, "#!/bin/sh\nexit 0\n");
+  chmodSync(relativeChromium, 0o755);
+  try {
+    process.chdir(workingDirectory);
+    const resolved = resolveChromiumExecutable({ PATH: "./bin" });
+    process.chdir(directory);
+    assert.equal(resolved, relativeChromium,
+      "relative PATH entries resolve to an absolute executable before the suite changes directories");
+    accessSync(resolved);
+  } finally {
+    process.chdir(originalDirectory);
+  }
 
   const alternateDirectory = mkdtempSync(join(tmpdir(), "librepaper-browser-alt-"));
   try {
