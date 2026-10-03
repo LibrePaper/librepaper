@@ -70,14 +70,6 @@ pub(crate) fn find(override_var: &str, tool: &str) -> Option<PathBuf> {
     which::which(tool).ok()
 }
 
-/// The name an executable actually has on this platform.
-pub(crate) fn exe_name(tool: &str) -> String {
-    if cfg!(windows) {
-        format!("{tool}.exe")
-    } else {
-        tool.to_string()
-    }
-}
 
 /// The first line of what `path --version` prints, or nothing.
 ///

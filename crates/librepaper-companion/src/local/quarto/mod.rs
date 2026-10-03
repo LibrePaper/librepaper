@@ -1022,10 +1022,15 @@ pub async fn run_job_with_bindings(
         }
     };
     let bundle_path = output.join("quarto-bundle.json");
-    let temporary_bundle = output.join("quarto-bundle.json.tmp");
-    if std::fs::write(&temporary_bundle, &bundle_bytes).is_err()
-        || std::fs::rename(&temporary_bundle, &bundle_path).is_err()
-    {
+    let committed = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut temporary = tempfile::NamedTempFile::new_in(&output)?;
+        temporary.write_all(&bundle_bytes)?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(&bundle_path).map_err(|error| error.error)?;
+        Ok(())
+    })();
+    if committed.is_err() {
         return failed(&request, &job_id, "could not commit Quarto result bundle");
     }
     let artifact_bytes = bundle

@@ -264,15 +264,8 @@ fn load_cache() -> Option<Cache> {
 }
 
 fn save_cache(cache: &Cache) {
-    let path = cache_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     if let Ok(text) = serde_json::to_string_pretty(cache) {
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
+        let _ = librepaper_base::private_files::publish(&cache_path(), text.as_bytes(), "tool cache");
     }
 }
 
