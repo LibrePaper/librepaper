@@ -97,25 +97,25 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
     let writer = catalog.claim_writer().await.unwrap();
     let owner = account(&catalog).await;
     let viewer = account(&catalog).await;
-    let document = document(&catalog, owner, "owned").await;
+    let paper = document(&catalog, owner, "owned").await;
     catalog
-        .set_grant(document, viewer, AccessRole::Reader)
+        .set_grant(paper, viewer, AccessRole::Reader)
         .await
         .unwrap();
 
-    catalog.set_favorite(viewer, document, true).await.unwrap();
-    catalog.mark_opened(viewer, document).await.unwrap();
+    catalog.set_favorite(viewer, paper, true).await.unwrap();
+    catalog.mark_opened(viewer, paper).await.unwrap();
     let before = catalog
-        .marks_for_documents(viewer, &[document])
+        .marks_for_documents(viewer, &[paper])
         .await
         .unwrap()
         .remove(0);
     assert!(catalog
-        .set_shared_hidden(viewer, document, true)
+        .set_shared_hidden(viewer, paper, true)
         .await
         .unwrap());
     let hidden = catalog
-        .marks_for_documents(viewer, &[document])
+        .marks_for_documents(viewer, &[paper])
         .await
         .unwrap();
     assert_eq!(hidden.len(), 1);
@@ -126,7 +126,7 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
     // removes the underlying grant nor another account's marks.
     assert_eq!(
         catalog
-            .access_role(document, Some(viewer), None, time::OffsetDateTime::now_utc())
+            .access_role(paper, Some(viewer), None, time::OffsetDateTime::now_utc())
             .await
             .unwrap(),
         Some(AccessRole::Reader)
@@ -136,15 +136,15 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
         .await
         .unwrap()
         .iter()
-        .any(|row| row.id == document));
+        .any(|row| row.id == paper));
     // Restoring this opened document removes only the hidden flag. Its open
     // timestamp remains as a Recent mark.
     assert!(!catalog
-        .set_shared_hidden(viewer, document, false)
+        .set_shared_hidden(viewer, paper, false)
         .await
         .unwrap());
     let restored = catalog
-        .marks_for_documents(viewer, &[document])
+        .marks_for_documents(viewer, &[paper])
         .await
         .unwrap();
     assert_eq!(restored.len(), 1);

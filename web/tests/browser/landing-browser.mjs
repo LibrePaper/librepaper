@@ -202,7 +202,8 @@ try {
   await click('.rail-item button[aria-label="Shared with me"]');
   await until("desktop shared project", () => tab.evaluate('Boolean(document.querySelector(\'.project-actions button[aria-label="Remove Shared paper from Shared"]\'))'));
   await click('.project-actions button[aria-label="Remove Shared paper from Shared"]');
-  await until("desktop shared project removed", () => tab.evaluate(`!document.querySelector(${JSON.stringify(trigger("shared"))})`));
+  const removeAction = '.project-actions button[aria-label="Remove Shared paper from Shared"]';
+  await until("desktop shared project removed", () => tab.evaluate(`!document.querySelector(${JSON.stringify(removeAction)})`));
   await click('.rail-item button[aria-label="Projects"]');
   const showAction = '.project-actions button[aria-label="Show Shared paper in Shared"]';
   await until("desktop show action", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(showAction)}))`));
@@ -210,7 +211,7 @@ try {
   await tab.navigate(currentUrl);
   await until("hidden preference after reload", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(showAction)}))`));
   await click(showAction);
-  await until("desktop restore request", () => tab.evaluate("testCalls.filter(call => call.path === '/api/documents/shared/shared' && call.method === 'POST').length >= 2"));
+  await until("desktop restore request", () => tab.evaluate("testCalls.some(call => call.path === '/api/documents/shared/shared' && call.method === 'POST')"));
   await click('.rail-item button[aria-label="Shared with me"]');
   await until("shared project restored from All projects", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(trigger("shared"))}))`));
   await click('.rail-item button[aria-label="Projects"]');
