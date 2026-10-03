@@ -2938,6 +2938,8 @@ fn covers(holder: &VersionVector, wanted: &VersionVector) -> bool {
 
 /// Stable across retries of the same batch. Client sequence and payload
 /// digest both participate, so the same sequence may carry distinct updates.
+/// The key is the first 16 bytes of a SHA-256 in a version 8 UUID. Keys are
+/// cleared each writer epoch, so changing the scheme cannot strand a stored key.
 fn durable_reservation_key(
     document_id: Uuid,
     peer_key: &str,
@@ -2953,9 +2955,7 @@ fn durable_reservation_key(
     let digest = hash.finalize();
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x50;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Uuid::from_bytes(bytes)
+    Uuid::new_v8(bytes)
 }
 
 fn decode_vector(bytes: &[u8]) -> Result<VersionVector> {
