@@ -52,6 +52,7 @@ let WorkerClass = typeof Worker !== "undefined" ? Worker : null;
 let biberOverride;
 let biberModule;
 let bibliographyIdentityOverride;
+let snapshotDigestOverride;
 let resourcesOverride;
 let fetchImpl = (...args) => fetch(...args);
 let nowImpl = () => Date.now();
@@ -212,6 +213,22 @@ function deadlineCall(target, cmd, payload, deadlineAt) {
   const ms = remaining(deadlineAt);
   if (!ms) return Promise.reject(timeoutError(`worker ${cmd}`));
   return call(target, cmd, payload, { timeoutMs: ms });
+}
+
+async function makeJobWithinDeadline({ tree, generation, engine, release, deadlineAt, signal }) {
+  if (signal?.aborted) throw supersededError();
+  if (!remaining(deadlineAt)) throw timeoutError("document digest");
+  const inputs = await withinDeadline((snapshotDigestOverride || snapshotDigest)(tree), deadlineAt, "document digest", undefined, signal);
+  if (signal?.aborted) throw supersededError();
+  if (!remaining(deadlineAt)) throw timeoutError("job identity");
+  const job = await withinDeadline(
+    jobsMod.makeJob({ project: currentProject, generation, tree, inputs, engine, release }),
+    deadlineAt,
+    "job identity",
+    undefined,
+    signal,
+  );
+  return { inputs, job };
 }
 
 /// Called by the reader when a document opens. Resets the queue, the
@@ -547,11 +564,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
     if (error?.name === "WorkerTimeout" || nowImpl() >= deadlineAt) return timedOutBeforeJob(releaseId);
     let job;
     try {
-      if (!remaining(deadlineAt)) throw timeoutError("document digest");
-      const inputs = await withinDeadline(snapshotDigest(tree), deadlineAt, "document digest", undefined, token.abort.signal);
-      checkpoint();
-      if (!remaining(deadlineAt)) throw timeoutError("job identity");
-      job = await withinDeadline(jobsMod.makeJob({ project: currentProject, generation: generationAtStart, tree, inputs, engine, release: releaseId }), deadlineAt, "job identity", undefined, token.abort.signal);
+      ({ job } = await makeJobWithinDeadline({ tree, generation: generationAtStart, engine, release: releaseId, deadlineAt, signal: token.abort.signal }));
       checkpoint();
     } catch (identityError) {
       checkpoint();
@@ -573,11 +586,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   let inputs;
   let job;
   try {
-    if (!remaining(deadlineAt)) throw timeoutError("document digest");
-    inputs = await withinDeadline(snapshotDigest(tree), deadlineAt, "document digest", undefined, token.abort.signal);
-    checkpoint();
-    if (!remaining(deadlineAt)) throw timeoutError("job identity");
-    job = await withinDeadline(jobsMod.makeJob({ project: currentProject, generation: generationAtStart, tree, inputs, engine, release: releaseId }), deadlineAt, "job identity", undefined, token.abort.signal);
+    ({ inputs, job } = await makeJobWithinDeadline({ tree, generation: generationAtStart, engine, release: releaseId, deadlineAt, signal: token.abort.signal }));
     checkpoint();
   } catch (error) {
     checkpoint();
@@ -1032,11 +1041,12 @@ export const resources = {
 /// Test-only injection. Not part of the public contract --
 /// `latex-controller.mjs` is the only caller.
 export const _testing = {
-  /** @param {{ worker?: any, biber?: any, bibliographyIdentity?: (input: any) => Promise<string>, resources?: any, fetch?: typeof fetch, now?: () => number, deadlineMs?: number }} [options] */
-  inject({ worker: WorkerOverride, biber: browserBiberModule, bibliographyIdentity, resources: resourcesModule, fetch: fetchOverride, now, deadlineMs: deadlineOverride } = {}) {
+  /** @param {{ worker?: any, biber?: any, bibliographyIdentity?: (input: any) => Promise<string>, snapshotDigest?: (tree: any) => Promise<string>, resources?: any, fetch?: typeof fetch, now?: () => number, deadlineMs?: number }} [options] */
+  inject({ worker: WorkerOverride, biber: browserBiberModule, bibliographyIdentity, snapshotDigest: snapshotDigestImpl, resources: resourcesModule, fetch: fetchOverride, now, deadlineMs: deadlineOverride } = {}) {
     if (WorkerOverride !== undefined) WorkerClass = WorkerOverride;
     if (browserBiberModule !== undefined) biberOverride = browserBiberModule;
     if (bibliographyIdentity !== undefined) bibliographyIdentityOverride = bibliographyIdentity;
+    if (snapshotDigestImpl !== undefined) snapshotDigestOverride = snapshotDigestImpl;
     if (resourcesModule !== undefined) resourcesOverride = resourcesModule;
     if (fetchOverride !== undefined) {
       fetchImpl = fetchOverride;
@@ -1053,6 +1063,7 @@ export const _testing = {
     WorkerClass = typeof Worker !== "undefined" ? Worker : null;
     biberOverride = undefined;
     bibliographyIdentityOverride = undefined;
+    snapshotDigestOverride = undefined;
     biberModule?.cancel();
     biberModule = undefined;
     resourcesOverride = undefined;
