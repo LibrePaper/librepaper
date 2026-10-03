@@ -3,7 +3,7 @@
 // The search scans labels after the comment frontier in order because later
 // edits can reintroduce a passage after it disappears.
 
-import { replacementAt, sourceTextAt, tracedBy, wentAt } from "../../src/lib/passages.js";
+import { replacementAt, sourceTextAt, tracedBy, wentAt, wentAtMany } from "../../src/lib/passages.js";
 import { hunks } from "../../src/lib/history.js";
 import { MOMENT } from "../../src/lib/moment.js";
 
@@ -189,12 +189,14 @@ function sourceHistory(n, until) {
     };
   };
   try {
-    const traced = inSource("parallel-history", "2026-09-05T09:59:00Z");
-    const answers = await Promise.all(Array.from({ length: 3 }, () =>
-      wentAt("parallel-history", traced, labels)));
+    const traced = [0, 20, 40].map((at) => ({
+      ...inSource(`parallel-history-${at}`, new Date(firstAt + (at - 1) * 1000).toISOString()),
+      created: new Date(firstAt + (at - 1) * 1000).toISOString(),
+    }));
+    const answers = await wentAtMany("parallel-history", traced, labels);
     check("parallel comments share one request per label beyond the bounded cache window",
       answers.every((answer) => answer?.sha === labels[70].sha)
-        && fetched.size === 73
+        && fetched.size === 75
         && [...fetched.values()].every((count) => count === 1));
   } finally {
     globalThis.fetch = oldFetch;

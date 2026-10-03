@@ -491,7 +491,6 @@ console.log("reader-races: all checks passed");
     slug: "project",
     origin: "https://app.example",
     read: () => ({ selection: "automatic", backend: "auto", engine: "auto" }),
-    renderers: { available: () => true },
     paint: () => paints++,
     latex: {
       configure: (value) => configurations.push(value), cancel: () => {}, setSettings: () => {},
@@ -535,7 +534,6 @@ console.log("reader-races: all checks passed");
     slug: "project",
     origin: "https://app.example",
     read,
-    renderers: { available: () => true },
     latex: { configure: () => {}, cancel: () => {}, setSettings: () => {} },
     interrupt: (next) => interrupted.push(next),
   });
@@ -564,7 +562,6 @@ console.log("reader-races: all checks passed");
   const settings = createBuildSettings({
     slug: "project", origin: "https://app.example",
     read: () => calepin,
-    renderers: { available: () => true },
     latex: { configure: () => {}, cancel: () => {}, setSettings: () => {} },
   });
 

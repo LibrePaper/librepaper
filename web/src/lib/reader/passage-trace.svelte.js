@@ -4,8 +4,8 @@
 // re-anchoring", which told the person who wrote it nothing they did not
 // already know. What is useful is the version at which the passage stopped
 // being found, and the text that stands where it stood. Both are answered by
-// reading old versions, which takes a request per comment, so this owns the
-// answers and the bookkeeping that keeps a slow walk from overwriting a
+// reading old versions, so this batches comments over the same ordered label
+// walk and owns the bookkeeping that keeps a slow scan from overwriting a
 // newer one.
 //
 // Three things can make a walk stale: a newer walk, a change to the source,
@@ -57,35 +57,42 @@ export function createPassageTrace({
       const state_ = now();
       return !stale() && state_.source === source && state_.visible === visible;
     };
-    // Walk comments together so their ordered label scans share the bounded
-    // source-response cache instead of each walk evicting the prior one's
-    // history before the next comment asks for it.
-    const answers = await Promise.all(lost.map(async (comment) => {
-      if (!current()) return null;
+    const traced = lost.map((comment) => passages.tracedBy(comment, paths()));
+    let points = Array(lost.length).fill(null);
+    if (passages.wentAtMany) {
       try {
-        const traced = passages.tracedBy(comment, paths());
-        const point = await passages.wentAt(slug, traced, list, keyHeaders(key));
-        if (!current()) return null;
-        if (!traced?.frontier) return { id: comment.id, point, replacement: null };
+        points = await passages.wentAtMany(slug, traced, list, keyHeaders(key));
+      } catch {
+        if (!stale()) last = null;
+      }
+    } else {
+      // Test seams and older adapters can still supply the one-comment API.
+      for (const [index, item] of traced.entries()) {
+        points[index] = await passages.wentAt(slug, item, list, keyHeaders(key));
+      }
+    }
+    if (!current()) return;
+    for (const [index, comment] of lost.entries()) {
+      if (!current()) return;
+      try {
+        const item = traced[index];
+        const point = points[index] || null;
+        if (point) went[comment.id] = point;
+        if (!item?.frontier) {
+          continue;
+        }
         const oldText = await passages.sourceTextAt(
-          slug, MOMENT + traced.frontier, { file_id: traced.file_id }, keyHeaders(key),
+          slug, MOMENT + item.frontier, { file_id: item.file_id }, keyHeaders(key),
         );
         if (!current()) return null;
-        const against = traced.path ? tree.texts[traced.path] ?? null : null;
-        const replacement = await passages.replacementAt(oldText, against, traced.selector);
-        return { id: comment.id, point, replacement };
+        const against = item.path ? tree.texts[item.path] ?? null : null;
+        const replacement = await passages.replacementAt(oldText, against, item.selector);
+        if (replacement !== null) replacements[comment.id] = replacement;
       } catch {
         // A missing label cannot establish a replacement. The walk is
         // forgotten rather than recorded, so the next one tries again.
         if (!stale()) last = null;
-        return null;
       }
-    }));
-    if (!current()) return;
-    for (const answer of answers) {
-      if (!answer) continue;
-      if (answer.point) went[answer.id] = answer.point;
-      if (answer.replacement !== null) replacements[answer.id] = answer.replacement;
     }
     if (current()) {
       state.went = went;
