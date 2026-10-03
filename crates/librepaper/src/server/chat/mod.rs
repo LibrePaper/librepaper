@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
 const CHANNEL_SECONDS: i64 = 60 * 60;
-use librepaper_companion::assistant::protocol::{
+use librepaper_base::assistant_protocol::{
     TaskKind, TaskScope,
     MAX_CONTEXT_BYTES as MAX_CONTEXT, MAX_EVENT_TEXT_BYTES as MAX_EVENT_TEXT,
     MAX_ID_BYTES as MAX_ID,
@@ -360,10 +360,10 @@ fn valid_task(task: Option<&Task>) -> bool {
     })
 }
 fn valid_context(context: &Value) -> bool {
-    librepaper_companion::assistant::protocol::valid_context(context)
+    librepaper_base::assistant_protocol::valid_context(context)
 }
 fn valid_status(status: &str) -> bool {
-    librepaper_companion::assistant::protocol::TaskStatus::parse(status).is_some()
+    librepaper_base::assistant_protocol::TaskStatus::parse(status).is_some()
 }
 fn bounded_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
     let value = value[key]
