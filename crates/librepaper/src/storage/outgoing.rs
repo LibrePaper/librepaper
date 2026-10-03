@@ -221,6 +221,8 @@ impl Sender {
     ///
     /// Marked durable: the writer must put it on the wire before it tears the
     /// socket down.
+    // The unit error predates the public re-export; callers only match on it.
+    #[allow(clippy::result_unit_err)]
     pub fn force_close(&self, reason: impl Into<String>) -> Result<(), ()> {
         let outgoing = Outgoing::Close(reason.into());
         #[cfg(not(test))]

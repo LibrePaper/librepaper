@@ -181,6 +181,7 @@ pub async fn poll_for_token(server: &str, code: &DeviceCode) -> Result<String, S
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+    use crate::local::credentials::write_token;
 
     #[test]
     fn corrupt_cache_is_preserved_when_login_writes() {
