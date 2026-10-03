@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { zip } from "../../src/lib/zip.js";
+import { requireChromiumExecutable } from "../../tools/browser-executable.mjs";
 
 // The paper somebody arrives with. Dropped on the explorer it is the files
 // inside it: the wrapper folder gone, Quarto's rendered output left behind.
@@ -421,7 +422,7 @@ try {
   const httpPort = typeof address === "object" && address ? address.port : 0;
   if (!httpPort) throw new Error("local editor server did not start");
 
-  browser = spawn("chromium", [
+  browser = spawn(requireChromiumExecutable(), [
     "--headless=new",
     "--no-sandbox",
     "--disable-gpu",

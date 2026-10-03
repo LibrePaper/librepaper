@@ -18,12 +18,14 @@ import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import http from "node:http";
 import { startDeployment } from "../tests/helpers/deployment.mjs";
+import { requireChromiumExecutable } from "./browser-executable.mjs";
 
 const binary = process.argv[2] || "dist/librepaper";
 if (!existsSync(binary)) {
   console.error(`browser: no librepaper binary at ${binary}; run \`make build\` first`);
   process.exit(1);
 }
+const chromium = requireChromiumExecutable();
 
 const deployment = await startDeployment({ label: "smoke", binary: resolve(binary) });
 if (deployment.unavailable) {
@@ -69,8 +71,6 @@ async function until(what, predicate, timeout = 15000) {
 /* ------------------------------------------------------------- the browser */
 
 let chrome = null;
-const CHROME = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
-
 async function connect(port) {
   for (let tries = 0; tries < 100; tries++) {
     try {
@@ -282,27 +282,19 @@ const MARKDOWN = "# A Paper\n\nThe first paragraph.\n";
 async function run() {
   await until("the server", async () => (await fetch(`${BASE}/api/config`)).ok);
 
-  for (const candidate of CHROME) {
-    try {
-      chrome = spawn(
-        candidate,
-        [
-          "--headless=new",
-          "--remote-debugging-port=9333",
-          "--no-sandbox",
-          "--disable-gpu",
-          "--disable-dev-shm-usage",
-          `--user-data-dir=${join(data, "chrome")}`,
-          "about:blank",
-        ],
-        { stdio: "ignore" },
-      );
-      break;
-    } catch {
-      chrome = null;
-    }
-  }
-  if (!chrome) throw new Error("no chromium to drive");
+  chrome = spawn(
+    chromium,
+    [
+      "--headless=new",
+      "--remote-debugging-port=9333",
+      "--no-sandbox",
+      "--disable-gpu",
+      "--disable-dev-shm-usage",
+      `--user-data-dir=${join(data, "chrome")}`,
+      "about:blank",
+    ],
+    { stdio: "ignore" },
+  );
   const endpoint = await connect(9333);
   socket = new WebSocket(endpoint);
   await new Promise((resolve, reject) => {

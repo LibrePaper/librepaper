@@ -3,12 +3,13 @@
 // same WASM ABI used by renderer-worker.js, then served to the real viewer.
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { call, handOver } from "../../src/lib/renderer-wasm.js";
+import { browser } from "../../tools/browser-driver.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
@@ -56,6 +57,8 @@ const PDFs = {
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PORT = 8800 + Math.floor(Math.random() * 200);
 const DEBUG_PORT = 9800 + Math.floor(Math.random() * 200);
+let chrome = null;
+let profile = null;
 const BASE = `http://localhost:${PORT}`;
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -132,51 +135,6 @@ function sendFile(response, file) {
   response.end(readFileSync(file));
 }
 
-class Tab {
-  constructor(socket, sessionId) {
-    this.socket = socket;
-    this.sessionId = sessionId;
-    this.next = 1;
-    this.pending = new Map();
-    socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
-      if (!message.id || !this.pending.has(message.id)) return;
-      const { resolve, reject } = this.pending.get(message.id);
-      this.pending.delete(message.id);
-      message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
-    });
-  }
-  send(method, params = {}) {
-    const id = this.next++;
-    const payload = { id, method, params };
-    if (this.sessionId) payload.sessionId = this.sessionId;
-    this.socket.send(JSON.stringify(payload));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-  async eval(expression) {
-    const result = await this.send("Runtime.evaluate", {
-      expression: `(async () => { ${expression} })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails).slice(0, 500));
-    return result.result.value;
-  }
-}
-
-const CHROME = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
-let chrome = null;
-let socket = null;
-async function endpoint() {
-  for (let tries = 0; tries < 200; tries++) {
-    try {
-      return await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`).then((r) => r.json()).then((v) => v.webSocketDebuggerUrl);
-    } catch {
-      await wait(100);
-    }
-  }
-  throw new Error("chromium never opened its debugging port");
-}
 async function settle(tab) {
   let last = -1;
   for (let tries = 0; tries < 120; tries++) {
@@ -196,23 +154,12 @@ function check(what, condition, detail = "") {
 }
 
 async function run() {
-  for (const candidate of CHROME) {
-    chrome = spawn(candidate, [
-      "--headless=new", `--remote-debugging-port=${DEBUG_PORT}`, "--no-sandbox",
-      "--disable-gpu", "--disable-dev-shm-usage", "about:blank",
-    ], { stdio: "ignore" });
-    if (chrome) break;
-  }
-  if (!chrome) throw new Error("no Chromium to drive");
-  socket = new WebSocket(await endpoint());
-  await new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve);
-    socket.addEventListener("error", reject);
-  });
-  const root = new Tab(socket, null);
-  const { targetId } = await root.send("Target.createTarget", { url: "about:blank" });
-  const { sessionId } = await root.send("Target.attachToTarget", { targetId, flatten: true });
-  const tab = new Tab(socket, sessionId);
+  profile = mkdtempSync(join(tmpdir(), "librepaper-typst-viewer-browser-"));
+  chrome = await browser("chromium", profile, DEBUG_PORT);
+  const tab = {
+    send: (method, params = {}) => chrome.command(method, params),
+    eval: (expression) => chrome.evaluate(`(async () => { ${expression} })()`),
+  };
   await tab.send("Runtime.enable");
   await tab.send("Page.enable");
   await tab.send("Page.addScriptToEvaluateOnNewDocument", { source: `
@@ -525,7 +472,6 @@ async function run() {
   `);
   check("locate scrolls the PDF viewer to a passage offset", located?.at > 0 && located.after > located.before, JSON.stringify(located));
 
-  await root.send("Target.closeTarget", { targetId });
 }
 
 server.listen(PORT);
@@ -534,8 +480,8 @@ try {
 } catch (error) {
   check("the Typst viewer check ran", false, String(error).slice(0, 500));
 } finally {
-  try { socket?.close(); } catch {}
-  chrome?.kill();
+  await chrome?.close();
+  if (profile) rmSync(profile, { recursive: true, force: true });
   server.close();
   await wait(150);
 }

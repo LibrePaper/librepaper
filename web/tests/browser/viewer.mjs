@@ -17,11 +17,12 @@
 // Headless Chromium over the DevTools protocol, the same way
 // `browser-smoke.mjs` and `latex-check.mjs` do it.
 
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, extname } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { browser } from "../../tools/browser-driver.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
@@ -145,64 +146,9 @@ function sendFile(response, file) {
 
 /* ------------------------------------------------------------- the browser */
 
-const CHROME = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
 const DEBUG_PORT = 9700 + Math.floor(Math.random() * 300);
 let chrome = null;
-let socket = null;
-
-async function endpoint() {
-  for (let tries = 0; tries < 200; tries++) {
-    try {
-      const version = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`).then((r) =>
-        r.json(),
-      );
-      return version.webSocketDebuggerUrl;
-    } catch {
-      await wait(150);
-    }
-  }
-  throw new Error("chromium never opened its debugging port");
-}
-
-class Tab {
-  constructor(socket, sessionId) {
-    this.socket = socket;
-    this.sessionId = sessionId;
-    this.next = 1;
-    this.pending = new Map();
-    this.console = [];
-    socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
-      if (message.id && this.pending.has(message.id)) {
-        const { resolve, reject } = this.pending.get(message.id);
-        this.pending.delete(message.id);
-        message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
-        return;
-      }
-      if (message.method === "Runtime.consoleAPICalled" || message.method === "Log.entryAdded") {
-        this.console.push(JSON.stringify(message.params).slice(0, 300));
-      }
-    });
-  }
-  send(method, params = {}) {
-    const id = this.next++;
-    const payload = { id, method, params };
-    if (this.sessionId) payload.sessionId = this.sessionId;
-    this.socket.send(JSON.stringify(payload));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-  async eval(expression) {
-    const result = await this.send("Runtime.evaluate", {
-      expression: `(async () => { ${expression} })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    if (result.exceptionDetails) {
-      throw new Error(JSON.stringify(result.exceptionDetails).slice(0, 500));
-    }
-    return result.result.value;
-  }
-}
+let profile = null;
 
 /* ------------------------------------------------------- the four passages */
 
@@ -252,35 +198,12 @@ const CASES = [
 /* ------------------------------------------------------------------ the run */
 
 async function run() {
-  for (const candidate of CHROME) {
-    try {
-      chrome = spawn(
-        candidate,
-        [
-          "--headless=new",
-          `--remote-debugging-port=${DEBUG_PORT}`,
-          "--no-sandbox",
-          "--disable-gpu",
-          "--disable-dev-shm-usage",
-          "about:blank",
-        ],
-        { stdio: "ignore" },
-      );
-      break;
-    } catch {
-      chrome = null;
-    }
-  }
-  if (!chrome) throw new Error("no chromium to drive");
-  socket = new WebSocket(await endpoint());
-  await new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve);
-    socket.addEventListener("error", reject);
-  });
-  const root = new Tab(socket, null);
-  const { targetId } = await root.send("Target.createTarget", { url: "about:blank" });
-  const { sessionId } = await root.send("Target.attachToTarget", { targetId, flatten: true });
-  const tab = new Tab(socket, sessionId);
+  profile = mkdtempSync(join(tmpdir(), "librepaper-viewer-browser-"));
+  chrome = await browser("chromium", profile, DEBUG_PORT);
+  const tab = {
+    send: (method, params = {}) => chrome.command(method, params),
+    eval: (expression) => chrome.evaluate(`(async () => { ${expression} })()`),
+  };
   await tab.send("Runtime.enable");
   await tab.send("Log.enable");
   await tab.send("Page.enable");
@@ -502,7 +425,6 @@ async function run() {
     String(second.viewerPages),
   );
 
-  await root.send("Target.closeTarget", { targetId });
 }
 
 /// Wait for the agent's republish. It debounces its observer by 250 ms, and a
@@ -524,10 +446,8 @@ try {
 } catch (error) {
   check("the viewer check ran", false, String(error).slice(0, 500));
 } finally {
-  try {
-    socket?.close();
-  } catch {}
-  chrome?.kill();
+  await chrome?.close();
+  if (profile) rmSync(profile, { recursive: true, force: true });
   server.close();
   await wait(200);
 }
