@@ -24,6 +24,10 @@ then `google-chrome-stable` on `PATH`. Running `tools/suite browser` or
 `tools/suite smoke` without a usable browser fails the requested suite rather
 than reporting a successful skip. Individual checks that explicitly skip when
 their built shell or fixture artifact is absent keep that optional behavior.
+The suite pins browser-selecting fixtures to Chromium even when `BROWSER` is
+set in the caller's environment. The LaTeX browser fixture can still be run
+directly with `firefox`, `chromium`, or `both` for standalone cross-browser
+coverage.
 
 ## Classification
 
@@ -33,7 +37,7 @@ their built shell or fixture artifact is absent keep that optional behavior.
 `assistant`, `assistant-preview`, `assistant-review`, `build-catalog`,
 `build-preferences`, `citations`, `collab-awareness`, `commands`,
 `companion-status`, `deployment-helper`, `diagnostics`, `downloads`, `file-manager`,
-`browser-executable`, `frame-overlays`, `generation`, `history-calendar`, `insert`, `landing`,
+`browser-executable`, `browser-suite-selection`, `frame-overlays`, `generation`, `history-calendar`, `insert`, `landing`,
 `latex-biber`, `latex-bibliography`, `latex-driver`, `latex-engine`,
 `latex-log`, `latex-reader`, `loro-codemirror`, `math`, `offline-projects`,
 `orphan`, `outline`, `panels`, `passage-trace`, `passages`, `pdf-fit`,
