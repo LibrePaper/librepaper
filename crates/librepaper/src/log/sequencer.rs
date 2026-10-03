@@ -294,7 +294,7 @@ impl Head<'_> {
         }
         let projected = librepaper_document::document::projection::project(
             &draft,
-            &librepaper_document::document::paths::rules(&self.rules_owner),
+            &librepaper_document::document::paths::rules(self.rules_owner),
         );
         Ok(Some(PreparedSource {
             batch,
@@ -2993,7 +2993,7 @@ mod prepare_budget_tests {
             frontier: doc.oplog_frontiers(),
             projection: Arc::new(librepaper_document::document::projection::project(
                 doc,
-                &librepaper_document::document::paths::rules(&config),
+                &librepaper_document::document::paths::rules(config),
             )),
             budget: budget.clone(),
             estimate,
