@@ -802,7 +802,7 @@ impl Server {
                     200,
                     &json!({"sha": row.id, "label": row.label.unwrap_or_default()}),
                 ),
-                Err(error) => return refused("label a version", &error),
+                Err(error) => refused("label a version", &error),
             }
         } else {
             let label_id = uuid::Uuid::parse_str(sha).expect("checked by is_label_id");
