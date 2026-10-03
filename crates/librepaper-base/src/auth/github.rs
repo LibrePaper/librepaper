@@ -205,50 +205,32 @@ impl GithubApp {
 /// the one expected negative answer and is represented by `Ok(None)` instead;
 /// every other failure must remain distinguishable from an invalid token so a
 /// transient GitHub outage cannot be cached as a negative authentication.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderError {
+    #[error("GitHub app credentials are not configured")]
     NotConfigured,
+    #[error("authentication checks are busy; retry shortly")]
     Busy,
+    #[error("GitHub authentication failed (HTTP {status})")]
     Authentication {
         status: u16,
     },
+    #[error("GitHub rate limit reached (HTTP {status})")]
     RateLimited {
         status: u16,
         retry_after: Option<Duration>,
     },
+    #[error("GitHub returned HTTP {status}")]
     Upstream {
         status: u16,
     },
+    #[error("could not reach GitHub")]
     Network,
+    #[error("GitHub returned an invalid response (HTTP {status})")]
     MalformedResponse {
         status: u16,
     },
 }
-
-impl fmt::Display for ProviderError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotConfigured => formatter.write_str("GitHub app credentials are not configured"),
-            Self::Busy => formatter.write_str("authentication checks are busy; retry shortly"),
-            Self::Authentication { status } => {
-                write!(formatter, "GitHub authentication failed (HTTP {status})")
-            }
-            Self::RateLimited { status, .. } => {
-                write!(formatter, "GitHub rate limit reached (HTTP {status})")
-            }
-            Self::Upstream { status } => write!(formatter, "GitHub returned HTTP {status}"),
-            Self::Network => formatter.write_str("could not reach GitHub"),
-            Self::MalformedResponse { status } => {
-                write!(
-                    formatter,
-                    "GitHub returned an invalid response (HTTP {status})"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ProviderError {}
 
 /// Asks GitHub who a token belongs to, via the browser OAuth flow's own token:
 /// the code exchange already proves it was issued to this app, so the plain
