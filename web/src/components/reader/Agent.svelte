@@ -614,16 +614,6 @@
       {#if pairProblem}<span class="panel-meta" role="alert">{pairProblem}</span>{/if}
     </div>
   {/snippet}
-  <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
-       the collaboration panel. What is left here is what the tabs contain. -->
-  <PanelTabs id="agent" label="Agent" listClass="agent-tabs" tabs={TABS}
-             value={tab} onchange={(value) => tab = value}>
-
-  <!-- The one manual step, done once per computer rather than once per
-       document. It is the same pairing the local compiler uses, so a
-       reader who already paired for Quarto or native TeX skips it. Until it
-       is done there is nothing else to offer: no port, no install command,
-       just the one button that starts it. -->
   <!-- The gear at the top of each pane is the one way to Local companion
        settings now; the Chat pane also gets Clear conversation beside it. -->
   {#snippet paneHeader(withNewConversation)}
@@ -676,6 +666,11 @@
     {@render permissionCard()}
     {#if progress}<p class="agent-progress panel-meta" role="status">{progress}</p>{/if}
   {/snippet}
+
+  <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
+       the collaboration panel. What is left here is what the tabs contain. -->
+  <PanelTabs id="agent" label="Agent" listClass="agent-tabs" tabs={TABS}
+             value={tab} onchange={(value) => tab = value}>
 
   <Tabs.Content value="chat" class="agent-tab-content">
   {@render paneHeader(true)}

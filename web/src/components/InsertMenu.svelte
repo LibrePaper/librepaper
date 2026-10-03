@@ -11,7 +11,7 @@
   /** @typedef {import("../lib/insert.js").InsertionResult} InsertionResult */
   /** @typedef {import("../lib/insert.js").FinalInsertion} FinalInsertion */
   /** @typedef {{key?: string; [field: string]: unknown}} InsertBibliographyEntry */
-  /** @typedef {Omit<InsertContext, "bibliography"> & {bibliography?: InsertBibliographyEntry[] | {entries: InsertBibliographyEntry[]}; targetId?: string}} InsertMenuContext */
+  /** @typedef {InsertContext & {bibliography?: InsertBibliographyEntry[] | {entries: InsertBibliographyEntry[]}; targetId?: string}} InsertMenuContext */
   /** @typedef {{
    * getContext?: () => InsertMenuContext | null;
    * oninsert?: (result: FinalInsertion, context: InsertMenuContext) => unknown;
@@ -70,13 +70,7 @@
   const actionById = (id) => INSERT_ACTIONS.find((action) => action.id === id);
   /** @returns {InsertMenuContext} */
   function contextNow() { return menuContext || getContext?.() || { format: "markdown", path: "", text: "", selection: { from: 0, to: 0, text: "" } }; }
-  /** @param {InsertMenuContext} context @returns {InsertContext} */
-  function insertionContext(context) {
-    const { bibliography, ...base } = context;
-    const entries = Array.isArray(bibliography) ? bibliography : bibliography?.entries;
-    return entries ? { ...base, bibliography: entries } : base;
-  }
-  function availability(id, context) { return insertionAvailability?.(id, insertionContext(context)) || { enabled: true }; }
+  function availability(id, context) { return insertionAvailability?.(id, context) || { enabled: true }; }
   function actionLabel(id) { return actionById(id)?.label || id; }
   function closeDialog() {
     const target = captured;
@@ -94,7 +88,7 @@
   }
   /** @param {string} id @param {InsertionDraft} options @param {InsertMenuContext} context @returns {InsertionResult} */
   function safeBuild(id, options, context) {
-    try { error = ""; return buildInsertion(id, options, insertionContext(context)); }
+    try { error = ""; return buildInsertion(id, options, context); }
     catch (cause) { const message = errorMessage(cause, "This insertion is not valid yet."); error = message; return { text: "", notes: [message], additionalEdits: [] }; }
   }
   /** @param {string} id */
@@ -140,7 +134,7 @@
   /** @param {string} id @param {InsertionDraft} options @param {InsertMenuContext} context */
   function insert(id, options, context) {
     let result;
-    try { result = buildInsertion(id, options, insertionContext(context)); }
+    try { result = buildInsertion(id, options, context); }
     catch (cause) { error = errorMessage(cause, "This insertion is not valid yet."); return; }
     try { oninsert?.(result, context); }
     catch (cause) { error = errorMessage(cause, "The insertion target changed."); dialog = id; dialogOpen = true; return; }
@@ -175,9 +169,9 @@
   const files = $derived((captured?.files || []).map((file) => typeof file === "string" ? file : file.path).filter((path) => (captured?.format === "latex" ? /\.bib$/i : captured?.format === "typst" ? /\.(bib|ya?ml)$/i : /\.(bib|json|ya?ml)$/i).test(path || "")));
   const selectedImage = $derived((captured?.files || []).find((file) => (typeof file === "string" ? file : file.path) === draft.path));
   const selectedImagePreview = $derived(selectedImage && typeof selectedImage !== "string" ? selectedImage.url : undefined);
-  const references = $derived(gatherInsertTargets(insertionContext(captured || {})));
-  const environmentFields = $derived(insertEnvironmentFields(draft.environment || "", insertionContext(captured || {})));
-  const environments = $derived(gatherInsertEnvironments(insertionContext(captured || {})));
+  const references = $derived(gatherInsertTargets(captured || {}));
+  const environmentFields = $derived(insertEnvironmentFields(draft.environment || "", captured || {}));
+  const environments = $derived(gatherInsertEnvironments(captured || {}));
   /** @param {string | null} id */
   const needsText = (id) => ["heading", "link"].includes(id || "");
   $effect(() => {
