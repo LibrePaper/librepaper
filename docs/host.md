@@ -76,11 +76,11 @@ Blocking: revokes sessions, denies access and writes. Unblocking: permits fresh 
 
 Hiding: preserves data while denying document, asset, source, history, export, and socket access. Unhiding restores previous access rules.
 
-Sockets refresh authorization every 2 seconds; existing frames in flight may still arrive. Preserve `moderation_audit` with normal backups.
+Open sockets recheck authorization every 2 seconds, then disconnect; frames already in flight may still arrive. Preserve `moderation_audit` with normal backups.
 
 ## Storage
 
-`librepaper admin serve` stores to `--data-directory` (default `librepaper-data`).
+`librepaper admin serve` stores catalog, objects, server state and session secrets in `--data-directory` (default `librepaper-data`). Restore needs an empty database and a path that does not exist yet.
 
 Storage limits:
 
@@ -119,8 +119,6 @@ Secrets (environment only):
 
 Service settings:
 - `LIBREPAPER_ASSET_MIRROR`: HTTPS URL (default: project mirror)
-- `--document-expire-after` / `LIBREPAPER_EXPIRE_AFTER`: duration e.g. `24h` (default: never)
-- `--document-expire-from` / `LIBREPAPER_EXPIRE_FROM`: `updated` or `created` (default: updated)
 
 ## Fonts
 
@@ -170,7 +168,10 @@ At least one OAuth client (GitHub or Google) is required.
 
 ## Retention
 
-See environment variables above.
+```sh
+librepaper admin serve --document-expire-after 24h      # LIBREPAPER_EXPIRE_AFTER; default never
+librepaper admin serve --document-expire-from created   # LIBREPAPER_EXPIRE_FROM; default updated
+```
 
 ## Containers
 

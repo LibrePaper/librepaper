@@ -20,7 +20,7 @@ The response can be limited to the comments made since a given checkpoint, cover
 
 > The confidence interval does not say that the parameter is inside it with 95% probability.
 
-**Then:** “with 95% probability, the true value lies in the interval”
+**Then:** "with 95% probability, the true value lies in the interval"
 
 **Now:** no longer in the document.
 

@@ -10,7 +10,7 @@ An operator's reverse proxy, backups and hosting provider keep their own logs.
 ## Security and encryption
 
 No end-to-end encryption. The server and database can read drafts, comments,
-identities and presence in the clear. Backups are unencrypted.
+identities and presence in the clear.
 
 ## What a deployment stores
 
@@ -105,7 +105,7 @@ Hosting, database and object-storage providers see what they store.
 - **Checkpoints:** kept until document is deleted
 - **Edit history:** kept whole for the life of the document
 - **Sessions:** 30 days; invalidated by sign-out or account erasure
-- **Backups:** as long as the operator keeps them
+- **Backups:** encrypted, up to 60 days
 
 Deleting a document deletes files, comments, replies, checkpoints and share links.
 
@@ -118,5 +118,9 @@ Deleting a document deletes files, comments, replies, checkpoints and share link
 3. Comments and checkpoints on others' documents stay, relabelled "Deleted user"
 4. Account record deleted once documents are gone
 
-Erasure does not reach backups; a restored backup restores the account as it was.
+When you delete your account, your personal information is removed from our
+active systems. Residual copies may remain in encrypted backups for up to 60
+days. Backup data is not accessible through the service or used for any other
+purpose and is automatically deleted as backups expire. If a backup is
+restored, previously completed deletion requests are reapplied.
 

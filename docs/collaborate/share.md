@@ -36,7 +36,7 @@ any signed-in GitHub or Google account may publish. Comments from signed-in
 users show the account's display name, or its handle when no display name is
 available.
 
-A stranger -- anyone with the URL and no live link -- is answered exactly as
+A stranger (anyone with the URL and no live link) is answered exactly as
 a deleted document answers. The reading frame is served from a separate
 documents host that holds no sign-in of yours, so the reader fetches a
 short-lived token on the origin that does and puts it on the frame's URL;

@@ -25,8 +25,8 @@ The project engine (Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX) is configurable
 per project. Every compile uses the release the server pins in `assets.lock`.
 Automatic honours a `% !TEX program = xelatex` line in the main file, then
 looks for packages that only a Unicode engine can load, and otherwise uses
-pdfLaTeX. LuaLaTeX remains available for release compatibility, but may not be
-available in the current release.
+pdfLaTeX. LuaLaTeX is listed for compatibility but
+the current release does not provide it.
 
 BibTeX and Biber run in the browser when the release provides them. Biber
 documents use the release's bundled biblatex pairing. If browser Biber has an

@@ -53,9 +53,9 @@ See [`docs/asset-mirrors.md`](docs/dev/asset-mirrors.md).
 
 - [What is LibrePaper](https://librepaper.org/what.html)
 - [Install](https://librepaper.org/install.html)
-- [Running a server](https://librepaper.org/host.html)
-- [Privacy and the LaTeX mirror](https://librepaper.org/host.html#privacy-and-the-latex-mirror)
-- [Building from source](https://librepaper.org/architecture.html#building-from-source)
+- [Self-hosting](https://librepaper.org/host.html)
+- [Privacy and the LaTeX mirror](https://librepaper.org/host.html#privacy)
+- [Building from source](https://librepaper.org/architecture/building.html)
 
 ## Credits
 
