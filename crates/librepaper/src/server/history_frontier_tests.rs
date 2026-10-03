@@ -19,16 +19,18 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::auth::{sign_agent_grant, sign_device, AgentGrant, Identity, PROVIDER_GITHUB};
-use crate::document::store::Role;
+use crate::document::store::{DocumentInput, Role};
 use crate::room::Message as RoomMessage;
 use crate::server::origins::Origins;
 
+use super::http_test_support::{deployment as http_deployment, owner_bearer};
 use super::{Server, Viewer};
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";
+
 async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> {
-    super::http_test_support::deployment(
-        crate::document::store::DocumentInput {
+    http_deployment(
+        DocumentInput {
             slug: slug.into(),
             title: "A Paper".into(),
             source: PAPER.into(),
@@ -41,9 +43,6 @@ async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> 
     )
     .await
 }
-
-
-use super::http_test_support::{owner_bearer, Deployment};
 
 fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) -> Viewer {
     Viewer {

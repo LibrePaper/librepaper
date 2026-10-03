@@ -20,15 +20,16 @@ use crate::server::origins::Origins;
 use crate::document::store::{DocumentInput, MutationActor};
 use crate::storage::postgres::{Authority, NewProposal};
 
-use super::Server;
+use super::http_test_support::{deployment as http_deployment, owner_bearer};
 
 const PAPER: &str = "# Figure test\n\nA document with figures.\n";
 const FIGURE_A: &[u8] = b"figure A bytes";
 const FIGURE_B: &[u8] = b"figure B bytes";
 const FIGURE_C: &[u8] = b"figure C bytes";
+
 async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> {
-    super::http_test_support::deployment(
-        crate::document::store::DocumentInput {
+    http_deployment(
+        DocumentInput {
             slug: slug.into(),
             title: "Figure Test".into(),
             source: PAPER.into(),
@@ -41,9 +42,6 @@ async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> 
     )
     .await
 }
-
-
-use super::http_test_support::owner_bearer;
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
