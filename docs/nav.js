@@ -13,7 +13,7 @@
 // adding a page here is the whole of adding it to the sidebar, and the order
 // below is the order it appears in.
 export const nav = [
-  { path: "start", label: "Getting started" },
+  { path: "what", label: "What is LibrePaper" },
   { path: "install", label: "Install" },
   {
     path: "authoring/index",
@@ -21,7 +21,13 @@ export const nav = [
     pages: [
       { path: "authoring/latex", label: "LaTeX" },
       { path: "authoring/typst", label: "Typst" },
-      { path: "authoring/quarto", label: "Quarto" },
+    ],
+  },
+  {
+    label: "Computational notebooks",
+    pages: [
+      { path: "notebooks/quarto", label: "Quarto" },
+      { path: "notebooks/calepin", label: "Calepin" },
     ],
   },
   {
@@ -36,7 +42,17 @@ export const nav = [
   { path: "agents", label: "Agents" },
   { path: "cli", label: "CLI" },
   { path: "backups", label: "Local backups" },
-  { path: "host", label: "Running a server" },
-  { path: "architecture", label: "Architecture" },
+  { path: "host", label: "Self-hosting" },
+  {
+    path: "architecture/index",
+    label: "Architecture",
+    pages: [
+      { path: "architecture/document", label: "Document and storage" },
+      { path: "architecture/review", label: "Comments and track changes" },
+      { path: "architecture/rendering", label: "Rendering and live sync" },
+      { path: "architecture/companion", label: "Companion and agents" },
+      { path: "architecture/building", label: "Building from source" },
+    ],
+  },
   { path: "privacy", label: "Privacy" },
 ];

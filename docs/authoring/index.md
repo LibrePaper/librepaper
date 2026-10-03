@@ -2,13 +2,13 @@
 title: "Authoring"
 ---
 
-LibrePaper accepts several source formats. The pages in this section cover [LaTeX](./latex.html), [Typst](./typst.html), and [Quarto](./quarto.html), as well as common concerns like bibliographies and mathematical notation.
+LibrePaper accepts several source formats. The pages in this section cover [LaTeX](./latex.html) and [Typst](./typst.html), as well as common concerns like bibliographies and mathematical notation.
 
 ## Bibliographies
 
 Add or upload a BibTeX or BibLaTeX file through Files, or include it when publishing
 a directory. In the source editor, type `@` (or `\cite{` in LaTeX) to search by
-citation key, author, title, or year. Selecting a result inserts its key.
+citation key, author, title, or year.
 
 Markdown accepts Pandoc citations such as `[@smith2020]`, `@smith2020`,
 and `[see @smith2020, pp. 3-4; @jones2021]`. Choose resources and a built-in
@@ -23,10 +23,9 @@ bibliography-style: apa
 
 With no resource declaration, all `.bib` files in the document form the library.
 The reference list appears at a References heading or at the end. Missing keys,
-malformed entries, and missing files appear in Diagnostics. Parsing and Markdown
-formatting run in separate, lazily loaded WebAssembly modules. LaTeX and Typst
+malformed entries, and missing files appear in Diagnostics. LaTeX and Typst
 keep their own bibliography compilers. Zotero exports can be uploaded as
-`.bib` files; live Zotero integration is a later milestone.
+`.bib` files.
 
 ## Math
 

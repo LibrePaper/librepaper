@@ -2,7 +2,7 @@
 title: "Install"
 ---
 
-Reading, commenting and publishing happen in the browser and need no install. Install `librepaper` to run the companion (local Quarto, Typst and TeX tools, coding agents, backups), to use the CLI, or to host a server. It is one binary; pick one method.
+Install `librepaper` to run the companion, use the CLI, or host a server. It is one binary; pick one method.
 
 ## Installer script
 
@@ -22,14 +22,14 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepa
 - To pin a version, replace `releases/latest/download/` with `releases/download/<tag>/`.
 - Update later with `librepaper-update`.
 
-## Homebrew
+## Homebrew (macOS)
 
 ```sh
 # macOS and Linux
 brew install vincentarelbundock/tap/librepaper
 ```
 
-## Scoop
+## Scoop (Windows)
 
 ```powershell
 # Windows
@@ -48,11 +48,9 @@ cargo install librepaper
 
 ```sh
 librepaper --version                 # check the install
-librepaper                           # start the companion in the background
-librepaper --at-login                # also start it every time you log in
-librepaper status                    # address, pairings, tools and agents found
+librepaper                           # start the companion
+librepaper --at-login                # start at login too
+librepaper status                    # address, pairings, tools, agents
 ```
 
-Then open *Settings*, *Local app* in LibrePaper and click **Connect**. No install method adds a desktop shortcut or registers a `librepaper://` link handler: you start the companion from a terminal.
-
-More commands are in [the CLI reference](cli.html#the-companion). To build from a checkout, see [building from source](architecture.html#building-from-source).
+See [the CLI reference](cli.html#the-companion) for more commands. To build from a checkout, see [building from source](architecture/building.html).
