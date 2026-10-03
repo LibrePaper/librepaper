@@ -19,6 +19,7 @@ pub(super) struct Upload {
     pub(super) files: Vec<(String, Vec<u8>)>,
 }
 
+#[allow(clippy::result_large_err)] // the invalid-source response is an HTTP reply
 fn main_source(path: &str, bytes: &[u8]) -> Result<String, Reply> {
     std::str::from_utf8(bytes)
         .map(str::to_owned)
