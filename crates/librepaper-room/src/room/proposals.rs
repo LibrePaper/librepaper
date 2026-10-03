@@ -64,31 +64,22 @@ pub struct Proposal {
 }
 
 /// What went wrong deciding one.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ProposalError {
     /// The decision was computed against a tip the proposal has moved past.
     /// The author edited while the reviewer was reading, so the hunks the
     /// reviewer decided about are not the hunks that are there now.
+    #[error("this proposal has changed since it was reviewed")]
     Stale,
     /// The base a client forked at is not a frontier this room can reach, so
     /// the branch cannot be rebuilt against it. The author is ahead of what
     /// they have sent: their own operations have to arrive before a proposal
     /// can be opened on top of them.
+    #[error("this proposal forked from work the server has not received yet")]
     UnknownBase,
     /// The branch could not be read, or the room refused the result.
+    #[error("{0}")]
     Failed(String),
-}
-
-impl std::fmt::Display for ProposalError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stale => f.write_str("this proposal has changed since it was reviewed"),
-            Self::UnknownBase => {
-                f.write_str("this proposal forked from work the server has not received yet")
-            }
-            Self::Failed(text) => f.write_str(text),
-        }
-    }
 }
 
 /// Turns a suggestion into a branch: one hunk putting the proposed text where

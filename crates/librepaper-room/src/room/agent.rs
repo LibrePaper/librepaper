@@ -344,24 +344,15 @@ fn reject_overlaps(ranges: &mut [(&str, usize, usize)]) -> Result<(), AgentError
 
 /// Errors are intentionally structured so the MCP adapter can map conflicts
 /// to a fresh bounded read without parsing prose.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AgentError {
+    #[error("invalid agent operation: {0}")]
     Invalid(String),
+    #[error("agent operation conflict: {0}")]
     Conflict(String),
+    #[error("agent operation storage failure: {0}")]
     Storage(String),
 }
-
-impl std::fmt::Display for AgentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Invalid(message) => write!(f, "invalid agent operation: {message}"),
-            Self::Conflict(message) => write!(f, "agent operation conflict: {message}"),
-            Self::Storage(message) => write!(f, "agent operation storage failure: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for AgentError {}
 
 impl From<CommandError> for AgentError {
     fn from(error: CommandError) -> Self {
