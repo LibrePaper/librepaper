@@ -25,8 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.workflow_run.head_sha }}
-          fetch-depth: 0
+          # Run helper scripts from the workflow revision, never from the
+          # release tag being inspected (which may predate those scripts).
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 1
 
       - id: resolve
         env:
