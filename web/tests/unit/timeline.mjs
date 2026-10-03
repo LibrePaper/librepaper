@@ -148,8 +148,6 @@ const order = (points) => [...points].sort(labelOrder).map((point) => point.sha)
     Boolean(calls[0][4]) && calls[0][4] === calls[1][4]);
   check("current-label retry keeps the document capability header",
     calls.every(([, , , headers]) => headers["X-LibrePaper-Key"] === "document-key"));
-  check("current-label retry keeps the shell request marker",
-    calls.every(([, , , headers]) => headers["X-LibrePaper-Client"] === "shell"));
 }
 
 {
@@ -167,6 +165,8 @@ const order = (points) => [...points].sort(labelOrder).map((point) => point.sha)
     check("label adapter sends the retry identity", JSON.parse(request.body).request_id === "stable-request-id");
     check("label adapter preserves document credentials",
       request.headers["X-LibrePaper-Key"] === "document-key");
+    check("label adapter adds the shell request marker",
+      request.headers["X-LibrePaper-Client"] === "shell");
   } finally { globalThis.fetch = originalFetch; }
 }
 
