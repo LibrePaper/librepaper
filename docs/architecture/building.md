@@ -35,11 +35,12 @@ dedicated disposable database and select one test by name:
 
 ```sh
 LIBREPAPER_TEST_POSTGRES_URL='postgresql://postgres:password@127.0.0.1:5432/librepaper_test' \
-  cargo test -p librepaper --lib <test_name> -- --ignored --test-threads=1
+  cargo test -p librepaper --lib server::history_frontier_tests::delegated_agent_bearer_stops_working_after_session_revocation -- --ignored --test-threads=1 --exact
 ```
 
 The selected case may clear tables, so do not use a shared or production
-database. The PostgreSQL CI job runs its recovery and deployment gates serially
+database. Shared PostgreSQL fixtures fail when explicitly run without their
+required database setting. The PostgreSQL CI job runs its recovery and deployment gates serially
 against separate disposable databases; its explicit selection skips keep
 release/capacity benchmarks and the unstable Quarto preview out of that run.
 See the [PostgreSQL CI invocation](../../.github/workflows/ci.yml).
@@ -55,7 +56,10 @@ LIBREPAPER_BENCHMARK_SECONDS=30 \
   cargo test -p librepaper --lib typing_throughput_release_benchmark --release -- --ignored --nocapture --test-threads=1
 ```
 
-That benchmark truncates its configured database. The socket benchmark instead
+The short run is diagnostic only; use the default 600-second run for release
+acceptance. Run the relevant benchmark before a performance release, and run
+the isolated recovery drill before a storage or recovery release. The throughput
+benchmark truncates its configured database. The socket benchmark instead
 uses `LIBREPAPER_BENCH_POSTGRES_URL`; the mixed workload and its PostgreSQL
 setup are documented in [`tools/frugal-mixed-bench/README.md`](../../tools/frugal-mixed-bench/README.md).
 The isolated backup/restore recovery drill has its own disposable-database
