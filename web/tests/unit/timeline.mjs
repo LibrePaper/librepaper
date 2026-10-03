@@ -159,7 +159,6 @@ const order = (points) => [...points].sort(labelOrder).map((point) => point.sha)
   };
   try {
     await label("paper", "current", "Named", {
-      "X-LibrePaper-Client": "shell",
       "X-LibrePaper-Key": "document-key",
     }, "stable-request-id");
     check("label adapter sends the retry identity", JSON.parse(request.body).request_id === "stable-request-id");
