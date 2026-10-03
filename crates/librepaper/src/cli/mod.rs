@@ -507,7 +507,9 @@ pub(crate) enum ModerationCommand {
     },
 }
 
-/// `librepaper local <command>` compatibility commands. See `crate::local::cli`.
+/// `librepaper local <command>` compatibility commands. Keep these aliases
+/// until a removal cutoff is announced for supported external CLI clients.
+/// See `crate::local::cli`.
 #[derive(Subcommand, Clone, Debug)]
 pub enum LocalCommand {
     /// Start the companion (in the background by default, or in this process with --foreground)

@@ -4,8 +4,9 @@
 // canvas and text layer, stacked vertically in one scrolling document, which
 // is what makes the text of a LaTeX document one sequence rather than a pile
 // of pages. pdf.js and its worker come from our own static assets and never
-// from a CDN -- the documents origin's CSP allows `script-src 'self'` and a
-// worker from `blob:`, and that is deliberate, not an oversight.
+// from a CDN. The documents origin currently allows HTTPS script sources;
+// serving pdf.js from the application's own static assets keeps this renderer
+// pinned to the application release. Its worker runs from `blob:`.
 //
 // It is loaded lazily by `viewer.js`, on the first PDF that arrives. pdf.js
 // is the largest thing the web build has after the typst module, and a reader
@@ -288,4 +289,3 @@ function gap(text) {
   span.textContent = text;
   return span;
 }
-

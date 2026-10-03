@@ -641,10 +641,9 @@ pub(super) async fn dispatch(
         if let ["pdf", slug] | ["pdf", slug, ""] = parts[..] {
             return server.serve_viewer(&arrival, slug).await;
         }
-        // The viewer page's own bundle, and pdf.js's worker beside it. A page
-        // whose CSP is `script-src 'self'` can only load its scripts from the
-        // origin it was served on, so these have to be reachable here as well
-        // as on the reader's host. They are the same digest-named, immutable
+        // The viewer page's own bundle, and pdf.js's worker beside it. Keep
+        // these same-origin assets reachable here as well as on the reader's
+        // host. They are the same digest-named, immutable
         // shell files either way, they carry no identity, and nothing else in
         // the shell is served from this origin.
         if path.starts_with("/assets/") {
@@ -993,8 +992,9 @@ impl Server {
 /// every document and every reader, because a policy a reader can switch is a
 /// policy nobody can reason about and a response nobody can cache.
 ///
-/// The rule it encodes is one sentence: **a document may run its own code, and
-/// may not fetch code from somewhere else.**
+/// The current rule allows document code, same-origin assets and HTTPS
+/// resources. A stricter external-script policy requires separate renderer
+/// compatibility work.
 ///
 /// `'unsafe-inline'` and `'unsafe-eval'` stay, and they cost nothing here. They
 /// are dangerous on a page that mixes trusted markup with untrusted input,
@@ -1003,11 +1003,10 @@ impl Server {
 /// its own origin, so its inline script *is* the document; refusing it would
 /// break most Quarto and pandoc output to protect nothing.
 ///
-/// What is refused is `https:` in `script-src`. That is not about danger per
-/// byte, it is about a second party and a later time: code fetched at read time
-/// was never reviewed with the document, the author can change it afterwards,
-/// and whoever serves it can be compromised into every reader's frame. `data:`
-/// and `blob:` remain because they are the document's own bytes, not a host.
+/// HTTPS script sources are currently allowed for renderer and CDN
+/// compatibility. This lets a document load code controlled by a second party
+/// at read time, which may change after publication or be compromised. `data:`
+/// and `blob:` remain for document-generated resources.
 ///
 /// Images, fonts, styles and network connections deliberately still reach the
 /// open web. A document can therefore still tell its author who opened it and
@@ -1019,9 +1018,8 @@ impl Server {
 ///
 /// There used to be a `document_policy` helper here that no route called,
 /// tested on its own. It had drifted: it refused `https:` in `script-src`
-/// and both routes allow it, so the test that said "a document may not
-/// fetch code from another host" was describing a deployment that does not
-/// exist. A policy is a property of a response, so these read the header off
+/// while both routes allow it, so the test described a deployment that does
+/// not exist. A policy is a property of a response, so these read the header off
 /// one.
 ///
 /// Nothing here changes what is served. Where the served policy and the

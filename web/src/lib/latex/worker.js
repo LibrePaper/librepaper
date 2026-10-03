@@ -53,9 +53,9 @@ const KINDS = {
 const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex", "latexml"]);
 
 // Released dvipdfm workers import the XeTeX resolver telemetry shim, but the
-// first format-1 manifests omitted that shared file from dvipdfm's inventory.
-// Keep the exception explicit and hash-verify it through `release.files` like
-// every manifest-listed engine asset.
+// pinned format-2 manifest still omits it from dvipdfm's inventory. Keep this
+// hash-verified fallback until the manifest lists it for dvipdfm or no
+// supported worker imports it.
 const COMPATIBILITY_ASSETS = { dvipdfm: ["xetex-resolver-evidence.js"] };
 
 const GZIP_MAGIC = [0x1f, 0x8b];
