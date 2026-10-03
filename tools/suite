@@ -35,12 +35,21 @@ require_chromium() {
 # real TeX Live and takes minutes by itself.
 suite_browser() {
 	require_chromium
+	# This suite is deliberately Chromium-only. A few direct test entry points
+	# can select Firefox for standalone runs; do not let inherited selectors
+	# override the browser prerequisite and resolver used here.
+	export BROWSER=chromium
 	tools/pins fetch
 	local failed="" test log
+	local -a test_args=()
 	for test in web/tests/browser/*.mjs; do
 		printf '%s: ' "$(basename "$test")"
+		test_args=()
+		if [ "$(basename "$test")" = "latex-browser.mjs" ]; then
+			test_args=(chromium)
+		fi
 		log="$(mktemp "${TMPDIR:-/tmp}/librepaper-browser-test.XXXXXX")"
-		if (cd web && timeout 900 node "../$test" >"$log" 2>&1); then
+		if (cd web && timeout 900 node "../$test" "${test_args[@]}" >"$log" 2>&1); then
 			echo ok
 		else
 			echo FAILED
