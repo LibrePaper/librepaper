@@ -29,7 +29,7 @@
   import Row from "./layout/Row.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import { say } from "../lib/toast.svelte.js";
-  import { SHELL_HEADERS, get, me as whoami, upload } from "../lib/api.js";
+  import { SHELL_HEADERS, get, getPrivate, me as whoami, upload } from "../lib/api.js";
   import { day as isoDay, since } from "../lib/dates.js";
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
   import { FORMATS, formatNamed, fillTemplate, matchTemplates } from "../lib/starter.js";
@@ -721,7 +721,7 @@
   // Your own templates, for the dialog and for the Templates place alike.
   async function loadTemplates() {
     try {
-      templateRows = (await get("/api/templates")).templates ?? [];
+      templateRows = (await getPrivate("/api/templates")).templates ?? [];
       if (!allTemplates.some((each) => each.id === templateId)) chooseTemplate("blank");
     } catch {
       // Signed out, or offline: the built-in templates are all there is.
@@ -1135,7 +1135,7 @@
   <div class="tcard" class:picked={templateId === template.id}>
     <button type="button" class="tcard-pick" aria-pressed={templateId === template.id}
             onclick={() => chooseTemplate(template.id)}>
-      <span class="tcard-name">{template.name}</span>
+      <span class="tcard-name" class:with-actions={template.custom}>{template.name}</span>
       {#if template.description}<span class="tcard-say">{template.description}</span>{/if}
       <span class="tcard-formats">
         {#each template.formats as id}<span class="tcard-badge">{formatNamed(id).name}</span>{/each}
@@ -1278,7 +1278,8 @@
   .tcard.picked { border-color: var(--color-brand); background: var(--color-row-selected); }
   .tcard-pick { display: flex; flex-direction: column; align-items: flex-start; gap: calc(var(--spacing)); flex: 1 1 auto; min-width: 0; padding: calc(var(--spacing) * 3); text-align: left; background: transparent; border: 0; border-radius: inherit; color: var(--color-text); cursor: pointer; }
   .tcard-pick:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
-  .tcard-name { font-weight: 600; }
+  .tcard-name { font-weight: 600; overflow-wrap: anywhere; }
+  .tcard-name.with-actions { padding-right: 4rem; }
   .tcard-say { font-size: var(--text-xs); color: var(--color-text-secondary); }
   .tcard-formats { display: flex; flex-wrap: wrap; gap: calc(var(--spacing)); margin-top: auto; }
   .tcard-badge { font-size: var(--text-xs); padding: 0 calc(var(--spacing) * 1.5); border-radius: 999px; background: var(--color-subtle); color: var(--color-text-secondary); }

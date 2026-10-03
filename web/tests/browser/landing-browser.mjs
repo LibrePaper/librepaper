@@ -101,7 +101,8 @@ try {
     assert.equal(await tab.evaluate("document.querySelectorAll('.mobile-updated').length"), 0, `${width}px: no inline relative dates`);
     assert.equal(await tab.evaluate("Boolean(document.querySelector('th[data-column=updated]'))"), false, `${width}px: updated column is hidden`);
     assert.ok(await rowHeight("owned") <= 65, `${width}px: ordinary rows stay compact (${await rowHeight("owned")}px)`);
-    assert.equal(await tab.evaluate("[...document.querySelectorAll('.activity-sections .icon-control')].filter(button => button.querySelector('.compact-label')).length"), 5, `${width}px: all five bottom rail labels remain`);
+    assert.equal(await tab.evaluate("[...document.querySelectorAll('.activity-sections .icon-control')].filter(button => button.querySelector('.compact-label')).length"), 6, `${width}px: all six bottom rail labels remain`);
+    assert.equal(await tab.evaluate("(() => { const rail = document.querySelector('.activity-sections'); return rail.scrollWidth <= rail.clientWidth; })()"), true, `${width}px: the bottom rail fits without scrolling`);
     const navGap = await tab.evaluate(`(() => { const actions=document.querySelector('.nav-actions'); const project=document.querySelector('.nav-new'); const account=document.querySelector('.nav-actions .account'); return { gap:getComputedStyle(actions).columnGap, between:Math.round(account.getBoundingClientRect().left-project.getBoundingClientRect().right) }; })()`);
     assert.deepEqual(navGap, { gap: "4px", between: 4 }, `${width}px: new-project and account controls keep a 4px gap`);
     await click(trigger("owned"));

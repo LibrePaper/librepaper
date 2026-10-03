@@ -5,7 +5,7 @@
 
 = #title
 
-#align(center, text(size: 11pt, [*#author*]))
+#strong(author)
 
 == Abstract
 
