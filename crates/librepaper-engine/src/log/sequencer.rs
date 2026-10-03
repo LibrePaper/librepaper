@@ -446,38 +446,21 @@ pub trait Command {
 
 /// Why a command did not happen. A conflict is the caller's to resolve and
 /// carries what it needs to do so.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CommandError {
     /// A precondition failed at head. Nothing was written.
+    #[error("{0}")]
     Conflict(String),
     /// A rendered selection was made against a projection that is no longer
     /// the head one (§7.1). The current digest comes back with it.
+    #[error("the document moved under that selection")]
     StaleSelection {
         digest: String,
     },
-    Storage(postgres::Error),
-    Sequencer(SequencerError),
-}
-
-impl std::fmt::Display for CommandError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Conflict(why) => formatter.write_str(why),
-            Self::StaleSelection { .. } => {
-                formatter.write_str("the document moved under that selection")
-            }
-            Self::Storage(error) => error.fmt(formatter),
-            Self::Sequencer(error) => error.fmt(formatter),
-        }
-    }
-}
-
-impl std::error::Error for CommandError {}
-
-impl From<postgres::Error> for CommandError {
-    fn from(error: postgres::Error) -> Self {
-        Self::Storage(error)
-    }
+    #[error(transparent)]
+    Storage(#[from] postgres::Error),
+    #[error(transparent)]
+    Sequencer(#[from] SequencerError),
 }
 
 impl From<sqlx::Error> for CommandError {
@@ -486,43 +469,22 @@ impl From<sqlx::Error> for CommandError {
     }
 }
 
-impl From<SequencerError> for CommandError {
-    fn from(error: SequencerError) -> Self {
-        Self::Sequencer(error)
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SequencerError {
     /// The document cannot be read: a build breached a bound (§9.3). Ingest
     /// and flush continue; projections and commands answer 503.
+    #[error("this document cannot be read: {0}")]
     Unreadable(String),
     /// The memory budget had no room. Retryable.
+    #[error("this deployment is at its memory budget; retry")]
     Busy,
-    Storage(postgres::Error),
+    #[error(transparent)]
+    Storage(#[from] postgres::Error),
+    #[error("{0}")]
     Loro(String),
     /// The fence was lost; this sequencer must stop and be re-admitted.
+    #[error("writer ownership lost: {0}")]
     Fenced(String),
-}
-
-impl std::fmt::Display for SequencerError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unreadable(why) => write!(formatter, "this document cannot be read: {why}"),
-            Self::Busy => formatter.write_str("this deployment is at its memory budget; retry"),
-            Self::Storage(error) => error.fmt(formatter),
-            Self::Loro(error) => formatter.write_str(error),
-            Self::Fenced(why) => write!(formatter, "writer ownership lost: {why}"),
-        }
-    }
-}
-
-impl std::error::Error for SequencerError {}
-
-impl From<postgres::Error> for SequencerError {
-    fn from(error: postgres::Error) -> Self {
-        Self::Storage(error)
-    }
 }
 
 pub type Result<T> = std::result::Result<T, SequencerError>;
