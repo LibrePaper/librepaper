@@ -279,7 +279,7 @@ async fn a_template_leaves_the_project_listing_and_follows_its_document() {
     // Marking again is not an error.
     catalog.mark_template(template).await.unwrap();
 
-    let ids = |rows: Vec<super::DocumentRecord>| rows.into_iter().map(|row| row.id).collect::<Vec<_>>();
+    let ids = |rows: Vec<super::super::DocumentRecord>| rows.into_iter().map(|row| row.id).collect::<Vec<_>>();
     let listed = ids(catalog.visible_documents(Some(owner), None, 200, false).await.unwrap());
     assert!(listed.contains(&project));
     assert!(!listed.contains(&template));
