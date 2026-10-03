@@ -2,7 +2,7 @@
 
 use crate::server::http_test_support::{deployment, owner_bearer};
 use crate::server::origins::Origins;
-use crate::storage::store::DocumentInput;
+use librepaper_engine::storage::store::DocumentInput;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
 use futures_util::stream;
@@ -28,7 +28,7 @@ fn paused_body(body: String) -> (Body, oneshot::Receiver<()>, oneshot::Sender<()
     (Body::from_stream(stream), started_rx, resume_tx)
 }
 
-async fn revoke_session(catalog: &crate::storage::postgres::PostgresCatalog, owner_id: uuid::Uuid) {
+async fn revoke_session(catalog: &librepaper_engine::storage::postgres::PostgresCatalog, owner_id: uuid::Uuid) {
     sqlx::query("UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1")
         .bind(owner_id)
         .execute(catalog.pool())

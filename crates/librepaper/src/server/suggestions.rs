@@ -27,7 +27,7 @@ fn assistant_capabilities(role: Role) -> Value {
 fn assistant_link_role(
     entry: &IndexEntry,
     who: &Viewer,
-    ceiling: crate::storage::store::Ceiling,
+    ceiling: librepaper_engine::storage::store::Ceiling,
     link_hash: &str,
     now: i64,
 ) -> Option<Role> {
@@ -354,7 +354,7 @@ mod capability_tests {
             bearer: false,
             auth_failed: false,
         };
-        let ceiling = crate::storage::store::Ceiling {
+        let ceiling = librepaper_engine::storage::store::Ceiling {
             comment: true,
             edit: true,
         };

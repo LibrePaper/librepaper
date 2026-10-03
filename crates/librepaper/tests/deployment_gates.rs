@@ -101,7 +101,7 @@ async fn connected(url: &str) -> PostgresCatalog {
 
 /// Wipes every row this file's fixtures could have left behind.
 ///
-/// The same list as `crate::tests::SCHEMA_TABLES`, spelled out again because
+/// The same list as `librepaper_engine::testing::SCHEMA_TABLES`, spelled out again because
 /// this is an integration test and can only see what the crate makes public:
 /// a reset list is not an API, and exporting one so a test could share it
 /// would put it in the deployment's surface. Adding a table to the schema

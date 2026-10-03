@@ -64,7 +64,7 @@ impl PostgresCatalog {
     /// Takes the caller's transaction rather than opening one: the check
     /// only means anything inside the transaction the write happens in, and
     /// four places had written the same four lines against theirs.
-    pub(crate) async fn check_writer_epoch(&self, tx: &mut PgConnection) -> Result<()> {
+    pub async fn check_writer_epoch(&self, tx: &mut PgConnection) -> Result<()> {
         let expected = self.writer_epoch()?;
         let durable: i64 =
             sqlx::query_scalar("SELECT epoch FROM deployment_writer WHERE singleton FOR SHARE")
@@ -76,7 +76,7 @@ impl PostgresCatalog {
         Ok(())
     }
 
-    pub(crate) async fn begin_writer_transaction(&self) -> Result<sqlx::Transaction<'_, Postgres>> {
+    pub async fn begin_writer_transaction(&self) -> Result<sqlx::Transaction<'_, Postgres>> {
         let mut tx = self.begin_metered().await?;
         self.check_writer_epoch(&mut tx).await?;
         Ok(tx)

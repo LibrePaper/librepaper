@@ -1042,18 +1042,18 @@ mod served_policy_tests {
         let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
             .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1");
         let catalog = Arc::new(
-            crate::storage::postgres::PostgresCatalog::connect(
-                crate::storage::postgres::PostgresOptions::new(url),
+            librepaper_engine::storage::postgres::PostgresCatalog::connect(
+                librepaper_engine::storage::postgres::PostgresOptions::new(url),
             )
             .await
             .unwrap(),
         );
         catalog.migrate().await.unwrap();
         let objects = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-        let blobs: Arc<dyn crate::storage::blob::BlobStore> =
-            Arc::new(crate::storage::blob::FsStore::new(objects.path(), false));
+        let blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore> =
+            Arc::new(librepaper_engine::storage::blob::FsStore::new(objects.path(), false));
         let config = Arc::new(Configuration::default());
-        let registry = crate::log::Registry::new(
+        let registry = librepaper_engine::log::Registry::new(
             catalog.clone(),
             blobs.clone(),
             config.clone(),
@@ -1065,13 +1065,13 @@ mod served_policy_tests {
             config.clone(),
             registry.clone(),
         );
-        let (_worker, background) = crate::storage::worker::Worker::new(
+        let (_worker, background) = librepaper_engine::storage::worker::Worker::new(
             catalog.clone(),
             blobs.clone(),
             registry.clone(),
             config.clone(),
         );
-        let store = crate::storage::store::Store::open_with_catalog(
+        let store = librepaper_engine::storage::store::Store::open_with_catalog(
             blobs.clone(),
             config.clone(),
             catalog.clone(),
@@ -1276,7 +1276,7 @@ impl Server {
         // restart. A refused wake-up is folded into the rescan bit, so
         // nothing here can lose the work either.
         self.background
-            .ask(crate::storage::worker::Task::EraseAccount {
+            .ask(librepaper_engine::storage::worker::Task::EraseAccount {
                 account: account_id,
                 after: uuid::Uuid::nil(),
             });

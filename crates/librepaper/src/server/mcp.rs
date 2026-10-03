@@ -422,7 +422,7 @@ impl Server {
             .await
         {
             Ok(()) => Ok(()),
-            Err(crate::storage::blob::BlobError::Conflict) => {
+            Err(librepaper_engine::storage::blob::BlobError::Conflict) => {
                 let old = self
                     .store
                     .blobs
@@ -458,7 +458,7 @@ impl Server {
         require_live_identity(who)?;
         let key = agent_object_key(slug, actor, kind, id);
         let bytes = self.store.blobs.get(&key).await.map_err(|e| match e {
-            crate::storage::blob::BlobError::NotFound => Failure::new(
+            librepaper_engine::storage::blob::BlobError::NotFound => Failure::new(
                 "view_expired",
                 "object is unavailable; capture a fresh view",
             ),

@@ -14,8 +14,8 @@ use futures_util::future::BoxFuture;
 use sha2::{Digest, Sha256};
 
 use super::*;
-use crate::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
-use crate::storage::postgres::{AssetRecord, Authority, NewAsset, PostgresCatalog};
+use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
+use librepaper_engine::storage::postgres::{AssetRecord, Authority, NewAsset, PostgresCatalog};
 
 /// A reservation made before an asset upload leaves the room.  The reservation
 /// is deliberately independent of anything the sequencer holds: the blob write
@@ -97,7 +97,7 @@ impl Command for AttachAsset {
                 .into_iter()
                 .next()
                 .ok_or_else(|| {
-                    CommandError::from(crate::storage::postgres::Error::Invalid(
+                    CommandError::from(librepaper_engine::storage::postgres::Error::Invalid(
                         "asset completion returned no row".into(),
                     ))
                 })
@@ -120,7 +120,7 @@ impl Room {
     pub(crate) async fn put_asset_authorized(
         &self,
         body: Vec<u8>,
-        actor: &crate::storage::store::MutationActor,
+        actor: &librepaper_engine::storage::store::MutationActor,
     ) -> Result<(String, i64), WriteError> {
         let size = body.len() as i64;
         if size == 0 {
@@ -130,7 +130,7 @@ impl Room {
         // attempted, an error can leave an uncatalogued immutable object and
         // callers must treat the upload admission as spent.
         let authorization = super::catalog::mutation_authorization(actor)?;
-        let sha = crate::storage::store::digest_of_bytes(&body);
+        let sha = librepaper_engine::storage::store::digest_of_bytes(&body);
         let digest: [u8; 32] = Sha256::digest(&body).into();
 
         // Keep the reservation local and cheap: the object write below can be

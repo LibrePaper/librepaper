@@ -19,7 +19,7 @@ use super::worker::Task;
 /// How many future tasks the worker will remember at once. Past this bound
 /// the map stops being a map and starts being an unbounded backlog, so a
 /// deadline that does not fit is refused rather than admitted anyway.
-pub(crate) const DEADLINES: usize = 1024;
+pub const DEADLINES: usize = 1024;
 
 /// The wait after one failure; doubles per consecutive failure up to the
 /// ceiling.
@@ -29,17 +29,17 @@ pub(crate) const DEADLINES: usize = 1024;
 /// named only by durable state that nothing else looks at until the next
 /// startup, so a transient blob-store failure on either one used to park it
 /// until somebody restarted the process.
-pub(crate) const BACKOFF: Duration = Duration::from_secs(60);
+pub const BACKOFF: Duration = Duration::from_secs(60);
 
 /// Where the doubling stops. A task failing for an hour is failing for a
 /// reason a faster retry will not fix, and the point of the ceiling is that
 /// it still retries at all: the state naming the task is durable, so the
 /// deployment should recover on its own once whatever broke is fixed,
 /// without an operator noticing.
-pub(crate) const BACKOFF_CEILING: Duration = Duration::from_secs(60 * 60);
+pub const BACKOFF_CEILING: Duration = Duration::from_secs(60 * 60);
 
 /// The wait after `failures` consecutive failures of one task.
-pub(crate) fn backoff(failures: u32) -> Duration {
+pub fn backoff(failures: u32) -> Duration {
     BACKOFF
         .saturating_mul(
             1u32.checked_shl(failures.saturating_sub(1))
@@ -73,7 +73,7 @@ struct Entry {
 /// early wake-up for it; the worst case is the next durable rescan finds it.
 /// That is what makes the bound in [`DEADLINES`] safe to enforce by
 /// refusing new entries rather than growing without one.
-pub(crate) struct Deadlines {
+pub struct Deadlines {
     entries: HashMap<Task, Entry>,
     /// The earliest due time of any deadline this map has refused to hold.
     /// It survives across refusals by keeping the minimum, so the worker
@@ -86,16 +86,16 @@ pub(crate) struct Deadlines {
 }
 
 /// What [`Deadlines::due`] handed back.
-pub(crate) struct Due {
-    pub(crate) tasks: Vec<Task>,
+pub struct Due {
+    pub tasks: Vec<Task>,
     /// A deadline this map refused to hold has come due, so the worker owes
     /// itself a fresh durable scan: whatever it forgot when the map was
     /// full is only findable by looking at durable state again.
-    pub(crate) rescan: bool,
+    pub rescan: bool,
 }
 
 impl Deadlines {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
             refusal: None,
@@ -122,7 +122,7 @@ impl Deadlines {
     /// new one, and must never be refused.
     ///
     /// [`clear`]: Deadlines::clear
-    pub(crate) fn failed(&mut self, task: Task, now: Instant) -> Duration {
+    pub fn failed(&mut self, task: Task, now: Instant) -> Duration {
         let failures = self.entries.get(&task).map_or(0, |entry| entry.failures) + 1;
         let wait = backoff(failures);
         let due = now + wait;
@@ -160,7 +160,7 @@ impl Deadlines {
     /// is what it is worth. A deletion that failed once, was retried, and
     /// then found itself still inside its grace period asks for exactly
     /// that, and refusing it there would leave nothing scheduled at all.
-    pub(crate) fn at(&mut self, task: Task, due: Instant) {
+    pub fn at(&mut self, task: Task, due: Instant) {
         if let Some(entry) = self.entries.get_mut(&task) {
             if entry.armed {
                 if entry.failures > 0 {
@@ -193,7 +193,7 @@ impl Deadlines {
     /// succeeds by scheduling itself for the end of the document's grace
     /// period, and removing the entry here would throw that wake-up away
     /// and leave the purge waiting for the next durable scan or restart.
-    pub(crate) fn clear(&mut self, task: &Task) {
+    pub fn clear(&mut self, task: &Task) {
         match self.entries.get_mut(task) {
             Some(entry) if entry.armed => entry.failures = 0,
             _ => {
@@ -205,20 +205,20 @@ impl Deadlines {
     /// Forget every reminder for `task`, including an armed deadline. This is
     /// used when durable work completes before its scheduled grace deadline,
     /// so an obsolete reminder cannot wake the worker for a removed row.
-    pub(crate) fn remove(&mut self, task: &Task) {
+    pub fn remove(&mut self, task: &Task) {
         self.entries.remove(task);
     }
 
     /// How many times in a row `task` has failed. For the warning log: a
     /// task nobody has recorded a failure for has failed zero times.
-    pub(crate) fn failures(&self, task: &Task) -> u32 {
+    pub fn failures(&self, task: &Task) -> u32 {
         self.entries.get(task).map_or(0, |entry| entry.failures)
     }
 
     /// Is `task` waiting out a deadline that has not come due? The worker
     /// drops a duplicate wake-up for such a task instead of defeating the
     /// backoff or the grace period a plain `at` deadline represents.
-    pub(crate) fn waiting(&self, task: &Task, now: Instant) -> bool {
+    pub fn waiting(&self, task: &Task, now: Instant) -> bool {
         self.entries
             .get(task)
             .is_some_and(|entry| entry.armed && entry.due > now)
@@ -231,7 +231,7 @@ impl Deadlines {
     /// failures survives disarmed, so the failure count is still there for
     /// the next `failed` call, but the same due task is not handed out
     /// twice before something asks for it again.
-    pub(crate) fn due(&mut self, now: Instant) -> Due {
+    pub fn due(&mut self, now: Instant) -> Due {
         let mut tasks = Vec::new();
         self.entries.retain(|task, entry| {
             if entry.armed && entry.due <= now {
@@ -265,7 +265,7 @@ impl Deadlines {
     /// armed entry's due time and the earliest refused deadline, since a
     /// refusal owes the worker a rescan just as much as an armed entry owes
     /// it a task.
-    pub(crate) fn next(&self) -> Option<Instant> {
+    pub fn next(&self) -> Option<Instant> {
         let earliest_armed = self
             .entries
             .values()
@@ -281,12 +281,12 @@ impl Deadlines {
     }
 
     /// How many tasks are remembered right now (armed or not).
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// How many deadlines this map has refused since the process started.
-    pub(crate) fn refused(&self) -> u64 {
+    pub fn refused(&self) -> u64 {
         self.refused
     }
 }

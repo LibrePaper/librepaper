@@ -86,8 +86,6 @@ impl QueueState {
         counts.frames = counts.frames.saturating_sub(1);
         counts.bytes = counts.bytes.saturating_sub(bytes);
     }
-
-    #[cfg(test)]
     fn snapshot(&self) -> (usize, usize) {
         let counts = self
             .counts
@@ -132,7 +130,6 @@ impl Drop for Reservation {
 
 enum Inner {
     Bounded(mpsc::Sender<QueuedOutgoing>),
-    #[cfg(test)]
     Raw(mpsc::Sender<Outgoing>),
 }
 
@@ -181,7 +178,6 @@ impl Sender {
 
     /// Adapt raw channels used by room unit tests and small internal callers.
     /// They retain Tokio's original semantics and have no budget.
-    #[cfg(test)]
     pub fn from_raw(inner: mpsc::Sender<Outgoing>) -> Self {
         Self {
             inner: Arc::new(Inner::Raw(inner)),
@@ -195,8 +191,6 @@ impl Sender {
             queue_admission: None,
         }
     }
-
-    #[cfg(test)]
     pub fn queued(&self) -> (usize, usize) {
         self.queue.snapshot()
     }
@@ -225,9 +219,6 @@ impl Sender {
     #[allow(clippy::result_unit_err)]
     pub fn force_close(&self, reason: impl Into<String>) -> Result<(), ()> {
         let outgoing = Outgoing::Close(reason.into());
-        #[cfg(not(test))]
-        let Inner::Bounded(inner) = self.inner.as_ref();
-        #[cfg(test)]
         let inner = match self.inner.as_ref() {
             Inner::Bounded(inner) => inner,
             Inner::Raw(inner) => return inner.try_send(outgoing).map_err(|_| ()),
@@ -242,12 +233,8 @@ impl Sender {
 
     fn try_send_kind(&self, outgoing: Outgoing, durability: bool) -> Result<(), Outgoing> {
         let bytes = outgoing.bytes();
-        #[cfg(not(test))]
-        let Inner::Bounded(inner) = self.inner.as_ref();
-        #[cfg(test)]
         let inner = match self.inner.as_ref() {
             Inner::Bounded(inner) => inner,
-            #[cfg(test)]
             Inner::Raw(inner) => {
                 // Raw channels predate the bounded sender and are used by
                 // room tests. Keep their observable String representation so
@@ -299,8 +286,6 @@ impl Sender {
         self.try_send(outgoing)
     }
 }
-
-#[cfg(test)]
 impl From<mpsc::Sender<Outgoing>> for Sender {
     fn from(value: mpsc::Sender<Outgoing>) -> Self {
         Self::from_raw(value)
@@ -323,8 +308,6 @@ impl OutgoingSink for Sender {
         Box::pin(async move { self.send(outgoing).await.map_err(|_| ()) })
     }
 }
-
-#[cfg(test)]
 impl OutgoingSink for mpsc::Sender<Outgoing> {
     fn send_boxed<'a>(
         &'a self,

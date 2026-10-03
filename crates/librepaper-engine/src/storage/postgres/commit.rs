@@ -51,7 +51,7 @@ impl Authority {
         }
     }
 
-    pub(crate) fn mutation_authorization(&self) -> super::annotations::MutationAuthorization {
+    pub fn mutation_authorization(&self) -> super::annotations::MutationAuthorization {
         super::annotations::MutationAuthorization {
             principal_key: self.principal_key.clone(),
             account_id: self.account_id,

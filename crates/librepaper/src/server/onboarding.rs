@@ -2,7 +2,7 @@
 //! The catalogue records each completed copy independently of its lifetime.
 
 use super::*;
-use crate::storage::store::DocumentInput;
+use librepaper_engine::storage::store::DocumentInput;
 
 struct Starter {
     main: &'static str,
@@ -198,7 +198,7 @@ impl Server {
         // `Store::put` deliberately refuses catalogue-backed writes because it
         // has no request actor, so carry the identity that sign-in already
         // authenticated through every catalogue admission and checkpoint.
-        let actor = crate::storage::store::MutationActor {
+        let actor = librepaper_engine::storage::store::MutationActor {
             account_id: account.id.to_string(),
             owner_key: account.handle.clone(),
             session_generation: who.session_generation.clone(),
@@ -272,10 +272,10 @@ impl Server {
     /// `put_directory_as_actor` could no longer promise.
     async fn simulate_starter(
         &self,
-        catalog: &std::sync::Arc<crate::storage::postgres::PostgresCatalog>,
+        catalog: &std::sync::Arc<librepaper_engine::storage::postgres::PostgresCatalog>,
         slug: &str,
         starter: &Starter,
-        actor: &crate::storage::store::MutationActor,
+        actor: &librepaper_engine::storage::store::MutationActor,
         account_id: uuid::Uuid,
         days: u32,
     ) -> Result<(), String> {
@@ -284,7 +284,7 @@ impl Server {
             .parse()
             .map_err(|_| "invalid onboarding session".to_string())?;
         let document = catalog
-            .create_document(crate::storage::postgres::NewDocument {
+            .create_document(librepaper_engine::storage::postgres::NewDocument {
                 slug: slug.to_string(),
                 owner_id: account_id,
                 owner_session_generation: Some(owner_session_generation),
@@ -314,7 +314,7 @@ impl Server {
             name if name.is_empty() => actor.owner_key.clone(),
             name => name,
         };
-        crate::storage::seed::activity::simulate(
+        librepaper_engine::storage::seed::activity::simulate(
             catalog.clone(),
             document.id,
             slug,

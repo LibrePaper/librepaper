@@ -18,12 +18,12 @@ use std::sync::Arc;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::log::Registry;
+use librepaper_engine::log::Registry;
 use crate::room::{Message as RoomMessage, Rooms};
-use crate::storage::blob::FsStore;
-use crate::storage::postgres::PostgresCatalog;
-use crate::storage::postgres::{AccessRole, NewAccount};
-use crate::storage::store::{DocumentInput, MutationActor, Role, Store};
+use librepaper_engine::storage::blob::FsStore;
+use librepaper_engine::storage::postgres::PostgresCatalog;
+use librepaper_engine::storage::postgres::{AccessRole, NewAccount};
+use librepaper_engine::storage::store::{DocumentInput, MutationActor, Role, Store};
 use librepaper_base::auth::{GithubApp, Identity, Policy, PROVIDER_GITHUB};
 use librepaper_base::config::Configuration;
 
@@ -39,7 +39,7 @@ struct Deployment {
     owner_session_generation: String,
     commenter_id: Uuid,
     commenter_session_generation: String,
-    _writer: crate::storage::postgres::WriterLease,
+    _writer: librepaper_engine::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
@@ -49,7 +49,7 @@ struct Deployment {
 /// this file is to catch a mismatch between that wiring and the comment
 /// path, which a smaller fixture could hide.
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let catalog = crate::testing::catalog().await?;
+    let catalog = librepaper_engine::testing::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let owner = catalog
         .create_account(NewAccount {
@@ -74,7 +74,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         .await
         .unwrap();
     let objects = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+    let blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore> =
         Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
     let registry = Registry::new(
@@ -89,7 +89,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         config.clone(),
         registry.clone(),
     );
-    let (worker, background) = crate::storage::worker::Worker::new(
+    let (worker, background) = librepaper_engine::storage::worker::Worker::new(
         catalog.clone(),
         blobs.clone(),
         registry.clone(),
@@ -339,7 +339,7 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
         .ingest(999, "editor-999", "editor-999", 1, update)
         .await;
     assert!(
-        matches!(ingested, crate::log::Ingested::Accepted),
+        matches!(ingested, librepaper_engine::log::Ingested::Accepted),
         "{ingested:?}"
     );
     let moved = room.reattach_comments().await.unwrap();
@@ -356,7 +356,7 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
     let attachment = after.attachment.as_ref().expect("a resolved attachment");
     assert_eq!(
         attachment.status,
-        crate::storage::annotation::AnchorStatus::Exact,
+        librepaper_engine::storage::annotation::AnchorStatus::Exact,
         "the quoted passage is still found, just further down the file",
     );
     deployment.catalog.close().await;
@@ -446,8 +446,8 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
     assert!(ok, "{first}");
     let through_the_wire = first["comment"]["id"].as_str().unwrap().to_string();
 
-    let page = crate::storage::postgres::annotations::ANNOTATION_PAGE_MAX as usize;
-    let actor = crate::storage::postgres::MutationAuthorization {
+    let page = librepaper_engine::storage::postgres::annotations::ANNOTATION_PAGE_MAX as usize;
+    let actor = librepaper_engine::storage::postgres::MutationAuthorization {
         principal_key: deployment.commenter_id.to_string(),
         account_id: Some(deployment.commenter_id),
         session_generation: Some(
@@ -471,7 +471,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
                 .put_annotation_authorized(
                     &mut tx,
                     id,
-                    crate::storage::postgres::NewAnnotation {
+                    librepaper_engine::storage::postgres::NewAnnotation {
                         document_id: room.document_id,
                         kind: "comment".into(),
                         body: format!("Seeded remark {index}"),
@@ -483,7 +483,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
                         original_anchor: crate::room::OriginalAnchor {
                             source_sequence: 1,
                             frontier: vec![1, 2, 3],
-                            target: crate::storage::annotation::CommentTarget::Document,
+                            target: librepaper_engine::storage::annotation::CommentTarget::Document,
                         },
                         presentation: Default::default(),
                         render_digest: None,

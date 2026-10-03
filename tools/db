@@ -26,8 +26,8 @@ Usage: tools/db <command>
 Commands:
   dev                Start the persistent PostgreSQL used by local deploy
   url                Print the dev database URL
-  sqlx-check         Fail if .sqlx/ no longer matches the queries in the tree
-  sqlx-prepare       Regenerate .sqlx/ after changing any query or migration
+  sqlx-check         Fail if crates/librepaper-engine/.sqlx/ no longer matches the queries in the tree
+  sqlx-prepare       Regenerate crates/librepaper-engine/.sqlx/ after changing any query or migration
   help               Show this help text
 
 Environment variables:
@@ -105,16 +105,16 @@ cmd_sqlx_database() {
     docker exec "$DEV_POSTGRES_CONTAINER" psql -U postgres -c "CREATE DATABASE \"$SQLX_POSTGRES_DB\"" >/dev/null
 
     # Run migrations.
-    DATABASE_URL="$SQLX_DATABASE_URL" sqlx migrate run --source crates/librepaper/migrations/postgres
+    DATABASE_URL="$SQLX_DATABASE_URL" sqlx migrate run --source crates/librepaper-engine/migrations/postgres
 }
 
-# Fail if .sqlx/ no longer matches the queries.
+# Fail if crates/librepaper-engine/.sqlx/ no longer matches the queries.
 cmd_sqlx_check() {
     cmd_sqlx_database >/dev/null
     SQLX_OFFLINE=false DATABASE_URL="$SQLX_DATABASE_URL" cargo sqlx prepare --check --workspace -- --all-targets
 }
 
-# Regenerate .sqlx/ after changing queries or migrations.
+# Regenerate crates/librepaper-engine/.sqlx/ after changing queries or migrations.
 cmd_sqlx_prepare() {
     cmd_sqlx_database >/dev/null
     SQLX_OFFLINE=false DATABASE_URL="$SQLX_DATABASE_URL" cargo sqlx prepare --workspace -- --all-targets

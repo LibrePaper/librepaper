@@ -11,7 +11,10 @@
 //! scenario needs, with its own writer lease, blob store, rooms and
 //! accounts, and those genuinely differ.
 
+use std::borrow::Cow;
 use std::sync::Arc;
+
+use loro::{ExportMode, LoroDoc, VersionVector};
 
 use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
 
@@ -69,3 +72,77 @@ pub async fn catalog() -> Option<Arc<PostgresCatalog>> {
     reset(&catalog).await;
     Some(catalog)
 }
+
+/// A causally-linked source of update batches, standing in for one editor's
+/// outbox: each call exports exactly the ops since the last call, which is
+/// what one `doc-update` looks like on the wire.
+pub struct Outbox {
+    doc: LoroDoc,
+    at: VersionVector,
+}
+
+impl Outbox {
+    pub fn new() -> Self {
+        let doc = LoroDoc::new();
+        let _ = doc.get_text("t");
+        Self {
+            doc,
+            at: VersionVector::default(),
+        }
+    }
+
+    pub fn export_since_last(&mut self) -> Vec<u8> {
+        self.doc.commit();
+        let batch = self
+            .doc
+            .export(ExportMode::Updates {
+                from: Cow::Borrowed(&self.at),
+            })
+            .expect("exporting from a covered vector never fails");
+        self.at = self.doc.oplog_vv();
+        batch
+    }
+
+    /// One keystroke's worth of edit, batched.
+    pub fn edit(&mut self) -> Vec<u8> {
+        let text = self.doc.get_text("t");
+        text.insert_utf16(text.len_utf16(), "x").unwrap();
+        self.export_since_last()
+    }
+
+    /// An edit padded to at least `bytes` wide. The filler is random, not
+    /// one repeated character: Loro's run-length encoding would otherwise
+    /// collapse a repeated character back under the trigger it is meant to
+    /// cross.
+    pub fn edit_at_least(&mut self, bytes: usize) -> Vec<u8> {
+        let filler = hex::encode(librepaper_base::util::random_bytes(bytes / 2 + 1));
+        let text = self.doc.get_text("t");
+        text.insert_utf16(text.len_utf16(), &filler).unwrap();
+        self.export_since_last()
+    }
+
+    /// What this outbox's own document currently reads, for a test to
+    /// compare against what a server it sent batches to ends up holding.
+    pub fn text(&self) -> String {
+        self.doc.get_text("t").to_string()
+    }
+
+    /// This outbox's own vector -- what it has sent and can vouch for --
+    /// distinct from `export_since_last`'s bookkeeping of what it has
+    /// already exported once.
+    pub fn vector(&self) -> VersionVector {
+        self.doc.oplog_vv()
+    }
+
+    /// Every op after `vector`, without touching this outbox's own
+    /// bookkeeping of what it has already exported once -- what a client
+    /// resending its whole unsent history after a `doc-gap` does.
+    pub fn export_from(&self, vector: &VersionVector) -> Vec<u8> {
+        self.doc
+            .export(ExportMode::Updates {
+                from: Cow::Borrowed(vector),
+            })
+            .expect("exporting from a covered vector never fails")
+    }
+}
+

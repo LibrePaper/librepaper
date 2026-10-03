@@ -26,10 +26,10 @@ pub mod budget;
 pub mod frame;
 pub mod ledger;
 pub mod pending;
-pub(crate) mod recorded;
+pub mod recorded;
 pub mod sequencer;
 #[cfg(test)]
-pub(crate) mod tests;
+pub mod tests;
 
 use std::collections::HashMap;
 use std::sync::Arc;

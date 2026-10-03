@@ -35,8 +35,8 @@ use serde_json::json;
 
 use super::text::slice16;
 use super::{Comment, Room};
-use crate::log::sequencer::SequencerError;
-use crate::storage::annotation::{
+use librepaper_engine::log::sequencer::SequencerError;
+use librepaper_engine::storage::annotation::{
     AnchorSide, AnchorStatus, CommentTarget, DerivedAttachment, LiveSourceRange, OriginalAnchor,
     ResolutionDiagnostic, SourceTextTarget,
 };
@@ -622,7 +622,7 @@ pub(crate) const ATTACHMENT_FRAME_MAX: usize = 200;
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::storage::annotation::FileId;
+    use librepaper_engine::storage::annotation::FileId;
     use librepaper_document::document::session;
 
     /// A document with one text file, the way a publish builds one.

@@ -28,7 +28,7 @@ use crate::room::{
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
 };
-use crate::storage::store::{
+use librepaper_engine::storage::store::{
     random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
     Role, Store,
 };
@@ -102,11 +102,11 @@ pub struct DocumentService {
     /// wrote -- an archive request, a delete -- rather than leaving it to be
     /// found on the worker's next startup scan (§8.6). Cheap to hold: it is
     /// a channel sender, not the worker itself.
-    pub background: crate::storage::worker::Handle,
+    pub background: librepaper_engine::storage::worker::Handle,
 }
 
 impl DocumentService {
-    pub fn new(store: Store, rooms: Rooms, background: crate::storage::worker::Handle) -> Self {
+    pub fn new(store: Store, rooms: Rooms, background: librepaper_engine::storage::worker::Handle) -> Self {
         Self {
             store: Arc::new(store),
             rooms,
@@ -188,7 +188,7 @@ pub struct Server {
     /// Dedicated PostgreSQL ownership session. Production installs this before
     /// the router becomes reachable; test servers that never accept durable
     /// source writes may leave it absent.
-    writer: Option<tokio::sync::Mutex<crate::storage::postgres::WriterLease>>,
+    writer: Option<tokio::sync::Mutex<librepaper_engine::storage::postgres::WriterLease>>,
     pub shell: HashMap<String, ShellFile>,
     pub app: GithubApp,
     /// The other way in. Configured from the environment alone, and set after
@@ -210,7 +210,7 @@ pub struct Server {
     /// Days of invented history to write for each starter document a new
     /// account is given, or nothing. A demonstration deployment asks for one;
     /// every other deployment keeps the honest history of a document
-    /// published once. See `crate::storage::seed::activity`.
+    /// published once. See `librepaper_engine::storage::seed::activity`.
     pub simulate_activity: Option<u32>,
     /// The terminals waiting to be signed in. In memory only: a restart
     /// forgets them, and a `login` that was mid-flight starts again.
@@ -266,7 +266,7 @@ struct StateTransfer {
     expires_at: i64,
     /// Held for its drop: the bytes above are charged to the memory budget
     /// for as long as this entry exists.
-    _reservation: crate::log::budget::Reservation,
+    _reservation: librepaper_engine::log::budget::Reservation,
 }
 
 #[derive(Default)]
@@ -283,7 +283,7 @@ impl StateTransfers {
         bytes: Bytes,
         digest: String,
         now: i64,
-        reservation: crate::log::budget::Reservation,
+        reservation: librepaper_engine::log::budget::Reservation,
     ) -> bool {
         let expired: Vec<_> = self
             .entries
@@ -358,7 +358,7 @@ fn resolved_role(
     entry: &IndexEntry,
     caller_id: &str,
     presented_link: &str,
-    ceiling: crate::storage::store::Ceiling,
+    ceiling: librepaper_engine::storage::store::Ceiling,
     now: i64,
 ) -> Role {
     if automation {
@@ -373,7 +373,7 @@ fn resolved_role(
 fn automation_role(
     entry: &IndexEntry,
     presented_link: &str,
-    ceiling: crate::storage::store::Ceiling,
+    ceiling: librepaper_engine::storage::store::Ceiling,
     now: i64,
 ) -> Role {
     match entry.link_role(presented_link, now) {
@@ -451,9 +451,9 @@ impl Viewer {
 
     pub fn document_authority(
         &self,
-        ceiling: crate::storage::store::Ceiling,
-    ) -> crate::storage::postgres::Authority {
-        crate::storage::postgres::Authority {
+        ceiling: librepaper_engine::storage::store::Ceiling,
+    ) -> librepaper_engine::storage::postgres::Authority {
+        librepaper_engine::storage::postgres::Authority {
             principal_key: self.principal_key(),
             account_id: self.account_id(),
             link_hash: self.link_bytes(),
@@ -470,9 +470,9 @@ impl Viewer {
     /// know the deployment's policy on its own, so callers pass it in.
     pub fn mutation_authorization(
         &self,
-        ceiling: crate::storage::store::Ceiling,
-    ) -> crate::storage::postgres::MutationAuthorization {
-        crate::storage::postgres::MutationAuthorization {
+        ceiling: librepaper_engine::storage::store::Ceiling,
+    ) -> librepaper_engine::storage::postgres::MutationAuthorization {
+        librepaper_engine::storage::postgres::MutationAuthorization {
             principal_key: self.principal_key(),
             account_id: self.account_id(),
             session_generation: self.id.session_generation.parse::<i64>().ok(),
@@ -623,9 +623,9 @@ impl RequestContext {
 
 /// Read one account row off the runtime worker.
 pub(crate) async fn account_row(
-    catalog: &Arc<crate::storage::postgres::PostgresCatalog>,
+    catalog: &Arc<librepaper_engine::storage::postgres::PostgresCatalog>,
     id: &str,
-) -> Result<Option<crate::storage::postgres::AccountRecord>, crate::storage::postgres::Error> {
+) -> Result<Option<librepaper_engine::storage::postgres::AccountRecord>, librepaper_engine::storage::postgres::Error> {
     let Ok(id) = uuid::Uuid::parse_str(id) else {
         return Ok(None);
     };
@@ -638,16 +638,16 @@ pub(crate) async fn account_row(
 /// dispatch leaves exactly the row it would have left, and the next request
 /// reads it. Nothing is reserved here, so there is nothing to refund.
 pub(crate) async fn upsert_account_job(
-    catalog: &Arc<crate::storage::postgres::PostgresCatalog>,
-    account: crate::storage::postgres::NewAccount,
-) -> Result<crate::storage::postgres::AccountRecord, crate::storage::postgres::Error> {
+    catalog: &Arc<librepaper_engine::storage::postgres::PostgresCatalog>,
+    account: librepaper_engine::storage::postgres::NewAccount,
+) -> Result<librepaper_engine::storage::postgres::AccountRecord, librepaper_engine::storage::postgres::Error> {
     catalog.upsert_registered_account(account).await
 }
 
-fn authentication_failure_of(error: crate::storage::postgres::Error) -> AuthenticationFailure {
+fn authentication_failure_of(error: librepaper_engine::storage::postgres::Error) -> AuthenticationFailure {
     if matches!(
         error,
-        crate::storage::postgres::Error::Conflict(_) | crate::storage::postgres::Error::Invalid(_)
+        librepaper_engine::storage::postgres::Error::Conflict(_) | librepaper_engine::storage::postgres::Error::Invalid(_)
     ) {
         AuthenticationFailure::Invalid
     } else {
@@ -814,7 +814,7 @@ impl Server {
     pub fn new(
         store: Store,
         rooms: Rooms,
-        background: crate::storage::worker::Handle,
+        background: librepaper_engine::storage::worker::Handle,
         shell: HashMap<String, ShellFile>,
         app: GithubApp,
         key: Vec<u8>,
@@ -866,13 +866,13 @@ impl Server {
         }
     }
 
-    pub fn install_writer(&mut self, lease: crate::storage::postgres::WriterLease) {
+    pub fn install_writer(&mut self, lease: librepaper_engine::storage::postgres::WriterLease) {
         self.writer = Some(tokio::sync::Mutex::new(lease));
     }
 
-    pub async fn verify_writer(&self) -> Result<i64, crate::storage::postgres::Error> {
+    pub async fn verify_writer(&self) -> Result<i64, librepaper_engine::storage::postgres::Error> {
         let writer = self.writer.as_ref().ok_or_else(|| {
-            crate::storage::postgres::Error::Ownership("writer is not ready".into())
+            librepaper_engine::storage::postgres::Error::Ownership("writer is not ready".into())
         })?;
         let mut writer = writer.lock().await;
         writer.verify().await?;
@@ -981,7 +981,7 @@ impl Server {
             // the account on first use and always take the generation from the
             // authoritative row, so cached provider identity cannot bypass
             // account erasure or session revocation.
-            let profile = crate::storage::postgres::NewAccount {
+            let profile = librepaper_engine::storage::postgres::NewAccount {
                 kind: "registered".into(),
                 provider: Some(identity.provider.clone()),
                 provider_subject: Some(identity.id.clone()),
@@ -1531,7 +1531,7 @@ impl Server {
         (result, ok)
     }
 
-    /// Turns one validated [`RoomCommand`] into the [`crate::log::Command`]
+    /// Turns one validated [`RoomCommand`] into the [`librepaper_engine::log::Command`]
     /// it names and runs it. Split out of `apply_from` because the match has
     /// eight arms and each one needs its own lookup before it can build its
     /// command -- `apply_from` stays about policy and shape, this is only
@@ -1541,7 +1541,7 @@ impl Server {
         &self,
         room: &Room,
         command: RoomCommand,
-        authority: &crate::storage::postgres::Authority,
+        authority: &librepaper_engine::storage::postgres::Authority,
         author: &crate::room::CommentAuthor,
     ) -> Result<Value, Value> {
         let catalog = self.store.catalog.clone();
@@ -1698,7 +1698,7 @@ impl Server {
     /// version rather than trusting a client-supplied one).
     async fn proposal_for_comment(
         &self,
-        catalog: &crate::storage::postgres::PostgresCatalog,
+        catalog: &librepaper_engine::storage::postgres::PostgresCatalog,
         document_id: uuid::Uuid,
         comment_id: uuid::Uuid,
     ) -> Result<(uuid::Uuid, i64, String, String, String), crate::room::WriteError> {
@@ -1739,7 +1739,7 @@ impl Server {
     /// there is no cached copy to trust yet.
     async fn comment_row(
         &self,
-        catalog: &crate::storage::postgres::PostgresCatalog,
+        catalog: &librepaper_engine::storage::postgres::PostgresCatalog,
         document_id: uuid::Uuid,
         comment_id: uuid::Uuid,
     ) -> Result<Option<crate::room::Comment>, crate::room::WriteError> {
@@ -1760,12 +1760,12 @@ impl Server {
 pub const DOCUMENTATION: &str = "https://librepaper.org";
 
 /// A sequencer failure as an HTTP answer. Every variant of
-/// [`crate::log::SequencerError`] is retryable from a caller's point of
+/// [`librepaper_engine::log::SequencerError`] is retryable from a caller's point of
 /// view -- an unreadable document waits on recovery, a busy budget or a lost
 /// fence waits on the next attempt -- so this is the one place that decides
 /// it is a 503, and every route that reads a projection reads the reason out
 /// of the same error rather than reimplementing `unreadable()`'s message.
-pub(super) fn sequencer_reply(error: &crate::log::SequencerError) -> Reply {
+pub(super) fn sequencer_reply(error: &librepaper_engine::log::SequencerError) -> Reply {
     write_json(503, &json!({"error": error.to_string(), "retryable": true}))
 }
 
@@ -1775,7 +1775,7 @@ pub(super) fn sequencer_reply(error: &crate::log::SequencerError) -> Reply {
 /// the refusal table, so a command's failure answers with the same status,
 /// retry advice and safe message a room write's does, and the storage
 /// context that used to travel here through `to_string()` goes to the log.
-pub(super) fn command_reply(what: &str, error: crate::log::CommandError) -> Reply {
+pub(super) fn command_reply(what: &str, error: librepaper_engine::log::CommandError) -> Reply {
     command_refused(what, error)
 }
 
@@ -1822,8 +1822,8 @@ mod comment_lookup_tests {
     /// storage error's context came back with it.
     #[test]
     fn a_refused_command_keeps_its_status_and_loses_its_storage_context() {
-        use crate::log::CommandError;
-        use crate::storage::postgres::Error as CatalogError;
+        use librepaper_engine::log::CommandError;
+        use librepaper_engine::storage::postgres::Error as CatalogError;
 
         let conflict =
             command_error_value(CommandError::Conflict("comment version changed".into()));
@@ -1853,8 +1853,8 @@ mod comment_lookup_tests {
     /// The same classification on the HTTP side, and in MCP's envelope.
     #[tokio::test]
     async fn every_transport_reads_the_same_refusal_table() {
-        use crate::log::CommandError;
-        use crate::storage::postgres::Error as CatalogError;
+        use librepaper_engine::log::CommandError;
+        use librepaper_engine::storage::postgres::Error as CatalogError;
 
         let storage = || {
             CommandError::Storage(CatalogError::Ownership(
@@ -1900,7 +1900,7 @@ mod comment_lookup_tests {
 /// route then answers with -- it used to look for one that was never there
 /// and fall back to 400, so a storage failure or a conflict came back as a
 /// bad request.
-fn command_error_value(error: crate::log::CommandError) -> Value {
+fn command_error_value(error: librepaper_engine::log::CommandError) -> Value {
     command_refusal_value("annotation command", error)
 }
 
@@ -1993,7 +1993,7 @@ mod automation_authority_tests {
     #[test]
     fn large_state_references_keep_exact_bounded_baseline_bytes() {
         let mut transfers = StateTransfers::default();
-        let budget = crate::log::budget::Budget::new(1 << 20, 1);
+        let budget = librepaper_engine::log::budget::Budget::new(1 << 20, 1);
         assert!(transfers.insert(
             "first".into(),
             "paper".into(),

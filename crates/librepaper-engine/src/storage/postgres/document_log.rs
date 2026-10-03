@@ -255,7 +255,7 @@ impl PostgresCatalog {
         Ok(tx)
     }
 
-    pub(crate) async fn check_fenced_flush(
+    pub async fn check_fenced_flush(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
@@ -299,7 +299,7 @@ impl PostgresCatalog {
         Ok(tx)
     }
 
-    pub(crate) async fn check_document_command(
+    pub async fn check_document_command(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
@@ -326,7 +326,7 @@ impl PostgresCatalog {
         Ok(sequence)
     }
 
-    pub(crate) async fn flush_log_row_charged(
+    pub async fn flush_log_row_charged(
         &self,
         document_id: Uuid,
         row: FlushRow<'_>,
@@ -362,7 +362,7 @@ impl PostgresCatalog {
             .await
     }
 
-    pub(crate) async fn insert_log_row_reserved(
+    pub async fn insert_log_row_reserved(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
@@ -459,7 +459,7 @@ impl PostgresCatalog {
     /// relayed. Each batch reserves its frame charge plus a row header; a
     /// flush replaces the prefix reservation with the actual encoded row in
     /// the same transaction.
-    pub(crate) async fn reserve_pending_log_bytes(
+    pub async fn reserve_pending_log_bytes(
         &self,
         document_id: Uuid,
         reservation_key: Uuid,
@@ -580,7 +580,7 @@ impl PostgresCatalog {
         ))
     }
 
-    pub(crate) async fn clear_stale_pending_log_reservations(&self) -> Result<()> {
+    pub async fn clear_stale_pending_log_reservations(&self) -> Result<()> {
         let epoch = self.writer_epoch()?;
         let mut tx = self.begin_writer_transaction().await?;
         sqlx::query("DELETE FROM pending_log_reservations WHERE writer_epoch <> $1")

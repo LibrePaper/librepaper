@@ -137,7 +137,7 @@ pub struct MutationAuthorization {
 
 /// Shared commit-boundary authorization check for document commands and
 /// catalogue mutations. It uses the same transaction as the rows it guards.
-pub(crate) async fn authorize_mutation(
+pub async fn authorize_mutation(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     document_id: Uuid,
     actor: &MutationAuthorization,
@@ -354,7 +354,7 @@ impl PostgresCatalog {
     /// and catalogue mutations. The caller takes the writer fence first;
     /// this checks and locks the account session, then the active document,
     /// before resolving the live grant and link rows.
-    pub(crate) async fn authorize_mutation(
+    pub async fn authorize_mutation(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         actor: &MutationAuthorization,
@@ -466,7 +466,7 @@ impl PostgresCatalog {
     /// nothing about this check needs to share a transaction with a write:
     /// unlike a mutation, its answer is not itself evidence that has to be
     /// committed atomically with anything else.
-    pub(crate) async fn authorize_document_mutation(
+    pub async fn authorize_document_mutation(
         &self,
         document_id: Uuid,
         actor: &MutationAuthorization,

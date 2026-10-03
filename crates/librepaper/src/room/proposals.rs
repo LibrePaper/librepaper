@@ -43,8 +43,8 @@ use loro::{
 };
 use uuid::Uuid;
 
-use crate::log::{Command, CommandError, Evidence, Head, PreparedSource};
-use crate::storage::postgres::{
+use librepaper_engine::log::{Command, CommandError, Evidence, Head, PreparedSource};
+use librepaper_engine::storage::postgres::{
     self, NewLabel, NewProposal, PostgresCatalog, StoredDecision, StoredProposal,
 };
 use librepaper_document::document::hunks::{hunks_of_batch, keep_declined_batch, Hunk};
@@ -1803,9 +1803,9 @@ pub fn validate_existing_action(
 /// that has since moved, which is exactly what `expected_version` reports
 /// everywhere else.
 pub async fn pending_proposal(
-    catalog: &crate::storage::postgres::PostgresCatalog,
+    catalog: &librepaper_engine::storage::postgres::PostgresCatalog,
     comment: &super::Comment,
-) -> Result<crate::storage::postgres::StoredProposal, ActionRefusal> {
+) -> Result<librepaper_engine::storage::postgres::StoredProposal, ActionRefusal> {
     let proposal_id = parse_uuid(&comment.proposal, "proposal")?;
     // A decided proposal is deleted, so a row that exists is still open.
     catalog

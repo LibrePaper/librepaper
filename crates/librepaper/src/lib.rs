@@ -26,12 +26,10 @@ mod cli;
 // spell it.
 pub use librepaper_base::config;
 mod local;
-pub mod log;
+// The log lives in librepaper-engine; the path stays as consumers spell it.
+pub use librepaper_engine::log;
 mod room;
 mod server;
-mod storage;
-// Opt-in PostgreSQL harness shared by the storage, room and server tests.
-pub(crate) mod testing;
 
 pub use cli::main;
 // The headless automation peer, for the integration tests in `tests/`.
@@ -91,7 +89,7 @@ pub mod locate {
 
 /// The range `locate` returns, as a comment stores it.
 pub mod annotation {
-    pub use crate::storage::annotation::{CommentTarget, OriginalAnchor};
+    pub use librepaper_engine::storage::annotation::{CommentTarget, OriginalAnchor};
 }
 
 /// The loopback service takes requests from any page in the browser, and a
@@ -105,14 +103,14 @@ pub mod protocol {
 /// What a version's bytes travel in, encoded and decoded by
 /// `tools/fuzz/fuzz_targets/archive.rs`.
 pub mod source_archive {
-    pub use crate::storage::source_archive::{
+    pub use librepaper_engine::storage::source_archive::{
         decode, encode, ArchiveLimits, SourceArchive, SourceFile,
     };
 }
 
 /// The catalogue the deployment-shaped tests stand a server on.
 pub mod postgres {
-    pub use crate::storage::postgres::{
+    pub use librepaper_engine::storage::postgres::{
         AccountRecord, Authority, Error, MutationAuthorization, NewAccount, NewAnnotation,
         NewDocument, NewReply, PostgresCatalog, PostgresOptions, StoragePolicy, WriterLease,
     };
@@ -121,16 +119,16 @@ pub mod postgres {
 /// The background worker, which those tests run so deletion and compaction
 /// behave as they do in a deployment.
 pub mod worker {
-    pub use crate::storage::worker::{prove_coverage, Handle, Worker};
+    pub use librepaper_engine::storage::worker::{prove_coverage, Handle, Worker};
 }
 /// The collaboration storage the whole-stack benchmarks measure.
 pub mod collaboration {
-    pub use crate::storage::collaboration::{superseded_base_deadline, CollaborationStorage};
+    pub use librepaper_engine::storage::collaboration::{superseded_base_deadline, CollaborationStorage};
 }
 
 /// The channel types a socket and a room talk through.
 pub mod outgoing {
-    pub use crate::storage::outgoing::{Outgoing, Receiver, Sender};
+    pub use librepaper_engine::storage::outgoing::{Outgoing, Receiver, Sender};
 }
 
 // What the deployment-shaped tests in `tests/` assemble: a whole server,
@@ -150,8 +148,8 @@ pub use librepaper_base::util::now_unix;
 pub use librepaper_shell::ShellFile;
 pub use room::{Room, Rooms};
 pub use server::Server;
-pub use storage::blob::{BlobStore, FsStore};
-pub use storage::store::Store;
+pub use librepaper_engine::storage::blob::{BlobStore, FsStore};
+pub use librepaper_engine::storage::store::Store;
 
 /// The release version, stamped in at build time for release artifacts and
 /// derived from the package version for crates.io installs.

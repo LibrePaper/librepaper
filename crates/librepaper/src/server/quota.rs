@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::storage::postgres::DocumentStorage;
+use librepaper_engine::storage::postgres::DocumentStorage;
 
 #[derive(Clone)]
 struct AccountStorageUsage {

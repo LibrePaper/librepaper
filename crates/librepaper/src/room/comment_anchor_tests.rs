@@ -16,11 +16,11 @@
 //! the rest of the catalogue coverage.
 
 use super::*;
-use crate::log::Registry;
-use crate::storage::annotation::{AnchorStatus, CommentTarget};
-use crate::storage::blob::FsStore;
-use crate::storage::postgres::Authority;
-use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::log::Registry;
+use librepaper_engine::storage::annotation::{AnchorStatus, CommentTarget};
+use librepaper_engine::storage::blob::FsStore;
+use librepaper_engine::storage::postgres::Authority;
+use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
 use librepaper_document::document::session;
 use serde_json::json;
 
@@ -31,15 +31,15 @@ struct Deployment {
     catalog: Arc<PostgresCatalog>,
     slug: String,
     account_id: Uuid,
-    _writer: crate::storage::postgres::WriterLease,
+    _writer: librepaper_engine::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let catalog = crate::testing::catalog().await?;
+    let catalog = librepaper_engine::testing::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let account = catalog
-        .create_account(crate::storage::postgres::NewAccount {
+        .create_account(librepaper_engine::storage::postgres::NewAccount {
             kind: "registered".into(),
             provider: Some("test".into()),
             provider_subject: Some("one".into()),
@@ -50,7 +50,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         .await
         .unwrap();
     let objects = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+    let blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore> =
         Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
     let registry = Registry::new(
@@ -126,8 +126,8 @@ impl Deployment {
         )
     }
 
-    fn mutation_authorization(&self) -> crate::storage::postgres::MutationAuthorization {
-        crate::storage::postgres::MutationAuthorization {
+    fn mutation_authorization(&self) -> librepaper_engine::storage::postgres::MutationAuthorization {
+        librepaper_engine::storage::postgres::MutationAuthorization {
             principal_key: self.account_id.to_string(),
             account_id: Some(self.account_id),
             session_generation: Some(1),
@@ -265,7 +265,7 @@ async fn a_suggestion_keeps_its_file_id_across_a_raw_path_collision_and_refineme
     assert!(matches!(
         room.ingest(9_123, "collider-writer", "collider-writer", 1, update)
             .await,
-        crate::log::Ingested::Accepted
+        librepaper_engine::log::Ingested::Accepted
     ));
 
     let mut add = deployment.add_comment(
@@ -482,7 +482,7 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
         .ingest(999, "editor-999", "editor-999", 1, update)
         .await;
     assert!(
-        matches!(ingested, crate::log::Ingested::Accepted),
+        matches!(ingested, librepaper_engine::log::Ingested::Accepted),
         "{ingested:?}"
     );
 
@@ -540,7 +540,7 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
         .ingest(999, "editor-999", "editor-999", 1, update)
         .await;
     assert!(
-        matches!(ingested, crate::log::Ingested::Accepted),
+        matches!(ingested, librepaper_engine::log::Ingested::Accepted),
         "{ingested:?}"
     );
 
@@ -570,7 +570,7 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
         1,
         true,
         "editor-1",
-        crate::storage::outgoing::Sender::from_raw(editor_tx.clone()),
+        librepaper_engine::storage::outgoing::Sender::from_raw(editor_tx.clone()),
         None,
     )
     .await
@@ -579,7 +579,7 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
         2,
         true,
         "editor-2",
-        crate::storage::outgoing::Sender::from_raw(editor_tx),
+        librepaper_engine::storage::outgoing::Sender::from_raw(editor_tx),
         None,
     )
     .await
@@ -588,7 +588,7 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
         3,
         false,
         "reader-3",
-        crate::storage::outgoing::Sender::from_raw(reader_tx),
+        librepaper_engine::storage::outgoing::Sender::from_raw(reader_tx),
         None,
     )
     .await
@@ -650,7 +650,7 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
         1,
         true,
         "editor-1",
-        crate::storage::outgoing::Sender::from_raw(editor_tx),
+        librepaper_engine::storage::outgoing::Sender::from_raw(editor_tx),
         None,
     )
     .await
@@ -659,7 +659,7 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
         2,
         false,
         "reader-2",
-        crate::storage::outgoing::Sender::from_raw(reader_tx),
+        librepaper_engine::storage::outgoing::Sender::from_raw(reader_tx),
         None,
     )
     .await
@@ -716,7 +716,7 @@ async fn a_suggestion_stays_out_of_the_public_channel() {
         1,
         true,
         "editor-1",
-        crate::storage::outgoing::Sender::from_raw(editor_tx),
+        librepaper_engine::storage::outgoing::Sender::from_raw(editor_tx),
         None,
     )
     .await
@@ -725,7 +725,7 @@ async fn a_suggestion_stays_out_of_the_public_channel() {
         2,
         false,
         "reader-2",
-        crate::storage::outgoing::Sender::from_raw(reader_tx),
+        librepaper_engine::storage::outgoing::Sender::from_raw(reader_tx),
         None,
     )
     .await
@@ -869,7 +869,7 @@ async fn refinement_round_trip(edit_source: bool, check_text: bool) {
             .await
             .expect_err("a refinement of text the suggestion no longer proposes");
         assert!(
-            matches!(&error, crate::log::CommandError::Conflict(message)
+            matches!(&error, librepaper_engine::log::CommandError::Conflict(message)
                 if message.contains("read it again")),
             "{error:?}",
         );
@@ -957,20 +957,20 @@ async fn edit_refinement_source(room: &Room, text: &str, sequence: i64) {
     assert!(matches!(
         room.ingest(999, "editor-999", "editor-999", sequence, update)
             .await,
-        crate::log::Ingested::Accepted,
+        librepaper_engine::log::Ingested::Accepted,
     ));
 }
 
 /// Whatever is already queued for a peer, as JSON.
 fn received(
-    rx: &mut tokio::sync::mpsc::Receiver<crate::storage::outgoing::Outgoing>,
+    rx: &mut tokio::sync::mpsc::Receiver<librepaper_engine::storage::outgoing::Outgoing>,
 ) -> Vec<Value> {
     let mut out = Vec::new();
     while let Ok(frame) = rx.try_recv() {
         let text = match frame {
-            crate::storage::outgoing::Outgoing::Text(value) => value,
-            crate::storage::outgoing::Outgoing::SharedText(value) => value.to_string(),
-            crate::storage::outgoing::Outgoing::Close(_) => continue,
+            librepaper_engine::storage::outgoing::Outgoing::Text(value) => value,
+            librepaper_engine::storage::outgoing::Outgoing::SharedText(value) => value.to_string(),
+            librepaper_engine::storage::outgoing::Outgoing::Close(_) => continue,
         };
         out.push(serde_json::from_str(&text).expect("every frame is JSON"));
     }

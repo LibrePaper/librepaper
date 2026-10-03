@@ -108,7 +108,7 @@ struct Restore {
     /// The version being restored, rechecked under the lock because a trim can
     /// delete it after the handler read it.
     label_id: uuid::Uuid,
-    catalog: std::sync::Arc<crate::storage::postgres::PostgresCatalog>,
+    catalog: std::sync::Arc<librepaper_engine::storage::postgres::PostgresCatalog>,
     expected_frontier: Vec<u8>,
     /// Each restored text as `(path, body, original id)`. The id comes from
     /// the projection being restored and is what keeps a restore from
@@ -124,7 +124,7 @@ struct Restore {
     replaced_vector: Vec<u8>,
 }
 
-impl crate::log::Command for Restore {
+impl librepaper_engine::log::Command for Restore {
     type Output = ();
 
     fn name(&self) -> &'static str {
@@ -141,23 +141,23 @@ impl crate::log::Command for Restore {
         &mut self,
     ) -> futures_util::future::BoxFuture<
         '_,
-        std::result::Result<Option<Self::Output>, crate::log::CommandError>,
+        std::result::Result<Option<Self::Output>, librepaper_engine::log::CommandError>,
     > {
         Box::pin(async move {
             self.catalog
                 .label_by_request(self.document_id, self.request_id)
                 .await
                 .map(|found| found.map(|_| ()))
-                .map_err(crate::log::CommandError::Storage)
+                .map_err(librepaper_engine::log::CommandError::Storage)
         })
     }
 
     fn evaluate(
         &mut self,
-        head: &crate::log::Head<'_>,
-    ) -> std::result::Result<Option<crate::log::PreparedSource>, crate::log::CommandError> {
+        head: &librepaper_engine::log::Head<'_>,
+    ) -> std::result::Result<Option<librepaper_engine::log::PreparedSource>, librepaper_engine::log::CommandError> {
         if head.frontier.encode() != self.expected_frontier {
-            return Err(crate::log::CommandError::Conflict(
+            return Err(librepaper_engine::log::CommandError::Conflict(
                 "the document changed since that moment; refresh before restoring".into(),
             ));
         }
@@ -247,16 +247,16 @@ impl crate::log::Command for Restore {
             }
             Ok(())
         })
-        .map_err(crate::log::CommandError::Conflict)
+        .map_err(librepaper_engine::log::CommandError::Conflict)
     }
 
     fn transact<'a>(
         &'a mut self,
         tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
-        evidence: &'a crate::log::Evidence,
+        evidence: &'a librepaper_engine::log::Evidence,
     ) -> futures_util::future::BoxFuture<
         'a,
-        std::result::Result<Self::Output, crate::log::CommandError>,
+        std::result::Result<Self::Output, librepaper_engine::log::CommandError>,
     > {
         Box::pin(async move {
             // Recheck the label and figures under the lock. A trim can delete both
@@ -265,9 +265,9 @@ impl crate::log::Command for Restore {
                 .catalog
                 .label_exists_in_transaction(tx, self.document_id, self.label_id)
                 .await
-                .map_err(crate::log::CommandError::Storage)?
+                .map_err(librepaper_engine::log::CommandError::Storage)?
             {
-                return Err(crate::log::CommandError::Conflict(
+                return Err(librepaper_engine::log::CommandError::Conflict(
                     "that version was deleted by a history trim".to_string(),
                 ));
             }
@@ -281,10 +281,10 @@ impl crate::log::Command for Restore {
                     .catalog
                     .missing_assets_in_transaction(tx, self.document_id, &digests)
                     .await
-                    .map_err(crate::log::CommandError::Storage)?
+                    .map_err(librepaper_engine::log::CommandError::Storage)?
                     > 0
             {
-                return Err(crate::log::CommandError::Conflict(
+                return Err(librepaper_engine::log::CommandError::Conflict(
                     "a figure that version names has been deleted".to_string(),
                 ));
             }
@@ -302,14 +302,14 @@ impl crate::log::Command for Restore {
             .bind(self.document_id)
             .fetch_optional(&mut **tx)
             .await
-            .map_err(|error| crate::log::CommandError::Storage(error.into()))?;
+            .map_err(|error| librepaper_engine::log::CommandError::Storage(error.into()))?;
             let already_kept = replaced_digest.is_some()
                 && newest.flatten().as_deref() == replaced_digest.as_ref().map(|d| d.as_slice());
             if !already_kept {
                 self.catalog
                     .insert_label(
                         tx,
-                        &crate::storage::postgres::NewLabel {
+                        &librepaper_engine::storage::postgres::NewLabel {
                             id: uuid::Uuid::new_v4(),
                             document_id: self.document_id,
                             source_sequence: evidence.source_sequence,
@@ -324,7 +324,7 @@ impl crate::log::Command for Restore {
                         },
                     )
                     .await
-                    .map_err(crate::log::CommandError::Storage)?;
+                    .map_err(librepaper_engine::log::CommandError::Storage)?;
             }
             let frontier = evidence
                 .after_frontier
@@ -340,7 +340,7 @@ impl crate::log::Command for Restore {
             self.catalog
                 .insert_label(
                     tx,
-                    &crate::storage::postgres::NewLabel {
+                    &librepaper_engine::storage::postgres::NewLabel {
                         id: uuid::Uuid::new_v4(),
                         document_id: self.document_id,
                         source_sequence: evidence.source_sequence,
@@ -355,7 +355,7 @@ impl crate::log::Command for Restore {
                     },
                 )
                 .await
-                .map_err(crate::log::CommandError::Storage)?;
+                .map_err(librepaper_engine::log::CommandError::Storage)?;
             Ok(())
         })
     }
@@ -366,12 +366,12 @@ impl crate::log::Command for Restore {
 /// same lock, so no edit can name a figure between the read and the delete.
 struct TrimRetained {
     document_id: uuid::Uuid,
-    catalog: std::sync::Arc<crate::storage::postgres::PostgresCatalog>,
+    catalog: std::sync::Arc<librepaper_engine::storage::postgres::PostgresCatalog>,
     referenced: Vec<Vec<u8>>,
 }
 
-impl crate::log::Command for TrimRetained {
-    type Output = crate::storage::postgres::TrimOutcome;
+impl librepaper_engine::log::Command for TrimRetained {
+    type Output = librepaper_engine::storage::postgres::TrimOutcome;
 
     fn name(&self) -> &'static str {
         "history-trim"
@@ -379,8 +379,8 @@ impl crate::log::Command for TrimRetained {
 
     fn evaluate(
         &mut self,
-        head: &crate::log::Head<'_>,
-    ) -> std::result::Result<Option<crate::log::PreparedSource>, crate::log::CommandError> {
+        head: &librepaper_engine::log::Head<'_>,
+    ) -> std::result::Result<Option<librepaper_engine::log::PreparedSource>, librepaper_engine::log::CommandError> {
         self.referenced = head
             .projection
             .projection
@@ -395,22 +395,22 @@ impl crate::log::Command for TrimRetained {
     fn transact<'a>(
         &'a mut self,
         tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
-        _evidence: &'a crate::log::Evidence,
+        _evidence: &'a librepaper_engine::log::Evidence,
     ) -> futures_util::future::BoxFuture<
         'a,
-        std::result::Result<Self::Output, crate::log::CommandError>,
+        std::result::Result<Self::Output, librepaper_engine::log::CommandError>,
     > {
         Box::pin(async move {
             self.catalog
                 .trim_retained_in_transaction(tx, self.document_id, &self.referenced)
                 .await
-                .map_err(crate::log::CommandError::from)
+                .map_err(librepaper_engine::log::CommandError::from)
         })
     }
 }
 
 /// A label row, on the wire.
-fn label_wire(row: &crate::storage::postgres::LabelRecord) -> Value {
+fn label_wire(row: &librepaper_engine::storage::postgres::LabelRecord) -> Value {
     json!({
         "sha": row.id,
         "sequence": row.sequence,
@@ -616,7 +616,7 @@ impl Server {
                     );
                 }
                 self.background
-                    .ask(crate::storage::worker::Task::Archive(label_id));
+                    .ask(librepaper_engine::storage::worker::Task::Archive(label_id));
                 // An explicit retry clears the old terminal error during
                 // admission. Return the row after that write so the caller
                 // sees pending (or a fast worker's ready result), not the
@@ -1024,14 +1024,14 @@ impl Server {
         // ahead of the log, not that compaction succeeded.
         let mut after = None;
         for attempt in 0..3 {
-            let result = crate::storage::worker::compact_document(
+            let result = librepaper_engine::storage::worker::compact_document(
                 &self.store.catalog,
                 &self.store.blobs,
                 self.rooms.registry(),
                 &self.background,
                 &self.config,
                 room.document_id,
-                crate::log::sequencer::SnapshotMode::Shallow,
+                librepaper_engine::log::sequencer::SnapshotMode::Shallow,
             )
             .await;
             match result {

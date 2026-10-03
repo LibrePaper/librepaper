@@ -12,7 +12,7 @@
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 # The SQL in this workspace is checked against a real schema at compile time by
-# sqlx's `query!` macros. The answers are cached in `.sqlx/`, which is checked
+# sqlx's `query!` macros. The answers are cached in `crates/librepaper-engine/.sqlx/`, which is checked
 # in, so an ordinary build needs no database and no network -- that is what
 # offline means here.
 #
@@ -22,8 +22,3 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 # fails on a stale one (`tools/db sqlx-check`).
 [env]
 SQLX_OFFLINE = { value = "true", force = false }
-
-# The cache stays at the repository root, but the crate being compiled is
-# crates/librepaper, so sqlx is told where it is. Relative to this file's
-# parent directory.
-SQLX_OFFLINE_DIR = { value = ".sqlx", relative = true }

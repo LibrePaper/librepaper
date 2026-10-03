@@ -14,8 +14,8 @@ use futures_util::future::BoxFuture;
 use uuid::Uuid;
 
 use super::*;
-use crate::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
-use crate::storage::postgres::{Authority, LabelRecord, NewLabel, PostgresCatalog};
+use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
+use librepaper_engine::storage::postgres::{Authority, LabelRecord, NewLabel, PostgresCatalog};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Attribution {
@@ -186,7 +186,7 @@ impl Room {
     /// [`Self::take_label`], and also whether §7.2's retry record answered
     /// it rather than a fresh commit. Callers that speak to a client over a
     /// request/response protocol want this; see
-    /// [`crate::log::sequencer::Sequencer::command_reporting_replay`].
+    /// [`librepaper_engine::log::sequencer::Sequencer::command_reporting_replay`].
     pub async fn take_label_reporting_replay(
         &self,
         reason: &str,
@@ -221,7 +221,7 @@ impl Room {
         by: impl Into<Attribution>,
         authority: &Authority,
         request_id: Option<Uuid>,
-        receipt: crate::storage::postgres::OperationReceipt,
+        receipt: librepaper_engine::storage::postgres::OperationReceipt,
     ) -> Result<(LabelRecord, bool), WriteError> {
         let mut command = TakeLabel {
             document_id: self.document_id,
@@ -234,7 +234,7 @@ impl Room {
             frontier: Vec::new(),
             digest: [0; 32],
         };
-        let mut command = crate::log::recorded::RecordedCommand::new(
+        let mut command = librepaper_engine::log::recorded::RecordedCommand::new(
             &mut command,
             receipt,
             |record: &LabelRecord| {

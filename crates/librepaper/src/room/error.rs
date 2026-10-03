@@ -7,7 +7,7 @@
 //! refusal is for the person reading it, so rewording one must not silently
 //! move a route from 507 to 413 or turn a permanent refusal into a retry.
 
-use crate::storage::postgres::Error as CatalogError;
+use librepaper_engine::storage::postgres::Error as CatalogError;
 
 /// Whether the same write is worth sending again.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -137,12 +137,12 @@ impl From<CatalogError> for WriteError {
     }
 }
 
-impl From<crate::log::SequencerError> for WriteError {
+impl From<librepaper_engine::log::SequencerError> for WriteError {
     /// The sequencer's refusals and the room's are the same refusals seen
     /// from two places, so the mapping is total and there is no catch-all:
     /// a variant added to one has to be answered for in the other.
-    fn from(error: crate::log::SequencerError) -> Self {
-        use crate::log::SequencerError;
+    fn from(error: librepaper_engine::log::SequencerError) -> Self {
+        use librepaper_engine::log::SequencerError;
         match error {
             SequencerError::Unreadable(why) => Self::Unreadable(why),
             SequencerError::Busy => Self::Busy,
@@ -153,9 +153,9 @@ impl From<crate::log::SequencerError> for WriteError {
     }
 }
 
-impl From<crate::log::CommandError> for WriteError {
-    fn from(error: crate::log::CommandError) -> Self {
-        use crate::log::CommandError;
+impl From<librepaper_engine::log::CommandError> for WriteError {
+    fn from(error: librepaper_engine::log::CommandError) -> Self {
+        use librepaper_engine::log::CommandError;
         match error {
             CommandError::Conflict(why) => Self::Conflict(why),
             // A stale rendered selection is a conflict with a fact the

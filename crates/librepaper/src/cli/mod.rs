@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
 use crate::local::cli::{LaunchArgs, LocalAgentCommand, LocalArgs, LocalCommand};
-use crate::storage::StorageFlags;
+use librepaper_engine::storage::StorageFlags;
 use librepaper_base::config::Configuration;
 use librepaper_base::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use librepaper_base::util::die;
@@ -106,7 +106,7 @@ pub(crate) struct ServiceFlags {
     /// Write each new account's starter documents as though they had been
     /// typed over this many days, so a demonstration deployment has a history
     /// panel with something in it. The operations are real; only the clock is
-    /// invented. See `crate::storage::seed::activity`.
+    /// invented. See `librepaper_engine::storage::seed::activity`.
     #[arg(
         long = "simulate-activity",
         env = "LIBREPAPER_SIMULATE_ACTIVITY",
@@ -573,21 +573,21 @@ async fn run_admin(command: AdminCommand) {
             directory,
             id,
         } => {
-            crate::storage::backup::backup_cli(storage.options(), directory, id.unwrap_or_default())
+            librepaper_engine::storage::backup::backup_cli(storage.options(), directory, id.unwrap_or_default())
                 .await
         }
         AdminCommand::Restore {
             storage,
             backup,
             directory,
-        } => crate::storage::backup::restore_cli(storage.options(), backup, directory).await,
+        } => librepaper_engine::storage::backup::restore_cli(storage.options(), backup, directory).await,
         AdminCommand::Moderate { command } => moderate(command).await,
         AdminCommand::Sweep { storage, batch } => sweep(storage, batch as usize).await,
     }
 }
 
 async fn moderate(command: ModerationCommand) {
-    use crate::storage::postgres::{ModerationAction, PostgresCatalog, PostgresOptions};
+    use librepaper_engine::storage::postgres::{ModerationAction, PostgresCatalog, PostgresOptions};
     let (database, action, target, actor, reason) = match command {
         ModerationCommand::BlockAccount {
             account,
@@ -684,19 +684,19 @@ async fn moderate(command: ModerationCommand) {
 /// `delete_orphans` refuses a shorter grace rather than trusting a flag.
 async fn sweep(storage: StorageFlags, batch: usize) {
     let options = storage.options();
-    let blobs = match crate::storage::open_storage(options.clone()).await {
+    let blobs = match librepaper_engine::storage::open_storage(options.clone()).await {
         Ok(blobs) => blobs,
         Err(error) => die(error),
     };
-    let catalog = match crate::storage::postgres::PostgresCatalog::connect(
-        crate::storage::postgres::PostgresOptions::new(&options.database_url),
+    let catalog = match librepaper_engine::storage::postgres::PostgresCatalog::connect(
+        librepaper_engine::storage::postgres::PostgresOptions::new(&options.database_url),
     )
     .await
     {
         Ok(catalog) => std::sync::Arc::new(catalog),
         Err(error) => die(error.to_string()),
     };
-    match crate::storage::maintenance::Maintenance::new(catalog, blobs)
+    match librepaper_engine::storage::maintenance::Maintenance::new(catalog, blobs)
         .delete_orphans(batch, time::Duration::days(7))
         .await
     {

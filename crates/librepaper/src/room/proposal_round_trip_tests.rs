@@ -17,9 +17,9 @@ use super::*;
 use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };
-use crate::storage::blob::FsStore;
-use crate::storage::postgres::{Authority, PostgresCatalog, StoredProposal};
-use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::blob::FsStore;
+use librepaper_engine::storage::postgres::{Authority, PostgresCatalog, StoredProposal};
+use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
 use librepaper_document::document::session;
 use loro::Frontiers;
 use uuid::Uuid;
@@ -29,14 +29,14 @@ struct Deployment {
     catalog: Arc<PostgresCatalog>,
     slug: String,
     authority: Authority,
-    _writer: crate::storage::postgres::WriterLease,
+    _writer: librepaper_engine::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let catalog = crate::testing::catalog().await?;
+    let catalog = librepaper_engine::testing::catalog().await?;
     let account = catalog
-        .create_account(crate::storage::postgres::NewAccount {
+        .create_account(librepaper_engine::storage::postgres::NewAccount {
             kind: "registered".into(),
             provider: Some("test".into()),
             provider_subject: Some("one".into()),
@@ -56,11 +56,11 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         automation: false,
     };
     let objects = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+    let blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore> =
         Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
     let writer = catalog.claim_writer().await.unwrap();
-    let registry = crate::log::Registry::new(
+    let registry = librepaper_engine::log::Registry::new(
         catalog.clone(),
         blobs.clone(),
         config.clone(),
@@ -143,7 +143,7 @@ async fn other_writer_types(room: &Room, path: &str, body: &str) {
         .ingest(9_999, "other-writer", "other-writer", 1, update)
         .await
     {
-        crate::log::Ingested::Accepted => {}
+        librepaper_engine::log::Ingested::Accepted => {}
         other => panic!("expected the concurrent write to be accepted, got {other:?}"),
     }
 }
@@ -221,7 +221,7 @@ async fn decide(
     hunk_index: i32,
     accepted: bool,
     against: &Frontiers,
-) -> Result<ProposalDecided, crate::log::CommandError> {
+) -> Result<ProposalDecided, librepaper_engine::log::CommandError> {
     let stored = room.catalog().proposal(proposal_id).await.unwrap().unwrap();
     let decided = room.catalog().decisions(proposal_id).await.unwrap();
     decide_with(
@@ -235,11 +235,11 @@ async fn decide_with(
     room: &Room,
     authority: &Authority,
     stored: StoredProposal,
-    decided: Vec<crate::storage::postgres::StoredDecision>,
+    decided: Vec<librepaper_engine::storage::postgres::StoredDecision>,
     hunk_index: i32,
     accepted: bool,
     against: &Frontiers,
-) -> Result<ProposalDecided, crate::log::CommandError> {
+) -> Result<ProposalDecided, librepaper_engine::log::CommandError> {
     let proposal_id = stored.id;
     let mut command = DecideProposalHunk {
         document_id: room.document_id,
@@ -331,7 +331,7 @@ async fn a_base_the_room_has_never_seen_is_refused() {
     };
     let refused = room.command(&deployment.authority, &mut command).await;
     assert!(
-        matches!(refused, Err(crate::log::CommandError::Conflict(_))),
+        matches!(refused, Err(librepaper_engine::log::CommandError::Conflict(_))),
         "got {refused:?}"
     );
     assert!(
@@ -418,7 +418,7 @@ async fn proposal_updates_require_the_owner_and_acknowledged_version_but_allow_e
         .expect_err("another author cannot update the branch");
     assert!(matches!(
         refused_owner,
-        crate::log::CommandError::Conflict(_)
+        librepaper_engine::log::CommandError::Conflict(_)
     ));
     assert_eq!(
         deployment
@@ -450,7 +450,7 @@ async fn proposal_updates_require_the_owner_and_acknowledged_version_but_allow_e
         .expect_err("an older acknowledged version cannot replace a newer branch");
     assert!(matches!(
         refused_stale,
-        crate::log::CommandError::Storage(crate::storage::postgres::Error::Conflict(_))
+        librepaper_engine::log::CommandError::Storage(librepaper_engine::storage::postgres::Error::Conflict(_))
     ));
     let still_original = deployment
         .catalog
@@ -482,7 +482,7 @@ async fn resuming_an_unknown_proposal_id_does_not_create_a_row() {
     };
     let unknown = room.command(&deployment.authority, &mut command).await;
     assert!(
-        matches!(&unknown, Err(crate::log::CommandError::Conflict(message)) if message.starts_with("proposal status is unknown")),
+        matches!(&unknown, Err(librepaper_engine::log::CommandError::Conflict(message)) if message.starts_with("proposal status is unknown")),
         "got {unknown:?}"
     );
     assert!(deployment.catalog.proposal(id).await.unwrap().is_none());
@@ -695,7 +695,7 @@ async fn a_proposal_goes_open_update_decide_resolve() {
     // A decision against a tip the proposal has moved past is refused (§7.1).
     let stale = decide(&room, &deployment.authority, stored.id, 0, true, &base).await;
     assert!(
-        matches!(stale, Err(crate::log::CommandError::Conflict(_))),
+        matches!(stale, Err(librepaper_engine::log::CommandError::Conflict(_))),
         "a decision against the wrong tip is refused, got {stale:?}"
     );
 
@@ -761,7 +761,7 @@ async fn a_proposal_goes_open_update_decide_resolve() {
         .command(&deployment.authority, &mut resumed_closed)
         .await;
     assert!(
-        matches!(closed_retry, Err(crate::log::CommandError::Conflict(_))),
+        matches!(closed_retry, Err(librepaper_engine::log::CommandError::Conflict(_))),
         "a resumed id with a retained outcome is replayed by the socket, never reopened: {closed_retry:?}"
     );
     assert!(deployment
@@ -784,7 +784,7 @@ async fn a_proposal_goes_open_update_decide_resolve() {
         .command(&deployment.authority, &mut delayed_initial_retry)
         .await;
     assert!(
-        matches!(delayed_retry, Err(crate::log::CommandError::Storage(_))),
+        matches!(delayed_retry, Err(librepaper_engine::log::CommandError::Storage(_))),
         "a delayed initial-open retry cannot recreate an id with a receipt: {delayed_retry:?}"
     );
     assert!(deployment

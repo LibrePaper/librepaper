@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::room::Message as RoomMessage;
 use crate::server::origins::Origins;
-use crate::storage::store::{DocumentInput, Role};
+use librepaper_engine::storage::store::{DocumentInput, Role};
 use librepaper_base::auth::{sign_agent_grant, AgentGrant, Identity, PROVIDER_GITHUB};
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer};
@@ -243,7 +243,7 @@ async fn archive_poll_preserves_terminal_failure_until_explicit_retry() {
         .get(&deployment.slug)
         .await
         .unwrap();
-    let authority = crate::storage::postgres::Authority {
+    let authority = librepaper_engine::storage::postgres::Authority {
         principal_key: deployment.owner_id.to_string(),
         account_id: Some(deployment.owner_id),
         link_hash: None,

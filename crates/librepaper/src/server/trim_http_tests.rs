@@ -17,8 +17,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::server::origins::Origins;
-use crate::storage::postgres::{Authority, NewProposal};
-use crate::storage::store::{DocumentInput, MutationActor};
+use librepaper_engine::storage::postgres::{Authority, NewProposal};
+use librepaper_engine::storage::store::{DocumentInput, MutationActor};
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer};
 
@@ -77,7 +77,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
     // Step 2: attach an archive to this label for versionBytes test.
     let archive_bytes = 1234i64;
     let storage_key = format!("documents/{}/labels/{}.tar.zst", room.document_id, named.id);
-    let archive_object = crate::storage::postgres::ArchiveObject {
+    let archive_object = librepaper_engine::storage::postgres::ArchiveObject {
         document_id: room.document_id,
         storage_key,
         tree_digest: Some(vec![1; 32]),
@@ -95,7 +95,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
             .attach_label_archive(named.id, &archive_object)
             .await
             .unwrap(),
-        crate::storage::postgres::ArchiveAttach::Attached
+        librepaper_engine::storage::postgres::ArchiveAttach::Attached
     );
 
     // Step 3: replace project so figure-a becomes unreferenced, and add figure-b (named).
@@ -130,13 +130,13 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
 
     // Step 4: manually add unreferenced figure-c (fresh) via catalog.
     let figure_c_digest_bytes = Sha256::digest(FIGURE_C).to_vec();
-    let (_assets, staged_c) = crate::storage::source::SourceStorage::new(
+    let (_assets, staged_c) = librepaper_engine::storage::source::SourceStorage::new(
         deployment.catalog.clone(),
         deployment.server.documents.store.blobs.clone(),
     )
     .stage_assets(
         room.document_id,
-        std::iter::once(&crate::storage::source::ProjectFile {
+        std::iter::once(&librepaper_engine::storage::source::ProjectFile {
             path: "figure-c.png".into(),
             bytes: FIGURE_C.to_vec(),
             media_type: "application/octet-stream".into(),

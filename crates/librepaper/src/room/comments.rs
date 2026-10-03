@@ -41,10 +41,10 @@ use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::log::sequencer::{
+use librepaper_engine::log::sequencer::{
     Command as SequencerCommand, CommandError, Evidence, Head, PreparedSource, Rung,
 };
-use crate::storage::postgres::{
+use librepaper_engine::storage::postgres::{
     self, AnnotationRecord, AnnotationState, MutationAuthorization, NewAnnotation, NewLabel,
     NewProposal, NewReply, PostgresCatalog, ReplyRecord,
 };
@@ -54,7 +54,7 @@ use librepaper_document::document::session;
 
 use super::locate::{self, Quote};
 use super::{Room, WriteError};
-use crate::storage::annotation::{
+use librepaper_engine::storage::annotation::{
     CommentTarget, DerivedAttachment, OriginalAnchor, PresentationContext, SourceTextTarget,
 };
 
@@ -79,7 +79,7 @@ pub struct Comment {
     pub id: String,
     /// What this comment is about, in the document as it stood when it was
     /// made. Written once by the server, from the selection a client sent,
-    /// and never written again: see [`crate::storage::annotation`].
+    /// and never written again: see [`librepaper_engine::storage::annotation`].
     ///
     /// Every stored comment has one -- the persistence layer refuses a
     /// comment that does not. It is optional here because the view served to
@@ -242,8 +242,8 @@ pub struct CommentEvent {
     carries_comment: bool,
     editor: Option<Comment>,
     reader: Option<Comment>,
-    editor_state: Option<crate::storage::postgres::AnnotationState>,
-    reader_state: Option<crate::storage::postgres::AnnotationState>,
+    editor_state: Option<librepaper_engine::storage::postgres::AnnotationState>,
+    reader_state: Option<librepaper_engine::storage::postgres::AnnotationState>,
 }
 
 impl CommentEvent {
@@ -2636,10 +2636,10 @@ pub fn comment_revision(state: &AnnotationState) -> String {
 #[cfg(test)]
 mod utf16_suggestion_tests {
     use super::{proposed_from_branch, replace_utf16_span, Comment};
-    use crate::storage::annotation::{
+    use librepaper_engine::storage::annotation::{
         AnchorSide, CommentTarget, FileId, OriginalAnchor, SourceTextTarget,
     };
-    use crate::storage::postgres::StoredProposal;
+    use librepaper_engine::storage::postgres::StoredProposal;
     use librepaper_document::document::session;
     use loro::LoroDoc;
     use uuid::Uuid;

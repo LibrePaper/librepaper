@@ -537,7 +537,7 @@ pub type Result<T> = std::result::Result<T, SequencerError>;
 /// `Arc<PostgresCatalog>`. `admit` is still the only production caller and
 /// still takes a concrete `PostgresCatalog`; the trait object is an internal
 /// seam, not a new public surface.
-pub(crate) trait LogCatalog: Send + Sync {
+pub trait LogCatalog: Send + Sync {
     fn log_coverage(
         &self,
         document_id: Uuid,
@@ -1071,7 +1071,7 @@ impl Sequencer {
     /// a sequencer this way with a fake `LogCatalog` so exercising them
     /// never needs PostgreSQL.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_parts(
+    pub fn from_parts(
         document_id: Uuid,
         slug: String,
         owner_id: Uuid,
@@ -1138,8 +1138,7 @@ impl Sequencer {
     /// `gap_check`: this is the seam SPEC-server-is-a-log §14.1 item 1's
     /// negative control uses, and the only caller of it anywhere in this
     /// crate is that test.
-    #[cfg(test)]
-    pub(crate) fn set_gap_check_enforced(&self, enforced: bool) {
+    pub fn set_gap_check_enforced(&self, enforced: bool) {
         self.gap_check
             .store(enforced, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1156,7 +1155,7 @@ impl Sequencer {
     /// test can hold it still or step it. `Duration::ZERO` hands the buckets
     /// back to the live clock, which is where production leaves them.
     #[cfg(test)]
-    pub(crate) fn set_rate_clock(&self, since_creation: Duration) {
+    pub fn set_rate_clock(&self, since_creation: Duration) {
         self.rate_clock.store(
             since_creation.as_nanos() as u64,
             std::sync::atomic::Ordering::Relaxed,
@@ -2653,7 +2652,7 @@ impl CompactionGate<'_> {
 
     /// Prevents this instance from serving state when an activation may
     /// have committed but its durable result cannot be read back.
-    pub(crate) fn fence(&mut self, why: String) {
+    pub fn fence(&mut self, why: String) {
         self.inner.fence(why);
     }
 
@@ -2663,7 +2662,7 @@ impl CompactionGate<'_> {
     /// The resident document still holds the history the base no longer has,
     /// so it is dropped and rebuilt from the shallow base, and every subscriber
     /// rejoins from that base.
-    pub(crate) fn reset_after_trim(&mut self, why: &str) {
+    pub fn reset_after_trim(&mut self, why: &str) {
         self.inner.cache = None;
         self.inner.projection = None;
         let payload = format!("{why}; reconnect");
@@ -2902,7 +2901,7 @@ fn notify_durable(inner: &mut Inner) {
 /// Takes attribution alone, not whole batches: acknowledgement never needs a
 /// payload, which is what lets a flush drop the encoded row -- and give its
 /// scratch back -- before the acknowledgements go out.
-pub(crate) fn ack_targets<'a>(
+pub fn ack_targets<'a>(
     acknowledged: impl IntoIterator<Item = (&'a str, i64)>,
 ) -> HashMap<&'a str, i64> {
     let mut highest: HashMap<&str, i64> = HashMap::new();

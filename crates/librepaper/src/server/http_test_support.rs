@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use crate::log::Registry;
+use librepaper_engine::log::Registry;
 use crate::room::Rooms;
 use crate::server::Server;
-use crate::storage::blob::FsStore;
-use crate::storage::postgres::{NewAccount, PostgresCatalog, WriterLease};
-use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::blob::FsStore;
+use librepaper_engine::storage::postgres::{NewAccount, PostgresCatalog, WriterLease};
+use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
 use librepaper_base::auth::{GithubApp, Policy};
 use librepaper_base::config::Configuration;
 
@@ -30,7 +30,7 @@ pub(super) async fn deployment(
     publishers: &str,
     commenters: &str,
 ) -> Option<Deployment> {
-    let catalog = crate::testing::catalog().await?;
+    let catalog = librepaper_engine::testing::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let owner = catalog
         .create_account(NewAccount {
@@ -44,7 +44,7 @@ pub(super) async fn deployment(
         .await
         .unwrap();
     let objects = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+    let blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore> =
         Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
     let registry = Registry::new(
@@ -59,7 +59,7 @@ pub(super) async fn deployment(
         config.clone(),
         registry.clone(),
     );
-    let (worker, background) = crate::storage::worker::Worker::new(
+    let (worker, background) = librepaper_engine::storage::worker::Worker::new(
         catalog.clone(),
         blobs.clone(),
         registry.clone(),

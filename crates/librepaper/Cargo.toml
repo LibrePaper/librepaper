@@ -12,7 +12,7 @@ readme = "../../README.md"
 keywords = ["document", "collaboration", "editor"]
 categories = ["command-line-utilities", "web-programming"]
 # Cargo packages only files under this directory, so the root-level inputs
-# (README.md, LICENSE, assets.lock, .sqlx, skills, web/dist, docs, tools) cannot
+# (README.md, LICENSE, assets.lock, skills, web/dist, docs, tools) cannot
 # be listed here. How the packaged inputs are gathered is resolved by the
 # flattener in Stage 7 of docs/dev/specs/SPEC-split-crates.md, so `cargo package`
 # is not expected to work between Stage 0 and Stage 7.
@@ -21,7 +21,6 @@ include = [
     "build.rs",
     "src/**",
     "tests/**",
-    "migrations/postgres/**",
     "assets/**",
 ]
 autotests = false
@@ -111,6 +110,8 @@ librepaper-shell = { path = "../librepaper-shell" }
 librepaper-base = { path = "../librepaper-base" }
 # What a document is, whoever serves it.
 librepaper-document = { path = "../librepaper-document" }
+# The log, the PostgreSQL catalogue and the blob store.
+librepaper-engine = { path = "../librepaper-engine" }
 # The command line.
 clap.workspace = true
 # The blob store is a trait with async methods behind a pointer.

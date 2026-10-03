@@ -10,12 +10,12 @@ use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::log::Registry;
+use librepaper_engine::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
-use crate::storage::blob::FsStore;
-use crate::storage::postgres::{AccessRole, NewAccount, PostgresCatalog};
-use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::blob::FsStore;
+use librepaper_engine::storage::postgres::{AccessRole, NewAccount, PostgresCatalog};
+use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
 use librepaper_base::auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
 use librepaper_base::config::Configuration;
 
@@ -35,14 +35,14 @@ struct Deployment {
     commenter_link_key: String,
     commenter_link_id: Uuid,
     document_id: Uuid,
-    _writer: crate::storage::postgres::WriterLease,
+    _writer: librepaper_engine::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
 /// The same real storage/room worker arrangement used by the HTTP integration
 /// harnesses, with an owner and a commenter identity.
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let catalog = crate::testing::catalog().await?;
+    let catalog = librepaper_engine::testing::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let owner = catalog
         .create_account(NewAccount {
@@ -67,7 +67,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         .await
         .unwrap();
     let objects = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+    let blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore> =
         Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
     let registry = Registry::new(
@@ -82,7 +82,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         config.clone(),
         registry.clone(),
     );
-    let (worker, background) = crate::storage::worker::Worker::new(
+    let (worker, background) = librepaper_engine::storage::worker::Worker::new(
         catalog.clone(),
         blobs.clone(),
         registry.clone(),

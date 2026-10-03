@@ -1,0 +1,44 @@
+# The write path and where the bytes go: the log, the PostgreSQL catalogue,
+# the blob store. Internal to librepaper.
+[package]
+name = "librepaper-engine"
+version.workspace = true
+edition.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[lib]
+doctest = false
+
+[dependencies]
+librepaper-base = { path = "../librepaper-base" }
+librepaper-document = { path = "../librepaper-document" }
+tokio.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+base64.workspace = true
+hex.workspace = true
+time.workspace = true
+async-trait.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+clap.workspace = true
+loro.workspace = true
+zstd.workspace = true
+tar.workspace = true
+fs2.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+log.workspace = true
+tempfile.workspace = true
+object_store.workspace = true
+
+[dev-dependencies]
+# `start_paused` and `advance`, so the deadline tests move a clock instead of
+# waiting on one. Test builds only.
+tokio = { workspace = true, features = ["test-util"] }

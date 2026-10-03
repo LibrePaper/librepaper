@@ -3,10 +3,10 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::WriteError;
-use crate::storage::postgres::MutationAuthorization;
+use librepaper_engine::storage::postgres::MutationAuthorization;
 
 pub(super) fn mutation_authorization(
-    actor: &crate::storage::store::MutationActor,
+    actor: &librepaper_engine::storage::store::MutationActor,
 ) -> Result<MutationAuthorization, WriteError> {
     let account_id = if actor.account_id.is_empty() {
         None

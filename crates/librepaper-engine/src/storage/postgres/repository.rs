@@ -709,7 +709,7 @@ impl PostgresCatalog {
         ))
     }
 
-    pub(crate) async fn complete_template_operation(
+    pub async fn complete_template_operation(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         target_document_id: Uuid,
@@ -1092,7 +1092,7 @@ impl PostgresCatalog {
     /// caller must already have performed semantic authorization; this helper
     /// retains the document-then-storage_usage lock order and the existing
     /// duplicate and quota accounting.
-    pub(crate) async fn complete_assets_in_transaction(
+    pub async fn complete_assets_in_transaction(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         inputs: &[NewAsset],
@@ -1271,7 +1271,7 @@ impl PostgresCatalog {
     /// the caller's transaction. A replacement reuses rows it found while
     /// staging, before the command lock, and a trim may delete such a row in
     /// between; counting here, under the lock, is what catches that.
-    pub(crate) async fn missing_assets_in_transaction(
+    pub async fn missing_assets_in_transaction(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,

@@ -5,7 +5,7 @@ pub mod backup;
 pub mod blob;
 pub mod collaboration;
 pub mod maintenance;
-pub(crate) mod outgoing;
+pub mod outgoing;
 pub mod postgres;
 pub mod schedule;
 #[cfg(test)]
@@ -84,7 +84,7 @@ pub async fn open_storage(options: StorageOptions) -> Result<Arc<dyn BlobStore>,
     }
 }
 
-pub(crate) fn create_private_dir(path: &std::path::Path, context: &str) -> Result<(), String> {
+pub fn create_private_dir(path: &std::path::Path, context: &str) -> Result<(), String> {
     std::fs::create_dir_all(path)
         .map_err(|err| format!("could not create {context} {}: {err}", path.display()))?;
     #[cfg(unix)]

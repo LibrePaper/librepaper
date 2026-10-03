@@ -10,7 +10,7 @@ use sqlx::{pool::PoolConnection, Connection, PgConnection, Postgres, Transaction
 use super::{meter, PostgresCatalog, Result};
 use crate::log::pending::Reservation;
 
-pub(crate) struct PersistenceConnection {
+pub struct PersistenceConnection {
     connection: Option<PoolConnection<Postgres>>,
     // Dropped after the connection, including when its transaction is cancelled.
     _scratch: Reservation,
@@ -20,7 +20,7 @@ pub(crate) struct PersistenceConnection {
 }
 
 impl PostgresCatalog {
-    pub(crate) async fn persistence_connection(
+    pub async fn persistence_connection(
         &self,
         scratch: Reservation,
     ) -> Result<PersistenceConnection> {
@@ -46,7 +46,7 @@ impl PostgresCatalog {
 }
 
 impl PersistenceConnection {
-    pub(crate) async fn begin(&mut self) -> Result<Transaction<'_, Postgres>> {
+    pub async fn begin(&mut self) -> Result<Transaction<'_, Postgres>> {
         let begun = self
             .connection
             .as_mut()
@@ -61,7 +61,7 @@ impl PersistenceConnection {
 
     /// Called only after the transaction has committed or rolled back. It has
     /// no awaits: cancellation cannot fall between shrinking and marking safe.
-    pub(crate) fn complete(&mut self) {
+    pub fn complete(&mut self) {
         let connection = self
             .connection
             .as_mut()

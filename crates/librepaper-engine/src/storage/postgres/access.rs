@@ -126,7 +126,7 @@ impl PostgresCatalog {
     /// verifies the active document row lock in that transaction, so link
     /// edits stay atomic with the caller's other document mutations.
     #[allow(clippy::type_complexity)]
-    pub(crate) async fn replace_share_links_tx(
+    pub async fn replace_share_links_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         links: &[(
@@ -216,7 +216,7 @@ impl PostgresCatalog {
         Ok(())
     }
 
-    pub(crate) async fn prune_link_grants_tx(
+    pub async fn prune_link_grants_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         live_hashes: &[Vec<u8>],

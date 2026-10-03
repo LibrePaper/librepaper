@@ -55,7 +55,7 @@ impl Server {
         };
         let upload_admission = match self.store.catalog.reserve_upload_admission(owner_id).await {
             Ok(id) => id,
-            Err(crate::storage::postgres::Error::Conflict(_)) => {
+            Err(librepaper_engine::storage::postgres::Error::Conflict(_)) => {
                 return write_json(
                     429,
                     &json!({"error": "too many uploads this hour; try later"}),
@@ -111,7 +111,7 @@ impl Server {
                 return plain(error.status(), &error.client_message());
             }
         };
-        let mutation_actor = crate::storage::store::MutationActor {
+        let mutation_actor = librepaper_engine::storage::store::MutationActor {
             account_id: who.id.id.clone(),
             owner_key: who.key.clone(),
             session_generation: who.id.session_generation.clone(),

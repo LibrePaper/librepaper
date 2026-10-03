@@ -6,14 +6,14 @@ use serde_json::Value;
 use super::sequencer::{Command, CommandError, Evidence, Head, PreparedSource, Rung};
 use crate::storage::postgres::{OperationReceipt, PostgresCatalog};
 
-pub(crate) struct RecordedCommand<'a, C, F> {
+pub struct RecordedCommand<'a, C, F> {
     command: &'a mut C,
     receipt: OperationReceipt,
     outcome: F,
 }
 
 impl<'a, C, F> RecordedCommand<'a, C, F> {
-    pub(crate) fn new(command: &'a mut C, receipt: OperationReceipt, outcome: F) -> Self {
+    pub fn new(command: &'a mut C, receipt: OperationReceipt, outcome: F) -> Self {
         Self {
             command,
             receipt,

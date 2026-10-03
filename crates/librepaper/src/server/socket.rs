@@ -2,14 +2,14 @@
 //! sends and receives, and the reauthorisation that runs while it is open.
 
 use super::*;
-use crate::log::sequencer::Ingested;
-use crate::log::CommandError;
+use librepaper_engine::log::sequencer::Ingested;
+use librepaper_engine::log::CommandError;
 use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };
 use crate::room::Room;
-use crate::storage::outgoing::OutgoingSink;
-use crate::storage::postgres::{StoredProposal, StoredProposalOutcome};
+use librepaper_engine::storage::outgoing::OutgoingSink;
+use librepaper_engine::storage::postgres::{StoredProposal, StoredProposalOutcome};
 
 /// Bound both queue and transport writes so a slow peer cannot pin the reader
 /// or the writer task down indefinitely.
@@ -162,7 +162,7 @@ fn proposal_outcome_json(outcome: &StoredProposalOutcome, request_id: &str) -> V
 fn is_proposal_version_conflict(error: &CommandError) -> bool {
     let message = match error {
         CommandError::Conflict(message) => Some(message.as_str()),
-        CommandError::Storage(crate::storage::postgres::Error::Conflict(message)) => {
+        CommandError::Storage(librepaper_engine::storage::postgres::Error::Conflict(message)) => {
             Some(message.as_str())
         }
         _ => None,
@@ -654,7 +654,7 @@ impl Server {
                             let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id()}).to_string())).await;
                             continue 'reader;
                         }
-                        let digest = crate::storage::store::digest_of(text);
+                        let digest = librepaper_engine::storage::store::digest_of(text);
                         if let Some((_, previous)) = chat_requests.iter().find(|(id,_)| id == incoming.temp_id()) {
                             let reply = if previous == &digest {
                                 json!({"type":"chat-ack","temp_id":incoming.temp_id()})
@@ -1652,7 +1652,7 @@ impl Server {
             .rooms
             .registry()
             .budget()
-            .reserve(update.len() as u64, crate::log::sequencer::RESERVE_PATIENCE)
+            .reserve(update.len() as u64, librepaper_engine::log::sequencer::RESERVE_PATIENCE)
             .await
             .ok()?;
         let now = librepaper_base::util::now_unix();
@@ -1802,7 +1802,7 @@ impl Server {
         // failed flush leaves it alone.
         if let Err(error) = room
             .log()
-            .flush(crate::log::FlushReason::AuthorityRevoked)
+            .flush(librepaper_engine::log::FlushReason::AuthorityRevoked)
             .await
         {
             log::warn!("could not flush {slug} as access was revoked: {error}");

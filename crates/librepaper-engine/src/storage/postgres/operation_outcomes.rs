@@ -6,7 +6,7 @@ use uuid::Uuid;
 use super::{Error, PostgresCatalog, Result};
 
 #[derive(Clone, Debug)]
-pub(crate) struct OperationReceipt {
+pub struct OperationReceipt {
     pub document_id: Uuid,
     pub actor: String,
     pub request_id: String,
@@ -16,7 +16,7 @@ pub(crate) struct OperationReceipt {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-pub(crate) struct StoredOperationOutcome {
+pub struct StoredOperationOutcome {
     pub digest: String,
     pub tool: String,
     pub outcome: Value,
@@ -25,7 +25,7 @@ pub(crate) struct StoredOperationOutcome {
 impl PostgresCatalog {
     /// The caller owns authorization and the document transaction. Failure to
     /// retain evidence fails that transaction too, never just its HTTP reply.
-    pub(crate) async fn record_operation_outcome(
+    pub async fn record_operation_outcome(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         receipt: &OperationReceipt,
         outcome: &Value,
@@ -62,7 +62,7 @@ impl PostgresCatalog {
 
     /// Call only after a definitive pre-commit refusal. Uncertain storage or
     /// transport errors must never be turned into evidence of nonexecution.
-    pub(crate) async fn store_operation_refusal(
+    pub async fn store_operation_refusal(
         &self,
         receipt: &OperationReceipt,
         code: &str,
@@ -107,7 +107,7 @@ impl PostgresCatalog {
 
     /// This is evidence lookup only. The service must recheck current access
     /// before and after it, and bind `actor` to authenticated identity.
-    pub(crate) async fn operation_outcome(
+    pub async fn operation_outcome(
         &self,
         document_id: Uuid,
         actor: &str,

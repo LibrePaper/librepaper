@@ -3,7 +3,7 @@
 //! What a room used to be was the document itself -- a resident `LoroDoc`,
 //! the authority over what the bytes meant, a lease to serialize writes to
 //! it, and a per-socket bookkeeping struct beside it. All of that moved into
-//! [`crate::log::Sequencer`] with SPEC-server-is-a-log: the server stores and
+//! [`librepaper_engine::log::Sequencer`] with SPEC-server-is-a-log: the server stores and
 //! forwards source bytes and reads only their headers to do so (§1), the
 //! sequencer's own lock is the order (§4.1), and what a document *says* is
 //! read on demand out of an evictable cache (§4.3).
@@ -29,16 +29,16 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::log::sequencer::{Command, CommandError, Joined, Role, SequencerError};
-use crate::log::{FlushReason, Ingested, Registry, Sequencer};
-use crate::storage::blob::BlobStore;
-use crate::storage::postgres::{Authority, PostgresCatalog};
+use librepaper_engine::log::sequencer::{Command, CommandError, Joined, Role, SequencerError};
+use librepaper_engine::log::{FlushReason, Ingested, Registry, Sequencer};
+use librepaper_engine::storage::blob::BlobStore;
+use librepaper_engine::storage::postgres::{Authority, PostgresCatalog};
 use librepaper_base::config::Configuration;
 
 pub(crate) mod agent;
 pub(crate) mod agent_query;
 mod agent_view;
-pub use crate::storage::annotation;
+pub use librepaper_engine::storage::annotation;
 mod catalog;
 mod command;
 #[cfg(test)]
@@ -57,7 +57,7 @@ pub mod locate;
 #[cfg(test)]
 mod locate_corpus_tests;
 mod message;
-pub(crate) use crate::storage::outgoing;
+pub(crate) use librepaper_engine::storage::outgoing;
 #[cfg(test)]
 mod proposal_round_trip_tests;
 pub(crate) mod proposals;
@@ -574,7 +574,7 @@ impl Room {
     pub async fn comment_state(
         &self,
         suggestions: bool,
-    ) -> Result<crate::storage::postgres::AnnotationState, WriteError> {
+    ) -> Result<librepaper_engine::storage::postgres::AnnotationState, WriteError> {
         Ok(self
             .catalog
             .annotation_state(self.document_id, suggestions)

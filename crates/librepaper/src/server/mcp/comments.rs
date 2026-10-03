@@ -51,7 +51,7 @@ pub(super) fn parse_uuid(value: &str, what: &str) -> Result<uuid::Uuid, Failure>
 /// agent matches on, and the stale-selection digest under the name the tool
 /// schema gives it. Storage context goes to the log rather than to the
 /// agent, which used to receive it verbatim through `to_string()`.
-pub(crate) fn command_failure(error: crate::log::sequencer::CommandError) -> Failure {
+pub(crate) fn command_failure(error: librepaper_engine::log::sequencer::CommandError) -> Failure {
     let (error, digest) = crate::server::reply::classify_command(error);
     if let Some(context) = error.log_context() {
         eprintln!("warning: annotation command: {context}");
@@ -249,7 +249,7 @@ impl Server {
                 )
                 .map_err(|error| Failure::new("invalid_params", error))?;
                 let operation = key.clone();
-                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
                     &mut cmd,
                     operation_receipt.clone(),
                     move |comment: &room::Comment| {
@@ -285,7 +285,7 @@ impl Server {
                 )
                 .map_err(|error| Failure::new("invalid_params", error))?;
                 let operation = key.clone();
-                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
                     &mut cmd,
                     operation_receipt.clone(),
                     move |outcome: &room::ReplyOutcome| {
@@ -312,7 +312,7 @@ impl Server {
                     &writer,
                 );
                 let operation = key.clone();
-                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
                     &mut cmd,
                     operation_receipt.clone(),
                     move |outcome: &room::ResolveOutcome| {
@@ -359,7 +359,7 @@ impl Server {
                 )
                 .map_err(|error| Failure::new("invalid_params", error))?;
                 let operation = key.clone();
-                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
                     &mut cmd,
                     operation_receipt.clone(),
                     move |comment: &room::Comment| {
@@ -393,7 +393,7 @@ impl Server {
                     decision_request_id,
                 );
                 let operation = key.clone();
-                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
                     &mut cmd,
                     operation_receipt.clone(),
                     move |comment_id: &uuid::Uuid| {
@@ -427,7 +427,7 @@ impl Server {
                 let mut cmd =
                     room::DeleteComment::new(catalog, document_id, named_comment(), &writer);
                 let operation = key.clone();
-                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
                     &mut cmd,
                     operation_receipt,
                     move |_: &()| {

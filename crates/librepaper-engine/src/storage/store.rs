@@ -1285,7 +1285,7 @@ impl Store {
     /// (`server::documents::preflight_directory`), so it is dropped rather
     /// than failing the whole directory, the same way a figure whose bytes
     /// never resolved is dropped when a project is read back.
-    pub(crate) async fn sort_and_stage_assets(
+    pub async fn sort_and_stage_assets(
         &self,
         document_id: uuid::Uuid,
         files: Vec<(String, Vec<u8>)>,

@@ -276,7 +276,7 @@ async fn middleware_inner(
             .rooms
             .registry()
             .budget()
-            .reserve(reservation, crate::log::sequencer::RESERVE_PATIENCE)
+            .reserve(reservation, librepaper_engine::log::sequencer::RESERVE_PATIENCE)
             .await
         {
             Ok(r) => Some(r),
@@ -406,7 +406,7 @@ fn agent_document_slug(path: &str) -> Option<&str> {
 /// with no script and an opaque origin if a browser renders it anyway. A
 /// `fetch` reads the body unaffected, which is how the reader takes figures.
 pub(super) async fn blob_response(
-    blobs: Arc<dyn crate::storage::blob::BlobStore>,
+    blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore>,
     key: String,
     digest: &str,
     headers: &HeaderMap,
@@ -414,7 +414,7 @@ pub(super) async fn blob_response(
 ) -> Reply {
     let length = match blobs.length(&key).await {
         Ok(length) => length,
-        Err(crate::storage::blob::BlobError::NotFound) => return plain(404, "not found"),
+        Err(librepaper_engine::storage::blob::BlobError::NotFound) => return plain(404, "not found"),
         Err(_) => return plain(503, "storage temporarily unavailable"),
     };
     let etag = format!("\"{digest}\"");
@@ -519,7 +519,7 @@ fn byte_range(value: &str, length: u64) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod blob_response_tests {
     use super::*;
-    use crate::storage::blob::{BlobStore, FsStore};
+    use librepaper_engine::storage::blob::{BlobStore, FsStore};
 
     /// Stored bytes are someone's upload. Whole or in part, they are never
     /// answered as something a browser would sniff, display or run.

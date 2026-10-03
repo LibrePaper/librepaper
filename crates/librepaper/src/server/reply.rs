@@ -571,10 +571,10 @@ pub(super) fn socket_refusal(error: &crate::room::WriteError, request_id: &str) 
 /// transport rebuilding the table and reaching for `to_string()` -- which is
 /// how storage context was leaking into replies.
 pub(super) fn classify_command(
-    error: crate::log::CommandError,
+    error: librepaper_engine::log::CommandError,
 ) -> (crate::room::WriteError, Option<String>) {
     match error {
-        crate::log::CommandError::StaleSelection { digest } => (
+        librepaper_engine::log::CommandError::StaleSelection { digest } => (
             crate::room::WriteError::Conflict(
                 "current project identity is required; refresh before annotating".into(),
             ),
@@ -586,7 +586,7 @@ pub(super) fn classify_command(
 
 /// A refused command as an HTTP answer. `what` names the operation for the
 /// log, exactly as it does for [`refused`].
-pub(super) fn command_refused(what: &str, error: crate::log::CommandError) -> Reply {
+pub(super) fn command_refused(what: &str, error: librepaper_engine::log::CommandError) -> Reply {
     let (error, digest) = classify_command(error);
     let fields: Vec<(&str, Value)> = digest
         .map(|digest| ("digest", json!(digest)))
@@ -599,7 +599,7 @@ pub(super) fn command_refused(what: &str, error: crate::log::CommandError) -> Re
 /// status its HTTP sibling would have answered with so a REST caller reading
 /// this value does not have to guess one. Storage context goes to the log
 /// here too: the frame reaches a browser.
-pub(super) fn command_refusal_value(what: &str, error: crate::log::CommandError) -> Value {
+pub(super) fn command_refusal_value(what: &str, error: librepaper_engine::log::CommandError) -> Value {
     let (error, digest) = classify_command(error);
     let mut payload = refusal_value(what, &error);
     if let Some(digest) = digest {

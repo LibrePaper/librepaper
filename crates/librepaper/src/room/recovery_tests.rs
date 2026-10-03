@@ -25,7 +25,7 @@
 //! never a sibling module of the same crate, so nothing needed widening to
 //! reach them.
 //!
-//! Reused rather than rebuilt: [`crate::log::tests::Outbox`], the causally-linked
+//! Reused rather than rebuilt: [`librepaper_engine::testing::Outbox`], the causally-linked
 //! batch source `log/tests.rs` already has (three of its methods gained a
 //! `pub(super)` and it gained two read-only accessors, `text` and `vector`,
 //! and one export variant, `export_from`, so this module could use it
@@ -66,15 +66,15 @@ use uuid::Uuid;
 
 use futures_util::future::BoxFuture;
 
-use crate::log::tests::Outbox;
-use crate::log::*;
+use librepaper_engine::testing::Outbox;
+use librepaper_engine::log::*;
 use crate::room::{AddComment, Rooms};
-use crate::storage::blob::{BlobStore, FsStore};
-use crate::storage::postgres::{
+use librepaper_engine::storage::blob::{BlobStore, FsStore};
+use librepaper_engine::storage::postgres::{
     Authority, MutationAuthorization, NewAccount, NewDocument, PostgresCatalog, PostgresOptions,
 };
-use crate::storage::store::{DocumentInput, MutationActor, Store};
-use crate::storage::worker::{Task, Worker};
+use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::worker::{Task, Worker};
 use librepaper_base::config::Configuration;
 use librepaper_document::document::session;
 
@@ -85,7 +85,7 @@ async fn connect(url: String) -> Arc<PostgresCatalog> {
             .expect("connect to the throwaway database"),
     );
     catalog.migrate().await.expect("apply the current schema");
-    crate::testing::reset(&catalog).await;
+    librepaper_engine::testing::reset(&catalog).await;
     catalog
 }
 
@@ -99,7 +99,7 @@ struct Bare {
     config: Arc<Configuration>,
     document_id: Uuid,
     slug: String,
-    _writer: crate::storage::postgres::WriterLease,
+    _writer: librepaper_engine::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
@@ -396,24 +396,24 @@ async fn housekeeping_re_asks_for_a_compaction_whose_ask_was_lost() {
     bare.catalog.close().await;
 }
 
-fn subscriber() -> crate::storage::outgoing::Sender {
-    crate::storage::outgoing::Sender::channel(64, 1 << 20, None, None).0
+fn subscriber() -> librepaper_engine::storage::outgoing::Sender {
+    librepaper_engine::storage::outgoing::Sender::channel(64, 1 << 20, None, None).0
 }
 
 fn editor_subscription() -> (
-    crate::storage::outgoing::Sender,
-    crate::storage::outgoing::Receiver,
+    librepaper_engine::storage::outgoing::Sender,
+    librepaper_engine::storage::outgoing::Receiver,
 ) {
-    crate::storage::outgoing::Sender::channel(64, 1 << 20, None, None)
+    librepaper_engine::storage::outgoing::Sender::channel(64, 1 << 20, None, None)
 }
 
-fn queued_frames(rx: &mut crate::storage::outgoing::Receiver) -> Vec<serde_json::Value> {
+fn queued_frames(rx: &mut librepaper_engine::storage::outgoing::Receiver) -> Vec<serde_json::Value> {
     let mut frames = Vec::new();
     while let Ok(queued) = rx.try_recv() {
         let text = match queued.into_parts().0 {
-            crate::storage::outgoing::Outgoing::Text(text) => text,
-            crate::storage::outgoing::Outgoing::SharedText(text) => text.to_string(),
-            crate::storage::outgoing::Outgoing::Close(_) => continue,
+            librepaper_engine::storage::outgoing::Outgoing::Text(text) => text,
+            librepaper_engine::storage::outgoing::Outgoing::SharedText(text) => text.to_string(),
+            librepaper_engine::storage::outgoing::Outgoing::Close(_) => continue,
         };
         frames.push(serde_json::from_str(&text).expect("a JSON frame"));
     }
@@ -1759,7 +1759,7 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
     // deadlines are `std::time::Instant`s, so this waits rather than
     // advancing a clock: the pass under test is the one a real quiet period
     // triggers.
-    tokio::time::sleep(crate::log::sequencer::FLUSH_QUIET + Duration::from_millis(500)).await;
+    tokio::time::sleep(librepaper_engine::log::sequencer::FLUSH_QUIET + Duration::from_millis(500)).await;
     let mut blocker = catalog.pool().begin().await.unwrap();
     sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton FOR UPDATE")
         .execute(&mut *blocker)

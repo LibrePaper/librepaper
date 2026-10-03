@@ -63,7 +63,7 @@ impl Server {
             .and_then(|id| uuid::Uuid::parse_str(id).ok())
         {
             self.background
-                .ask(crate::storage::worker::Task::Delete(storage_id));
+                .ask(librepaper_engine::storage::worker::Task::Delete(storage_id));
         }
         self.store.remove(slug).await
     }
@@ -401,7 +401,7 @@ impl Server {
         };
         let upload_admission = match self.store.catalog.reserve_upload_admission(owner_id).await {
             Ok(id) => id,
-            Err(crate::storage::postgres::Error::Conflict(_)) => {
+            Err(librepaper_engine::storage::postgres::Error::Conflict(_)) => {
                 return write_json(
                     429,
                     &json!({"error": "too many uploads this hour; try later"}),
@@ -463,7 +463,7 @@ impl Server {
         } else {
             format!("{base}-{}", random_suffix(&self.config))
         };
-        let actor = crate::storage::store::MutationActor {
+        let actor = librepaper_engine::storage::store::MutationActor {
             account_id: who.id.clone(),
             owner_key: who.key.clone(),
             session_generation: who.session_generation.clone(),
@@ -1199,7 +1199,7 @@ impl Server {
             main,
             project: snapshot,
             files,
-            source_sha: crate::storage::store::digest_of(&source),
+            source_sha: librepaper_engine::storage::store::digest_of(&source),
             source,
             comments,
             comment_state,
@@ -1299,7 +1299,7 @@ impl Server {
             Ok(Some(_)) | Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let actor = crate::storage::store::MutationActor {
+        let actor = librepaper_engine::storage::store::MutationActor {
             account_id: who.id.clone(),
             owner_key: who.key.clone(),
             session_generation: who.session_generation.clone(),
@@ -1449,7 +1449,7 @@ impl Server {
                 .await
             {
                 Ok(operation) => operation,
-                Err(crate::storage::postgres::Error::Conflict(error)) => {
+                Err(librepaper_engine::storage::postgres::Error::Conflict(error)) => {
                     return write_json(409, &json!({"error": error}))
                 }
                 Err(error) => return write_json(503, &json!({"error": error.to_string()})),
@@ -1492,7 +1492,7 @@ impl Server {
                 .await
             {
                 Ok(id) => Some(id),
-                Err(crate::storage::postgres::Error::Conflict(_)) => {
+                Err(librepaper_engine::storage::postgres::Error::Conflict(_)) => {
                     return write_json(
                         429,
                         &json!({"error": "too many uploads this hour; try later"}),
@@ -1545,7 +1545,7 @@ impl Server {
             };
             format!(
                 "{stem}-{}",
-                crate::storage::store::random_suffix(&self.config)
+                librepaper_engine::storage::store::random_suffix(&self.config)
             )
         };
         if let Some(operation) = &template_operation {
@@ -1582,7 +1582,7 @@ impl Server {
                 .begin_template_operation(
                     request_id,
                     source_id,
-                    crate::storage::postgres::NewDocument {
+                    librepaper_engine::storage::postgres::NewDocument {
                         slug: base.clone(),
                         owner_id: account_id,
                         owner_session_generation: Some(session_generation),
@@ -1595,7 +1595,7 @@ impl Server {
                 .await
             {
                 Ok(result) => result,
-                Err(crate::storage::postgres::Error::Conflict(error)) => {
+                Err(librepaper_engine::storage::postgres::Error::Conflict(error)) => {
                     if let Some(admission) = upload_admission {
                         let _ = self.store.catalog.cancel_upload_admission(admission).await;
                     }
@@ -1630,7 +1630,7 @@ impl Server {
                 );
             }
         }
-        let actor = crate::storage::store::MutationActor {
+        let actor = librepaper_engine::storage::store::MutationActor {
             account_id: who.id.clone(),
             owner_key: who.key.clone(),
             session_generation: who.session_generation.clone(),
@@ -1816,7 +1816,7 @@ impl Server {
             self.store.purge_now(slug, &who.id).await.map(|document| {
                 if let Some(document) = document {
                     self.background
-                        .ask(crate::storage::worker::Task::Delete(document));
+                        .ask(librepaper_engine::storage::worker::Task::Delete(document));
                     true
                 } else {
                     false

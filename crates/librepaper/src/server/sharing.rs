@@ -208,7 +208,7 @@ impl Server {
             ),
             ..Default::default()
         };
-        let actor = crate::storage::store::MutationActor {
+        let actor = librepaper_engine::storage::store::MutationActor {
             account_id: caller.id.clone(),
             owner_key: caller.key.clone(),
             session_generation: caller.session_generation.clone(),
@@ -383,7 +383,7 @@ impl Server {
 
         let revoke = asked.revoke.clone().unwrap_or_default();
         let now = librepaper_base::util::now_unix();
-        let mutation_actor = crate::storage::store::MutationActor {
+        let mutation_actor = librepaper_engine::storage::store::MutationActor {
             account_id: current_who.id.id.clone(),
             owner_key: current_who.key.clone(),
             session_generation: current_who.id.session_generation.clone(),
@@ -662,7 +662,7 @@ impl Server {
         {
             let catalog = &self.store.catalog;
             let target = match catalog
-                .upsert_registered_account(crate::storage::postgres::NewAccount {
+                .upsert_registered_account(librepaper_engine::storage::postgres::NewAccount {
                     kind: "registered".into(),
                     provider: Some(account.provider.clone()),
                     provider_subject: Some(account.id.clone()),
@@ -688,7 +688,7 @@ impl Server {
                 Ok(owner) => owner,
                 Err(_) => return write_json(409, &json!({"error":"ownership changed"})),
             };
-            let transfer_actor = crate::storage::postgres::MutationAuthorization {
+            let transfer_actor = librepaper_engine::storage::postgres::MutationAuthorization {
                 principal_key: current_who.key.clone(),
                 account_id: Some(expected_owner),
                 session_generation: current_who.id.session_generation.parse().ok(),
@@ -709,10 +709,10 @@ impl Server {
             {
                 Ok(true) => {}
                 Ok(false) => return write_json(409, &json!({"error":"ownership changed"})),
-                Err(crate::storage::postgres::Error::Conflict(_)) => {
+                Err(librepaper_engine::storage::postgres::Error::Conflict(_)) => {
                     return write_json(409, &json!({"error":"ownership changed"}))
                 }
-                Err(crate::storage::postgres::Error::NotFound) => {
+                Err(librepaper_engine::storage::postgres::Error::NotFound) => {
                     return write_json(404, &json!({"error":"not found"}))
                 }
                 Err(error) => {

@@ -15,8 +15,8 @@
 //! crates/librepaper/src`).
 
 use crate::server::origins::Origins;
-use crate::storage::postgres::Authority;
-use crate::storage::store::DocumentInput;
+use librepaper_engine::storage::postgres::Authority;
+use librepaper_engine::storage::store::DocumentInput;
 use axum::body::Body;
 use axum::http::Request;
 use serde_json::json;
@@ -93,7 +93,7 @@ async fn a_restore_keeps_what_it_replaced() {
         .ingest(999, "editor-999", "editor-999", 1, update)
         .await;
     assert!(
-        matches!(ingested, crate::log::Ingested::Accepted),
+        matches!(ingested, librepaper_engine::log::Ingested::Accepted),
         "{ingested:?}"
     );
 

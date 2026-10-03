@@ -18,7 +18,7 @@ const OBJECT_KEY_LOCK_NAMESPACE: i32 = 0x4c_50_4f; // "LPO"
 /// a cancelled advisory-lock query may have acquired the server-side lock
 /// even though its result never reached this process; dropping the guard then
 /// closes the session and releases the lock.
-pub(crate) struct BlobLifecycleLock {
+pub struct BlobLifecycleLock {
     connection: Option<PgConnection>,
 }
 
@@ -26,7 +26,7 @@ impl BlobLifecycleLock {
     /// Acquire the backup's exclusive lock on a dedicated database session.
     /// The session, rather than its transaction, owns this lock so it remains
     /// held after the snapshot transaction commits and while blob bytes copy.
-    pub(crate) async fn backup(catalog: &PostgresCatalog) -> Result<Self, String> {
+    pub async fn backup(catalog: &PostgresCatalog) -> Result<Self, String> {
         let options = catalog.pool().connect_options();
         let connection = PgConnection::connect_with(&options)
             .await
@@ -49,7 +49,7 @@ impl BlobLifecycleLock {
     /// active; callers must defer and retry rather than delete without the
     /// barrier. This dedicated connection leaves the configured pool free for
     /// the catalogue reads and writes cleanup needs to perform.
-    pub(crate) async fn try_delete(catalog: &PostgresCatalog) -> Result<Option<Self>, String> {
+    pub async fn try_delete(catalog: &PostgresCatalog) -> Result<Option<Self>, String> {
         let options = catalog.pool().connect_options();
         let connection = PgConnection::connect_with(&options)
             .await
@@ -71,7 +71,7 @@ impl BlobLifecycleLock {
     }
 
     /// Access the guarded session for backup snapshot SQL.
-    pub(crate) fn connection_mut(&mut self) -> &mut PgConnection {
+    pub fn connection_mut(&mut self) -> &mut PgConnection {
         self.connection
             .as_mut()
             .expect("blob lifecycle lock owns its connection")
@@ -80,7 +80,7 @@ impl BlobLifecycleLock {
     /// Release after all external object and catalogue work has completed.
     /// If the query errors or this future is cancelled, Drop closes the
     /// session instead of returning a possibly locked connection to the pool.
-    pub(crate) async fn release(mut self) -> Result<(), String> {
+    pub async fn release(mut self) -> Result<(), String> {
         let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock_shared($1)")
             .bind(BLOB_LIFECYCLE_LOCK)
             .fetch_one(self.connection_mut())
@@ -94,7 +94,7 @@ impl BlobLifecycleLock {
     }
 
     /// Release the exclusive variant held by a backup.
-    pub(crate) async fn release_backup(mut self) -> Result<(), String> {
+    pub async fn release_backup(mut self) -> Result<(), String> {
         let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
             .bind(BLOB_LIFECYCLE_LOCK)
             .fetch_one(self.connection_mut())
@@ -122,12 +122,12 @@ impl Drop for BlobLifecycleLock {
 /// Per-object session lock shared by archive adoption and the orphan sweep.
 /// It uses a second advisory-lock namespace and a direct connection so a
 /// held writer lease or a small application pool cannot starve cleanup.
-pub(crate) struct ObjectKeyLock {
+pub struct ObjectKeyLock {
     connection: Option<PgConnection>,
 }
 
 impl ObjectKeyLock {
-    pub(crate) async fn acquire(catalog: &PostgresCatalog, key: &str) -> Result<Self, String> {
+    pub async fn acquire(catalog: &PostgresCatalog, key: &str) -> Result<Self, String> {
         let options = catalog.pool().connect_options();
         let connection = PgConnection::connect_with(&options)
             .await
@@ -146,7 +146,7 @@ impl ObjectKeyLock {
 
     /// The orphan sweep does not wait behind an active adopter. `None` means
     /// leave this key for the next bounded pass.
-    pub(crate) async fn try_acquire(
+    pub async fn try_acquire(
         catalog: &PostgresCatalog,
         key: &str,
     ) -> Result<Option<Self>, String> {
@@ -166,13 +166,13 @@ impl ObjectKeyLock {
         Ok(acquired.then_some(guard))
     }
 
-    pub(crate) fn connection_mut(&mut self) -> &mut PgConnection {
+    pub fn connection_mut(&mut self) -> &mut PgConnection {
         self.connection
             .as_mut()
             .expect("object-key lock owns its connection")
     }
 
-    pub(crate) async fn release(mut self, key: &str) -> Result<(), String> {
+    pub async fn release(mut self, key: &str) -> Result<(), String> {
         let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1,hashtext($2))")
             .bind(OBJECT_KEY_LOCK_NAMESPACE)
             .bind(key)

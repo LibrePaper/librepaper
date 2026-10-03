@@ -105,7 +105,7 @@ impl Server {
         let mut signed_who = who.clone();
         {
             let catalog = &self.store.catalog;
-            let profile = crate::storage::postgres::NewAccount {
+            let profile = librepaper_engine::storage::postgres::NewAccount {
                 kind: "registered".into(),
                 provider: Some(who.provider.clone()),
                 provider_subject: Some(who.id.clone()),
@@ -119,7 +119,7 @@ impl Server {
                     signed_who.session_generation = account.session_generation.to_string();
                 }
                 Ok(_) => return plain(403, "this account is not active"),
-                Err(crate::storage::postgres::Error::Conflict(_)) => {
+                Err(librepaper_engine::storage::postgres::Error::Conflict(_)) => {
                     return plain(403, "this account is not active")
                 }
                 Err(err) => return plain(503, &format!("could not establish account: {err}")),

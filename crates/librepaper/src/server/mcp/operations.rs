@@ -238,9 +238,9 @@ impl Server {
         digest: &str,
         tool: &str,
         document_id: uuid::Uuid,
-    ) -> Result<crate::storage::postgres::OperationReceipt, Failure> {
+    ) -> Result<librepaper_engine::storage::postgres::OperationReceipt, Failure> {
         let expires_at = self.mcp_epoch(actor, key, true)?;
-        Ok(crate::storage::postgres::OperationReceipt {
+        Ok(librepaper_engine::storage::postgres::OperationReceipt {
             document_id,
             actor: actor.to_owned(),
             request_id: key.scoped_request_id(actor),
@@ -755,7 +755,7 @@ impl Server {
         let operation_receipt =
             self.mcp_operation_receipt(actor, key, digest, "document_comment", room.document_id)?;
         let key_for_receipt = key.clone();
-        let mut cmd = crate::log::recorded::RecordedCommand::new(
+        let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
             &mut cmd,
             operation_receipt,
             move |accepted: &room::Accepted| {
@@ -1173,7 +1173,7 @@ impl Server {
             )?;
             let operation = key.clone();
             let retained_candidate_id = candidate_id.to_owned();
-            let mut cmd = crate::log::recorded::RecordedCommand::new(
+            let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
                 &mut cmd,
                 operation_receipt,
                 move |outcomes: &Vec<room::BatchItemResult>| {

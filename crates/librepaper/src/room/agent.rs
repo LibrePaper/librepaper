@@ -20,9 +20,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
+use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
 use crate::room::Room;
-use crate::storage::postgres::{LabelRecord, NewLabel, PostgresCatalog};
+use librepaper_engine::storage::postgres::{LabelRecord, NewLabel, PostgresCatalog};
 use librepaper_document::document::session;
 
 const MAX_OPERATION_EPOCH: usize = 128;
@@ -272,7 +272,7 @@ pub fn validate_patches(tree: &SourceTree<'_>, request: &PatchRequest) -> Result
                 ));
             }
             if !dependency.file_hash.is_empty()
-                && dependency.file_hash != crate::storage::store::digest_of(file.text)
+                && dependency.file_hash != librepaper_engine::storage::store::digest_of(file.text)
             {
                 return Err(AgentError::Conflict("dependency file changed".into()));
             }
@@ -487,7 +487,7 @@ struct AgentPatchCommand<'a> {
     document_id: Uuid,
     author_account_id: Option<Uuid>,
     author_label: String,
-    operation_receipt: Option<crate::storage::postgres::OperationReceipt>,
+    operation_receipt: Option<librepaper_engine::storage::postgres::OperationReceipt>,
 }
 
 impl Command for AgentPatchCommand<'_> {
@@ -552,7 +552,7 @@ impl Command for AgentPatchCommand<'_> {
                 .insert_label(
                     tx,
                     &NewLabel {
-                        id: crate::storage::postgres::new_id(),
+                        id: librepaper_engine::storage::postgres::new_id(),
                         document_id: self.document_id,
                         source_sequence: evidence.source_sequence,
                         vector: evidence.vector.clone(),
@@ -609,7 +609,7 @@ async fn label_for_request(
     catalog: &PostgresCatalog,
     document_id: Uuid,
     request_id: Uuid,
-) -> Result<Option<LabelRecord>, crate::storage::postgres::Error> {
+) -> Result<Option<LabelRecord>, librepaper_engine::storage::postgres::Error> {
     sqlx::query_as::<_, LabelRecord>(
         "SELECT l.id,l.document_id,l.sequence,l.source_sequence,l.vector,l.frontier,l.tree_digest,l.label,l.reason,\
          l.request_id,l.author_account_id,l.author_label,l.created_at,l.archive_requested_at,l.archive_key,\
@@ -621,7 +621,7 @@ async fn label_for_request(
     .bind(request_id)
     .fetch_optional(catalog.pool())
     .await
-    .map_err(crate::storage::postgres::Error::from)
+    .map_err(librepaper_engine::storage::postgres::Error::from)
 }
 
 fn receipt_from_label(request: &PatchRequest, label: &LabelRecord) -> AgentReceipt {
@@ -647,7 +647,7 @@ impl Room {
         &self,
         request: PatchRequest,
         authority: AgentAuthority,
-        operation_receipt: Option<crate::storage::postgres::OperationReceipt>,
+        operation_receipt: Option<librepaper_engine::storage::postgres::OperationReceipt>,
         recheck: F,
     ) -> Result<AgentReceipt, AgentError>
     where
@@ -664,7 +664,7 @@ impl Room {
         recheck().await?;
 
         let catalog = self.catalog().clone();
-        let actor = crate::storage::store::MutationActor {
+        let actor = librepaper_engine::storage::store::MutationActor {
             account_id: authority.account_id.clone(),
             owner_key: authority.owner_key.clone(),
             session_generation: authority.session_generation.clone(),
@@ -680,7 +680,7 @@ impl Room {
             .authorize_document_mutation(self.document_id, &authorization, true)
             .await
             .map_err(|error| AgentError::Conflict(error.to_string()))?;
-        let document_authority = crate::storage::postgres::Authority {
+        let document_authority = librepaper_engine::storage::postgres::Authority {
             principal_key: if authority.account_id.is_empty() {
                 authority.owner_key.clone()
             } else {

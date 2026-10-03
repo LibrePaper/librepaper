@@ -44,7 +44,7 @@ PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(LCM)
 # site target at the bottom of this file.
 WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mjs web/tests/unit/vocabulary.js
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
-SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) $(shell find .sqlx -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
+SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
 .PHONY: help build install test test-rust check fmt serve demo demo-run wipe kill clean snapshot web pins site site-serve
 
@@ -95,7 +95,7 @@ test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@echo "test: passed -- NOT everything. Still to run:"
 	@echo "  tools/suite browser                       the components in a real chromium"
 	@echo "  LIBREPAPER_TEST_POSTGRES_URL=... \\"
-	@echo "    cargo test -p librepaper --lib -- --ignored --test-threads=1"
+	@echo "    cargo test -p librepaper-engine -p librepaper --lib -- --ignored --test-threads=1"
 	@echo "  make check                                test + browser + reader smoke in one go"
 
 # Keep runner discovery separate from runner execution: a failing nextest run

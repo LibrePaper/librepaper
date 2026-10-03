@@ -29,17 +29,17 @@
 use std::collections::HashSet;
 
 use super::*;
-use crate::log::Registry;
-use crate::storage::annotation::CommentTarget;
-use crate::storage::blob::FsStore;
-use crate::storage::postgres::annotations::{
+use librepaper_engine::log::Registry;
+use librepaper_engine::storage::annotation::CommentTarget;
+use librepaper_engine::storage::blob::FsStore;
+use librepaper_engine::storage::postgres::annotations::{
     ANNOTATION_PAGE_MAX, REPLY_LOOKUP_MAX, REPLY_PAGE_MAX,
 };
-use crate::storage::postgres::{
+use librepaper_engine::storage::postgres::{
     AnnotationRecord, Authority, MutationAuthorization, NewAccount, NewAnnotation, NewReply,
     PostgresCatalog,
 };
-use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n";
 
@@ -52,12 +52,12 @@ struct Deployment {
     catalog: Arc<PostgresCatalog>,
     slug: String,
     account_id: Uuid,
-    _writer: crate::storage::postgres::WriterLease,
+    _writer: librepaper_engine::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let catalog = crate::testing::catalog().await?;
+    let catalog = librepaper_engine::testing::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let account = catalog
         .create_account(NewAccount {
@@ -71,7 +71,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         .await
         .unwrap();
     let objects = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+    let blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore> =
         Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
     let registry = Registry::new(
@@ -223,7 +223,7 @@ impl Deployment {
                 .catalog
                 .open_proposal(
                     &mut tx,
-                    crate::storage::postgres::NewProposal {
+                    librepaper_engine::storage::postgres::NewProposal {
                         document_id,
                         id: Uuid::new_v4(),
                         author: self.author_key(),

@@ -12,12 +12,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
 
-use crate::log::Registry;
+use librepaper_engine::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
-use crate::storage::blob::FsStore;
-use crate::storage::postgres::{AccessRole, NewAccount, PostgresCatalog};
-use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::blob::FsStore;
+use librepaper_engine::storage::postgres::{AccessRole, NewAccount, PostgresCatalog};
+use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
 use librepaper_base::auth::{
     sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB,
 };
@@ -36,12 +36,12 @@ struct Deployment {
     account_session_generation: String,
     slug: String,
     document_id: Uuid,
-    _writer: crate::storage::postgres::WriterLease,
+    _writer: librepaper_engine::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let catalog = crate::testing::catalog().await?;
+    let catalog = librepaper_engine::testing::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let account = catalog
         .create_account(NewAccount {
@@ -55,7 +55,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         .await
         .unwrap();
     let objects = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+    let blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore> =
         Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
     let registry = Registry::new(
@@ -70,7 +70,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         config.clone(),
         registry.clone(),
     );
-    let (worker, background) = crate::storage::worker::Worker::new(
+    let (worker, background) = librepaper_engine::storage::worker::Worker::new(
         catalog.clone(),
         blobs.clone(),
         registry.clone(),

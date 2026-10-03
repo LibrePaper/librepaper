@@ -18,14 +18,14 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
 
-use crate::log::Registry;
+use librepaper_engine::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
-use crate::storage::blob::FsStore;
-use crate::storage::postgres::{
+use librepaper_engine::storage::blob::FsStore;
+use librepaper_engine::storage::postgres::{
     AccessRole, NewAccount, PostgresCatalog, PostgresOptions, StoragePolicy,
 };
-use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
 use librepaper_base::auth::{
     sign_device, sign_session, sign_visitor, GithubApp, Identity, Policy, PROVIDER_GITHUB,
     VISITOR_COOKIE,
@@ -50,8 +50,8 @@ struct Deployment {
     asset_sha: String,
     share_key: String,
     commenter_link_key: String,
-    blobs: Arc<dyn crate::storage::blob::BlobStore>,
-    _writer: crate::storage::postgres::WriterLease,
+    blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore>,
+    _writer: librepaper_engine::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
@@ -95,10 +95,10 @@ async fn deployment_mode_with_policy(
         options.policy = policy;
         let catalog = Arc::new(PostgresCatalog::connect(options).await.unwrap());
         catalog.migrate().await.unwrap();
-        crate::testing::reset(&catalog).await;
+        librepaper_engine::testing::reset(&catalog).await;
         Some(catalog)
     } else {
-        crate::testing::catalog().await
+        librepaper_engine::testing::catalog().await
     }?;
     let writer = catalog.claim_writer().await.unwrap();
     let account = catalog
@@ -124,7 +124,7 @@ async fn deployment_mode_with_policy(
         .await
         .unwrap();
     let objects = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+    let blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore> =
         Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
     let registry = Registry::new(
@@ -139,7 +139,7 @@ async fn deployment_mode_with_policy(
         config.clone(),
         registry.clone(),
     );
-    let (worker, background) = crate::storage::worker::Worker::new(
+    let (worker, background) = librepaper_engine::storage::worker::Worker::new(
         catalog.clone(),
         blobs.clone(),
         registry.clone(),
@@ -158,7 +158,7 @@ async fn deployment_mode_with_policy(
         unowned_publisher: open,
     };
     let asset_bytes = b"moderation figure bytes".to_vec();
-    let asset_sha = crate::storage::store::digest_of_bytes(&asset_bytes);
+    let asset_sha = librepaper_engine::storage::store::digest_of_bytes(&asset_bytes);
     store
         .put_directory_as_actor(
             DocumentInput {

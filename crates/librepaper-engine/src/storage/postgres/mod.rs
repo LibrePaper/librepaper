@@ -11,7 +11,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{ConnectOptions, PgPool, Postgres};
 
 mod access;
-pub(crate) mod annotations;
+pub mod annotations;
 
 mod commit;
 mod document_log;
@@ -21,9 +21,9 @@ mod meter;
 mod moderation;
 mod operation_outcomes;
 mod ownership;
-pub(crate) use operation_outcomes::OperationReceipt;
+pub use operation_outcomes::OperationReceipt;
 mod persistence;
-pub(crate) use persistence::PersistenceConnection;
+pub use persistence::PersistenceConnection;
 mod proposals;
 mod repository;
 

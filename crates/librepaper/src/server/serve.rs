@@ -8,8 +8,8 @@ use tokio::net::TcpListener;
 
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
-use crate::storage::store::Store;
-use crate::storage::{open_storage, StorageOptions};
+use librepaper_engine::storage::store::Store;
+use librepaper_engine::storage::{open_storage, StorageOptions};
 use librepaper_base::auth::{session_key_file, GithubApp, GoogleApp, Policy};
 use librepaper_base::config::Configuration;
 use librepaper_base::util::die;
@@ -39,7 +39,7 @@ pub struct ServeOptions {
     /// Write each new account's starter documents as though they had been
     /// typed over this many days, so the history panel has something in it on a
     /// demonstration deployment. The operations are real; only the clock is
-    /// invented. See `crate::storage::seed::activity`.
+    /// invented. See `librepaper_engine::storage::seed::activity`.
     pub simulate_activity: Option<u32>,
     /// The reader origin browsers reach this deployment on, and the origin
     /// documents are served from. Without the first, the deployment answers on
@@ -217,15 +217,15 @@ pub fn sign_in_advice(
 }
 
 /// The stable Loro peer identity this deployment authors source under
-/// (§7.3). Kept in `server_runtime_state` under `crate::log::DEPLOYMENT_PEER_STATE`
+/// (§7.3). Kept in `server_runtime_state` under `librepaper_engine::log::DEPLOYMENT_PEER_STATE`
 /// so a label written by one process and read by the next names one author,
 /// rather than a fresh peer on every restart. Minted once, the first time a
 /// deployment reads it absent.
 async fn deployment_peer_key(
-    catalog: &crate::storage::postgres::PostgresCatalog,
+    catalog: &librepaper_engine::storage::postgres::PostgresCatalog,
 ) -> Result<String, String> {
     if let Some(existing) = catalog
-        .runtime_state(crate::log::DEPLOYMENT_PEER_STATE)
+        .runtime_state(librepaper_engine::log::DEPLOYMENT_PEER_STATE)
         .await
         .map_err(|error| format!("could not read the deployment peer key: {error}"))?
     {
@@ -238,7 +238,7 @@ async fn deployment_peer_key(
     let key = librepaper_base::util::random_token();
     catalog
         .set_runtime_state(
-            crate::log::DEPLOYMENT_PEER_STATE,
+            librepaper_engine::log::DEPLOYMENT_PEER_STATE,
             serde_json::json!({ "key": key }),
         )
         .await
@@ -248,8 +248,8 @@ async fn deployment_peer_key(
 
 /// What the catalogue is allowed to hold, and how fast it may be asked to
 /// hold it, as this deployment's configuration says.
-fn storage_policy(config: &Configuration) -> crate::storage::postgres::StoragePolicy {
-    crate::storage::postgres::StoragePolicy {
+fn storage_policy(config: &Configuration) -> librepaper_engine::storage::postgres::StoragePolicy {
+    librepaper_engine::storage::postgres::StoragePolicy {
         owner_bytes: config.storage.per_owner,
         deployment_bytes: config.storage.total,
         asset_uploads_per_hour: config.storage.uploads_per_hour as i64,
@@ -371,11 +371,11 @@ pub async fn serve(options: ServeOptions) {
     let secrets = &deployment_paths.secrets;
     let key_path = secrets.join("session.key");
     let key = session_key_file(&key_path, key_path.exists()).unwrap_or_else(|err| die(err));
-    let mut database = crate::storage::postgres::PostgresOptions::new(&storage.database_url);
+    let mut database = librepaper_engine::storage::postgres::PostgresOptions::new(&storage.database_url);
     database.max_connections = storage.database_connections;
     database.policy = storage_policy(&config);
     let catalog = Arc::new(
-        crate::storage::postgres::PostgresCatalog::connect(database)
+        librepaper_engine::storage::postgres::PostgresCatalog::connect(database)
             .await
             .unwrap_or_else(|err| die(format!("could not connect to PostgreSQL: {err}"))),
     );
@@ -404,14 +404,14 @@ pub async fn serve(options: ServeOptions) {
         .await
         .unwrap_or_else(|err| die(err));
     let registry =
-        crate::log::Registry::new(catalog.clone(), blobs.clone(), config.clone(), peer_key);
+        librepaper_engine::log::Registry::new(catalog.clone(), blobs.clone(), config.clone(), peer_key);
     let rooms = crate::room::Rooms::new(
         catalog.clone(),
         blobs.clone(),
         config.clone(),
         registry.clone(),
     );
-    let (worker, background) = crate::storage::worker::Worker::new(
+    let (worker, background) = librepaper_engine::storage::worker::Worker::new(
         catalog.clone(),
         blobs.clone(),
         registry.clone(),
