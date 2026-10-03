@@ -1,14 +1,12 @@
 ---
 title: "{{title}}"
 author: "{{author}}"
+abstract: |
+  This is a placeholder abstract. Replace this text with a summary of your research, findings, or main argument.
 format: html
 bibliography: references.bib
 bibliography-style: apa
 ---
-
-## Abstract
-
-This is a placeholder abstract. Replace this text with a summary of your research, findings, or main argument.
 
 ## Introduction
 
@@ -36,7 +34,7 @@ The results can be summarized in a table:
 
 ## Discussion
 
-Interpret your results in the context of existing literature. Discuss the implications, limitations, and potential future directions for this work.
+Interpret your results in the context of existing literature. Discuss the implications, limitations, and potential future directions for this work. A comprehensive overview of the field is provided by Jones [@jones2019].
 
 ## References
 
