@@ -136,18 +136,14 @@ export function tracedBy(comment, paths) {
   };
 }
 
-/// The first label at which a comment's passage was no longer found.
-///
-/// `labels` is the manifest, oldest first. A comment always carries its
-/// own frontier now, never a label (§7.3: nothing writes a label for a
-/// comment), so the search starts at that exact position rather than at a
-/// manifest entry. Labels may show the passage disappearing and returning,
-/// so inspect them in order and return the first loss. Returns that entry, or null
-/// when there is nothing to say: no history to look in, or a passage that
-/// turns out still to be there.
+/// Finds loss points for several comments while reading the label timeline
+/// once. State is proportional to the comment batch; historical source text
+/// is retained only by the shared bounded response cache.
 export async function wentAtMany(slug, tracedList, labels, headers = {}, atSource = sourceTextAt, isCurrent = () => true) {
   const answers = Array(tracedList.length).fill(null);
-  if (!labels?.length) return answers;
+  const incomplete = Array(tracedList.length).fill(false);
+  const result = () => ({ points: answers, incomplete });
+  if (!labels?.length) return result();
 
   // Validate each comment against its own frontier before comparing it with
   // the shared label timeline. State is proportional to comments, while
@@ -155,8 +151,15 @@ export async function wentAtMany(slug, tracedList, labels, headers = {}, atSourc
   const groups = new Map();
   for (const [index, traced] of tracedList.entries()) {
     if (!traced?.frontier) continue;
-    const ownText = await atSource(slug, MOMENT + traced.frontier, { file_id: traced.file_id }, headers);
-    if (!isCurrent()) return answers;
+    let ownText;
+    try {
+      ownText = await atSource(slug, MOMENT + traced.frontier, { file_id: traced.file_id }, headers);
+    } catch {
+      incomplete[index] = true;
+      if (!isCurrent()) return result();
+      continue;
+    }
+    if (!isCurrent()) return result();
     if (typeof ownText !== "string" || !holds(ownText, traced.selector)) continue;
     const created = Date.parse(traced.created);
     if (!Number.isFinite(created)) continue;
@@ -167,13 +170,22 @@ export async function wentAtMany(slug, tracedList, labels, headers = {}, atSourc
     groups.get(key).push({ index, traced, start });
   }
 
-  if (!groups.size) return answers;
+  if (!groups.size) return result();
   const newest = labels.at(-1);
   const active = new Map();
   for (const [fileId, candidates] of groups) {
-    const newestText = await atSource(slug, newest.sha, { file_id: fileId }, headers);
-    if (!isCurrent()) return answers;
-    if (typeof newestText !== "string") continue;
+    let newestText;
+    try {
+      newestText = await atSource(slug, newest.sha, { file_id: fileId }, headers);
+    } catch {
+      for (const { index } of candidates) incomplete[index] = true;
+      if (!isCurrent()) return result();
+      continue;
+    }
+    if (!isCurrent()) return result();
+    if (typeof newestText !== "string") {
+      continue;
+    }
     const stillPresent = new Set(candidates
       .filter(({ traced }) => holds(newestText, traced.selector))
       .map(({ index }) => index));
@@ -197,10 +209,17 @@ export async function wentAtMany(slug, tracedList, labels, headers = {}, atSourc
         active.delete(fileId);
         continue;
       }
-      const text = await atSource(slug, point.sha, { file_id: fileId }, headers);
-      if (!isCurrent()) return answers;
+      let text;
+      let failed = false;
+      try {
+        text = await atSource(slug, point.sha, { file_id: fileId }, headers);
+      } catch {
+        failed = true;
+      }
+      if (!isCurrent()) return result();
       if (typeof text !== "string") {
         const unresolved = new Set(eligible.map(({ index }) => index));
+        if (failed) for (const { index } of eligible) incomplete[index] = true;
         const remaining = candidates.filter(({ index }) => !unresolved.has(index));
         if (remaining.length) active.set(fileId, remaining);
         else active.delete(fileId);
@@ -220,11 +239,20 @@ export async function wentAtMany(slug, tracedList, labels, headers = {}, atSourc
       }
     }
   }
-  return answers;
+  return result();
 }
 
+/// The first label at which a comment's passage was no longer found.
+///
+/// `labels` is the manifest, oldest first. A comment always carries its
+/// own frontier now, never a label (§7.3: nothing writes a label for a
+/// comment), so the search starts at that exact position rather than at a
+/// manifest entry. Labels may show the passage disappearing and returning,
+/// so inspect them in order and return the first loss. Returns that entry, or null
+/// when there is nothing to say: no history to look in, or a passage that
+/// turns out still to be there.
 export async function wentAt(slug, traced, labels, headers = {}, atSource = sourceTextAt) {
-  return (await wentAtMany(slug, [traced], labels, headers, atSource))[0] ?? null;
+  return (await wentAtMany(slug, [traced], labels, headers, atSource)).points[0] ?? null;
 }
 
 /// Finds what replaced a comment's quotation between two versions. The

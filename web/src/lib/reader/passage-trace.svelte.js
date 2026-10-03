@@ -61,7 +61,9 @@ export function createPassageTrace({
     const traced = lost.map((comment) => passages.tracedBy(comment, paths()));
     let points = Array(lost.length).fill(null);
     try {
-      points = await passages.wentAtMany(slug, traced, list, keyHeaders(key), undefined, current);
+      const history = await passages.wentAtMany(slug, traced, list, keyHeaders(key), undefined, current);
+      points = history.points;
+      if (history.incomplete.some(Boolean) && current()) last = null;
     } catch {
       if (!stale()) last = null;
     }
