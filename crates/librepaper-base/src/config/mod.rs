@@ -3,7 +3,8 @@
 //! server reads them directly. A limit changed here changes everywhere on the
 //! next build.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 pub mod budget;
@@ -262,7 +263,8 @@ pub struct CostPolicy {
     pub work_concurrency: usize,
     /// TCP peers whose X-Forwarded-For header may be used for client identity.
     /// An empty list means the TCP peer address is authoritative.
-    pub trusted_proxies: Vec<String>,
+    #[serde(deserialize_with = "deserialize_trusted_proxies", serialize_with = "serialize_trusted_proxies")]
+    pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
 pub const DEFAULT_REQUESTS_PER_PRINCIPAL_MINUTE: usize = 6_000;
@@ -290,14 +292,13 @@ impl CostPolicy {
         if self.trusted_proxies.len() > 128 {
             return Err("trusted_proxies may contain at most 128 networks".into());
         }
-        for network in &self.trusted_proxies {
-            validate_proxy_network(network)?;
-        }
         Ok(())
     }
 }
 
-fn validate_proxy_network(value: &str) -> Result<(), String> {
+/// Parse a network string that may be a bare IP address or a CIDR block.
+/// A bare address is converted to /32 or /128 automatically.
+fn parse_network(value: &str) -> Result<ipnet::IpNet, String> {
     let value = value.trim();
     if value.is_empty() || value.len() > 64 {
         return Err(format!(
@@ -306,23 +307,24 @@ fn validate_proxy_network(value: &str) -> Result<(), String> {
     }
     let (address, prefix) = value.split_once('/').unwrap_or((value, ""));
     let address = address
-        .parse::<std::net::IpAddr>()
+        .parse::<IpAddr>()
         .map_err(|_| format!("trusted_proxies entry {value:?} is not an IP address or CIDR"))?;
     let bits = match address {
-        std::net::IpAddr::V4(_) => 32,
-        std::net::IpAddr::V6(_) => 128,
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
     };
     if prefix.is_empty() {
         return if value.contains('/') {
             Err("trusted_proxies CIDR requires a prefix".into())
         } else {
-            Ok(())
+            // Bare address becomes /32 or /128
+            Ok(ipnet::IpNet::new(address, bits as u8).unwrap())
         };
     }
     let prefix = prefix
         .parse::<u8>()
         .map_err(|_| format!("trusted_proxies entry {value:?} has an invalid prefix"))?;
-    if matches!(address, std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some()) && prefix < 96 {
+    if matches!(address, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some()) && prefix < 96 {
         return Err("mapped IPv4 proxy CIDR requires a prefix between 96 and 128".into());
     }
     if prefix > bits {
@@ -330,7 +332,27 @@ fn validate_proxy_network(value: &str) -> Result<(), String> {
             "trusted_proxies entry {value:?} has prefix /{prefix}, but this address has {bits} bits"
         ));
     }
-    Ok(())
+    ipnet::IpNet::new(address, prefix)
+        .map_err(|_| format!("trusted_proxies entry {value:?} is not a valid network"))
+}
+
+fn deserialize_trusted_proxies<'de, D>(deserializer: D) -> Result<Vec<ipnet::IpNet>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let strings: Vec<String> = Vec::deserialize(deserializer)?;
+    strings
+        .into_iter()
+        .map(|s| parse_network(&s).map_err(serde::de::Error::custom))
+        .collect()
+}
+
+fn serialize_trusted_proxies<S>(networks: &[ipnet::IpNet], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let strings: Vec<String> = networks.iter().map(|n| n.to_string()).collect();
+    strings.serialize(serializer)
 }
 
 /// What the server-held document may cost: how big a state may travel inline,

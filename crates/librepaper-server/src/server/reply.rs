@@ -35,13 +35,10 @@ pub fn local_path(next: &str) -> String {
 }
 
 /// Resolve only a bounded, valid forwarding chain from an explicitly trusted peer.
-pub fn client_address(peer: SocketAddr, headers: &HeaderMap, trusted: &[String]) -> String {
+pub fn client_address(peer: SocketAddr, headers: &HeaderMap, trusted: &[ipnet::IpNet]) -> String {
     let peer = normalized_ip(peer.ip());
     let fallback = peer.to_string();
-    if !trusted
-        .iter()
-        .any(|network| network_contains(network, peer))
-    {
+    if !trusted.iter().any(|network| network.contains(peer)) {
         return fallback;
     }
     let values: Vec<_> = headers.get_all("x-forwarded-for").iter().collect();
@@ -68,7 +65,7 @@ pub fn client_address(peer: SocketAddr, headers: &HeaderMap, trusted: &[String])
     chain
         .into_iter()
         .rev()
-        .find(|ip| !trusted.iter().any(|network| network_contains(network, *ip)))
+        .find(|ip| !trusted.iter().any(|network| network.contains(*ip)))
         .map(|ip| ip.to_string())
         .unwrap_or(fallback)
 }
@@ -83,45 +80,13 @@ pub fn normalized_ip(ip: IpAddr) -> IpAddr {
     }
 }
 
-pub fn network_contains(network: &str, ip: IpAddr) -> bool {
-    let network = network.trim();
-    let (address, prefix) = network
-        .split_once('/')
-        .map_or((network, None), |(ip, prefix)| (ip, Some(prefix)));
-    let Ok(address) = address.parse::<IpAddr>() else {
-        return false;
-    };
-    let mapped = matches!(address, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some());
-    let original_bits = if address.is_ipv4() { 32 } else { 128 };
-    let address = normalized_ip(address);
-    let bits = if address.is_ipv4() { 32 } else { 128 };
-    let prefix = match prefix {
-        Some(prefix) => match prefix.parse::<u32>() {
-            Ok(prefix) if mapped && (96..=128).contains(&prefix) => prefix - 96,
-            Ok(prefix) if !mapped && prefix <= original_bits => prefix,
-            _ => return false,
-        },
-        None => bits,
-    };
-    match (address, normalized_ip(ip)) {
-        (IpAddr::V4(network), IpAddr::V4(ip)) => {
-            prefix == 0 || (u32::from(network) >> (32 - prefix)) == (u32::from(ip) >> (32 - prefix))
-        }
-        (IpAddr::V6(network), IpAddr::V6(ip)) => {
-            prefix == 0
-                || (u128::from(network) >> (128 - prefix)) == (u128::from(ip) >> (128 - prefix))
-        }
-        _ => false,
-    }
-}
-
 /// IPv4 hosts share a /32 bucket and IPv6 privacy addresses share a /64.
 pub fn client_network(address: &str) -> String {
     match address.parse::<IpAddr>().map(normalized_ip) {
-        Ok(IpAddr::V6(ip)) => format!(
-            "{}/64",
-            std::net::Ipv6Addr::from(u128::from(ip) & (u128::MAX << 64))
-        ),
+        Ok(IpAddr::V6(ip)) => {
+            let net = ipnet::Ipv6Net::new(ip, 64).expect("valid /64");
+            format!("{}/64", net.trunc().network())
+        }
         Ok(ip) => ip.to_string(),
         Err(_) => "invalid".into(),
     }
@@ -134,7 +99,10 @@ mod proxy_tests {
     #[test]
     fn forwarding_walks_only_the_trusted_suffix() {
         let peer = "127.0.0.1:8080".parse().unwrap();
-        let trusted = vec!["127.0.0.1/32".into(), "10.0.0.0/24".into()];
+        let trusted: Vec<ipnet::IpNet> = vec![
+            "127.0.0.1/32".parse().unwrap(),
+            "10.0.0.0/24".parse().unwrap(),
+        ];
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-forwarded-for",
@@ -161,7 +129,7 @@ mod proxy_tests {
     #[test]
     fn malformed_missing_oversized_and_all_trusted_use_tcp_peer() {
         let peer = "127.0.0.1:8080".parse().unwrap();
-        let trusted = vec!["127.0.0.1".into()];
+        let trusted: Vec<ipnet::IpNet> = vec!["127.0.0.1".parse().unwrap()];
         for value in [
             None,
             Some("".to_string()),
@@ -186,23 +154,17 @@ mod proxy_tests {
     fn mapped_addresses_and_ipv6_prefixes_are_normalized() {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "::ffff:198.51.100.23".parse().unwrap());
+        let trusted: Vec<ipnet::IpNet> = vec!["127.0.0.1/32".parse().unwrap()];
         assert_eq!(
-            client_address(
-                "[::ffff:127.0.0.1]:8".parse().unwrap(),
-                &headers,
-                &["127.0.0.1/32".into()]
-            ),
+            client_address("[::ffff:127.0.0.1]:8".parse().unwrap(), &headers, &trusted),
             "198.51.100.23"
         );
-        assert!(network_contains(
-            " ::ffff:127.0.0.1/128 ",
-            "127.0.0.1".parse().unwrap()
-        ));
-        assert!(network_contains(
-            "2001:db8::/32",
-            "2001:db8:1::1".parse().unwrap()
-        ));
-        assert!(!network_contains("::/0", "127.0.0.1".parse().unwrap()));
+        let mapped_net: ipnet::IpNet = " ::ffff:127.0.0.1/128 ".trim().parse().unwrap();
+        assert!(mapped_net.contains("127.0.0.1".parse::<IpAddr>().unwrap()));
+        let subnet: ipnet::IpNet = "2001:db8::/32".parse().unwrap();
+        assert!(subnet.contains("2001:db8:1::1".parse::<IpAddr>().unwrap()));
+        let all_zeros: ipnet::IpNet = "::/0".parse().unwrap();
+        assert!(!all_zeros.contains("127.0.0.1".parse::<IpAddr>().unwrap()));
         assert_eq!(client_network("2001:db8:1:2:3:4:5:6"), "2001:db8:1:2::/64");
     }
 }
