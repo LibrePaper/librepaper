@@ -1,15 +1,26 @@
+export function relativePathParts(path, label, kind = "relative path") {
+  if (typeof path !== "string" || !path || path.trim() !== path || path.startsWith("/") || /[\\%?#:\0]/.test(path)) {
+    throw new Error(`${label} has an unsafe ${kind}`);
+  }
+  const parts = path.split("/");
+  if (parts.some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`${label} has an unsafe ${kind}`);
+  }
+  return parts;
+}
+
 export function validateReleaseShape(release) {
   if (release?.format !== 2) throw new Error(`unsupported release format: ${release?.format}`);
   if (!release.files || typeof release.files !== "object" || Array.isArray(release.files)) {
     throw new Error("release has no files map");
   }
   if (!release.engines || typeof release.engines !== "object" || Array.isArray(release.engines) || !release.engines.pdftex) {
-    throw new Error("no complete pdfTeX engine: release has no pdfTeX specification");
+    throw new Error("release has no pdfTeX worker specification");
   }
 
   for (const [name, spec] of Object.entries(release.engines)) {
     const incomplete = () => name === "pdftex"
-      ? "no complete pdfTeX engine: invalid worker inventory"
+      ? "pdfTeX engine has no valid worker inventory"
       : `engine ${name} has no valid worker inventory`;
     if (!spec || typeof spec !== "object" || typeof spec.worker !== "string" || !spec.worker.trim() ||
         !Array.isArray(spec.files) || !spec.files.length || !spec.files.includes(spec.worker)) {

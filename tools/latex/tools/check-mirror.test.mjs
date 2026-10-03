@@ -116,9 +116,9 @@ try {
   build((entry) => { entry.format = 1; });
   check(1, /unsupported release format/);
   build((entry) => { delete entry.engines.pdftex; });
-  check(1, /no complete pdfTeX/);
+  check(1, /pdfTeX worker specification/);
   build((entry) => { entry.engines.pdftex.files = []; });
-  check(1, /no complete pdfTeX/);
+  check(1, /pdfTeX engine has no valid worker inventory/);
   build((entry) => { entry.engines.xetex = { worker: "xetex.worker.js", files: [] }; });
   check(1, /engine xetex has no valid worker inventory/);
   build((entry) => { entry.files["worker.js"].size = 0; });

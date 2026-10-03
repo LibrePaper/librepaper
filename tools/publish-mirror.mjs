@@ -14,7 +14,7 @@ import { Transform } from "node:stream";
 import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
-import { validateReleaseShape } from "./latex/tools/release-shape.mjs";
+import { relativePathParts, validateReleaseShape } from "./latex/tools/release-shape.mjs";
 
 const runFile = promisify(execFile);
 const HASH = /(?:^|[./_-])[a-f0-9]{64}(?=$|[./_-])/i;
@@ -136,14 +136,7 @@ async function digestFile(path) {
 }
 
 function safeRelativePath(root, base, url, label) {
-  if (typeof url !== "string" || !url || url.trim() !== url ||
-      url.startsWith("/") || /[\\%?#:\0]/.test(url)) {
-    throw new Error(`${label} has an unsafe URL`);
-  }
-  const pieces = [...base.split("/").filter((part) => part && part !== "."), ...url.split("/")];
-  if (pieces.some((part) => !part || part === "." || part === "..")) {
-    throw new Error(`${label} has an unsafe URL`);
-  }
+  const pieces = [...base.split("/").filter((part) => part && part !== "."), ...relativePathParts(url, label, "URL")];
   const absolute = resolve(root, ...pieces);
   const rel = relative(root, absolute);
   if (!rel || rel === ".." || rel.startsWith(`..${sep}`)) throw new Error(`${label} escapes the mirror directory`);

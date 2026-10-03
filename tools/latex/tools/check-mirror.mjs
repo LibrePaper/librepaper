@@ -6,8 +6,8 @@
 // `latex/<id>/` where id is the SHA-256 of `<id>/MANIFEST.json`, described by
 // `<id>/release.json` (format 2, every path relative to the release
 // directory, bundled releases only, no per-file TeX Live snapshot). This
-// check is the consumer side: it verifies that what it is given is a complete
-// format-2 release before LibrePaper is pointed at it.
+// check is the consumer side: it validates format-2 release metadata and
+// verifies the payloads available in the selected local or URL mode.
 //
 //     node check-mirror.mjs <mirror dir>            every <id>/ inside it
 //     node check-mirror.mjs <release dir>           one release
@@ -15,18 +15,14 @@
 import { readFile, readdir, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import { validateReleaseShape } from "./release-shape.mjs";
+import { relativePathParts, validateReleaseShape } from "./release-shape.mjs";
 
 const base = process.argv[2];
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const ID = /^[a-f0-9]{64}$/;
 
 const safeAssetPath = (url, what) => {
-  if (typeof url !== "string" || !url || url.startsWith("/") || /[\\%?#:\0]/.test(url) ||
-      url.split("/").some((part) => !part || part === "." || part === "..")) {
-    throw new Error(`${what} has an unsafe relative path`);
-  }
-  return url;
+  return relativePathParts(url, what).join("/");
 };
 
 /// One release directory on disk: MANIFEST.json hashes to the directory name,
