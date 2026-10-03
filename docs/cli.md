@@ -55,12 +55,18 @@ librepaper list       # show ID, date, and title
 
 ```sh
 librepaper admin serve --help              # start server with flags
-librepaper admin backup <dir> <dest>       # create recovery point
+librepaper admin backup <dest>             # backup default data directory
+librepaper admin backup --data-directory <data-dir> <dest>
 librepaper admin restore <src> <dest>      # restore from backup
 curl http://127.0.0.1:8080/api/status      # check operational state
 ```
 
 See [hosting page](host.html) for server flags.
+
+The backup command uses the default data directory `librepaper-data`, or the
+`LIBREPAPER_DATA` environment variable, unless `--data-directory` is supplied.
+Self-hosted backups also require a PostgreSQL database and restore into an
+empty database and a new directory; see [storage requirements](host.html#storage).
 
 ## Agents
 

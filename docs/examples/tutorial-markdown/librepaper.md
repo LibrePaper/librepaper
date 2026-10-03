@@ -13,7 +13,7 @@ Welcome to LibrePaper. Edit this sentence in the browser and watch the preview u
 
 ## Source and preview
 
-This file is Markdown. LibrePaper renders it to HTML in the browser, and the native command-line client uses the matching renderer. The server synchronizes and stores the source; it does not compile the document.
+This file is Markdown. LibrePaper renders it to HTML in the browser. The server synchronizes and stores the source; it does not compile the document. The command-line project export copies source and assets; it does not render documents or export comments.
 
 ## A small scientific example
 
@@ -41,6 +41,6 @@ Try changing the four values and leave a comment on this paragraph.
 
 ## Working with other clients
 
-The browser editor is enough for writing and reading. A one-shot `librepaper export DOCUMENT ./paper-copy` creates an independent local copy. Readers render the small Markdown document in their browser and need no local toolchain.
+The browser editor is enough for writing and reading. A one-shot `librepaper export DOCUMENT ./paper-copy` creates an independent local copy of the project source and assets. Readers render the Markdown document in their browser and need no local toolchain.
 
 ## References

@@ -38,8 +38,9 @@ available.
 
 A stranger (anyone with the URL and no live link) is answered exactly as
 a deleted document answers. The reading frame is served from a separate
-documents host that holds no sign-in of yours, so the reader fetches a
-short-lived token on the origin that does and puts it on the frame's URL;
-that is what lets an HTML document's own scripts run for whoever may read it
-and for nobody else.
-
+documents host that holds no sign-in of yours. The reader app first fetches an
+authorized source projection from the application origin, then passes that
+projection to the sandboxed frame using origin-checked messaging. The frame
+URL does not contain a document token or source. This isolates application
+authority from document scripts; it does not hide shared source from people
+authorized to read the document.

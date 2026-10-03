@@ -2,8 +2,10 @@
 title: "Privacy"
 ---
 
-LibrePaper is software, not a service. The operator decides what is kept, for
-how long, and is answerable to regulators. The project authors run no service.
+This notice describes the public LibrePaper deployment. If you run another
+instance, its operator controls the database, object storage, logs, backups,
+retention, and legal obligations; consult that operator's notice. The server
+can read document contents and account data in plaintext.
 
 An operator's reverse proxy, backups and hosting provider keep their own logs.
 
@@ -61,13 +63,22 @@ Browser storage (never sent to server):
 Browser storage sent to the deployment:
 - `librepaper-keys` - share secrets, sent as the X-LibrePaper-Key header
 
-None profiles anybody or is shared. No consent banner needed.
+These browser-storage descriptions concern the application keys and purposes
+listed above; they are not a general statement about third-party content
+embedded in a document.
 
 ## Reading and visibility
 
 Signed-in readers can use their account for comments and presence. While open,
 the collaboration layer broadcasts presence and cursor position to other viewers
 of the document. Read, comment, and edit links require sign-in.
+
+Authorized readers receive a projected copy of shared source text, main-file
+metadata, and assets in order to render the document in the browser. They do not
+join source CRDT synchronization or receive its operation history, but shared
+source is readable in the browser and should not be treated as private. Keep
+confidential inputs outside the shared project; a local companion folder can
+provide local build inputs without uploading that folder.
 
 Pseudonymous comments hide identity from other readers, not the operator.
 
@@ -102,10 +113,16 @@ Hosting, database and object-storage providers see what they store.
 
 - **Documents:** kept until deleted or `--document-expire-after` period passes
   (measured from last update or creation). See [Retention](./host.html#retention).
-- **Checkpoints:** kept until document is deleted
-- **Edit history:** kept whole for the life of the document
-- **Sessions:** 30 days; invalidated by sign-out or account erasure
-- **Backups:** encrypted, up to 90 days
+- **Checkpoints and edit history:** retained by default while the document
+  exists; an owner can explicitly trim history, which permanently removes
+  older history and named versions. See [history and revisions](./collaborate/history.html).
+- **Sessions:** session credentials expire after 30 days. Signing out clears the
+  current browser's cookie; it does not invalidate a copied credential. Account
+  erasure revokes the account's sessions.
+- **Backups:** the application backup command creates a database/object-store
+  recovery point. It does not encrypt, schedule, prune, or expire backup copies.
+  Backup security and retention depend on the operator's separate storage and
+  retention controls; this notice makes no encryption or deletion-replay promise.
 
 Deleting a document deletes files, comments, replies, checkpoints and share links.
 
@@ -113,14 +130,14 @@ Deleting a document deletes files, comments, replies, checkpoints and share link
 
 **Settings > Account > Erase this account** (confirm with your handle):
 
-1. Session invalidated immediately; no sign-in possible; irreversible from browser
+1. Account sessions are revoked; the account cannot sign in again. Erasure is irreversible from the browser
 2. Owned documents marked for deletion and removed after 7 days (configurable)
 3. Comments and checkpoints on others' documents stay, relabelled "Deleted user"
 4. Account record deleted once documents are gone
 
-When you delete your account, your personal information is removed from our
-active systems. Residual copies may remain in encrypted backups for up to 90
-days. Backup data is not accessible through the service or used for any other
-purpose and is automatically deleted as backups expire. If a backup is
-restored, previously completed deletion requests are reapplied.
-
+Account and document deletion affects the live service according to the
+retention periods above. Separate backup copies may still contain deleted data
+until the operator's backup-retention process removes them. Restoring a backup
+does not automatically replay an independent deletion ledger; operators must
+review and reapply applicable deletion requests after restore. See the
+[operator privacy guide](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/privacy-operators.md).

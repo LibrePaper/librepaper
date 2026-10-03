@@ -9,10 +9,10 @@ but the live link remains the complete document authority. Signed-in comments
 retain the account's normal attribution; an anonymous link-only peer receives
 a stable link pseudonym.
 
-This is `librepaper.room.v3`, the protocol in `SPEC-server-is-a-log.md`. The
-server stores and forwards source bytes and reads only their headers to do
-so; it interprets their contents only on demand, through a bounded, evictable
-cache. See that document for the reasoning behind each rule below.
+This is `librepaper.room.v3`. The server stores and forwards source bytes and
+reads only their headers to do so; it interprets their contents only on
+demand, through a bounded, evictable cache. The sections below describe the
+current HTTP and WebSocket contract.
 
 ## Snapshot
 
@@ -138,7 +138,7 @@ sequencer evaluated the command, which the server takes for it. A co-editor
 typing between that evaluation and the write invalidates the moment rather
 than the comment: the comment and the source operation it may depend on
 commit in one transaction, so nothing interleaves between evaluation and
-commit for that document (`SPEC-server-is-a-log.md` §7). Only a room edited
+commit for that document. Only a room edited
 continuously enough to lose that race three times running answers `type:
 error` with `"code": "stale_selection"`, which a client may resend.
 
@@ -254,7 +254,7 @@ label has landed durably.
 
 A label is recorded as a `document_labels` row: no precondition is
 checked, and the row records the head vector, frontier and tree digest at the
-moment it runs (`SPEC-server-is-a-log.md` §7.1, §8.2). `request_id`
+moment it runs. `request_id`
 correlates label results; it is not a stored replay key by itself, but a
 retry with the same `request_id` finds the label the earlier attempt wrote
 and returns it rather than writing a second one. An unchanged tree is a
@@ -266,7 +266,7 @@ from a lost response.
 
 Automation peers connect to /ws/{slug} with the same key header and automation
 marker. The document messages carry the synchronization transport described
-in `SPEC-server-is-a-log.md` §6.
+in this section.
 
 The two annotation frames a socket receives before any document message:
 
@@ -295,7 +295,7 @@ their loaded prefix or was already changed optimistically.
   update, and its local state is left untouched.
 
   The server answers with one of, depending on how much of the client's
-  vector the log already covers (`SPEC-server-is-a-log.md` §6.2):
+  vector the log already covers:
 
   - `doc-state {vector, durableVector, updates}` when the base and every row
     are covered: `updates` is the buffer's batches and `vector` is the head.
@@ -472,8 +472,8 @@ durable. Use the explicit durable vector to confirm coverage of local work.
 
 ### Join algorithm
 
-Restated precisely, because it is the part most worth getting right
-(`SPEC-server-is-a-log.md` §6.2). Joining is handled as one message to the
+Restated precisely, because it is the part most worth getting right.
+Joining is handled as one message to the
 document's sequencer task, so no batch can arrive and be relayed between the
 server computing its `doc-open` reply and the client actually being
 registered as a subscriber:
@@ -494,8 +494,8 @@ registered as a subscriber:
 
 ### Crash contract
 
-Stated exactly, because it is a narrower guarantee than "your work is safe"
-(`SPEC-server-is-a-log.md` §6.4). Between a flush and the next one, an
+Stated exactly, because it is a narrower guarantee than "your work is safe".
+Between a flush and the next one, an
 editor's typing lives only in clients and the sequencer's in-memory buffer.
 If the server process dies with a non-empty buffer:
 

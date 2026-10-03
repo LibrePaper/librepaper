@@ -6,6 +6,10 @@ title: "Self-hosting"
 
 ### Quick start
 
+This command starts the server only. Self-hosting also requires a PostgreSQL
+database and at least one configured OAuth provider; see [Production](#production)
+and [OAuth](#oauth) below before expecting sign-in or persistence to work.
+
 ```sh
 librepaper admin serve --port 8081 --publishers YOUR-GITHUB-LOGIN
 ```

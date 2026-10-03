@@ -10,13 +10,13 @@ LaTeX engines and TeX Live packages are fetched from an HTTPS mirror from `latex
 
 Compilation runs in one worker per module. Markdown and Quarto produce flow HTML; LaTeX and Typst produce paged PDF. The deployment never renders or stores a compiler. The editor keeps the last successfully rendered page while the engine warms.
 
-There is no publish step and no stored rendered page. A reader sees the same head an editor sees, projected (text tree, main file, format, assets), identified by tree digest not version number. Opening, reconnecting and every edit resolve to fetch-and-render.
+There is no publish step and no stored rendered page. A reader sees the same head an editor sees, projected (text tree, main file, format, assets), identified by tree digest not version number. The reader requests this projection from the application origin; the app passes it to the isolated document frame. Opening, reconnecting and every edit resolve to fetch-and-render.
 
 The projection algorithm is implemented in Rust and JavaScript, held to the same behaviour by `web/tests/fixtures/projection.json`. When a document changes, the socket carries `source-changed {digest}` (digest only, not text). The reader refetches using digest as etag; unchanged files reuse cache.
 
 Readers and commenters never receive CRDT bytes or edit history; projections carry text and assets only.
 
-Projected source and assets are served only on the document origin, never the application origin. Reader link or account authority is rechecked on every response. Assets use stable document-scoped paths with private revalidation.
+The application origin authorizes and returns projected source and assets to the reader app. It then supplies the projection to the isolated document frame; the separate document origin serves the frame shell and does not receive document access credentials in its URL. Reader link or account authority is rechecked on the application response. Assets use stable document-scoped paths with private revalidation. The projection is readable source, so a reader must not treat source-only files in a shared project as private.
 
 ## Live collaboration
 
@@ -24,7 +24,7 @@ A room holds one document's comments and open sockets, in one process. Writes re
 
 The socket carries document updates, presence, comments and `source-changed {digest}` notices. Presence (who is here, where is their cursor) is ephemeral and never persisted. Editors synchronise source through the socket; readers use it for annotations and digest notices. Both follow the same authority rules since readers see the same head as editors.
 
-A dropped socket loses nothing; comments post via HTTP and reconnect resends the full list. Silent disconnections (NAT expiry, sleep) are detected by periodic polling of connection liveness. Queue depth and transport writes are bounded server-side. Authority is rechecked while a socket is open.
+A dropped socket loses nothing; comments post via HTTP and reconnect hydrates a bounded first page, with older comments loaded through cursor pagination. Refreshes remain bounded. Silent disconnections (NAT expiry, sleep) are detected by periodic polling of connection liveness. Queue depth and transport writes are bounded server-side. Authority is rechecked while a socket is open.
 
 Identity comes from GitHub or Google (browser), or the deployment's device flow (`librepaper login` in a headless terminal). Browser-started local agents receive an automatically renewed five-minute token scoped to the current document and link while the page is open. Both sign-in paths end as a handle (policy-gated) and an id (everything else keys on). Cookies use `__Host-` naming on HTTPS; OAuth uses PKCE and state cookies; logout is POST-only.
 
