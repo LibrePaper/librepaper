@@ -44,7 +44,9 @@ export function say(text, { kind = "note", id, action } = {}) {
     type: TYPES[kind] || "info",
     description: text,
     id: id || `say:${text}`,
-    ...(action ? { action } : {}),
+    // Zag merges data into an existing toast with the same id. Passing
+    // undefined explicitly clears an old action when an Undo succeeds.
+    action,
     ...(kind === "problem" ? { duration: Number.POSITIVE_INFINITY } : {}),
   });
 }
