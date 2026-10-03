@@ -513,6 +513,24 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   };
 
   const engine = resolveEngine(tree, currentSettings);
+  const timedOutBeforeJob = (releaseId) => buildResult({
+    job: {
+      id: `${currentProject}:${generationAtStart}`,
+      project: currentProject,
+      generation: generationAtStart,
+      // No snapshot digest is available when its own deadline expired.
+      snapshot: "",
+      inputs: "",
+      main: tree?.main ?? "",
+      engine,
+      release: releaseId,
+    },
+    attempts: [],
+    startedAt,
+    ok: false,
+    failure: { kind: "timeout", message: "The compile exceeded its time budget.", stage: "browser" },
+    provenance: baseProvenance(engine, releaseId === "unknown" ? null : releaseId),
+  });
 
   let releaseEntry;
   try {
@@ -525,33 +543,47 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
     }, token.abort.signal);
   } catch (error) {
     checkpoint();
-    const inputs = await snapshotDigest(tree).catch(() => "");
-    checkpoint();
-    const job = await jobsMod.makeJob({
-      project: currentProject,
-      generation: generationAtStart,
-      tree,
-      inputs,
-      engine,
-      release: releaseEntry?.id || "unknown",
-    });
-    checkpoint();
+    const releaseId = releaseEntry?.id || "unknown";
+    if (error?.name === "WorkerTimeout" || nowImpl() >= deadlineAt) return timedOutBeforeJob(releaseId);
+    let job;
+    try {
+      if (!remaining(deadlineAt)) throw timeoutError("document digest");
+      const inputs = await withinDeadline(snapshotDigest(tree), deadlineAt, "document digest", undefined, token.abort.signal);
+      checkpoint();
+      if (!remaining(deadlineAt)) throw timeoutError("job identity");
+      job = await withinDeadline(jobsMod.makeJob({ project: currentProject, generation: generationAtStart, tree, inputs, engine, release: releaseId }), deadlineAt, "job identity", undefined, token.abort.signal);
+      checkpoint();
+    } catch (identityError) {
+      checkpoint();
+      if (identityError?.name === "WorkerTimeout" || nowImpl() >= deadlineAt) return timedOutBeforeJob(releaseId);
+      throw identityError;
+    }
     return buildResult({
       job,
       attempts: [],
       startedAt,
       ok: false,
-      failure: { kind: error?.name === "WorkerTimeout" ? "timeout" : "resources", message: String(error?.message || error), stage: "browser" },
-      provenance: baseProvenance(engine, null),
+      failure: { kind: "resources", message: String(error?.message || error), stage: "browser" },
+      provenance: baseProvenance(engine, releaseEntry?.id || null),
     });
   }
   checkpoint();
 
   const releaseId = releaseEntry.id;
-  const inputs = await snapshotDigest(tree);
-  checkpoint();
-  const job = await jobsMod.makeJob({ project: currentProject, generation: generationAtStart, tree, inputs, engine, release: releaseId });
-  checkpoint();
+  let inputs;
+  let job;
+  try {
+    if (!remaining(deadlineAt)) throw timeoutError("document digest");
+    inputs = await withinDeadline(snapshotDigest(tree), deadlineAt, "document digest", undefined, token.abort.signal);
+    checkpoint();
+    if (!remaining(deadlineAt)) throw timeoutError("job identity");
+    job = await withinDeadline(jobsMod.makeJob({ project: currentProject, generation: generationAtStart, tree, inputs, engine, release: releaseId }), deadlineAt, "job identity", undefined, token.abort.signal);
+    checkpoint();
+  } catch (error) {
+    checkpoint();
+    if (error?.name === "WorkerTimeout" || nowImpl() >= deadlineAt) return timedOutBeforeJob(releaseId);
+    throw error;
+  }
 
   const attempts = [];
   // LuaLaTeX is never selected for the author (see `engine.js`'s `detect`);
@@ -722,8 +754,29 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         const bytes = fileBytes(tree, path);
         if (bytes) files[path] = bytes;
       }
-      const identity = await (bibliographyIdentityOverride || bibliography.identity)({ kind, controlBytes, files, engine, release: releaseId, tool: kind });
-      checkpoint();
+      let identity;
+      try {
+        if (!remaining(deadlineAt)) throw timeoutError("bibliography identity");
+        identity = await withinDeadline(
+          (bibliographyIdentityOverride || bibliography.identity)({ kind, controlBytes, files, engine, release: releaseId, tool: kind }),
+          deadlineAt,
+          "bibliography identity",
+          undefined,
+          token.abort.signal,
+        );
+        checkpoint();
+      } catch (error) {
+        checkpoint();
+        if (error?.name === "WorkerTimeout" || nowImpl() >= deadlineAt) {
+          attempts.push({ stage: "browser-bibliography", backend: "browser", ok: false, log: String(error?.message || error), reason: "timeout" });
+          return buildResult({
+            job, attempts, startedAt, ok: false, log: finalLog,
+            failure: { kind: "timeout", message: "The compile exceeded its time budget.", stage: "browser-bibliography" },
+            provenance: baseProvenance(engine, releaseId),
+          });
+        }
+        throw error;
+      }
 
       let bibResult = bibCache.get(identity) || null;
       if (bibResult) {

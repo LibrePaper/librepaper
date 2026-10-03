@@ -468,6 +468,52 @@ function nextProject() {
   assert.equal((await queued).ok, true, "the queued compile progresses on a fresh worker");
 }
 
+// The whole-job deadline also bounds bibliography identity hashing. A held
+// digest must settle as a timeout and release the queue without retiring an
+// otherwise responsive TeX worker.
+{
+  latex.at("/deadline-bibliography-identity/");
+  const previousWorker = worker();
+  let identityStarted;
+  const started = new Promise((resolve) => { identityStarted = resolve; });
+  let releaseIdentity;
+  const heldIdentity = new Promise((resolve) => { releaseIdentity = resolve; });
+  let holdFirstIdentity = true;
+  let clock = 0;
+  latex._testing.inject({
+    worker: FakeWorker,
+    fetch: fakeFetch,
+    now: () => clock,
+    deadlineMs: 10_000,
+    bibliographyIdentity: async (input) => {
+      if (holdFirstIdentity) {
+        holdFirstIdentity = false;
+        identityStarted();
+        clock = 10_001;
+        await heldIdentity;
+      }
+      return bibliography.identity(input);
+    },
+  });
+  latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
+  FakeWorker.nextTexReplies = [{
+    status: 0, pdf: PDF, synctex: null, log: "",
+    outputs: { "main.aux": enc.encode("\\bibdata{refs}\n\\citation{a}\n") },
+  }];
+  const expiring = latex.compile(tree("main.tex", "identity timeout", { "refs.bib": enc.encode("@book{x,}") }));
+  const compilingWorker = await untilWorker(previousWorker);
+  await started;
+  compilingWorker.texReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: {} }];
+  const queued = latex.compile(tree("main.tex", "queued after identity timeout"));
+
+  const timedOut = await expiring;
+  assert.equal(timedOut.failure.kind, "timeout", "stalled identity hashing consumes the compile deadline");
+  assert.match(timedOut.job.snapshot, /^[0-9a-f]{64}$/, "the completed source snapshot remains attached to the timeout result");
+  assert.equal((await queued).ok, true, "the queue advances while the old digest is still held");
+  assert.equal(compilingWorker.dead, false, "a hashing timeout does not retire the responsive worker");
+  releaseIdentity();
+}
+
 // Cancellation while bibliography hashing is in flight must stop the stale
 // run before it dispatches BibTeX on a worker reused by a replacement job.
 {
