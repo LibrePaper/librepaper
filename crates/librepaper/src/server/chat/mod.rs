@@ -16,8 +16,7 @@ use tokio::sync::Mutex;
 
 const CHANNEL_SECONDS: i64 = 60 * 60;
 use librepaper_base::assistant_protocol::{
-    TaskKind, TaskScope,
-    MAX_CONTEXT_BYTES as MAX_CONTEXT, MAX_EVENT_TEXT_BYTES as MAX_EVENT_TEXT,
+    TaskKind, TaskScope, MAX_CONTEXT_BYTES as MAX_CONTEXT, MAX_EVENT_TEXT_BYTES as MAX_EVENT_TEXT,
     MAX_ID_BYTES as MAX_ID,
 };
 pub type Error = (u16, &'static str);
@@ -353,8 +352,7 @@ fn valid_runner_binding(value: &str) -> bool {
 fn valid_task(task: Option<&Task>) -> bool {
     task.is_none_or(|task| {
         serde_json::from_value::<TaskKind>(json!(task.kind)).is_ok()
-            && serde_json::from_value::<TaskScope>(json!(task.scope))
-                .is_ok()
+            && serde_json::from_value::<TaskScope>(json!(task.scope)).is_ok()
             && task.kind.len() <= 32
             && task.scope.len() <= 32
     })

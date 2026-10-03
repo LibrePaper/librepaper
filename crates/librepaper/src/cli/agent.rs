@@ -34,11 +34,10 @@ pub(crate) struct McpArgs {
 
 pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
     let Deployment { server, token } = args.deployment;
-    let resolved =
-        librepaper_companion::local::connections::ConnectionStore::new(
-            &librepaper_companion::local::paths::state_home()?,
-        )
-        .resolve(&args.connection)?;
+    let resolved = librepaper_companion::local::connections::ConnectionStore::new(
+        &librepaper_companion::local::paths::state_home()?,
+    )
+    .resolve(&args.connection)?;
     if let (Some(conversation), Some(chat_token)) = (&resolved.conversation, &resolved.chat_token) {
         std::env::set_var("LIBREPAPER_CONVERSATION", conversation);
         std::env::set_var("LIBREPAPER_CHAT_TOKEN", chat_token);

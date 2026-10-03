@@ -61,9 +61,7 @@ pub(crate) fn load_tokens(base: &Path) -> std::collections::HashMap<String, Stri
     read_tokens(base).unwrap_or_default()
 }
 
-pub fn read_tokens(
-    base: &Path,
-) -> Result<std::collections::HashMap<String, String>, String> {
+pub fn read_tokens(base: &Path) -> Result<std::collections::HashMap<String, String>, String> {
     let path = tokens_path(base);
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,

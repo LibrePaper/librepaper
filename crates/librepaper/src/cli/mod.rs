@@ -574,7 +574,9 @@ async fn run_admin(command: AdminCommand) {
                             let stopper = app.clone();
                             Ok(crate::server::serve::LocalApp {
                                 address: app.address.clone(),
-                                stop: Box::new(move || Box::pin(async move { stopper.stop().await })),
+                                stop: Box::new(move || {
+                                    Box::pin(async move { stopper.stop().await })
+                                }),
                             })
                         })
                     })
