@@ -24,6 +24,8 @@ function buildSite(root) {
 test("a second docs build removes pages absent from the current nav and sources", async () => {
   const root = await mkdtemp(join(tmpdir(), "librepaper-site-build-"));
   try {
+    await mkdir(join(root, "docs"), { recursive: true });
+    await mkdir(join(root, "web/src/site"), { recursive: true });
     await writeFile(join(root, "package.json"), '{"type":"module"}\n');
     await writeFile(
       join(root, "docs/nav.js"),

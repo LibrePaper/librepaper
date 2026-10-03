@@ -15,13 +15,13 @@ async function runnerFixture(withNextest = false) {
   const log = join(directory, "calls.log");
   await writeFile(
     join(directory, "cargo"),
-    '#!/bin/sh\nprintf "cargo %s %s\\n" "$*" "${LIBREPAPER_FSYNC:-}" >> "$MOCK_LOG"\nexit "${MOCK_CARGO_EXIT:-0}"\n',
+    '#!/bin/sh\nif [ "$1" = nextest ]; then\n  shift\n  printf "nextest %s %s\\n" "$*" "${LIBREPAPER_FSYNC:-}" >> "$MOCK_LOG"\n  exit "${MOCK_NEXTEST_EXIT:-0}"\nfi\nprintf "cargo %s %s\\n" "$*" "${LIBREPAPER_FSYNC:-}" >> "$MOCK_LOG"\nexit "${MOCK_CARGO_EXIT:-0}"\n',
     { mode: 0o755 },
   );
   if (withNextest) {
     await writeFile(
       join(directory, "cargo-nextest"),
-      '#!/bin/sh\nprintf "nextest %s %s\\n" "$*" "${LIBREPAPER_FSYNC:-}" >> "$MOCK_LOG"\nexit "${MOCK_NEXTEST_EXIT:-0}"\n',
+      "#!/bin/sh\nexit 0\n",
       { mode: 0o755 },
     );
   }
