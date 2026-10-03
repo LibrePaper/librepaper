@@ -4356,15 +4356,14 @@
     font-size: var(--text-sm);
   }
   .execution-short { display: none; }
-  .mobile-pane-nav { justify-content: flex-start; gap: var(--spacing); }
-  /* The two faces read as one control with one of them chosen, rather than as
-     two buttons that happen to be next to each other: a tray around the pair,
-     and the tint the pressed icon already wears marking which is in front. */
+  .mobile-pane-nav { justify-content: flex-start; gap: calc(var(--spacing) * 2); }
+  /* Adapted widths keep the two faces grouped. Compact widths use the same
+     standalone square geometry as the Panels control. */
   .face-switch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--radius-container); background: var(--color-subtle); }
-  /* Sized for a thumb where it is only ever touched, like the row of panels
-     along the bottom of the same window. */
+  /* Compact controls are sized for a thumb. */
   @media (max-width: 760px) {
-    .face-switch :global(.icon-control) { width: 2.5rem; height: 2.5rem; }
+    .face-switch { gap: calc(var(--spacing) * 2); padding: 0; border-radius: 0; background: none; }
+    .face-switch :global(.icon-control) { width: 2.75rem; height: 2.75rem; }
   }
   .connection-settings { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); }
   .connection-pill { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .75); min-height: 1.75rem; padding: 0 calc(var(--spacing) * 2); border: 1px solid var(--color-border); border-radius: 999px; background: var(--color-subtle); color: var(--color-text-secondary); font: inherit; font-size: var(--text-xs); cursor: pointer; }

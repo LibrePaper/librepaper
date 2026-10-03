@@ -62,8 +62,11 @@
   }}
   positioning={{ placement: "top-start", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}
 >
-  <Menu.Trigger class="btn btn-sm lp-control-outline compact-panels-trigger" aria-label="Panels">
-    <Icon name="menu" size="1.25rem" />
+  <Menu.Trigger
+    class={`btn-icon icon-control icon-standard compact-panels-trigger ${open ? "lp-control-tonal-brand" : "icon-plain"}`}
+    aria-label="Panels"
+  >
+    <Icon name="menu" />
   </Menu.Trigger>
   <ExplorerMenu>
     <div class="compact-panels-items" use:sizeMenu>
@@ -118,6 +121,11 @@
     align-items: center;
     justify-content: center;
     padding-inline: 0;
+  }
+
+  :global(.compact-panels-trigger[aria-expanded="true"]) {
+    background: var(--color-row-selected);
+    color: var(--color-brand);
   }
 
   .compact-panels-items {

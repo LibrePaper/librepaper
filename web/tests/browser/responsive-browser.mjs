@@ -429,10 +429,22 @@ try {
     const faceSwitch = bar?.querySelector('.face-switch');
     const triggerRect = trigger?.getBoundingClientRect();
     const faceRect = faceSwitch?.getBoundingClientRect();
+    const controls = [trigger, ...[...(faceSwitch?.querySelectorAll('button') || [])]];
+    const rects = controls.map(control => control?.getBoundingClientRect());
+    const styles = controls.map(control => getComputedStyle(control));
+    const icons = controls.map(control => control?.querySelector('svg'));
     return { triggers: bar?.querySelectorAll('.compact-panels-trigger').length || 0,
       face: Boolean(bar?.querySelector('.face-switch')),
       faceLabels: [...bar?.querySelectorAll('.face-switch button')||[]].map(button=>button.getAttribute('aria-label')),
       height: triggerRect?.height || 0,
+      sizes: rects.map(rect => [rect?.width || 0, rect?.height || 0]),
+      radii: styles.map(style => style.borderRadius),
+      borders: styles.map(style => [style.borderTopWidth, style.borderTopStyle]),
+      iconSizes: icons.map(icon => { const style = icon && getComputedStyle(icon); return style ? [style.width, style.height] : null; }),
+      gaps: [
+        rects[1]?.left - rects[0]?.right,
+        rects[2]?.left - rects[1]?.right,
+      ],
       immediatelyLeft: Boolean(trigger && faceSwitch && trigger.compareDocumentPosition(faceSwitch) & Node.DOCUMENT_POSITION_FOLLOWING
         && triggerRect.right <= faceRect.left && faceRect.left - triggerRect.right <= parseFloat(getComputedStyle(bar).gap) + 1) };
   })()`);
@@ -440,6 +452,11 @@ try {
   assert.equal(compactNav.face,true,'mobile nav includes the source/document switch beside Panels');
   assert.deepEqual(compactNav.faceLabels,['Document','Source'],'both mobile workspace faces remain available');
   assert.equal(compactNav.height,44,'mobile Panels trigger is 44px tall');
+  assert.deepEqual(compactNav.sizes,[[44,44],[44,44],[44,44]],'all three compact controls are 44px square');
+  assert.equal(new Set(compactNav.radii).size,1,'all three compact controls share a corner radius');
+  assert.equal(new Set(compactNav.borders.map(border => border.join('|'))).size,1,'all three compact controls share a border');
+  assert.equal(new Set(compactNav.iconSizes.map(size => size?.join('|'))).size,1,'all three compact controls share an icon size');
+  assert.deepEqual(compactNav.gaps,[8,8],'the three compact controls are separated by equal 8px gaps');
   assert.equal(compactNav.immediatelyLeft,true,'the icon trigger sits immediately left of the face switch');
   assert.equal(await b.evaluate('document.querySelector(".compact-panels-trigger[aria-label=Panels]").innerText.trim()'),'','the Panels trigger is icon only');
   await click('.compact-panels-trigger[aria-label="Panels"]');
