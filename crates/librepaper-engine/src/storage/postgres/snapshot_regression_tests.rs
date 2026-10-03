@@ -57,10 +57,22 @@ async fn snapshot_migration_preserves_current_evidence_and_legacy_deadlines() {
     .await
     .unwrap();
     for migration in [
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0001_catalog.sql")),
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0002_purge_claim.sql")),
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0003_catalog_constraints_indexes.sql")),
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0004_archive_accounting.sql")),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/postgres/0001_catalog.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/postgres/0002_purge_claim.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/postgres/0003_catalog_constraints_indexes.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/postgres/0004_archive_accounting.sql"
+        )),
     ] {
         sqlx::raw_sql(migration).execute(&mut *tx).await.unwrap();
     }
@@ -78,9 +90,10 @@ async fn snapshot_migration_preserves_current_evidence_and_legacy_deadlines() {
          INSERT INTO superseded_bases(snapshot_key,document_id,delete_after)
          VALUES('retired-1',md5('document')::uuid,'2026-01-08 UTC'),('retired-2',md5('document')::uuid,'2026-01-09 UTC');"
     ).execute(&mut *tx).await.unwrap();
-    sqlx::raw_sql(include_str!(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0005_document_snapshots.sql")
-    ))
+    sqlx::raw_sql(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/migrations/postgres/0005_document_snapshots.sql"
+    )))
     .execute(&mut *tx)
     .await
     .unwrap();
@@ -88,11 +101,26 @@ async fn snapshot_migration_preserves_current_evidence_and_legacy_deadlines() {
     // normalization migration, so exercise them against the complete 0001-0009
     // catalogue before archive migration 0010 is merged.
     for migration in [
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0006_operation_outcomes.sql")),
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0007_drop_example_ownership.sql")),
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0008_proposals_are_pending.sql")),
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0009_grant_provenance.sql")),
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0011_schema_constraints_cleanup.sql")),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/postgres/0006_operation_outcomes.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/postgres/0007_drop_example_ownership.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/postgres/0008_proposals_are_pending.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/postgres/0009_grant_provenance.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/postgres/0011_schema_constraints_cleanup.sql"
+        )),
     ] {
         sqlx::raw_sql(migration).execute(&mut *tx).await.unwrap();
     }
