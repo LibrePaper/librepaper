@@ -16,11 +16,12 @@ use super::{Error, PostgresCatalog, Result};
 #[path = "listing_regression_tests.rs"]
 mod listing_regression_tests;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, sqlx::FromRow)]
 pub struct MarkRecord {
     pub document_id: Uuid,
     pub favorited_at: Option<OffsetDateTime>,
     pub opened_at: Option<OffsetDateTime>,
+    pub shared_hidden: bool,
 }
 
 /// The two numbers the listing prints beside a project's name.
@@ -67,13 +68,14 @@ impl PostgresCatalog {
         )
         .fetch_optional(&mut *tx)
         .await?;
-        sqlx::query!(
+        sqlx::query(
             "DELETE FROM document_marks
              WHERE account_id=$1 AND document_id=$2
-               AND favorited_at IS NOT NULL AND opened_at IS NULL",
-            account_id,
-            document_id,
+               AND favorited_at IS NOT NULL AND opened_at IS NULL
+               AND NOT shared_hidden",
         )
+        .bind(account_id)
+        .bind(document_id)
         .execute(&mut *tx)
         .await?;
         sqlx::query!(
@@ -82,6 +84,57 @@ impl PostgresCatalog {
             account_id,
             document_id,
         )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(false)
+    }
+
+    /// Hide or restore a shared document in this account's shared-project
+    /// view. This is a private listing preference and grants no authority.
+    pub async fn set_shared_hidden(
+        &self,
+        account_id: Uuid,
+        document_id: Uuid,
+        hidden: bool,
+    ) -> Result<bool> {
+        if hidden {
+            sqlx::query(
+                "INSERT INTO document_marks(account_id,document_id,shared_hidden)
+                 VALUES($1,$2,true)
+                 ON CONFLICT(account_id,document_id) DO UPDATE SET shared_hidden=true",
+            )
+            .bind(account_id)
+            .bind(document_id)
+            .execute(&self.pool)
+            .await?;
+            return Ok(true);
+        }
+
+        let mut tx = self.begin_metered().await?;
+        let _ = sqlx::query(
+            "SELECT account_id FROM document_marks
+             WHERE account_id=$1 AND document_id=$2 FOR UPDATE",
+        )
+        .bind(account_id)
+        .bind(document_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE document_marks SET shared_hidden=false
+             WHERE account_id=$1 AND document_id=$2",
+        )
+        .bind(account_id)
+        .bind(document_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM document_marks
+             WHERE account_id=$1 AND document_id=$2
+               AND favorited_at IS NULL AND opened_at IS NULL AND NOT shared_hidden",
+        )
+        .bind(account_id)
+        .bind(document_id)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -116,13 +169,12 @@ impl PostgresCatalog {
         if document_ids.is_empty() {
             return Ok(Vec::new());
         }
-        sqlx::query_as!(
-            MarkRecord,
-            "SELECT document_id,favorited_at,opened_at FROM document_marks
+        sqlx::query_as::<_, MarkRecord>(
+            "SELECT document_id,favorited_at,opened_at,shared_hidden FROM document_marks
              WHERE account_id=$1 AND document_id=ANY($2)",
-            account_id,
-            document_ids,
         )
+        .bind(account_id)
+        .bind(document_ids)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)

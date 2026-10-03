@@ -43,6 +43,10 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
             "/api/documents/{slug}/favorite",
             post(favorite).delete(favorite),
         )
+        .route(
+            "/api/documents/{slug}/shared",
+            post(shared_hidden).delete(shared_hidden),
+        )
         .route("/api/documents/{slug}/opened", post(opened))
         .route("/api/documents/{slug}/chat", any(chat_root))
         .route("/api/documents/{slug}/chat/{*tail}", any(chat))
@@ -359,6 +363,19 @@ async fn favorite(
     let query = request.uri().query().map(str::to_string);
     server
         .handle_favorite(request.headers(), &ctx.arrival, &slug, query.as_deref(), on)
+        .await
+}
+
+async fn shared_hidden(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    let hidden = request.method() != Method::POST;
+    let query = request.uri().query().map(str::to_string);
+    server
+        .handle_shared_hidden(request.headers(), &ctx.arrival, &slug, query.as_deref(), hidden)
         .await
 }
 
@@ -1300,9 +1317,10 @@ impl Server {
             .iter()
             .map(|entry| {
                 let mut row = self.listing_row(entry, &who);
-                let (favorite, opened) = marks.get(&entry.slug).cloned().unwrap_or_default();
+                let (favorite, opened, shared_hidden) = marks.get(&entry.slug).cloned().unwrap_or_default();
                 row["favorite"] = json!(favorite);
                 row["opened_at"] = json!(opened);
+                row["shared_hidden"] = json!(shared_hidden);
                 let (comments, open, files) =
                     counts.get(&entry.slug).copied().unwrap_or((0, 0, None));
                 row["comments"] = json!(comments);

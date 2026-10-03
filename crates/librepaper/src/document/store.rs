@@ -851,6 +851,20 @@ impl Store {
             .map_err(|error| ModifyError::Storage(error.to_string()))
     }
 
+    /// Hide or restore a shared document in this account's shared-project view.
+    pub async fn set_shared_hidden(
+        &self,
+        slug: &str,
+        account_id: &str,
+        hidden: bool,
+    ) -> Result<bool, ModifyError> {
+        let (document_id, account_id) = self.mark_target(slug, account_id).await?;
+        self.catalog
+            .set_shared_hidden(account_id, document_id, hidden)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))
+    }
+
     /// Note that this account has just opened this document.
     pub async fn mark_opened(&self, slug: &str, account_id: &str) -> Result<(), ModifyError> {
         let (document_id, account_id) = self.mark_target(slug, account_id).await?;
@@ -971,7 +985,7 @@ impl Store {
         &self,
         account_id: &str,
         entries: &[IndexEntry],
-    ) -> Result<std::collections::HashMap<String, (bool, String)>, CatalogError> {
+    ) -> Result<std::collections::HashMap<String, (bool, String, bool)>, CatalogError> {
         let account_id = uuid::Uuid::parse_str(account_id)
             .map_err(|_| CatalogError::Invalid("invalid listing account".into()))?;
         let mut by_id = std::collections::HashMap::new();
@@ -990,7 +1004,7 @@ impl Store {
                     .opened_at
                     .map(|at| crate::util::format_unix(at.unix_timestamp()))
                     .unwrap_or_default();
-                Some((slug, (mark.favorited_at.is_some(), opened)))
+                Some((slug, (mark.favorited_at.is_some(), opened, mark.shared_hidden)))
             })
             .collect())
     }
