@@ -87,10 +87,6 @@ serde_yaml.workspace = true
 reqwest.workspace = true
 # Digests, SigV4, and the signature on every cookie.
 sha2.workspace = true
-# Quarto's freezer names a cached computation by the MD5 of its source, so
-# reading that cache means computing the same digest. A format requirement,
-# not a security choice: nothing here trusts MD5 for anything.
-md5.workspace = true
 hmac.workspace = true
 base64.workspace = true
 hex.workspace = true
@@ -100,7 +96,6 @@ rand.workspace = true
 regex.workspace = true
 # Timestamps in the index and the room, RFC 3339 like the Worker wrote them.
 time.workspace = true
-chrono-tz.workspace = true
 # The built browser app, compiled in.
 librepaper-shell = { path = "../librepaper-shell" }
 # Configuration, identity and shared helpers.
@@ -113,12 +108,8 @@ librepaper-engine = { path = "../librepaper-engine" }
 librepaper-companion = { path = "../librepaper-companion" }
 # The command line.
 clap.workspace = true
-# The blob store is a trait with async methods behind a pointer.
-async-trait.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
-# What a browser shows of a document, for anchoring seeded annotations.
-html-escape.workspace = true
 # The collaboration substrate (SPEC-loro.md). This version and `loro-crdt` in
 # web/package.json are one pin: see tools/check-loro-pin.sh.
 loro.workspace = true
@@ -129,10 +120,6 @@ tar.workspace = true
 # the same library. Its rustls transport has no provider of its own; tls.rs
 # installs the AWS-LC provider used by Reqwest and object_store as well.
 tokio-tungstenite.workspace = true
-# Keep the explicit provider handle for tokio-tungstenite's rustls client. The
-# other HTTP and database clients select the same AWS-LC implementation.
-rustls.workspace = true
-fs2.workspace = true
 chacha20poly1305.workspace = true
 # PostgreSQL is the production catalogue. SQLx supplies the async pool and
 # compile-independent migrations; queries are exercised against PostgreSQL in
@@ -142,7 +129,6 @@ uuid.workspace = true
 log.workspace = true
 tempfile.workspace = true
 zip.workspace = true
-object_store.workspace = true
 
 [dev-dependencies]
 # `start_paused` and `advance`, so the deadline tests move a clock instead of
@@ -155,4 +141,5 @@ typst-assets.workspace = true
 typst.workspace = true
 # Test-only: render markdown in the locate corpus test.
 comrak.workspace = true
-sha1.workspace = true
+# Test-only: decode entities in the locate corpus test.
+html-escape.workspace = true

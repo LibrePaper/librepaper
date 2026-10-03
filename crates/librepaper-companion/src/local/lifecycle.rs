@@ -441,6 +441,23 @@ pub fn startup_enabled() -> bool {
     }
 }
 
+/// The five characters XML text cannot hold verbatim.
+#[cfg(target_os = "macos")]
+fn xml_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 pub fn set_startup(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
@@ -469,7 +486,7 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
             return remove_startup(&file);
         }
         let executable = super::paths::current_executable()?;
-        let path = html_escape::encode_text(&executable.to_string_lossy()).into_owned();
+        let path = xml_escape(&executable.to_string_lossy());
         write_startup_file(
             &file,
             format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>Label</key><string>com.librepaper.local</string><key>ProgramArguments</key><array><string>{path}</string><string>start</string></array><key>RunAtLoad</key><true/></dict></plist>"),

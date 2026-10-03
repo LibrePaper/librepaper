@@ -31,7 +31,6 @@ clap.workspace = true
 loro.workspace = true
 zstd.workspace = true
 tar.workspace = true
-fs2.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
 log.workspace = true

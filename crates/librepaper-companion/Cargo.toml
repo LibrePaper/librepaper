@@ -43,13 +43,11 @@ percent-encoding.workspace = true
 # JSON-RPC framing, protocol negotiation, or request correlation.
 agent-client-protocol.workspace = true
 rmcp.workspace = true
-html-escape.workspace = true
 unicode-normalization.workspace = true
 # The automation peer is a WebSocket client; tls.rs in librepaper-base installs
 # the AWS-LC provider this rustls handle names.
 tokio-tungstenite.workspace = true
 rustls.workspace = true
-fs2.workspace = true
 uuid.workspace = true
 tempfile.workspace = true
 zip.workspace = true
