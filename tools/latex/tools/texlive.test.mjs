@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const name = path.basename(process.cwd());
 if (process.env.FAKE_FAIL === name) process.exit(19);
+if (process.env.FAKE_NO_OUTPUT === name) process.exit(0);
 if (name === 'broken') {
   fs.writeFileSync('main.log', 'Undefined control sequence.\\nFile chapters/missing.tex not found.\\nFatal error occurred\\n');
   process.exit(1);
@@ -23,7 +24,7 @@ fs.writeFileSync('main.pdf', 'pdf');
 fs.writeFileSync('main.synctex.gz', 'synctex');
 `;
 
-async function fixture({ omitXeTeX = false } = {}) {
+async function fixture({ omitXeTeX = false, staleOutputs = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), "librepaper-texlive-test-"));
   const corpus = join(root, "corpus");
   const bin = join(root, "bin");
@@ -33,6 +34,11 @@ async function fixture({ omitXeTeX = false } = {}) {
     await writeFile(join(corpus, name, "main.tex"), `fixture ${name}\n`);
     await mkdir(join(corpus, name, "logs"));
     await writeFile(join(corpus, name, "logs", "texlive.log"), `old ${name} log\n`);
+  }
+  if (staleOutputs) {
+    await writeFile(join(corpus, "paper", "main.log"), "Output written on main.pdf (4 pages, stale).\\n");
+    await writeFile(join(corpus, "paper", "main.pdf"), "stale PDF");
+    await writeFile(join(corpus, "paper", "main.synctex.gz"), "stale SyncTeX");
   }
   await writeFile(join(corpus, "pages.json"), "old pages\n");
   for (const command of ["pdflatex", ...(!omitXeTeX ? ["xelatex"] : [])]) {
@@ -66,12 +72,13 @@ test("a missing engine, failed positive compile, or missing Unicode glyph preser
   for (const [options, env, expected] of [
     [{ omitXeTeX: true }, {}, /required TeX Live command not found: xelatex/],
     [{}, { FAKE_FAIL: "paper" }, /paper: pdflatex exited with status 19/],
+    [{ staleOutputs: true }, { FAKE_NO_OUTPUT: "paper" }, /paper: pdflatex produced no main.log/],
     [{}, { FAKE_ZERO_PAGES: "paper" }, /paper: pdflatex log has no positive page count/],
     [{}, { FAKE_MISSING_GLYPH: "1" }, /XeTeX reported a missing glyph/],
   ]) {
     const temp = await fixture(options);
     try {
-      await assert.rejects(compileCorpus({ corpus: temp.corpus, env: { ...temp.env, ...env } }), expected);
+      assert.throws(() => compileCorpus({ corpus: temp.corpus, env: { ...temp.env, ...env } }), expected);
       assert.equal(await readFile(join(temp.corpus, "pages.json"), "utf8"), "old pages\n");
       for (const name of fixtureNames) {
         assert.equal(await readFile(join(temp.corpus, name, "logs", "texlive.log"), "utf8"), `old ${name} log\n`);

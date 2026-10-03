@@ -49,7 +49,8 @@ with a `main.tex`; each has a distinct purpose:
   `node web/tests/browser/latex-browser.mjs --measure`. These are the parser's
   fixtures and `web/tests/unit/latex-log.mjs` runs over all of them.
 - `pages.json` — the page count a TeX Live on this machine gives each
-  browser-comparison document and positive local XeTeX sample. The browser
+  browser-comparison document. The TeX Live oracle also checks
+  `unicode-fonts` as a separate positive glyph-coverage sample; the browser
   harness compares only its explicit `article`, `paper`, `packages`, and
   `xetex` cases.
 - `broken/expected.json` — the diagnostics, per engine.

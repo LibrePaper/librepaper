@@ -6,6 +6,12 @@ repository or been removed. The old commands below describe how this record
 was produced; they are not runnable tools in this repository today. The values
 are not a claim about current releases or a current machine.
 
+The report first appears in this repository's initial commit
+(`13cdfee1e9968f0c586f86f01ef501394b6f93c6`), dated 2026-09-26. No separate
+measurement timestamp or upstream mirror revision was recorded, so that
+commit is repository provenance rather than proof of the exact run date or
+input release.
+
 The distributions were measured in headless Chromium on one machine. The
 values are bytes the mirror actually served, counted by
 `tools/latex/tools/serve.mjs` with Cache Storage emptied before each

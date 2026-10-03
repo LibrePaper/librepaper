@@ -8,7 +8,7 @@
 
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -26,9 +26,11 @@ const EXAMPLES = [
   { name: "broken", engine: "pdflatex", negative: true },
   { name: "xetex", engine: "xelatex" },
   { name: "unicode-fonts", engine: "xelatex", unicode: true },
-  // This package-set probe is intentionally outside pages.json/browser comparisons.
+  // This package-set probe is outside the browser comparison set.
   { name: "packages", engine: "pdflatex", bibtex: true },
 ];
+
+const GENERATED = /\.(?:aux|bbl|bcf|blg|fdb_latexmk|fls|log|out|pdf|run\.xml|synctex\.gz|toc|xdv)$/;
 
 export function pagesFromLog(log) {
   const written = log.match(/Output written on [^(]*\((\d+) pages?/);
@@ -94,6 +96,9 @@ function replaceAtomically(target, bytes) {
   }
 }
 
+// Compilation and outcome validation finish before the first replacement.
+// Each corpus file is renamed atomically; the set of renames is not a
+// cross-file filesystem transaction if the disk fails during publication.
 export function compileCorpus({ corpus = CORPUS, keepPdf = KEEP_PDF, env = process.env } = {}) {
   const stage = mkdtempSync(join(tmpdir(), "librepaper-texlive-"));
   const record = {};
@@ -103,8 +108,17 @@ export function compileCorpus({ corpus = CORPUS, keepPdf = KEEP_PDF, env = proce
       const source = join(corpus, example.name);
       const work = join(stage, example.name);
       mkdirSync(work, { recursive: true });
-      cpSync(source, work, { recursive: true, filter: (from) => !from.includes("/logs") });
-      rmSync(join(work, "logs"), { recursive: true, force: true });
+      cpSync(source, work, {
+        recursive: true,
+        filter: (from) => {
+          const rel = relative(source, from);
+          if (!rel) return true;
+          const parts = rel.split(sep);
+          if (parts.includes("logs") || GENERATED.test(basename(from))) return false;
+          if (example.name === "article" && basename(from) === "article.bib") return false;
+          return true;
+        },
+      });
       const result = compile(example, work, keepPdf, env);
       const log = join(work, "main.log");
       outputs.push({ target: join(source, "logs", "texlive.log"), bytes: readFileSync(log) });
