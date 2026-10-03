@@ -33,7 +33,7 @@ for (const format of ["latex", "typst", "markdown", "quarto", "html"]) {
   assert.ok(rows.includes("render-local"), `${format} keeps local tools status visible`);
   assert.ok(rows.includes("render-latex-engine"), `${format} keeps LaTeX engine selection visible`);
   assert.ok(rows.includes("render-latex-files"), `${format} keeps browser-wide LaTeX cache controls visible`);
-  assert.ok(rows.includes("render-typst-tool"), `${format} keeps Typst tool selection visible`);
+  assert.ok(!rows.includes("render-typst-tool") && !rows.includes("render-quarto-tool"), `${format} has no global choice of a tool that runs the document`);
   assert.ok(rows.includes("quarto-executable") && rows.includes("calepin-executable"), `${format} keeps both local integration sections visible`);
 }
 assert.ok(!renderRows({ format: "latex", mayEdit: false }).includes("render-folder"));
@@ -55,19 +55,20 @@ assert.match(latexFiles, /id="render-latex-files"/);
 assert.doesNotMatch(dialog, /render-folder/);
 
 // Build settings are global and do not probe on mount. Selecting a local tool
-// does probe. LaTeX engine, Typst tool, Markdown tool, and Quarto tool
-// selections all present the correct options.
+// does probe. LaTeX engine and Markdown tool
+// selections both present the correct options.
 assert.doesNotMatch(build, /\$effect\([^)]*probe/);
 assert.match(build, /void localBridge\.probe\(\{ force: true \}\)/);
 assert.match(build, /id: "render-latex-engine"/);
 assert.deepEqual([...build.matchAll(/value: "(\w+)", says/g)].map((match) => match[1]), [
   "automatic", "pdflatex", "xelatex",
-  "browser", "calepin",
   "browser", "pandoc", "quarto",
-  "browser", "quarto",
 ]);
 assert.doesNotMatch(build, /lualatex/i);
-for (const format of ["latex", "typst", "markdown", "quarto"]) assert.match(dialog, new RegExp(`<BuildSettings format="${format}"`));
+for (const format of ["latex", "markdown"]) assert.match(dialog, new RegExp(`<BuildSettings format="${format}"`));
+// Quarto and Calepin run the document, so whether they do is asked per
+// document in the View menu, never chosen once for every document here.
+for (const format of ["typst", "quarto"]) assert.doesNotMatch(dialog, new RegExp(`<BuildSettings format="${format}"`));
 
 // Integration command fields stay rendered; the companion and fresh settings
 // are required before edits apply, and responses are scoped to the connection.

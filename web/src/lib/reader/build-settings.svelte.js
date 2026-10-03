@@ -40,7 +40,7 @@ export function createBuildSettings({
     // through a callback to set values it had just worked out.
     latexOutput: "html",
     typstOutput: "html",
-    quartoPreviewMode: "quarto",
+    quartoPreviewMode: "markdown",
     typstPreviewMode: "typst",
   });
 
@@ -50,19 +50,14 @@ export function createBuildSettings({
 
   /// What a preference says about the outputs and preview modes.
   ///
-  /// The two paths differ, and deliberately. A preference *loaded* for a
-  /// format says what that format's preview mode is whether or not this
-  /// document is in it -- the Typst mode is read when a Typst file is opened
-  /// later. A preference *chosen* by hand only speaks for the document on
-  /// screen, because that is what the reader was looking at when they chose.
+  /// The two paths differ, and deliberately. The output format (HTML or PDF)
+  /// is read when a format is loaded for any document. The preview mode of an
+  /// executing tool follows the per-document permission, not a remembered
+  /// preference, and is set only when that permission is chosen by hand.
   function apply(preference, format, how) {
     if (format === "latex") state.latexOutput = outputOf(preference);
     if (format === "typst") state.typstOutput = outputOf(preference);
     if (how === "loaded") {
-      state.typstPreviewMode = preference.backend === "local" && preference.tool === "calepin" ? "calepin" : "typst";
-      if (preference.selection === "tool") {
-        state.quartoPreviewMode = preference.backend === "local" && preference.tool === "quarto" ? "quarto" : "markdown";
-      }
       return;
     }
     const local = preference.selection === "tool" && preference.backend === "local";

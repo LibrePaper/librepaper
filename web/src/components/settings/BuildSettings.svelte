@@ -22,15 +22,6 @@
       ],
       chosen: (preference) => preference.selection === "tool" && ["pdflatex", "xelatex"].includes(preference.engine) ? preference.engine : "automatic",
     },
-    typst: {
-      id: "render-typst-tool", title: "Render with", label: "Typst renderer",
-      description: "Calepin runs on this computer once local code execution is on for the document.",
-      choices: [
-        { value: "browser", says: "Browser", patch: browser("typst") },
-        { value: "calepin", says: "Calepin (local)", patch: local("calepin") },
-      ],
-      chosen: (preference) => preference.backend === "local" && preference.tool === "calepin" ? "calepin" : "browser",
-    },
     markdown: {
       id: "render-markdown-tool", title: "Markdown files", label: "Markdown renderer",
       description: "Pandoc and Quarto run on this computer through the companion.",
@@ -40,15 +31,6 @@
         { value: "quarto", says: "Quarto (local)", patch: local("quarto") },
       ],
       chosen: (preference) => preference.backend === "local" && ["pandoc", "quarto"].includes(preference.tool) ? preference.tool : "browser",
-    },
-    quarto: {
-      id: "render-quarto-tool", title: "Quarto files", label: "Quarto renderer",
-      description: "Quarto runs on this computer once local code execution is on for the document.",
-      choices: [
-        { value: "browser", says: "Browser", patch: browser("markdown") },
-        { value: "quarto", says: "Quarto (local)", patch: local("quarto") },
-      ],
-      chosen: (preference) => preference.backend === "local" && preference.tool === "quarto" ? "quarto" : "browser",
     },
   };
 

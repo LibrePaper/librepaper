@@ -165,12 +165,12 @@ export function createPreviewRenderer({
         const options = { ...(manual ? { manual: true } : {}) };
         if (htmlPreview) options.format = "html";
         const current = facts();
-        // Local execution is a choice this page session makes and never
-        // remembers, so a remembered preference for a tool that runs the
-        // document -- Quarto, Calepin -- is ignored until it is turned on. A
-        // Quarto document is then drawn as the Markdown it is, and a Typst
-        // one by this browser's own renderer, rather than by running code
-        // this reader never agreed to run.
+        // Local execution is remembered per (origin, user, document slug) in
+        // local storage, off by default, and forgotten on sign-out. A
+        // remembered preference for a tool that runs the document -- Quarto,
+        // Calepin -- is ignored until permission is granted. A Quarto document
+        // is then drawn as the Markdown it is, and a Typst one by this
+        // browser's own renderer, rather than by running code without consent.
         const executes = format === "quarto" || ["quarto", "calepin"].includes(current.buildPreferences.tool);
         const build = executes && !current.localExecution
           ? (format === "typst"

@@ -35,6 +35,7 @@
   import { prepareOfflineProject, preparedProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
+  import { granted, grant, revoke, isGrantKey } from "../lib/local-execution.js";
   import {
     SHELL_HEADERS,
     authHeaders,
@@ -281,6 +282,11 @@
     localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
   }
 
+  /// The execution permission key for this document.
+  function executionScope() {
+    return { origin: location.origin, user: buildUserId, slug: SLUG };
+  }
+
   /// The Quarto project binding this document already has, if any. This one
   /// really is format-specific: only a locally renderable project has one.
   function readQuartoBinding() {
@@ -289,13 +295,13 @@
   // Which engine draws each format, and what it produces, belong to the
   // build settings along with the preference they follow from; the aliases
   // are further down, where that module is built. What stays here is the one
-  // thing that is not a preference: running a document's code is a gesture
-  // this page session asks for and never remembers.
+  // thing that is not a preference: running a document's code is remembered
+  // per document in local storage.
   //
-  // Pairing grants the browser permission to ask, but never starts document
-  // code. Quarto and Calepin execution begin only with that gesture, and it
-  // is never remembered: a shared document arrives with local execution off,
-  // whatever build preference this browser happens to have kept for it.
+  // The permission is (origin, user, document slug). It is off by default
+  // for every document, including shared ones. Signing out clears all
+  // permissions. Pairing grants the browser permission to ask, but never
+  // starts document code on its own.
   let localExecution = $state(false);
 
   async function setLatexOutput(format) {
@@ -336,21 +342,25 @@
   // attribute on a button, which is to say it was invisible on a touch screen
   // and delayed on every other: a consequence of this size is asked about,
   // not hinted at.
-  const LOCAL_EXECUTION_WARNING = "Quarto and Calepin execution can run arbitrary code from this document on your computer.";
   let localExecutionConsent = $state(false);
 
   // The formats whose local tool runs the document rather than only typesets
-  // it. The option can be turned on with anything else open -- it is a choice
-  // about this session, not about this file -- but there is no companion to
-  // reach for until one of these is what is being read.
+  // it. The permission is remembered per document in this browser, and the
+  // companion is reached only when both permission and format match what is
+  // being read.
   const localExecutionRelevant = $derived(["quarto", "typst"].includes(sourceFormat) && mayEdit);
 
   // Turning it on, once the dialog has been answered: put this format's
-  // engine on the local tool and reach the companion. A companion that cannot
-  // be reached leaves the choice standing and says why in Diagnostics, rather
-  // than silently undoing what was just asked for.
+  // engine on the local tool, reach the companion, and remember the
+  // permission. A companion that cannot be reached leaves the choice standing
+  // and says why in Diagnostics, rather than silently undoing what was just
+  // asked for.
+  //
+  // Only the dialog grants. Every other caller, a retry button or the sync
+  // below, reaches this with a permission already on record or not at all.
   async function startLocalExecution() {
     localExecutionConsent = false;
+    if (!granted(executionScope())) return;
     localExecution = true;
     if (!localExecutionRelevant) return;
     if (sourceFormat === "quarto") {
@@ -361,10 +371,11 @@
     }
   }
 
-  // Turning it off puts the browser's own renderer back and stops whatever
-  // the companion was running for this document.
+  // Turning it off puts the browser's own renderer back, stops whatever
+  // the companion was running for this document, and revokes the permission.
   async function stopLocalExecution() {
     localExecution = false;
+    revoke(executionScope());
     if (sourceFormat === "quarto") await setQuartoPreviewMode("markdown");
     else if (sourceFormat === "typst") await setTypstPreviewMode("typst");
   }
@@ -374,10 +385,32 @@
     else localExecutionConsent = true;
   };
 
-  // The choice is about this session rather than about one file, so pointing
-  // the preview at a document in the other executable format puts the
-  // companion behind that one too, and checks that it is there, without
-  // asking again. Once the mode is set this settles: the guard reads it.
+  // Sync localExecution state with the stored permission. Called when
+  // buildUserId changes, and when storage events arrive from other tabs.
+  function syncLocalExecution() {
+    const should = granted(executionScope());
+    if (should && !localExecution) void startLocalExecution();
+    else if (!should && localExecution) void stopLocalExecution();
+  }
+
+  // When the signed-in identity resolves or changes, sync the permission.
+  $effect(() => {
+    buildUserId;
+    untrack(() => syncLocalExecution());
+  });
+
+  // When another tab grants or revokes the permission, sync this tab.
+  $effect(() => {
+    function handleStorage(e) {
+      if (isGrantKey(e.key) || e.key === null) untrack(() => syncLocalExecution());
+    }
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  });
+
+  // Pointing the preview at a document in the other executable format puts
+  // the companion behind that one too, and checks that it is there, without
+  // asking again. The permission belongs to this document, not the session.
   $effect(() => {
     if (!localExecution || !localExecutionRelevant) return;
     const running = sourceFormat === "quarto" ? quartoPreviewMode === "quarto" : typstPreviewMode === "calepin";
@@ -3773,13 +3806,11 @@
   <hr class="hr my-1" />
   {@render previewItems()}
   {#if localExecutionRelevant}
-    <!-- Off for every document every time it is opened, including one
-         somebody else shared: what a document may run on this computer is
-         answered by the person sitting at it, in this session, and is never
-         remembered or carried by the document. Offered only where it means
-         something: a LaTeX or HTML document has no local tool that runs it,
-         so the item would warn about arbitrary code execution and then do
-         nothing at all. -->
+    <!-- Permission is per (origin, user, document slug), remembered in this
+         browser, and off by default for every document. Signing out revokes
+         all permissions. Offered only where it means something: a LaTeX or
+         HTML document has no local tool that runs it, so the item would warn
+         about arbitrary code execution and then do nothing at all. -->
     <div class="menu-section-label">Local execution</div>
     <Menu.Item value="local-execution" class="menuitem">
       <span class="menuitem-check">{localExecution ? "✓" : ""}</span>Execute code locally
@@ -4306,8 +4337,12 @@
 </Modal>
 
 <Modal bind:open={localExecutionConsent} title="Run this document's code on this computer?"
-  description="{LOCAL_EXECUTION_WARNING} Only turn this on for a document whose authors you trust."
-  confirm={{ label: "OK", onclick: () => void startLocalExecution() }}></Modal>
+  confirm={{ label: "Run code on this computer", onclick: () => { grant(executionScope()); void startLocalExecution(); } }}>
+  <p class="execution-warning">Quarto or Calepin will run the code in this document on your computer.</p>
+  <p>Code in this document will run with your account's access to your files, network, and credentials. Anyone who can edit this document now or later can change that code, and it will run the next time the preview builds.</p>
+  <p>Only allow this if you trust the document's owner and everyone who can edit it.</p>
+  <p>This permission is remembered for this document in this browser until you turn it off or sign out.</p>
+</Modal>
 
 <Modal bind:open={timeline.state.restoring} title="Restore this version?"
   description={restoreMoved
@@ -4349,6 +4384,7 @@
 <Toasts />
 
 <style>
+  .execution-warning { color: var(--color-warning-text); font-weight: 600; }
   .nav-document {
     display: block;
     max-width: min(38vw, 20rem);

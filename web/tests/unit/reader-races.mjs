@@ -557,11 +557,10 @@ console.log("reader-races: all checks passed");
   assert.deepEqual(interrupted.at(-1), { selection: "tool", backend: "local", tool: "calepin" });
 }
 
-// What a preference says about the outputs and the preview modes, and the one
-// way the two paths differ: a preference *loaded* for a format speaks for that
-// format whether or not the document is in it -- the Typst mode is read when a
-// Typst file is opened later -- while one *chosen* by hand speaks only for the
-// document the reader was looking at when they chose it.
+// What a preference says about the outputs and the preview modes. A loaded
+// preference never puts a tool that runs the document in charge: Quarto and
+// Calepin follow the per-document permission, which is chosen by hand, and a
+// chosen preference speaks only for the document on screen.
 {
   const calepin = { selection: "tool", backend: "local", tool: "calepin", output: "pdf" };
   const settings = createBuildSettings({
@@ -571,11 +570,13 @@ console.log("reader-races: all checks passed");
     latex: { configure: () => {}, cancel: () => {}, setSettings: () => {} },
   });
 
-  // Loading a Typst preference while a Markdown document is on screen still
-  // says what Typst will do.
-  settings.follow({ format: "markdown", user: "anonymous" });
-  assert.equal(settings.state.typstPreviewMode, "calepin", "a loaded preference speaks for its format");
-  assert.equal(settings.state.quartoPreviewMode, "markdown", "and for Quarto, when a tool was chosen");
+  // A remembered local preference, loaded for either format, leaves both on
+  // the browser's own renderer.
+  for (const format of ["markdown", "typst", "quarto"]) {
+    settings.follow({ format, user: "anonymous" });
+    assert.equal(settings.state.typstPreviewMode, "typst", "a loaded preference never starts Calepin");
+    assert.equal(settings.state.quartoPreviewMode, "markdown", "a loaded preference never starts Quarto");
+  }
 
   // Choosing one while a Markdown document is on screen says nothing about
   // Typst, because that is not what the reader was looking at.

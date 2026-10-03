@@ -35,5 +35,6 @@ If `librepaper status` does not find Calepin, install it or add it to PATH; a cu
 
 - Calepin runs with your user account: your files, installed packages and the network. LibrePaper does not sandbox it.
 - Pairing asks once per site in a native dialog. Pairing alone runs nothing.
-- Each document starts Calepin separately, after a warning that its code runs on your computer.
-- Anyone with editor access can change that code, so start Calepin only on documents whose editors you trust.
+- Every document starts on the browser preview. Calepin runs only after you choose View > Execute code locally and accept the warning, one document at a time.
+- Anyone with editor access can change that code at any time, so allow it only on documents whose owner and editors you trust.
+- The permission is remembered for that document in this browser until you turn it off or sign out.
