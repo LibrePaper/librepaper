@@ -193,7 +193,7 @@ function sourceHistory(n, until) {
       ...inSource(`parallel-history-${at}`, new Date(firstAt + (at - 1) * 1000).toISOString()),
       created: new Date(firstAt + (at - 1) * 1000).toISOString(),
     }));
-    const answers = await wentAtMany("parallel-history", traced, labels);
+    const { points: answers } = await wentAtMany("parallel-history", traced, labels);
     check("parallel comments share one request per label beyond the bounded cache window",
       answers.every((answer) => answer?.sha === labels[70].sha)
         && fetched.size === 75
@@ -219,7 +219,34 @@ function sourceHistory(n, until) {
     reads++;
     return "before the passage of interest after";
   }, () => false);
-  check("a stale passage batch stops after its current projection", reads === 1 && result[0] === null);
+  check("a stale passage batch stops after its current projection", reads === 1 && result.points[0] === null);
+}
+
+{
+  const frontierOne = inSource("healthy-frontier", "2026-09-05T09:59:00Z");
+  const frontierTwo = inSource("transient-frontier", "2026-09-05T09:59:00Z");
+  const traces = [frontierOne, frontierTwo];
+  const labels = [0, 1, 2].map((at) => ({
+    sha: String(at).padStart(64, "0"),
+    at: new Date(Date.UTC(2026, 8, 5, 10, 0, at)).toISOString(),
+  }));
+  let failOnce = true;
+  const atSource = async (_slug, sha) => {
+    if (sha === `${MOMENT}transient-frontier` && failOnce) {
+      failOnce = false;
+      throw new Error("temporary history failure");
+    }
+    if (sha.startsWith(MOMENT)) return "before the passage of interest after";
+    return Number(sha) < 1 ? "before the passage of interest after" : "before after";
+  };
+  const first = await wentAtMany("slug", traces, labels, {}, atSource);
+  check("one unreadable frontier marks only that comment incomplete and keeps a healthy loss point",
+    first.points[0]?.sha === labels[1].sha && first.points[1] === null
+      && first.incomplete[0] === false && first.incomplete[1] === true);
+  const recovered = await wentAtMany("slug", traces, labels, {}, atSource);
+  check("the transient frontier can recover without changing the comment batch",
+    recovered.points.every((point) => point?.sha === labels[1].sha)
+      && recovered.incomplete.every((value) => value === false));
 }
 
 /* ------------------------------------------------------------ the answer */

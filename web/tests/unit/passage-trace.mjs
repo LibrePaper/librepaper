@@ -34,10 +34,10 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
     loadLabels,
     passages: {
       tracedBy: realPassages.tracedBy,
-      wentAtMany: async (_slug, traced) => traced.map((item) => {
+      wentAtMany: async (_slug, traced) => ({ points: traced.map((item) => {
         calls.push(`went:${item.selector.exact}`);
         return { sha: "sha-1" };
-      }),
+      }), incomplete: traced.map(() => false) }),
       sourceTextAt: async () => "old source",
       replacementAt: async () => "what stands there now",
       ...passages,
@@ -67,7 +67,7 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
       wentAtMany: async (_slug, traced) => {
         batches++;
         assert.deepEqual(traced.map((item) => item.selector.exact), ["a", "b"]);
-        return [{ sha: "sha-a" }, { sha: "sha-b" }];
+        return { points: [{ sha: "sha-a" }, { sha: "sha-b" }], incomplete: [false, false] };
       },
     },
   });
@@ -75,6 +75,31 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   assert.equal(batches, 1, "all orphan comments enter one history batch");
   assert.deepEqual(trace.state.went, { a: { sha: "sha-a" }, b: { sha: "sha-b" } });
   assert.deepEqual(calls, [], "the per-comment fallback is not also called");
+}
+
+// A partial history response preserves healthy points but makes the same
+// unchanged input eligible for another attempt.
+{
+  let state = { source: 1, visible: "visible" };
+  let batches = 0;
+  const { trace } = build({
+    current: () => state,
+    passages: {
+      wentAtMany: async (_slug, traced) => {
+        batches++;
+        return {
+          points: traced.map((item, index) => index === 0 || batches > 1 ? { sha: `sha-${item.selector.exact}` } : null),
+          incomplete: traced.map((_, index) => index === 1 && batches === 1),
+        };
+      },
+    },
+  });
+  const comments = [orphan("a"), orphan("b")];
+  await trace.trace({ comments, tree, labels: [{ sha: "sha-1" }] });
+  assert.deepEqual(trace.state.went, { a: { sha: "sha-a" } }, "the healthy result is still visible");
+  await trace.trace({ comments, tree, labels: [{ sha: "sha-1" }] });
+  assert.equal(batches, 2, "the incomplete batch is retried for unchanged source/comments");
+  assert.deepEqual(trace.state.went, { a: { sha: "sha-a" }, b: { sha: "sha-b" } });
 }
 
 // A comment that still anchors is not walked, and neither is one about the
@@ -116,7 +141,7 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
     passages: {
       wentAtMany: async (_slug, traced) => {
         state = { source: 2, visible: "visible" };
-        return traced.map(() => ({ sha: "sha-1" }));
+        return { points: traced.map(() => ({ sha: "sha-1" })), incomplete: traced.map(() => false) };
       },
     },
   });
@@ -135,7 +160,7 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
     passages: {
       wentAtMany: async (_slug, traced) => {
         if (first) { first = false; await held; }
-        return traced.map((item) => ({ sha: `sha-${item.selector.exact}` }));
+        return { points: traced.map((item) => ({ sha: `sha-${item.selector.exact}` })), incomplete: traced.map(() => false) };
       },
     },
   });
@@ -189,7 +214,7 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   const { trace } = build({
     current: () => state,
     passages: {
-      wentAtMany: async (_slug, traced) => traced.map(() => ({ sha: "lost-at" })),
+      wentAtMany: async (_slug, traced) => ({ points: traced.map(() => ({ sha: "lost-at" })), incomplete: traced.map(() => false) }),
       replacementAt: async () => { replacements++; throw new Error("comparison unavailable"); },
     },
   });
