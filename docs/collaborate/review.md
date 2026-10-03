@@ -10,7 +10,7 @@ from the terminal; see [Export](../cli.html#export).
 
 ## Response to reviewers
 
-The response format groups by reviewer, numbered within each, with the remark, the passage as that reviewer saw it, what became of it, and the thread underneath as the answer. It can be limited to the comments made since a given checkpoint, covering only what is new.
+The response can be limited to the comments made since a given checkpoint, covering only what is new.
 
 
 ```markdown
