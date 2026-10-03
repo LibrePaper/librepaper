@@ -1,9 +1,16 @@
 # Isolated backup recovery drill
 
-`drill.sh` exercises the existing `librepaper admin backup create` and
-`restore` path against an explicitly named synthetic deployment. It seeds
-seven days of generated activity so the source contains document updates and
-assets, creates a backup, encrypts the bundle with the operator's age public
+`drill.sh` exercises the existing `librepaper admin backup` and `admin restore`
+path against an explicitly named synthetic deployment. It publishes five
+tutorial projects through the real server, compacts each to a snapshot, then
+republishes each owned slug twice with a format-safe source comment. Each
+whole-project replacement writes a durable source update and history label.
+The comments are source-only markers; the drill makes no claim that rendered
+output changes. Before creating a backup it requires at least two durable
+updates and two history labels per project, at least one retained snapshot per
+project, and non-empty update payloads. This is a bounded sequence of edits,
+not a simulation of seven days or elapsed time. It creates a backup, encrypts
+the bundle with the operator's age public
 recipient, decrypts it with the operator-managed identity, restores into a
 separate empty PostgreSQL database and data directory, and compares the
 source-history signature and asset references. It also checks the database
@@ -49,9 +56,10 @@ the decrypted backup staging directory and tar files but retains the
 encrypted `.age` bundle and the two data directories. Without it, the whole
 temporary directory is removed at exit.
 
-The drill's SQL signature compares document and update counts, total update
-payload bytes, an ordered MD5 over every update payload, asset rows and their
-keys/digests/lengths, snapshot count, and label count. Matching signatures
+The drill's SQL signature compares document and update counts, minimum updates,
+labels, and retained snapshots per document, total update payload bytes, an
+ordered MD5 over every update payload, asset rows and their keys/digests/lengths,
+snapshot count, and label count. Matching signatures
 show that source-history rows and their payloads were restored byte-for-byte;
 the object checks prove the referenced stored objects survived encryption,
 decryption, and restore. This synthetic drill is a recovery-path check, not a

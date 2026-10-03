@@ -2,12 +2,9 @@
 set -euo pipefail
 
 : "${SCOOP_BUCKET_GITHUB_TOKEN:?SCOOP_BUCKET_GITHUB_TOKEN is required}"
+source "$(dirname "${BASH_SOURCE[0]}")/release-updater-common.sh"
 
-tag="${LIBREPAPER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
-if [[ ! "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-  echo "expected a stable v-prefixed semver release tag, got: ${tag:-<empty>}" >&2
-  exit 1
-fi
+tag="$(release_updater_validate_tag "${LIBREPAPER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}")"
 
 version="${tag#v}"
 archive="librepaper-x86_64-pc-windows-msvc.zip"
@@ -15,26 +12,9 @@ release_url="https://github.com/LibrePaper/librepaper/releases/download/${tag}"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "${tmpdir}"' EXIT
 
-curl -fsSL "${release_url}/${archive}" -o "${tmpdir}/${archive}"
-curl -fsSL "${release_url}/${archive}.sha256" -o "${tmpdir}/${archive}.sha256"
-declared="$(awk 'NR == 1 { print $1 }' "${tmpdir}/${archive}.sha256")"
-if ! [[ "${declared}" =~ ^[[:xdigit:]]{64}$ ]]; then
-  echo "invalid SHA-256 checksum for ${archive}" >&2
-  exit 1
-fi
-if command -v sha256sum >/dev/null 2>&1; then
-  actual="$(sha256sum "${tmpdir}/${archive}" | awk '{print $1}')"
-else
-  actual="$(shasum -a 256 "${tmpdir}/${archive}" | awk '{print $1}')"
-fi
-if [[ "${actual,,}" != "${declared,,}" ]]; then
-  echo "SHA-256 mismatch for ${archive}" >&2
-  exit 1
-fi
+actual="$(release_updater_fetch_verified_asset "${tag}" "${archive}" "${tmpdir}")"
 
-export GIT_CONFIG_COUNT=1
-export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
-export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${SCOOP_BUCKET_GITHUB_TOKEN}" | base64 | tr -d '\n')"
+release_updater_configure_github_auth "${SCOOP_BUCKET_GITHUB_TOKEN}"
 bucket_dir="${tmpdir}/scoop-bucket"
 git clone https://github.com/vincentarelbundock/scoop-bucket.git "${bucket_dir}"
 cd "${bucket_dir}"
@@ -74,13 +54,5 @@ cat > bucket/librepaper.json <<MANIFEST
 }
 MANIFEST
 
-git add bucket/librepaper.json
-if git diff --cached --quiet; then
-  echo "Scoop manifest already up to date"
-  exit 0
-fi
-
-git config user.name "github-actions[bot]"
-git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git commit -m "Update librepaper manifest to ${tag}"
-git push origin HEAD:main
+release_updater_publish_file bucket/librepaper.json \
+  "Scoop manifest already up to date" "Update librepaper manifest to ${tag}" main

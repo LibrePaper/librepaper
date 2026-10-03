@@ -2,49 +2,23 @@
 set -euo pipefail
 
 : "${HOMEBREW_TAP_GITHUB_TOKEN:?HOMEBREW_TAP_GITHUB_TOKEN is required}"
+source "$(dirname "${BASH_SOURCE[0]}")/release-updater-common.sh"
 
-tag="${LIBREPAPER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
-if [[ ! "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-  echo "expected a stable v-prefixed semver release tag, got: ${tag:-<empty>}" >&2
-  exit 1
-fi
+tag="$(release_updater_validate_tag "${LIBREPAPER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}")"
 
 version="${tag#v}"
 release_url="https://github.com/LibrePaper/librepaper/releases/download/${tag}"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "${tmpdir}"' EXIT
 
-sha256_for() {
-  local asset="$1" archive="${tmpdir}/$1" checksum="${tmpdir}/$1.sha256" declared actual
-  curl -fsSL "${release_url}/${asset}" -o "${archive}"
-  curl -fsSL "${release_url}/${asset}.sha256" -o "${checksum}"
-  declared="$(awk 'NR == 1 { print $1 }' "${checksum}")"
-  if ! [[ "${declared}" =~ ^[[:xdigit:]]{64}$ ]]; then
-    echo "invalid SHA-256 checksum for ${asset}" >&2
-    return 1
-  fi
-  if command -v sha256sum >/dev/null 2>&1; then
-    actual="$(sha256sum "${archive}" | awk '{print $1}')"
-  else
-    actual="$(shasum -a 256 "${archive}" | awk '{print $1}')"
-  fi
-  if [[ "${actual,,}" != "${declared,,}" ]]; then
-    echo "SHA-256 mismatch for ${asset}" >&2
-    return 1
-  fi
-  printf '%s' "${actual}"
-}
-
-linux_x86="$(sha256_for librepaper-x86_64-unknown-linux-musl.tar.xz)"
-linux_arm="$(sha256_for librepaper-aarch64-unknown-linux-musl.tar.xz)"
-mac_x86="$(sha256_for librepaper-x86_64-apple-darwin.tar.xz)"
-mac_arm="$(sha256_for librepaper-aarch64-apple-darwin.tar.xz)"
+linux_x86="$(release_updater_fetch_verified_asset "${tag}" librepaper-x86_64-unknown-linux-musl.tar.xz "${tmpdir}")"
+linux_arm="$(release_updater_fetch_verified_asset "${tag}" librepaper-aarch64-unknown-linux-musl.tar.xz "${tmpdir}")"
+mac_x86="$(release_updater_fetch_verified_asset "${tag}" librepaper-x86_64-apple-darwin.tar.xz "${tmpdir}")"
+mac_arm="$(release_updater_fetch_verified_asset "${tag}" librepaper-aarch64-apple-darwin.tar.xz "${tmpdir}")"
 
 # Put the token in Git's environment config rather than a URL or command line,
 # so it cannot appear in clone output or process arguments.
-export GIT_CONFIG_COUNT=1
-export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
-export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${HOMEBREW_TAP_GITHUB_TOKEN}" | base64 | tr -d '\n')"
+release_updater_configure_github_auth "${HOMEBREW_TAP_GITHUB_TOKEN}"
 tap_dir="${tmpdir}/homebrew-tap"
 git clone https://github.com/vincentarelbundock/homebrew-tap.git "${tap_dir}"
 cd "${tap_dir}"
@@ -93,13 +67,5 @@ class Librepaper < Formula
 end
 FORMULA
 
-git add Formula/librepaper.rb
-if git diff --cached --quiet; then
-  echo "Homebrew formula already up to date"
-  exit 0
-fi
-
-git config user.name "github-actions[bot]"
-git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git commit -m "Update librepaper formula to ${tag}"
-git push origin HEAD:main
+release_updater_publish_file Formula/librepaper.rb \
+  "Homebrew formula already up to date" "Update librepaper formula to ${tag}" main

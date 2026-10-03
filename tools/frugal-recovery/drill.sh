@@ -49,7 +49,8 @@ cleanup() {
 trap cleanup EXIT
 mkdir -m 700 "$work/source-data" "$work/restored-data"
 
-# Populate a fresh deployment with tutorial documents. No production data or
+# Populate a fresh deployment with tutorial documents, snapshot each one, and
+# record two source revisions after that baseline. No production data or
 # existing deployment directory is read.
 node "$(dirname "$0")/fixture.mjs" \
   "$LIBREPAPER_BIN" \
@@ -61,12 +62,26 @@ signature_sql="SELECT jsonb_build_object(
   'updates',(SELECT count(*) FROM document_updates),
   'update_payload_bytes',(SELECT COALESCE(sum(octet_length(update_bytes)),0) FROM document_updates),
   'update_payload_md5',(SELECT md5(COALESCE(string_agg(encode(update_bytes,'hex'),'' ORDER BY document_id,update_sequence),'')) FROM document_updates),
+  'minimum_document_updates',(SELECT COALESCE(min(n),0) FROM (SELECT d.id,count(u.document_id) AS n FROM documents d LEFT JOIN document_updates u ON u.document_id=d.id GROUP BY d.id) per_document),
+  'minimum_document_snapshots',(SELECT COALESCE(min(n),0) FROM (SELECT d.id,count(s.document_id) AS n FROM documents d LEFT JOIN document_snapshots s ON s.document_id=d.id AND s.delete_after IS NULL GROUP BY d.id) per_document),
   'assets',(SELECT count(*) FROM document_assets),
   'asset_refs',(SELECT md5(COALESCE(string_agg(storage_key||':'||encode(digest,'hex')||':'||byte_length::text,'|' ORDER BY storage_key),'')) FROM document_assets),
   'snapshots',(SELECT count(*) FROM document_snapshots),
-  'labels',(SELECT count(*) FROM document_labels)
+  'labels',(SELECT count(*) FROM document_labels),
+  'minimum_document_labels',(SELECT COALESCE(min(n),0) FROM (SELECT d.id,count(l.id) AS n FROM documents d LEFT JOIN document_labels l ON l.document_id=d.id GROUP BY d.id) per_document)
 )::text"
 psql "$LIBREPAPER_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 -c "$signature_sql" >"$work/source-signature"
+node --input-type=module - "$work/source-signature" <<'JSHISTORY'
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const signature=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+assert.equal(Number(signature.documents),5,'the source contains all five tutorial projects');
+assert.ok(Number(signature.minimum_document_updates)>=2,'each project has at least two durable source edits');
+assert.ok(Number(signature.minimum_document_labels)>=2,'each project has at least two recorded history labels');
+assert.ok(Number(signature.minimum_document_snapshots)>=1,'each project has a retained compaction snapshot');
+assert.ok(Number(signature.update_payload_bytes)>0,'the recovery history contains non-empty update payloads');
+console.log('fixture history verified: five projects, each with a snapshot and two edits/labels');
+JSHISTORY
 
 "$LIBREPAPER_BIN" admin backup \
   --database-url "$LIBREPAPER_SOURCE_URL" \
