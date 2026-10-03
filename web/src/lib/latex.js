@@ -734,7 +734,12 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
             if (token.cancelled || biberAbort.signal.aborted) throw supersededError();
             return backend.runBiber(request, {
               base: absoluteBase(), release: releaseEntry, signal: biberAbort.signal,
-              onProgress: progress => { if (!token.cancelled) statusStore.set({ progress }); },
+              // The Biber promise can keep running after this job times out.
+              // Its late progress must not overwrite the status of a queued
+              // compile that has since become current.
+              onProgress: progress => {
+                if (!token.cancelled && !biberAbort.signal.aborted) statusStore.set({ progress });
+              },
             });
           })(), deadlineAt, "browser Biber", () => { biberTimedOut = true; biberAbort.abort(); }, token.abort.signal);
         } catch (error) {

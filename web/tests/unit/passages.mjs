@@ -166,6 +166,41 @@ function sourceHistory(n, until) {
   }
 }
 
+{
+  const oldFetch = globalThis.fetch;
+  const fetched = new Map();
+  const firstAt = Date.UTC(2026, 8, 5, 10, 0, 0);
+  const labels = Array.from({ length: 90 }, (_, at) => ({
+    sha: String(at).padStart(64, "0"),
+    at: new Date(firstAt + at * 1000).toISOString(),
+  }));
+  globalThis.fetch = async (url) => {
+    const sha = decodeURIComponent(new URL(String(url), "https://example.test").pathname.split("/history/").at(-1));
+    fetched.set(sha, (fetched.get(sha) || 0) + 1);
+    const index = Number(sha);
+    const text = sha.startsWith("frontier:") || index < 70
+      ? "before the passage of interest after" : "before after";
+    return {
+      ok: true,
+      json: async () => ({
+        files: { "main.md": { kind: "text", id: "file-1" } },
+        texts: { "main.md": text },
+      }),
+    };
+  };
+  try {
+    const traced = inSource("parallel-history", "2026-09-05T09:59:00Z");
+    const answers = await Promise.all(Array.from({ length: 3 }, () =>
+      wentAt("parallel-history", traced, labels)));
+    check("parallel comments share one request per label beyond the bounded cache window",
+      answers.every((answer) => answer?.sha === labels[70].sha)
+        && fetched.size === 73
+        && [...fetched.values()].every((count) => count === 1));
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+}
+
 /* ---------------------------------------------------------- source anchors */
 
 {

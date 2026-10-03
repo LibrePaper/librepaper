@@ -375,6 +375,40 @@ function nextProject() {
   assert.equal((await queued).ok, true, "a queued compile configures a fresh worker");
 }
 
+// A Biber callback may report progress after its per-job wait has timed out.
+// That late callback belongs to the expired job and must not replace the
+// status of the queued compile.
+{
+  latex.at("/deadline-biber-progress/");
+  const previousWorker = worker();
+  let reportLateProgress;
+  latex._testing.inject({
+    worker: FakeWorker,
+    fetch: fakeFetch,
+    deadlineMs: 200,
+    biber: { runBiber: (_request, { onProgress }) => {
+      reportLateProgress = onProgress;
+      return new Promise(() => {});
+    } },
+  });
+  latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
+  FakeWorker.nextTexReplies = [{
+    status: 0, pdf: PDF, synctex: null,
+    log: "Please (re)run Biber on the file: main\n",
+    outputs: { "main.bcf": enc.encode('<bcf:controlfile><bcf:datasource type="file">refs.bib</bcf:datasource></bcf:controlfile>') },
+  }];
+  const expired = latex.compile(tree("main.tex", "biber timeout", { "refs.bib": enc.encode("@book{x,}") }));
+  const firstWorker = await untilWorker(previousWorker);
+  await until(() => reportLateProgress !== undefined);
+  const queued = latex.compile(tree("main.tex", "after biber timeout"));
+  assert.equal((await expired).failure.kind, "timeout");
+  assert.equal(firstWorker.dead, false, "the reusable TeX worker is not retired for a Biber timeout");
+  assert.equal((await queued).ok, true, "the queued compile finishes after Biber times out");
+  assert.equal(latex.status().progress, null, "the completed queued job has no stale progress");
+  reportLateProgress({ done: 9, total: 10, scope: "expired Biber" });
+  assert.equal(latex.status().progress, null, "late Biber progress cannot overwrite the newer job status");
+}
+
 // The Biber asset waiter is scoped to its compile: canceling while it is
 // waiting aborts that waiter and never starts a Biber worker later.
 {

@@ -9,8 +9,8 @@
 // newer one.
 //
 // Three things can make a walk stale: a newer walk, a change to the source,
-// and a change to the visible text. All three are checked between every
-// request, which is why `now()` is asked for the current pair rather than
+// and a change to the visible text. All three are checked between async
+// steps, which is why `now()` is asked for the current pair rather than
 // handed one: a walk that started a second ago has to compare itself against
 // what is true at the moment it is about to write.
 
@@ -57,24 +57,35 @@ export function createPassageTrace({
       const state_ = now();
       return !stale() && state_.source === source && state_.visible === visible;
     };
-    for (const comment of lost) {
-      if (!current()) return;
+    // Walk comments together so their ordered label scans share the bounded
+    // source-response cache instead of each walk evicting the prior one's
+    // history before the next comment asks for it.
+    const answers = await Promise.all(lost.map(async (comment) => {
+      if (!current()) return null;
       try {
         const traced = passages.tracedBy(comment, paths());
         const point = await passages.wentAt(slug, traced, list, keyHeaders(key));
-        if (point) went[comment.id] = point;
-        if (!traced?.frontier) continue;
+        if (!current()) return null;
+        if (!traced?.frontier) return { id: comment.id, point, replacement: null };
         const oldText = await passages.sourceTextAt(
           slug, MOMENT + traced.frontier, { file_id: traced.file_id }, keyHeaders(key),
         );
+        if (!current()) return null;
         const against = traced.path ? tree.texts[traced.path] ?? null : null;
         const replacement = await passages.replacementAt(oldText, against, traced.selector);
-        if (replacement !== null) replacements[comment.id] = replacement;
+        return { id: comment.id, point, replacement };
       } catch {
         // A missing label cannot establish a replacement. The walk is
         // forgotten rather than recorded, so the next one tries again.
         if (!stale()) last = null;
+        return null;
       }
+    }));
+    if (!current()) return;
+    for (const answer of answers) {
+      if (!answer) continue;
+      if (answer.point) went[answer.id] = answer.point;
+      if (answer.replacement !== null) replacements[answer.id] = answer.replacement;
     }
     if (current()) {
       state.went = went;

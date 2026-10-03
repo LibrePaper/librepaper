@@ -150,16 +150,10 @@ export async function wentAt(slug, traced, labels, headers = {}, atSource = sour
 
   // Every label supplies the name this same file had at that moment.
   const selector = traced.selector;
-  const textBySha = new Map();
-  const read = (sha) => {
-    if (!textBySha.has(sha)) textBySha.set(sha, atSource(slug, sha, { file_id: traced.file_id }, headers));
-    return textBySha.get(sha);
-  };
-
   // Read the comment's own recorded position first. Falling back to the
   // oldest label would lose passages introduced later in the
   // document's life.
-  const ownText = await read(MOMENT + traced.frontier);
+  const ownText = await atSource(slug, MOMENT + traced.frontier, { file_id: traced.file_id }, headers);
   if (typeof ownText !== "string" || !holds(ownText, selector)) return null;
 
   // A comment's own frontier is not itself in the label manifest. Its
@@ -169,10 +163,15 @@ export async function wentAt(slug, traced, labels, headers = {}, atSource = sour
   if (!Number.isFinite(created)) return null;
   const after = labels.filter((point) => (Date.parse(point.at) || 0) >= created);
   if (!after.length) return null;
-  const newestText = await read(after.at(-1).sha);
+  const newest = after.at(-1);
+  const newestText = await atSource(slug, newest.sha, { file_id: traced.file_id }, headers);
   if (typeof newestText !== "string" || holds(newestText, selector)) return null;
   for (const point of after) {
-    const text = await read(point.sha);
+    // Retain only the newest response. A per-walk map grows with the full
+    // label history; the shared bounded source cache handles ordinary reuse.
+    const text = point.sha === newest.sha
+      ? newestText
+      : await atSource(slug, point.sha, { file_id: traced.file_id }, headers);
     if (typeof text !== "string") return null;
     if (!holds(text, selector)) return point;
   }
