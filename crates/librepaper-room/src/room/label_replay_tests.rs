@@ -1,5 +1,5 @@
 //! Proves §7.2's retry contract is real for `take_label`, the command
-//! `crates/librepaper/src/server/mcp/operations.rs`'s `mcp_label` calls.
+//! `crates/librepaper-server/src/server/mcp/operations.rs`'s `mcp_label` calls.
 //!
 //! `Sequencer::command_reporting_replay` and `Room::command_reporting_replay`
 //! already exist and are exercised by other command tests through the plain

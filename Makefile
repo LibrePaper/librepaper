@@ -95,7 +95,7 @@ test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@echo "test: passed -- NOT everything. Still to run:"
 	@echo "  tools/suite browser                       the components in a real chromium"
 	@echo "  LIBREPAPER_TEST_POSTGRES_URL=... \\"
-	@echo "    cargo test -p librepaper-engine -p librepaper --lib -- --ignored --test-threads=1"
+	@echo "    cargo test -p librepaper-engine -p librepaper-room -p librepaper-server --lib -- --ignored --test-threads=1"
 	@echo "  make check                                test + browser + reader smoke in one go"
 
 # Keep runner discovery separate from runner execution: a failing nextest run

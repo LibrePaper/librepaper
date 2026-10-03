@@ -86,7 +86,7 @@ try {
     if (url.pathname === "/api/documents/paper/share") return json(response, {links:{}});
     if (url.pathname === "/api/documents/paper/history") {
       // The manifest wire is `document_labels` now: `label_wire` in
-      // crates/librepaper/src/server/history.rs names each row
+      // crates/librepaper-server/src/server/history.rs names each row
       // `{sha, sequence, at, by, label, reason, tree_sha, frontier,
       // archive_status}` inside a `labels` array, not `checkpoints` (old name). There is
       // no per-row `changed` any more (a manifest is a moment, not a diff;

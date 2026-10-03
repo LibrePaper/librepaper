@@ -71,7 +71,7 @@ suite_smoke() {
 }
 
 suite_external() {
-	cargo test -p librepaper quarto -- --ignored --nocapture --test-threads=1 \
+	cargo test -p librepaper-companion quarto -- --ignored --nocapture --test-threads=1 \
 		--skip quarto_project_scope_collects_pages_and_nested_web_resources \
 		--skip quarto_book_scope_keeps_chapter_navigation
 }

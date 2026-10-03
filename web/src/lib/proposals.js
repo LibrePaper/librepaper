@@ -15,7 +15,7 @@
 import { encodeFrontiers, decodeFrontiers } from "loro-crdt";
 
 // How much untouched text may sit between two changes before they stop being
-// one decision. This must match crates/librepaper/src/document/hunks.rs:SAME_DECISION_WITHIN
+// one decision. This must match crates/librepaper-document/src/document/hunks.rs:SAME_DECISION_WITHIN
 // or a reviewer's decision will revert the wrong hunks.
 const SAME_DECISION_WITHIN = 8;
 

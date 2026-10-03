@@ -14,7 +14,7 @@
 //! but differs in a way that matters, so it stays where it is rather than
 //! folding in here:
 //!
-//! - `document::session::apply_text_edits` (crates/librepaper/src/document/session/edits.rs)
+//! - `document::session::apply_text_edits` (crates/librepaper-document/src/document/session/edits.rs)
 //!   is *checked*: it validates every edit against the text's current UTF-16
 //!   length and rejects the whole batch (returns `false`, no partial writes)
 //!   if any edit doesn't fit or the edits overlap. It cannot clamp, because a

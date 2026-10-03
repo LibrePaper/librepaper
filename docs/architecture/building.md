@@ -69,7 +69,7 @@ bounded override when a short diagnostic is intended:
 ```sh
 LIBREPAPER_BENCHMARK_POSTGRES_URL='postgresql://postgres:password@127.0.0.1:5432/librepaper_bench' \
 LIBREPAPER_BENCHMARK_SECONDS=30 \
-  cargo test -p librepaper --lib typing_throughput_release_benchmark --release -- --ignored --nocapture --test-threads=1
+  cargo test -p librepaper --test storage_benchmarks typing_throughput_release_benchmark --release -- --ignored --nocapture --test-threads=1
 ```
 
 The short run is diagnostic only; use the default 600-second run for release
@@ -87,7 +87,7 @@ reproduce it, install Quarto and a PDF engine, then run the focused ignored
 test:
 
 ```sh
-cargo test -p librepaper --lib real_quarto_pdf_preview_publishes_complete_pdf_bytes -- --ignored --test-threads=1
+cargo test -p librepaper-companion --lib real_quarto_pdf_preview_publishes_complete_pdf_bytes -- --ignored --test-threads=1
 ```
 
 `tools/suite external` is the current manual coverage path for Quarto/R/Python
