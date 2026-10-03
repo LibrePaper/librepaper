@@ -52,6 +52,8 @@ LIBREPAPER_TEST_POSTGRES_URL='postgresql://postgres:password@127.0.0.1:5432/libr
   cargo test -p librepaper --lib server::history_frontier_tests::delegated_agent_bearer_stops_working_after_session_revocation -- --ignored --test-threads=1 --exact
 ```
 
+The log and catalogue tests live in `librepaper-engine`, the room and server tests in `librepaper`: run the same command with `-p librepaper-engine` for the former.
+
 The selected case may clear tables, so do not use a shared or production
 database. Shared PostgreSQL fixtures fail when explicitly run without their
 required database setting. The PostgreSQL CI job runs its recovery and deployment gates serially

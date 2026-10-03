@@ -71,7 +71,7 @@ Bottom-up, with the external dependencies that land in each:
 | `librepaper-server` | the rest of `server` | 27k | axum, rmcp, tokio-tungstenite |
 | `librepaper-companion` | `local`, `assistant`, `automation`, plus the credential helpers and `Local*` clap types from `cli` | 28k | axum, agent-client-protocol, rmcp, the Linux dialog stack, rfd |
 | `librepaper` | `lib.rs` facade re-exports, `cli`, `seed`, `main.rs`, `tests/`, the whole-stack benchmarks | 7k | clap |
-| `librepaper-testing` | the shared Postgres harness from `src/tests/mod.rs` and the fixtures; `publish = false`, dev-dependency only | 0.2k | sqlx |
+| `librepaper-testing` | not a crate: the shared Postgres harness is `engine::testing`, compiled always (it needs the catalogue types, so a crate beside `engine` would be a cycle), and the one fixture moved to `web/tests/fixtures/quarto` | 0.2k | sqlx |
 
 Dependency graph, which must stay acyclic and is enforced by Cargo:
 
@@ -141,7 +141,7 @@ Each item is a move or an inversion that the current single crate accepts today,
 
 ### Shared test support
 
-`src/tests/mod.rs` is the opt-in Postgres connection, migration and reset shared by the ignored database tests in `storage`, `log`, `room`, `server`, `document` (the store tests, which move to `engine`) and `seed`. It becomes `librepaper-testing`, `publish = false`, listed under `[dev-dependencies]` of each crate that needs it. The flattener (below) folds it into the published crate as a `#[cfg(test)]` module, so the flat crate's tests compile and run exactly like the workspace's. `src/tests/fixtures` and `src/tests/local` go with the crate whose tests read them.
+`src/tests/mod.rs` was the opt-in Postgres connection, migration and reset shared by the ignored database tests in `storage`, `log`, `room`, `server` and `seed`. It lives in `engine` as `engine::testing`, a `pub mod` compiled always rather than under `cfg(test)`, because the tests of `room` and `server` reach it across a crate boundary and `cfg(test)` does not cross one. A separate `librepaper-testing` crate would need the catalogue types from `engine` while `engine`'s own tests need the harness, which is a cycle. `testing` also holds `Outbox`, the update-batch source the `log` and `room` tests share. The unreferenced `src/tests/local` was deleted; the Quarto fixture moved beside the web test that reads it. The flattener's `TESTING` handling only acts when a crate named `librepaper-testing` exists, so it stays dormant.
 
 ## Workspace layout
 
@@ -155,7 +155,6 @@ crates/librepaper-room/
 crates/librepaper-shell/         owns the staged browser build
 crates/librepaper-server/
 crates/librepaper-companion/     owns the skills bundle path
-crates/librepaper-testing/       publish = false
 tools/flatten/                   the lint and the generator for the published single crate, plus its build.rs
 target/flat/                     generated, never committed: the package that gets published
 ```
@@ -173,7 +172,7 @@ Today one `build.rs` watches `assets.lock`, `.sqlx`, `skills/` and `web/dist`. C
 | input | reader | after the split |
 | --- | --- | --- |
 | `web/dist` | `shell` | Stays where Vite builds it. The shell crate's `build.rs` canonicalizes `CARGO_MANIFEST_DIR/../../web/dist`, emits `cargo:rustc-env=LIBREPAPER_SHELL_DIST=<abs path>` and watches each file. The code does `include_dir!("$LIBREPAPER_SHELL_DIST")`. The flattener stages `dist/` at publish time, and the flat `build.rs` sets the same variable from it. None of the 16 `web/dist` references move. |
-| `.sqlx` | `engine` (and `seed` once it moves there) | Directory moves to `crates/librepaper-engine/.sqlx`. `tools/db sqlx-prepare` and `sqlx-check` already use `--workspace`; sqlx writes each crate's cache under that crate. `SQLX_OFFLINE` handling stays in the root `.cargo/config.toml` and in the engine crate's `build.rs` for packaged builds. |
+| `.sqlx` | `engine` (which holds `seed`) | Moved to `crates/librepaper-engine/.sqlx` in Stage 5; the root `.sqlx` and `SQLX_OFFLINE_DIR` are gone. `tools/db sqlx-prepare` and `sqlx-check` use `--workspace`; sqlx writes each crate's cache under that crate. `SQLX_OFFLINE` handling stays in the root `.cargo/config.toml` and in the engine crate's `build.rs` for packaged builds. |
 | `migrations/postgres` | `engine` | Moves with the SQL. |
 | `skills/` | `companion` | Either moves to `crates/librepaper-companion/skills` or the release workflow stages a copy there. Prefer the move; `skills/` has no other reader that cares where it is except the Makefile's source list. |
 | `assets.lock` | `shell` (`include_str!` of the pinned wasm digests, `shell.rs:14`) | Stays at the repository root for the Node tools that read and write it (`web/tools/pin-tools`). The shell crate's `build.rs` copies it into `OUT_DIR` and the code reads `include_str!(concat!(env!("OUT_DIR"), "/assets.lock"))`, so the source path does not depend on the layout. The flattener copies the root file next to the flat `Cargo.toml`, where the flat `build.rs` does the same copy. |
@@ -191,8 +190,7 @@ The alternative, publishing the sub-crates as `librepaper-*` with exact pins and
 
 A script, checked in and run by CI on every pull request, that produces a self-contained single-crate package directory under `target/flat/` from the workspace:
 
-1. **Sources.** For each sub-crate `librepaper-<name>`, copy `src/` to `target/flat/src/<name>/`, with the crate's `lib.rs` becoming `src/<name>/mod.rs`. Copy the facade crate's `src/`, `tests/` and `build.rs` to the root. Copy `librepaper-testing` to `src/testing/`.
-2. **Paths.** In every copied sub-crate file, rewrite `\bcrate::` to `crate::<name>::` and `\blibrepaper_(\w+)::` to `crate::$1::`. In the facade's own files rewrite only the second pattern, because the facade is the root. Append `mod base; mod document; mod engine; mod room; mod shell; mod server; mod companion; #[cfg(test)] mod testing;` to the facade's `lib.rs`. The modules are private at the root, so the facade's re-exports remain the only public surface, which is tighter than the development layout where every sub-crate `pub` is visible.
+1. **Sources.** For each sub-crate `librepaper-<name>`, copy `src/` to `target/flat/src/<name>/`, with the crate's `lib.rs` becoming `src/<name>/mod.rs`. Copy the facade crate's `src/`, `tests/` and `build.rs` to the root. 2. **Paths.** In every copied sub-crate file, rewrite `\bcrate::` to `crate::<name>::` and `\blibrepaper_(\w+)::` to `crate::$1::`. In the facade's own files rewrite only the second pattern, because the facade is the root. Append `mod base; mod document; mod engine; mod room; mod shell; mod server; mod companion; #[cfg(test)] mod testing;` to the facade's `lib.rs`. The modules are private at the root, so the facade's re-exports remain the only public surface, which is tighter than the development layout where every sub-crate `pub` is visible.
 3. **Inputs.** Copy each sub-crate's non-source inputs to the flat root at the same manifest-relative path: `dist/` and `assets.lock` from `shell`, `.sqlx/` and `migrations/` from `engine`, `skills/` from `companion`. Every `include_dir!`, `include_str!`, `sqlx::migrate!` and `env!("CARGO_MANIFEST_DIR")` path then resolves identically in both layouts.
 4. **Manifest.** Generate `Cargo.toml` from the root manifest: `[package]` from `[workspace.package]` plus the facade's metadata, `[dependencies]` as the union of every sub-crate's dependencies resolved against `[workspace.dependencies]`, `[target.*.dependencies]` and `[dev-dependencies]` likewise, `[[test]]` entries from the facade, profiles copied, `include` listing the staged inputs. Copy `Cargo.lock`, then run `cargo metadata --offline` once so Cargo prunes the `librepaper-*` entries, and fail if anything else in the lockfile changed.
 5. **Build script.** The flat `build.rs` is a checked-in file, `tools/flatten/build.rs`, that does what today's single build script does: watch `dist/` and set `LIBREPAPER_SHELL_DIST` to it, `assets.lock`, `.sqlx`, `skills/`, set `SQLX_OFFLINE`. The sub-crates' individual build scripts are the pieces of it.
@@ -257,7 +255,7 @@ Land the moves listed under "The seams to cut" as separate small commits: `socke
 
 ### Stage 5: engine
 
-- Extract `librepaper-engine` with `log`, `storage`, `store`, `annotation`, `outgoing`, `seed`. Move `.sqlx` and `migrations`. Create `librepaper-testing` from `src/tests/mod.rs`.
+- Extract `librepaper-engine` with `log`, `storage`, `store`, `annotation`, `outgoing`, `seed`. Move `.sqlx` and `migrations`. The Postgres test harness becomes `engine::testing`, not a crate.
 - **Acceptance:** `tools/db sqlx-check` passes with the moved cache. An edit in `engine` does not compile `companion`. The ignored Postgres tests run with `cargo test -p librepaper-engine --lib -- --ignored --test-threads=1`, and the CI job that runs them is updated to name every crate that has them.
 
 ### Stage 6: room, then server
