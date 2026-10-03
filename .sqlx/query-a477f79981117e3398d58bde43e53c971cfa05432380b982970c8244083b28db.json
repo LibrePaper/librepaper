@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO document_marks(account_id,document_id,shared_hidden)\n                 VALUES($1,$2,true)\n                 ON CONFLICT(account_id,document_id) DO UPDATE SET shared_hidden=true",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a477f79981117e3398d58bde43e53c971cfa05432380b982970c8244083b28db"
+}

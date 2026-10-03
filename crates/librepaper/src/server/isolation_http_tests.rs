@@ -490,12 +490,11 @@ async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
         picture: String::new(),
         session_generation: outsider.session_generation.to_string(),
     });
-    Arc::get_mut(&mut deployment.server)
-        .unwrap()
-        .publishers = crate::auth::Policy::parse_publishers(
-        "isolation-owner,shared-viewer,shared-peer,shared-outsider",
-    )
-    .unwrap();
+    Arc::get_mut(&mut deployment.server).unwrap().publishers =
+        crate::auth::Policy::parse_publishers(
+            "isolation-owner,shared-viewer,shared-peer,shared-outsider",
+        )
+        .unwrap();
     let (base, _address, stop) = serve(deployment.server.clone()).await;
     let client = reqwest::Client::new();
     let endpoint = format!("{base}/api/documents/{}/shared", deployment.slug);
@@ -559,7 +558,10 @@ async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
         .await
         .unwrap();
     assert_eq!(hidden.status().as_u16(), 200);
-    assert_eq!(hidden.json::<serde_json::Value>().await.unwrap()["shared_hidden"], true);
+    assert_eq!(
+        hidden.json::<serde_json::Value>().await.unwrap()["shared_hidden"],
+        true
+    );
     assert_eq!(
         deployment
             .catalog
@@ -575,7 +577,7 @@ async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
         "hiding must not change read access"
     );
     let readable = client
-        .get(format!("{base}/api/documents/{}/source", deployment.slug))
+        .get(format!("{base}/api/documents/{}/project", deployment.slug))
         .header("host", "paper.example")
         .header("origin", READER)
         .header("sec-fetch-site", "same-origin")
@@ -639,7 +641,10 @@ async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
         .await
         .unwrap();
     assert_eq!(restored.status().as_u16(), 200);
-    assert_eq!(restored.json::<serde_json::Value>().await.unwrap()["shared_hidden"], false);
+    assert_eq!(
+        restored.json::<serde_json::Value>().await.unwrap()["shared_hidden"],
+        false
+    );
     let _ = stop.send(());
 }
 

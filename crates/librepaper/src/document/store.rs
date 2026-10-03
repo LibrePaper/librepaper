@@ -1004,7 +1004,10 @@ impl Store {
                     .opened_at
                     .map(|at| crate::util::format_unix(at.unix_timestamp()))
                     .unwrap_or_default();
-                Some((slug, (mark.favorited_at.is_some(), opened, mark.shared_hidden)))
+                Some((
+                    slug,
+                    (mark.favorited_at.is_some(), opened, mark.shared_hidden),
+                ))
             })
             .collect())
     }

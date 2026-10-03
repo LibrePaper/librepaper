@@ -114,10 +114,7 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
         .set_shared_hidden(viewer, paper, true)
         .await
         .unwrap());
-    let hidden = catalog
-        .marks_for_documents(viewer, &[paper])
-        .await
-        .unwrap();
+    let hidden = catalog.marks_for_documents(viewer, &[paper]).await.unwrap();
     assert_eq!(hidden.len(), 1);
     assert!(hidden[0].shared_hidden);
     assert_eq!(hidden[0].favorited_at, before.favorited_at);
@@ -143,10 +140,7 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
         .set_shared_hidden(viewer, paper, false)
         .await
         .unwrap());
-    let restored = catalog
-        .marks_for_documents(viewer, &[paper])
-        .await
-        .unwrap();
+    let restored = catalog.marks_for_documents(viewer, &[paper]).await.unwrap();
     assert_eq!(restored.len(), 1);
     assert!(!restored[0].shared_hidden);
     assert_eq!(restored[0].favorited_at, before.favorited_at);

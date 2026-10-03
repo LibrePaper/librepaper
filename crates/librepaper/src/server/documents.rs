@@ -1617,20 +1617,12 @@ impl Server {
             return write_json(401, &json!({"error": "sign in first"}));
         }
         if entry.owned_by(&who.id.id) {
-            return write_json(
-                403,
-                &json!({"error": "only shared projects can be hidden"}),
-            );
+            return write_json(403, &json!({"error": "only shared projects can be hidden"}));
         }
-        match self
-            .store
-            .set_shared_hidden(slug, &who.id.id, hidden)
-            .await
-        {
-            Ok(shared_hidden) => write_json(
-                200,
-                &json!({"slug": slug, "shared_hidden": shared_hidden}),
-            ),
+        match self.store.set_shared_hidden(slug, &who.id.id, hidden).await {
+            Ok(shared_hidden) => {
+                write_json(200, &json!({"slug": slug, "shared_hidden": shared_hidden}))
+            }
             Err(error) => {
                 eprintln!("could not update shared visibility for {slug}: {error:?}");
                 write_json(500, &json!({"error": "could not save that"}))
