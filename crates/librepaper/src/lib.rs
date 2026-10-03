@@ -30,6 +30,8 @@ pub mod log;
 mod room;
 mod server;
 mod storage;
+// Opt-in PostgreSQL harness shared by the storage, room and server tests.
+pub(crate) mod testing;
 
 pub use cli::main;
 // The headless automation peer, for the integration tests in `tests/`.
@@ -150,9 +152,6 @@ pub use room::{Room, Rooms};
 pub use server::Server;
 pub use storage::blob::{BlobStore, FsStore};
 pub use storage::store::Store;
-
-#[cfg(test)]
-mod tests;
 
 /// The release version, stamped in at build time for release artifacts and
 /// derived from the package version for crates.io installs.

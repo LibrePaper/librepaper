@@ -33,7 +33,7 @@ const SCHEMA_TABLES: &str =
 /// It really does truncate: these tests must run with `--test-threads=1`
 /// against a database nothing else is using. Calling this from a harness
 /// does not change when a reset happens, only which tables it names.
-pub(crate) async fn reset(catalog: &PostgresCatalog) {
+pub async fn reset(catalog: &PostgresCatalog) {
     sqlx::query(&format!("TRUNCATE {SCHEMA_TABLES} CASCADE"))
         .execute(catalog.pool())
         .await
@@ -50,7 +50,7 @@ pub(crate) async fn reset(catalog: &PostgresCatalog) {
 /// it with `?`; database-dependent tests are explicitly `#[ignore]` instead
 /// of using `None` as an implicit skip. Selecting one requires a configured
 /// disposable database and a serial test run.
-pub(crate) async fn catalog() -> Option<Arc<PostgresCatalog>> {
+pub async fn catalog() -> Option<Arc<PostgresCatalog>> {
     let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").unwrap_or_else(|_| {
         panic!(
             "LIBREPAPER_TEST_POSTGRES_URL is required for this ignored PostgreSQL test; set it to a disposable PostgreSQL database URL and rerun with --test-threads=1"
