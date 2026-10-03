@@ -416,7 +416,7 @@ impl BackupManager {
         })?;
         let origin = crate::local::credentials::origin(origin);
         let key = BackupConfig::key(&origin, account_id);
-        let authorization_id = crate::auth::random_token();
+        let authorization_id = crate::util::random_token();
         let pairing_digest = hex::encode(Sha256::digest(pairing_token.as_bytes()));
         {
             let mut pending = self.authorizations.lock().await;

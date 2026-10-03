@@ -99,12 +99,12 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     // loopback service works fine on IPv4 alone when it is.
     let listener_v6 = TcpListener::bind(("::1", port)).await.ok();
 
-    let instance = hex::encode(crate::auth::random_bytes(8));
+    let instance = hex::encode(crate::util::random_bytes(8));
     let state = ServiceState {
         port,
         instance: instance.clone(),
         pid: std::process::id(),
-        started: crate::auth::now_unix(),
+        started: crate::util::now_unix(),
     };
     if let Err(err) = pairing.write_service(&state) {
         die(format!("could not write service.json: {err}"));

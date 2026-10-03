@@ -233,7 +233,7 @@ async fn deployment_peer_key(
             }
         }
     }
-    let key = crate::auth::random_token();
+    let key = crate::util::random_token();
     catalog
         .set_runtime_state(
             crate::log::DEPLOYMENT_PEER_STATE,

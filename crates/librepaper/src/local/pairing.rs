@@ -26,7 +26,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::auth::{now_unix, random_bytes};
+use crate::util::{now_unix, random_bytes};
 
 /// How long a pairing token is good for once issued.
 pub const TOKEN_TTL_SECONDS: i64 = 30 * 24 * 3600;

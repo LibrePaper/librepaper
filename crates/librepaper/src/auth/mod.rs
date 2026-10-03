@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
+pub use crate::util::{now_unix, random_bytes, random_token};
+
 mod device;
 mod github;
 mod google;
@@ -593,12 +595,6 @@ fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
     }
 }
 
-pub fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
 
 /// "<token>.<signature>" for a freshly minted visitor token, so a browser
 /// cannot simply pick its own owner key.
@@ -720,16 +716,7 @@ fn decode_session_key(raw: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-pub fn random_bytes(n: usize) -> Vec<u8> {
-    use rand::RngCore;
-    let mut raw = vec![0u8; n];
-    rand::rng().fill_bytes(&mut raw);
-    raw
-}
 
-pub fn random_token() -> String {
-    hex::encode(random_bytes(16))
-}
 
 /// A user code as the table keys it. People type them in whatever case their
 /// keyboard is in, and a hyphen is the shape a printed code invites.

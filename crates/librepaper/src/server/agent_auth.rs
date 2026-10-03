@@ -74,7 +74,7 @@ pub(super) async fn issue(
         Role::Commenter => 2,
         Role::Editor | Role::Owner => 3,
     };
-    let expires_at = crate::auth::now_unix() + crate::auth::AGENT_GRANT_MAX_AGE.as_secs() as i64;
+    let expires_at = crate::util::now_unix() + crate::auth::AGENT_GRANT_MAX_AGE.as_secs() as i64;
     let grant = crate::auth::AgentGrant {
         identity,
         slug,

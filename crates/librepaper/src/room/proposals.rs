@@ -1001,7 +1001,7 @@ pub fn resolve(
 /// socket was the shape of that bug -- a socket can open more than one
 /// proposal, and did.
 fn fresh_peer() -> PeerID {
-    let bytes = crate::auth::random_bytes(8);
+    let bytes = crate::util::random_bytes(8);
     let mut id = [0u8; 8];
     id.copy_from_slice(&bytes);
     // Peer 0 is Loro's own default, so taking it is the collision above with

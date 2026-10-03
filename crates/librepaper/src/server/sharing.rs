@@ -139,7 +139,7 @@ pub fn hash_link_key(key: &str) -> String {
 /// which is what admits a caller, and a sealed copy of the key itself, which
 /// is what lets its owner be handed the URL again.
 pub fn mint_link_key() -> String {
-    hex::encode(crate::auth::random_bytes(32))
+    hex::encode(crate::util::random_bytes(32))
 }
 
 /// The key that seals a link key, from the deployment's session key. A purpose
@@ -160,7 +160,7 @@ fn sealing_key(session_key: &[u8]) -> chacha20poly1305::Key {
 pub fn seal_link_key(session_key: &[u8], key: &str) -> Vec<u8> {
     use chacha20poly1305::aead::{Aead, KeyInit};
     let cipher = chacha20poly1305::XChaCha20Poly1305::new(&sealing_key(session_key));
-    let nonce = crate::auth::random_bytes(24);
+    let nonce = crate::util::random_bytes(24);
     let Ok(sealed) = cipher.encrypt(chacha20poly1305::XNonce::from_slice(&nonce), key.as_bytes())
     else {
         return Vec::new();

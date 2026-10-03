@@ -351,7 +351,7 @@ impl Outbox {
     /// collapse a repeated character back under the trigger it is meant to
     /// cross.
     pub(super) fn edit_at_least(&mut self, bytes: usize) -> Vec<u8> {
-        let filler = hex::encode(crate::auth::random_bytes(bytes / 2 + 1));
+        let filler = hex::encode(crate::util::random_bytes(bytes / 2 + 1));
         let text = self.doc.get_text("t");
         text.insert_utf16(text.len_utf16(), &filler).unwrap();
         self.export_since_last()

@@ -58,6 +58,19 @@ pub fn now_unix() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
 }
 
+/// `n` bytes from the operating system's random generator.
+pub fn random_bytes(n: usize) -> Vec<u8> {
+    use rand::RngCore;
+    let mut raw = vec![0u8; n];
+    rand::rng().fill_bytes(&mut raw);
+    raw
+}
+
+/// Sixteen random bytes as lowercase hex.
+pub fn random_token() -> String {
+    hex::encode(random_bytes(16))
+}
+
 /// Unix milliseconds for persisted deadlines and timestamps.
 pub fn now_millis() -> i64 {
     i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
@@ -73,7 +86,7 @@ pub fn new_request_key() -> String {
     format!(
         "v2.{}.{}",
         now_millis(),
-        hex::encode(crate::auth::random_bytes(16))
+        hex::encode(random_bytes(16))
     )
 }
 
