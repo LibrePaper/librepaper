@@ -16,14 +16,6 @@ export const nav = [
   { path: "what", label: "What is LibrePaper" },
   { path: "install", label: "Install" },
   {
-    path: "authoring/index",
-    label: "Authoring",
-    pages: [
-      { path: "authoring/latex", label: "LaTeX" },
-      { path: "authoring/typst", label: "Typst" },
-    ],
-  },
-  {
     label: "Computational notebooks",
     pages: [
       { path: "notebooks/quarto", label: "Quarto" },

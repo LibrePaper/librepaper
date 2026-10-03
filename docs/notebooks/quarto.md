@@ -14,8 +14,6 @@ librepaper --at-login                # also start every time you log in
 librepaper status                    # check it is running and found Quarto
 ```
 
-When the server runs on the same machine you browse from, it runs the local app itself and there is nothing to start. Use `--no-local` to turn that off. For a computer with no display, run `librepaper local approve`.
-
 > **Warning:** Previews run the document's code, filters and scripts on your computer, so only enable this on documents you trust. Anyone with editor access can change that code.
 
 ## Preview and output
