@@ -35,8 +35,4 @@ A hunk is a maximal run of non-retain operations. Replacing "cat" with "tabby" i
 
 Accepting a whole branch imports it. Accepting part of one: (1) import the branch, (2) compute inverse difference, (3) keep only rejected hunks, (4) apply as reviewer. Result is the accepted subset with accepted text attributed to author and removal to reviewer. Steps 1-4 are atomic; intermediate state is never persisted.
 
-The server counts in code points; the browser counts UTF-16. No diff information crosses the network; each side computes from its own state.
-
-Two branches touching the same passage are grouped into one card. Adjacent edits are not grouped. Stale rows are excluded.
-
-Any subset of open changes can be merged into a scratch document and read as finished prose (speculative reading). Attribution survives partial accept; operation history is fully reachable.
+Two branches touching the same passage are grouped into one card. Adjacent edits are not grouped.

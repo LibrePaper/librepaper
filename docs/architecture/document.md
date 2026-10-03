@@ -21,11 +21,11 @@ Each document's log is capped by `log_quota_mb` (advanced config, default 32 MB)
 
 ## Storage and history
 
-PostgreSQL holds accounts, documents, grants, share links, annotations, replies, update logs, labels, proposals, hunk decisions, and storage accounting. The object store holds immutable blobs: collaboration bases, source archives, document assets and published files, keyed by content digest or never-reused names.
+PostgreSQL holds metadata, update logs and review state; the object store holds immutable blobs keyed by digest or never-reused names.
 
 Document state is persisted as a compressed base plus an ordered log in Postgres, compacted periodically. The base is full operation history compressed with zstd (a million keystrokes costs a few hundred kilobytes). There is no retention window on edit history.
 
-A checkpoint records the whole directory as a canonical tree. Checkpoints are written when somebody labels a moment, restores an earlier version, commits from the command line, or a proposal is accepted. The manifest is served to the browser. Checkpoints can be labelled and are kept until the document is deleted.
+A checkpoint records the whole directory as a canonical tree. Checkpoints are written when somebody labels a moment, restores an earlier version, commits from the command line, or a proposal is accepted.
 
 Source archives are produced on request (keyed by tree digest), not at checkpoint time. They are content-addressed and the fastest way to retrieve a document at a point in time.
 
