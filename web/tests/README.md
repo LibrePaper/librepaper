@@ -11,7 +11,7 @@ The checks are grouped by how they execute, not by product feature:
 - `fixtures/` contains checked-in inputs shared by tests. The Typst corpus is
   used by both the PDF and viewer checks.
 
-The npm scripts in `web/package.json` are the authoritative entry points; the
+The Bun scripts in `web/package.json` are the authoritative entry points; the
 directory names make the runtime requirements visible without changing what
 each check asserts.
 

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const here = fileURLToPath(new URL(".", import.meta.url));
 const update = join(here, "update-module-pin.mjs");
 const updateLatex = join(here, "update-latex-pin.mjs");
+const fetchModules = join(here, "fetch-modules.mjs");
 const sha = "a".repeat(64);
 const lock = `markdown.wasm wasm-markdown v0.1.1 ${sha}\nbibliography.wasm wasm-bibliography v0.1.1 ${sha}\ncitations.wasm wasm-bibliography v0.1.1 ${sha}\ntypst.wasm wasm-typst v0.1.1 ${sha}\nlatex wasm-latex v0.1.0 ${sha}\n`;
 
@@ -19,6 +20,16 @@ async function fixture() {
 }
 
 const run = (script, args, cwd = undefined) => execFileSync(process.execPath, [script, ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+test("module fetch rejects an unknown selector instead of succeeding without fetching", () => {
+  let error;
+  try {
+    run(fetchModules, ["not-a-module"]);
+  } catch (caught) {
+    error = caught;
+  }
+  assert.match(String(error?.stderr ?? ""), /unknown module not-a-module/);
+});
 
 test("pin update validates checksums before changing the pin", async () => {
   const root = await fixture();

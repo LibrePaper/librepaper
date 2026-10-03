@@ -3,7 +3,7 @@
 # Upstream loro-codemirror cannot keep an editor in step with a document that
 # holds more than one container, and a LibrePaper document is a map of files,
 # so this build uses a fork carrying the fixes until a release contains them:
-# see docs/loro-codemirror.md for what is changed and why.
+# see docs/dev/loro-codemirror.md for what is changed and why.
 #
 # `tools/pins fetch` fetches these files and refuses anything whose bytes
 # do not hash to what is written here. They land in web/vendor/loro-codemirror,
