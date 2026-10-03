@@ -119,6 +119,7 @@ const fakeFetch = async (url) => {
 };
 
 const latex = await import("../../src/lib/latex.js?latex-controller-check");
+const bibliography = await import("../../src/lib/latex/bibliography.js");
 
 function tick(times = 1) {
   let p = Promise.resolve();
@@ -465,6 +466,51 @@ function nextProject() {
   assert.equal(expired.failure.kind, "timeout");
   assert.equal(firstWorker.dead, true, "the timed-out helper worker was retired");
   assert.equal((await queued).ok, true, "the queued compile progresses on a fresh worker");
+}
+
+// Cancellation while bibliography hashing is in flight must stop the stale
+// run before it dispatches BibTeX on a worker reused by a replacement job.
+{
+  latex.at("/cancel-bibliography-identity/");
+  const previousWorker = worker();
+  let identityStarted;
+  const started = new Promise((resolve) => { identityStarted = resolve; });
+  let releaseIdentity;
+  const heldIdentity = new Promise((resolve) => { releaseIdentity = resolve; });
+  let holdFirstIdentity = true;
+  latex._testing.inject({
+    worker: FakeWorker,
+    fetch: fakeFetch,
+    bibliographyIdentity: async (input) => {
+      if (holdFirstIdentity) {
+        holdFirstIdentity = false;
+        identityStarted();
+        await heldIdentity;
+      }
+      return bibliography.identity(input);
+    },
+  });
+  latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
+  FakeWorker.nextTexReplies = [{
+    status: 0, pdf: PDF, synctex: null, log: "",
+    outputs: { "main.aux": enc.encode("\\bibdata{refs}\n\\citation{a}\n") },
+  }];
+  const canceled = latex.compile(tree("main.tex", "identity wait", { "refs.bib": enc.encode("@book{x,}") }));
+  const compilingWorker = await untilWorker(previousWorker);
+  await started;
+  latex.cancel();
+  await assert.rejects(canceled, (error) => error.name === "Superseded");
+
+  compilingWorker.texReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: {} }];
+  const replacement = latex.compile(tree("main.tex", "replacement after identity cancel"));
+  assert.equal((await replacement).ok, true, "a replacement compile can reuse the worker while old hashing is held");
+  assert.equal(compilingWorker.dead, false, "identity cancellation does not retire a worker with no pending RPC");
+  const bibtexBeforeRelease = FakeWorker.totalBibtexCalls;
+
+  releaseIdentity();
+  await tick(4);
+  assert.equal(FakeWorker.totalBibtexCalls, bibtexBeforeRelease, "the stale identity continuation does not dispatch BibTeX");
+  assert.equal(compilingWorker.dead, false, "the stale job does not affect the replacement worker");
 }
 
 // Canceling a hung helper must retire its worker before a replacement can

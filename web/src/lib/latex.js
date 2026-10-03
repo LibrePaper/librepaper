@@ -51,6 +51,7 @@ let base = "";
 let WorkerClass = typeof Worker !== "undefined" ? Worker : null;
 let biberOverride;
 let biberModule;
+let bibliographyIdentityOverride;
 let resourcesOverride;
 let fetchImpl = (...args) => fetch(...args);
 let nowImpl = () => Date.now();
@@ -525,6 +526,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   } catch (error) {
     checkpoint();
     const inputs = await snapshotDigest(tree).catch(() => "");
+    checkpoint();
     const job = await jobsMod.makeJob({
       project: currentProject,
       generation: generationAtStart,
@@ -533,6 +535,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       engine,
       release: releaseEntry?.id || "unknown",
     });
+    checkpoint();
     return buildResult({
       job,
       attempts: [],
@@ -546,6 +549,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
   const releaseId = releaseEntry.id;
   const inputs = await snapshotDigest(tree);
+  checkpoint();
   const job = await jobsMod.makeJob({ project: currentProject, generation: generationAtStart, tree, inputs, engine, release: releaseId });
   checkpoint();
 
@@ -662,6 +666,8 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
     if (!(reply.status === 0 || reply.status === 1) || !lastPdf) {
       attempts.push({ stage: "browser", backend: "browser", ok: false, log: finalLog, reason: "tex" });
+      const missingMessage = await mirrorAbsentMessage(reply.mirrorAbsent);
+      checkpoint();
       return handleBrowserFailure({
         job,
         tree,
@@ -671,7 +677,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         startedAt,
         signal: token.abort.signal,
         kind: "tex",
-        message: (await mirrorAbsentMessage(reply.mirrorAbsent)) || "The document failed to compile.",
+        message: missingMessage || "The document failed to compile.",
       });
     }
 
@@ -715,7 +721,8 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         const bytes = fileBytes(tree, path);
         if (bytes) files[path] = bytes;
       }
-      const identity = await bibliography.identity({ kind, controlBytes, files, engine, release: releaseId, tool: kind });
+      const identity = await (bibliographyIdentityOverride || bibliography.identity)({ kind, controlBytes, files, engine, release: releaseId, tool: kind });
+      checkpoint();
 
       let bibResult = bibCache.get(identity) || null;
       if (bibResult) {
@@ -742,7 +749,9 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
               },
             });
           })(), deadlineAt, "browser Biber", () => { biberTimedOut = true; biberAbort.abort(); }, token.abort.signal);
+          checkpoint();
         } catch (error) {
+          checkpoint();
           if (token.cancelled || error?.name === "Superseded") throw supersededError();
           if (biberTimedOut || error?.name === "WorkerTimeout" || nowImpl() >= deadlineAt) {
             return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "timeout", message: "The compile exceeded its time budget.", stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId) });
@@ -795,6 +804,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         try {
           await deadlineCall(target, "write", { path: `${stem}.bbl`, bytes: bibResult.bbl.buffer || bibResult.bbl }, deadlineAt);
         } catch (error) {
+          checkpoint();
           if (error?.name === "WorkerTimeout") return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "timeout", message: error.message, stage: "write-bibliography" }, provenance: baseProvenance(engine, releaseId) });
           /* the next tex pass will simply see the same undefined citations */
         }
@@ -968,10 +978,11 @@ export const resources = {
 /// Test-only injection. Not part of the public contract --
 /// `latex-controller.mjs` is the only caller.
 export const _testing = {
-  /** @param {{ worker?: any, biber?: any, resources?: any, fetch?: typeof fetch, now?: () => number, deadlineMs?: number }} [options] */
-  inject({ worker: WorkerOverride, biber: browserBiberModule, resources: resourcesModule, fetch: fetchOverride, now, deadlineMs: deadlineOverride } = {}) {
+  /** @param {{ worker?: any, biber?: any, bibliographyIdentity?: (input: any) => Promise<string>, resources?: any, fetch?: typeof fetch, now?: () => number, deadlineMs?: number }} [options] */
+  inject({ worker: WorkerOverride, biber: browserBiberModule, bibliographyIdentity, resources: resourcesModule, fetch: fetchOverride, now, deadlineMs: deadlineOverride } = {}) {
     if (WorkerOverride !== undefined) WorkerClass = WorkerOverride;
     if (browserBiberModule !== undefined) biberOverride = browserBiberModule;
+    if (bibliographyIdentity !== undefined) bibliographyIdentityOverride = bibliographyIdentity;
     if (resourcesModule !== undefined) resourcesOverride = resourcesModule;
     if (fetchOverride !== undefined) {
       fetchImpl = fetchOverride;
@@ -987,6 +998,7 @@ export const _testing = {
   reset() {
     WorkerClass = typeof Worker !== "undefined" ? Worker : null;
     biberOverride = undefined;
+    bibliographyIdentityOverride = undefined;
     biberModule?.cancel();
     biberModule = undefined;
     resourcesOverride = undefined;
