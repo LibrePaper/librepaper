@@ -2664,6 +2664,8 @@
   let templateModalOpen = $state(false);
   let templateName = $state("");
   let templateError = $state("");
+  let templateSaveKey = "";
+  let templateSaveRequestId = "";
 
   function openSettings(category = "editor") {
     // The editor category carries the shortcut table, and the table greys what
@@ -2996,6 +2998,8 @@
   function openSaveTemplateModal() {
     templateName = doc.title || "";
     templateError = "";
+    templateSaveKey = "";
+    templateSaveRequestId = "";
     templateModalOpen = true;
   }
 
@@ -3005,17 +3009,33 @@
       templateError = "Give the template a name.";
       return;
     }
+    const key = `librepaper:template-save:${SLUG}:${title}`;
+    if (templateSaveKey !== key || !templateSaveRequestId) {
+      templateSaveKey = key;
+      try {
+        templateSaveRequestId = sessionStorage.getItem(key) || "";
+      } catch {
+        templateSaveRequestId = "";
+      }
+      if (!templateSaveRequestId) {
+        templateSaveRequestId = crypto.randomUUID();
+        try { sessionStorage.setItem(key, templateSaveRequestId); } catch { /* in-memory retries still reuse it */ }
+      }
+    }
     savingTemplate = true;
     try {
       const response = await fetch(`/api/documents/${SLUG}/template`, {
         method: "POST",
         headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
-        body: JSON.stringify({ title }),
+        body: JSON.stringify({ title, request_id: templateSaveRequestId }),
       });
       if (!response.ok) {
         templateError = (await response.json().catch(() => ({}))).error || "The template could not be saved.";
         return;
       }
+      try { sessionStorage.removeItem(key); } catch { /* no persistent key was available */ }
+      templateSaveKey = "";
+      templateSaveRequestId = "";
       templateModalOpen = false;
       say(`Saved "${title}" as a template.`, { id: "reader:saved-template" });
     } catch (error) {

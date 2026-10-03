@@ -118,11 +118,11 @@ export const archiveUrl = (slug, sha) => `/api/documents/${slug}/history/${sha}/
 
 /// Names a label, or takes its name away with an empty one. Editors only,
 /// which the server decides and this does not pretend to know.
-export async function label(slug, sha, text, headers = {}) {
+export async function label(slug, sha, text, headers = {}, requestId = null) {
   const response = await fetch(`/api/documents/${slug}/history/${sha}`, {
     method: "PATCH",
     headers: { ...asked(headers), "content-type": "application/json" },
-    body: JSON.stringify({ label: text }),
+    body: JSON.stringify({ label: text, ...(requestId ? { request_id: requestId } : {}) }),
   });
   if (!response.ok) {
     const said = await response.json().catch(() => ({}));

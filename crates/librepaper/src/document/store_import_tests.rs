@@ -114,7 +114,7 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
                 main: "main.md".into(),
             },
             vec![("figure.png".into(), bytes)],
-            current_actor,
+            current_actor.clone(),
         )
         .await
         .expect("authorized replacement commits its asset");
@@ -123,6 +123,59 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
         .await
         .expect("read committed asset");
     assert_eq!(assets.len(), 1);
+
+    let request_id = Uuid::new_v4();
+    let template = catalog
+        .begin_template_operation(
+            request_id,
+            document.id,
+            NewDocument {
+                slug: format!("template-{}", Uuid::new_v4()),
+                owner_id: owner.id,
+                owner_session_generation: Some(current_generation),
+                ownership_mode: "owned".into(),
+                title: "Copied template".into(),
+                source_format: "markdown".into(),
+                main_path: "main.md".into(),
+            },
+        )
+        .await
+        .expect("reserve template operation")
+        .0;
+    let template_slug = template.target.slug.clone();
+    let saved = store
+        .put_template_directory_as_actor(
+            DocumentInput {
+                slug: template_slug,
+                title: template.title.clone(),
+                source: "# Copied source\n".into(),
+                source_format: "markdown".into(),
+                main: "main.md".into(),
+            },
+            Vec::new(),
+            current_actor,
+            request_id,
+            template.target.id,
+        )
+        .await
+        .expect("commit source and operation completion together");
+    assert_eq!(saved.storage_id, template.target.id.to_string());
+    let completed = catalog
+        .template_operation(owner.id, current_generation, request_id)
+        .await
+        .expect("read completed template operation")
+        .expect("operation remains durable");
+    assert!(completed.complete);
+    assert_eq!(completed.target.id, template.target.id);
+    let label_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM document_labels WHERE document_id=$1 AND request_id=$2",
+    )
+    .bind(template.target.id)
+    .bind(request_id)
+    .fetch_one(catalog.pool())
+    .await
+    .expect("read the source transaction's label");
+    assert_eq!(label_count, 1, "the source label and completion share the commit");
 }
 
 #[tokio::test]
@@ -279,6 +332,7 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
 
     let mut command = ReplaceProject {
         request_id: Uuid::new_v4(),
+        template_operation_id: None,
         document_id: document.id,
         catalog: catalog.clone(),
         texts: texts_with_main,

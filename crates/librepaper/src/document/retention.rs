@@ -21,6 +21,11 @@ pub fn parse_retention(value: &str) -> Result<i64, String> {
     if seconds <= 0.0 || !seconds.is_finite() {
         return Err(invalid());
     }
+    // Zero is the public spelling for “never”. Reject positive values below
+    // one second instead of truncating them to that sentinel.
+    if seconds < 1.0 {
+        return Err(invalid());
+    }
     Ok(seconds as i64)
 }
 
@@ -80,5 +85,18 @@ pub fn describe_seconds(seconds: i64) -> String {
         format!("{}h", seconds / 3600)
     } else {
         format!("{seconds}s")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_retention;
+
+    #[test]
+    fn positive_subsecond_retention_cannot_turn_expiry_off() {
+        assert!(parse_retention("500ms").is_err());
+        assert!(parse_retention("0.5s").is_err());
+        assert_eq!(parse_retention("1s").unwrap(), 1);
+        assert_eq!(parse_retention("never").unwrap(), 0);
     }
 }

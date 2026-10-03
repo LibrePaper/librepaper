@@ -760,6 +760,16 @@ impl Server {
             return write_json(413, &json!({"error": "that label is too long"}));
         };
         let asked: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        let request_id = asked
+            .get("request_id")
+            .and_then(Value::as_str)
+            .and_then(|value| uuid::Uuid::parse_str(value).ok());
+        if current && request_id.is_none() {
+            return write_json(
+                400,
+                &json!({"error": "a current label needs a stable request_id"}),
+            );
+        }
         let label = asked
             .get("label")
             .and_then(Value::as_str)
@@ -782,7 +792,7 @@ impl Server {
                     None,
                     who.attribution(),
                     &authority,
-                    Some(uuid::Uuid::new_v4()),
+                    request_id,
                 )
                 .await
             {

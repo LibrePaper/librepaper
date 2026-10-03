@@ -39,6 +39,7 @@ pub use ownership::WriterLease;
 pub use proposals::{NewProposal, StoredDecision, StoredProposal, StoredProposalOutcome};
 pub use repository::{
     AccountRecord, AssetRecord, DocumentRecord, DocumentStorage, NewAccount, NewAsset, NewDocument,
+    TemplateOperation,
 };
 
 static MIGRATOR: sqlx::migrate::Migrator =
@@ -1561,6 +1562,42 @@ mod tests {
             first_write.id, retried.id,
             "a retried create returns the row it already wrote"
         );
+        // A reused identity is a replay only when every immutable field that
+        // was first stored is the same, including page presentation evidence.
+        let mut changed_color = annotation_input(first.id, collaborator.id, anchor.clone());
+        changed_color.color = Some("amber".into());
+        let mut changed_digest = annotation_input(first.id, collaborator.id, anchor.clone());
+        changed_digest.render_digest = Some(vec![1; 32]);
+        let mut changed_presentation =
+            annotation_input(first.id, collaborator.id, anchor.clone());
+        changed_presentation.presentation.rendered_exact = "different excerpt".into();
+        let mut changed_prefix = annotation_input(first.id, collaborator.id, anchor.clone());
+        changed_prefix.presentation.rendered_prefix = "different context".into();
+        let mut changed_suffix = annotation_input(first.id, collaborator.id, anchor.clone());
+        changed_suffix.presentation.rendered_suffix = "different ending".into();
+        let mut changed_position =
+            annotation_input(first.id, collaborator.id, anchor.clone());
+        changed_position.presentation.rendered_position_utf16 = Some(9);
+        for changed in [
+            changed_color,
+            changed_digest,
+            changed_presentation,
+            changed_prefix,
+            changed_suffix,
+            changed_position,
+        ] {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            assert!(catalog
+                .put_annotation_authorized(
+                    &mut tx,
+                    annotation_id,
+                    changed,
+                    &unauthorized,
+                    false,
+                )
+                .await
+                .is_err());
+        }
         catalog
             .remove_grant(first.id, collaborator.id)
             .await

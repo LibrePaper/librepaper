@@ -763,7 +763,23 @@
   // Your own templates, for the dialog and for the Templates place alike.
   async function loadTemplates() {
     try {
-      templateRows = (await getPrivate("/api/templates")).templates ?? [];
+      const bySlug = new Map();
+      let cursor = null;
+      do {
+        const query = new URLSearchParams();
+        if (cursor?.after_updated && cursor?.after_id) {
+          query.set("after_updated", cursor.after_updated);
+          query.set("after_id", cursor.after_id);
+        }
+        const suffix = query.toString();
+        const page = await getPrivate(`/api/templates${suffix ? `?${suffix}` : ""}`);
+        if (!Array.isArray(page.templates)) throw new Error("refresh returned an invalid template listing");
+        for (const template of page.templates) {
+          if (template?.slug) bySlug.set(template.slug, template);
+        }
+        cursor = page.next_cursor;
+      } while (cursor?.after_updated && cursor?.after_id);
+      templateRows = [...bySlug.values()];
       if (!allTemplates.some((each) => each.id === templateId)) chooseTemplate("blank");
     } catch {
       // Signed out, or offline: the built-in templates are all there is.

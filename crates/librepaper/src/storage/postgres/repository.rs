@@ -63,6 +63,22 @@ pub struct DocumentRecord {
 }
 
 #[derive(Clone, Debug)]
+pub struct TemplateOperation {
+    pub source_document_id: Uuid,
+    pub title: String,
+    pub target: DocumentRecord,
+    pub complete: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct TemplateOperationRow {
+    source_document_id: Uuid,
+    title: String,
+    target_document_id: Uuid,
+    completed_at: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug)]
 pub struct NewAsset {
     pub document_id: Uuid,
     pub storage_key: String,
@@ -524,6 +540,196 @@ impl PostgresCatalog {
         .ok_or_else(|| Error::Conflict("owner account is inactive or session changed".into()))
     }
 
+    /// Reads a template save operation after rechecking the authenticated
+    /// account generation. Its id is scoped to the owner, and the recorded
+    /// source/title let callers reject accidental key reuse.
+    pub async fn template_operation(
+        &self,
+        owner_id: Uuid,
+        session_generation: i64,
+        request_id: Uuid,
+    ) -> Result<Option<TemplateOperation>> {
+        let mut tx = self.begin_writer_transaction().await?;
+        let account = sqlx::query_as::<_, (String, i64)>(
+            "SELECT status,session_generation FROM accounts WHERE id=$1 FOR SHARE",
+        )
+        .bind(owner_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        if account.0 != "active" || account.1 != session_generation {
+            return Err(Error::Conflict("owner account is inactive or session changed".into()));
+        }
+        let row = sqlx::query_as::<_, TemplateOperationRow>(
+            "SELECT source_document_id,title,target_document_id,completed_at
+             FROM document_template_operations WHERE owner_id=$1 AND request_id=$2",
+        )
+        .bind(owner_id)
+        .bind(request_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let target = sqlx::query_as::<_, DocumentRecord>(
+            "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
+                    main_path,update_sequence,created_at,updated_at,deleted_at
+             FROM documents WHERE id=$1",
+        )
+        .bind(row.target_document_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        tx.commit().await?;
+        Ok(Some(TemplateOperation {
+            source_document_id: row.source_document_id,
+            title: row.title,
+            target,
+            complete: row.completed_at.is_some(),
+        }))
+    }
+
+    /// Atomically reserves an owner-scoped template operation, its ordinary
+    /// document row, and the marker that keeps it out of the project listing.
+    /// Locking the account serializes two simultaneous first attempts with
+    /// the same request id; the loser resumes the winner's target instead of
+    /// creating a second copy.
+    pub async fn begin_template_operation(
+        &self,
+        request_id: Uuid,
+        source_document_id: Uuid,
+        input: NewDocument,
+    ) -> Result<(TemplateOperation, bool)> {
+        validate_document(&input)?;
+        let Some(session_generation) = input.owner_session_generation else {
+            return Err(Error::Invalid("template saves require an authenticated session".into()));
+        };
+        if input.ownership_mode != "owned" {
+            return Err(Error::Invalid("template saves must be owner-held".into()));
+        }
+        let mut tx = self.begin_writer_transaction().await?;
+        let account = sqlx::query_as::<_, (String, i64)>(
+            "SELECT status,session_generation FROM accounts WHERE id=$1 FOR UPDATE",
+        )
+        .bind(input.owner_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        if account.0 != "active" || account.1 != session_generation {
+            return Err(Error::Conflict("owner account is inactive or session changed".into()));
+        }
+        if let Some(row) = sqlx::query_as::<_, TemplateOperationRow>(
+            "SELECT source_document_id,title,target_document_id,completed_at
+             FROM document_template_operations WHERE owner_id=$1 AND request_id=$2",
+        )
+        .bind(input.owner_id)
+        .bind(request_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            if row.source_document_id != source_document_id || row.title != input.title {
+                return Err(Error::Conflict(
+                    "template request id was reused with different input".into(),
+                ));
+            }
+            let target = sqlx::query_as::<_, DocumentRecord>(
+                "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
+                        main_path,update_sequence,created_at,updated_at,deleted_at
+                 FROM documents WHERE id=$1",
+            )
+            .bind(row.target_document_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(Error::NotFound)?;
+            if target.status != "active" {
+                return Err(Error::Conflict("the saved template is no longer active".into()));
+            }
+            tx.commit().await?;
+            return Ok((
+                TemplateOperation {
+                    source_document_id: row.source_document_id,
+                    title: row.title,
+                    target,
+                    complete: row.completed_at.is_some(),
+                },
+                false,
+            ));
+        }
+
+        let target_id = new_id();
+        let target = sqlx::query_as::<_, DocumentRecord>(
+            "INSERT INTO documents
+             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
+             VALUES($1,$2,$3,'owned',$4,'active',$5,$6)
+             RETURNING id,slug,owner_id,ownership_mode,title,status,source_format,
+                       main_path,update_sequence,created_at,updated_at,deleted_at",
+        )
+        .bind(target_id)
+        .bind(&input.slug)
+        .bind(input.owner_id)
+        .bind(&input.title)
+        .bind(&input.source_format)
+        .bind(&input.main_path)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query("INSERT INTO document_templates(document_id) VALUES($1)")
+            .bind(target_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO document_template_operations
+             (owner_id,request_id,source_document_id,title,target_document_id)
+             VALUES($1,$2,$3,$4,$5)",
+        )
+        .bind(input.owner_id)
+        .bind(request_id)
+        .bind(source_document_id)
+        .bind(&input.title)
+        .bind(target_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok((
+            TemplateOperation {
+                source_document_id,
+                title: input.title,
+                target,
+                complete: false,
+            },
+            true,
+        ))
+    }
+
+    pub(crate) async fn complete_template_operation(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        target_document_id: Uuid,
+        request_id: Uuid,
+        source_sequence: i64,
+        tree_digest: Option<[u8; 32]>,
+    ) -> Result<()> {
+        let Some(tree_digest) = tree_digest else {
+            return Err(Error::Conflict("template source digest is unavailable".into()));
+        };
+        let rows = sqlx::query(
+            "UPDATE document_template_operations
+             SET completed_at=clock_timestamp(),source_sequence=$3,tree_digest=$4
+             WHERE target_document_id=$1 AND request_id=$2 AND completed_at IS NULL",
+        )
+        .bind(target_document_id)
+        .bind(request_id)
+        .bind(source_sequence)
+        .bind(tree_digest.as_slice())
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        if rows != 1 {
+            return Err(Error::Conflict("template save operation is missing or already complete".into()));
+        }
+        Ok(())
+    }
+
     /// Remove a document row created before its first source transaction when
     /// that transaction is refused. The predicates preserve it if another
     /// writer has made any durable progress in the meantime.
@@ -652,6 +858,8 @@ impl PostgresCatalog {
                  FROM documents d
                  WHERE d.owner_id=$1 AND d.status='active'
                    AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)
+                   AND NOT EXISTS (SELECT 1 FROM document_template_operations o
+                                   WHERE o.target_document_id=d.id AND o.completed_at IS NULL)
                    AND ($5 OR NOT EXISTS (SELECT 1 FROM document_templates t WHERE t.document_id=d.id))
                    AND (d.updated_at,d.id) <
                        (COALESCE($2::timestamptz,'infinity'),
@@ -663,6 +871,8 @@ impl PostgresCatalog {
                  JOIN documents d ON d.id=g.document_id AND d.status='active'
                  WHERE g.account_id=$1
                    AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)
+                   AND NOT EXISTS (SELECT 1 FROM document_template_operations o
+                                   WHERE o.target_document_id=d.id AND o.completed_at IS NULL)
                    AND ($5 OR NOT EXISTS (SELECT 1 FROM document_templates t WHERE t.document_id=d.id))
                    AND (g.source_link_hash IS NULL OR EXISTS (
                      SELECT 1 FROM share_links l
@@ -711,6 +921,7 @@ impl PostgresCatalog {
     pub async fn templates_by_owner(
         &self,
         owner_id: Uuid,
+        before: Option<(OffsetDateTime, Uuid)>,
         limit: i64,
     ) -> Result<Vec<DocumentRecord>> {
         if !(1..=200).contains(&limit) {
@@ -726,8 +937,15 @@ impl PostgresCatalog {
              JOIN document_templates t ON t.document_id=d.id
              WHERE d.owner_id=$1 AND d.status='active'
                AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)
-             ORDER BY d.updated_at DESC,d.id DESC LIMIT $2",
+               AND NOT EXISTS (SELECT 1 FROM document_template_operations o
+                               WHERE o.target_document_id=d.id AND o.completed_at IS NULL)
+               AND (d.updated_at,d.id) <
+                   (COALESCE($2::timestamptz,'infinity'),
+                    COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+             ORDER BY d.updated_at DESC,d.id DESC LIMIT $4",
             owner_id,
+            before.map(|value| value.0),
+            before.map(|value| value.1),
             limit,
         )
         .fetch_all(&self.pool)

@@ -5,6 +5,7 @@
 // Requires a built librepaper binary and the optional PostgreSQL test URL.
 // Only those established missing prerequisites are skipped.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { deploymentBinary, startDeployment } from "../helpers/deployment.mjs";
 
@@ -37,16 +38,48 @@ try {
   assert.ok(created.ok, `upload: ${created.status}`);
   const source = await created.json();
 
+  const currentLabel = (request_id) => api(`/api/documents/${source.slug}/history/current`, {
+    method: "PATCH", body: { label: "First saved state", request_id },
+  });
+  assert.equal((await api(`/api/documents/${source.slug}/history/current`, {
+    method: "PATCH", body: { label: "First saved state" },
+  })).status, 400, "current labels require a retry identity");
+  const labelRequestId = randomUUID();
+  const firstLabel = await currentLabel(labelRequestId);
+  const replayedLabel = await currentLabel(labelRequestId);
+  assert.equal(firstLabel.status, 200, JSON.stringify(firstLabel.body));
+  assert.equal(replayedLabel.status, 200, JSON.stringify(replayedLabel.body));
+  assert.equal(replayedLabel.body.sha, firstLabel.body.sha, "an ambiguous retry returns the original current label");
+
   assert.equal((await api(`/api/documents/${source.slug}/template`, { method: "POST", body: { title: "  " } })).status, 400);
-  const saved = await api(`/api/documents/${source.slug}/template`, { method: "POST", body: { title: "My template" } });
+  const requestId = randomUUID();
+  const saveBody = { title: "My template", request_id: requestId };
+  const saved = await api(`/api/documents/${source.slug}/template`, { method: "POST", body: saveBody });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const template = saved.body;
   assert.notEqual(template.slug, source.slug, "a template is a copy, not the project itself");
   assert.equal(template.title, "My template");
+  const replay = await api(`/api/documents/${source.slug}/template`, { method: "POST", body: saveBody });
+  assert.equal(replay.status, 200, JSON.stringify(replay.body));
+  assert.equal(replay.body.slug, template.slug, "retrying a lost response returns the same copy");
+  assert.equal(
+    (await api(`/api/documents/${source.slug}/template`, {
+      method: "POST",
+      body: { title: "Different title", request_id: requestId },
+    })).status,
+    409,
+    "an operation id cannot be reused for different input",
+  );
 
   const listed = (await api("/api/templates")).body.templates;
   assert.deepEqual(slugs(listed), [template.slug]);
   assert.equal(listed[0].source_format, "typst");
+  const templatePage = await api("/api/templates?limit=1");
+  assert.equal(templatePage.status, 200);
+  assert.match(templatePage.body.next_cursor.after_id, /^[0-9a-f-]{36}$/i);
+  const templateCursor = new URLSearchParams(templatePage.body.next_cursor);
+  const nextTemplatePage = await api(`/api/templates?${templateCursor}`);
+  assert.deepEqual(nextTemplatePage.body.templates, []);
 
   const projects = (await api("/api/list")).body.documents;
   assert.ok(slugs(projects).includes(source.slug), "the source stays a project");

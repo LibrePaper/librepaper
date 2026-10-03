@@ -512,6 +512,7 @@ fn client_seq_of(id: Uuid) -> i64 {
 /// yet, removing nothing and writing everything is exactly a creation.
 struct ReplaceProject {
     request_id: Uuid,
+    template_operation_id: Option<Uuid>,
     document_id: Uuid,
     catalog: Arc<Catalog>,
     texts: Vec<(String, String)>,
@@ -646,6 +647,17 @@ impl Command for ReplaceProject {
                     },
                 )
                 .await?;
+            if let Some(operation_id) = self.template_operation_id {
+                self.catalog
+                    .complete_template_operation(
+                        tx,
+                        self.document_id,
+                        operation_id,
+                        evidence.source_sequence,
+                        tree_digest,
+                    )
+                    .await?;
+            }
             Ok(())
         })
     }
@@ -765,13 +777,50 @@ impl Store {
         entries_from_documents(catalog, &documents).await
     }
 
-    /// The custom templates this account owns, most recently changed first.
-    pub async fn templates_page(&self, account_id: &str) -> Result<Vec<IndexEntry>, CatalogError> {
+    /// One keyset page of this account's completed custom templates.
+    pub async fn templates_page(
+        &self,
+        account_id: &str,
+        cursor: Option<(&str, &str)>,
+        limit: u32,
+    ) -> Result<(Vec<IndexEntry>, Option<(String, String)>), CatalogError> {
         let catalog = &self.catalog;
         let account_id = uuid::Uuid::parse_str(account_id)
             .map_err(|_| CatalogError::Invalid("invalid listing account".into()))?;
-        let documents = catalog.templates_by_owner(account_id, 200).await?;
-        entries_from_documents(catalog, &documents).await
+        if !(1..=200).contains(&limit) {
+            return Err(CatalogError::Invalid("template page limit must be 1..=200".into()));
+        }
+        let before = match cursor {
+            Some((updated, id)) => {
+                let updated = time::OffsetDateTime::parse(
+                    updated,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .map_err(|_| CatalogError::Invalid("invalid template cursor".into()))?;
+                let id = uuid::Uuid::parse_str(id)
+                    .map_err(|_| CatalogError::Invalid("invalid template cursor".into()))?;
+                Some((updated, id))
+            }
+            None => None,
+        };
+        let documents = catalog
+            .templates_by_owner(account_id, before, i64::from(limit))
+            .await?;
+        let next = if documents.len() == limit as usize {
+            match documents.last() {
+                Some(document) => Some((
+                    document
+                        .updated_at
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .map_err(|error| CatalogError::Invalid(error.to_string()))?,
+                    document.id.to_string(),
+                )),
+                None => None,
+            }
+        } else {
+            None
+        };
+        Ok((entries_from_documents(catalog, &documents).await?, next))
     }
 
     /// Every document this account has deleted and can still get back, newest
@@ -790,10 +839,14 @@ impl Store {
         let entries = entries_from_documents(catalog, &documents).await?;
         let mut rows = Vec::with_capacity(entries.len());
         for (entry, document) in entries.into_iter().zip(documents.iter()) {
-            let due = catalog
-                .deletion_due(document.id)
-                .await?
-                .map(|at| crate::util::format_unix(at.unix_timestamp()));
+            // `trashed_documents` already returned the deletion timestamp.
+            // Derive the fixed purge grace from that row instead of issuing
+            // one `deletion_due` query per document.
+            let due = document.deleted_at.map(|at| {
+                crate::util::format_unix(
+                    (at + crate::storage::maintenance::DELETION_GRACE).unix_timestamp(),
+                )
+            });
             rows.push((entry, due));
         }
         Ok(rows)
@@ -1052,6 +1105,38 @@ impl Store {
         files: Vec<(String, Vec<u8>)>,
         actor: MutationActor,
     ) -> Result<IndexEntry, PutError> {
+        self.put_directory_with_operation(value, files, actor, None)
+            .await
+    }
+
+    /// Writes a template's first source command against the atomically
+    /// reserved target row. Completion is part of `ReplaceProject`'s durable
+    /// transaction, so the row stays hidden from the template shelf until
+    /// its copied source is committed.
+    pub async fn put_template_directory_as_actor(
+        &self,
+        value: DocumentInput,
+        files: Vec<(String, Vec<u8>)>,
+        actor: MutationActor,
+        request_id: Uuid,
+        target_document_id: Uuid,
+    ) -> Result<IndexEntry, PutError> {
+        self.put_directory_with_operation(
+            value,
+            files,
+            actor,
+            Some((request_id, target_document_id)),
+        )
+        .await
+    }
+
+    async fn put_directory_with_operation(
+        &self,
+        value: DocumentInput,
+        files: Vec<(String, Vec<u8>)>,
+        actor: MutationActor,
+        template_operation: Option<(Uuid, Uuid)>,
+    ) -> Result<IndexEntry, PutError> {
         let catalog = &self.catalog;
         let account_id =
             uuid::Uuid::parse_str(&actor.account_id).map_err(|_| PutError::Authorization {
@@ -1071,7 +1156,21 @@ impl Store {
             .await
             .map_err(source_put_error)?
         {
-            Some(document) => (document, false),
+            Some(document) => {
+                if template_operation.is_some_and(|(_, expected_id)| document.id != expected_id) {
+                    return Err(PutError::Authorization {
+                        status: 409,
+                        message: "the template save target changed",
+                    });
+                }
+                (document, false)
+            }
+            None if template_operation.is_some() => {
+                return Err(PutError::Authorization {
+                    status: 409,
+                    message: "the template save target disappeared",
+                });
+            }
             None => (
                 catalog
                     .create_document(crate::storage::postgres::NewDocument {
@@ -1128,7 +1227,10 @@ impl Store {
                 automation: actor.automation,
             };
             let mut command = ReplaceProject {
-                request_id: Uuid::new_v4(),
+                request_id: template_operation
+                    .map(|(request_id, _)| request_id)
+                    .unwrap_or_else(Uuid::new_v4),
+                template_operation_id: template_operation.map(|(request_id, _)| request_id),
                 document_id: document.id,
                 catalog: catalog.clone(),
                 texts,
