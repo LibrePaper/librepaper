@@ -112,19 +112,12 @@ fn conventional_dirs() -> Vec<PathBuf> {
     dirs.push(PathBuf::from("/usr/local/bin"));
 
     // User-local binary directories.
-    if let Some(home) = home_dir() {
+    if let Some(home) = super::paths::home() {
         dirs.push(home.join(".local").join("bin"));
         dirs.push(home.join(".cargo").join("bin"));
     }
 
     dirs
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
 }
 
 /// The first directory among `dirs` that holds `tool`, resolved to its
