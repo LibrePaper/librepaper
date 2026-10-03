@@ -21,10 +21,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use librepaper_room::room::{
-    decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
-    Sender,
-};
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
 };
@@ -38,13 +34,17 @@ use librepaper_base::auth::{
     VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
+use librepaper_base::shell::{renderers, ShellFile};
 use librepaper_base::util::clean;
 use librepaper_document::document::render::{title_from_html, title_from_markdown};
 use librepaper_engine::storage::store::{
     random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
     Role, Store,
 };
-use librepaper_base::shell::{renderers, ShellFile};
+use librepaper_room::room::{
+    decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
+    Sender,
+};
 
 mod agent_auth;
 mod chat;
@@ -1726,7 +1726,9 @@ impl Server {
             .proposal(proposal_id)
             .await
             .map_err(|error| librepaper_room::room::WriteError::Storage(error.to_string()))?
-            .ok_or_else(|| librepaper_room::room::WriteError::Conflict("unknown suggestion".into()))?;
+            .ok_or_else(|| {
+                librepaper_room::room::WriteError::Conflict("unknown suggestion".into())
+            })?;
         // The passage as the comment currently has it anchored, which is
         // what `RefineSuggestion` relocates from -- not anything the wire
         // message carries, since `Command::Refine` names only the new
@@ -1810,12 +1812,15 @@ mod comment_lookup_tests {
     /// the comment is unknown.
     #[test]
     fn a_failed_read_is_not_an_unknown_comment() {
-        let missing = read_error_value(librepaper_room::room::WriteError::Conflict("unknown comment".into()));
+        let missing = read_error_value(librepaper_room::room::WriteError::Conflict(
+            "unknown comment".into(),
+        ));
         assert_eq!(missing["message"], json!("unknown comment"));
         assert!(missing.get("retryable").is_none());
 
-        let unavailable =
-            read_error_value(librepaper_room::room::WriteError::Storage("connection reset".into()));
+        let unavailable = read_error_value(librepaper_room::room::WriteError::Storage(
+            "connection reset".into(),
+        ));
         assert_eq!(
             unavailable["message"],
             json!("storage temporarily unavailable")

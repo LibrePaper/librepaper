@@ -144,9 +144,9 @@ pub use librepaper_base::auth::{
 pub use librepaper_base::util::now_unix;
 pub use librepaper_engine::storage::blob::{BlobStore, FsStore};
 pub use librepaper_engine::storage::store::Store;
-pub use librepaper_shell::ShellFile;
 pub use librepaper_room::room::{Room, Rooms};
 pub use librepaper_server::server::Server;
+pub use librepaper_shell::ShellFile;
 
 /// The release version, stamped in at build time for release artifacts and
 /// derived from the package version for crates.io installs.

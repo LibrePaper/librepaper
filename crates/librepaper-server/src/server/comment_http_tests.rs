@@ -18,7 +18,6 @@ use std::sync::Arc;
 use serde_json::json;
 use uuid::Uuid;
 
-use librepaper_room::room::{Message as RoomMessage, Rooms};
 use librepaper_base::auth::{GithubApp, Identity, Policy, PROVIDER_GITHUB};
 use librepaper_base::config::Configuration;
 use librepaper_engine::log::Registry;
@@ -26,6 +25,7 @@ use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::PostgresCatalog;
 use librepaper_engine::storage::postgres::{AccessRole, NewAccount};
 use librepaper_engine::storage::store::{DocumentInput, MutationActor, Role, Store};
+use librepaper_room::room::{Message as RoomMessage, Rooms};
 
 use super::{Server, Viewer};
 

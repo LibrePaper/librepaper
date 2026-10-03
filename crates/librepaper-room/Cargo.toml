@@ -11,6 +11,7 @@ repository.workspace = true
 doctest = false
 
 [dependencies]
+sqlx.workspace = true
 librepaper-base = { path = "../librepaper-base" }
 librepaper-document = { path = "../librepaper-document" }
 librepaper-engine = { path = "../librepaper-engine" }
@@ -30,7 +31,6 @@ log.workspace = true
 # `start_paused` and `advance`, so the deadline tests move a clock instead of
 # waiting on one. Test builds only.
 tokio = { workspace = true, features = ["test-util"] }
-sqlx.workspace = true
 tempfile.workspace = true
 regex.workspace = true
 html-escape.workspace = true

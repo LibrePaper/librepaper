@@ -2,14 +2,14 @@
 //! sends and receives, and the reauthorisation that runs while it is open.
 
 use super::*;
-use librepaper_room::room::proposals::{
-    DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
-};
-use librepaper_room::room::Room;
 use librepaper_engine::log::sequencer::Ingested;
 use librepaper_engine::log::CommandError;
 use librepaper_engine::storage::outgoing::OutgoingSink;
 use librepaper_engine::storage::postgres::{StoredProposal, StoredProposalOutcome};
+use librepaper_room::room::proposals::{
+    DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
+};
+use librepaper_room::room::Room;
 
 /// Bound both queue and transport writes so a slow peer cannot pin the reader
 /// or the writer task down indefinitely.
@@ -525,7 +525,12 @@ impl Server {
                     let mut state = librepaper_room::room::comments::comment_state_json(&state);
                     state["complete"] = json!(page.complete);
                     state["next_cursor"] = json!(page.next.map(|at| {
-                        librepaper_room::room::comments::encode_cursor(room.document_id, None, may_edit, at)
+                        librepaper_room::room::comments::encode_cursor(
+                            room.document_id,
+                            None,
+                            may_edit,
+                            at,
+                        )
                     }));
                     json!({"type": "hello", "comments": comments, "state": state})
                 }

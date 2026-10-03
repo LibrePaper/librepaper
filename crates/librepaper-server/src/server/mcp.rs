@@ -1,7 +1,7 @@
 //! MCP document tools. MCP owns transport; rooms own effects and durability.
 use super::*;
-use librepaper_room::room::agent_query::{QueryBudget, QuerySnapshot};
 use hmac::{Hmac, Mac};
+use librepaper_room::room::agent_query::{QueryBudget, QuerySnapshot};
 use serde::Serialize;
 
 pub(crate) mod comments;
@@ -700,8 +700,13 @@ impl Server {
             };
             let after = match at.as_deref() {
                 Some(raw) => Some(
-                    librepaper_room::room::comments::decode_cursor(raw, room.document_id, thread, editor)
-                        .map_err(|error| Failure::new("invalid_params", error.to_string()))?,
+                    librepaper_room::room::comments::decode_cursor(
+                        raw,
+                        room.document_id,
+                        thread,
+                        editor,
+                    )
+                    .map_err(|error| Failure::new("invalid_params", error.to_string()))?,
                 ),
                 None => None,
             };

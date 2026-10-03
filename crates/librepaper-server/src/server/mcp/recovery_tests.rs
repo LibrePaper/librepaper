@@ -10,7 +10,6 @@ use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use librepaper_room::room::Rooms;
 use crate::server::origins::Origins;
 use librepaper_base::auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
 use librepaper_base::config::Configuration;
@@ -18,6 +17,7 @@ use librepaper_engine::log::Registry;
 use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::{AccessRole, NewAccount, PostgresCatalog};
 use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_room::room::Rooms;
 
 use super::super::Server;
 
