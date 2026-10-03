@@ -41,6 +41,12 @@ try {
   assert.equal(takeKeyFromFragment("slug"), "private-key");
   assert.equal(keyFor("slug"), "private-key");
   assert.match(linkFor("slug"), /#k=private-key$/);
+  let replaced = "";
+  globalThis.location.hash = "#k=%";
+  globalThis.history.replaceState = (_state, _title, url) => { replaced = url; };
+  assert.equal(takeKeyFromFragment("malformed-fragment"), "");
+  assert.equal(keyFor("malformed-fragment"), "", "the malformed value is not remembered");
+  assert.equal(replaced, "/docs/slug", "the invalid fragment is removed from the address bar");
 } finally {
   globalThis.location = savedLocation;
   globalThis.history = savedHistory;

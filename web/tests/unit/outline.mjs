@@ -63,7 +63,6 @@ const reviewCases = [
  ['html', '<h1 title="x > y">Good</h1>', ['Good']],
  ['html', '<div title="<h1>Fake</h1>"></div><h2>Real</h2>', ['Real']],
  ['html', '<textarea><h1>Fake</h1></textarea><h1>Real</h1>', ['Real']],
- ['html', '<h1>&#9999999999; heading</h1>', null],
  ['markdown', '<!--\n```\n-->\n# Real', ['Real']],
  ['markdown', '```\n# Fake\n```suffix\n# Still fake\n```\n# Real', ['Real']],
  ['markdown', 'Title\n---\n---', ['Title']],
@@ -81,7 +80,8 @@ const reviewCases = [
 ];
 for (const [format, source, expected] of reviewCases) {
   const actual = extractOutline(source, format).map(heading => heading.title);
-  if (expected !== null) assert.deepEqual(actual, expected, format + ': ' + source);
+  assert.deepEqual(actual, expected, format + ': ' + source);
 }
+assert.doesNotThrow(() => extractOutline('<h1>&#9999999999; heading</h1>', 'html'));
 
 console.log("outline: markdown/quarto, typst, html, and latex extraction passed");

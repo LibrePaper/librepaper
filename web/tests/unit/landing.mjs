@@ -18,6 +18,7 @@ const body = (start, end) => {
 const showList = body("  async function showList()", "  async function deleteSelected");
 const reallyDelete = body("  async function reallyDelete()", "  /* --------------------------------------------------------- a new project */");
 const create = body("  async function create(event)", "  $effect(() => {");
+const reconcileTemplateSelection = body("  function reconcileTemplateSelection()", "  $effect(() => reconcileTemplateSelection());");
 
 const context = (values) => vm.createContext({
   Promise,
@@ -64,6 +65,34 @@ const context = (values) => vm.createContext({
   ]);
   assert.deepEqual(Array.from(ctx.documents, (doc) => doc.slug), ["first", "duplicate", "last"]);
   assert.deepEqual(problems, []);
+}
+
+// Filtering always leaves a visible template selected, or clears the choice
+// when there are no matches; creation also guards against stale hidden state.
+{
+  const ctx = context({
+    shownTemplates: [{ id: "visible" }, { id: "other" }], templateId: "visible",
+  });
+  vm.runInContext(reconcileTemplateSelection, ctx);
+  vm.runInContext("reconcileTemplateSelection()", ctx);
+  vm.runInContext("shownTemplates = [{ id: 'other' }];", ctx);
+  vm.runInContext("reconcileTemplateSelection()", ctx);
+  assert.equal(ctx.templateId, "other");
+  vm.runInContext("shownTemplates = [];", ctx);
+  vm.runInContext("reconcileTemplateSelection()", ctx);
+  assert.equal(ctx.templateId, "");
+
+  let uploads = 0;
+  const stale = context({
+    name: "A name", nameError: "", busy: false, chosenTemplate: { id: "hidden" },
+    shownTemplates: [{ id: "visible" }], templateId: "hidden", nameInput: null,
+    upload: async () => { uploads++; return { ok: true, json: async () => ({ url: "/docs/no" }) }; },
+    location: { href: "/" },
+  });
+  vm.runInContext(create, stale);
+  await vm.runInContext("create({ preventDefault() {} })", stale);
+  assert.equal(uploads, 0);
+  assert.match(stale.nameError, /visible template/);
 }
 
 // A later-page failure reports the refresh problem while leaving the prior
@@ -153,6 +182,7 @@ const picker = {
   me: { name: "Ada" },
   templateId: "article",
   chosenTemplate: { id: "article", custom: false },
+  shownTemplates: [{ id: "article" }],
   format: "quarto",
   formatNamed, fillTemplate,
   templateFiles: async () => [{ path: "main.qmd", text: 'title: "{{title}}"\nauthor: "{{author}}"\n' }],

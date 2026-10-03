@@ -40,12 +40,9 @@ export function createLocalPreview({
   // browser was rendering into it.
   onStartingChange,
   onEnded,
-  now = () => Date.now(),
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (timer) => clearTimeout(timer),
 } = {}) {
-  void now; // reserved for a future backoff; every cadence today is fixed.
-
   // What the page draws. Owned here rather than mirrored into the page
   // through callbacks: these are facts about a preview, the preview is this
   // module, and a mirror is one more thing that can disagree.

@@ -2117,12 +2117,10 @@
   // is what the source pane has always shown and what keystroke-speed feedback
   // requires; the two are different jobs.
   //
-  // The documents origin shares no cookie with this one and holds no link key,
-  // so on its own it has no way to tell who is asking. It serves a document's
-  // bytes only to a frame whose URL carries a short-lived token, which this
-  // page fetches over the channel that does carry an identity -- see
-  // `navigateFrame`. That is what lets every HTML document be served as
-  // itself, scripts and all, now that reading always takes a credential.
+  // The documents origin serves only an empty shell. This reader fetches the
+  // source projection with its credentials, renders it here, then sends the
+  // resulting HTML to the frame over an origin-checked message. The frame URL
+  // carries only `navigateFrame`'s refresh generation, never a credential.
   //
   // And a label is always painted, whatever the format: the frame is
   // served from the live document, so there is nothing on the documents origin

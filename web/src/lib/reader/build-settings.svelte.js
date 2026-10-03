@@ -101,7 +101,7 @@ export function createBuildSettings({
     apply(next, format, "chosen");
     if (format === "latex") {
       state.latex = engineSettings(next);
-      latex.configure({ project: slug, settings: state.latex, mayCompile: renderers.available("latex") });
+      latex.configure({ project: slug, settings: state.latex });
       latex.setSettings(state.latex);
     }
     paint();
@@ -136,7 +136,6 @@ export function createBuildSettings({
     latex.configure({
       project: slug,
       settings: state.latex,
-      mayCompile: renderers.available("latex"),
     });
     observedSession = session;
     return state.preferences;
