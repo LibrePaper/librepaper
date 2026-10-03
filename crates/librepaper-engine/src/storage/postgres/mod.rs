@@ -364,15 +364,15 @@ mod tests {
         .unwrap();
 
         for migration in [
-            include_str!("../../../migrations/postgres/0001_catalog.sql"),
-            include_str!("../../../migrations/postgres/0002_purge_claim.sql"),
-            include_str!("../../../migrations/postgres/0003_catalog_constraints_indexes.sql"),
-            include_str!("../../../migrations/postgres/0004_archive_accounting.sql"),
-            include_str!("../../../migrations/postgres/0005_document_snapshots.sql"),
-            include_str!("../../../migrations/postgres/0006_operation_outcomes.sql"),
-            include_str!("../../../migrations/postgres/0007_drop_example_ownership.sql"),
-            include_str!("../../../migrations/postgres/0008_proposals_are_pending.sql"),
-            include_str!("../../../migrations/postgres/0009_grant_provenance.sql"),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0001_catalog.sql")),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0002_purge_claim.sql")),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0003_catalog_constraints_indexes.sql")),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0004_archive_accounting.sql")),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0005_document_snapshots.sql")),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0006_operation_outcomes.sql")),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0007_drop_example_ownership.sql")),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0008_proposals_are_pending.sql")),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0009_grant_provenance.sql")),
         ] {
             sqlx::raw_sql(migration).execute(&mut *tx).await.unwrap();
         }
@@ -397,7 +397,7 @@ mod tests {
         .unwrap();
 
         sqlx::raw_sql(include_str!(
-            "../../../migrations/postgres/0010_document_archives.sql"
+            concat!(env!("CARGO_MANIFEST_DIR"), "/migrations/postgres/0010_document_archives.sql")
         ))
         .execute(&mut *tx)
         .await

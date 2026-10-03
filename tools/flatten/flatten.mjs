@@ -232,6 +232,29 @@ function ruleBuildScriptEnv(ctx) {
   }
 }
 
+// 9. No file-relative include that leaves src/.
+function ruleEscapingInclude(ctx) {
+  const include = /include_(?:str|bytes)!\(\s*"((?:\.\.\/)+)/g;
+  for (const crate of ctx.subs) {
+    const src = join(crate.dir, "src");
+    for (const file of walk(src).filter((f) => f.endsWith(".rs"))) {
+      const depth = relative(src, dirname(file)).split(/[\\/]/).filter(Boolean).length;
+      const text = readFileSync(file, "utf8");
+      for (const m of text.matchAll(include)) {
+        if (m[1].length / 3 >= depth) {
+          const line = text.slice(0, m.index).split("\n").length;
+          ctx.report(
+            file,
+            line,
+            "escaping-include",
+            'a file-relative include that leaves src/ resolves differently in the flat crate; use concat!(env!("CARGO_MANIFEST_DIR"), "/...")',
+          );
+        }
+      }
+    }
+  }
+}
+
 function lint(ws) {
   const findings = [];
   const ctx = {
@@ -247,6 +270,7 @@ function lint(ws) {
     ruleModuleNames,
     ruleCrateInStrings,
     ruleBuildScriptEnv,
+    ruleEscapingInclude,
   ]) {
     rule(ctx);
   }

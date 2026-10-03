@@ -14,7 +14,7 @@ use librepaper_document::results::{
 };
 
 pub fn filter() -> &'static str {
-    include_str!("../../assets/quarto-capture.lua")
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/quarto-capture.lua"))
 }
 
 /// Return inline records whose authored line is a complete, single-line

@@ -36,3 +36,4 @@ The Rust code is a workspace of internal sub-crates under `crates/`.
   - a crate's short name is not a module of the facade, nor `testing`
   - no `crate::` inside a string literal
   - every `cargo:rustc-env=` in a sub-crate `build.rs` is also emitted by `tools/flatten/build.rs`
+  - no file-relative `include_str!("../...")` or `include_bytes!` that leaves `src/`; use `concat!(env!("CARGO_MANIFEST_DIR"), "/...")`
