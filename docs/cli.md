@@ -42,7 +42,7 @@ export LIBREPAPER_SERVER="https://librepaper.arelbundock.com"
 
 ```sh
 librepaper login      # prints code and URL to sign in (valid 90 days)
-librepaper logout     # revoke token
+librepaper logout     # remove the cached token from this computer
 ```
 
 ## List
