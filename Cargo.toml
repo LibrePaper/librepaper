@@ -138,7 +138,7 @@ thiserror = "2"
 # compile-independent migrations; queries are exercised against PostgreSQL in
 # integration tests against the production database engine.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "uuid", "time", "json", "migrate", "macros"] }
-uuid = { version = "1", features = ["v7", "serde"] }
+uuid = { version = "1", features = ["v7", "v8", "serde"] }
 log = "0.4"
 # Free-space statistics for the storage ceiling warning and the capacity
 # snapshot. std has file locks; it has no statvfs.

@@ -124,19 +124,19 @@ pub struct Flat {
     pub from: Vec<u32>,
 }
 
-/// The named entities worth decoding in an HTML source. Anything else is
-/// blanked: an entity nobody here knows is not prose, and leaving its letters
-/// in would put `amp` in the middle of a sentence.
-fn named_entity(body: &str) -> Option<char> {
-    match body.to_ascii_lowercase().as_str() {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" => Some('\''),
-        "nbsp" => Some(' '),
-        _ => None,
+/// A named entity from the full HTML table, accepted only when it decodes to
+/// exactly one character. Anything else is blanked: an entity nobody here
+/// knows is not prose, and leaving its letters in would put `amp` in the
+/// middle of a sentence. `entity` is the whole reference, `&` and `;` included.
+fn named_entity(entity: &str) -> Option<char> {
+    let decoded = html_escape::decode_html_entities(entity);
+    let mut chars = decoded.chars();
+    let only = chars.next()?;
+    if chars.next().is_some() || decoded == entity {
+        return None;
     }
+    // A no-break space is a space here, as it is to a reader.
+    Some(if only == '\u{a0}' { ' ' } else { only })
 }
 
 fn numeric_entity(body: &str) -> Option<char> {
@@ -199,7 +199,8 @@ pub fn flatten(text: &str, html: bool) -> Flat {
             }
             if let Some(semicolon) = rest[..limit].find(';') {
                 let body = &rest[1..semicolon];
-                let decoded = named_entity(body).or_else(|| numeric_entity(body));
+                let decoded = numeric_entity(body)
+                    .or_else(|| named_entity(&rest[..semicolon + 1]));
                 if let Some(decoded) = decoded {
                     // `&nbsp;` decodes to a space, and a space next to a space
                     // is one space here like anywhere else -- otherwise a
@@ -750,6 +751,17 @@ mod tests {
         }];
         let found = locate(&files, &quote("Tea & coffee", "", "")).unwrap();
         assert_eq!(found.exact, "Tea &amp; coffee");
+    }
+
+    #[test]
+    fn named_entities_beyond_the_basic_six_anchor() {
+        let files = vec![Candidate {
+            file_id: "f1",
+            path: "index.html",
+            text: "<p>A caf&eacute; &mdash; open late.</p>\n",
+        }];
+        let found = locate(&files, &quote("caf\u{e9} \u{2014} open", "", "")).unwrap();
+        assert_eq!(found.exact, "caf&eacute; &mdash; open");
     }
 
     #[test]
