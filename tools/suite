@@ -40,7 +40,7 @@ suite_browser() {
 	# override the browser prerequisite and resolver used here.
 	export BROWSER=chromium
 	tools/pins fetch
-	local failed="" test log test_arg
+	local failed="" test log
 	local -a test_args=()
 	for test in web/tests/browser/*.mjs; do
 		printf '%s: ' "$(basename "$test")"
