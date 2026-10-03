@@ -1,0 +1,5 @@
+{
+  "name": "Article",
+  "description": "A paper with an abstract, sections and a bibliography.",
+  "keywords": ["paper", "journal", "preprint", "abstract", "bibliography"]
+}

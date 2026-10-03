@@ -63,6 +63,7 @@ export const PROJECT_TABS = [
   { id: "recent", says: "Recent", icon: "history" },
   { id: "shared", says: "Shared with me", compactLabel: "Shared", icon: "users" },
   { id: "favorites", says: "Favorites", icon: "star" },
+  { id: "templates", says: "Templates", icon: "layout-template" },
   // Last, and after a gap the stylesheet puts there: the trash is a place you
   // go on purpose, and never the one you land on next to Favorites by being
   // slightly off with the pointer.

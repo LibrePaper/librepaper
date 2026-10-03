@@ -203,6 +203,7 @@
       ["path", "M22 21v-2a4 4 0 0 0-3-3.87"],
       ["path", "M16 3.13a4 4 0 0 1 0 7.75"],
     ],
+    "layout-template": [["rect", { width: 18, height: 7, x: 3, y: 3, rx: 1 }], ["rect", { width: 9, height: 7, x: 3, y: 14, rx: 1 }], ["rect", { width: 7, height: 7, x: 14, y: 14, rx: 1 }]],
     trash: [
       ["path", "M3 6h18"],
       ["path", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"],
