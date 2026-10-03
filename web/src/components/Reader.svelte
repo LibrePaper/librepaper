@@ -3788,7 +3788,7 @@
     </Menu.Item>
     <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
   {/if}
-  {#if me?.id}<Menu.Item value="save-template" class="menuitem">Save as template...</Menu.Item>{/if}
+  {#if me?.id}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
   <!-- Only where the panel behind it is one this reader is offered: a menu
@@ -4381,6 +4381,7 @@
   {#snippet children()}
     <label class="label">
       <span class="label-text">Template name</span>
+      <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
       <input class="input" autofocus bind:value={templateName} />
     </label>
     {#if templateError}<p class="lp-text-error text-sm">{templateError}</p>{/if}

@@ -198,7 +198,7 @@
             <div role="cell" class="doc-title">
               <div class="title-with-badge">
                 <a class="title-text" href="/docs/{doc.slug}" title={nameOf(doc)}>{nameOf(doc)}</a>
-                {#if doc.template}<span class="badge">Template</span>{/if}
+                {#if doc.template}<span class="badge lp-tone-neutral">Template</span>{/if}
               </div>
               {#if trimErrors[doc.slug]}<div class="trim-error">{trimErrors[doc.slug]}</div>{/if}
               {#if deleteTemplateErrors[doc.slug]}<div class="trim-error">{deleteTemplateErrors[doc.slug]}</div>{/if}
@@ -226,23 +226,23 @@
   </SettingRow>
 {/if}
 
-<Modal bind:open={trimOpen} title=”Trim history?”
-       confirm={{ label: trimPending ? “Trimming…” : “Trim history”, tone: “error”, disabled: trimPending, onclick: confirmTrim }}>
+<Modal bind:open={trimOpen} title="Trim history?"
+       confirm={{ label: trimPending ? "Trimming…" : "Trim history", tone: "error", disabled: trimPending, onclick: confirmTrim }}>
   {#if trimTarget}
     <p>This keeps “<strong>{trimTarget.title}</strong>” as it is now and permanently deletes everything before it:</p>
-    <ul class=”trim-list”>
+    <ul class="trim-list">
       <li>Its editing history ({storageBytes(trimTarget.historyBytes)})</li>
       <li>All its named versions ({storageBytes(trimTarget.archiveBytes)})</li>
       <li>Figures its current files no longer use, except ones uploaded in the last hour</li>
     </ul>
-    <p class=”lp-text-secondary text-sm”>Comments stay. This cannot be undone.</p>
+    <p class="lp-text-secondary text-sm">Comments stay. This cannot be undone.</p>
   {/if}
 </Modal>
 
-<Modal bind:open={deleteTemplateOpen} title=”Delete template?”
-       confirm={{ label: deleteTemplatePending ? “Deleting...” : “Delete”, tone: “error”, disabled: deleteTemplatePending, onclick: confirmDeleteTemplate }}>
+<Modal bind:open={deleteTemplateOpen} title="Delete template?"
+       confirm={{ label: deleteTemplatePending ? "Deleting..." : "Delete", tone: "error", disabled: deleteTemplatePending, onclick: confirmDeleteTemplate }}>
   {#if deleteTemplateTarget}
-    <p>”<strong>{deleteTemplateTarget.title}</strong>” will move to the trash, where it stays for seven days. Until then you can put it back.</p>
+    <p>“<strong>{deleteTemplateTarget.title}</strong>” will move to the trash, where it stays for seven days. Until then you can put it back.</p>
   {/if}
 </Modal>
 
@@ -269,7 +269,6 @@
   .title-with-badge { display: flex; align-items: center; gap: calc(var(--spacing) * 1); min-width: 0; }
   .title-text { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: inherit; text-decoration: none; }
   .title-text:hover, .title-text:focus-visible { text-decoration: underline; }
-  .badge { white-space: nowrap; font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 4px; background: var(--color-primary-light); color: var(--color-primary-text); flex-shrink: 0; }
   .doc-storage { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
   .doc-actions { display: flex; gap: calc(var(--spacing) * 1); }
   .doc-total { min-width: 4.5rem; text-align: right; white-space: nowrap; font-size: 0.875rem; font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
