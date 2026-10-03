@@ -1,9 +1,8 @@
 # The LaTeX corpus
 
-Four documents, each a directory with a `main.tex`, written when LaTeX in the
-browser was first specified. They exist to be compiled by every distribution
-LibrePaper drives and by a TeX Live on a desk, and to disagree with none of
-them. What each is for:
+The corpus contains browser-comparison examples, an intentional negative
+fixture, and independent local TeX Live probes. Every document has a directory
+with a `main.tex`; each has a distinct purpose:
 
 - **`article/`** — one file, with its bibliography inside it in
   `filecontents*`. It is the shape the spec was written against before a
@@ -31,15 +30,17 @@ them. What each is for:
   compiler. Two pages on a TeX Live; `MEASUREMENTS.md` records what it
   can and cannot do on SwiftLaTeX pdfTeX.
 
-- **`xetex/`** — a document that needs XeTeX: `fontspec`, and Greek and
-  Cyrillic in the source rather than as macros. It is how a pdfTeX-only
-  distribution is shown refusing cleanly, with the error `fontspec`
-  gives, rather than producing a wrong page. One page.
+- **`xetex/`** — a document that needs XeTeX and `fontspec`. It is how a
+  pdfTeX-only distribution is shown refusing cleanly, with the error
+  `fontspec` gives, rather than producing a wrong page. One page.
 
-- **`unicode-fonts/`** — also XeTeX: named Libertinus text and math fonts
-  through `fontspec` and `unicode-math`, with Greek and Cyrillic text. Not
-  held to `pages.json`; wasm-latex's package recorder compiles it so the
-  named-font and `unicode-math` package requests reach the mirror.
+- **`unicode-fonts/`** — a positive XeTeX Unicode glyph-coverage sample:
+  named Libertinus text and math fonts through `fontspec` and `unicode-math`,
+  with Greek and Cyrillic. The TeX Live oracle requires a positive page count
+  and rejects `Missing character` diagnostics. It is not run through the
+  browser comparison because those workers do not promise system fonts; the
+  wasm-latex package recorder also compiles it so the named-font and
+  `unicode-math` package requests reach the mirror.
 
 ## What is generated, and by what
 
@@ -48,7 +49,9 @@ them. What each is for:
   `node web/tests/browser/latex-browser.mjs --measure`. These are the parser's
   fixtures and `web/tests/unit/latex-log.mjs` runs over all of them.
 - `pages.json` — the page count a TeX Live on this machine gives each
-  document, which every distribution is then held to.
+  browser-comparison document and positive local XeTeX sample. The browser
+  harness compares only its explicit `article`, `paper`, `packages`, and
+  `xetex` cases.
 - `broken/expected.json` — the diagnostics, per engine.
 - `MEASUREMENTS.md` — bytes and seconds per distribution per document.
 

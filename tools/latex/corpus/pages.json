@@ -19,6 +19,11 @@
     "pages": 1,
     "synctex": true
   },
+  "unicode-fonts": {
+    "engine": "xelatex",
+    "pages": 1,
+    "synctex": true
+  },
   "packages": {
     "engine": "pdflatex",
     "pages": 2,
