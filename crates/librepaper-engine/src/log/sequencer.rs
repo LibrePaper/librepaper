@@ -1539,7 +1539,7 @@ impl Sequencer {
             }) {
                 Ok(scratch) => scratch,
                 Err(_) => {
-                    ::log::warn!(
+                    tracing::warn!(
                         "deferring the flush of {}: no persistence scratch right now",
                         self.slug
                     );
@@ -1615,7 +1615,7 @@ impl Sequencer {
         if inner.source_changed_owed {
             self.emit_source_changed(&mut inner);
         }
-        ::log::debug!(
+        tracing::debug!(
             "flushed {} batches for {} as row {written} ({reason:?})",
             acknowledged.len(),
             self.slug
@@ -2647,7 +2647,7 @@ impl CompactionGate<'_> {
         self.inner.uncompacted_count = uncompacted_count;
         self.ledger
             .charge(self.owner_id, after as i64 - before as i64);
-        ::log::debug!("{} compacted through {through}", self.slug);
+        tracing::debug!("{} compacted through {through}", self.slug);
     }
 
     /// Prevents this instance from serving state when an activation may

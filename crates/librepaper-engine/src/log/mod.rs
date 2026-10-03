@@ -261,7 +261,7 @@ impl Registry {
         futures_util::stream::iter(due)
             .for_each_concurrent(concurrency, |(sequencer, reason)| async move {
                 if let Err(error) = sequencer.flush(reason).await {
-                    ::log::warn!("could not flush {}: {error}", sequencer.slug);
+                    tracing::warn!("could not flush {}: {error}", sequencer.slug);
                 }
             })
             .await;
@@ -336,7 +336,7 @@ impl Registry {
     pub async fn shutdown(&self) {
         for sequencer in self.all().await {
             if let Err(error) = sequencer.flush(FlushReason::Shutdown).await {
-                ::log::warn!("could not flush {} at shutdown: {error}", sequencer.slug);
+                tracing::warn!("could not flush {} at shutdown: {error}", sequencer.slug);
             }
         }
         self.resident.lock().await.clear();

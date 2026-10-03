@@ -2512,7 +2512,7 @@ impl Room {
                 match reader_safe_comment(self.document_id, comment) {
                     Ok(reader) => Some(reader),
                     Err(error) => {
-                        log::warn!(
+                        tracing::warn!(
                             "could not prepare reader comment event for {}: {error}",
                             self.slug
                         );
@@ -2531,7 +2531,7 @@ impl Room {
             match self.comment_state(is_owner).await {
                 Ok(state) => *slot = Some(state),
                 Err(error) => {
-                    log::warn!("could not read comment counts for {}: {error}", self.slug)
+                    tracing::warn!("could not read comment counts for {}: {error}", self.slug)
                 }
             }
         }
@@ -2551,7 +2551,7 @@ impl Room {
                 // A read failure is not "there is no such comment". A
                 // broadcast has nowhere to put a reason, so the peer gets
                 // what it always got and the reason goes to the log.
-                log::warn!(
+                tracing::warn!(
                     "could not read a comment of {} for its event: {error}",
                     self.slug
                 );

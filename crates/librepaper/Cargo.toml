@@ -115,5 +115,4 @@ loro.workspace = true
 zstd.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
-log.workspace = true
 tokio-tungstenite.workspace = true

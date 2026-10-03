@@ -1813,7 +1813,7 @@ impl Server {
             .flush(librepaper_engine::log::FlushReason::AuthorityRevoked)
             .await
         {
-            log::warn!("could not flush {slug} as access was revoked: {error}");
+            tracing::warn!("could not flush {slug} as access was revoked: {error}");
         }
         room.leave(socket_id).await;
     }

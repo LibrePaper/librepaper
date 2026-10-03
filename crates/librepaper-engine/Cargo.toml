@@ -36,7 +36,6 @@ zstd.workspace = true
 tar.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
-log.workspace = true
 tempfile.workspace = true
 object_store.workspace = true
 
