@@ -13,15 +13,16 @@ pub use crate::document::projection::paths::{
 
 use librepaper_base::config::Configuration;
 
-impl Configuration {
-    pub fn paths(&self) -> Rules<'_> {
-        Rules {
-            text: &self.text_extensions,
-            asset: &self.asset_extensions,
-            derived: &self.derived_extensions,
-            max_path: self.max_path,
-            max_segments: MAX_SEGMENTS,
-        }
+/// The path rules this deployment's configuration binds. A free function
+/// rather than a method: `Configuration` lives in librepaper-base and the
+/// orphan rule keeps inherent impls in the defining crate.
+pub fn rules(config: &Configuration) -> Rules<'_> {
+    Rules {
+        text: &config.text_extensions,
+        asset: &config.asset_extensions,
+        derived: &config.derived_extensions,
+        max_path: config.max_path,
+        max_segments: MAX_SEGMENTS,
     }
 }
 
