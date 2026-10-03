@@ -335,7 +335,7 @@ fn validate_proposed_changes(
                             ));
                         };
                         let path = path.to_string();
-                        if !crate::local::protocol::safe_relative_path(&path)
+                        if !librepaper_document::document::paths::safe_relative_path(&path)
                             || existing_paths.contains(&path)
                             || inserted_paths.values().any(|existing| existing == &path)
                             || inserted_paths.insert(key.clone(), path).is_some()
@@ -447,7 +447,7 @@ fn validate_proposed_changes(
                         ));
                     };
                     let path = path.as_ref();
-                    if !crate::local::protocol::safe_relative_path(path)
+                    if !librepaper_document::document::paths::safe_relative_path(path)
                         || !created_path_names.insert(path.to_owned())
                     {
                         return Err(ProposalError::Failed(
