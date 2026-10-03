@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const resolver = path.join(repository, "scripts/resolve-stable-release.sh");
@@ -39,7 +39,7 @@ function fixture(t) {
   const workflowSha = git(source, "rev-parse", "HEAD");
   git(source, "tag", "v1.3.0-rc.1");
   git(root, "clone", "--bare", source, remote);
-  git(root, "clone", "--no-tags", "--depth", "1", remote, checkout);
+  git(root, "clone", "--no-tags", "--depth", "1", pathToFileURL(remote).href, checkout);
 
   return { checkout, releasedSha, root, workflowSha };
 }
@@ -65,11 +65,14 @@ function resolve(fixtureData, env) {
 test("stable dispatch fetches the tag without moving the trusted checkout", (t) => {
   const data = fixture(t);
   assert.notEqual(data.releasedSha, data.workflowSha);
+  assert.equal(git(data.checkout, "rev-parse", "--is-shallow-repository"), "true");
   assert.equal(git(data.checkout, "rev-parse", "HEAD"), data.workflowSha);
+  assert.throws(() => git(data.checkout, "cat-file", "-e", `${data.releasedSha}^{commit}`));
 
   assert.equal(resolve(data, { DISPATCH_TAG: "v1.2.3" }), "tag=v1.2.3\nproceed=true\n");
   assert.equal(git(data.checkout, "rev-parse", "HEAD"), data.workflowSha);
   assert.equal(git(data.checkout, "rev-parse", "refs/tags/v1.2.3^{commit}"), data.releasedSha);
+  assert.doesNotThrow(() => git(data.checkout, "cat-file", "-e", `${data.releasedSha}^{commit}`));
 });
 
 test("workflow-run resolution rejects a stable tag on a different commit", (t) => {
