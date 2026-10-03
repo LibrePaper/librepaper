@@ -23,7 +23,9 @@ fn main() {
     );
     println!(
         "cargo:rerun-if-changed={}",
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.sqlx").display()
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.sqlx")
+            .display()
     );
     let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
     println!("cargo:rerun-if-changed={}", skills.display());
