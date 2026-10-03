@@ -59,6 +59,29 @@ jobs:
       # not cover.
       - run: tools/db sqlx-check
 
+  # The published crate is generated from the workspace, so the generator and
+  # its output are checked on every change: the lint keeps the rewrite
+  # syntactic, and the flat crate's own unit tests are the proof that it kept
+  # its meaning. The dry run also exercises the `include` list.
+  flatten:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # mold and the built pages, for the reason given in the sqlx job.
+      - uses: oven-sh/setup-bun@v2
+      - run: sudo apt-get install -y --no-install-recommends mold
+      - run: make pins web/dist/index.html
+      - run: tools/flatten/flatten lint
+      - run: tools/flatten/flatten build
+      - run: cargo check --all-targets --locked
+        working-directory: target/flat
+      - run: cargo test --lib --locked
+        working-directory: target/flat
+      - run: cargo publish --dry-run --locked --allow-dirty
+        working-directory: target/flat
+
   # SPEC-server-is-a-log.md §14.2: the idempotency and recovery contracts
   # (the single-writer lease, compaction coverage proof, the two
   # deployment-shaped gates) live only in these PostgreSQL-gated cases, which
