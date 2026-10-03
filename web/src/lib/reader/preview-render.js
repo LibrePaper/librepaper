@@ -253,7 +253,7 @@ export function createPreviewRenderer({
         status.succeeded();
         const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
         onsynctex(null);
-        const page = { kind: "pdf", sha: identity, bytes: new Uint8Array(buffer.slice(0)) };
+        const page = { kind: /** @type {const} */ ("pdf"), sha: identity, bytes: new Uint8Array(buffer.slice(0)) };
         framePreview.publish(page);
         rememberPreview(page, identity);
         onRendered(identity, capturedProjectDigest);
