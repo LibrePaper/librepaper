@@ -39,42 +39,14 @@ use uuid::Uuid;
 
 use super::budget::{estimate, Budget, Busy, Reservation};
 use super::frame;
+pub use crate::config::budget::{
+    max_pending_charge, max_row_bytes, max_update_bytes, BUFFER_CEILING_BYTES, FLUSH_TRIGGER_BYTES,
+};
 use crate::config::Configuration;
 use crate::room::outgoing::{Outgoing, Sender};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{self, Authority, FlushRow, PostgresCatalog};
 
-/// The maximum size of one update as it arrives, derived from the log quota.
-/// One update on the wire may be as large as the log quota, since anything
-/// larger could never be admitted. The two expansion factors in budget.rs
-/// are measurements applied to the log bytes, not bounds of their own.
-pub fn max_update_bytes(log_quota_bytes: usize) -> usize {
-    log_quota_bytes
-}
-
-/// The most one document's pending charge can come to.
-///
-/// [`BUFFER_CEILING_BYTES`] is the ordinary ceiling, but an empty buffer
-/// always admits one update whatever it weighs -- otherwise a single
-/// maximum-size update would be refused forever the moment its framing
-/// pushed it one byte past the ceiling. So the true per-document maximum
-/// is the larger of the two.
-pub fn max_pending_charge(log_quota_bytes: usize) -> usize {
-    let ceiling = BUFFER_CEILING_BYTES;
-    let single =
-        max_update_bytes(log_quota_bytes) + frame::BATCH_HEADER_BYTES + frame::MAX_PEER_KEY;
-    if single > ceiling {
-        single
-    } else {
-        ceiling
-    }
-}
-
-/// The largest row an ordinary flush can write: one version byte over a
-/// document's whole pending charge.
-pub fn max_row_bytes(log_quota_bytes: usize) -> usize {
-    frame::ROW_HEADER_BYTES + max_pending_charge(log_quota_bytes)
-}
 
 /// A buffer non-empty for this long flushes even while somebody is still
 /// typing, so the log is never further behind the screen than this.
@@ -82,18 +54,6 @@ pub const FLUSH_MAX_AGE: Duration = Duration::from_secs(30);
 /// No batch for this long flushes, so somebody who stops typing is durable
 /// shortly afterwards rather than at the max age.
 pub const FLUSH_QUIET: Duration = Duration::from_secs(5);
-/// A trigger, not a cap: one large update flushes alone rather than being
-/// refused for exceeding it.
-pub const FLUSH_TRIGGER_BYTES: usize = 1024 * 1024;
-/// With PostgreSQL unavailable the buffer grows to this before ingest is
-/// refused retryably (§10).
-///
-/// Measured against the buffer's CHARGE -- payload plus this batch's framing
-/// -- rather than payload alone, so that the row a flush will write is
-/// bounded by it too. A buffer of very many very small updates is mostly
-/// framing (`frame::overhead` per batch), and a ceiling that ignored it
-/// bounded the payload while letting the row grow several times past it.
-pub const BUFFER_CEILING_BYTES: usize = FLUSH_TRIGGER_BYTES * 4;
 /// At most one `source-changed` per document per second (§4.5).
 pub const SOURCE_CHANGED_INTERVAL: Duration = Duration::from_secs(1);
 /// How long a build may run before the document is marked unreadable (§9.3).

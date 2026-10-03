@@ -252,6 +252,8 @@ impl Drop for Reservation {
     }
 }
 
+pub use crate::config::budget::{driver_scratch_for, scratch_for, SCRATCH_SLACK};
+
 impl std::fmt::Debug for Reservation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -262,25 +264,6 @@ impl std::fmt::Debug for Reservation {
     }
 }
 
-/// Room for small per-write allocations that are not the row itself: the
-/// encoded version vector, the format and main-path strings stamped on the
-/// document row, and the `FlushRow` around them. None of them scales with the
-/// buffer; a fixed allowance is honest and keeps the estimate readable.
-pub const SCRATCH_SLACK: u64 = 8 * 1024;
-
-/// SQLx 0.8.6 copies the row into PgArguments and again into the
-/// connection's Bind write buffer. Each Vec may grow to twice its needed
-/// size. The connection guard holds this allowance until those buffers are
-/// shrunk on success or destroyed on error/cancellation.
-pub fn driver_scratch_for(row_bytes: u64) -> u64 {
-    row_bytes.saturating_add(SCRATCH_SLACK).saturating_mul(4)
-}
-
-/// One exactly preallocated row plus both driver buffers and their capacity
-/// growth. Small per-query fields are included in each driver's allowance.
-pub fn scratch_for(row_bytes: u64) -> u64 {
-    row_bytes.saturating_add(driver_scratch_for(row_bytes))
-}
 
 #[cfg(test)]
 mod tests {
