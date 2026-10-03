@@ -401,10 +401,7 @@ async fn a_template_leaves_the_project_listing_and_follows_its_document() {
     assert!(backed_up.contains(&template));
 
     assert_eq!(
-        ids(catalog
-            .templates_by_owner(owner, None, 200)
-            .await
-            .unwrap()),
+        ids(catalog.templates_by_owner(owner, None, 200).await.unwrap()),
         vec![template]
     );
     let flagged = catalog.template_ids(&[template, project]).await.unwrap();
@@ -442,7 +439,12 @@ async fn template_operations_hide_incomplete_rows_replay_and_page_stably() {
     let writer = catalog.claim_writer().await.unwrap();
     let owner = account(&catalog).await;
     let source = document(&catalog, owner, "owned").await;
-    let generation = catalog.account(owner).await.unwrap().unwrap().session_generation;
+    let generation = catalog
+        .account(owner)
+        .await
+        .unwrap()
+        .unwrap()
+        .session_generation;
     let request_id = Uuid::new_v4();
     let new_document = |slug: String, title: String| NewDocument {
         slug,
@@ -469,12 +471,15 @@ async fn template_operations_hide_incomplete_rows_replay_and_page_stably() {
         .unwrap()
         .iter()
         .any(|row| row.id == pending.target.id));
-    assert!(!catalog
-        .visible_documents(Some(owner), None, 200, true)
-        .await
-        .unwrap()
-        .iter()
-        .any(|row| row.id == pending.target.id), "backups omit unfinished templates");
+    assert!(
+        !catalog
+            .visible_documents(Some(owner), None, 200, true)
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.id == pending.target.id),
+        "backups omit unfinished templates"
+    );
     assert!(!catalog
         .templates_by_owner(owner, None, 200)
         .await
@@ -518,8 +523,14 @@ async fn template_operations_hide_incomplete_rows_replay_and_page_stably() {
     );
     let (left, left_created) = left.unwrap();
     let (right, right_created) = right.unwrap();
-    assert_ne!(left_created, right_created, "exactly one request reserves the operation");
-    assert_eq!(left.target.id, right.target.id, "both callers resume the same target");
+    assert_ne!(
+        left_created, right_created,
+        "exactly one request reserves the operation"
+    );
+    assert_eq!(
+        left.target.id, right.target.id,
+        "both callers resume the same target"
+    );
 
     // Completion performed in a command transaction remains invisible if
     // that transaction rolls back, so a partial source write cannot publish
@@ -561,13 +572,7 @@ async fn template_operations_hide_incomplete_rows_replay_and_page_stably() {
 
     let mut tx = catalog.pool().begin().await.unwrap();
     catalog
-        .complete_template_operation(
-            &mut tx,
-            pending.target.id,
-            request_id,
-            0,
-            Some([7; 32]),
-        )
+        .complete_template_operation(&mut tx, pending.target.id, request_id, 0, Some([7; 32]))
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -616,7 +621,10 @@ async fn template_operations_hide_incomplete_rows_replay_and_page_stably() {
     found.sort();
     let mut expected = vec![pending.target.id, older, newer];
     expected.sort();
-    assert_eq!(found, expected, "keyset pages cover each completed template once");
+    assert_eq!(
+        found, expected,
+        "keyset pages cover each completed template once"
+    );
     drop(writer);
     catalog.close().await;
 }

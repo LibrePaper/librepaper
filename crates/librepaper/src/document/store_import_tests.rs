@@ -175,7 +175,10 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
     .fetch_one(catalog.pool())
     .await
     .expect("read the source transaction's label");
-    assert_eq!(label_count, 1, "the source label and completion share the commit");
+    assert_eq!(
+        label_count, 1,
+        "the source label and completion share the commit"
+    );
 }
 
 #[tokio::test]

@@ -291,7 +291,10 @@ async fn put_annotation(
             || existing.rendered_prefix != input.presentation.rendered_prefix
             || existing.rendered_suffix != input.presentation.rendered_suffix
             || existing.rendered_position_utf16
-                != input.presentation.rendered_position_utf16.map(|at| at as i32)
+                != input
+                    .presentation
+                    .rendered_position_utf16
+                    .map(|at| at as i32)
             || !same_anchor(&existing, &input.original_anchor)?
         {
             return Err(Error::Conflict(

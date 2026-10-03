@@ -1567,15 +1567,13 @@ mod tests {
         changed_color.color = Some("amber".into());
         let mut changed_digest = annotation_input(first.id, collaborator.id, anchor.clone());
         changed_digest.render_digest = Some(vec![1; 32]);
-        let mut changed_presentation =
-            annotation_input(first.id, collaborator.id, anchor.clone());
+        let mut changed_presentation = annotation_input(first.id, collaborator.id, anchor.clone());
         changed_presentation.presentation.rendered_exact = "different excerpt".into();
         let mut changed_prefix = annotation_input(first.id, collaborator.id, anchor.clone());
         changed_prefix.presentation.rendered_prefix = "different context".into();
         let mut changed_suffix = annotation_input(first.id, collaborator.id, anchor.clone());
         changed_suffix.presentation.rendered_suffix = "different ending".into();
-        let mut changed_position =
-            annotation_input(first.id, collaborator.id, anchor.clone());
+        let mut changed_position = annotation_input(first.id, collaborator.id, anchor.clone());
         changed_position.presentation.rendered_position_utf16 = Some(9);
         for changed in [
             changed_color,
@@ -1587,13 +1585,7 @@ mod tests {
         ] {
             let mut tx = catalog.pool().begin().await.unwrap();
             assert!(catalog
-                .put_annotation_authorized(
-                    &mut tx,
-                    annotation_id,
-                    changed,
-                    &unauthorized,
-                    false,
-                )
+                .put_annotation_authorized(&mut tx, annotation_id, changed, &unauthorized, false,)
                 .await
                 .is_err());
         }

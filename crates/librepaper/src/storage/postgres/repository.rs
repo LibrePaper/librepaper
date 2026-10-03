@@ -558,7 +558,9 @@ impl PostgresCatalog {
         .await?
         .ok_or(Error::NotFound)?;
         if account.0 != "active" || account.1 != session_generation {
-            return Err(Error::Conflict("owner account is inactive or session changed".into()));
+            return Err(Error::Conflict(
+                "owner account is inactive or session changed".into(),
+            ));
         }
         let row = sqlx::query_as::<_, TemplateOperationRow>(
             "SELECT source_document_id,title,target_document_id,completed_at
@@ -603,7 +605,9 @@ impl PostgresCatalog {
     ) -> Result<(TemplateOperation, bool)> {
         validate_document(&input)?;
         let Some(session_generation) = input.owner_session_generation else {
-            return Err(Error::Invalid("template saves require an authenticated session".into()));
+            return Err(Error::Invalid(
+                "template saves require an authenticated session".into(),
+            ));
         };
         if input.ownership_mode != "owned" {
             return Err(Error::Invalid("template saves must be owner-held".into()));
@@ -617,7 +621,9 @@ impl PostgresCatalog {
         .await?
         .ok_or(Error::NotFound)?;
         if account.0 != "active" || account.1 != session_generation {
-            return Err(Error::Conflict("owner account is inactive or session changed".into()));
+            return Err(Error::Conflict(
+                "owner account is inactive or session changed".into(),
+            ));
         }
         if let Some(row) = sqlx::query_as::<_, TemplateOperationRow>(
             "SELECT source_document_id,title,target_document_id,completed_at
@@ -643,7 +649,9 @@ impl PostgresCatalog {
             .await?
             .ok_or(Error::NotFound)?;
             if target.status != "active" {
-                return Err(Error::Conflict("the saved template is no longer active".into()));
+                return Err(Error::Conflict(
+                    "the saved template is no longer active".into(),
+                ));
             }
             tx.commit().await?;
             return Ok((
@@ -710,7 +718,9 @@ impl PostgresCatalog {
         tree_digest: Option<[u8; 32]>,
     ) -> Result<()> {
         let Some(tree_digest) = tree_digest else {
-            return Err(Error::Conflict("template source digest is unavailable".into()));
+            return Err(Error::Conflict(
+                "template source digest is unavailable".into(),
+            ));
         };
         let rows = sqlx::query(
             "UPDATE document_template_operations
@@ -725,7 +735,9 @@ impl PostgresCatalog {
         .await?
         .rows_affected();
         if rows != 1 {
-            return Err(Error::Conflict("template save operation is missing or already complete".into()));
+            return Err(Error::Conflict(
+                "template save operation is missing or already complete".into(),
+            ));
         }
         Ok(())
     }

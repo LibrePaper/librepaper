@@ -788,7 +788,9 @@ impl Store {
         let account_id = uuid::Uuid::parse_str(account_id)
             .map_err(|_| CatalogError::Invalid("invalid listing account".into()))?;
         if !(1..=200).contains(&limit) {
-            return Err(CatalogError::Invalid("template page limit must be 1..=200".into()));
+            return Err(CatalogError::Invalid(
+                "template page limit must be 1..=200".into(),
+            ));
         }
         let before = match cursor {
             Some((updated, id)) => {

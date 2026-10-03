@@ -1372,7 +1372,10 @@ impl Server {
                 .and_then(|value| value.get("request_id")?.as_str().map(str::to_string))
                 .and_then(|value| uuid::Uuid::parse_str(&value).ok());
             let Some(request_id) = request_id else {
-                return write_json(400, &json!({"error": "a template save needs a stable request_id"}));
+                return write_json(
+                    400,
+                    &json!({"error": "a template save needs a stable request_id"}),
+                );
             };
             Some(request_id)
         } else {
@@ -1439,8 +1442,7 @@ impl Server {
             None
         };
         if let Some(operation) = &template_operation {
-            if Some(operation.source_document_id) != template_source_id
-                || operation.title != asked
+            if Some(operation.source_document_id) != template_source_id || operation.title != asked
             {
                 return write_json(
                     409,
@@ -1448,7 +1450,10 @@ impl Server {
                 );
             }
             if operation.target.status != "active" {
-                return write_json(409, &json!({"error": "the saved template is no longer active"}));
+                return write_json(
+                    409,
+                    &json!({"error": "the saved template is no longer active"}),
+                );
             }
             if operation.complete {
                 return write_json(
@@ -1640,12 +1645,10 @@ impl Server {
             self.store.put_directory_as_actor(input, rest, actor).await
         };
         match saved {
-            Ok(made) => {
-                write_json(
-                    200,
-                    &json!({"slug": made.slug, "title": made.title, "url": format!("/docs/{}", made.slug)}),
-                )
-            }
+            Ok(made) => write_json(
+                200,
+                &json!({"slug": made.slug, "title": made.title, "url": format!("/docs/{}", made.slug)}),
+            ),
             Err(PutError::Quota { status, message }) => {
                 // A failed create can leave its new, empty document row; keep
                 // the upload counted to bound those side effects.
@@ -1704,7 +1707,8 @@ impl Server {
                     .collect();
                 let mut body = json!({"templates": templates});
                 if let Some((after_updated, after_id)) = next {
-                    body["next_cursor"] = json!({"after_updated": after_updated, "after_id": after_id});
+                    body["next_cursor"] =
+                        json!({"after_updated": after_updated, "after_id": after_id});
                 }
                 write_json(200, &body)
             }
