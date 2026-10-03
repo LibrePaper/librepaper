@@ -20,9 +20,14 @@ librepaper agent add <id> -- <command>          # add an agent command
 librepaper agent remove <id>                    # remove an agent
 librepaper local approve <code>                 # approve on a no-display machine
 librepaper local disconnect <origin>            # revoke a website pairing
+librepaper export c9k ./paper-copy              # immutable snapshot
+librepaper export c9k ./paper-copy --key URL    # read as share-link holder
+librepaper export c9k ./paper-copy --at "v1"    # historical version
 ```
 
 On a machine with no display, check `companion.log` for the code and run `librepaper local approve <code>` within 5 minutes.
+
+For scheduled local backups, see [account backups](backups.html).
 
 ## Document commands
 
@@ -46,17 +51,7 @@ librepaper logout     # revoke token
 librepaper list       # show ID, date, and title
 ```
 
-## Export
-
-```sh
-librepaper export c9k ./paper-copy              # immutable snapshot
-librepaper export c9k ./paper-copy --key URL    # read as share-link holder
-librepaper export c9k ./paper-copy --at "v1"    # historical version
-```
-
-For scheduled local backups, see [account backups](backups.html).
-
-## Operating a deployment
+## Self-host
 
 ```sh
 librepaper admin serve --help              # start server with flags

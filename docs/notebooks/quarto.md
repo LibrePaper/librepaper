@@ -2,7 +2,7 @@
 title: "Quarto"
 ---
 
-Quarto is an open source publishing system that runs R, Python or Julia code in a Markdown document.
+[Quarto](https://quarto.org) is an open source publishing system that runs R, Python or Julia code in a Markdown document.
 
 ## Local app
 
@@ -16,8 +16,6 @@ librepaper status                    # check it is running and found Quarto
 
 When the server runs on the same machine you browse from, it runs the local app itself and there is nothing to start. Use `--no-local` to turn that off. For a computer with no display, run `librepaper local approve`.
 
-> **Warning:** Previews run the document's code, filters and scripts on your computer, so only enable this on documents you trust. Anyone with editor access can change that code.
-
 ## Preview and output
 
 Markdown preview renders the source as Markdown in the browser with front matter dropped and code chunks shown verbatim. No code runs. Quarto fenced divs such as callouts, columns, and tabsets are shown as code blocks; unsupported shortcodes are treated the same way. This is the fallback when no local app is paired.
@@ -26,9 +24,12 @@ Quarto preview produces HTML, RevealJS, or PDF. DOCX is available only as an exp
 
 Nothing rendered is ever uploaded. The server holds only the `.qmd` source and its declared shared resources.
 
-## Sandbox
+## Trust
 
-Executable previews and renders require operating-system confinement: Bubblewrap on Linux or `sandbox-exec` on macOS. LibrePaper refuses to run Quarto code when confinement is unavailable. The renderer can see the connected project or synchronized preview workspace, but paths outside that scope are hidden and network access is disabled. For an isolated one-shot render, additional local data must be named explicitly as a project-relative input; only those inputs are copied into the temporary workspace.
+- Quarto runs with your user account: your files, installed packages and the network. LibrePaper does not sandbox it.
+- Pairing asks once per site in a native dialog. Pairing alone runs nothing.
+- Each document starts Quarto separately, after a warning that its code runs on your computer.
+- Anyone with editor access can change that code, so start Quarto only on documents whose editors you trust.
 
 ## Publishing a project
 

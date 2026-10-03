@@ -29,33 +29,8 @@ pdfLaTeX. LuaLaTeX is listed for compatibility but
 the current release does not provide it.
 
 BibTeX and Biber run in the browser when the release provides them. Biber
-documents use the release's bundled biblatex pairing. If browser Biber has an
-infrastructure failure, the reader can hand the `.bcf` and `.bib` files to the
-local companion and continue typesetting in the browser. Bibliography input
-errors are shown directly and are not retried through another backend. If the
-companion is unavailable, the reader explains that local Biber is required.
-
-The local companion extends the online editor with tools installed on your
-computer. Install from the [install page](../install.html), then start it:
-
-```sh
-librepaper                           # start in the background
-librepaper --at-login                # also start every time you log in
-```
-
-The first connection asks permission for the named site and document;
-subsequent connections reuse that permission, including after restarting the
-companion. Compilation permissions do not grant the website access to local
-management controls.
-
-The companion is the same binary as the CLI; see [the companion](../cli.html#the-companion).
-
-When browser compilation fails (an engine that will not start, a package the
-mirror lacks, a crash, a TeX error), the reader falls back to compiling
-natively with your installed TeX, once per version of the source. The app
-accepts structured jobs rather than commands, runs the tools with shell escape
-off, confines them with `bwrap` or `sandbox-exec` where available, and says so
-when it cannot. It never installs packages or changes your TeX installation.
+documents use the release's bundled biblatex pairing. Bibliography input
+errors are shown directly.
 
 A self-hoster can serve the browser distribution from their own mirror rather
 than the project one; see [Privacy](../host.html#privacy).

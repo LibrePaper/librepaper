@@ -6,7 +6,7 @@ title: "Getting the review out"
 
 A document's annotations come out as readable Markdown, or as W3C Web
 Annotation JSON-LD for anything that wants to process them. Both are exports
-from the terminal; see [Export](../cli.html#export).
+from the terminal; see [the CLI](../cli.html#the-companion).
 
 ## Response to reviewers
 
