@@ -250,6 +250,19 @@ struct BackupState {
     in_flight: HashSet<String>,
 }
 
+fn restore_after_persist_failure(
+    state: &mut BackupState,
+    key: &str,
+    previous: Option<BackupConfig>,
+    origin: &str,
+    account_id: &str,
+    error: &str,
+) {
+    let mut config = previous.unwrap_or_else(|| BackupConfig::new(origin, account_id));
+    config.error = Some(error.to_owned());
+    state.configs.insert(key.to_owned(), config);
+}
+
 pub(super) struct BackupManager {
     path: PathBuf,
     state: Mutex<BackupState>,
@@ -690,20 +703,14 @@ impl BackupManager {
         config.error = None;
         config.revision = config.revision.wrapping_add(1);
         if let Err(error) = self.persist(&state).await {
-            match previous {
-                Some(previous) => {
-                    state.configs.insert(key.clone(), previous);
-                }
-                None => {
-                    state.configs.remove(&key);
-                    let mut config = BackupConfig::new(origin, account_id);
-                    config.error = Some(error.clone());
-                    state.configs.insert(key.clone(), config);
-                }
-            }
-            if let Some(config) = state.configs.get_mut(&key) {
-                config.error = Some(error.clone());
-            }
+            restore_after_persist_failure(
+                &mut state,
+                &key,
+                previous,
+                origin,
+                account_id,
+                &error,
+            );
             return Err(write_json(500, &json!({"error": error})));
         }
         self.changed.notify_one();
@@ -809,20 +816,14 @@ impl BackupManager {
             config.last_attempt = None;
         }
         if let Err(error) = self.persist(&state).await {
-            match previous {
-                Some(previous) => {
-                    state.configs.insert(key.clone(), previous);
-                }
-                None => {
-                    state.configs.remove(&key);
-                    let mut config = BackupConfig::new(origin, account_id);
-                    config.error = Some(error.clone());
-                    state.configs.insert(key.clone(), config);
-                }
-            }
-            if let Some(config) = state.configs.get_mut(&key) {
-                config.error = Some(error.clone());
-            }
+            restore_after_persist_failure(
+                &mut state,
+                &key,
+                previous,
+                origin,
+                account_id,
+                &error,
+            );
             return Err(error);
         }
         self.changed.notify_one();
@@ -850,10 +851,14 @@ impl BackupManager {
         }
         if let Err(error) = self.persist(&state).await {
             state.in_flight.remove(&key);
-            state.configs.insert(key.clone(), previous);
-            if let Some(current) = state.configs.get_mut(&key) {
-                current.error = Some(error.clone());
-            }
+            restore_after_persist_failure(
+                &mut state,
+                &key,
+                Some(previous),
+                origin,
+                account_id,
+                &error,
+            );
             return Err(error);
         }
         Ok(config)
@@ -1997,6 +2002,51 @@ mod tests {
         assert!(config.destination.is_dir());
         assert!(config.last_attempt.is_none());
         assert!(!config.running);
+    }
+
+    #[tokio::test]
+    async fn failed_run_admission_restores_config_and_clears_in_flight() {
+        let home = tempfile::tempdir().unwrap();
+        let manager = BackupManager::new(home.path());
+        let account = uuid::Uuid::now_v7().to_string();
+        let origin = "https://paper.example";
+        let key = BackupConfig::key(origin, &account);
+        let destination = tempfile::tempdir().unwrap();
+        let mut previous = BackupConfig::new(origin, &account);
+        previous.enabled = true;
+        previous.destination = destination.path().to_path_buf();
+        previous.last_attempt = Some(123);
+        previous.last_success = Some(100);
+        previous.error = Some("previous failure".into());
+        previous.projects = 4;
+        previous.updated = 2;
+        previous.run_generation = 14;
+        previous.revision = 9;
+        manager
+            .state
+            .lock()
+            .await
+            .configs
+            .insert(key.clone(), previous);
+        // A directory at the settings-file path makes the real publish fail.
+        std::fs::create_dir_all(&manager.path).unwrap();
+
+        let error = manager
+            .admit_run(origin, &account)
+            .await
+            .expect_err("persistence should fail for a directory settings path");
+        let state = manager.state.lock().await;
+        assert!(!state.in_flight.contains(&key));
+        let restored = state.configs.get(&key).expect("config is restored");
+        assert!(restored.enabled);
+        assert!(!restored.running);
+        assert_eq!(restored.last_attempt, Some(123));
+        assert_eq!(restored.last_success, Some(100));
+        assert_eq!(restored.error.as_deref(), Some(error.as_str()));
+        assert_eq!(restored.projects, 4);
+        assert_eq!(restored.updated, 2);
+        assert_eq!(restored.run_generation, 14);
+        assert_eq!(restored.revision, 9);
     }
 
     #[derive(Clone)]

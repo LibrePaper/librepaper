@@ -2077,15 +2077,12 @@ fn frozen_preflight(
         .file_stem()
         .and_then(|value| value.to_str())
         .ok_or("frozen Quarto entrypoint has no valid stem")?;
-    let result_dir = project
-        .join("_freeze")
-        .join(main_path.parent().unwrap_or_else(|| Path::new("")))
-        .join(stem)
-        .join("execute-results");
-    let freezer_dir = result_dir
+    let result_path = frozen_cache_result_path(project, main_path, format)
+        .ok_or("frozen Quarto entrypoint has no valid stem")?;
+    let freezer_dir = result_path
         .parent()
+        .and_then(Path::parent)
         .ok_or("frozen Quarto cache has no resource directory")?;
-    let result_path = result_dir.join(format!("{format}.json"));
     let result_canonical = std::fs::canonicalize(&result_path)
         .map_err(|_| "frozen Quarto cache is missing or unreadable")?;
     if !result_canonical.starts_with(project) {
@@ -2180,6 +2177,18 @@ fn frozen_preflight(
         remainder = &remainder[end + 1..];
     }
     Ok(())
+}
+
+fn frozen_cache_result_path(project: &Path, main_path: &Path, format: &str) -> Option<PathBuf> {
+    let stem = main_path.file_stem()?.to_str()?;
+    Some(
+        project
+            .join("_freeze")
+            .join(main_path.parent().unwrap_or_else(|| Path::new("")))
+            .join(stem)
+            .join("execute-results")
+            .join(format!("{format}.json")),
+    )
 }
 
 fn verify_frozen_includes(
@@ -2315,15 +2324,9 @@ fn persist_frozen_cache_identity(
         return Ok(());
     }
     let main_path = Path::new(&options.main);
-    let Some(stem) = main_path.file_stem().and_then(|value| value.to_str()) else {
+    let Some(cache_path) = frozen_cache_result_path(project, main_path, &options.format) else {
         return Ok(());
     };
-    let cache_path = project
-        .join("_freeze")
-        .join(main_path.parent().unwrap_or_else(|| Path::new("")))
-        .join(stem)
-        .join("execute-results")
-        .join(format!("{}.json", options.format));
     let metadata = match std::fs::symlink_metadata(&cache_path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),

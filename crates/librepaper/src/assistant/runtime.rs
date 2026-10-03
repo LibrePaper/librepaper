@@ -248,6 +248,14 @@ async fn report_final(transport: &Transport, task: &Task) -> Result<(), String> 
     Ok(())
 }
 
+async fn report_snapshot(transport: &Transport, task: &Task) -> Result<(), String> {
+    if task.status.terminal() {
+        report_final(transport, task).await
+    } else {
+        report(transport, task).await
+    }
+}
+
 async fn report_task(
     transport: &Transport,
     state: &mut State,
@@ -255,11 +263,7 @@ async fn report_task(
     state_path: &Path,
 ) -> Result<(), String> {
     let task = persist_report(state, id, state_path)?;
-    if task.status.terminal() {
-        report_final(transport, &task).await
-    } else {
-        report(transport, &task).await
-    }
+    report_snapshot(transport, &task).await
 }
 
 fn persist_report(state: &mut State, id: &str, state_path: &Path) -> Result<Task, String> {
@@ -282,11 +286,7 @@ fn persist_report(state: &mut State, id: &str, state_path: &Path) -> Result<Task
 /// advancing its task sequence.
 async fn replay_task(transport: &Transport, state: &State, id: &str) -> Result<(), String> {
     let task = state.task(id).ok_or("task disappeared while replaying")?;
-    if task.status.terminal() {
-        report_final(transport, task).await
-    } else {
-        report(transport, task).await
-    }
+    report_snapshot(transport, task).await
 }
 
 /// Check that this link can actually use the document tools, and say what is
