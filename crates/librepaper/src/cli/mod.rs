@@ -10,6 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
 use crate::config::Configuration;
+use crate::local::cli::{LaunchArgs, LocalAgentCommand, LocalArgs, LocalCommand};
 use crate::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use crate::storage::StorageFlags;
 use crate::util::die;
@@ -40,35 +41,6 @@ pub(crate) struct Cli {
     /// Companion launch options. With no command, `librepaper` launches it.
     #[command(flatten)]
     launch: LaunchArgs,
-}
-
-/// Shared options for the default launch and explicit `start` aliases.
-#[derive(Args, Clone, Debug, Default)]
-pub struct LaunchArgs {
-    /// Run in the foreground of this process instead of in the background
-    #[arg(long, help_heading = "Companion")]
-    pub foreground: bool,
-    /// Also start the companion every time you log in
-    #[arg(long, help_heading = "Companion")]
-    pub at_login: bool,
-    /// Port to listen on (default 8763)
-    #[arg(
-        long,
-        value_name = "PORT",
-        hide_default_value = true,
-        env = "LIBREPAPER_LOCAL_PORT",
-        help_heading = "Companion"
-    )]
-    pub port: Option<u16>,
-    /// Extra directories searched before PATH for typst, pandoc and calepin
-    #[arg(
-        long,
-        value_name = "DIRS",
-        env = "LIBREPAPER_TOOL_PATH",
-        value_delimiter = ':',
-        help_heading = "Companion"
-    )]
-    pub tool_path: Vec<PathBuf>,
 }
 
 /// Deployment credentials: server URL and optional authentication token.
@@ -505,81 +477,6 @@ pub(crate) enum ModerationCommand {
         #[command(flatten)]
         database: ModerationDatabase,
     },
-}
-
-/// `librepaper local <command>` compatibility commands. Keep these aliases
-/// until a removal cutoff is announced for supported external CLI clients.
-/// See `crate::local::cli`.
-#[derive(Subcommand, Clone, Debug)]
-pub enum LocalCommand {
-    /// Start the companion (in the background by default, or in this process with --foreground)
-    #[command(hide = true)]
-    Start(LaunchArgs),
-    /// Ask a running companion to stop cleanly.
-    #[command(hide = true)]
-    Stop,
-    /// Launch the companion and open a validated local connection link.
-    /// The operating system runs this for `librepaper://` links; it is not
-    /// listed because nobody types it.
-    #[command(hide = true)]
-    Open { url: String },
-    /// Whether the service is running, its address, code and pairings, and which native tools were found
-    #[command(hide = true)]
-    Status {
-        /// Extra directories searched before PATH for typst, pandoc and calepin, colon-separated
-        #[arg(
-            long,
-            value_name = "DIRS",
-            env = "LIBREPAPER_TOOL_PATH",
-            value_delimiter = ':'
-        )]
-        tool_path: Vec<PathBuf>,
-    },
-    /// Approve a dialog request from the companion
-    Approve {
-        /// Approval code from the dialog
-        code: String,
-    },
-    /// Revoke a site pairing
-    Disconnect {
-        /// Origin (e.g. https://papers.example)
-        origin: String,
-    },
-    /// Teach this computer an ACP agent the sidebar can drive
-    #[command(hide = true)]
-    Agent {
-        #[command(subcommand)]
-        command: LocalAgentCommand,
-    },
-}
-
-/// Declaring an ACP agent this machine offers. It lives here, as a local
-/// command, rather than as a loopback route: a paired page picks which agent
-/// to drive, never what command to run.
-#[derive(Subcommand, Clone, Debug)]
-pub enum LocalAgentCommand {
-    /// Declare an agent. Everything after `--` is the command that speaks the
-    /// Agent Client Protocol on stdio, for example:
-    /// `librepaper agent add opencode --label opencode -- opencode acp`
-    Add {
-        /// Short lower-case id, shown in the sidebar's agent list.
-        id: String,
-        #[arg(long, value_name = "NAME", default_value = "")]
-        label: String,
-        #[arg(last = true, required = true, value_name = "COMMAND")]
-        command: Vec<String>,
-    },
-    /// Which agents this computer has been taught
-    List,
-    Remove {
-        id: String,
-    },
-}
-
-/// The arguments `librepaper local` hands to `crate::local::run`.
-#[derive(Clone, Debug)]
-pub struct LocalArgs {
-    pub command: LocalCommand,
 }
 
 #[tokio::main]

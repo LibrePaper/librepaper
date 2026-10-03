@@ -348,7 +348,7 @@ impl BackupManager {
     async fn status(&self, inner: &Inner, origin: &str, account_id: &str) -> Value {
         let key = BackupConfig::key(origin, account_id);
         let mut config = self.config(origin, account_id).await;
-        let token_missing = crate::cli::stored_token_at(&inner.state_home, origin).is_empty();
+        let token_missing = crate::local::credentials::stored_token_at(&inner.state_home, origin).is_empty();
         if !token_missing
             && config.error.as_deref().is_some_and(is_identity_error)
             && self.should_recheck_login(&key)
@@ -596,7 +596,7 @@ impl BackupManager {
             let store_origin = origin.clone();
             let store_token = token.clone();
             tokio::task::spawn_blocking(move || {
-                crate::cli::store_token_at(&base, &store_origin, &store_token)
+                crate::local::credentials::store_token_at(&base, &store_origin, &store_token)
             })
             .await
             .map_err(|error| format!("could not save account authorization: {error}"))??;
@@ -1167,7 +1167,7 @@ async fn verify_account(inner: &Inner, origin: &str, account_id: &str) -> Result
     if !inner.pairing.has_live_pairing(origin) {
         return Err("This site is no longer connected.".into());
     }
-    let token = crate::cli::stored_token_at(&inner.state_home, origin);
+    let token = crate::local::credentials::stored_token_at(&inner.state_home, origin);
     if token.is_empty() {
         return Err("Sign in to this account from Settings to authorize backups.".into());
     }
@@ -1491,7 +1491,7 @@ mod tests {
             .unwrap();
         assert_eq!(user_code, "ABCD-EFGH");
         assert!(!authorization_id.contains("fixture-device-code"));
-        assert!(crate::cli::stored_token_at(&inner.state_home, &origin).is_empty());
+        assert!(crate::local::credentials::stored_token_at(&inner.state_home, &origin).is_empty());
 
         inner
             .backups
@@ -1505,7 +1505,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            crate::cli::stored_token_at(&inner.state_home, &origin),
+            crate::local::credentials::stored_token_at(&inner.state_home, &origin),
             "approved-device-token"
         );
         assert!(!inner
@@ -1590,7 +1590,7 @@ mod tests {
             .await
             .unwrap_err()
             .contains("expired or was replaced"));
-        assert!(crate::cli::stored_token_at(&inner.state_home, &origin).is_empty());
+        assert!(crate::local::credentials::stored_token_at(&inner.state_home, &origin).is_empty());
         server_task.abort();
     }
 
@@ -1624,7 +1624,7 @@ mod tests {
             .await
             .unwrap_err()
             .contains("does not match"));
-        assert!(crate::cli::stored_token_at(&inner.state_home, &origin).is_empty());
+        assert!(crate::local::credentials::stored_token_at(&inner.state_home, &origin).is_empty());
         assert!(!inner
             .backups
             .authorizations
@@ -1671,7 +1671,7 @@ mod tests {
             .await
             .unwrap_err()
             .contains("expired or was replaced"));
-        assert!(crate::cli::stored_token_at(&inner.state_home, &origin).is_empty());
+        assert!(crate::local::credentials::stored_token_at(&inner.state_home, &origin).is_empty());
         server_task.abort();
     }
 
@@ -1724,7 +1724,7 @@ mod tests {
             .unwrap()
             .unwrap_err()
             .contains("no longer connected"));
-        assert!(crate::cli::stored_token_at(&inner.state_home, &origin).is_empty());
+        assert!(crate::local::credentials::stored_token_at(&inner.state_home, &origin).is_empty());
         server_task.abort();
     }
 
@@ -1759,7 +1759,7 @@ mod tests {
             .await
             .unwrap_err()
             .contains("too large"));
-        assert!(crate::cli::stored_token_at(&inner.state_home, &origin).is_empty());
+        assert!(crate::local::credentials::stored_token_at(&inner.state_home, &origin).is_empty());
         server_task.abort();
     }
 
@@ -1814,7 +1814,7 @@ mod tests {
         let cache_home = tempfile::tempdir().unwrap();
         let destination = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path(), cache_home.path()).await;
-        crate::cli::store_token_at(&inner.state_home, &origin, "backup-test-token").unwrap();
+        crate::local::credentials::store_token_at(&inner.state_home, &origin, "backup-test-token").unwrap();
         let (pairing_token, _) = inner
             .pairing
             .issue(&origin, "identity outage test")
@@ -2132,7 +2132,7 @@ mod tests {
         account_id: &str,
         destination: &Path,
     ) {
-        crate::cli::store_token_at(&inner.state_home, origin, "backup-test-token").unwrap();
+        crate::local::credentials::store_token_at(&inner.state_home, origin, "backup-test-token").unwrap();
         inner
             .pairing
             .issue(origin, "backup integration fixture")

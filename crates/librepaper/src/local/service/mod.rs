@@ -468,7 +468,7 @@ pub struct LocalService {
 
 impl LocalService {
     /// `state_home` and `cache_home` are XDG bases -- production passes
-    /// `crate::cli::state_home()` and the real cache directory; a test
+    /// `crate::local::paths::state_home_or_die()` and the real cache directory; a test
     /// passes two temporary directories so it never races another test over
     /// process-wide environment state. Completed Quarto records are restored
     /// for bounded retry/recovery; interrupted and unknown workspaces are
