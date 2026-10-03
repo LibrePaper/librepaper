@@ -1,6 +1,6 @@
 // Semantic actions shared by the navbar and the source-format adapters.
 /**
- * @typedef {(id: string, options: InsertOptions, context: any) => string | InsertionResult} BuildFormatter
+ * @typedef {(id: string, options: InsertOptions, context: InsertContext) => string | InsertionResult} BuildFormatter
  */
 import { buildLatex } from './insert-latex.js';
 import { buildTypst } from './insert-typst.js';
@@ -47,6 +47,8 @@ const scholarly = new Set(['theorem','lemma','proposition','definition','proof',
  * @typedef {{from: number; to: number; text: string}} Selection
  */
 
+/** @typedef {{path: string, text?: string, url?: string, sha?: string, kind?: string} | string} InsertFile */
+
 /**
  * @typedef InsertContext
  * @type {object}
@@ -56,7 +58,9 @@ const scholarly = new Set(['theorem','lemma','proposition','definition','proof',
  * @property {string} [mainText]
  * @property {string} [mainPath]
  * @property {Selection} [selection]
- * @property {{path: string; text: string}[]} [files]
+ * @property {InsertFile[]} [files]
+ * @property {object[]} [bibliography]
+ * @property {string} [targetId]
  */
 
 /**
@@ -84,7 +88,11 @@ const scholarly = new Set(['theorem','lemma','proposition','definition','proof',
  * @property {string} [environment]
  * @property {string} [brackets]
  * @property {boolean} [inMath]
+ * @property {string} [argumentsText]
+ * @property {string[]} [arguments]
  */
+
+/** @typedef {Omit<InsertOptions, 'level'|'rows'|'columns'> & {level?: number|string, rows?: number|string, columns?: number|string, text?: string, argumentsText?: string}} InsertionDraft */
 
 /**
  * @param {string} path
@@ -133,7 +141,7 @@ const url = value => { const s=plain(value).trim(); if (/^(?:javascript|data|vbs
  * @param {InsertContext} [c={}]
  * @returns {InsertContext & {text: string; selection: Selection; files: {path: string; text: string}[]}}
  */
-function context(c = {}) { const text=plain(c.text); const selection=c.selection || {from:text.length,to:text.length,text:''}; return {...c, text, selection, files:c.files || []}; }
+function context(c = {}) { const text=plain(c.text); const selection=c.selection || {from:text.length,to:text.length,text:''}; const files=(c.files || []).map(file=>typeof file==='string'?{path:file,text:''}:file); return {...c, text, selection, files}; }
 /**
  * @param {InsertContext} [input={}]
  * @returns {'code'|'comment'|'metadata'|'math'|'markup'}
@@ -195,7 +203,7 @@ export function insertionAvailability(id, input = {}) {
  * @returns {string[]}
  */
 export function gatherInsertEnvironments(input = {}) {
-  const c=context(input), text=[c.text,c.mainText,...c.files.map(f=>f.text)].filter(Boolean).join('\n'), names=new Set();
+  const c=context(input), text=[c.text,c.mainText,...c.files.map(f=>typeof f==='string'?'':f.text)].filter(Boolean).join('\n'), names=new Set();
   const regex=c.format==='latex'?/\\(?:newenvironment|renewenvironment|newtheorem)\*?\s*\{([^}]+)\}/g:/#let\s+([A-Za-z][\w-]*)\s*\([^)]*\bbody\b[^)]*\)/g;
   for(const m of text.matchAll(regex))names.add(m[1]);
   return [...names].sort();
@@ -215,7 +223,7 @@ export function gatherInsertEnvironments(input = {}) {
  */
 export function insertEnvironmentFields(name,input={}) {
   if(!/^[A-Za-z][\w-]*$/.test(name||''))return [];
-  const c=context(input),source=[c.text,c.mainText,...c.files.map(f=>f.text)].filter(Boolean).join('\n');
+  const c=context(input),source=[c.text,c.mainText,...c.files.map(f=>typeof f==='string'?'':f.text)].filter(Boolean).join('\n');
   if(c.format==='latex'){
     const match=source.match(new RegExp('\\\\(?:newenvironment|renewenvironment)\\s*\\{'+name+'\\}\\s*\\[(\\d+)\\](?:\\s*\\[([^\\]]*)\\])?'));
     return Array.from({length:Math.min(9,Number(match?.[1])||0)},(_,i)=>({label:'Argument '+(i+1),defaultValue:i===0?match?.[2]||'':'',optional:i===0&&match?.[2]!=null}));
@@ -241,7 +249,7 @@ export function insertEnvironmentFields(name,input={}) {
  */
 export function gatherInsertTargets(input = {}) {
   const c=context(input), found=[], seen=new Set();
-  const sources=[{path:c.path,text:c.text},...c.files.filter(f=>f.path!==c.path && typeof f.text==='string')];
+  const sources=[{path:c.path,text:c.text},...c.files.filter(f=>typeof f!=='string' && f.path!==c.path && typeof f.text==='string')];
   function add(id,title,kind,path){if(!seen.has(id)){seen.add(id);found.push({id,label:title||id,kind,path});}}
   for(const source of sources){
     const text=plain(source.text).replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1\s*$/gm,'');
@@ -429,13 +437,18 @@ function buildMarkdown(id,o,c) {
 
 /**
  * @param {string} id
- * @param {InsertOptions} [options={}]
+ * @param {InsertionDraft} [options={}]
  * @param {InsertContext} [input={}]
  * @returns {FinalInsertion}
  */
 export function buildInsertion(id, options = {}, input = {}) {
   const c=context(input), available=insertionAvailability(id,c);if(!available.enabled)throw Error(available.reason);
-  const o={...options, inMath: insertSyntaxContext(c)==='math'};
+  const draft={...options, inMath: insertSyntaxContext(c)==='math'};
+  const o={...draft,
+    ...(draft.level!==undefined?{level:Number(draft.level)}:{}),
+    ...(draft.rows!==undefined?{rows:Number(draft.rows)}:{}),
+    ...(draft.columns!==undefined?{columns:Number(draft.columns)}:{}),
+  };
   /** @type {[string, number][]} */
   const numericValidations = [['rows',100],['columns',30],['level',6]];
   for(const [key,max] of numericValidations) {

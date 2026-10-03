@@ -151,9 +151,10 @@ export function selectedBibliographyFiles(source, format) {
 export function bibliographyFiles({ texts = {} } = {}) { return Object.keys(texts).filter((path) => /\.bib$/i.test(path)).sort(); }
 export function bibliographyNeedsAnalysis(request = {}) { return bibliographyFiles(request).length > 0 || selectedBibliographyFiles(request.source, request.format).length > 0; }
 export function bibliographyCacheKey({ main = "", format = "", source = "", texts = {} } = {}) {
-  const config = string(source).split(/\r?\n/).map((line, index) => [index + 1, line]).filter(([, line]) =>
+  const config = string(source).split(/\r?\n/).flatMap((line, index) =>
     /^\s*bibliography\s*:/i.test(line) || /^\s*-\s*[^#].*\.bib\s*$/i.test(line) ||
-    /#bibliography\s*\(|\\(?:addbibresource|bibliography)\b/.test(line) || /^\s*(?:---|\.\.\.)\s*$/.test(line) || /\/\*|\*\//.test(line)).map(([index, line]) => `${index}:${line}`).join("\n");
+    /#bibliography\s*\(|\\(?:addbibresource|bibliography)\b/.test(line) || /^\s*(?:---|\.\.\.)\s*$/.test(line) || /\/\*|\*\//.test(line)
+      ? [`${index + 1}:${line}`] : []).join("\n");
   return JSON.stringify({ main: string(main), format: string(format), config, selected: selectedBibliographyFiles(source, format), bib: bibliographyFiles({ texts }).map((path) => [path, string(texts[path])]) });
 }
 

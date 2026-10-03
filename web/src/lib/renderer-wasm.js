@@ -6,9 +6,20 @@ const REQUIRED_EXPORTS = [
   "clear_files", "set_main", "set_asset_url", "set_today", "word_diff",
 ];
 
+/** @typedef {(...args: number[]) => number} RendererFunction */
+/** @typedef {WebAssembly.Exports & {memory: WebAssembly.Memory, alloc: RendererFunction, dealloc: RendererFunction, compile: RendererFunction, compile_html?: RendererFunction, output_ptr: RendererFunction, ok: RendererFunction, output_kind: RendererFunction, diagnostics: RendererFunction, diagnostics_ptr: RendererFunction, failure_page: RendererFunction, title_of: RendererFunction, add_file: RendererFunction, clear_files: RendererFunction, set_main: RendererFunction, set_asset_url: RendererFunction, set_today: RendererFunction, word_diff: RendererFunction, bibliography?: RendererFunction, needs?: RendererFunction, needs_ptr?: RendererFunction}} RendererWasm */
+
+/** @param {RendererWasm} wasm @param {string} name @returns {RendererFunction} */
+function functionExport(wasm, name) {
+  const value = wasm[name];
+  if (typeof value !== "function") throw new Error(`renderer export ${name} is unavailable`);
+  return value;
+}
+
 // Keep the ABI check at the module boundary. This makes a stale or wrong
 // artifact fail while loading, with the complete list of what it lacks,
 // instead of failing later in a worker operation with an opaque TypeError.
+/** @param {WebAssembly.Exports} wasm @param {string} [url] @returns {RendererWasm} */
 export function validateExports(wasm, url = "renderer") {
   const missing = REQUIRED_EXPORTS.filter((name) => {
     if (name === "memory") return !(wasm[name] && wasm[name].buffer instanceof ArrayBuffer);
@@ -20,7 +31,7 @@ export function validateExports(wasm, url = "renderer") {
   if (typeof wasm.default_fonts_required === "function" && wasm.default_fonts_required() !== 0) {
     throw new Error(`incompatible Typst module ${url}: external fonts are unsupported; use an embedded-font build`);
   }
-  return wasm;
+  return /** @type {RendererWasm} */ (wasm);
 }
 
 async function instantiate(url) {
@@ -41,12 +52,12 @@ export function load(url) {
   if (loads[url]) return loads[url];
   loads[url] = instantiate(url)
     .then(({ exports: wasm }) => {
-      validateExports(wasm, url);
+      const renderer = validateExports(wasm, url);
       // The compiler has no clock of its own, so typst's datetime.today() is
       // whatever this tab says it is.
       const now = new Date();
-      wasm.set_today(now.getFullYear(), now.getMonth() + 1, now.getDate());
-      return wasm;
+      renderer.set_today(now.getFullYear(), now.getMonth() + 1, now.getDate());
+      return renderer;
     }).catch((error) => {
       delete loads[url];
       throw error;
@@ -59,6 +70,7 @@ export function load(url) {
 // which is how a figure reaches the compiler. The module's memory can be
 // replaced when it grows, so a view of it is taken after every call that might
 // have grown it, never held across one.
+/** @param {RendererWasm} wasm @param {string} name @param {...(string|Uint8Array)} strings */
 export function call(wasm, name, ...strings) {
   const encoder = new TextEncoder();
   const written = [];
@@ -75,7 +87,7 @@ export function call(wasm, name, ...strings) {
   }
   let length;
   try {
-    length = wasm[name](...written.flatMap(({ pointer, length }) => [pointer, length]));
+    length = functionExport(wasm, name)(...written.flatMap(({ pointer, length }) => [pointer, length]));
   } finally {
     for (const { pointer, length } of written) wasm.dealloc(pointer, length);
   }
@@ -108,6 +120,7 @@ export function call(wasm, name, ...strings) {
   };
 }
 
+/** @param {RendererWasm} wasm @param {{main?: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array>, urls?: Record<string, string>}} tree */
 export function handOver(wasm, tree) {
   wasm.clear_files();
   for (const [path, body] of Object.entries(tree.texts || {})) {
@@ -130,6 +143,7 @@ export function handOver(wasm, tree) {
 /// What the last compile went looking for and did not find -- packages and
 /// font families -- from a module that says so, or `null` from one that has
 /// no such export (markdown) or has compiled nothing yet. See `needs.js`.
+/** @param {RendererWasm} wasm @returns {{packages: {url?: string, dir: string}[], fonts: string[]} | null} */
 export function needsOf(wasm) {
   if (typeof wasm.needs !== "function" || typeof wasm.needs_ptr !== "function") return null;
   const size = wasm.needs();

@@ -35,7 +35,8 @@ export function pageForOffset(offset) {
 }
 
 export function pointFromClient(clientX, clientY) {
-  const element = document.elementFromPoint(clientX, clientY)?.closest?.(".page[data-page]");
+  const found = document.elementFromPoint(clientX, clientY)?.closest?.(".page[data-page]");
+  const element = found instanceof HTMLElement ? found : null;
   if (!element || !renderScale) return null;
   const rect = element.getBoundingClientRect();
   return { page: Number(element.dataset.page), x: (clientX - rect.left) / renderScale,

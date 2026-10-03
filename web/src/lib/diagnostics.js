@@ -17,6 +17,7 @@ export const DIAGNOSTIC_DELAY = 400;
 /// `paint(list)` is called with what should be on the screen. `now`,
 /// `setTimer` and `clearTimer` are injectable so a test can run a session in
 /// no time at all.
+/** @param {{delay?: number, paint: (list: object[]) => void, now?: () => number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout}} [options] */
 export function painter({
   delay = DIAGNOSTIC_DELAY,
   paint,
@@ -46,6 +47,7 @@ export function painter({
     },
 
     /// A render finished. `page` is whether it produced one.
+    /** @param {{page: boolean, diagnostics?: object[]}} result */
     rendered({ page, diagnostics = [] }) {
       if (page) {
         // A successful render clears every diagnostic the moment it lands,

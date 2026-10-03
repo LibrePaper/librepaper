@@ -6,9 +6,14 @@ let assets = null;
 const active = new Set();
 const TIMEOUT_MS = 120000;
 
+/** @typedef {{url: string, sha256: string, size: number}} BiberFile */
+/** @typedef {{digest: string, files?: Record<string, BiberFile>, engines?: {biber?: {worker: string, files?: string[]}}}} BiberRelease */
+/** @typedef {{done: number, total: number, scope: string}} BiberProgress */
+
 function abortError() { return new DOMException('Biber canceled', 'AbortError'); }
 function checkSignal(signal) { if (signal?.aborted) throw abortError(); }
 
+/** @param {string} base @param {BiberRelease} release @param {AbortSignal} [signal] @param {(progress: BiberProgress) => void} [onProgress] */
 async function load(base, release, signal, onProgress) {
   const key = `${base}:${release.digest}`;
   if (!assets || assets.key !== key) {
@@ -55,7 +60,8 @@ async function load(base, release, signal, onProgress) {
   });
 }
 
-export async function runBiber(request, { base, release, signal, onProgress } = {}) {
+/** @param {object} request @param {{base: string, release: BiberRelease, signal?: AbortSignal, onProgress?: (progress: BiberProgress) => void}} options */
+export async function runBiber(request, { base, release, signal, onProgress }) {
   const runtime = await load(base, release, signal, onProgress);
   checkSignal(signal);
   const url = URL.createObjectURL(new Blob([runtime.worker], { type: 'text/javascript' }));

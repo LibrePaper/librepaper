@@ -251,6 +251,7 @@ export function sourcePlaceFor(rendered, at, source, format, { exact = false } =
 // order a map happened to iterate in. The first file whose words match wins,
 // and a phrase that appears in two files is ambiguous in the document as
 // well -- `findOnce` refuses it there for the same reason.
+/** @param {string} rendered @param {number} at @param {{main?: string, texts?: Record<string, string>}} tree @param {{open?: string, formatOf?: (path: string) => string}} [options] */
 export function sourcePlaceInTree(rendered, at, tree, { open = "", formatOf } = {}) {
   const paths = Object.keys(tree.texts || {});
   const ordered = [

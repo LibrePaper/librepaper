@@ -50,6 +50,7 @@ export function readQuartoOptions(scope) {
   return { profile: null, parameters: {} };
 }
 
+/** @param {unknown} scope @param {{profile?: string|null, parameters?: Record<string, unknown>}} [options] */
 export function writeQuartoOptions(scope, { profile, parameters } = {}) {
   const value = { profile: profile || null, parameters: parameters || {} };
   try { storage()?.setItem(key(scope, QUARTO_OPTIONS), JSON.stringify(value)); } catch { /* private mode/quota */ }

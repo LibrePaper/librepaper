@@ -3,6 +3,10 @@
 // reused, and the same slug on two servers names two different projects.
 export const PROJECT_IDENTITY_VERSION = 2;
 
+/** @typedef {{server?: string, documentId?: string, slug?: string, createdAt?: string, access?: string}} ProjectIdentityInput */
+/** @typedef {{version: 2, origin: string, documentId: string, access: string} | {version: 1, origin: string, slug: string, createdAt: string}} ProjectIdentity */
+
+/** @param {ProjectIdentityInput} input @returns {ProjectIdentity} */
 export function projectIdentity({ server, documentId, slug, createdAt, access = "" }) {
   const origin = new URL(server || globalThis.location?.origin || "http://localhost").origin;
   if (documentId) return { version: PROJECT_IDENTITY_VERSION, origin, documentId, access };
@@ -28,7 +32,6 @@ export function sameProject(left, right) {
 export function assertSameProject(local, remote) {
   if (!sameProject(local, remote)) {
     const error = new Error("The remote document is not the project stored on this device.");
-    error.code = "project-identity-changed";
-    throw error;
+    throw Object.assign(error, { code: "project-identity-changed" });
   }
 }

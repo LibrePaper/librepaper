@@ -15,7 +15,10 @@
 // into this global scope, where it installs its own message handler; this
 // host never posts a message of its own.
 
-const nativeImportScripts = self.importScripts.bind(self);
+/** @typedef {{importScripts: (...urls: string[]) => void, addEventListener: typeof self.addEventListener, __librepaperLocateFile?: (name: string) => string, Module?: Record<string, unknown> & {locateFile?: (name: string) => string}}} EngineHostScope */
+/** @type {EngineHostScope} */
+const engineScope = /** @type {unknown} */ (self);
+const nativeImportScripts = engineScope.importScripts.bind(engineScope);
 
 function lookup(map, value, what) {
   const key = String(value).split("/").pop();
@@ -31,15 +34,15 @@ function setup({ data }) {
   }
   const { source, imports, assets } = host;
   if (imports) {
-    self.importScripts = (...urls) => nativeImportScripts(...urls.map((value) => lookup(imports, value, "import")));
+    engineScope.importScripts = (...urls) => nativeImportScripts(...urls.map((value) => lookup(imports, value, "import")));
   }
   if (assets) {
-    self.__librepaperLocateFile = (name) => lookup(assets, name, "asset");
-    self.Module = { ...(self.Module || {}), locateFile: self.__librepaperLocateFile };
+    engineScope.__librepaperLocateFile = (name) => lookup(assets, name, "asset");
+    engineScope.Module = { ...(engineScope.Module || {}), locateFile: engineScope.__librepaperLocateFile };
   }
   nativeImportScripts(source);
 }
 
 // Listeners added while an event is being dispatched are not called for it, so
 // the engine's own handler only ever sees the messages that come after this one.
-self.addEventListener("message", setup, { once: true });
+engineScope.addEventListener("message", setup, { once: true });

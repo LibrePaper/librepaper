@@ -38,9 +38,7 @@ function browserReferenceFetcher({ slug, key = "", fetcher = globalThis.fetch })
       headers: authHeaders(key || keyFor(slug)),
     });
     if (!response.ok) {
-      const error = new Error("could not fetch the document");
-      error.restartBaseline = response.status === 410;
-      throw error;
+      throw Object.assign(new Error("could not fetch the document"), { restartBaseline: response.status === 410 });
     }
     const expected = response.headers.get("x-librepaper-state-digest");
     if (!expected) throw new Error("document state response has no integrity identity");

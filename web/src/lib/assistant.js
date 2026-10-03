@@ -221,8 +221,12 @@ export function suggestionContext(suggestion) {
   };
 }
 
+/** @typedef {{kind: string, scope: string}} AssistantTask */
+/** @typedef {{type: "message", id: string, text: string, task?: AssistantTask, context: Record<string, unknown>}} AssistantTaskMessage */
+/** @param {{id?: string, text?: string, task?: AssistantTask, attachment?: object|null, selection?: object|null, path?: string, revision?: string, diagnostic?: object|null, diagnostics?: object[], suggestion?: object|null, thread?: object|null}} [options] @returns {AssistantTaskMessage} */
 export function composeTaskMessage({ id, text: body = "", task, attachment = null, selection = null, path = "", revision = "", diagnostic = null, diagnostics = [], suggestion = null, thread = null } = {}) {
-  const context = {};
+  /** @type {Record<string, unknown> & {diagnostics: object[], diagnostics_omitted: number}} */
+  const context = { diagnostics: [], diagnostics_omitted: 0 };
   const selected = task?.scope === "selection" || !task
     ? (attachment || (selection ? captureAttachment(selection, path, revision) : null))
     : null;

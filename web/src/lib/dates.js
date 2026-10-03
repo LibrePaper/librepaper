@@ -15,6 +15,7 @@
 /// `at` -- an ISO string, a Date, or a number -- as YYYY-MM-DD in the
 /// reader's timezone. An unparseable value is the empty string, which is what
 /// every caller here wants to render as nothing.
+/** @param {string|number|Date} at @param {string} [timeZone] @returns {string} */
 export function day(at, timeZone) {
   const when = at instanceof Date ? at : new Date(at);
   if (Number.isNaN(when.getTime())) return "";
@@ -40,10 +41,11 @@ export function day(at, timeZone) {
 ///
 /// The exact timestamp belongs in a `title` beside wherever this is rendered:
 /// this is the glance, not the record.
+/** @param {string|number|Date} at @param {Date} [now] @returns {string} */
 export function since(at, now = new Date()) {
   const when = at instanceof Date ? at : new Date(at);
   if (Number.isNaN(when.getTime())) return "";
-  const seconds = Math.floor((now - when) / 1000);
+  const seconds = Math.floor((now.getTime() - when.getTime()) / 1000);
   // A clock that is a little behind the server's reads as the future. There
   // is no useful way to write that, and "just now" is what it means.
   if (seconds < 90) return "just now";
@@ -51,7 +53,7 @@ export function since(at, now = new Date()) {
   if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.floor(minutes / 60);
   if (hours < 24 && day(when) === day(now)) return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
-  const days = Math.round((new Date(day(now)) - new Date(day(when))) / 86400000);
+  const days = Math.round((new Date(day(now)).getTime() - new Date(day(when)).getTime()) / 86400000);
   if (days <= 0) return "today";
   if (days === 1) return "yesterday";
   if (days < 7) return `${days} days ago`;
@@ -63,6 +65,7 @@ export function since(at, now = new Date()) {
 /// for anything older. A thread is read in one sitting, where every message
 /// carrying its full date is noise; the full timestamp stays in the tooltip.
 /// Both halves are in the reader's timezone, for the reason `day` gives.
+/** @param {string|number|Date} at @param {Date} [now] @returns {string} */
 export function moment(at, now = new Date()) {
   const when = at instanceof Date ? at : new Date(at);
   if (Number.isNaN(when.getTime())) return "";

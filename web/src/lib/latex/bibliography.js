@@ -125,6 +125,7 @@ function logUndefinedCitations(log) {
 /// `"main"`); `outputs` is the `tex` reply's `outputs` map (path -> bytes);
 /// `log` is that pass's TeX log; `tree` is the project, used only to decide
 /// whether a name the aux/bcf mentioned is actually present.
+/** @param {{stem: string, outputs?: Record<string, string|Uint8Array>, log?: string, tree?: {main?: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array>}}} input */
 export function inspect({ stem, outputs = {}, log = "", tree = {} }) {
   const mainDir = dirname(tree?.main);
   const auxPaths = [];
@@ -207,7 +208,9 @@ export function inspect({ stem, outputs = {}, log = "", tree = {} }) {
 /// the bcf) or a tool/engine/release change all change `controlBytes` or
 /// `files` and therefore this hash, while a prose-only edit -- which touches
 /// none of those -- reuses it exactly.
+/** @param {{kind?: string, controlBytes?: string|Uint8Array, files?: Record<string, string|number|Uint8Array|ArrayBuffer>, engine?: string, release?: string, tool?: string|{name?: string,version?: string,backend?: string}}} input */
 export async function identity({ kind, controlBytes, files = {}, engine, release, tool }) {
+  /** @type {[string, Uint8Array][]} */
   const entries = Object.entries(files)
     .map(([path, bytes]) => [path, bytesOrEmpty(bytes)])
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
@@ -215,6 +218,7 @@ export async function identity({ kind, controlBytes, files = {}, engine, release
   const toolTag =
     tool == null ? "" : typeof tool === "string" ? tool : `${tool.name || ""}:${tool.version || ""}:${tool.backend || ""}`;
 
+  /** @type {Uint8Array[]} */
   const parts = [
     encoder.encode(`kind:${kind || ""}\nengine:${engine || ""}\nrelease:${release || ""}\ntool:${toolTag}\n`),
   ];

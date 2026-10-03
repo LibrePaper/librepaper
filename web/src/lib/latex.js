@@ -54,7 +54,7 @@ let biberModule;
 let bibliographyIdentityOverride;
 let snapshotDigestOverride;
 let resourcesOverride;
-let fetchImpl = (...args) => fetch(...args);
+let fetchImpl = (input, init) => fetch(input, init);
 let nowImpl = () => Date.now();
 let deadlineMs = DEADLINE_MS;
 
@@ -234,6 +234,7 @@ async function makeJobWithinDeadline({ tree, generation, engine, release, deadli
 /// Called by the reader when a document opens. Resets the queue, the
 /// session route and every per-project cache when the project itself
 /// changes; a settings-only reconfigure of the same project is `setSettings`.
+/** @param {{project?: string|null, settings?: object}} [options] */
 export function configure({ project, settings: nextSettings } = {}) {
   const changedProject = project !== currentProject;
   currentProject = project;
@@ -1067,7 +1068,7 @@ export const _testing = {
     biberModule?.cancel();
     biberModule = undefined;
     resourcesOverride = undefined;
-    fetchImpl = (...args) => fetch(...args);
+    fetchImpl = (input, init) => fetch(input, init);
     nowImpl = () => Date.now();
     deadlineMs = DEADLINE_MS;
     release = null;

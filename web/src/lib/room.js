@@ -192,8 +192,7 @@ export function openRoom(slug, { onMessage, onConnected, onSourceChanged, key = 
             // `StaleSelection`), which a caller needs to re-render before
             // retrying.
             const failure = new Error(body.message || body.error || `comment submission failed (${response.status})`);
-            failure.body = body;
-            throw failure;
+            throw Object.assign(failure, { body });
           }
           const event = await response.json();
           onMessage(event);

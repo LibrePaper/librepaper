@@ -136,7 +136,7 @@ class GrabToPan {
     stopEvent(event);
 
     const focusedElement = document.activeElement;
-    if (focusedElement && !focusedElement.contains(event.target)) {
+    if (focusedElement instanceof HTMLElement && event.target instanceof Node && !focusedElement.contains(event.target)) {
       focusedElement.blur();
     }
   }
