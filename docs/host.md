@@ -2,6 +2,8 @@
 title: "Self-hosting"
 ---
 
+> **Warning:** LibrePaper is experimental software that is evolving rapidly. We do not recommend self-hosting at the moment. This page nevertheless includes some notes for interested readers and system administrators.
+
 ## Deploy
 
 ### Quick start
