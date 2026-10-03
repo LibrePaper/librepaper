@@ -802,7 +802,7 @@ async fn listing_publisher_uses_cached_authentication_and_keeps_its_gates() {
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn snapshot_exposes_the_shared_cli_project_snapshot_wire_fields() {
-    let Some(deployment) = deployment("http-snapshot-project-contract").await else {
+    let Some(mut deployment) = deployment("http-snapshot-project-contract").await else {
         return;
     };
     deployment.server.app.client_id = "test-client".into();
