@@ -19,7 +19,7 @@ use super::protocol;
 use crate::util::now_unix;
 
 fn opaque_id() -> String {
-    format!("q-{}", hex::encode(crate::auth::random_bytes(16)))
+    format!("q-{}", hex::encode(crate::util::random_bytes(16)))
 }
 
 /// Validate an entrypoint stored in a user-approved project binding. Bindings

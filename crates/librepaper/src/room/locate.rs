@@ -23,8 +23,8 @@
 //! first of them: that would make the comment silently about the wrong
 //! sentence, which is worse than asking for a longer selection.
 
-use super::annotation::{AnchorSide, FileId, SourceTextTarget};
 use super::text::slice16;
+use crate::storage::annotation::{AnchorSide, FileId, SourceTextTarget};
 
 /// Below this a phrase is too common to identify a place on its own:
 /// "the interval" appears throughout a document about intervals. A selection

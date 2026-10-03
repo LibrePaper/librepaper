@@ -20,7 +20,7 @@
 //! timeout, never a bare sleep for the deletion grace period itself.
 //!
 //! Every test needs `LIBREPAPER_TEST_POSTGRES_URL` and is `#[ignore]`d
-//! by default, the same convention as `log/recovery.rs` and
+//! by default, the same convention as `room/recovery_tests.rs` and
 //! `server/comment_http_tests.rs`. Point it at a throwaway database:
 //! `docker exec librepaper-postgres psql -U postgres -c 'CREATE DATABASE lp_worker_spike'`.
 //! Every test truncates the tables it uses and claims the single writer

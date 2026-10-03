@@ -44,8 +44,8 @@ use crate::log::sequencer::{
     SequencerError, FLUSH_MAX_AGE, FLUSH_QUIET, FLUSH_TRIGGER_BYTES,
 };
 use crate::log::{frame, Budget};
-use crate::room::outgoing::{Outgoing, Receiver, Sender};
 use crate::storage::blob::{BlobStore, FsStore};
+use crate::storage::outgoing::{Outgoing, Receiver, Sender};
 use crate::storage::postgres::{self, Authority, FlushRow};
 
 // -- fixtures ------------------------------------------------------------
@@ -309,16 +309,16 @@ fn sequencer_sharing_pending(
 /// A causally-linked source of update batches, standing in for one editor's
 /// outbox: each call exports exactly the ops since the last call, which is
 /// what one `doc-update` looks like on the wire.
-// `pub(super)`, not private: `log::recovery` (SPEC-server-is-a-log §14.1)
+// `pub(crate)`, not private: `room::recovery_tests` (SPEC-server-is-a-log §14.1)
 // reuses this as the same causally-linked batch source rather than building
 // a second one. Nothing outside `crate::log` sees it either way.
-pub(super) struct Outbox {
+pub(crate) struct Outbox {
     doc: LoroDoc,
     at: VersionVector,
 }
 
 impl Outbox {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let doc = LoroDoc::new();
         let _ = doc.get_text("t");
         Self {
@@ -327,7 +327,7 @@ impl Outbox {
         }
     }
 
-    pub(super) fn export_since_last(&mut self) -> Vec<u8> {
+    pub(crate) fn export_since_last(&mut self) -> Vec<u8> {
         self.doc.commit();
         let batch = self
             .doc
@@ -340,7 +340,7 @@ impl Outbox {
     }
 
     /// One keystroke's worth of edit, batched.
-    pub(super) fn edit(&mut self) -> Vec<u8> {
+    pub(crate) fn edit(&mut self) -> Vec<u8> {
         let text = self.doc.get_text("t");
         text.insert_utf16(text.len_utf16(), "x").unwrap();
         self.export_since_last()
@@ -350,8 +350,8 @@ impl Outbox {
     /// one repeated character: Loro's run-length encoding would otherwise
     /// collapse a repeated character back under the trigger it is meant to
     /// cross.
-    pub(super) fn edit_at_least(&mut self, bytes: usize) -> Vec<u8> {
-        let filler = hex::encode(crate::auth::random_bytes(bytes / 2 + 1));
+    pub(crate) fn edit_at_least(&mut self, bytes: usize) -> Vec<u8> {
+        let filler = hex::encode(crate::util::random_bytes(bytes / 2 + 1));
         let text = self.doc.get_text("t");
         text.insert_utf16(text.len_utf16(), &filler).unwrap();
         self.export_since_last()
@@ -359,21 +359,21 @@ impl Outbox {
 
     /// What this outbox's own document currently reads, for a test to
     /// compare against what a server it sent batches to ends up holding.
-    pub(super) fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         self.doc.get_text("t").to_string()
     }
 
     /// This outbox's own vector -- what it has sent and can vouch for --
     /// distinct from `export_since_last`'s bookkeeping of what it has
     /// already exported once.
-    pub(super) fn vector(&self) -> VersionVector {
+    pub(crate) fn vector(&self) -> VersionVector {
         self.doc.oplog_vv()
     }
 
     /// Every op after `vector`, without touching this outbox's own
     /// bookkeeping of what it has already exported once -- what a client
     /// resending its whole unsent history after a `doc-gap` does.
-    pub(super) fn export_from(&self, vector: &VersionVector) -> Vec<u8> {
+    pub(crate) fn export_from(&self, vector: &VersionVector) -> Vec<u8> {
         self.doc
             .export(ExportMode::Updates {
                 from: Cow::Borrowed(vector),

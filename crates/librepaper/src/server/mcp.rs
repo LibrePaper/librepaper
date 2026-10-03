@@ -1,6 +1,6 @@
 //! MCP document tools. MCP owns transport; rooms own effects and durability.
 use super::*;
-use crate::agent_query::{QueryBudget, QuerySnapshot};
+use crate::room::agent_query::{QueryBudget, QuerySnapshot};
 use hmac::{Hmac, Mac};
 use serde::Serialize;
 
@@ -109,6 +109,12 @@ impl Failure {
     fn with_data(mut self, data: Value) -> Self {
         self.data = data;
         self
+    }
+}
+
+impl From<crate::room::proposals::ActionRefusal> for Failure {
+    fn from(refusal: crate::room::proposals::ActionRefusal) -> Self {
+        Self::new(refusal.code, refusal.message)
     }
 }
 
@@ -589,7 +595,7 @@ impl Server {
                 Ok(existing) => existing,
                 Err(error) if error.code == "view_expired" => {
                     let expiry = now_unix() + 3600;
-                    let payload = format!("{expiry}.{}", hex::encode(crate::auth::random_bytes(8)));
+                    let payload = format!("{expiry}.{}", hex::encode(crate::util::random_bytes(8)));
                     let operation_epoch = format!("{payload}.{}", sign(&self.key, actor, &payload));
                     let candidate = View {
                         snapshot: snapshot.clone(),
@@ -676,14 +682,14 @@ impl Server {
         let author = self.mcp_author(headers, arrival, who, actor);
         let editor = who.at_least(Role::Editor);
         for query in wanted {
-            let fingerprint = crate::agent_query::query_fingerprint(query);
+            let fingerprint = crate::room::agent_query::query_fingerprint(query);
             // Where this query continues, if it is a continuation. The
             // cursor is validated in full against the snapshot afterwards;
             // this only decides which rows to read.
             let at = query
                 .get("cursor")
                 .and_then(Value::as_str)
-                .and_then(crate::agent_query::peek_cursor)
+                .and_then(crate::room::agent_query::peek_cursor)
                 .and_then(|peeked| peeked.at);
             let thread = match query.get("id").and_then(Value::as_str) {
                 Some(id) => Some(comments::parse_uuid(id, "id")?),
@@ -855,7 +861,7 @@ impl Server {
         };
         let snapshot = view.snapshot;
         let (snapshot, query_result) = tokio::task::spawn_blocking(move || {
-            let result = crate::agent_query::read(
+            let result = crate::room::agent_query::read(
                 &snapshot,
                 &queries,
                 QueryBudget {

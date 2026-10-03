@@ -1239,7 +1239,7 @@ async fn put_or_adopt_archive(
 /// Two independent checks, because they fail differently. The header says
 /// what the encoder claimed; the scratch document says what a decoder
 /// actually finds. A fabricated or truncated snapshot passes at most one.
-pub(crate) fn prove_coverage(
+pub fn prove_coverage(
     snapshot: &[u8],
     log_vector: &[u8],
     changes: usize,

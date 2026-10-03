@@ -41,7 +41,7 @@
 //!
 //! ```text
 //! pub use auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
-//! pub use document::store::Store;
+//! pub use storage::store::Store;
 //! pub use room::{Room, Rooms};
 //! pub use server::Server;
 //! pub use storage::blob::{BlobStore, FsStore};
@@ -82,7 +82,7 @@ fn test_database_url() -> String {
 
 /// A throwaway, leaked-temp-directory blob store. Nothing in either test
 /// reads an asset back; a document created straight through the catalogue
-/// (rather than through `document::store::Store`) never writes one either,
+/// (rather than through `storage::store::Store`) never writes one either,
 /// so this exists only because `Registry::new` needs a value for the field.
 fn blobs() -> Arc<dyn BlobStore> {
     let dir = tempfile::tempdir().expect("a temp directory for the unused blob store");
@@ -762,7 +762,7 @@ mod idle {
 // `handle_share` route in `server/sharing.rs`, the same route a browser's
 // share dialog calls) -- a signed-in identity is required to hold anything
 // through a link at all, per `Ceiling`'s own doc comment in
-// `document/store.rs`: "publishing always asks for a sign-in first, so a
+// `storage/store.rs`: "publishing always asks for a sign-in first, so a
 // link never edits" on its own. Revoking the link takes only that second
 // editor's authority, so the owner's socket is always there as the second
 // subscriber `Room::leave` would otherwise see.
@@ -793,7 +793,7 @@ mod revocation {
     ///
     /// Generalized over the account rather than hard-coded to the owner,
     /// because the second editor in this test needs one too: `Ceiling`'s own
-    /// doc comment in `document/store.rs` says why an edit link is not by
+    /// doc comment in `storage/store.rs` says why an edit link is not by
     /// itself enough -- "publishing always asks for a sign-in first, so a
     /// link never edits" -- an edit link only raises a caller who is already
     /// signed in and inside `--publishers` up to Editor. A guest who

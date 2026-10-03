@@ -468,7 +468,7 @@ pub struct LocalService {
 
 impl LocalService {
     /// `state_home` and `cache_home` are XDG bases -- production passes
-    /// `crate::cli::state_home()` and the real cache directory; a test
+    /// `crate::local::paths::state_home_or_die()` and the real cache directory; a test
     /// passes two temporary directories so it never races another test over
     /// process-wide environment state. Completed Quarto records are restored
     /// for bounded retry/recovery; interrupted and unknown workspaces are
@@ -626,7 +626,7 @@ fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry>
                         record.status.status.as_str(),
                         "queued" | "running" | "done" | "failed" | "canceled"
                     )
-                    && crate::auth::now_unix().saturating_sub(record.finished_at)
+                    && crate::util::now_unix().saturating_sub(record.finished_at)
                         <= FINISHED_TTL.as_secs() as i64
                     && record.files.len() <= MAX_FILES
                     && record.status.outputs.len() <= MAX_FILES
@@ -721,7 +721,7 @@ fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry>
             let _ = std::fs::remove_dir_all(&path);
             continue;
         }
-        let age = crate::auth::now_unix()
+        let age = crate::util::now_unix()
             .saturating_sub(record.finished_at)
             .max(0) as u64;
         let (cancel_tx, cancel_rx) = watch::channel(false);
@@ -824,7 +824,7 @@ fn persist_quarto_job(id: &str, entry: &JobEntry) -> Result<(), String> {
         origin: entry.origin.clone(),
         project: entry.project.clone(),
         files: names,
-        finished_at: crate::auth::now_unix(),
+        finished_at: crate::util::now_unix(),
     };
     let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
     let temporary = root.join(format!("{QUARTO_RECORD_FILE}.tmp-{id}"));
@@ -1978,7 +1978,7 @@ mod recovery_tests {
             "status": {"id": "job", "kind": "quarto", "status": status,
                 "snapshot": "s", "generation": 1, "outputs": {}},
             "origin": "https://example.test", "project": "paper",
-            "files": [], "finished_at": crate::auth::now_unix()
+            "files": [], "finished_at": crate::util::now_unix()
         })
     }
 

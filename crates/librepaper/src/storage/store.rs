@@ -1620,7 +1620,7 @@ async fn entries_from_documents(
 
 pub fn random_suffix(config: &Configuration) -> String {
     let alphabet = config.suffix_alphabet.as_bytes();
-    crate::auth::random_bytes(config.suffix_length)
+    crate::util::random_bytes(config.suffix_length)
         .into_iter()
         .map(|byte| alphabet[byte as usize % alphabet.len()] as char)
         .collect()

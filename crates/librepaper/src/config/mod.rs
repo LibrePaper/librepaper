@@ -6,6 +6,9 @@
 use serde::Serialize;
 use std::path::PathBuf;
 
+pub mod budget;
+pub mod socket_budget;
+
 /// The public static asset mirror used when an operator does not host a copy:
 /// the browser wasm modules under `wasm/<sha256>/` and the pinned LaTeX
 /// release under `latex/<sha256>/`. Browsers fetch them directly; the origin never proxies these
@@ -104,7 +107,7 @@ pub struct Configuration {
     #[serde(skip)]
     pub cost: CostPolicy,
     #[serde(skip)]
-    pub sockets: crate::server::socket_budget::SocketPolicy,
+    pub sockets: crate::config::socket_budget::SocketPolicy,
     /// Optional reporting metadata for operator-managed backups.
     pub backup: BackupPolicy,
 
@@ -365,7 +368,7 @@ impl Default for Configuration {
             max_path: 200,
             log_quota_bytes: DEFAULT_LOG_QUOTA_BYTES,
             memory_budget_bytes: 512 * 1024 * 1024,
-            cache_expansion: crate::log::budget::DEFAULT_EXPANSION,
+            cache_expansion: budget::DEFAULT_EXPANSION,
             pending_bytes: DEFAULT_PENDING_BYTES,
             pending_scratch_bytes: default_pending_scratch_bytes(DEFAULT_LOG_QUOTA_BYTES),
             text_extensions: [
@@ -422,7 +425,7 @@ impl Default for Configuration {
                 uploads_per_hour: 30,
             },
             cost: CostPolicy::default(),
-            sockets: crate::server::socket_budget::SocketPolicy::default(),
+            sockets: crate::config::socket_budget::SocketPolicy::default(),
             backup: BackupPolicy::default(),
             // What the upload form takes. Every one of these is a source
             // format `document_format` names and `storable_source` allows, so
@@ -574,7 +577,7 @@ impl Configuration {
     /// number near `u64::MAX` gets a configuration error rather than a
     /// comparison that wrapped.
     pub fn validate_pending(&self) -> Result<(), String> {
-        use crate::log::sequencer::{max_pending_charge, max_row_bytes, BUFFER_CEILING_BYTES};
+        use budget::{max_pending_charge, max_row_bytes, BUFFER_CEILING_BYTES};
 
         if self.pending_bytes == 0 || self.pending_scratch_bytes == 0 {
             return Err("the pending-source ceilings must be positive".into());
@@ -590,7 +593,7 @@ impl Configuration {
         // A row past the log quota is refused, so the quota is the largest row
         // any path writes.
         let largest_row = max_row_bytes(self.log_quota_bytes) as u64;
-        let needed = crate::log::pending::scratch_for(largest_row);
+        let needed = budget::scratch_for(largest_row);
         if self.pending_scratch_bytes < needed {
             return Err(format!(
                 "the persistence scratch ceiling ({} MB) cannot write one maximum-size row, \
@@ -616,7 +619,7 @@ impl Configuration {
     /// Does not check the memory budget, because the two are checked together
     /// by `validate_budgets` once every override is applied.
     pub fn set_log_quota(&mut self, megabytes: Option<u64>) -> Result<(), String> {
-        use crate::log::sequencer::BUFFER_CEILING_BYTES;
+        use budget::BUFFER_CEILING_BYTES;
 
         let Some(megabytes) = megabytes else {
             return Ok(());
@@ -669,7 +672,7 @@ impl Configuration {
     /// reserves the resident expansion plus the transient one, and Budget::reserve
     /// refuses a request larger than the whole limit, so the budget must cover both.
     pub fn validate_budgets(&self) -> Result<(), String> {
-        use crate::log::sequencer::BUFFER_CEILING_BYTES;
+        use budget::BUFFER_CEILING_BYTES;
 
         if self.log_quota_bytes < BUFFER_CEILING_BYTES {
             return Err(format!(
@@ -680,9 +683,8 @@ impl Configuration {
         }
 
         let quota = self.log_quota_bytes as u64;
-        let resident = crate::log::budget::estimate(quota, self.cache_expansion);
-        let transient =
-            crate::log::budget::estimate(quota, crate::log::budget::BUILD_TRANSIENT_EXPANSION);
+        let resident = budget::estimate(quota, self.cache_expansion);
+        let transient = budget::estimate(quota, budget::BUILD_TRANSIENT_EXPANSION);
         let needed = resident
             .checked_add(transient)
             .ok_or_else(|| "the memory budget requirement overflows".to_string())?;
@@ -729,7 +731,7 @@ pub const DEFAULT_PENDING_BYTES: u64 = 64 * 1024 * 1024;
 /// row and both driver buffers, including capacity growth. The pool is a ceiling
 /// on reservations, not memory held.
 pub fn default_pending_scratch_bytes(log_quota_bytes: usize) -> u64 {
-    crate::log::pending::scratch_for(crate::log::sequencer::max_row_bytes(log_quota_bytes) as u64)
+    budget::scratch_for(budget::max_row_bytes(log_quota_bytes) as u64)
 }
 
 #[cfg(test)]

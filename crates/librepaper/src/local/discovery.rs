@@ -77,7 +77,7 @@ struct Cache {
 }
 
 fn cache_path() -> PathBuf {
-    crate::cli::state_home()
+    crate::local::paths::state_home_or_die()
         .join("librepaper")
         .join("local")
         .join("tools.json")

@@ -2501,7 +2501,7 @@ fn read_file_bounded_to(path: &Path, description: &str, limit: usize) -> Result<
 }
 
 fn opaque_id() -> String {
-    format!("q-{}", hex::encode(crate::auth::random_bytes(16)))
+    format!("q-{}", hex::encode(crate::util::random_bytes(16)))
 }
 fn timestamp() -> String {
     time::OffsetDateTime::now_utc()

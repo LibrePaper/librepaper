@@ -13,10 +13,10 @@
 //! `librepaper_sqlx`.
 
 use super::*;
-use crate::document::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::Authority;
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n";
 

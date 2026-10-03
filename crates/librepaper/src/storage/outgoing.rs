@@ -221,6 +221,8 @@ impl Sender {
     ///
     /// Marked durable: the writer must put it on the wire before it tears the
     /// socket down.
+    // The unit error predates the public re-export; callers only match on it.
+    #[allow(clippy::result_unit_err)]
     pub fn force_close(&self, reason: impl Into<String>) -> Result<(), ()> {
         let outgoing = Outgoing::Close(reason.into());
         #[cfg(not(test))]
@@ -357,8 +359,8 @@ mod budget_tests {
 
     #[tokio::test]
     async fn aggregate_queue_is_reserved_once_and_released_when_receiver_drops() {
-        let budget = crate::server::socket_budget::SocketBudget::new(
-            crate::server::socket_budget::SocketPolicy {
+        let budget = crate::config::socket_budget::SocketBudget::new(
+            crate::config::socket_budget::SocketPolicy {
                 queue_bytes_max: 6,
                 ..Default::default()
             },
@@ -391,8 +393,8 @@ mod budget_tests {
         let Outgoing::SharedText(text) = &payload else {
             unreachable!("shared_text constructs SharedText");
         };
-        let budget = crate::server::socket_budget::SocketBudget::new(
-            crate::server::socket_budget::SocketPolicy {
+        let budget = crate::config::socket_budget::SocketBudget::new(
+            crate::config::socket_budget::SocketPolicy {
                 queue_bytes_max: 8 * payload.bytes(),
                 ..Default::default()
             },
@@ -438,7 +440,7 @@ mod budget_tests {
     /// compares per-recipient String allocation with one owned `Utf8Bytes`
     /// allocation cloned across all recipients, for both a small and a large
     /// frame. Run with `cargo test -p librepaper --lib
-    /// room::outgoing::budget_tests::benchmark_shared_fanout -- --ignored
+    /// storage::outgoing::budget_tests::benchmark_shared_fanout -- --ignored
     /// --nocapture`.
     #[test]
     #[ignore = "microbenchmark; run with --ignored --nocapture"]

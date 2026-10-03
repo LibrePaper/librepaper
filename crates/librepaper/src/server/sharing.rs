@@ -139,7 +139,7 @@ pub fn hash_link_key(key: &str) -> String {
 /// which is what admits a caller, and a sealed copy of the key itself, which
 /// is what lets its owner be handed the URL again.
 pub fn mint_link_key() -> String {
-    hex::encode(crate::auth::random_bytes(32))
+    hex::encode(crate::util::random_bytes(32))
 }
 
 /// The key that seals a link key, from the deployment's session key. A purpose
@@ -160,7 +160,7 @@ fn sealing_key(session_key: &[u8]) -> chacha20poly1305::Key {
 pub fn seal_link_key(session_key: &[u8], key: &str) -> Vec<u8> {
     use chacha20poly1305::aead::{Aead, KeyInit};
     let cipher = chacha20poly1305::XChaCha20Poly1305::new(&sealing_key(session_key));
-    let nonce = crate::auth::random_bytes(24);
+    let nonce = crate::util::random_bytes(24);
     let Ok(sealed) = cipher.encrypt(chacha20poly1305::XNonce::from_slice(&nonce), key.as_bytes())
     else {
         return Vec::new();
@@ -204,7 +204,7 @@ impl Server {
             until: crate::util::format_unix(crate::util::now_unix() + LINK_DEFAULT_SECONDS),
             ..Default::default()
         };
-        let actor = crate::document::store::MutationActor {
+        let actor = crate::storage::store::MutationActor {
             account_id: caller.id.clone(),
             owner_key: caller.key.clone(),
             session_generation: caller.session_generation.clone(),
@@ -379,7 +379,7 @@ impl Server {
 
         let revoke = asked.revoke.clone().unwrap_or_default();
         let now = crate::util::now_unix();
-        let mutation_actor = crate::document::store::MutationActor {
+        let mutation_actor = crate::storage::store::MutationActor {
             account_id: current_who.id.id.clone(),
             owner_key: current_who.key.clone(),
             session_generation: current_who.id.session_generation.clone(),

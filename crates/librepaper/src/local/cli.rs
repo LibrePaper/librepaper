@@ -8,11 +8,117 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::net::TcpListener;
 
-use crate::cli::{state_home, LocalArgs, LocalCommand};
+use clap::{Args, Subcommand};
+
 use crate::local::pairing::{PairingStore, ServiceState};
+use crate::local::paths::state_home_or_die as state_home;
 use crate::local::protocol::{self, DEFAULT_PORT};
 use crate::local::service::{LocalService, NativeRunner, Runner};
 use crate::util::die;
+
+/// Shared options for the default launch and explicit `start` aliases.
+#[derive(Args, Clone, Debug, Default)]
+pub struct LaunchArgs {
+    /// Run in the foreground of this process instead of in the background
+    #[arg(long, help_heading = "Companion")]
+    pub foreground: bool,
+    /// Also start the companion every time you log in
+    #[arg(long, help_heading = "Companion")]
+    pub at_login: bool,
+    /// Port to listen on (default 8763)
+    #[arg(
+        long,
+        value_name = "PORT",
+        hide_default_value = true,
+        env = "LIBREPAPER_LOCAL_PORT",
+        help_heading = "Companion"
+    )]
+    pub port: Option<u16>,
+    /// Extra directories searched before PATH for typst, pandoc and calepin
+    #[arg(
+        long,
+        value_name = "DIRS",
+        env = "LIBREPAPER_TOOL_PATH",
+        value_delimiter = ':',
+        help_heading = "Companion"
+    )]
+    pub tool_path: Vec<PathBuf>,
+}
+
+/// `librepaper local <command>` compatibility commands. Keep these aliases
+/// until a removal cutoff is announced for supported external CLI clients.
+/// See `crate::local::cli`.
+#[derive(Subcommand, Clone, Debug)]
+pub enum LocalCommand {
+    /// Start the companion (in the background by default, or in this process with --foreground)
+    #[command(hide = true)]
+    Start(LaunchArgs),
+    /// Ask a running companion to stop cleanly.
+    #[command(hide = true)]
+    Stop,
+    /// Launch the companion and open a validated local connection link.
+    /// The operating system runs this for `librepaper://` links; it is not
+    /// listed because nobody types it.
+    #[command(hide = true)]
+    Open { url: String },
+    /// Whether the service is running, its address, code and pairings, and which native tools were found
+    #[command(hide = true)]
+    Status {
+        /// Extra directories searched before PATH for typst, pandoc and calepin, colon-separated
+        #[arg(
+            long,
+            value_name = "DIRS",
+            env = "LIBREPAPER_TOOL_PATH",
+            value_delimiter = ':'
+        )]
+        tool_path: Vec<PathBuf>,
+    },
+    /// Approve a dialog request from the companion
+    Approve {
+        /// Approval code from the dialog
+        code: String,
+    },
+    /// Revoke a site pairing
+    Disconnect {
+        /// Origin (e.g. https://papers.example)
+        origin: String,
+    },
+    /// Teach this computer an ACP agent the sidebar can drive
+    #[command(hide = true)]
+    Agent {
+        #[command(subcommand)]
+        command: LocalAgentCommand,
+    },
+}
+
+/// Declaring an ACP agent this machine offers. It lives here, as a local
+/// command, rather than as a loopback route: a paired page picks which agent
+/// to drive, never what command to run.
+#[derive(Subcommand, Clone, Debug)]
+pub enum LocalAgentCommand {
+    /// Declare an agent. Everything after `--` is the command that speaks the
+    /// Agent Client Protocol on stdio, for example:
+    /// `librepaper agent add opencode --label opencode -- opencode acp`
+    Add {
+        /// Short lower-case id, shown in the sidebar's agent list.
+        id: String,
+        #[arg(long, value_name = "NAME", default_value = "")]
+        label: String,
+        #[arg(last = true, required = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// Which agents this computer has been taught
+    List,
+    Remove {
+        id: String,
+    },
+}
+
+/// The arguments `librepaper local` hands to `crate::local::run`.
+#[derive(Clone, Debug)]
+pub struct LocalArgs {
+    pub command: LocalCommand,
+}
 
 pub async fn run(args: LocalArgs) {
     match args.command {
@@ -43,7 +149,7 @@ pub async fn run(args: LocalArgs) {
 /// and never under the state home the tokens live in. Read here, not in
 /// `service.rs`, so the service itself stays free of environment reads and
 /// testable with an explicit directory -- the same reasoning
-/// `crate::cli::state_home` gives for the token cache.
+/// `crate::local::paths::state_home_or_die` gives for the token cache.
 fn cache_home() -> PathBuf {
     match std::env::var("XDG_CACHE_HOME") {
         Ok(base) if !base.is_empty() => PathBuf::from(base),
@@ -99,12 +205,12 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     // loopback service works fine on IPv4 alone when it is.
     let listener_v6 = TcpListener::bind(("::1", port)).await.ok();
 
-    let instance = hex::encode(crate::auth::random_bytes(8));
+    let instance = hex::encode(crate::util::random_bytes(8));
     let state = ServiceState {
         port,
         instance: instance.clone(),
         pid: std::process::id(),
-        started: crate::auth::now_unix(),
+        started: crate::util::now_unix(),
     };
     if let Err(err) = pairing.write_service(&state) {
         die(format!("could not write service.json: {err}"));
@@ -386,9 +492,9 @@ fn disconnect(origin: String) {
 /// is not in the built-in table. This is how opencode, Pi, or something that
 /// does not exist yet becomes a sidebar assistant without LibrePaper
 /// guessing at a package name that may never have existed.
-fn local_agent(command: crate::cli::LocalAgentCommand) {
-    use crate::cli::LocalAgentCommand;
-    let state_home = crate::cli::state_home();
+fn local_agent(command: LocalAgentCommand) {
+    use LocalAgentCommand;
+    let state_home = crate::local::paths::state_home_or_die();
     let store = crate::local::acp_agents::CustomStore::new(&state_home);
     match command {
         LocalAgentCommand::Add {

@@ -29,9 +29,8 @@
 use std::collections::HashSet;
 
 use super::*;
-use crate::document::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
-use crate::room::annotation::CommentTarget;
+use crate::storage::annotation::CommentTarget;
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::annotations::{
     ANNOTATION_PAGE_MAX, REPLY_LOOKUP_MAX, REPLY_PAGE_MAX,
@@ -40,6 +39,7 @@ use crate::storage::postgres::{
     AnnotationRecord, Authority, MutationAuthorization, NewAccount, NewAnnotation, NewReply,
     PostgresCatalog,
 };
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n";
 

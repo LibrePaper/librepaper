@@ -15,12 +15,12 @@
 
 use super::*;
 use crate::document::session;
-use crate::document::store::{DocumentInput, MutationActor, Store};
 use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::{Authority, PostgresCatalog, StoredProposal};
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 use loro::Frontiers;
 use uuid::Uuid;
 

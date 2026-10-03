@@ -20,12 +20,12 @@ use uuid::Uuid;
 
 use crate::auth::{GithubApp, Identity, Policy, PROVIDER_GITHUB};
 use crate::config::Configuration;
-use crate::document::store::{DocumentInput, MutationActor, Role, Store};
 use crate::log::Registry;
 use crate::room::{Message as RoomMessage, Rooms};
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::PostgresCatalog;
 use crate::storage::postgres::{AccessRole, NewAccount};
+use crate::storage::store::{DocumentInput, MutationActor, Role, Store};
 
 use super::{Server, Viewer};
 
@@ -351,7 +351,7 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
     let attachment = after.attachment.as_ref().expect("a resolved attachment");
     assert_eq!(
         attachment.status,
-        crate::room::annotation::AnchorStatus::Exact,
+        crate::storage::annotation::AnchorStatus::Exact,
         "the quoted passage is still found, just further down the file",
     );
     deployment.catalog.close().await;
@@ -478,7 +478,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
                         original_anchor: crate::room::OriginalAnchor {
                             source_sequence: 1,
                             frontier: vec![1, 2, 3],
-                            target: crate::room::annotation::CommentTarget::Document,
+                            target: crate::storage::annotation::CommentTarget::Document,
                         },
                         presentation: Default::default(),
                         render_digest: None,

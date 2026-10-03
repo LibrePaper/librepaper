@@ -195,7 +195,7 @@ fn private_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn nonce() -> String {
-    hex::encode(crate::auth::random_bytes(24))
+    hex::encode(crate::util::random_bytes(24))
 }
 
 impl Lease {

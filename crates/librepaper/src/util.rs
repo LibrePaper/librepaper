@@ -58,6 +58,19 @@ pub fn now_unix() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
 }
 
+/// `n` bytes from the operating system's random generator.
+pub fn random_bytes(n: usize) -> Vec<u8> {
+    use rand::RngCore;
+    let mut raw = vec![0u8; n];
+    rand::rng().fill_bytes(&mut raw);
+    raw
+}
+
+/// Sixteen random bytes as lowercase hex.
+pub fn random_token() -> String {
+    hex::encode(random_bytes(16))
+}
+
 /// Unix milliseconds for persisted deadlines and timestamps.
 pub fn now_millis() -> i64 {
     i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
@@ -70,11 +83,7 @@ pub fn now_millis() -> i64 {
 /// every mutating document tool call, in the exact shape the server's
 /// `OperationKey::validate` requires, so the model never constructs one.
 pub fn new_request_key() -> String {
-    format!(
-        "v2.{}.{}",
-        now_millis(),
-        hex::encode(crate::auth::random_bytes(16))
-    )
+    format!("v2.{}.{}", now_millis(), hex::encode(random_bytes(16)))
 }
 
 pub fn timestamp() -> String {
@@ -121,4 +130,15 @@ pub fn request_key_timestamp(key: &str) -> Option<i64> {
         return None;
     }
     issued.parse().ok()
+}
+
+/// Base64, which is how a binary update travels on a JSON socket.
+pub fn encode_update(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+pub fn decode_update(text: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(text).ok()
 }

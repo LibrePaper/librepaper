@@ -120,7 +120,7 @@ impl Room {
     pub(crate) async fn put_asset_authorized(
         &self,
         body: Vec<u8>,
-        actor: &crate::document::store::MutationActor,
+        actor: &crate::storage::store::MutationActor,
     ) -> Result<(String, i64), WriteError> {
         let size = body.len() as i64;
         if size == 0 {
@@ -130,7 +130,7 @@ impl Room {
         // attempted, an error can leave an uncatalogued immutable object and
         // callers must treat the upload admission as spent.
         let authorization = super::catalog::mutation_authorization(actor)?;
-        let sha = crate::document::store::digest_of_bytes(&body);
+        let sha = crate::storage::store::digest_of_bytes(&body);
         let digest: [u8; 32] = Sha256::digest(&body).into();
 
         // Keep the reservation local and cheap: the object write below can be

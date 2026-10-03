@@ -2,7 +2,7 @@
 //! loopback service consults on every authenticated request.
 //!
 //! State lives under `<state_home>/librepaper/local/` -- a sibling of, not
-//! inside, the deployment token cache `crate::cli` keeps under
+//! inside, the deployment token cache `local::credentials` keeps under
 //! `<state_home>/librepaper/` -- as two small JSON files:
 //!
 //! - `service.json`: what the running `librepaper start` printed, so
@@ -16,7 +16,7 @@
 //! Every function here takes the config-home base directory as an explicit
 //! argument rather than reading `$XDG_STATE_HOME` itself, so a test can hand
 //! it a temporary directory and never race another test over process-wide
-//! environment state. `crate::cli::state_home()` is what production passes.
+//! environment state. `crate::local::paths::state_home_or_die()` is what production passes.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::auth::{now_unix, random_bytes};
+use crate::util::{now_unix, random_bytes};
 
 /// How long a pairing token is good for once issued.
 pub const TOKEN_TTL_SECONDS: i64 = 30 * 24 * 3600;
@@ -64,7 +64,7 @@ pub struct PairingStore {
 }
 
 impl PairingStore {
-    /// `state_home` is an XDG state base, e.g. `crate::cli::state_home()`
+    /// `state_home` is an XDG state base, e.g. `crate::local::paths::state_home_or_die()`
     /// in production or a temporary directory standing in for
     /// `$XDG_STATE_HOME` in a test.
     pub fn new(state_home: &Path, _fixed_code: Option<String>) -> Self {

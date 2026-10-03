@@ -61,7 +61,7 @@ pub async fn running(state_home: &Path) -> Option<ServiceState> {
 /// Idempotent launch, with bounded readiness checks. The CLI reports success
 /// only after identifying the running instance rather than merely spawning.
 pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<ServiceState, String> {
-    let state_home = crate::cli::state_home();
+    let state_home = crate::local::paths::state_home_or_die();
     if let Some(state) = running(&state_home).await {
         if port != 0 && port != state.port {
             return Err(format!(

@@ -272,7 +272,7 @@ pub fn validate_patches(tree: &SourceTree<'_>, request: &PatchRequest) -> Result
                 ));
             }
             if !dependency.file_hash.is_empty()
-                && dependency.file_hash != crate::document::store::digest_of(file.text)
+                && dependency.file_hash != crate::storage::store::digest_of(file.text)
             {
                 return Err(AgentError::Conflict("dependency file changed".into()));
             }
@@ -664,7 +664,7 @@ impl Room {
         recheck().await?;
 
         let catalog = self.catalog().clone();
-        let actor = crate::document::store::MutationActor {
+        let actor = crate::storage::store::MutationActor {
             account_id: authority.account_id.clone(),
             owner_key: authority.owner_key.clone(),
             session_generation: authority.session_generation.clone(),

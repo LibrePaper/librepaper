@@ -282,11 +282,11 @@ mod tests {
     use crate::log::{
         Budget, Command, CommandError, Evidence, Head, PreparedSource, Role, Sequencer,
     };
-    use crate::room::annotation::{CommentTarget, OriginalAnchor, PresentationContext};
-    use crate::room::outgoing::Sender;
+    use crate::storage::annotation::{CommentTarget, OriginalAnchor, PresentationContext};
     use crate::storage::blob::{BlobStore, FsStore};
     use crate::storage::collaboration::CollaborationStorage;
     use crate::storage::maintenance::Maintenance;
+    use crate::storage::outgoing::Sender;
 
     /// §8.4 step 5 end to end, for the catalogue tests that only care about
     /// where a base and its rows end up. Production splits these two -- the
@@ -3251,8 +3251,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod benchmarks;
 pub use access::AccessRole;
 pub use annotations::{
     original_anchor_from_record, presentation_from_record, AnnotationRecord, AnnotationState,

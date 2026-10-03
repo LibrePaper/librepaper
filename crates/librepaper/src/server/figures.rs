@@ -111,7 +111,7 @@ impl Server {
                 return plain(error.status(), &error.client_message());
             }
         };
-        let mutation_actor = crate::document::store::MutationActor {
+        let mutation_actor = crate::storage::store::MutationActor {
             account_id: who.id.id.clone(),
             owner_key: who.key.clone(),
             session_generation: who.id.session_generation.clone(),

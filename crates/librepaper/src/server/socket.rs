@@ -4,11 +4,11 @@
 use super::*;
 use crate::log::sequencer::Ingested;
 use crate::log::CommandError;
-use crate::room::outgoing::OutgoingSink;
 use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };
 use crate::room::Room;
+use crate::storage::outgoing::OutgoingSink;
 use crate::storage::postgres::{StoredProposal, StoredProposalOutcome};
 
 /// Bound both queue and transport writes so a slow peer cannot pin the reader
@@ -325,16 +325,16 @@ impl Server {
             .live_link(&who.link, crate::util::now_unix())
             .and_then(|link| crate::util::parse_timestamp(&link.until));
         let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
-        let identity = crate::server::socket_budget::SocketIdentity {
+        let identity = crate::config::socket_budget::SocketIdentity {
             network: client_network(&address),
             principal: who.id.id.clone(),
             document: slug.to_string(),
             role: Some(if may_edit {
-                super::socket_budget::SocketRole::Editor
+                crate::config::socket_budget::SocketRole::Editor
             } else if who.at_least(Role::Commenter) {
-                super::socket_budget::SocketRole::Commenter
+                crate::config::socket_budget::SocketRole::Commenter
             } else {
-                super::socket_budget::SocketRole::Reader
+                crate::config::socket_budget::SocketRole::Reader
             }),
         };
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
@@ -395,7 +395,7 @@ impl Server {
         arrival: Arrival,
         query: Option<String>,
         link_expires: Option<i64>,
-        _socket_permit: crate::server::socket_budget::SocketPermit,
+        _socket_permit: crate::config::socket_budget::SocketPermit,
     ) {
         let socket_id = _socket_permit.id();
         let (mut sink, mut stream) = socket.split();
@@ -654,7 +654,7 @@ impl Server {
                             let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id()}).to_string())).await;
                             continue 'reader;
                         }
-                        let digest = crate::document::store::digest_of(text);
+                        let digest = crate::storage::store::digest_of(text);
                         if let Some((_, previous)) = chat_requests.iter().find(|(id,_)| id == incoming.temp_id()) {
                             let reply = if previous == &digest {
                                 json!({"type":"chat-ack","temp_id":incoming.temp_id()})

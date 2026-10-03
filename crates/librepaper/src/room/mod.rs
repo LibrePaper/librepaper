@@ -36,8 +36,9 @@ use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{Authority, PostgresCatalog};
 
 pub(crate) mod agent;
+pub(crate) mod agent_query;
 mod agent_view;
-pub mod annotation;
+pub use crate::storage::annotation;
 mod catalog;
 mod command;
 #[cfg(test)]
@@ -56,13 +57,16 @@ pub mod locate;
 #[cfg(test)]
 mod locate_corpus_tests;
 mod message;
-pub(crate) mod outgoing;
+pub(crate) use crate::storage::outgoing;
 #[cfg(test)]
 mod proposal_round_trip_tests;
 pub(crate) mod proposals;
+#[cfg(test)]
+mod recovery_tests;
 pub(crate) mod resolve;
 pub(crate) mod text;
 
+pub use crate::util::{decode_update, encode_update};
 pub use annotation::OriginalAnchor;
 pub use command::Command as RoomCommand;
 pub use comments::*;
@@ -787,17 +791,6 @@ pub fn format_from_path(path: &str) -> String {
     crate::document::render::document_format(path)
         .unwrap_or_default()
         .to_string()
-}
-
-/// Base64, which is how a binary update travels on a JSON socket.
-pub fn encode_update(bytes: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-pub fn decode_update(text: &str) -> Option<Vec<u8>> {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.decode(text).ok()
 }
 
 /// The key one address is rate limited under. An hour rather than a minute,

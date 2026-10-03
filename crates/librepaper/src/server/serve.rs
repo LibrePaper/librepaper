@@ -9,9 +9,9 @@ use tokio::net::TcpListener;
 use crate::auth::{session_key_file, GithubApp, GoogleApp, Policy};
 use crate::config::Configuration;
 use crate::document::retention::{describe_seconds, parse_expire_from, parse_retention};
-use crate::document::store::Store;
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
+use crate::storage::store::Store;
 use crate::storage::{open_storage, StorageOptions};
 use crate::util::die;
 use librepaper_shell::load_shell;
@@ -37,7 +37,7 @@ pub struct ServeOptions {
     /// Write each new account's starter documents as though they had been
     /// typed over this many days, so the history panel has something in it on a
     /// demonstration deployment. The operations are real; only the clock is
-    /// invented. See `crate::seed::activity`.
+    /// invented. See `crate::storage::seed::activity`.
     pub simulate_activity: Option<u32>,
     /// The reader origin browsers reach this deployment on, and the origin
     /// documents are served from. Without the first, the deployment answers on
@@ -233,7 +233,7 @@ async fn deployment_peer_key(
             }
         }
     }
-    let key = crate::auth::random_token();
+    let key = crate::util::random_token();
     catalog
         .set_runtime_state(
             crate::log::DEPLOYMENT_PEER_STATE,

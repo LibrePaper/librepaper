@@ -14,31 +14,16 @@
 /// was written by something that is not this program.
 pub const VERSION: u8 = 0x01;
 
-/// Bounds on what a frame may claim, so a corrupt or hostile row cannot make
-/// the decoder allocate. Both are far above anything a flush produces: a
-/// peer key is an account id or a deployment marker.
-pub const MAX_PEER_KEY: usize = 256;
-const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
+pub use crate::config::budget::{BATCH_HEADER_BYTES, MAX_PEER_KEY, ROW_HEADER_BYTES};
 
-/// What one batch's header costs, on top of its payload:
-/// `[peer_key_len u16][client_seq u64][bytes_len u32]`, and then the key
-/// itself. Named rather than spelled `14` in three places, because the
-/// pending accounting in [`super::pending`] charges it -- a buffer of very
-/// many very small updates is mostly this, and an estimate that ignored it
-/// would under-reserve the row it is about to write by however many batches
-/// went into it.
-pub const BATCH_HEADER_BYTES: usize = 2 + 8 + 4;
+/// Bounds on what a frame may claim, so a corrupt or hostile row cannot make
+/// the decoder allocate. Both are far above anything a flush produces.
+const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 
 /// What framing one batch from `peer_key` adds to the row.
 pub fn overhead(peer_key: &str) -> usize {
     BATCH_HEADER_BYTES + peer_key.len()
 }
-
-/// What the version byte costs. A row is this plus each batch's payload and
-/// [`overhead`], exactly -- which is what lets a flush reserve its scratch
-/// from the buffer's own accounting rather than by encoding first and
-/// measuring afterwards.
-pub const ROW_HEADER_BYTES: usize = 1;
 
 /// One batch as a client sent it, with that client's session sequence.
 #[derive(Clone, Debug, Eq, PartialEq)]

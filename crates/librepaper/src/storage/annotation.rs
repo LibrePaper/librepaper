@@ -52,12 +52,12 @@ mod frontier_wire {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        crate::room::encode_update(bytes).serialize(serializer)
+        crate::util::encode_update(bytes).serialize(serializer)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
         let text = String::deserialize(deserializer)?;
-        crate::room::decode_update(&text)
+        crate::util::decode_update(&text)
             .ok_or_else(|| serde::de::Error::custom("frontier is not base64"))
     }
 }

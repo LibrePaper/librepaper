@@ -1071,7 +1071,7 @@ mod served_policy_tests {
             registry.clone(),
             config.clone(),
         );
-        let store = crate::document::store::Store::open_with_catalog(
+        let store = crate::storage::store::Store::open_with_catalog(
             blobs.clone(),
             config.clone(),
             catalog.clone(),

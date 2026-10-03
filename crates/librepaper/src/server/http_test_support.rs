@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use crate::auth::{GithubApp, Policy};
 use crate::config::Configuration;
-use crate::document::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::Server;
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::{NewAccount, PostgresCatalog, WriterLease};
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 
 pub(super) struct Deployment {
     pub(super) server: Server,

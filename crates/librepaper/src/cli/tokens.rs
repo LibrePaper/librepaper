@@ -2,102 +2,13 @@
 //! under the state home, the device flow that fills it, and `logout`.
 
 use super::*;
-
-/// The state directory to read and write under, following XDG. What lives
-/// here is written by the program, not by a person: the token cache, and the
-/// local service's pairings and tool cache. That is state, not
-/// configuration, so it goes under `$XDG_STATE_HOME` (or `~/.local/state`),
-/// not the config home. This is the only place any of the token helpers below
-/// touches the environment, so everything else can be pure and tested by
-/// handing it a base directory directly rather than mutating `$HOME` or
-/// `$XDG_STATE_HOME` for the whole process.
-pub(crate) fn state_home() -> PathBuf {
-    crate::local::paths::state_home().unwrap_or_else(|error| die(&error))
-}
-
-/// Where every librepaper file lives under the state directory.
-pub(super) fn librepaper_dir(base: &Path) -> PathBuf {
-    base.join("librepaper")
-}
-
-/// One JSON object mapping a normalized server origin to the bearer token
-/// `login` received from it. Scoped by origin, not by the literal `--server`
-/// string, so `https://x.example` and `https://x.example/` share a cache
-/// entry and a request never carries one deployment's token to another.
-pub(crate) fn tokens_path(base: &Path) -> PathBuf {
-    librepaper_dir(base).join("tokens.json")
-}
-
-/// All cached tokens, keyed by origin. A missing or unreadable file is the
-/// same as no tokens cached yet, which is not worth failing a command over.
-pub(super) fn load_tokens(base: &Path) -> std::collections::HashMap<String, String> {
-    read_tokens(base).unwrap_or_default()
-}
-
-fn read_tokens(base: &Path) -> Result<std::collections::HashMap<String, String>, String> {
-    let path = tokens_path(base);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
-        Err(err) => return Err(format!("could not read {}: {err}", path.display())),
-    };
-    serde_json::from_str(&raw)
-        .map_err(|err| format!("invalid token cache {}: {err}", path.display()))
-}
-
-// Never unlink this lock: replacing its inode would let two processes lock
-// different files. The operating system releases the lock even after a crash.
-fn lock_tokens(base: &Path) -> Result<std::fs::File, String> {
-    let directory = librepaper_dir(base);
-    std::fs::create_dir_all(&directory)
-        .map_err(|err| format!("could not create {}: {err}", directory.display()))?;
-    let path = directory.join("tokens.lock");
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let file = options
-        .open(&path)
-        .map_err(|err| format!("could not open {}: {err}", path.display()))?;
-    fs2::FileExt::lock_exclusive(&file)
-        .map_err(|err| format!("could not lock {}: {err}", path.display()))?;
-    Ok(file)
-}
-
-pub(super) fn save_tokens(
-    base: &Path,
-    tokens: &std::collections::HashMap<String, String>,
-) -> Result<(), String> {
-    let path = tokens_path(base);
-    let body = serde_json::to_string_pretty(tokens)
-        .map_err(|err| format!("could not encode {}: {err}", path.display()))?;
-    // `write_token` is the general "write this text where nobody else can
-    // read it" primitive, not only the one `login` used to use for a lone
-    // bearer string; a trailing newline on a JSON file is harmless.
-    write_token(&path, &body)
-}
-
-/// The token cached for one server's origin, or "" if there is none.
-pub(crate) fn stored_token_at(base: &Path, server: &str) -> String {
-    let origin = crate::local::credentials::origin(server);
-    load_tokens(base)
-        .get(&origin)
-        .map(|token| token.trim().to_string())
-        .filter(|token| !token.is_empty())
-        .unwrap_or_default()
-}
-
-/// Caches `token` under `server`'s origin.
-pub(crate) fn store_token_at(base: &Path, server: &str, token: &str) -> Result<(), String> {
-    let _lock = lock_tokens(base)?;
-    let origin = crate::local::credentials::origin(server);
-    let mut tokens = read_tokens(base)?;
-    tokens.insert(origin, token.to_string());
-    save_tokens(base, &tokens)
-}
+#[cfg(test)]
+use crate::local::credentials::read_tokens;
+pub(crate) use crate::local::credentials::write_private_file;
+use crate::local::credentials::{
+    librepaper_dir, lock_tokens, store_token_at, stored_token_at, tokens_path,
+};
+pub(crate) use crate::local::paths::state_home_or_die as state_home;
 
 /// The token to send to `server`: an explicit `--token` (or the
 /// `$LIBREPAPER_TOKEN` clap merges into it) if one was given, or whatever
@@ -168,25 +79,6 @@ pub async fn login(server: Option<String>) {
         println!("signed in as {who}");
     }
     eprintln!("  token stored in {}", tokens_path(&base).display());
-}
-/// Replaces `path` with `bytes`, readable by nobody else.
-///
-/// The private-replacement mechanics -- create the temporary already
-/// private, sync it, close it before the rename, sync the directory, take
-/// the temporary away on failure -- are [`crate::private_files::publish`]'s,
-/// shared with the assistant journal so the two cannot drift. Caller
-/// locking stays here: `save_tokens` holds the tokens lock across a
-/// read-modify-write, which no single replacement can provide.
-pub(super) fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    crate::private_files::publish(path, bytes, &path.display().to_string())
-}
-
-/// Writes the token where the next command will look for it, readable by
-/// nobody else. Kept as a thin wrapper over `write_private_file` because
-/// tests write a token to an arbitrary path directly, without going through
-/// `login`'s scoped cache.
-pub fn write_token(path: &Path, token: &str) -> Result<(), String> {
-    write_private_file(path, format!("{token}\n").as_bytes())
 }
 
 /// Signs out of every cached deployment at once: `logout` takes no `--server`
@@ -289,6 +181,7 @@ pub async fn poll_for_token(server: &str, code: &DeviceCode) -> Result<String, S
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+    use crate::local::credentials::write_token;
 
     #[test]
     fn corrupt_cache_is_preserved_when_login_writes() {
