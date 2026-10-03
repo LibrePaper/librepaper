@@ -402,7 +402,7 @@ where
 
     loop {
         match buf_reader.fill_buf().await {
-            Ok(buf) if buf.is_empty() => {
+            Ok([]) => {
                 if !line_buf.is_empty() {
                     let line_str = String::from_utf8_lossy(&line_buf);
                     {
@@ -434,6 +434,7 @@ where
                     process_log_line(&watch, trimmed).await;
                     line_buf.clear();
                 } else {
+                    let consumed = buf.len();
                     if line_buf.len() < MAX_LINE_SIZE {
                         let available = MAX_LINE_SIZE - line_buf.len();
                         let to_append = if buf.len() <= available {
@@ -443,7 +444,7 @@ where
                         };
                         line_buf.extend_from_slice(to_append);
                     }
-                    buf_reader.consume(buf.len());
+                    buf_reader.consume(consumed);
                 }
             }
         }
@@ -646,7 +647,7 @@ mod tests {
         });
 
         let long_line = "x".repeat(200 * 1024);
-        let input = format!("{}ok\n", long_line);
+        let input = format!("{long_line}\nok\n");
         let cursor = Cursor::new(input.as_bytes().to_vec());
 
         pump(cursor, watch).await;

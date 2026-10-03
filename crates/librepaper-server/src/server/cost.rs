@@ -3,7 +3,6 @@
 use super::*;
 use axum::body::HttpBody;
 pub struct CostMeter {
-    config: Arc<Configuration>,
     requests: Option<governor::DefaultKeyedRateLimiter<String>>,
     pub transfers: Arc<tokio::sync::Semaphore>,
     work: Arc<tokio::sync::Semaphore>,
@@ -17,7 +16,6 @@ impl CostMeter {
     // worth a query on a clock to save.
     pub fn new(config: &Arc<Configuration>) -> Self {
         Self {
-            config: config.clone(),
             transfers: Arc::new(tokio::sync::Semaphore::new(config.cost.artifact_transfers)),
             work: Arc::new(tokio::sync::Semaphore::new(config.cost.work_concurrency)),
             control_work: Arc::new(tokio::sync::Semaphore::new(16)),
