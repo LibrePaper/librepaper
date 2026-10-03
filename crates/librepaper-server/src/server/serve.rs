@@ -384,7 +384,7 @@ pub async fn serve(options: ServeOptions) {
         port,
     );
     for warning in &advice.warnings {
-        eprintln!("{warning}");
+        tracing::warn!("{}", warning.strip_prefix("warning: ").unwrap_or(warning.as_str()));
     }
     if let Some(fatal) = advice.fatal {
         die(fatal);
@@ -481,7 +481,7 @@ pub async fn serve(options: ServeOptions) {
         Some(start) => match start(deployment_paths.state.join("local-app")).await {
             Ok(local) => Some(local),
             Err(error) => {
-                eprintln!("warning: local app not started: {error}");
+                tracing::warn!("local app not started: {error}");
                 None
             }
         },
@@ -496,7 +496,7 @@ pub async fn serve(options: ServeOptions) {
         let metrics_server = instance.clone();
         tokio::spawn(async move {
             if let Err(error) = super::metrics::serve(metrics_listener, metrics_server).await {
-                eprintln!("metrics listener stopped: {error}");
+                tracing::error!("metrics listener stopped: {error}");
             }
         });
     }

@@ -287,7 +287,7 @@ impl Server {
                 Ok(Some(entry)) => entry,
                 Ok(None) => return plain(404, "not found"),
                 Err(error) => {
-                    eprintln!("could not authorize socket for {slug}: {error}");
+                    tracing::warn!("could not authorize socket for {slug}: {error}");
                     return plain(503, "catalogue temporarily unavailable");
                 }
             }
@@ -1066,8 +1066,8 @@ impl Server {
                                     }
                                     Err(error) => {
                                         if let Some(context) = error.log_context() {
-                                            eprintln!(
-                                                "warning: could not label {}: {context}",
+                                            tracing::warn!(
+                                                "could not label {}: {context}",
                                                 room.slug
                                             );
                                         }
@@ -1693,7 +1693,7 @@ impl Server {
                 return false;
             }
             Err(error) => {
-                eprintln!("could not check moderation state for {slug}: {error}");
+                tracing::warn!("could not check moderation state for {slug}: {error}");
                 self.disconnect_connection(slug, socket_id).await;
                 return false;
             }
@@ -1713,7 +1713,7 @@ impl Server {
                 // An unresolved catalogue cannot authorize a protected frame.
                 // Disconnect only this sender; the periodic/all-socket path
                 // will independently revisit the other connections.
-                eprintln!("could not reauthorize {slug}: {error}");
+                tracing::warn!("could not reauthorize {slug}: {error}");
                 self.disconnect_connection(slug, socket_id).await;
                 return false;
             }
@@ -1836,7 +1836,7 @@ impl Server {
         let entry = match self.store.get_result(slug).await {
             Ok(entry) => entry,
             Err(error) => {
-                eprintln!("could not reauthorize {slug}: {error}");
+                tracing::warn!("could not reauthorize {slug}: {error}");
                 None
             }
         };

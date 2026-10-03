@@ -496,7 +496,7 @@ pub(super) fn refused_with(
     fields: &[(&str, Value)],
 ) -> Reply {
     if let Some(context) = error.log_context() {
-        eprintln!("warning: {what}: {context}");
+        tracing::warn!("{what}: {context}");
     }
     let mut payload = json!({"error": error.client_message()});
     if error.is_temporary() {
@@ -581,7 +581,7 @@ pub(super) fn command_refusal_value(
 /// written to the log rather than sent.
 pub(super) fn refusal_value(what: &str, error: &librepaper_room::room::WriteError) -> Value {
     if let Some(context) = error.log_context() {
-        eprintln!("warning: {what}: {context}");
+        tracing::warn!("{what}: {context}");
     }
     let mut payload = json!({
         "type": "error",
