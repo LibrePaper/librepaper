@@ -93,6 +93,29 @@ export function bucketFromArn(arn) {
   return match[1];
 }
 
+const publisherEnvironmentKeys = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
+
+// Deploy-assets resolves these once before its S3 probes. Standalone pushes
+// still load SOPS when the caller has not supplied a complete canonical config.
+export async function publisherEnvironment(env, loadSecrets = loadSecretsFromSops) {
+  const complete = publisherEnvironmentKeys.every((key) => env[key]);
+  const candidate = complete ? env : { ...env, ...selectedOvhFields(await loadSecrets()) };
+  return mappedEnvironment(candidate);
+}
+
+async function loadSecretsFromSops() {
+  try {
+    const { stdout } = await runFile("sops", ["--decrypt", "--output-type", "json", keys], {
+      maxBuffer: 1024 * 1024,
+    });
+    const secrets = JSON.parse(stdout);
+    if (!secrets || typeof secrets !== "object" || Array.isArray(secrets)) throw new Error("invalid key file");
+    return secrets;
+  } catch {
+    throw new Error("SOPS could not load deploy keys; check SOPS availability and deploy key configuration");
+  }
+}
+
 async function run() {
   if (![undefined, "", "0", "1"].includes(process.env.MIRRORS_DRY_RUN)) {
     throw new Error("MIRRORS_DRY_RUN must be 0 or 1");
@@ -103,22 +126,11 @@ async function run() {
     return;
   }
 
-  let secrets;
-  try {
-    const { stdout } = await runFile("sops", ["--decrypt", "--output-type", "json", keys], {
-      maxBuffer: 1024 * 1024,
-    });
-    secrets = JSON.parse(stdout);
-    if (!secrets || typeof secrets !== "object" || Array.isArray(secrets)) throw new Error("invalid key file");
-  } catch {
-    throw new Error("SOPS could not load deploy keys; check SOPS availability and deploy key configuration");
-  }
-  const selected = selectedOvhFields(secrets);
-  await publishPrepared({ ...process.env, ...selected });
+  await publishPrepared(await publisherEnvironment(process.env, loadSecretsFromSops));
 }
 
 async function publishPrepared(rawEnv, { dryRun = false } = {}) {
-  const env = dryRun ? rawEnv : mappedEnvironment(rawEnv);
+  const env = rawEnv;
   if (!dryRun) publisherConfiguration(env);
   const staged = await stageWasmMirror();
   try {

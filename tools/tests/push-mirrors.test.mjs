@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { bucketFromArn, mappedEnvironment, selectedOvhFields, stageWasmMirror } from "../push-mirrors.mjs";
+import { bucketFromArn, mappedEnvironment, publisherEnvironment, selectedOvhFields, stageWasmMirror } from "../push-mirrors.mjs";
 
 const script = fileURLToPath(new URL("../push-mirrors.mjs", import.meta.url));
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -66,6 +66,34 @@ test("null SOPS placeholders are absent and canonical overrides precede effectiv
 test("a null OVH bucket allows the exact bucket ARN fallback", () => {
   const selected = selectedOvhFields({ OVH_S3_BUCKET: null, OVH_S3_ARN: "arn:aws:s3:::asset-bucket" });
   assert.equal(mappedEnvironment(selected).S3_BUCKET, "asset-bucket");
+});
+
+test("complete canonical publisher settings skip SOPS while incomplete settings retain fallback mapping", async () => {
+  let loads = 0;
+  const canonical = {
+    S3_ENDPOINT: "https://canonical.invalid", S3_REGION: "canonical-region", S3_BUCKET: "canonical-bucket",
+    AWS_ACCESS_KEY_ID: "canonical-id", AWS_SECRET_ACCESS_KEY: "canonical-secret",
+  };
+  const resolved = await publisherEnvironment(canonical, async () => {
+    loads += 1;
+    return {};
+  });
+  assert.equal(loads, 0);
+  assert.equal(resolved.S3_ENDPOINT, "https://canonical.invalid");
+  assert.equal(resolved.S3_BUCKET, "canonical-bucket");
+
+  const partial = await publisherEnvironment({ S3_ENDPOINT: "https://override.invalid" }, async () => {
+    loads += 1;
+    return {
+      OVH_S3_ENDPOINT: "https://from-sops.invalid", OVH_S3_REGION: "region-from-sops",
+      OVH_S3_ARN: "arn:aws:s3:::sops-bucket", OVH_S3_USER: "sops-id", OVH_S3_SECRET: "sops-secret",
+    };
+  });
+  assert.equal(loads, 1);
+  assert.equal(partial.S3_ENDPOINT, "https://override.invalid");
+  assert.equal(partial.S3_REGION, "region-from-sops");
+  assert.equal(partial.S3_BUCKET, "sops-bucket");
+  assert.equal(partial.AWS_ACCESS_KEY_ID, "sops-id");
 });
 
 test("dry run stages the wasm mirror, hashes both mirrors and skips SOPS, even without credentials", async () => {

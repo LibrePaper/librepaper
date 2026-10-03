@@ -115,6 +115,44 @@ push_mirrors() {
   fi
 }
 
+# Read and validate the encrypted S3 settings once, then pass the same resolved
+# configuration to the bucket probes and the mirror publisher.
+load_publish_credentials() {
+  KEYS="${KEYS:-tools/deploy-keys.yaml}"
+  local secrets_json='{}' credentials_json
+  if [ -z "${S3_ENDPOINT:-}" ] || [ -z "${S3_REGION:-}" ] || [ -z "${S3_BUCKET:-}" ] || \
+      [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+    if ! secrets_json=$(sops --decrypt --output-type json "$KEYS" 2>/dev/null); then
+      printf '%s\n' 'Error: SOPS could not load deploy keys' >&2
+      exit 1
+    fi
+  fi
+  if ! credentials_json=$(printf '%s' "$secrets_json" | node --input-type=module -e '
+import { readFileSync } from "node:fs";
+import { publisherEnvironment } from "./tools/push-mirrors.mjs";
+import { publisherConfiguration } from "./tools/publish-mirror.mjs";
+const secrets = JSON.parse(readFileSync(0, "utf8"));
+const config = await publisherEnvironment(process.env, async () => secrets);
+publisherConfiguration(config);
+const keys = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
+const values = keys.map((key) => config[key]);
+if (values.some((value) => typeof value !== "string" || !value || /[\x00-\x1f]/.test(value))) process.exit(1);
+process.stdout.write(values.join("\n"));
+' 2>/dev/null); then
+    printf '%s\n' 'Error: could not resolve valid S3 publishing configuration' >&2
+    exit 1
+  fi
+  local -a resolved
+  mapfile -t resolved <<< "$credentials_json"
+  [ "${#resolved[@]}" -eq 5 ] || { printf '%s\n' 'Error: incomplete S3 publishing configuration' >&2; exit 1; }
+  S3_ENDPOINT="${resolved[0]}"
+  S3_REGION="${resolved[1]}"
+  S3_BUCKET="${resolved[2]}"
+  AWS_ACCESS_KEY_ID="${resolved[3]}"
+  AWS_SECRET_ACCESS_KEY="${resolved[4]}"
+  unset secrets_json credentials_json resolved
+}
+
 # Verify: fetch public URL with Origin header; expect 200 + access-control-allow-origin.
 verify_public() {
   local KEY="$1"
@@ -175,31 +213,13 @@ cmd_publish() {
     return
   fi
 
-  # Decrypt and read keys.
-  KEYS="${KEYS:-tools/deploy-keys.yaml}"
-  key() { sops --decrypt --extract "[\"$1\"]" "$KEYS"; }
-  OVH_S3_ENDPOINT=$(key OVH_S3_ENDPOINT)
-  OVH_S3_REGION=$(key OVH_S3_REGION)
-  OVH_S3_USER=$(key OVH_S3_USER)
-  OVH_S3_SECRET=$(key OVH_S3_SECRET)
-  OVH_S3_ARN=$(key OVH_S3_ARN)
-
-  # Derive bucket from ARN: arn:aws:s3:::bucket -> bucket
-  S3_BUCKET="${S3_BUCKET:-${OVH_S3_ARN#arn:aws:s3:::}}"
-  if [ -z "$S3_BUCKET" ] || [ "$S3_BUCKET" = "$OVH_S3_ARN" ]; then
-    printf '%s\n' "Error: could not derive bucket from OVH_S3_ARN or S3_BUCKET is not set" >&2
-    exit 1
-  fi
+  # Decrypt once and share the same credentials with the AWS probes and publisher.
+  local custom_s3_target=0
+  if [ -n "${S3_ENDPOINT:-}" ] || [ -n "${S3_REGION:-}" ]; then custom_s3_target=1; fi
+  load_publish_credentials
 
   # Require a public URL when the S3 API target is overridden. S3 endpoint
   # hostnames do not determine a provider's public object URL convention.
-  local custom_s3_target=0
-  if [ -n "${S3_ENDPOINT:-}" ] || [ -n "${S3_REGION:-}" ]; then custom_s3_target=1; fi
-
-  # Honor environment variable overrides for S3 endpoint and region.
-  S3_ENDPOINT="${S3_ENDPOINT:-$OVH_S3_ENDPOINT}"
-  S3_REGION="${S3_REGION:-$OVH_S3_REGION}"
-
   if [ -z "${S3_PUBLIC_BASE_URL:-}" ]; then
     if [ "$custom_s3_target" = 1 ]; then
       printf '%s\n' "Error: set S3_PUBLIC_BASE_URL when overriding S3_ENDPOINT or S3_REGION" >&2
@@ -219,8 +239,8 @@ cmd_publish() {
   esac
 
   # Export AWS credentials (read-only here, not echoed), honoring overrides.
-  export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-$OVH_S3_USER}"
-  export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-$OVH_S3_SECRET}"
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+  export S3_ENDPOINT S3_REGION S3_BUCKET
 
   # Choose aws command: prefer aws if available, else nix shell.
   local aws_cmd
