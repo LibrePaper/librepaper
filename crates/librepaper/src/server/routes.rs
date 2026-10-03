@@ -36,6 +36,8 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents/{slug}/history/trim", post(history_trim))
         .route("/api/documents/{slug}/rename", post(rename))
         .route("/api/documents/{slug}/fork", post(fork))
+        .route("/api/documents/{slug}/template", post(template))
+        .route("/api/templates", get(templates))
         .route("/api/trash", get(trash))
         .route("/api/documents/{slug}/untrash", post(untrash))
         .route("/api/documents/{slug}/purge", post(purge))
@@ -312,6 +314,25 @@ async fn fork(
     request: Request<Body>,
 ) -> Reply {
     server.handle_fork(request, &ctx.arrival, &slug).await
+}
+
+async fn template(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_template(request, &ctx.arrival, &slug).await
+}
+
+async fn templates(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_templates(request.headers(), &ctx.arrival)
+        .await
 }
 
 /// The deleted projects still inside their recovery window. Not
@@ -1272,6 +1293,7 @@ impl Server {
                 (!who.key.is_empty()).then_some(who.key.as_str()),
                 listing_cursor,
                 listing_limit,
+                false,
             )
             .await
         {
@@ -1361,7 +1383,13 @@ impl Server {
             .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
         let entries = match self
             .store
-            .visible_page_with_options(Some(&account_id), None, listing_cursor, listing_limit)
+            .visible_page_with_options(
+                Some(&account_id),
+                None,
+                listing_cursor,
+                listing_limit,
+                true,
+            )
             .await
         {
             Ok(entries) => entries,
