@@ -20,11 +20,10 @@ async fn project_export_writes_verified_text_and_binary_files() {
     let text_sha = hex::encode(Sha256::digest(text.as_bytes()));
     let asset_sha = hex::encode(Sha256::digest(&asset));
 
-    // The live export reads `/snapshot`, which carries the head projection
-    // (SPEC-server-is-a-log §4.4) rather than the old `tree`/`sha` shape.
-    // Building a real `Projection` and asking it for its own digest, instead
-    // of hand-rolling the canonical form here, keeps this test honest against
-    // whatever `Projection::digest` actually does.
+    // Match the source-bearing fields emitted by GET /snapshot:
+    // `sha` and `tree` are the projection digest and projection, with text
+    // bodies alongside them. The route also returns presentation metadata;
+    // export intentionally ignores those extra fields.
     let mut files = BTreeMap::new();
     files.insert(
         "paper.md".to_string(),
@@ -52,9 +51,22 @@ async fn project_export_writes_verified_text_and_binary_files() {
     };
     let digest = projection.digest();
     let snapshot = json!({
-        "digest": digest,
-        "projection": projection,
-        "texts": {"paper.md": text}
+        "version": 1,
+        "protocol": "librepaper.snapshot.v1",
+        "slug": SLUG,
+        "title": "Paper",
+        "format": "markdown",
+        "main": "paper.md",
+        "sha": digest,
+        "tree": projection,
+        "files": projection.files,
+        "texts": {"paper.md": text},
+        "source": text,
+        "source_sha": hex::encode(Sha256::digest(text.as_bytes())),
+        "comments": [],
+        "comment_state": {"complete": true, "next_cursor": null},
+        "role": "owner",
+        "capabilities": {"read": true, "comment": true, "edit": true}
     });
     let listed = json!({"documents":[{"slug":SLUG,"title":"Paper"}]});
     let expected_asset_sha = asset_sha.clone();

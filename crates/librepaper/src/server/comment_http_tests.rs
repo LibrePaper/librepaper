@@ -801,6 +801,120 @@ async fn listing_publisher_uses_cached_authentication_and_keeps_its_gates() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn snapshot_exposes_the_shared_cli_project_snapshot_wire_fields() {
+    let Some(deployment) = deployment("http-snapshot-project-contract").await else {
+        return;
+    };
+    deployment.server.app.client_id = "test-client".into();
+    let identity = Identity {
+        provider: "github".into(),
+        id: deployment.owner_id.to_string(),
+        handle: "owner".into(),
+        name: "Owner".into(),
+        picture: String::new(),
+        session_generation: deployment.owner_session_generation.clone(),
+    };
+    let request = axum::http::Request::builder()
+        .uri(format!("/api/documents/{}/snapshot", deployment.slug))
+        .header("x-librepaper-client", "test")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let arrival = super::origins::Origins::loopback_only()
+        .resolve("127.0.0.1:8080")
+        .unwrap();
+    let context = crate::server::RequestContext {
+        arrival,
+        peer: "127.0.0.1:4321".parse().unwrap(),
+        authentication: Ok(identity),
+    };
+
+    let response = deployment
+        .server
+        .handle_snapshot(request.headers(), &context, &deployment.slug, None)
+        .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(payload["protocol"], "librepaper.snapshot.v1");
+    assert!(payload.get("digest").is_none());
+    assert!(payload.get("projection").is_none());
+    let snapshot: crate::document::projection::ProjectSnapshot =
+        serde_json::from_value(payload.clone()).unwrap();
+    assert_eq!(snapshot.sha, snapshot.tree.digest());
+    assert_eq!(snapshot.tree.main, "paper.md");
+    assert_eq!(snapshot.texts["paper.md"], PAPER);
+    assert_eq!(payload["files"], payload["tree"]["files"]);
+    deployment.catalog.close().await;
+}
+
+fn multipart_upload(
+    parts: &[(&str, Option<&str>, &[u8])],
+) -> axum::http::Request<axum::body::Body> {
+    let boundary = "librepaper-upload-test-boundary";
+    let mut body = Vec::new();
+    for (name, filename, bytes) in parts {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"")
+                .as_bytes(),
+        );
+        if let Some(filename) = filename {
+            body.extend_from_slice(format!("; filename=\"{filename}\"").as_bytes());
+        }
+        body.extend_from_slice(b"\r\n\r\n");
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    axum::http::Request::builder()
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header("content-length", body.len().to_string())
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn upload_parser_rejects_invalid_utf8_in_single_and_selected_main_files() {
+    let Some(deployment) = deployment("http-upload-invalid-main-utf8").await else {
+        return;
+    };
+    let single = [
+        ("title", None, b"Paper".as_slice()),
+        ("file", Some("paper.md"), b"# Bad \xff".as_slice()),
+    ];
+    let directory = [
+        ("title", None, b"Paper".as_slice()),
+        ("main", None, b"paper.md".as_slice()),
+        ("file", Some("paper.md"), b"# Bad \xff".as_slice()),
+        ("file", Some("notes.md"), b"Valid UTF-8".as_slice()),
+    ];
+
+    for parts in [&single[..], &directory[..]] {
+        let response = match deployment
+            .server
+            .read_upload(multipart_upload(parts))
+            .await
+        {
+            Ok(_) => panic!("invalid UTF-8 main source was accepted"),
+            Err(response) => response,
+        };
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["error"], "paper.md is not valid UTF-8");
+    }
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn backup_listing_includes_shared_reader_without_granting_publishing_access() {
     let Some(mut deployment) = deployment("http-backup-shared-reader").await else {
         return;

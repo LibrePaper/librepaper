@@ -17,14 +17,6 @@ use crate::http::{detail_of, get_as, send, Credentials};
 use crate::storage::source_archive::{self, ArchiveLimits, SourceFile};
 use crate::util::die;
 
-#[derive(serde::Deserialize)]
-struct ProjectSnapshot {
-    digest: String,
-    projection: crate::document::projection::Projection,
-    #[serde(default)]
-    texts: std::collections::BTreeMap<String, String>,
-}
-
 /// Download an immutable, server-captured project into a new directory.
 ///
 /// The live project (`at` empty) reads the head projection: text bodies
@@ -140,13 +132,13 @@ async fn fetch_live_project(
     if status != 200 {
         return Err(format!("could not capture project snapshot ({status})"));
     }
-    let snapshot: ProjectSnapshot = serde_json::from_value(raw)
+    let snapshot: crate::document::projection::ProjectSnapshot = serde_json::from_value(raw)
         .map_err(|error| format!("invalid project snapshot: {error}"))?;
-    if snapshot.digest != snapshot.projection.digest() {
+    if snapshot.sha != snapshot.tree.digest() {
         return Err("project snapshot digest does not match its identity".into());
     }
-    let mut files = Vec::with_capacity(snapshot.projection.files.len());
-    for (path, entry) in &snapshot.projection.files {
+    let mut files = Vec::with_capacity(snapshot.tree.files.len());
+    for (path, entry) in &snapshot.tree.files {
         let relative = safe_relative_path(path)?;
         let bytes = match entry.kind.as_str() {
             "text" => snapshot

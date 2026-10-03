@@ -19,6 +19,34 @@ pub(super) struct Upload {
     pub(super) files: Vec<(String, Vec<u8>)>,
 }
 
+fn main_source(path: &str, bytes: &[u8]) -> Result<String, Reply> {
+    std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| {
+        write_json(
+            400,
+            &json!({"error": format!("{path} is not valid UTF-8")}),
+        )
+    })
+}
+
+#[derive(serde::Serialize)]
+struct SnapshotResponse<C> {
+    version: u8,
+    protocol: &'static str,
+    slug: String,
+    title: String,
+    format: String,
+    main: String,
+    #[serde(flatten)]
+    project: crate::document::projection::ProjectSnapshot,
+    files: std::collections::BTreeMap<String, crate::document::projection::Entry>,
+    source: String,
+    source_sha: String,
+    comments: C,
+    comment_state: Value,
+    role: String,
+    capabilities: Value,
+}
+
 impl Server {
     pub async fn delete_document(&self, slug: &str) -> Result<usize, String> {
         let storage_id = self.store.begin_delete(slug).await?;
@@ -652,7 +680,7 @@ impl Server {
             if sent.len() == 1 && main.is_empty() {
                 let (at, bytes) = &sent[0];
                 filename = at.clone();
-                html = String::from_utf8_lossy(bytes).to_string();
+                html = main_source(at, bytes)?;
                 sent.clear();
             } else if !sent.is_empty() {
                 let wanted = if main.is_empty() {
@@ -669,7 +697,7 @@ impl Server {
                 let (path, bytes) = sent.remove(at);
                 main = path.clone();
                 filename = path;
-                html = String::from_utf8_lossy(&bytes).to_string();
+                html = main_source(&filename, &bytes)?;
             }
             // Markdown dropped on the page is stored as markdown. It is not
             // rendered here and never was worth rendering here: the browser
@@ -1141,33 +1169,41 @@ impl Server {
             .next
             .map(|at| crate::room::comments::encode_cursor(room.document_id, None, may_edit, at)));
         let tree_sha = projected.projection.digest();
-        write_json(
-            200,
-            &json!({
-                "version": 1,
-                "protocol": "librepaper.snapshot.v1",
-                "slug": entry.slug,
-                "title": entry.title,
-                "format": format,
-                "main": projected.projection.main,
-                "tree": projected.projection,
-                "files": projected.projection.files,
-                "texts": projected.texts,
-                "source": source,
-                // The projection digest, for an assistant anchor to hold
-                // onto until a label names this state durably.
-                "sha": tree_sha,
-                "source_sha": crate::document::store::digest_of(&source),
-                "comments": comments,
-                "comment_state": comment_state,
-                "role": who.role.as_str(),
-                "capabilities": {
-                    "read": true,
-                    "comment": who.at_least(Role::Commenter),
-                    "edit": who.at_least(Role::Editor),
-                },
+        let main = projected.projection.main.clone();
+        let files = projected.projection.files.clone();
+        let snapshot = crate::document::projection::ProjectSnapshot {
+            sha: tree_sha,
+            tree: projected.projection,
+            texts: projected.texts,
+        };
+        let response = SnapshotResponse {
+            version: 1,
+            protocol: "librepaper.snapshot.v1",
+            slug: entry.slug,
+            title: entry.title,
+            format,
+            main,
+            project: snapshot,
+            files,
+            source_sha: crate::document::store::digest_of(&source),
+            source,
+            comments,
+            comment_state,
+            role: who.role.as_str().to_string(),
+            capabilities: json!({
+                "read": true,
+                "comment": who.at_least(Role::Commenter),
+                "edit": who.at_least(Role::Editor),
             }),
-        )
+        };
+        let payload = match serde_json::to_value(response) {
+            Ok(payload) => payload,
+            Err(error) => {
+                eprintln!("could not serialize project snapshot for {slug}: {error}");
+                return write_json(500, &json!({"error": "could not read project snapshot"}));
+            }
+        };
+        write_json(200, &payload)
     }
 
     pub(super) async fn handle_delete(

@@ -140,6 +140,17 @@ pub struct Projection {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// The source-bearing part of `librepaper.snapshot.v1` shared by the server
+/// producer and CLI consumer. The route adds comments and other presentation
+/// metadata around these fields; `sha` names the digest of `tree`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProjectSnapshot {
+    pub sha: String,
+    pub tree: Projection,
+    #[serde(default)]
+    pub texts: BTreeMap<String, String>,
+}
+
 impl Projection {
     /// The name of this projection: the SHA-256 of what it says.
     ///
