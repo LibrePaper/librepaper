@@ -579,6 +579,7 @@ pub async fn serve(options: ServeOptions) {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
+            sweeper.cost.housekeep();
             if !sweeper.rooms.registry().all().await.is_empty() {
                 sweeper.rooms.housekeep().await;
             }
