@@ -6,10 +6,11 @@
 % Unicode below is the second reason: pdfTeX has no way to set Greek and
 % Cyrillic from a Unicode source without a package that maps them.
 %
-% No font is named. There are no system fonts in a worker, so a document that
-% asked for one by name would fail on the browser distributions for a reason
-% that has nothing to do with the engine, and this example is about the
-% engine.
+% No font is named. This is an engine-admission and historical diagnostic
+% fixture, not a Unicode success oracle: its retained native XeTeX log records
+% missing Greek and Cyrillic glyphs with the default font. Browser workers
+% have no system fonts, so a named-font request would fail there for a reason
+% unrelated to engine admission. `unicode-fonts/` is the positive glyph test.
 \documentclass[11pt]{article}
 
 \usepackage{fontspec}
@@ -37,7 +38,9 @@ Mathematical Greek still comes from the maths fonts, and is unaffected:
 
 A distribution whose only engine is pdfTeX must refuse this document with the
 error \verb|fontspec| gives, and that refusal must reach the reader as a
-diagnostic rather than as a hang or a blank page. That is the whole of what
-this example tests.
+diagnostic rather than as a hang or a blank page. That refusal is the
+worker-facing behavior this example tests. The retained XeTeX log is
+diagnostic history; its successful page count does not imply that all source
+glyphs were rendered.
 
 \end{document}

@@ -32,7 +32,12 @@ with a `main.tex`; each has a distinct purpose:
 
 - **`xetex/`** — a document that needs XeTeX and `fontspec`. It is how a
   pdfTeX-only distribution is shown refusing cleanly, with the error
-  `fontspec` gives, rather than producing a wrong page. One page.
+  `fontspec` gives, rather than producing a wrong page. It is an
+  engine-admission and historical diagnostic fixture, not a Unicode success
+  oracle: the retained native XeTeX log records missing Greek and Cyrillic
+  glyphs because this sample deliberately names no font. Its recorded page
+  count only shows that XeTeX emitted a PDF; it does not claim complete text
+  rendering.
 
 - **`unicode-fonts/`** — a positive XeTeX Unicode glyph-coverage sample:
   named Libertinus text and math fonts through `fontspec` and `unicode-math`,
