@@ -135,3 +135,14 @@ pub fn request_key_timestamp(key: &str) -> Option<i64> {
     }
     issued.parse().ok()
 }
+
+/// Base64, which is how a binary update travels on a JSON socket.
+pub fn encode_update(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+pub fn decode_update(text: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(text).ok()
+}

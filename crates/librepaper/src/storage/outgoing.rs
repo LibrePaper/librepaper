@@ -438,7 +438,7 @@ mod budget_tests {
     /// compares per-recipient String allocation with one owned `Utf8Bytes`
     /// allocation cloned across all recipients, for both a small and a large
     /// frame. Run with `cargo test -p librepaper --lib
-    /// room::outgoing::budget_tests::benchmark_shared_fanout -- --ignored
+    /// storage::outgoing::budget_tests::benchmark_shared_fanout -- --ignored
     /// --nocapture`.
     #[test]
     #[ignore = "microbenchmark; run with --ignored --nocapture"]

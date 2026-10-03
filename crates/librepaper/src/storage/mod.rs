@@ -1,9 +1,11 @@
 //! PostgreSQL-backed metadata and immutable deployment bytes.
 
+pub mod annotation;
 pub mod backup;
 pub mod blob;
 pub mod collaboration;
 pub mod maintenance;
+pub(crate) mod outgoing;
 pub mod postgres;
 pub mod schedule;
 #[cfg(test)]

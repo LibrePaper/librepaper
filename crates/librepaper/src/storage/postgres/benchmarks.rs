@@ -2154,7 +2154,7 @@ type Pending = Arc<std::sync::Mutex<std::collections::HashMap<i64, Instant>>>;
 /// `Sender` a socket would hold, rather than a flush return value the
 /// server never sends anybody.
 fn acknowledgement_reader(
-    mut rx: crate::room::outgoing::Receiver,
+    mut rx: crate::storage::outgoing::Receiver,
     pending: Pending,
 ) -> tokio::task::JoinHandle<Vec<u64>> {
     tokio::spawn(async move {
@@ -2162,8 +2162,8 @@ fn acknowledgement_reader(
         while let Some(queued) = rx.recv().await {
             let (outgoing, _reservation) = queued.into_parts();
             let text = match &outgoing {
-                crate::room::outgoing::Outgoing::Text(text) => text.to_string(),
-                crate::room::outgoing::Outgoing::SharedText(text) => text.to_string(),
+                crate::storage::outgoing::Outgoing::Text(text) => text.to_string(),
+                crate::storage::outgoing::Outgoing::SharedText(text) => text.to_string(),
                 _ => continue,
             };
             let Ok(value) = serde_json::from_str::<Value>(&text) else {
@@ -2245,7 +2245,7 @@ async fn capacity_editor(
     deadline: Instant,
     interval: Duration,
 ) -> EditorReport {
-    use crate::room::outgoing::Sender;
+    use crate::storage::outgoing::Sender;
 
     let mut report = EditorReport {
         offered: scheduled_edits(deadline.duration_since(started_at), interval),

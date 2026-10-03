@@ -52,7 +52,7 @@ use crate::storage::postgres::{
 };
 use crate::util::clean;
 
-use super::annotation::{
+use crate::storage::annotation::{
     CommentTarget, DerivedAttachment, OriginalAnchor, PresentationContext, SourceTextTarget,
 };
 use super::locate::{self, Quote};
@@ -79,7 +79,7 @@ pub struct Comment {
     pub id: String,
     /// What this comment is about, in the document as it stood when it was
     /// made. Written once by the server, from the selection a client sent,
-    /// and never written again: see [`super::annotation`].
+    /// and never written again: see [`crate::storage::annotation`].
     ///
     /// Every stored comment has one -- the persistence layer refuses a
     /// comment that does not. It is optional here because the view served to
@@ -2637,7 +2637,7 @@ pub fn comment_revision(state: &AnnotationState) -> String {
 mod utf16_suggestion_tests {
     use super::{proposed_from_branch, replace_utf16_span, Comment};
     use crate::document::session;
-    use crate::room::annotation::{
+    use crate::storage::annotation::{
         AnchorSide, CommentTarget, FileId, OriginalAnchor, SourceTextTarget,
     };
     use crate::storage::postgres::StoredProposal;

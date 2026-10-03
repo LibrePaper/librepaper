@@ -282,8 +282,8 @@ mod tests {
     use crate::log::{
         Budget, Command, CommandError, Evidence, Head, PreparedSource, Role, Sequencer,
     };
-    use crate::room::annotation::{CommentTarget, OriginalAnchor, PresentationContext};
-    use crate::room::outgoing::Sender;
+    use crate::storage::annotation::{CommentTarget, OriginalAnchor, PresentationContext};
+    use crate::storage::outgoing::Sender;
     use crate::storage::blob::{BlobStore, FsStore};
     use crate::storage::collaboration::CollaborationStorage;
     use crate::storage::maintenance::Maintenance;

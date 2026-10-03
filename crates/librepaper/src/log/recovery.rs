@@ -400,11 +400,11 @@ fn subscriber() -> crate::room::Sender {
     crate::room::Sender::channel(64, 1 << 20, None, None).0
 }
 
-fn editor_subscription() -> (crate::room::Sender, crate::room::outgoing::Receiver) {
+fn editor_subscription() -> (crate::room::Sender, crate::storage::outgoing::Receiver) {
     crate::room::Sender::channel(64, 1 << 20, None, None)
 }
 
-fn queued_frames(rx: &mut crate::room::outgoing::Receiver) -> Vec<serde_json::Value> {
+fn queued_frames(rx: &mut crate::storage::outgoing::Receiver) -> Vec<serde_json::Value> {
     let mut frames = Vec::new();
     while let Ok(queued) = rx.try_recv() {
         let text = match queued.into_parts().0 {

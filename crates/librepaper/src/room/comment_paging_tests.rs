@@ -31,7 +31,7 @@ use std::collections::HashSet;
 use super::*;
 use crate::storage::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
-use crate::room::annotation::CommentTarget;
+use crate::storage::annotation::CommentTarget;
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::annotations::{
     ANNOTATION_PAGE_MAX, REPLY_LOOKUP_MAX, REPLY_PAGE_MAX,

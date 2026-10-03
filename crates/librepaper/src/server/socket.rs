@@ -4,7 +4,7 @@
 use super::*;
 use crate::log::sequencer::Ingested;
 use crate::log::CommandError;
-use crate::room::outgoing::OutgoingSink;
+use crate::storage::outgoing::OutgoingSink;
 use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };

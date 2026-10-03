@@ -24,7 +24,7 @@ use sqlx::{FromRow, PgConnection, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::room::annotation::{
+use crate::storage::annotation::{
     AnchorSide, CommentTarget, DerivedAttachment, FileId, OriginalAnchor, PresentationContext,
     SourceTextTarget,
 };

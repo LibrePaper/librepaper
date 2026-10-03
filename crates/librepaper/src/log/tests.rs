@@ -44,7 +44,7 @@ use crate::log::sequencer::{
     SequencerError, FLUSH_MAX_AGE, FLUSH_QUIET, FLUSH_TRIGGER_BYTES,
 };
 use crate::log::{frame, Budget};
-use crate::room::outgoing::{Outgoing, Receiver, Sender};
+use crate::storage::outgoing::{Outgoing, Receiver, Sender};
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::postgres::{self, Authority, FlushRow};
 

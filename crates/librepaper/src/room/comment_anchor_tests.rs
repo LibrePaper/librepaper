@@ -19,7 +19,7 @@ use super::*;
 use crate::document::session;
 use crate::storage::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
-use crate::room::annotation::{AnchorStatus, CommentTarget};
+use crate::storage::annotation::{AnchorStatus, CommentTarget};
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::Authority;
 use serde_json::json;
@@ -570,7 +570,7 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
         1,
         true,
         "editor-1",
-        super::outgoing::Sender::from_raw(editor_tx.clone()),
+        crate::storage::outgoing::Sender::from_raw(editor_tx.clone()),
         None,
     )
     .await
@@ -579,7 +579,7 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
         2,
         true,
         "editor-2",
-        super::outgoing::Sender::from_raw(editor_tx),
+        crate::storage::outgoing::Sender::from_raw(editor_tx),
         None,
     )
     .await
@@ -588,7 +588,7 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
         3,
         false,
         "reader-3",
-        super::outgoing::Sender::from_raw(reader_tx),
+        crate::storage::outgoing::Sender::from_raw(reader_tx),
         None,
     )
     .await
@@ -650,7 +650,7 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
         1,
         true,
         "editor-1",
-        super::outgoing::Sender::from_raw(editor_tx),
+        crate::storage::outgoing::Sender::from_raw(editor_tx),
         None,
     )
     .await
@@ -659,7 +659,7 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
         2,
         false,
         "reader-2",
-        super::outgoing::Sender::from_raw(reader_tx),
+        crate::storage::outgoing::Sender::from_raw(reader_tx),
         None,
     )
     .await
@@ -716,7 +716,7 @@ async fn a_suggestion_stays_out_of_the_public_channel() {
         1,
         true,
         "editor-1",
-        super::outgoing::Sender::from_raw(editor_tx),
+        crate::storage::outgoing::Sender::from_raw(editor_tx),
         None,
     )
     .await
@@ -725,7 +725,7 @@ async fn a_suggestion_stays_out_of_the_public_channel() {
         2,
         false,
         "reader-2",
-        super::outgoing::Sender::from_raw(reader_tx),
+        crate::storage::outgoing::Sender::from_raw(reader_tx),
         None,
     )
     .await
@@ -962,13 +962,13 @@ async fn edit_refinement_source(room: &Room, text: &str, sequence: i64) {
 }
 
 /// Whatever is already queued for a peer, as JSON.
-fn received(rx: &mut tokio::sync::mpsc::Receiver<crate::room::outgoing::Outgoing>) -> Vec<Value> {
+fn received(rx: &mut tokio::sync::mpsc::Receiver<crate::storage::outgoing::Outgoing>) -> Vec<Value> {
     let mut out = Vec::new();
     while let Ok(frame) = rx.try_recv() {
         let text = match frame {
-            crate::room::outgoing::Outgoing::Text(value) => value,
-            crate::room::outgoing::Outgoing::SharedText(value) => value.to_string(),
-            crate::room::outgoing::Outgoing::Close(_) => continue,
+            crate::storage::outgoing::Outgoing::Text(value) => value,
+            crate::storage::outgoing::Outgoing::SharedText(value) => value.to_string(),
+            crate::storage::outgoing::Outgoing::Close(_) => continue,
         };
         out.push(serde_json::from_str(&text).expect("every frame is JSON"));
     }

@@ -104,7 +104,7 @@ pub mod locate {
 
 /// The range `locate` returns, as a comment stores it.
 pub mod annotation {
-    pub use crate::room::annotation::{CommentTarget, OriginalAnchor};
+    pub use crate::storage::annotation::{CommentTarget, OriginalAnchor};
 }
 
 /// The loopback service takes requests from any page in the browser, and a

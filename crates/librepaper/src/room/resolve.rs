@@ -33,7 +33,7 @@ use loro::cursor::{Cursor, Side};
 use loro::Frontiers;
 use serde_json::json;
 
-use super::annotation::{
+use crate::storage::annotation::{
     AnchorSide, AnchorStatus, CommentTarget, DerivedAttachment, LiveSourceRange, OriginalAnchor,
     ResolutionDiagnostic, SourceTextTarget,
 };
@@ -620,7 +620,7 @@ pub(crate) const ATTACHMENT_FRAME_MAX: usize = 200;
 pub(super) mod tests {
     use super::*;
     use crate::document::session;
-    use crate::room::annotation::FileId;
+    use crate::storage::annotation::FileId;
 
     /// A document with one text file, the way a publish builds one.
     pub(super) fn document(path: &str, body: &str) -> (loro::LoroDoc, String) {

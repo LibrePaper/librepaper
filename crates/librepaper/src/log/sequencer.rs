@@ -43,7 +43,7 @@ pub use crate::config::budget::{
     max_pending_charge, max_row_bytes, max_update_bytes, BUFFER_CEILING_BYTES, FLUSH_TRIGGER_BYTES,
 };
 use crate::config::Configuration;
-use crate::room::outgoing::{Outgoing, Sender};
+use crate::storage::outgoing::{Outgoing, Sender};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{self, Authority, FlushRow, PostgresCatalog};
 
