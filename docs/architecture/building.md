@@ -26,6 +26,20 @@ The four browser modules (markdown, bibliography, citations, typst) are not embe
 
 `make demo` runs the site, application, local companion and simulated activity. It runs `tools/deploy-assets check` on the LaTeX mirror at `MIRROR=` (default `../wasm-latex/mirror`), then Docker PostgreSQL from `tools/db dev` or `LIBREPAPER_DATABASE_URL`. GitHub sign-in comes from `tools/deploy-keys.yaml` when `sops` can decrypt it; otherwise none. Use `LIBREPAPER_PUBLISHERS=any LIBREPAPER_COMMENTERS=anyone` for local development.
 
+## Workspace
+
+`crates/` holds internal sub-crates and the `librepaper` facade. An edit recompiles the crate it touches and its dependents.
+
+```sh
+cargo check -p librepaper-engine           # inner loop: one crate
+cargo nextest run -p librepaper-engine     # its tests
+make test                                  # everything, before handing work back
+```
+
+- The published `librepaper` crate is generated, not checked in: `tools/flatten/flatten build` writes `target/flat/`.
+- `tools/flatten/flatten lint` checks the rules the generator relies on; CI runs both, then tests the flat crate.
+- `tools/flatten/build.rs` is the flat crate's build script. Every sub-crate `build.rs` needs its counterpart there.
+
 ## Test suites
 
 `make test` runs the ordinary Rust and web checks; PostgreSQL-gated cases and
