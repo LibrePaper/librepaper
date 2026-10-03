@@ -153,4 +153,7 @@ mod tests;
 
 /// The release version, stamped in at build time for release artifacts and
 /// derived from the package version for crates.io installs.
-pub use librepaper_companion::VERSION;
+pub const VERSION: &str = match option_env!("LIBREPAPER_VERSION") {
+    Some(version) => version,
+    None => concat!("v", env!("CARGO_PKG_VERSION")),
+};

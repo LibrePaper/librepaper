@@ -5,6 +5,8 @@ use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LIBREPAPER_VERSION");
+    let version = std::env::var("CARGO_PKG_VERSION").expect("cargo sets the package version");
+    println!("cargo:rustc-env=LIBREPAPER_BUILD_VERSION=v{version}");
     // The skills bundle lives outside this crate, so the path comes from here;
     // the flat crate's build.rs sets the same variable to its own skills/.
     let skills_dir = Path::new(env!("CARGO_MANIFEST_DIR"))

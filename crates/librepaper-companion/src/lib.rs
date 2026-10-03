@@ -9,7 +9,9 @@ pub mod local;
 
 /// The release version, stamped in at build time for release artifacts and
 /// derived from the package version for crates.io installs.
+// The workspace version reaches the source through the build script, which
+// is the one place a sub-crate may read it.
 pub const VERSION: &str = match option_env!("LIBREPAPER_VERSION") {
     Some(version) => version,
-    None => concat!("v", env!("CARGO_PKG_VERSION")),
+    None => env!("LIBREPAPER_BUILD_VERSION"),
 };
