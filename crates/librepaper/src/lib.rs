@@ -25,7 +25,6 @@ mod cli;
 pub use librepaper_base::config;
 // The log lives in librepaper-engine; the path stays as consumers spell it.
 pub use librepaper_engine::log;
-mod server;
 
 pub use cli::main;
 // The headless automation peer, for the integration tests in `tests/`.
@@ -147,7 +146,7 @@ pub use librepaper_engine::storage::blob::{BlobStore, FsStore};
 pub use librepaper_engine::storage::store::Store;
 pub use librepaper_shell::ShellFile;
 pub use librepaper_room::room::{Room, Rooms};
-pub use server::Server;
+pub use librepaper_server::server::Server;
 
 /// The release version, stamped in at build time for release artifacts and
 /// derived from the package version for crates.io installs.

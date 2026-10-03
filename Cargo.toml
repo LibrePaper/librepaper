@@ -7,7 +7,7 @@
 # browser modules, which are fetched rather than built.
 [workspace]
 resolver = "2"
-members = ["crates/librepaper", "crates/librepaper-shell", "crates/librepaper-base", "crates/librepaper-document", "crates/librepaper-engine", "crates/librepaper-room", "crates/librepaper-companion"]
+members = ["crates/librepaper", "crates/librepaper-shell", "crates/librepaper-base", "crates/librepaper-document", "crates/librepaper-engine", "crates/librepaper-room", "crates/librepaper-server", "crates/librepaper-companion"]
 # The fuzz targets need libFuzzer and a nightly compiler, so they build on
 # their own: `tools/suite fuzz`, or `cargo fuzz --fuzz-dir tools/fuzz run <target>`.
 exclude = ["tools/fuzz", "tools/measure"]

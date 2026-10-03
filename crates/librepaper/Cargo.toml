@@ -71,13 +71,8 @@ name = "writer_socket_bench"
 path = "tests/writer_socket_bench.rs"
 
 [dependencies]
-ttf-parser.workspace = true
-# The server. WebSockets come with axum, so nothing here frames them by hand.
 tokio.workspace = true
 axum.workspace = true
-http-body-util.workspace = true
-futures-util.workspace = true
-# Every JSON body, in and out.
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -85,22 +80,9 @@ serde_yaml.workspace = true
 # binary does not carry two HTTP/TLS client stacks. rustls rather than OpenSSL
 # keeps the client portable across release targets.
 reqwest.workspace = true
-# Digests, SigV4, and the signature on every cookie.
 sha2.workspace = true
-# Quarto's freezer names a cached computation by the MD5 of its source, so
-# reading that cache means computing the same digest. A format requirement,
-# not a security choice: nothing here trusts MD5 for anything.
-md5.workspace = true
-hmac.workspace = true
-base64.workspace = true
 hex.workspace = true
-rand.workspace = true
-# The slug pattern, which the shell shares as a string, and the handful of
-# patterns that read documents for seeding.
-regex.workspace = true
-# Timestamps in the index and the room, RFC 3339 like the Worker wrote them.
 time.workspace = true
-chrono-tz.workspace = true
 # The built browser app, compiled in.
 librepaper-shell = { path = "../librepaper-shell" }
 # Configuration, identity and shared helpers.
@@ -111,50 +93,25 @@ librepaper-document = { path = "../librepaper-document" }
 librepaper-engine = { path = "../librepaper-engine" }
 # One live document: the room, its comments, proposals and anchoring.
 librepaper-room = { path = "../librepaper-room" }
+# The HTTP service.
+librepaper-server = { path = "../librepaper-server" }
 # The local app, the assistant and the automation peer.
 librepaper-companion = { path = "../librepaper-companion" }
 # The command line.
 clap.workspace = true
-# The blob store is a trait with async methods behind a pointer.
-async-trait.workspace = true
 url.workspace = true
-percent-encoding.workspace = true
-# What a browser shows of a document, for anchoring seeded annotations.
-html-escape.workspace = true
-# The collaboration substrate (SPEC-loro.md). This version and `loro-crdt` in
-# web/package.json are one pin: see tools/check-loro-pin.sh.
-loro.workspace = true
-# Source versions are deterministic tar streams stored as zstd blobs.
-zstd.workspace = true
-tar.workspace = true
-# `sync` is a WebSocket client, and axum's socket type is the server half of
-# the same library. Its rustls transport has no provider of its own; tls.rs
-# installs the AWS-LC provider used by Reqwest and object_store as well.
-tokio-tungstenite.workspace = true
-# Keep the explicit provider handle for tokio-tungstenite's rustls client. The
-# other HTTP and database clients select the same AWS-LC implementation.
-rustls.workspace = true
-fs2.workspace = true
-chacha20poly1305.workspace = true
-# PostgreSQL is the production catalogue. SQLx supplies the async pool and
-# compile-independent migrations; queries are exercised against PostgreSQL in
-# integration tests against the production database engine.
-sqlx.workspace = true
-uuid.workspace = true
-log.workspace = true
 tempfile.workspace = true
-zip.workspace = true
-object_store.workspace = true
 
 [dev-dependencies]
 # `start_paused` and `advance`, so the deadline tests move a clock instead of
 # waiting on one. Test builds only.
 tokio = { workspace = true, features = ["test-util"] }
-# A font file for the tests to put in a library.
-typst-assets.workspace = true
-# Test-only: check that the family names our ttf-parser code extracts match
-# the compiler's.
-typst.workspace = true
-# Test-only: render markdown in the locate corpus test.
-comrak.workspace = true
-sha1.workspace = true
+futures-util.workspace = true
+hmac.workspace = true
+base64.workspace = true
+loro.workspace = true
+zstd.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+log.workspace = true
+tokio-tungstenite.workspace = true
