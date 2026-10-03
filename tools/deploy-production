@@ -296,7 +296,7 @@ verify() {
 	monitoring_verify
 
 	step "Site: https://$SITE"
-	curl -fs -o /dev/null "https://$SITE/start.html" || die "https://$SITE/start.html did not answer: is the site uploaded?"
+	curl -fs -o /dev/null "https://$SITE/what.html" || die "https://$SITE/what.html did not answer: is the site uploaded?"
 	ok "landing page and manual answer"
 
 	step "Documents: https://$DOCS"
@@ -472,7 +472,7 @@ case "${1:-help}" in
 		site_build
 		site_sync
 		step "Site: https://$SITE"
-		curl -fs -o /dev/null "https://$SITE/start.html" || die "https://$SITE/start.html did not answer: is the site uploaded?"
+		curl -fs -o /dev/null "https://$SITE/what.html" || die "https://$SITE/what.html did not answer: is the site uploaded?"
 		ok "landing page and manual answer"
 		printf '\n%sDone: site updated at https://%s (%ss)%s\n' "$green$bold" "$SITE" "$SECONDS" "$reset"
 		;;

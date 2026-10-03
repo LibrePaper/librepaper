@@ -22,14 +22,14 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepa
 - To pin a version, replace `releases/latest/download/` with `releases/download/<tag>/`.
 - Update later with `librepaper-update`.
 
-## Homebrew
+## Homebrew (macOS)
 
 ```sh
 # macOS and Linux
 brew install vincentarelbundock/tap/librepaper
 ```
 
-## Scoop
+## Scoop (Windows)
 
 ```powershell
 # Windows

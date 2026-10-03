@@ -26,7 +26,7 @@
     <div class="flex items-center gap-4 ml-auto">
       <a
         class="lp-text-secondary lp-hover-brand flex items-center"
-        href="/start.html"
+        href="/what.html"
         aria-label="Documentation"
         title="Documentation"
       >

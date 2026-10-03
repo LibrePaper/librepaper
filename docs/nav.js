@@ -13,7 +13,7 @@
 // adding a page here is the whole of adding it to the sidebar, and the order
 // below is the order it appears in.
 export const nav = [
-  { path: "start", label: "Getting started" },
+  { path: "what", label: "What is LibrePaper" },
   { path: "install", label: "Install" },
   {
     path: "authoring/index",

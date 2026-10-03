@@ -51,7 +51,7 @@ the mirror is immutable and the mirror only grows, so older binaries keep
 working. Operators can host their own copy with `--asset-mirror`.
 See [`docs/asset-mirrors.md`](docs/dev/asset-mirrors.md).
 
-- [Getting started](https://librepaper.org/start.html)
+- [What is LibrePaper](https://librepaper.org/what.html)
 - [Install](https://librepaper.org/install.html)
 - [Running a server](https://librepaper.org/host.html)
 - [Privacy and the LaTeX mirror](https://librepaper.org/host.html#privacy-and-the-latex-mirror)
