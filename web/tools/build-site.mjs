@@ -11,12 +11,11 @@
 // step reading files off disk, so this instantiates the module itself and
 // reuses only `call` and `validateExports`, the parts of that file that do
 // not care where the bytes came from.
-import { readFile, writeFile, mkdir, readdir, copyFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, copyFile, rm } from "node:fs/promises";
 import { resolve, relative, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { call, validateExports } from "../src/lib/renderer-wasm.js";
 import { nav } from "../../docs/nav.js";
-import { prepareSiteOutput } from "./site-output.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const siteDir = resolve(here, "../../docs");
@@ -221,7 +220,8 @@ async function buildPage(wasm, entry) {
 async function main() {
   // Vite discovers every HTML file in this directory, so stale pages from an
   // earlier navigation/source tree would otherwise be emitted again.
-  await prepareSiteOutput(outDir);
+  await rm(outDir, { recursive: true, force: true });
+  await mkdir(outDir, { recursive: true });
   const wasm = await loadMarkdownEngine();
   const files = await collectMarkdownFiles(siteDir).catch((error) => {
     if (error.code === "ENOENT") return [];

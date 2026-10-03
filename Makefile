@@ -1,10 +1,9 @@
 # LibrePaper. `make` builds the single static binary into dist/.
 #
-# The application crate provides the server and CLI and links the pinned
-# renderer libraries directly. The web app in web/ is Svelte,
-# bundled by vite and installed by bun. The binary embeds the web build (from
-# web/dist) and serves it. The WASM renderers are not embedded: they are
-# published to the asset mirror (tools/deploy-assets publish) and browsers load them there.
+# The application crate provides the server and CLI. The web app in web/ is
+# Svelte, bundled by Vite and installed by Bun. The binary embeds the web build
+# (from web/dist) and serves it. Browser WASM renderers are separate pinned
+# inputs fetched into web/wasm and published to the asset mirror for browsers.
 
 # Local settings, kept out of the repository: the GitHub OAuth app and who may
 # publish. Copy .env.example to .env and fill it in. Values are read as Make
@@ -47,7 +46,7 @@ WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mj
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) $(shell find .sqlx -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
-.PHONY: help build install test check fmt serve demo demo-run wipe kill clean snapshot web pins site site-serve
+.PHONY: help build install test test-rust check fmt serve demo demo-run wipe kill clean snapshot web pins site site-serve
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -87,12 +86,7 @@ test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 # relaxes durability under `cfg(test)` on its own; this is for the cases that
 # spawn the real binary, which is built without it. Nothing a test writes
 # outlives the run, so there is no crash for an fsync to survive.
-	@if command -v cargo-nextest >/dev/null; then \
-		LIBREPAPER_FSYNC=false cargo nextest run --workspace; \
-	else \
-		echo "cargo-nextest not installed (cargo install cargo-nextest); using cargo test"; \
-		LIBREPAPER_FSYNC=false cargo test --workspace; \
-	fi
+	@$(MAKE) --no-print-directory test-rust
 # Said out loud because a silent green `test` reads as "everything passes", and
 # it is not: the browser components and the Postgres-gated cases are both out
 # of this target on purpose, and both have hidden real faults while every
@@ -103,6 +97,16 @@ test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@echo "  LIBREPAPER_TEST_POSTGRES_URL=... \\"
 	@echo "    cargo test -p librepaper --lib -- --ignored --test-threads=1"
 	@echo "  make check                                test + browser + reader smoke in one go"
+
+# Keep runner discovery separate from runner execution: a failing nextest run
+# is a test failure, not a reason to retry with a runner that can hide it.
+test-rust:
+	@if command -v cargo-nextest >/dev/null; then \
+		LIBREPAPER_FSYNC=false cargo nextest run --workspace; \
+	else \
+		echo "cargo-nextest not installed (cargo install cargo-nextest); using cargo test"; \
+		LIBREPAPER_FSYNC=false cargo test --workspace; \
+	fi
 
 # One command that means what a green `test` looks like it means. The Postgres
 # cases stay out even here: they want a database to point at and they TRUNCATE
