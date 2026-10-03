@@ -5,7 +5,6 @@ use super::*;
 #[cfg(test)]
 use crate::local::credentials::read_tokens;
 pub(crate) use crate::local::credentials::write_private_file;
-pub use crate::local::credentials::write_token;
 use crate::local::credentials::{
     librepaper_dir, lock_tokens, store_token_at, stored_token_at, tokens_path,
 };
