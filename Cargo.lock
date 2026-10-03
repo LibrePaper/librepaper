@@ -3337,6 +3337,7 @@ dependencies = [
  "hex",
  "librepaper-base",
  "librepaper-document",
+ "log",
  "loro",
  "object_store",
  "percent-encoding",

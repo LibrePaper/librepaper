@@ -384,7 +384,12 @@ pub async fn serve(options: ServeOptions) {
         port,
     );
     for warning in &advice.warnings {
-        tracing::warn!("{}", warning.strip_prefix("warning: ").unwrap_or(warning.as_str()));
+        tracing::warn!(
+            "{}",
+            warning
+                .strip_prefix("warning: ")
+                .unwrap_or(warning.as_str())
+        );
     }
     if let Some(fatal) = advice.fatal {
         die(fatal);
