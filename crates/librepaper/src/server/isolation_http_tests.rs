@@ -19,7 +19,7 @@ use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
 use crate::storage::blob::FsStore;
-use crate::storage::postgres::{NewAccount, PostgresCatalog};
+use crate::storage::postgres::{AccessRole, NewAccount, PostgresCatalog};
 
 use super::Server;
 
@@ -140,11 +140,11 @@ fn identity(deployment: &Deployment) -> Identity {
 }
 
 fn session_cookie(deployment: &Deployment) -> String {
-    let token = sign_session(
-        &[0; 32],
-        &identity(deployment),
-        crate::util::now_unix() + 3600,
-    );
+    session_cookie_for(&identity(deployment))
+}
+
+fn session_cookie_for(identity: &Identity) -> String {
+    let token = sign_session(&[0; 32], identity, crate::util::now_unix() + 3600);
     format!("__Host-librepaper_session={token}")
 }
 
@@ -415,6 +415,232 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
 
     let _ = stop.send(());
     deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
+    let Some(mut deployment) = deployment("shared-visibility-http").await else {
+        return;
+    };
+    let viewer = deployment
+        .catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some(PROVIDER_GITHUB.into()),
+            provider_subject: Some("shared-visibility-viewer".into()),
+            handle: "shared-viewer".into(),
+            display_name: "Shared viewer".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    let peer = deployment
+        .catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some(PROVIDER_GITHUB.into()),
+            provider_subject: Some("shared-visibility-peer".into()),
+            handle: "shared-peer".into(),
+            display_name: "Shared peer".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    let outsider = deployment
+        .catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some(PROVIDER_GITHUB.into()),
+            provider_subject: Some("shared-visibility-outsider".into()),
+            handle: "shared-outsider".into(),
+            display_name: "No grant".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    for account_id in [viewer.id, peer.id] {
+        deployment
+            .catalog
+            .set_grant(deployment.document_id, account_id, AccessRole::Reader)
+            .await
+            .unwrap();
+    }
+    let viewer_cookie = session_cookie_for(&Identity {
+        provider: PROVIDER_GITHUB.into(),
+        id: viewer.id.to_string(),
+        handle: viewer.handle.clone(),
+        name: viewer.display_name.clone(),
+        picture: String::new(),
+        session_generation: viewer.session_generation.to_string(),
+    });
+    let peer_cookie = session_cookie_for(&Identity {
+        provider: PROVIDER_GITHUB.into(),
+        id: peer.id.to_string(),
+        handle: peer.handle.clone(),
+        name: peer.display_name.clone(),
+        picture: String::new(),
+        session_generation: peer.session_generation.to_string(),
+    });
+    let outsider_cookie = session_cookie_for(&Identity {
+        provider: PROVIDER_GITHUB.into(),
+        id: outsider.id.to_string(),
+        handle: outsider.handle.clone(),
+        name: outsider.display_name.clone(),
+        picture: String::new(),
+        session_generation: outsider.session_generation.to_string(),
+    });
+    Arc::get_mut(&mut deployment.server)
+        .unwrap()
+        .publishers = crate::auth::Policy::parse_publishers(
+        "isolation-owner,shared-viewer,shared-peer,shared-outsider",
+    )
+    .unwrap();
+    let (base, _address, stop) = serve(deployment.server.clone()).await;
+    let client = reqwest::Client::new();
+    let endpoint = format!("{base}/api/documents/{}/shared", deployment.slug);
+    let browser_headers = |cookie: &str, origin: &str, fetch_site: &str| {
+        client
+            .delete(&endpoint)
+            .header("host", "paper.example")
+            .header("origin", origin)
+            .header("sec-fetch-site", fetch_site)
+            .header("x-librepaper-client", "web")
+            .header("cookie", cookie)
+    };
+
+    // A signed-in owner still cannot hide a project from the Shared list.
+    let owner_attempt = client
+        .delete(&endpoint)
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("cookie", session_cookie(&deployment))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(owner_attempt.status().as_u16(), 403);
+
+    // A signed-out caller and a different signed-in account cannot use the
+    // route to discover or alter this document's preference.
+    let signed_out = client
+        .delete(&endpoint)
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(signed_out.status().as_u16(), 200);
+    let inaccessible = browser_headers(&outsider_cookie, READER, "same-origin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(inaccessible.status().as_u16(), 404);
+
+    // The valid viewer's cookie is still insufficient from the document
+    // origin. The refusal happens before the preference is written.
+    let cross_site = browser_headers(&viewer_cookie, DOCS, "same-site")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_site.status().as_u16(), 403);
+    assert!(deployment
+        .catalog
+        .marks_for_documents(viewer.id, &[deployment.document_id])
+        .await
+        .unwrap()
+        .is_empty());
+
+    let hidden = browser_headers(&viewer_cookie, READER, "same-origin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(hidden.status().as_u16(), 200);
+    assert_eq!(hidden.json::<serde_json::Value>().await.unwrap()["shared_hidden"], true);
+    assert_eq!(
+        deployment
+            .catalog
+            .access_role(
+                deployment.document_id,
+                Some(viewer.id),
+                None,
+                time::OffsetDateTime::now_utc(),
+            )
+            .await
+            .unwrap(),
+        Some(AccessRole::Reader),
+        "hiding must not change read access"
+    );
+    let readable = client
+        .get(format!("{base}/api/documents/{}/source", deployment.slug))
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("cookie", &viewer_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(readable.status().as_u16(), 200);
+
+    let viewer_list = client
+        .get(format!("{base}/api/list"))
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("cookie", &viewer_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let row = viewer_list["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["slug"] == deployment.slug)
+        .expect("shared document remains in the authorized listing");
+    assert_eq!(row["shared_hidden"], true);
+
+    let peer_list = client
+        .get(format!("{base}/api/list"))
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("cookie", &peer_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let peer_row = peer_list["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["slug"] == deployment.slug)
+        .expect("the second reader still sees the shared document");
+    assert_eq!(peer_row["shared_hidden"], false);
+
+    let restored = client
+        .post(&endpoint)
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("cookie", &viewer_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(restored.status().as_u16(), 200);
+    assert_eq!(restored.json::<serde_json::Value>().await.unwrap()["shared_hidden"], false);
+    let _ = stop.send(());
 }
 
 #[tokio::test]
