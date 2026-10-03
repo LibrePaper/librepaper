@@ -56,7 +56,7 @@ pub fn new_doc() -> LoroDoc {
 /// is written in and enough randomness that two browsers creating a file at
 /// the same instant do not collide.
 pub fn mint_id() -> String {
-    hex::encode(crate::util::random_bytes(6))
+    hex::encode(librepaper_base::util::random_bytes(6))
 }
 
 /// The path the main file is known by, which is what the index entry records

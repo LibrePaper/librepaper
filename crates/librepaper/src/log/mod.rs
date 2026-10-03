@@ -44,7 +44,7 @@ pub use sequencer::{
     Retry, Role, Sequencer, SequencerError,
 };
 
-use crate::config::Configuration;
+use librepaper_base::config::Configuration;
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::PostgresCatalog;
 

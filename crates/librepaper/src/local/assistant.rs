@@ -74,7 +74,7 @@ pub(super) async fn handle_assistant_start(
         };
     if !body
         .agent_token
-        .starts_with(crate::auth::AGENT_GRANT_PREFIX)
+        .starts_with(librepaper_base::auth::AGENT_GRANT_PREFIX)
     {
         return write_json(
             401,
@@ -133,7 +133,7 @@ pub(super) async fn handle_assistant_renew(
         };
     if !body
         .agent_token
-        .starts_with(crate::auth::AGENT_GRANT_PREFIX)
+        .starts_with(librepaper_base::auth::AGENT_GRANT_PREFIX)
     {
         return write_json(
             401,

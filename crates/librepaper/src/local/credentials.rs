@@ -132,12 +132,12 @@ pub(crate) fn store_token_at(base: &Path, server: &str, token: &str) -> Result<(
 ///
 /// The private-replacement mechanics -- create the temporary already
 /// private, sync it, close it before the rename, sync the directory, take
-/// the temporary away on failure -- are [`crate::private_files::publish`]'s,
+/// the temporary away on failure -- are [`librepaper_base::private_files::publish`]'s,
 /// shared with the assistant journal so the two cannot drift. Caller
 /// locking stays here: `save_tokens` holds the tokens lock across a
 /// read-modify-write, which no single replacement can provide.
 pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    crate::private_files::publish(path, bytes, &path.display().to_string())
+    librepaper_base::private_files::publish(path, bytes, &path.display().to_string())
 }
 
 /// Writes the token where the next command will look for it, readable by

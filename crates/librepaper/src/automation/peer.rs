@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use crate::http::{detail_of, KEY_HEADER};
+use librepaper_base::http::{detail_of, KEY_HEADER};
 
 /// Extract a share key from either a literal key or a pasted document URL.
 pub fn link_key(flag: &str) -> String {
@@ -243,14 +243,14 @@ impl AutomationPeer {
     /// browser delegated to the companion. This path never consults cached
     /// device credentials, which could otherwise widen its authority.
     pub(crate) async fn open_scoped(link: DocumentLink, token: String) -> Result<Self, String> {
-        if !token.starts_with(crate::auth::AGENT_GRANT_PREFIX) {
+        if !token.starts_with(librepaper_base::auth::AGENT_GRANT_PREFIX) {
             return Err("the browser did not provide a scoped assistant authorization".into());
         }
         Self::open_with_token(link, token).await
     }
 
     async fn open_with_token(link: DocumentLink, token: String) -> Result<Self, String> {
-        let scoped = token.starts_with(crate::auth::AGENT_GRANT_PREFIX);
+        let scoped = token.starts_with(librepaper_base::auth::AGENT_GRANT_PREFIX);
         let client = new_client()?;
         let mut request = client.get(format!("{}/api/documents/{}", link.server(), link.slug()));
         for (name, value) in auth_headers(&token, &link.key) {

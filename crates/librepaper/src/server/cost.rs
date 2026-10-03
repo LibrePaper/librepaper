@@ -317,7 +317,7 @@ async fn middleware_inner(
     let delegated_agent = authorization
         .as_deref()
         .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| token.starts_with(crate::auth::AGENT_GRANT_PREFIX));
+        .is_some_and(|token| token.starts_with(librepaper_base::auth::AGENT_GRANT_PREFIX));
     if delegated_agent && authentication.is_ok() && !agent_document_path(&server, &path) {
         return write_json(
             403,

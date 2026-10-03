@@ -487,7 +487,7 @@ impl Previews {
                 output.trim()
             ));
         }
-        let id = crate::util::new_id();
+        let id = librepaper_base::util::new_id();
         self.0.insert(
             id.clone(),
             Session {

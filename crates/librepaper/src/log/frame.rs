@@ -14,7 +14,7 @@
 /// was written by something that is not this program.
 pub const VERSION: u8 = 0x01;
 
-pub use crate::config::budget::{BATCH_HEADER_BYTES, MAX_PEER_KEY, ROW_HEADER_BYTES};
+pub use librepaper_base::config::budget::{BATCH_HEADER_BYTES, MAX_PEER_KEY, ROW_HEADER_BYTES};
 
 /// Bounds on what a frame may claim, so a corrupt or hostile row cannot make
 /// the decoder allocate. Both are far above anything a flush produces.

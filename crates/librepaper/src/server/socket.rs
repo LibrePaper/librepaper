@@ -322,19 +322,19 @@ impl Server {
         // moderation of anyone else's comment are both the editor rung.
         let may_edit = who.at_least(Role::Editor);
         let link_expires = entry
-            .live_link(&who.link, crate::util::now_unix())
-            .and_then(|link| crate::util::parse_timestamp(&link.until));
+            .live_link(&who.link, librepaper_base::util::now_unix())
+            .and_then(|link| librepaper_base::util::parse_timestamp(&link.until));
         let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
-        let identity = crate::config::socket_budget::SocketIdentity {
+        let identity = librepaper_base::config::socket_budget::SocketIdentity {
             network: client_network(&address),
             principal: who.id.id.clone(),
             document: slug.to_string(),
             role: Some(if may_edit {
-                crate::config::socket_budget::SocketRole::Editor
+                librepaper_base::config::socket_budget::SocketRole::Editor
             } else if who.at_least(Role::Commenter) {
-                crate::config::socket_budget::SocketRole::Commenter
+                librepaper_base::config::socket_budget::SocketRole::Commenter
             } else {
-                crate::config::socket_budget::SocketRole::Reader
+                librepaper_base::config::socket_budget::SocketRole::Reader
             }),
         };
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
@@ -395,7 +395,7 @@ impl Server {
         arrival: Arrival,
         query: Option<String>,
         link_expires: Option<i64>,
-        _socket_permit: crate::config::socket_budget::SocketPermit,
+        _socket_permit: librepaper_base::config::socket_budget::SocketPermit,
     ) {
         let socket_id = _socket_permit.id();
         let (mut sink, mut stream) = socket.split();
@@ -573,7 +573,7 @@ impl Server {
         let has_deadline = link_expires.is_some();
         let deadline = match link_expires {
             Some(until) => {
-                let now = crate::util::now_unix();
+                let now = librepaper_base::util::now_unix();
                 tokio::time::Instant::now()
                     + std::time::Duration::from_secs(until.saturating_sub(now).max(0) as u64)
             }
@@ -678,7 +678,7 @@ impl Server {
                         let mut message = json!({
                             "type":"chat", "id":random_token(),
                             "text":text, "creator":creator,
-                            "created":crate::util::timestamp(),
+                            "created":librepaper_base::util::timestamp(),
                         });
                         room.broadcast_except(Some(socket_id),&message).await;
                         message["temp_id"] = Value::String(incoming.temp_id().to_owned());
@@ -1655,7 +1655,7 @@ impl Server {
             .reserve(update.len() as u64, crate::log::sequencer::RESERVE_PATIENCE)
             .await
             .ok()?;
-        let now = crate::util::now_unix();
+        let now = librepaper_base::util::now_unix();
         let id = random_token();
         let digest = format!("{:x}", Sha256::digest(&update));
         let mut transfers = self.state_transfers.lock().await;

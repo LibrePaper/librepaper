@@ -6,14 +6,14 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 
-use crate::auth::{session_key_file, GithubApp, GoogleApp, Policy};
-use crate::config::Configuration;
+use librepaper_base::auth::{session_key_file, GithubApp, GoogleApp, Policy};
+use librepaper_base::config::Configuration;
 use crate::document::retention::{describe_seconds, parse_expire_from, parse_retention};
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
 use crate::storage::store::Store;
 use crate::storage::{open_storage, StorageOptions};
-use crate::util::die;
+use librepaper_base::util::die;
 use librepaper_shell::load_shell;
 
 /// With no --port, serve takes the first free port in this range, so a second
@@ -233,7 +233,7 @@ async fn deployment_peer_key(
             }
         }
     }
-    let key = crate::util::random_token();
+    let key = librepaper_base::util::random_token();
     catalog
         .set_runtime_state(
             crate::log::DEPLOYMENT_PEER_STATE,
@@ -498,7 +498,7 @@ pub async fn serve(options: ServeOptions) {
         println!("  fonts: {}", library.describe());
     }
     println!("  asset mirror: {assets}");
-    if assets == crate::config::DEFAULT_ASSET_MIRROR {
+    if assets == librepaper_base::config::DEFAULT_ASSET_MIRROR {
         println!(
             "  the project mirror promises only releases carried by this build (latex {})",
             librepaper_shell::latex_release()
@@ -516,7 +516,7 @@ pub async fn serve(options: ServeOptions) {
             describe_seconds(retention)
         );
         instance
-            .delete_expired(crate::util::now_unix(), retention, &expire_from)
+            .delete_expired(librepaper_base::util::now_unix(), retention, &expire_from)
             .await;
         let janitor = instance.clone();
         let from = expire_from.clone();
@@ -526,7 +526,7 @@ pub async fn serve(options: ServeOptions) {
             loop {
                 ticker.tick().await;
                 janitor
-                    .delete_expired(crate::util::now_unix(), retention, &from)
+                    .delete_expired(librepaper_base::util::now_unix(), retention, &from)
                     .await;
             }
         });

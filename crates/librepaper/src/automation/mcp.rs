@@ -125,7 +125,7 @@ impl Bridge {
                 "call document_read before this tool; no document epoch is known yet",
             ));
         };
-        let id = crate::util::new_request_key();
+        let id = librepaper_base::util::new_request_key();
         if let Some(object) = args.as_object_mut() {
             object.insert("operation".into(), json!({"epoch": epoch, "id": id}));
         }
@@ -292,7 +292,7 @@ fn publish_bridge_readiness() -> Result<(), McpError> {
     if token.len() > 128 {
         return Err(internal_error("invalid bridge readiness token"));
     }
-    crate::private_files::publish(
+    librepaper_base::private_files::publish(
         Path::new(&path),
         token.as_bytes(),
         "runner bridge readiness",

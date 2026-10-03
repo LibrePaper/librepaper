@@ -66,7 +66,7 @@ use uuid::Uuid;
 
 use futures_util::future::BoxFuture;
 
-use crate::config::Configuration;
+use librepaper_base::config::Configuration;
 use crate::document::session;
 use crate::log::tests::Outbox;
 use crate::log::*;

@@ -68,7 +68,7 @@ fn read_grant(path: &Path) -> Result<String, String> {
     let token = std::fs::read_to_string(path).map_err(|error| {
         format!("could not read the assistant's document authorization: {error}")
     })?;
-    if !token.starts_with(crate::auth::AGENT_GRANT_PREFIX) {
+    if !token.starts_with(librepaper_base::auth::AGENT_GRANT_PREFIX) {
         return Err("the assistant's document authorization is not a scoped grant; start the assistant again from the browser".into());
     }
     Ok(token)
@@ -112,7 +112,7 @@ mod tests {
         std::fs::write(&path, "lp_device-login-token").unwrap();
         assert!(read_grant(&path).is_err());
 
-        let scoped = format!("{}v1.payload.signature", crate::auth::AGENT_GRANT_PREFIX);
+        let scoped = format!("{}v1.payload.signature", librepaper_base::auth::AGENT_GRANT_PREFIX);
         std::fs::write(&path, &scoped).unwrap();
         assert_eq!(read_grant(&path).unwrap(), scoped);
     }

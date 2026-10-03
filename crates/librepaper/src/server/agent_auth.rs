@@ -54,7 +54,7 @@ pub(super) async fn issue(
     let link_hash = server.link_hash(headers, request.uri().query());
     if link_hash.is_empty()
         || entry
-            .link_role(&link_hash, crate::util::now_unix())
+            .link_role(&link_hash, librepaper_base::util::now_unix())
             .is_none()
     {
         return write_json(
@@ -67,22 +67,22 @@ pub(super) async fn issue(
         &entry,
         &link_hash,
         server.ceiling_for(&identity),
-        crate::util::now_unix(),
+        librepaper_base::util::now_unix(),
     );
     let role = match delegated_role {
         Role::Reader => 1,
         Role::Commenter => 2,
         Role::Editor | Role::Owner => 3,
     };
-    let expires_at = crate::util::now_unix() + crate::auth::AGENT_GRANT_MAX_AGE.as_secs() as i64;
-    let grant = crate::auth::AgentGrant {
+    let expires_at = librepaper_base::util::now_unix() + librepaper_base::auth::AGENT_GRANT_MAX_AGE.as_secs() as i64;
+    let grant = librepaper_base::auth::AgentGrant {
         identity,
         slug,
         link_hash,
         role,
         expires_at,
     };
-    let Some(token) = crate::auth::sign_agent_grant(&server.key, &grant) else {
+    let Some(token) = librepaper_base::auth::sign_agent_grant(&server.key, &grant) else {
         return write_json(
             400,
             &json!({"error": "could not create a scoped companion authorization"}),

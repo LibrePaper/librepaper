@@ -13,9 +13,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::cli::{resolve_identifier, server_or_die};
-use crate::http::{detail_of, get_as, send, Credentials};
+use librepaper_base::http::{detail_of, get_as, send, Credentials};
 use crate::storage::source_archive::{self, ArchiveLimits, SourceFile};
-use crate::util::die;
+use librepaper_base::util::die;
 
 /// Download an immutable, server-captured project into a new directory.
 ///

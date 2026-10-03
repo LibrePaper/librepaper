@@ -18,7 +18,7 @@ use axum::http::{HeaderMap, HeaderValue};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::auth::{sign_agent_grant, AgentGrant, Identity, PROVIDER_GITHUB};
+use librepaper_base::auth::{sign_agent_grant, AgentGrant, Identity, PROVIDER_GITHUB};
 use crate::room::Message as RoomMessage;
 use crate::server::origins::Origins;
 use crate::storage::store::{DocumentInput, Role};
@@ -194,7 +194,7 @@ async fn delegated_agent_bearer_stops_working_after_session_revocation() {
         slug: deployment.slug.clone(),
         link_hash: "ab".repeat(32),
         role: 1,
-        expires_at: crate::util::now_unix() + 60,
+        expires_at: librepaper_base::util::now_unix() + 60,
     };
     let token = sign_agent_grant(&deployment.server.key, &grant).unwrap();
     let mut headers = HeaderMap::new();

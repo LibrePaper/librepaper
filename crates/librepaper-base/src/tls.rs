@@ -4,7 +4,7 @@
 /// client needs the same provider installed explicitly when rustls features
 /// have been unified. An embedding application may install its own provider
 /// first; that choice is left intact.
-pub(crate) fn ensure_crypto_provider() {
+pub fn ensure_crypto_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         // Another thread may install a provider after the check. In that
         // race its provider is already the process-wide choice, so ignore

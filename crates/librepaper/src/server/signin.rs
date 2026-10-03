@@ -255,7 +255,7 @@ impl Server {
                         return Some(plain(400, &format!("github refused the sign-in: {err}")))
                     }
                 };
-                let who = match crate::auth::login_for(&token).await {
+                let who = match librepaper_base::auth::login_for(&token).await {
                     Ok(who) => who,
                     Err(_) => return Some(plain(502, "github would not say who you are")),
                 };
@@ -294,8 +294,8 @@ impl Server {
                     // The one refusal a person can act on: every other failure
                     // here is the deployment's or Google's, and says so.
                     Err(err)
-                        if err == crate::auth::UNVERIFIED_EMAIL
-                            || err == crate::auth::UNVERIFIED_WORKSPACE_DOMAIN =>
+                        if err == librepaper_base::auth::UNVERIFIED_EMAIL
+                            || err == librepaper_base::auth::UNVERIFIED_WORKSPACE_DOMAIN =>
                     {
                         return Some(plain(403, &err))
                     }
@@ -613,7 +613,7 @@ impl Server {
 /// upload page can refuse a 30 MB mistake before it is sent rather than
 /// after, plus the few facts about this deployment a page needs up front.
 fn config_body(
-    config: &crate::config::Configuration,
+    config: &librepaper_base::config::Configuration,
     fonts: bool,
     latex: Option<&str>,
     local_app: Option<&str>,
@@ -639,8 +639,8 @@ fn config_body(
 #[cfg(test)]
 mod tests {
     use super::{config_body, set_cookie};
-    use crate::auth::{cookie_name, SESSION_COOKIE};
-    use crate::config::Configuration;
+    use librepaper_base::auth::{cookie_name, SESSION_COOKIE};
+    use librepaper_base::config::Configuration;
 
     #[test]
     fn the_embedded_local_app_is_advertised_only_when_it_runs() {

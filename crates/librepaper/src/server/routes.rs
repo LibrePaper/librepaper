@@ -1510,7 +1510,7 @@ impl Server {
         // the role the link they came in on actually carries. Checked
         // against the copy already in hand first, so an open that is not
         // this caller's first never asks the store to write anything.
-        let now = crate::util::now_unix();
+        let now = librepaper_base::util::now_unix();
         if who.id.is_signed_in()
             && !who.automation
             && !entry.owned_by(&who.id.id)

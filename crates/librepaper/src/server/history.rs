@@ -779,7 +779,7 @@ impl Server {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .trim();
-        let label = crate::util::clean(label, MAX_LABEL);
+        let label = librepaper_base::util::clean(label, MAX_LABEL);
         let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,

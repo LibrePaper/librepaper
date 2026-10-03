@@ -18,14 +18,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::config::Configuration;
+use librepaper_base::config::Configuration;
 use crate::document::paths::{check, Kind};
 use crate::log::{Command, CommandError, Evidence, Head, PreparedSource, Registry};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{
     Authority, Error as CatalogError, NewAsset, NewLabel, PostgresCatalog as Catalog,
 };
-use crate::util::parse_timestamp;
+use librepaper_base::util::parse_timestamp;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct IndexEntry {
@@ -757,7 +757,7 @@ impl Store {
             .map_err(|_| CatalogError::Invalid("invalid listing account".into()))?;
         let before = match cursor {
             Some((updated, slug)) => {
-                if crate::util::parse_timestamp(updated).is_none() {
+                if librepaper_base::util::parse_timestamp(updated).is_none() {
                     return Err(CatalogError::Invalid("invalid listing cursor".into()));
                 }
                 let document = catalog
@@ -845,7 +845,7 @@ impl Store {
             // Derive the fixed purge grace from that row instead of issuing
             // one `deletion_due` query per document.
             let due = document.deleted_at.map(|at| {
-                crate::util::format_unix(
+                librepaper_base::util::format_unix(
                     (at + crate::storage::maintenance::DELETION_GRACE).unix_timestamp(),
                 )
             });
@@ -1067,7 +1067,7 @@ impl Store {
                 let slug = by_id.get(&mark.document_id)?.clone();
                 let opened = mark
                     .opened_at
-                    .map(|at| crate::util::format_unix(at.unix_timestamp()))
+                    .map(|at| librepaper_base::util::format_unix(at.unix_timestamp()))
                     .unwrap_or_default();
                 Some((
                     slug,
@@ -1443,7 +1443,7 @@ impl Store {
                 let expiry = if link.until.is_empty() {
                     None
                 } else {
-                    crate::util::parse_timestamp(&link.until)
+                    librepaper_base::util::parse_timestamp(&link.until)
                         .and_then(|seconds| time::OffsetDateTime::from_unix_timestamp(seconds).ok())
                 };
                 Ok((
@@ -1459,7 +1459,7 @@ impl Store {
         let live_hashes = entry
             .links
             .iter()
-            .filter(|link| link.live_at(crate::util::now_unix()))
+            .filter(|link| link.live_at(librepaper_base::util::now_unix()))
             .filter_map(|link| hex::decode(&link.hash).ok())
             .collect::<Vec<_>>();
         catalog
@@ -1563,10 +1563,10 @@ async fn entries_from_documents(
                     sealed: link.sealed_token,
                     label: link.label,
                     budget: link.comment_budget,
-                    since: crate::util::format_unix(link.created_at.unix_timestamp()),
+                    since: librepaper_base::util::format_unix(link.created_at.unix_timestamp()),
                     until: link
                         .expires_at
-                        .map(|at| crate::util::format_unix(at.unix_timestamp()))
+                        .map(|at| librepaper_base::util::format_unix(at.unix_timestamp()))
                         .unwrap_or_default(),
                 })
                 .collect();
@@ -1587,7 +1587,7 @@ async fn entries_from_documents(
                 guests.push(Guest {
                     id: grant.account_id.to_string(),
                     name: account.display_name.clone(),
-                    since: crate::util::format_unix(grant.created_at.unix_timestamp()),
+                    since: librepaper_base::util::format_unix(grant.created_at.unix_timestamp()),
                     link: hex::encode(hash),
                 });
             }
@@ -1600,8 +1600,8 @@ async fn entries_from_documents(
                 // exactly when the document does, so it is what a listing
                 // page uses as a change token.
                 sha: document.update_sequence.to_string(),
-                created_at: crate::util::format_unix(document.created_at.unix_timestamp()),
-                updated_at: crate::util::format_unix(document.updated_at.unix_timestamp()),
+                created_at: librepaper_base::util::format_unix(document.created_at.unix_timestamp()),
+                updated_at: librepaper_base::util::format_unix(document.updated_at.unix_timestamp()),
                 unowned: document.ownership_mode == "open",
                 publisher: owner.map(|a| a.handle.clone()).unwrap_or_default(),
                 publisher_id: document.owner_id.to_string(),
@@ -1620,7 +1620,7 @@ async fn entries_from_documents(
 
 pub fn random_suffix(config: &Configuration) -> String {
     let alphabet = config.suffix_alphabet.as_bytes();
-    crate::util::random_bytes(config.suffix_length)
+    librepaper_base::util::random_bytes(config.suffix_length)
         .into_iter()
         .map(|byte| alphabet[byte as usize % alphabet.len()] as char)
         .collect()

@@ -617,7 +617,7 @@ fn ensure_namespace(path: &Path, server: &str, account_id: &str) -> Result<(), S
 fn write_manifest(path: &Path, manifest: &Manifest) -> Result<(), String> {
     let bytes = serde_json::to_vec(manifest)
         .map_err(|error| format!("could not encode backup manifest: {error}"))?;
-    crate::private_files::publish(path, &bytes, "backup manifest")
+    librepaper_base::private_files::publish(path, &bytes, "backup manifest")
 }
 
 fn owned_archive(root: &Path, filename: &str, slug: &str) -> Result<(), String> {

@@ -29,7 +29,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::config::Configuration;
+use librepaper_base::config::Configuration;
 use crate::log::sequencer::{Command, CommandError, Joined, Role, SequencerError};
 use crate::log::{FlushReason, Ingested, Registry, Sequencer};
 use crate::storage::blob::BlobStore;
@@ -66,7 +66,7 @@ mod recovery_tests;
 pub(crate) mod resolve;
 pub(crate) mod text;
 
-pub use crate::util::{decode_update, encode_update};
+pub use librepaper_base::util::{decode_update, encode_update};
 pub use annotation::OriginalAnchor;
 pub use command::Command as RoomCommand;
 pub use comments::*;
@@ -395,7 +395,7 @@ impl Room {
     /// ephemeral and is counted apart from durable edit accounting, so a
     /// conversation cannot consume an editor's update allowance.
     pub async fn chat_allowed(&self, socket: u64) -> bool {
-        let minute = crate::util::now_unix() / 60;
+        let minute = librepaper_base::util::now_unix() / 60;
         let mut peers = self.peers.lock().await;
         let Some(peer) = peers.get_mut(&socket) else {
             return false;
@@ -797,6 +797,6 @@ pub fn format_from_path(path: &str) -> String {
 /// because the thing being bounded is how many comments one stranger can
 /// leave, not how fast they can type.
 pub fn rate_key(address: &str) -> String {
-    let hour = crate::util::now_unix() / 3600;
+    let hour = librepaper_base::util::now_unix() / 3600;
     format!("{address}:{hour}")
 }

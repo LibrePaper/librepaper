@@ -191,11 +191,11 @@ fn private_directory(path: &Path) -> Result<(), String> {
 }
 
 fn private_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    crate::private_files::publish(path, bytes, "runner control state")
+    librepaper_base::private_files::publish(path, bytes, "runner control state")
 }
 
 fn nonce() -> String {
-    hex::encode(crate::util::random_bytes(24))
+    hex::encode(librepaper_base::util::random_bytes(24))
 }
 
 impl Lease {

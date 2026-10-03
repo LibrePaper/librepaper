@@ -141,7 +141,7 @@ impl Sources {
     /// the tests, which have a document and no projection in hand.
     #[cfg(test)]
     pub(crate) fn of_doc(doc: &loro::LoroDoc) -> Sources {
-        let config = crate::config::Configuration::default();
+        let config = librepaper_base::config::Configuration::default();
         Sources::of(&crate::document::projection::project(doc, &config.paths()))
     }
 
@@ -679,7 +679,7 @@ pub(super) mod tests {
             "both files exist, and both are named `paper.md`",
         );
 
-        let config = crate::config::Configuration::default();
+        let config = librepaper_base::config::Configuration::default();
         let projected = crate::document::projection::project(&doc, &config.paths());
         assert_eq!(
             projected.projection.files.len(),

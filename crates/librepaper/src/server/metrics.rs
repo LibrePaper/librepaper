@@ -128,7 +128,7 @@ impl Metrics {
 
     /// Replace the cached gauges after a timed background sample. The caller
     /// supplies only values selected by `GAUGE_FIELDS` below.
-    fn update_gauges(&self, snapshot: &Value, config: &crate::config::Configuration) {
+    fn update_gauges(&self, snapshot: &Value, config: &librepaper_base::config::Configuration) {
         let mut gauges = Vec::with_capacity(GAUGE_FIELDS.len() + 8);
         for (family, section, field) in GAUGE_FIELDS {
             if let Some(value) = snapshot.get(section).and_then(|v| v.get(field)) {
@@ -782,7 +782,7 @@ mod tests {
         metrics.record_refusal("work_concurrency");
         metrics.update_gauges(
             &serde_json::json!({"rooms":{"documents":2,"private_id":8}}),
-            &crate::config::Configuration::default(),
+            &librepaper_base::config::Configuration::default(),
         );
         let text = metrics.render();
         assert!(text.contains("route=\"api_documents\",method=\"GET\",status_class=\"5xx\""));
@@ -855,7 +855,7 @@ mod tests {
         metrics.record_middleware_result("api_status", "GET", 421, started);
         metrics.update_gauges(
             &serde_json::json!({"rooms":{"documents":1}}),
-            &crate::config::Configuration::default(),
+            &librepaper_base::config::Configuration::default(),
         );
         let text = metrics.render();
         assert!(text.contains("route=\"api_status\",method=\"GET\",status_class=\"4xx\"} 1"));
@@ -875,7 +875,7 @@ mod tests {
         let metrics = Metrics::new();
         metrics.update_gauges(
             &serde_json::json!({"rooms":{"documents":1}}),
-            &crate::config::Configuration::default(),
+            &librepaper_base::config::Configuration::default(),
         );
         let timestamp = metrics.snapshot_timestamp.load(Ordering::Relaxed);
         assert_ne!(timestamp, 0);
@@ -939,7 +939,7 @@ mod tests {
         let metrics = Metrics::new();
         metrics.update_gauges(
             &serde_json::json!({"rooms":{"documents":7,"account_id":"private","email":12}}),
-            &crate::config::Configuration::default(),
+            &librepaper_base::config::Configuration::default(),
         );
         let rendered = metrics.render();
         assert!(rendered.contains("librepaper_rooms_documents 7"));
@@ -956,7 +956,7 @@ mod tests {
                 "begin_wait_max_us": 2_500_000,
             }
         });
-        metrics.update_gauges(&snapshot, &crate::config::Configuration::default());
+        metrics.update_gauges(&snapshot, &librepaper_base::config::Configuration::default());
         let rendered = metrics.render();
 
         assert!(rendered.contains("librepaper_database_begin_wait_mean_seconds 1.25\n"));

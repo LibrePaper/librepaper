@@ -359,8 +359,8 @@ mod budget_tests {
 
     #[tokio::test]
     async fn aggregate_queue_is_reserved_once_and_released_when_receiver_drops() {
-        let budget = crate::config::socket_budget::SocketBudget::new(
-            crate::config::socket_budget::SocketPolicy {
+        let budget = librepaper_base::config::socket_budget::SocketBudget::new(
+            librepaper_base::config::socket_budget::SocketPolicy {
                 queue_bytes_max: 6,
                 ..Default::default()
             },
@@ -393,8 +393,8 @@ mod budget_tests {
         let Outgoing::SharedText(text) = &payload else {
             unreachable!("shared_text constructs SharedText");
         };
-        let budget = crate::config::socket_budget::SocketBudget::new(
-            crate::config::socket_budget::SocketPolicy {
+        let budget = librepaper_base::config::socket_budget::SocketBudget::new(
+            librepaper_base::config::socket_budget::SocketPolicy {
                 queue_bytes_max: 8 * payload.bytes(),
                 ..Default::default()
             },

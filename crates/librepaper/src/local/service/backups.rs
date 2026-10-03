@@ -327,7 +327,7 @@ impl BackupManager {
             .map_err(|error| format!("could not encode backup settings: {error}"))?;
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
-            crate::private_files::publish(&path, &bytes, &path.display().to_string())
+            librepaper_base::private_files::publish(&path, &bytes, &path.display().to_string())
                 .map_err(|error| format!("could not save backup settings: {error}"))
         })
         .await
@@ -417,7 +417,7 @@ impl BackupManager {
         })?;
         let origin = crate::local::credentials::origin(origin);
         let key = BackupConfig::key(&origin, account_id);
-        let authorization_id = crate::util::random_token();
+        let authorization_id = librepaper_base::util::random_token();
         let pairing_digest = hex::encode(Sha256::digest(pairing_token.as_bytes()));
         {
             let mut pending = self.authorizations.lock().await;
@@ -487,7 +487,7 @@ impl BackupManager {
                 return Err("account authorization was replaced; start again".into());
             };
             if entry.expires <= Instant::now()
-                || !crate::util::constant_time_eq(
+                || !librepaper_base::util::constant_time_eq(
                     entry.pairing_digest.as_bytes(),
                     hex::encode(Sha256::digest(pairing_token.as_bytes())).as_bytes(),
                 )
@@ -522,7 +522,7 @@ impl BackupManager {
             };
             if entry.origin != origin
                 || entry.account_id != account_id
-                || !crate::util::constant_time_eq(
+                || !librepaper_base::util::constant_time_eq(
                     entry.pairing_digest.as_bytes(),
                     digest.as_bytes(),
                 )
@@ -585,7 +585,7 @@ impl BackupManager {
                     && entry.origin == origin
                     && entry.account_id == account_id
                     && entry.completing
-                    && crate::util::constant_time_eq(
+                    && librepaper_base::util::constant_time_eq(
                         entry.pairing_digest.as_bytes(),
                         expected_digest.as_bytes(),
                     )

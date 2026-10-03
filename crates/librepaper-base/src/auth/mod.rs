@@ -168,7 +168,7 @@ pub const HOST_COOKIE_PREFIX: &str = "__Host-";
 const PROVIDER_REQUEST_CONCURRENCY: usize = 16;
 static PROVIDER_REQUESTS: Semaphore = Semaphore::const_new(PROVIDER_REQUEST_CONCURRENCY);
 
-pub(crate) fn try_provider_request() -> Option<SemaphorePermit<'static>> {
+pub fn try_provider_request() -> Option<SemaphorePermit<'static>> {
     PROVIDER_REQUESTS.try_acquire().ok()
 }
 

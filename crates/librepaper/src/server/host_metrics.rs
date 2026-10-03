@@ -57,7 +57,7 @@ pub fn snapshot() -> Value {
     })
 }
 
-pub fn warn(config: &crate::config::Configuration, primary: &Path) {
+pub fn warn(config: &librepaper_base::config::Configuration, primary: &Path) {
     if let Ok(free) = fs2::available_space(primary) {
         if config.storage.total >= 0
             && config.storage.total as u64 > free.saturating_sub(256 * 1024 * 1024)

@@ -305,7 +305,7 @@ mod tests {
             .write_base(
                 document_id,
                 snapshot,
-                crate::config::Configuration::default().log_quota_bytes,
+                librepaper_base::config::Configuration::default().log_quota_bytes,
             )
             .await
             .unwrap();
@@ -2617,7 +2617,7 @@ mod tests {
 
         let object_root = tempfile::tempdir().unwrap();
         let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
-        let config = Arc::new(crate::config::Configuration::default());
+        let config = Arc::new(librepaper_base::config::Configuration::default());
         let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
         let pending =
             crate::log::PendingBudget::new(config.pending_bytes, config.pending_scratch_bytes);
@@ -2828,7 +2828,7 @@ mod tests {
         .await
         .unwrap();
 
-        let config = Arc::new(crate::config::Configuration::default());
+        let config = Arc::new(librepaper_base::config::Configuration::default());
         let registry = crate::log::Registry::new(
             catalog.clone(),
             blobs.clone(),
@@ -2990,7 +2990,7 @@ mod tests {
             1
         );
 
-        let config = Arc::new(crate::config::Configuration::default());
+        let config = Arc::new(librepaper_base::config::Configuration::default());
         let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
         let pending =
             crate::log::PendingBudget::new(config.pending_bytes, config.pending_scratch_bytes);
@@ -3173,7 +3173,7 @@ mod tests {
 
         let object_root = tempfile::tempdir().unwrap();
         let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
-        let config = Arc::new(crate::config::Configuration::default());
+        let config = Arc::new(librepaper_base::config::Configuration::default());
         let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
         let pending =
             crate::log::PendingBudget::new(config.pending_bytes, config.pending_scratch_bytes);

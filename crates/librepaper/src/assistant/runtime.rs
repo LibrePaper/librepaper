@@ -51,7 +51,7 @@ pub fn config(
     })
 }
 fn event_id() -> String {
-    crate::util::new_id()
+    librepaper_base::util::new_id()
 }
 /// The bookkeeping paths the document adapter needs. Everything secret is
 /// absent by construction: the link and the channel credential live in the
@@ -114,7 +114,7 @@ fn publish_agent_label(session_path: &Path, options: &Value) -> Result<(), Strin
     if std::fs::read_to_string(&path).is_ok_and(|current| current == label) {
         return Ok(());
     }
-    crate::private_files::publish(&path, label.as_bytes(), "agent label")
+    librepaper_base::private_files::publish(&path, label.as_bytes(), "agent label")
 }
 
 /// Resolve this runner's document link and channel credential from the
@@ -177,7 +177,7 @@ impl BridgeGrant {
         if self.written.as_deref() == Some(current.as_str()) {
             return Ok(());
         }
-        crate::private_files::publish(&self.path, current.as_bytes(), "assistant document grant")?;
+        librepaper_base::private_files::publish(&self.path, current.as_bytes(), "assistant document grant")?;
         self.written = Some(current);
         Ok(())
     }

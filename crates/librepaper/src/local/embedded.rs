@@ -65,7 +65,7 @@ pub async fn start(base: &Path, tool_path: Vec<PathBuf>) -> Result<Arc<Embedded>
         .port();
     let listener_v6 = TcpListener::bind(("::1", port)).await.ok();
 
-    let instance = hex::encode(crate::util::random_bytes(8));
+    let instance = hex::encode(librepaper_base::util::random_bytes(8));
     let runner = Arc::new(NativeRunner::with_hosted_workspaces(
         tool_path,
         &state_home,

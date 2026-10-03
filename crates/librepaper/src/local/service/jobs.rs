@@ -410,7 +410,7 @@ pub(super) async fn handle_jobs_post(
         }
     }
 
-    let id = crate::util::new_id();
+    let id = librepaper_base::util::new_id();
     let root = inner.jobs_root.join(&id);
     let project_dir = root.join("project");
     if std::fs::create_dir_all(&project_dir).is_err() {

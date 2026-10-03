@@ -12,8 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
 
-use crate::auth::{sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB};
-use crate::config::Configuration;
+use librepaper_base::auth::{sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB};
+use librepaper_base::config::Configuration;
 use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
@@ -144,7 +144,7 @@ fn session_cookie(deployment: &Deployment) -> String {
 }
 
 fn session_cookie_for(identity: &Identity) -> String {
-    let token = sign_session(&[0; 32], identity, crate::util::now_unix() + 3600);
+    let token = sign_session(&[0; 32], identity, librepaper_base::util::now_unix() + 3600);
     format!("__Host-librepaper_session={token}")
 }
 
@@ -152,7 +152,7 @@ fn device_bearer(deployment: &Deployment) -> String {
     sign_device(
         &[0; 32],
         &identity(deployment),
-        crate::util::now_unix() + 3600,
+        librepaper_base::util::now_unix() + 3600,
     )
 }
 
@@ -491,7 +491,7 @@ async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
         session_generation: outsider.session_generation.to_string(),
     });
     Arc::get_mut(&mut deployment.server).unwrap().publishers =
-        crate::auth::Policy::parse_publishers(
+        librepaper_base::auth::Policy::parse_publishers(
             "isolation-owner,shared-viewer,shared-peer,shared-outsider",
         )
         .unwrap();

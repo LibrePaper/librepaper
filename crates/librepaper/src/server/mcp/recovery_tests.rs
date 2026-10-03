@@ -10,8 +10,8 @@ use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
-use crate::config::Configuration;
+use librepaper_base::auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
+use librepaper_base::config::Configuration;
 use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
@@ -185,7 +185,7 @@ fn bearer(account_id: Uuid, handle: &str, generation: &str, link_key: &str) -> H
         picture: String::new(),
         session_generation: generation.into(),
     };
-    let token = sign_device(&[0u8; 32], &identity, crate::util::now_unix() + 3600);
+    let token = sign_device(&[0u8; 32], &identity, librepaper_base::util::now_unix() + 3600);
     let mut headers = HeaderMap::new();
     headers.insert(
         "authorization",
@@ -231,7 +231,7 @@ async fn call(
 fn operation(epoch: &str) -> Value {
     json!({
         "epoch":epoch,
-        "id":format!("v2.{}.{}", crate::util::now_unix() * 1000, Uuid::new_v4().simple())
+        "id":format!("v2.{}.{}", librepaper_base::util::now_unix() * 1000, Uuid::new_v4().simple())
     })
 }
 

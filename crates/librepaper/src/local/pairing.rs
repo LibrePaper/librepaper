@@ -26,7 +26,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::util::{now_unix, random_bytes};
+use librepaper_base::util::{now_unix, random_bytes};
 
 /// How long a pairing token is good for once issued.
 pub const TOKEN_TTL_SECONDS: i64 = 30 * 24 * 3600;
@@ -141,7 +141,7 @@ impl PairingStore {
         let now = now_unix();
         self.load().get(&origin).is_some_and(|pairing| {
             pairing.expires > now
-                && crate::util::constant_time_eq(pairing.token_sha256.as_bytes(), hash.as_bytes())
+                && librepaper_base::util::constant_time_eq(pairing.token_sha256.as_bytes(), hash.as_bytes())
         })
     }
 
@@ -303,7 +303,7 @@ pub(crate) fn return_fragment(return_to: &str, port: u16, request: &str) -> Stri
 
 pub(crate) fn write_private_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let body = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
-    crate::private_files::publish(path, &body, "local private JSON").map_err(std::io::Error::other)
+    librepaper_base::private_files::publish(path, &body, "local private JSON").map_err(std::io::Error::other)
 }
 
 pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {

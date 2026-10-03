@@ -627,7 +627,7 @@ mod tests {
         assert!(bridge
             .iter()
             .chain(agent.iter())
-            .all(|(_, value)| !value.contains(crate::auth::AGENT_GRANT_PREFIX)));
+            .all(|(_, value)| !value.contains(librepaper_base::auth::AGENT_GRANT_PREFIX)));
     }
 
     #[tokio::test]

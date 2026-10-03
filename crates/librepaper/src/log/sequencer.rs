@@ -39,10 +39,10 @@ use uuid::Uuid;
 
 use super::budget::{estimate, Budget, Busy, Reservation};
 use super::frame;
-pub use crate::config::budget::{
+pub use librepaper_base::config::budget::{
     max_pending_charge, max_row_bytes, max_update_bytes, BUFFER_CEILING_BYTES, FLUSH_TRIGGER_BYTES,
 };
-use crate::config::Configuration;
+use librepaper_base::config::Configuration;
 use crate::storage::blob::BlobStore;
 use crate::storage::outgoing::{Outgoing, Sender};
 use crate::storage::postgres::{self, Authority, FlushRow, PostgresCatalog};

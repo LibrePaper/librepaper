@@ -32,7 +32,7 @@ use std::time::Duration;
 use sqlx::Connection;
 use uuid::Uuid;
 
-use crate::config::Configuration;
+use librepaper_base::config::Configuration;
 use crate::log::Registry;
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::postgres::{

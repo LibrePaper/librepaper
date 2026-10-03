@@ -107,6 +107,8 @@ chrono-tz.workspace = true
 include_dir.workspace = true
 # The built browser app, compiled in.
 librepaper-shell = { path = "../librepaper-shell" }
+# Configuration, identity and shared helpers.
+librepaper-base = { path = "../librepaper-base" }
 # The command line.
 clap.workspace = true
 # The blob store is a trait with async methods behind a pointer.

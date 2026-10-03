@@ -37,7 +37,7 @@ use loro::{ExportMode, Frontiers, LoroDoc, VersionVector};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-use crate::config::Configuration;
+use librepaper_base::config::Configuration;
 use crate::log::budget::DEFAULT_EXPANSION;
 use crate::log::sequencer::{
     ack_targets, max_update_bytes, FlushReason, Ingested, LogCatalog, Role, Sequencer,
@@ -351,7 +351,7 @@ impl Outbox {
     /// collapse a repeated character back under the trigger it is meant to
     /// cross.
     pub(crate) fn edit_at_least(&mut self, bytes: usize) -> Vec<u8> {
-        let filler = hex::encode(crate::util::random_bytes(bytes / 2 + 1));
+        let filler = hex::encode(librepaper_base::util::random_bytes(bytes / 2 + 1));
         let text = self.doc.get_text("t");
         text.insert_utf16(text.len_utf16(), &filler).unwrap();
         self.export_since_last()

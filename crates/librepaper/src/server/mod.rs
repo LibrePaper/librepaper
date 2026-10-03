@@ -21,8 +21,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::auth::pseudonym::pseudonym_for;
-use crate::auth::{
+use librepaper_base::auth::pseudonym::pseudonym_for;
+use librepaper_base::auth::{
     cookie_name, normalized, now_unix, pkce_verifier, random_token, read_agent_grant, read_device,
     read_session, read_visitor, sign_device, sign_session, sign_visitor, Accounts, DeviceOutcome,
     GithubAccounts, GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache,
@@ -30,7 +30,7 @@ use crate::auth::{
     PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE,
     VISITOR_COOKIE,
 };
-use crate::config::Configuration;
+use librepaper_base::config::Configuration;
 use crate::document::render::{title_from_html, title_from_markdown};
 use crate::room::{
     decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
@@ -43,7 +43,7 @@ use crate::storage::store::{
     random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
     Role, Store,
 };
-use crate::util::clean;
+use librepaper_base::util::clean;
 use librepaper_shell::{renderers, ShellFile};
 
 mod agent_auth;
@@ -78,7 +78,7 @@ pub mod serve;
 mod sharing;
 mod signin;
 mod socket;
-pub use crate::config::socket_budget;
+pub use librepaper_base::config::socket_budget;
 mod suggestions;
 #[cfg(test)]
 mod trim_http_tests;
@@ -151,10 +151,10 @@ fn may_read(entry: &IndexEntry, who: &Viewer) -> bool {
         return who.bearer
             && !who.link.is_empty()
             && entry
-                .link_role(&who.link, crate::util::now_unix())
+                .link_role(&who.link, librepaper_base::util::now_unix())
                 .is_some();
     }
-    entry.readable_by(&who.id.id, &who.link, crate::util::now_unix())
+    entry.readable_by(&who.id.id, &who.link, librepaper_base::util::now_unix())
 }
 
 fn needs_sign_in(entry: &IndexEntry, who: &Viewer) -> bool {
@@ -163,11 +163,11 @@ fn needs_sign_in(entry: &IndexEntry, who: &Viewer) -> bool {
     }
     (!who.id.is_signed_in() || (who.automation && !who.bearer))
         && entry
-            .link_role(&who.link, crate::util::now_unix())
+            .link_role(&who.link, librepaper_base::util::now_unix())
             .is_some()
 }
 
-fn grant_matches_scope(grant: &crate::auth::AgentGrant, slug: &str, link_hash: &str) -> bool {
+fn grant_matches_scope(grant: &librepaper_base::auth::AgentGrant, slug: &str, link_hash: &str) -> bool {
     grant.slug == slug && grant.link_hash == link_hash
 }
 
@@ -1185,7 +1185,7 @@ impl Server {
                 .map(|guest| guest.link.clone())
                 .unwrap_or_default();
         }
-        let now = crate::util::now_unix();
+        let now = librepaper_base::util::now_unix();
         let ceiling = self.ceiling_for(&id);
         let mut role = resolved_role(automation, entry, &id.id, &presented_link, ceiling, now);
         if let Some(grant) = grant.as_ref().filter(|_| grant_in_scope) {
@@ -1375,7 +1375,7 @@ impl Server {
     /// a listing that carried link digests would put them in every reader's
     /// browser.
     fn listing_row(&self, entry: &IndexEntry, who: &Caller) -> Value {
-        let now = crate::util::now_unix();
+        let now = librepaper_base::util::now_unix();
         // A guest holds no key and no link in this request -- the listing
         // asks for every document at once, not through the one link that got
         // them onto any single one of them -- so their role is read back off
@@ -2100,12 +2100,12 @@ mod automation_authority_tests {
 
     #[test]
     fn delegated_grants_bind_document_link_and_role_ceiling() {
-        let grant = crate::auth::AgentGrant {
+        let grant = librepaper_base::auth::AgentGrant {
             identity: Identity::default(),
             slug: "paper".into(),
             link_hash: "a".repeat(64),
             role: 2,
-            expires_at: crate::util::now_unix() + 60,
+            expires_at: librepaper_base::util::now_unix() + 60,
         };
         assert!(grant_matches_scope(&grant, "paper", &"a".repeat(64)));
         assert!(!grant_matches_scope(
@@ -2128,7 +2128,7 @@ mod automation_authority_tests {
     #[test]
     fn an_owner_session_does_not_widen_the_link_an_agent_was_given() {
         let entry = shared_document();
-        let now = crate::util::now_unix();
+        let now = librepaper_base::util::now_unix();
         // One caller, one document, one reader link. The only thing that
         // differs between these two calls is whether it is the agent asking.
         let owner = "github:alice";
@@ -2150,7 +2150,7 @@ mod automation_authority_tests {
     #[test]
     fn an_agent_still_gets_what_its_link_actually_grants() {
         let entry = shared_document();
-        let now = crate::util::now_unix();
+        let now = librepaper_base::util::now_unix();
         assert_eq!(
             automation_role(&entry, "editor-hash", ceiling(), now),
             Role::Editor
@@ -2162,7 +2162,7 @@ mod automation_authority_tests {
     /// blanked fields would turn "presented nothing" into full authority.
     #[test]
     fn presenting_no_link_grants_nothing() {
-        let now = crate::util::now_unix();
+        let now = librepaper_base::util::now_unix();
         for entry in [shared_document(), IndexEntry::default()] {
             assert_eq!(automation_role(&entry, "", ceiling(), now), Role::Reader);
             assert_eq!(
@@ -2177,7 +2177,7 @@ mod automation_authority_tests {
     #[test]
     fn a_deployment_ceiling_can_lower_a_link_but_never_raise_one() {
         let entry = shared_document();
-        let now = crate::util::now_unix();
+        let now = librepaper_base::util::now_unix();
         let read_only = Ceiling {
             comment: false,
             edit: false,

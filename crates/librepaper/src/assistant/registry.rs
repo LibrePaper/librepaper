@@ -216,7 +216,7 @@ impl SessionRegistry {
         conversation: &str,
         token: &str,
     ) -> Result<(), String> {
-        if !token.starts_with(crate::auth::AGENT_GRANT_PREFIX) {
+        if !token.starts_with(librepaper_base::auth::AGENT_GRANT_PREFIX) {
             return Err("the renewed assistant authorization is invalid".into());
         }
         // Validate with the document server before replacing a working grant;

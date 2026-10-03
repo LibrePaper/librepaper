@@ -35,7 +35,7 @@ fn now() -> Result<String, String> {
 
 pub async fn backup_cli(options: StorageOptions, directory: String, id: String) {
     if let Err(e) = create(options, Path::new(&directory), id).await {
-        crate::util::die(e)
+        librepaper_base::util::die(e)
     }
 }
 
@@ -187,7 +187,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
 
 pub async fn restore_cli(options: StorageOptions, backup: String, directory: String) {
     if let Err(e) = restore(options, Path::new(&backup), Path::new(&directory)).await {
-        crate::util::die(e)
+        librepaper_base::util::die(e)
     }
 }
 async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> Result<(), String> {

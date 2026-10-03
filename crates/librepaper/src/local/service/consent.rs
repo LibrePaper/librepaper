@@ -220,7 +220,7 @@ pub(super) async fn handle_pair_claim(inner: &Inner, request: Request<Body>) -> 
             != super::super::pairing::normalize_origin(&body.origin)
         || body.verifier.len() < 32
         || body.verifier.len() > 128
-        || !crate::util::constant_time_eq(
+        || !librepaper_base::util::constant_time_eq(
             item.challenge.as_bytes(),
             hex::encode(Sha256::digest(body.verifier.as_bytes())).as_bytes(),
         )

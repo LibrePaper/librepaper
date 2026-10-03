@@ -954,7 +954,7 @@ impl Server {
             else {
                 return plain(410, "that baseline has expired; reconnect for a newer one");
             };
-            if transfer_slug != slug || expires_at < crate::util::now_unix() {
+            if transfer_slug != slug || expires_at < librepaper_base::util::now_unix() {
                 transfers.remove(&transfer_id);
                 transfers.order.retain(|id| id != &transfer_id);
                 return plain(410, "that baseline has expired; reconnect for a newer one");

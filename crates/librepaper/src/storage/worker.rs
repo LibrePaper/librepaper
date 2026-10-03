@@ -282,7 +282,7 @@ pub async fn compact_document(
     blobs: &Arc<dyn BlobStore>,
     sequencers: &Arc<Registry>,
     handle: &Handle,
-    config: &crate::config::Configuration,
+    config: &librepaper_base::config::Configuration,
     document_id: Uuid,
     mode: crate::log::sequencer::SnapshotMode,
 ) -> Result<Option<u64>, String> {
@@ -461,7 +461,7 @@ pub struct Worker {
     catalog: Arc<PostgresCatalog>,
     blobs: Arc<dyn BlobStore>,
     sequencers: Arc<Registry>,
-    config: Arc<crate::config::Configuration>,
+    config: Arc<librepaper_base::config::Configuration>,
     rx: tokio::sync::mpsc::Receiver<Task>,
     handle: Handle,
     /// The bounded map of future work: a failure's backoff, a deletion's
@@ -484,7 +484,7 @@ impl Worker {
         catalog: Arc<PostgresCatalog>,
         blobs: Arc<dyn BlobStore>,
         sequencers: Arc<Registry>,
-        config: Arc<crate::config::Configuration>,
+        config: Arc<librepaper_base::config::Configuration>,
     ) -> (Self, Handle) {
         let (tx, rx) = tokio::sync::mpsc::channel(QUEUE);
         let handle = Handle {
@@ -1575,7 +1575,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let blobs: Arc<dyn BlobStore> =
             Arc::new(super::super::blob::FsStore::new(directory.path(), false));
-        let config = Arc::new(crate::config::Configuration::default());
+        let config = Arc::new(librepaper_base::config::Configuration::default());
         let registry = Registry::new(
             catalog.clone(),
             blobs.clone(),
@@ -1619,7 +1619,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let blobs: Arc<dyn BlobStore> =
             Arc::new(super::super::blob::FsStore::new(directory.path(), false));
-        let config = Arc::new(crate::config::Configuration::default());
+        let config = Arc::new(librepaper_base::config::Configuration::default());
         let registry = Registry::new(
             catalog.clone(),
             blobs.clone(),

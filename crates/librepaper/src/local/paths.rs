@@ -16,7 +16,7 @@ pub(crate) fn state_home() -> Result<PathBuf, String> {
 /// token cache and the local service's pairings live. A machine with no home
 /// directory cannot go on, so this exits with the reason.
 pub(crate) fn state_home_or_die() -> PathBuf {
-    state_home().unwrap_or_else(|error| crate::util::die(&error))
+    state_home().unwrap_or_else(|error| librepaper_base::util::die(&error))
 }
 
 /// Resolve the live installation path even when Linux reports the retained

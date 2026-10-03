@@ -85,7 +85,7 @@ impl Task {
     }
 
     pub(crate) fn frame(&self) -> Value {
-        json!({"type":"task","id":crate::util::new_id(),"seq":self.event_seq,"task_id":self.id,"status":self.status,"text":self.detail,
+        json!({"type":"task","id":librepaper_base::util::new_id(),"seq":self.event_seq,"task_id":self.id,"status":self.status,"text":self.detail,
             "context":{"results":self.results,"input":self.input}})
     }
 
@@ -200,7 +200,7 @@ impl Admission {
         let detail = snapshot.map_or("", |snapshot| snapshot.detail.as_str());
         let seq = snapshot.map_or(0, |snapshot| snapshot.event_seq);
         let results = snapshot.map_or(Value::Null, |snapshot| snapshot.results.clone());
-        json!({"type":"task","id":crate::util::new_id(),"seq":seq,"task_id":id,
+        json!({"type":"task","id":librepaper_base::util::new_id(),"seq":seq,"task_id":id,
             "status":status,"text":format!("{detail} (answer no longer retained)"),
             "context":{"results":results,"input":null,"answer_retained":false}})
     }
@@ -270,7 +270,7 @@ impl State {
 
     pub(crate) fn save(&self, path: &Path) -> Result<(), String> {
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
-        crate::private_files::publish(path, &bytes, "local task history")
+        librepaper_base::private_files::publish(path, &bytes, "local task history")
     }
 
     pub(crate) fn task(&self, id: &str) -> Option<&Task> {

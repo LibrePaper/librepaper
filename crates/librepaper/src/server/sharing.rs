@@ -93,7 +93,7 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
     if seconds <= 0 {
         return Err("an expiry is a duration such as 180d or 24h, or 'never'".to_string());
     }
-    Ok(crate::util::format_unix(crate::util::now_unix() + seconds))
+    Ok(librepaper_base::util::format_unix(librepaper_base::util::now_unix() + seconds))
 }
 
 /// The provider namespace of a catalog account identity.
@@ -139,7 +139,7 @@ pub fn hash_link_key(key: &str) -> String {
 /// which is what admits a caller, and a sealed copy of the key itself, which
 /// is what lets its owner be handed the URL again.
 pub fn mint_link_key() -> String {
-    hex::encode(crate::util::random_bytes(32))
+    hex::encode(librepaper_base::util::random_bytes(32))
 }
 
 /// The key that seals a link key, from the deployment's session key. A purpose
@@ -160,7 +160,7 @@ fn sealing_key(session_key: &[u8]) -> chacha20poly1305::Key {
 pub fn seal_link_key(session_key: &[u8], key: &str) -> Vec<u8> {
     use chacha20poly1305::aead::{Aead, KeyInit};
     let cipher = chacha20poly1305::XChaCha20Poly1305::new(&sealing_key(session_key));
-    let nonce = crate::util::random_bytes(24);
+    let nonce = librepaper_base::util::random_bytes(24);
     let Ok(sealed) = cipher.encrypt(chacha20poly1305::XNonce::from_slice(&nonce), key.as_bytes())
     else {
         return Vec::new();
@@ -200,8 +200,8 @@ impl Server {
             hash: hash_link_key(&key),
             role: Role::Reader.as_str().to_string(),
             sealed: seal_link_key(&self.key, &key),
-            since: crate::util::timestamp(),
-            until: crate::util::format_unix(crate::util::now_unix() + LINK_DEFAULT_SECONDS),
+            since: librepaper_base::util::timestamp(),
+            until: librepaper_base::util::format_unix(librepaper_base::util::now_unix() + LINK_DEFAULT_SECONDS),
             ..Default::default()
         };
         let actor = crate::storage::store::MutationActor {
@@ -329,7 +329,7 @@ impl Server {
                 hash: hash_link_key(&key),
                 role: role.as_str().to_string(),
                 sealed: seal_link_key(&self.key, &key),
-                since: crate::util::timestamp(),
+                since: librepaper_base::util::timestamp(),
                 until,
                 label: label.unwrap_or_default(),
                 budget: wanted.budget,
@@ -378,7 +378,7 @@ impl Server {
         }
 
         let revoke = asked.revoke.clone().unwrap_or_default();
-        let now = crate::util::now_unix();
+        let now = librepaper_base::util::now_unix();
         let mutation_actor = crate::storage::store::MutationActor {
             account_id: current_who.id.id.clone(),
             owner_key: current_who.key.clone(),
@@ -483,7 +483,7 @@ impl Server {
     /// deployment's switches will let the owner offer. Only the owner ever
     /// asks for this now, so nothing here is held back from the caller.
     pub(super) fn sharing_json(&self, entry: &IndexEntry) -> Value {
-        let now = crate::util::now_unix();
+        let now = librepaper_base::util::now_unix();
         // One row per role, or null where the document has never had one.
         // `url` is built exactly the way `handle_publish` builds a document's
         // own `url`: a path on this same origin, since that is what a dialog
@@ -802,10 +802,10 @@ mod link_expiry_tests {
 
     #[test]
     fn an_unset_expiry_defaults_to_seven_days() {
-        let before = crate::util::now_unix();
+        let before = librepaper_base::util::now_unix();
         let until = link_expiry("").expect("the default expiry is valid");
-        let after = crate::util::now_unix();
-        let until = crate::util::parse_timestamp(&until).expect("expiry is a timestamp");
+        let after = librepaper_base::util::now_unix();
+        let until = librepaper_base::util::parse_timestamp(&until).expect("expiry is a timestamp");
 
         assert!((before + 7 * 24 * 3600..=after + 7 * 24 * 3600).contains(&until));
     }

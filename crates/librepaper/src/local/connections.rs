@@ -22,7 +22,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use super::pairing::write_private_json;
-use crate::util::now_unix;
+use librepaper_base::util::now_unix;
 
 /// How long a connection survives without being resolved. A connection is
 /// renewed on every successful resolve, so an agent in daily use never

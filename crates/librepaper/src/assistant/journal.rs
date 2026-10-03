@@ -207,7 +207,7 @@ fn write_session_file(path: &Path, session: &RunnerSession) -> Result<(), String
         return Ok(());
     }
     let bytes = serde_json::to_vec(session).map_err(|error| error.to_string())?;
-    crate::private_files::publish(path, &bytes, "runner session")
+    librepaper_base::private_files::publish(path, &bytes, "runner session")
 }
 
 /// Set this runner's execution epoch, keeping the active task id it may
@@ -290,7 +290,7 @@ fn write(path: &Path, disk: &Disk) -> Result<(), String> {
     // serialises readers against writers; this is about what is on disk in
     // between. What it replaced wrote first and chmodded second, which left
     // the journal world-readable for the length of that window.
-    crate::private_files::publish(path, &bytes, "runner journal")
+    librepaper_base::private_files::publish(path, &bytes, "runner journal")
 }
 
 fn update<T>(path: &Path, f: impl FnOnce(&mut Disk) -> Result<T, String>) -> Result<T, String> {

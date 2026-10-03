@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use clap::Args;
 
-use crate::config::DeploymentPaths;
+use librepaper_base::config::DeploymentPaths;
 use crate::storage::blob::{BlobStore, ObjectBlobStore};
 
 #[derive(Clone, Debug)]

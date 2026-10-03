@@ -18,11 +18,11 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
 
-use crate::auth::{
+use librepaper_base::auth::{
     sign_device, sign_session, sign_visitor, GithubApp, Identity, Policy, PROVIDER_GITHUB,
     VISITOR_COOKIE,
 };
-use crate::config::Configuration;
+use librepaper_base::config::Configuration;
 use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
@@ -262,7 +262,7 @@ fn bearer(deployment: &Deployment) -> String {
 }
 
 fn bearer_for(identity: &Identity) -> String {
-    sign_device(&[0; 32], identity, crate::util::now_unix() + 3600)
+    sign_device(&[0; 32], identity, librepaper_base::util::now_unix() + 3600)
 }
 
 fn cookie(deployment: &Deployment) -> String {
@@ -270,7 +270,7 @@ fn cookie(deployment: &Deployment) -> String {
 }
 
 fn cookie_for(identity: &Identity) -> String {
-    let token = sign_session(&[0; 32], identity, crate::util::now_unix() + 3600);
+    let token = sign_session(&[0; 32], identity, librepaper_base::util::now_unix() + 3600);
     format!("__Host-librepaper_session={token}")
 }
 

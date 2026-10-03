@@ -11,7 +11,7 @@ pub use crate::document::projection::paths::{
     check, collision_key, kind_of, normalise, suffixed, Kind, Rules, MAX_SEGMENTS,
 };
 
-use crate::config::Configuration;
+use librepaper_base::config::Configuration;
 
 impl Configuration {
     pub fn paths(&self) -> Rules<'_> {

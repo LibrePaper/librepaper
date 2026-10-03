@@ -39,7 +39,7 @@ fn parent_of(target: &Path) -> &Path {
         .unwrap_or(Path::new("."))
 }
 
-pub(crate) fn publish(target: &Path, bytes: &[u8], what: &str) -> Result<(), String> {
+pub fn publish(target: &Path, bytes: &[u8], what: &str) -> Result<(), String> {
     let parent = parent_of(target);
     fs::create_dir_all(parent)
         .map_err(|error| format!("could not create {what} directory: {error}"))?;

@@ -17,7 +17,7 @@ pub(super) fn now() -> i64 {
 }
 fn token_matches(stored: &str, token: &str) -> bool {
     let hash = crate::storage::store::digest_of(token);
-    !token.is_empty() && crate::util::constant_time_eq(stored.as_bytes(), hash.as_bytes())
+    !token.is_empty() && librepaper_base::util::constant_time_eq(stored.as_bytes(), hash.as_bytes())
 }
 
 #[derive(Default)]

@@ -14,7 +14,7 @@ use crate::local::pairing::{PairingStore, ServiceState};
 use crate::local::paths::state_home_or_die as state_home;
 use crate::local::protocol::{self, DEFAULT_PORT};
 use crate::local::service::{LocalService, NativeRunner, Runner};
-use crate::util::die;
+use librepaper_base::util::die;
 
 /// Shared options for the default launch and explicit `start` aliases.
 #[derive(Args, Clone, Debug, Default)]
@@ -205,12 +205,12 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     // loopback service works fine on IPv4 alone when it is.
     let listener_v6 = TcpListener::bind(("::1", port)).await.ok();
 
-    let instance = hex::encode(crate::util::random_bytes(8));
+    let instance = hex::encode(librepaper_base::util::random_bytes(8));
     let state = ServiceState {
         port,
         instance: instance.clone(),
         pid: std::process::id(),
-        started: crate::util::now_unix(),
+        started: librepaper_base::util::now_unix(),
     };
     if let Err(err) = pairing.write_service(&state) {
         die(format!("could not write service.json: {err}"));

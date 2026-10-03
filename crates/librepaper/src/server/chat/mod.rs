@@ -59,8 +59,8 @@ impl Server {
         };
         let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
         let link_expires = entry
-            .live_link(&who.link, crate::util::now_unix())
-            .and_then(|link| crate::util::parse_timestamp(&link.until));
+            .live_link(&who.link, librepaper_base::util::now_unix())
+            .and_then(|link| librepaper_base::util::parse_timestamp(&link.until));
         let connection = Connection {
             slug: slug.into(),
             network: client_network(&address),
@@ -123,7 +123,7 @@ impl Server {
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
         let _socket_permit = match self.socket_budget.admit(
             socket_id,
-            crate::config::socket_budget::SocketIdentity {
+            librepaper_base::config::socket_budget::SocketIdentity {
                 network: connection.network.clone(),
                 principal: connection.principal.clone(),
                 document: slug.clone(),
@@ -218,7 +218,7 @@ impl Server {
                     // its own link expiring on the same ticker that already
                     // checks idleness and drives the ping, rather than a
                     // second timer just for this.
-                    if link_expires.is_some_and(|until| until <= crate::util::now_unix()) {
+                    if link_expires.is_some_and(|until| until <= librepaper_base::util::now_unix()) {
                         break;
                     }
                     if last_ping.elapsed() >= Duration::from_secs(10) {

@@ -252,7 +252,7 @@ impl Drop for Reservation {
     }
 }
 
-pub use crate::config::budget::{driver_scratch_for, scratch_for, SCRATCH_SLACK};
+pub use librepaper_base::config::budget::{driver_scratch_for, scratch_for, SCRATCH_SLACK};
 
 impl std::fmt::Debug for Reservation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

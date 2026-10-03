@@ -41,7 +41,7 @@ use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::config::Configuration;
+use librepaper_base::config::Configuration;
 use crate::document::session;
 use crate::log::sequencer::{
     Command as SequencerCommand, CommandError, Evidence, Head, PreparedSource, Rung,
@@ -50,7 +50,7 @@ use crate::storage::postgres::{
     self, AnnotationRecord, AnnotationState, MutationAuthorization, NewAnnotation, NewLabel,
     NewProposal, NewReply, PostgresCatalog, ReplyRecord,
 };
-use crate::util::clean;
+use librepaper_base::util::clean;
 
 use super::locate::{self, Quote};
 use super::{Room, WriteError};
@@ -368,7 +368,7 @@ fn motivation_of(kind: &str) -> String {
 }
 
 fn format_time(value: time::OffsetDateTime) -> String {
-    crate::util::format_unix(value.unix_timestamp())
+    librepaper_base::util::format_unix(value.unix_timestamp())
 }
 
 /// The text paired with a stable file id. Paths label files, but two supported

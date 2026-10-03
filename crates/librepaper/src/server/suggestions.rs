@@ -295,7 +295,7 @@ impl Server {
             &who,
             self.ceiling_for(&who.id),
             &link_hash,
-            crate::util::now_unix(),
+            librepaper_base::util::now_unix(),
         ) else {
             return no_such_document();
         };
@@ -325,7 +325,7 @@ mod capability_tests {
 
     #[test]
     fn browser_capability_probe_uses_selected_link_without_agent_bearer() {
-        let now = crate::util::now_unix();
+        let now = librepaper_base::util::now_unix();
         let entry = IndexEntry {
             slug: "paper".into(),
             publisher: "owner".into(),
@@ -340,7 +340,7 @@ mod capability_tests {
         let owner = Identity {
             id: "github:owner".into(),
             handle: "owner".into(),
-            provider: crate::auth::PROVIDER_GITHUB.into(),
+            provider: librepaper_base::auth::PROVIDER_GITHUB.into(),
             session_generation: "generation".into(),
             ..Default::default()
         };

@@ -53,7 +53,7 @@ impl OperationKey {
                 "operation.epoch is missing or malformed: copy operation_epoch verbatim from your most recent document_read response".into(),
             ));
         }
-        let id_ok = crate::util::request_key_timestamp(&self.id).is_some()
+        let id_ok = librepaper_base::util::request_key_timestamp(&self.id).is_some()
             && self.id.len() <= MAX_OPERATION_ID
             && self.id.is_ascii()
             && !self.id.chars().any(|c| c.is_ascii_control());
@@ -71,7 +71,7 @@ impl OperationKey {
         let mut binding = b"librepaper-agent-batch-child-v2\0".to_vec();
         binding.extend_from_slice(self.scoped_request_id(scope).as_bytes());
         binding.extend_from_slice(&(index as u64).to_be_bytes());
-        let issued = crate::util::request_key_timestamp(&self.id).unwrap_or(0);
+        let issued = librepaper_base::util::request_key_timestamp(&self.id).unwrap_or(0);
         Self {
             epoch: self.epoch.clone(),
             id: format!(
@@ -92,7 +92,7 @@ impl OperationKey {
         binding.extend_from_slice(self.epoch.as_bytes());
         binding.push(0);
         binding.extend_from_slice(self.id.as_bytes());
-        let issued = crate::util::request_key_timestamp(&self.id).unwrap_or(0);
+        let issued = librepaper_base::util::request_key_timestamp(&self.id).unwrap_or(0);
         format!(
             "v2.{issued}.{}",
             &hex::encode(Sha256::digest(binding))[..32]
@@ -755,7 +755,7 @@ mod tests {
         PatchRequest {
             operation: OperationKey {
                 epoch: "epoch-1".into(),
-                id: crate::util::new_request_key(),
+                id: librepaper_base::util::new_request_key(),
             },
             base_tree: base.revision.clone(),
             consistency: Consistency::ExactTree,

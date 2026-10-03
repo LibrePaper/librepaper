@@ -51,7 +51,7 @@ impl Transport {
         token: String,
         binding_nonce: String,
     ) -> Self {
-        crate::tls::ensure_crypto_provider();
+        librepaper_base::tls::ensure_crypto_provider();
         let (outgoing, mut output) = mpsc::channel::<Value>(128);
         let (input, incoming) = mpsc::channel::<Event>(128);
         let task = tokio::spawn(async move {
@@ -275,8 +275,8 @@ mod tests {
             .unwrap();
         let installed = rustls::crypto::CryptoProvider::get_default().unwrap();
 
-        crate::tls::ensure_crypto_provider();
-        crate::tls::ensure_crypto_provider();
+        librepaper_base::tls::ensure_crypto_provider();
+        librepaper_base::tls::ensure_crypto_provider();
 
         let after = rustls::crypto::CryptoProvider::get_default().unwrap();
         assert!(std::sync::Arc::ptr_eq(installed, after));

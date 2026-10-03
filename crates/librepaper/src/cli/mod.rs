@@ -9,11 +9,11 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
-use crate::config::Configuration;
-use crate::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
+use librepaper_base::config::Configuration;
+use librepaper_base::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use crate::local::cli::{LaunchArgs, LocalAgentCommand, LocalArgs, LocalCommand};
 use crate::storage::StorageFlags;
-use crate::util::die;
+use librepaper_base::util::die;
 
 mod agent;
 
@@ -161,7 +161,7 @@ pub(crate) struct ServiceFlags {
         long,
         env = "LIBREPAPER_ASSET_MIRROR",
         value_name = "URL",
-        default_value = crate::config::DEFAULT_ASSET_MIRROR
+        default_value = librepaper_base::config::DEFAULT_ASSET_MIRROR
     )]
     asset_mirror: String,
     /// Serve the font files in this directory to typst documents that name a
@@ -266,7 +266,7 @@ struct AdvancedConfigFile {
     /// checked at startup.
     memory_budget_mb: Option<u64>,
     #[serde(default)]
-    backup: crate::config::BackupPolicyOverrides,
+    backup: librepaper_base::config::BackupPolicyOverrides,
 }
 
 // The nested `AdminCommand::Serve` flags determine this enum's size too; clap

@@ -20,29 +20,20 @@
 // test target; integration binaries do not consume them in that target.
 
 mod assistant;
-mod auth;
 mod automation;
 mod cli;
-// `config` and `log` are the two modules whose names a narrowing facade
-// cannot take: a crate root holds one item per name, and these two live
-// directly in it rather than nested, so `pub mod config { ... }` beside
-// `mod config;` is simply a redefinition. Renaming the real ones would move
-// about two hundred `crate::log::` paths for no behavioural gain, so they
-// stay whole -- and the dead re-exports a narrowing pass exposed inside them
-// have been removed by hand instead.
+// The configuration lives in librepaper-base; the path stays as consumers
+// spell it.
+pub use librepaper_base::config;
 pub mod config;
 mod document;
-mod http;
 mod local;
 pub mod log;
-mod private_files;
 mod quarto;
 mod results;
 mod room;
 mod server;
 mod storage;
-mod tls;
-mod util;
 
 pub use cli::main;
 // The headless automation peer, for the integration tests in `tests/`.
@@ -154,7 +145,7 @@ pub mod outgoing {
 // rest of what it takes to stand one up and drive it the way a browser or
 // the sharing route actually does: a running `Server` behind a real socket,
 // authenticated the same way a signed-in owner and a share-link guest are.
-pub use auth::{
+pub use librepaper_base::auth::{
     sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB, SESSION_COOKIE,
 };
 pub use librepaper_shell::ShellFile;
@@ -162,7 +153,7 @@ pub use room::{Room, Rooms};
 pub use server::Server;
 pub use storage::blob::{BlobStore, FsStore};
 pub use storage::store::Store;
-pub use util::now_unix;
+pub use librepaper_base::util::now_unix;
 
 #[cfg(test)]
 mod tests;
