@@ -45,6 +45,8 @@ librepaper login      # prints code and URL to sign in (valid 90 days)
 librepaper logout     # remove the cached token from this computer
 ```
 
+Tokens copied elsewhere remain usable until they expire or are separately revoked; removing the local cached token does not revoke them.
+
 ## List
 
 ```sh
