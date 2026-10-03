@@ -17,18 +17,18 @@
 use axum::body::Body;
 use axum::http::Request;
 use serde_json::json;
-use uuid::Uuid;
-
+use crate::document::store::DocumentInput;
 use crate::server::origins::Origins;
 use crate::storage::postgres::Authority;
 
-use super::Server;
+use super::http_test_support::{deployment as http_deployment, owner_bearer};
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";
 const EDITED: &str = "# Interval estimates\n\nThe *interval* has been rewritten entirely.\n\nA second paragraph, for company.\n";
+
 async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> {
-    super::http_test_support::deployment(
-        crate::document::store::DocumentInput {
+    http_deployment(
+        DocumentInput {
             slug: slug.into(),
             title: "A Paper".into(),
             source: PAPER.into(),
@@ -41,9 +41,6 @@ async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> 
     )
     .await
 }
-
-
-use super::http_test_support::owner_bearer;
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
