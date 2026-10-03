@@ -98,7 +98,7 @@
     /* Let the two groups share the narrow bar. Keeping both at their
        intrinsic width can make the document itself wider than the phone once
        a page adds its own view and status controls. */
-    .nav-actions { gap: 0; flex-shrink: 1; min-width: 0; }
+    .nav-actions { gap: var(--spacing); flex-shrink: 1; min-width: 0; }
     .reader-nav .nav-actions { gap: var(--spacing); flex-shrink: 0; }
     .nav-identity { gap: var(--spacing); flex-shrink: 1; min-width: 0; }
     .nav-trail { display: none; }

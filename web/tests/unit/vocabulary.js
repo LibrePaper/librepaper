@@ -73,7 +73,9 @@ for (const path of files(SRC)) {
     // 3. A control is a component. Skeleton's button classes belong in the
     //    components that wrap them, so a page cannot invent a fourth kind of
     //    button that is almost like the other three.
-    if (/class="[^"]*\bbtn-icon\b/.test(code) && !/components\/(IconButton|Toasts)\.svelte$/.test(name)) {
+    // Menu.Trigger must own menu semantics while this wrapper supplies the
+    // application's icon-button vocabulary.
+    if (/class="[^"]*\bbtn-icon\b/.test(code) && !/components\/(IconButton|MenuIconButton|Toasts)\.svelte$/.test(name)) {
       complain(name, at, "an icon button drawn by hand; use <IconButton>", line);
     }
   });

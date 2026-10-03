@@ -1,4 +1,5 @@
 <script>
+  import { Menu } from "@skeletonlabs/skeleton-svelte";
   // The landing page, which for anyone signed in is not a landing page at all
   // but the other half of the workspace.
   //
@@ -18,6 +19,7 @@
   import DataTable from "./DataTable.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
+  import MenuIconButton from "./MenuIconButton.svelte";
   import Modal from "./Modal.svelte";
   import Hero from "./Hero.svelte";
   import Toasts from "./Toasts.svelte";
@@ -25,6 +27,7 @@
   import Page from "./layout/Page.svelte";
   import Stack from "./layout/Stack.svelte";
   import Row from "./layout/Row.svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
   import { say } from "../lib/toast.svelte.js";
   import { SHELL_HEADERS, get, me as whoami, upload } from "../lib/api.js";
   import { day as isoDay, since } from "../lib/dates.js";
@@ -125,11 +128,11 @@
     list.push({
       key: "actions",
       label: "",
-      // A phone still has every row action, arranged in a compact two-by-two
-      // group rather than taking the title's entire line.
-      width: narrow ? 76 : trash ? 88 : 150,
+      // A narrow row has one trigger; its actions live in the menu.
+      width: narrow ? 48 : trash ? 88 : 150,
       resizable: false,
       align: "right",
+      class: "col-actions",
     });
     return list;
   });
@@ -599,6 +602,19 @@
     copyError = "";
   }
 
+  // Skeleton closes the portalled menu on selection. Let that finish before
+  // opening a focus-trapping dialog so focus does not race the new modal.
+  function compactProjectAction(action, doc) {
+    setTimeout(() => {
+      if (action === "rename") askRename(doc);
+      else if (action === "fork") askFork(doc);
+      else if (action === "favorite") void star(doc);
+      else if (action === "trash") askDelete(doc);
+      else if (action === "restore") void restore(doc);
+      else if (action === "purge") askPurge([doc]);
+    }, 0);
+  }
+
   async function fork(event) {
     event.preventDefault();
     const doc = copying;
@@ -867,13 +883,8 @@
                   {found(doc, needle).path}
                 </a>
               {/if}
-              {#if place === "trash" && doc.purge_due}
+              {#if place === "trash" && doc.purge_due && !narrow}
                 <span>Deleted for good {since(doc.purge_due)}</span>
-              {/if}
-              {#if narrow}
-                <span class="mobile-updated" title={isoDay(place === "recent" ? doc.opened_at : doc.updated_at)}>
-                  {since(place === "recent" ? doc.opened_at : doc.updated_at)}
-                </span>
               {/if}
             </span>
           {:else if column.key === "owner"}
@@ -893,7 +904,43 @@
               {since(place === "recent" ? doc.opened_at : doc.updated_at)}
             </span>
           {:else if column.key === "actions"}
-            {#if place === "trash"}
+            {#if narrow}
+              <Menu
+                onSelect={(chosen) => compactProjectAction(chosen.value, doc)}
+                positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}
+              >
+                <MenuIconButton icon="more-horizontal" label={`Actions for ${doc.title}`}
+                                projectSlug={doc.slug} class="project-actions-trigger" />
+                <ExplorerMenu>
+                  {#if place === "trash"}
+                    <Menu.Item value="restore" class="menuitem project-action-item" data-project-action="restore">
+                      <Icon name="undo-2" size="1rem" /><span class="menuitem-label">Put back</span>
+                    </Menu.Item>
+                    <Menu.Item value="purge" class="menuitem project-action-item" data-project-action="purge">
+                      <Icon name="trash" size="1rem" /><span class="menuitem-label">Delete for good</span>
+                    </Menu.Item>
+                  {:else}
+                    {#if mine(doc)}
+                      <Menu.Item value="rename" class="menuitem project-action-item" data-project-action="rename">
+                        <Icon name="pencil" size="1rem" /><span class="menuitem-label">Rename</span>
+                      </Menu.Item>
+                    {/if}
+                    <Menu.Item value="fork" class="menuitem project-action-item" data-project-action="fork" disabled={forking === doc.slug}>
+                      <Icon name="git-fork" size="1rem" /><span class="menuitem-label">Fork</span>
+                    </Menu.Item>
+                    <Menu.Item value="favorite" class="menuitem project-action-item" data-project-action="favorite">
+                      <Icon name="star" size="1rem" filled={doc.favorite} />
+                      <span class="menuitem-label">{doc.favorite ? "Remove from favorites" : "Add to favorites"}</span>
+                    </Menu.Item>
+                    {#if mine(doc)}
+                      <Menu.Item value="trash" class="menuitem project-action-item" data-project-action="trash">
+                        <Icon name="trash" size="1rem" /><span class="menuitem-label">Move to trash</span>
+                      </Menu.Item>
+                    {/if}
+                  {/if}
+                </ExplorerMenu>
+              </Menu>
+            {:else if place === "trash"}
               <span class="trash-actions">
                 <!-- The tooltip says the action; the accessible name says the
                      action and which project, because a row of identical
@@ -1118,15 +1165,17 @@
   .owner-name { font-size: var(--text-sm); }
   .trash-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing)); }
   .project-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing)); }
+  :global(.project-actions-trigger) { display: inline-flex; width: 2.75rem; height: 2.75rem; align-items: center; justify-content: center; padding: 0; font-size: 1.5rem; line-height: 1; }
+  :global(.project-action-item) { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
 
   /* The metadata columns a phone has no room for: the listing is read there
-     to find a project, and neither how many files it has nor who owns it is
-     how anyone finds one. The day moves beneath the title at this width, where
-     it distinguishes rows without taking a fixed table column. */
+     to find a project, and neither how many files it has, who owns it, nor
+     when it changed belongs in the compact row. */
   @media (max-width: 760px) {
     .compact-sort { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
     .compact-sort label { font-size: var(--text-sm); font-weight: 600; }
     .compact-sort select { width: auto; min-width: 0; max-width: 100%; }
+    :global(.projects-table td.col-actions) { padding-inline: 0; padding-block: var(--spacing); overflow: visible; }
     /* The landing rail is navigation, not the Reader's collapsible panel.
        Put its five destinations in a compact row below the list, while the
        list keeps the remaining workspace height and its own vertical scroll. */
@@ -1142,10 +1191,7 @@
     .nav-new { width: 2rem; padding-inline: 0; }
     .nav-new-label { display: none; }
 
-    /* Keep every action, but use a two-by-two group so project titles still
-       receive a useful share of a phone-width row. The time moves beneath the
-       title, preserving the information without another fixed column. */
-    .project-actions { display: inline-grid; grid-template-columns: repeat(2, 2rem); gap: calc(var(--spacing)); }
-    :global(.projects-table .mobile-updated) { display: inline; }
+    /* One 44px menu trigger keeps the action column small and the title row
+       free of duplicate metadata. */
   }
 </style>
