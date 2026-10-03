@@ -17,11 +17,7 @@ pub(super) fn now() -> i64 {
 }
 fn token_matches(stored: &str, token: &str) -> bool {
     let hash = crate::document::store::digest_of(token);
-    let difference = stored
-        .bytes()
-        .zip(hash.bytes())
-        .fold(0u8, |diff, (a, b)| diff | (a ^ b));
-    !token.is_empty() && stored.len() == hash.len() && difference == 0
+    !token.is_empty() && crate::util::constant_time_eq(stored.as_bytes(), hash.as_bytes())
 }
 
 #[derive(Default)]
