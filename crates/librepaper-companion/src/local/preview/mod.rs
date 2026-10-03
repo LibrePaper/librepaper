@@ -401,20 +401,50 @@ where
     const MAX_LINE_SIZE: usize = 64 * 1024;
 
     loop {
-        line_buf.clear();
-        match buf_reader.read_until(b'\n', &mut line_buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {
-                if line_buf.len() > MAX_LINE_SIZE {
-                    line_buf.truncate(MAX_LINE_SIZE);
+        match buf_reader.fill_buf().await {
+            Ok(buf) if buf.is_empty() => {
+                if !line_buf.is_empty() {
+                    let line_str = String::from_utf8_lossy(&line_buf);
+                    {
+                        let mut guard = watch.log.lock().await;
+                        append_bounded(&mut guard, &line_str, PREVIEW_LOG_CAP_BYTES);
+                    }
+                    let trimmed = line_str.trim_end_matches(['\r', '\n']);
+                    process_log_line(&watch, trimmed).await;
                 }
-                let line_str = String::from_utf8_lossy(&line_buf);
-                {
-                    let mut guard = watch.log.lock().await;
-                    append_bounded(&mut guard, &line_str, PREVIEW_LOG_CAP_BYTES);
+                break;
+            }
+            Err(_) => break,
+            Ok(buf) => {
+                if let Some(newline_pos) = buf.iter().position(|&b| b == b'\n') {
+                    let to_append = &buf[..=newline_pos];
+                    if line_buf.len() + to_append.len() <= MAX_LINE_SIZE {
+                        line_buf.extend_from_slice(to_append);
+                    } else if line_buf.len() < MAX_LINE_SIZE {
+                        let available = MAX_LINE_SIZE - line_buf.len();
+                        line_buf.extend_from_slice(&to_append[..available]);
+                    }
+                    buf_reader.consume(newline_pos + 1);
+                    let line_str = String::from_utf8_lossy(&line_buf);
+                    {
+                        let mut guard = watch.log.lock().await;
+                        append_bounded(&mut guard, &line_str, PREVIEW_LOG_CAP_BYTES);
+                    }
+                    let trimmed = line_str.trim_end_matches(['\r', '\n']);
+                    process_log_line(&watch, trimmed).await;
+                    line_buf.clear();
+                } else {
+                    if line_buf.len() < MAX_LINE_SIZE {
+                        let available = MAX_LINE_SIZE - line_buf.len();
+                        let to_append = if buf.len() <= available {
+                            buf
+                        } else {
+                            &buf[..available]
+                        };
+                        line_buf.extend_from_slice(to_append);
+                    }
+                    buf_reader.consume(buf.len());
                 }
-                let trimmed = line_str.trim_end_matches(['\r', '\n']);
-                process_log_line(&watch, trimmed).await;
             }
         }
     }
@@ -578,5 +608,55 @@ impl Previews {
         for id in expired {
             self.stop(&id).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    struct MockWatch;
+
+    impl Watch for MockWatch {
+        fn rendering_started(&self, _line: &str) -> bool {
+            false
+        }
+        fn render_finished(&self, _line: &str) -> bool {
+            false
+        }
+        fn output_path(&self, _root: &Path) -> Option<PathBuf> {
+            None
+        }
+        fn kind(&self) -> ArtifactKind {
+            ArtifactKind::Html
+        }
+    }
+
+    #[tokio::test]
+    async fn pump_bounds_memory_with_long_unterminated_line() {
+        let log = Arc::new(AsyncMutex::new(String::new()));
+        let watch = Arc::new(SessionWatch {
+            root: PathBuf::from("/tmp"),
+            entrypoint: "test.html".to_string(),
+            adapter: Box::new(MockWatch),
+            log: log.clone(),
+            latest: Arc::new(AsyncMutex::new(None)),
+            rendering: Arc::new(AtomicBool::new(false)),
+        });
+
+        let long_line = "x".repeat(200 * 1024);
+        let input = format!("{}ok\n", long_line);
+        let cursor = Cursor::new(input.as_bytes().to_vec());
+
+        pump(cursor, watch).await;
+
+        let final_log = log.lock().await.clone();
+        assert!(final_log.contains("ok"), "Expected 'ok' to be in the log");
+        assert!(
+            final_log.len() <= 200 * 1024 + 1024,
+            "Log size should be bounded; got {}",
+            final_log.len()
+        );
     }
 }
