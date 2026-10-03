@@ -10,149 +10,37 @@
 //! Needs `LIBREPAPER_TEST_POSTGRES_URL` and is skipped without it, like the
 //! rest of the catalogue coverage.
 
-use std::sync::Arc;
-
 use axum::body::Body;
-use axum::http::{HeaderMap, HeaderValue, Request};
+use axum::http::Request;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
-use crate::config::Configuration;
-use crate::document::store::{DocumentInput, MutationActor, Store};
-use crate::log::Registry;
-use crate::room::Rooms;
+use crate::document::store::{DocumentInput, MutationActor};
 use crate::server::origins::Origins;
-use crate::storage::blob::FsStore;
-use crate::storage::postgres::{Authority, NewAccount, NewProposal, PostgresCatalog};
+use crate::storage::postgres::{Authority, NewProposal};
 
-use super::Server;
+use super::http_test_support::{deployment as http_deployment, owner_bearer};
 
 const PAPER: &str = "# Figure test\n\nA document with figures.\n";
 const FIGURE_A: &[u8] = b"figure A bytes";
 const FIGURE_B: &[u8] = b"figure B bytes";
 const FIGURE_C: &[u8] = b"figure C bytes";
 
-struct Deployment {
-    server: Server,
-    catalog: Arc<PostgresCatalog>,
-    slug: String,
-    owner_id: Uuid,
-    owner_session_generation: String,
-    _writer: crate::storage::postgres::WriterLease,
-    _objects: tempfile::TempDir,
-}
-
-async fn deployment(slug: &str) -> Option<Deployment> {
-    let catalog = crate::tests::catalog().await?;
-    let writer = catalog.claim_writer().await.unwrap();
-    let owner = catalog
-        .create_account(NewAccount {
-            kind: "registered".into(),
-            provider: Some("test".into()),
-            provider_subject: Some("owner".into()),
-            handle: "owner".into(),
-            display_name: "Owner".into(),
-            email: None,
-        })
-        .await
-        .unwrap();
-    let objects = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
-        Arc::new(FsStore::new(objects.path(), false));
-    let config = Arc::new(Configuration::default());
-    let registry = Registry::new(
-        catalog.clone(),
-        blobs.clone(),
-        config.clone(),
-        "deployment".into(),
-    );
-    let rooms = Rooms::new(
-        catalog.clone(),
-        blobs.clone(),
-        config.clone(),
-        registry.clone(),
-    );
-    let (worker, background) = crate::storage::worker::Worker::new(
-        catalog.clone(),
-        blobs.clone(),
-        registry.clone(),
-        config.clone(),
-    );
-    tokio::spawn(worker.run());
-    let store = Store::open_with_catalog(
-        blobs.clone(),
-        config.clone(),
-        catalog.clone(),
-        registry.clone(),
-    );
-    let actor = MutationActor {
-        account_id: owner.id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: owner.session_generation.to_string(),
-        link_hash: String::new(),
-        policy_editor: true,
-        policy_comment: true,
-        automation: false,
-        unowned_publisher: false,
-    };
-    store
-        .put_directory_as_actor(
-            DocumentInput {
-                slug: slug.into(),
-                title: "Figure Test".into(),
-                source: PAPER.into(),
-                source_format: "markdown".into(),
-                main: "paper.md".into(),
-            },
-            vec![("figure-a.png".into(), FIGURE_A.to_vec())],
-            actor,
-        )
-        .await
-        .unwrap();
-    let app = GithubApp {
-        client_id: "test-client".into(),
-        ..GithubApp::default()
-    };
-    let server = Server::new(
-        store,
-        rooms,
-        background,
-        std::collections::HashMap::new(),
-        app,
-        vec![0u8; 32],
-        config.clone(),
-        Policy::parse_publishers("owner").unwrap(),
-        Policy::parse(""),
-    );
-    Some(Deployment {
-        server,
-        catalog,
-        slug: slug.into(),
-        owner_id: owner.id,
-        owner_session_generation: owner.session_generation.to_string(),
-        _writer: writer,
-        _objects: objects,
-    })
-}
-
-fn owner_bearer(deployment: &Deployment) -> HeaderMap {
-    let identity = Identity {
-        provider: PROVIDER_GITHUB.into(),
-        id: deployment.owner_id.to_string(),
-        handle: "owner".into(),
-        name: "Owner".into(),
-        picture: String::new(),
-        session_generation: deployment.owner_session_generation.clone(),
-    };
-    let token = sign_device(&[0u8; 32], &identity, crate::util::now_unix() + 3600);
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "authorization",
-        HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-    );
-    headers
+async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> {
+    http_deployment(
+        DocumentInput {
+            slug: slug.into(),
+            title: "Figure Test".into(),
+            source: PAPER.into(),
+            source_format: "markdown".into(),
+            main: "paper.md".into(),
+        },
+        vec![("figure-a.png".into(), FIGURE_A.to_vec())],
+        "owner",
+        "",
+    )
+    .await
 }
 
 #[tokio::test]

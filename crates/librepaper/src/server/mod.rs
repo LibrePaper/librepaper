@@ -59,6 +59,8 @@ mod history;
 mod history_frontier_tests;
 mod host_metrics;
 #[cfg(test)]
+mod http_test_support;
+#[cfg(test)]
 mod isolation_http_tests;
 pub(crate) mod mcp;
 mod metrics;
