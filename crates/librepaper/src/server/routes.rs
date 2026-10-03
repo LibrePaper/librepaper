@@ -375,7 +375,13 @@ async fn shared_hidden(
     let hidden = request.method() != Method::POST;
     let query = request.uri().query().map(str::to_string);
     server
-        .handle_shared_hidden(request.headers(), &ctx.arrival, &slug, query.as_deref(), hidden)
+        .handle_shared_hidden(
+            request.headers(),
+            &ctx.arrival,
+            &slug,
+            query.as_deref(),
+            hidden,
+        )
         .await
 }
 
@@ -1317,7 +1323,8 @@ impl Server {
             .iter()
             .map(|entry| {
                 let mut row = self.listing_row(entry, &who);
-                let (favorite, opened, shared_hidden) = marks.get(&entry.slug).cloned().unwrap_or_default();
+                let (favorite, opened, shared_hidden) =
+                    marks.get(&entry.slug).cloned().unwrap_or_default();
                 row["favorite"] = json!(favorite);
                 row["opened_at"] = json!(opened);
                 row["shared_hidden"] = json!(shared_hidden);

@@ -16,7 +16,7 @@ use super::{Error, PostgresCatalog, Result};
 #[path = "listing_regression_tests.rs"]
 mod listing_regression_tests;
 
-#[derive(Clone, Debug, sqlx::FromRow)]
+#[derive(Clone, Debug)]
 pub struct MarkRecord {
     pub document_id: Uuid,
     pub favorited_at: Option<OffsetDateTime>,
@@ -68,19 +68,20 @@ impl PostgresCatalog {
         )
         .fetch_optional(&mut *tx)
         .await?;
-        sqlx::query(
+        sqlx::query!(
             "DELETE FROM document_marks
              WHERE account_id=$1 AND document_id=$2
                AND favorited_at IS NOT NULL AND opened_at IS NULL
                AND NOT shared_hidden",
+            account_id,
+            document_id,
         )
-        .bind(account_id)
-        .bind(document_id)
         .execute(&mut *tx)
         .await?;
         sqlx::query!(
             "UPDATE document_marks SET favorited_at=NULL
-             WHERE account_id=$1 AND document_id=$2 AND opened_at IS NOT NULL",
+             WHERE account_id=$1 AND document_id=$2
+               AND (opened_at IS NOT NULL OR shared_hidden)",
             account_id,
             document_id,
         )
@@ -99,42 +100,43 @@ impl PostgresCatalog {
         hidden: bool,
     ) -> Result<bool> {
         if hidden {
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO document_marks(account_id,document_id,shared_hidden)
                  VALUES($1,$2,true)
                  ON CONFLICT(account_id,document_id) DO UPDATE SET shared_hidden=true",
+                account_id,
+                document_id,
             )
-            .bind(account_id)
-            .bind(document_id)
             .execute(&self.pool)
             .await?;
             return Ok(true);
         }
 
         let mut tx = self.begin_metered().await?;
-        let _ = sqlx::query(
+        let _ = sqlx::query!(
             "SELECT account_id FROM document_marks
              WHERE account_id=$1 AND document_id=$2 FOR UPDATE",
+            account_id,
+            document_id,
         )
-        .bind(account_id)
-        .bind(document_id)
         .fetch_optional(&mut *tx)
         .await?;
-        sqlx::query(
-            "UPDATE document_marks SET shared_hidden=false
-             WHERE account_id=$1 AND document_id=$2",
+        sqlx::query!(
+            "DELETE FROM document_marks
+             WHERE account_id=$1 AND document_id=$2 AND shared_hidden
+               AND favorited_at IS NULL AND opened_at IS NULL",
+            account_id,
+            document_id,
         )
-        .bind(account_id)
-        .bind(document_id)
         .execute(&mut *tx)
         .await?;
-        sqlx::query(
-            "DELETE FROM document_marks
-             WHERE account_id=$1 AND document_id=$2
-               AND favorited_at IS NULL AND opened_at IS NULL AND NOT shared_hidden",
+        sqlx::query!(
+            "UPDATE document_marks SET shared_hidden=false
+             WHERE account_id=$1 AND document_id=$2 AND shared_hidden
+               AND (favorited_at IS NOT NULL OR opened_at IS NOT NULL)",
+            account_id,
+            document_id,
         )
-        .bind(account_id)
-        .bind(document_id)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -169,12 +171,13 @@ impl PostgresCatalog {
         if document_ids.is_empty() {
             return Ok(Vec::new());
         }
-        sqlx::query_as::<_, MarkRecord>(
+        sqlx::query_as!(
+            MarkRecord,
             "SELECT document_id,favorited_at,opened_at,shared_hidden FROM document_marks
              WHERE account_id=$1 AND document_id=ANY($2)",
+            account_id,
+            document_ids,
         )
-        .bind(account_id)
-        .bind(document_ids)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
