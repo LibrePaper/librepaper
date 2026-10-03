@@ -96,14 +96,12 @@
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Typst and Calepin</h4></div>
-            <BuildSettings format="typst" {userId} onpreferences={onbuildpreferences} />
             <IntegrationSettings name="calepin" />
           </section>
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Markdown and Quarto</h4></div>
             <BuildSettings format="markdown" {userId} onpreferences={onbuildpreferences} />
-            <BuildSettings format="quarto" {userId} onpreferences={onbuildpreferences} />
             <IntegrationSettings name="quarto" />
             <RenderingSettings {userId} {onquartooptions} />
           </section>
