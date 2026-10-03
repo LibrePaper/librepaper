@@ -1422,9 +1422,7 @@ impl Server {
             Ok(generation) => generation,
             Err(_) => return write_json(401, &json!({"error": "invalid account session"})),
         };
-        let mut template_operation = if let (Some(request_id), Some(source_id)) =
-            (template_request_id, template_source_id)
-        {
+        let mut template_operation = if let Some(request_id) = template_request_id {
             match self
                 .store
                 .catalog

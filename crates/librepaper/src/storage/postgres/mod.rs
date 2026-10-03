@@ -39,7 +39,6 @@ pub use ownership::WriterLease;
 pub use proposals::{NewProposal, StoredDecision, StoredProposal, StoredProposalOutcome};
 pub use repository::{
     AccountRecord, AssetRecord, DocumentRecord, DocumentStorage, NewAccount, NewAsset, NewDocument,
-    TemplateOperation,
 };
 
 static MIGRATOR: sqlx::migrate::Migrator =
