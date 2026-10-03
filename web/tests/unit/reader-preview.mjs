@@ -63,7 +63,7 @@ assert.doesNotMatch(readerSource, /nothing to jump to here/);
 // A compile that produced no page still says why, and says it through the
 // diagnostics rather than by blanking the frame. The render itself is a
 // module now, so this is asked of the module.
-assert.match(previewSource, /const failed = hasError[\s\S]*?severity: "error"[\s\S]*?diagnostics\.rendered\(\{ page: null, diagnostics: failed \}\)/);
+assert.match(previewSource, /const failed = hasError[\s\S]*?severity: "error"[\s\S]*?diagnostics\.rendered\(\{ page: false, diagnostics: failed \}\)/);
 // Running a document's code is one per-document permission covering both
 // local tools, off for every document until the dialog grants it, and read
 // back from the grant store rather than from a build preference.
@@ -132,4 +132,3 @@ assert.match(readerSource, /\{#if mayEdit && \["typst", "markdown", "quarto"\]\.
 // HTML/PDF output format choice for markdown and quarto in View menu.
 assert.match(readerSource, /\{@const selectableFormat = \["latex", "typst", "markdown", "quarto"\]\.includes\(displayedFormat\)\}/);
 assert.match(readerSource, /async function setMarkdownOutput\(format\)/);
-
