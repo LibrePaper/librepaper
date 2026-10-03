@@ -28,7 +28,7 @@
     open = $bindable(false),
     title,
     description = null,
-    children,
+    children = undefined,
     confirm = null,
     cancelLabel = "Cancel",
     onclose = undefined,

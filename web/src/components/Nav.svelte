@@ -16,7 +16,7 @@
   // Page-specific tools may include compact global state, such as the
   // Reader's connection and presence indicator. Pane-specific state stays
   // with the pane it describes.
-  let { me = {}, children, menus, tools, reader = false } = $props();
+  let { me = {}, children = undefined, menus = undefined, tools = undefined, reader = false } = $props();
 </script>
 
 <!-- The way past the bar. Every page puts twenty-odd controls between the

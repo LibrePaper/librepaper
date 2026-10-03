@@ -307,7 +307,13 @@
       if (operation === undefined || operation === false) throw new Error("Review action is unavailable.");
       await operation;
       const next = nextAfter(ids, oldIndex);
-      if (next) activate(next, { focus: true }); else { expanded = ""; requestAnimationFrame(() => document.querySelector(".changes-panel")?.focus()); }
+      if (next) activate(next, { focus: true }); else {
+        expanded = "";
+        requestAnimationFrame(() => {
+          const panel = document.querySelector(".changes-panel");
+          if (panel instanceof HTMLElement) panel.focus();
+        });
+      }
     } catch (error) { feedback = error?.message || `Could not ${action} this change.`; focusRow(id); }
     finally { removeBusy(id); }
   }

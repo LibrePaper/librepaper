@@ -10,6 +10,7 @@
   import { basename, parentPath, inside, nodeKey, fileTree, folderPaths, topEntries, checkPlacement, copyPath, droppedFiles } from "../../lib/file-manager.js";
   import { expandArchives } from "../../lib/project-upload.js";
   import { unzip } from "../../lib/zip.js";
+  import { retargetElementAttributes } from "../element-attributes.js";
 
   let { files = [], folders = [], open = "", preview = "", mayEdit = false, rules = {},
     onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onmain, onfigure, ontext, ondownload, ondownloaditem } = $props();
@@ -123,14 +124,14 @@
     }
   }
   function renameOnDoubleClick(event, node) {
-    if (!mayEdit || editing || event.target.closest("input, button")) return;
+    if (!(event.target instanceof Element) || !mayEdit || editing || event.target.closest("input, button")) return;
     event.preventDefault();
     event.stopPropagation();
     const entry = entryOf(node);
     if (entry) start("rename", entry, parentPath(entry.path));
   }
   function keyed(event) {
-    if (!mayEdit || event.target.closest("input, button, [role=menu]")) return;
+    if (!(event.target instanceof Element) || !mayEdit || event.target.closest("input, button, [role=menu]")) return;
     if (event.key === "Escape") { selected = []; return; }
     const targets = chosen.length ? chosen : entries.filter((entry) => nodeKey(entry) === focused);
     if (event.key === "F2" && targets.length === 1) { event.preventDefault(); start("rename", targets[0], parentPath(targets[0].path)); }
@@ -243,8 +244,8 @@
 </script>
 
 <div class="panel filelist explorer" class:explorer-drop={hover === ""} role="region" aria-label="File manager"
-  onpointerdown={(event) => { if (!event.target.closest('[role="treeitem"], button, input, select, header')) selected = []; }}
-  ondragover={(event) => dragOver(event, "")} ondrop={(event) => drop(event, "")} ondragleave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) dragEnd(); }}>
+  onpointerdown={(event) => { if (!(event.target instanceof Element) || !event.target.closest('[role="treeitem"], button, input, select, header')) selected = []; }}
+  ondragover={(event) => dragOver(event, "")} ondrop={(event) => drop(event, "")} ondragleave={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) dragEnd(); }}>
   <PanelHeader title="Files">
     {#snippet actions()}
       <!-- One run of controls, left to right: what makes something in the
@@ -265,7 +266,7 @@
       </div>
       {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label="Choose files to upload"
         accept="{(rules.extensions || []).join(',')},.zip"
-      onchange={(event) => { const picked = [...event.target.files]; event.target.value = ""; upload(picked.map((file) => ({ file, path: file.name })), uploadTarget); }} />{/if}
+      onchange={(event) => { const input = event.currentTarget; const picked = [...(input.files || [])]; input.value = ""; upload(picked.map((file) => ({ file, path: file.name })), uploadTarget); }} />{/if}
     {/snippet}
     {#if chosen.length > 1 && mayEdit}
       <span class="panel-meta">{chosen.length} selected</span>
@@ -357,7 +358,7 @@
         <Menu onSelect={({ value }) => action(value, node)}>
           <Menu.ContextTrigger>
             {#snippet element(attributes)}
-              <div {...attributes}>
+              <div {...retargetElementAttributes(attributes)}>
                 <TreeView.BranchControl class="explorer-row {hover === node.path ? 'drop-target' : ''}" title={node.path}
                   {...dragAttrs(node, node.path)}>
                   {@render row(node)}
@@ -379,7 +380,7 @@
       <Menu onSelect={({ value }) => action(value, node)}>
         <Menu.ContextTrigger>
           {#snippet element(attributes)}
-            <div {...attributes}>
+            <div {...retargetElementAttributes(attributes)}>
               <TreeView.Item class="explorer-row {open === node.fileId ? 'explorer-open' : ''} {hover === parentPath(node.path) ? 'drop-target' : ''}" title={node.path}
                 {...dragAttrs(node, parentPath(node.path))}>
                 {@render row(node)}
