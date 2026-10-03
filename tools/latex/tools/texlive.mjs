@@ -26,11 +26,10 @@ const EXAMPLES = [
   { name: "broken", engine: "pdflatex", negative: true },
   { name: "xetex", engine: "xelatex" },
   { name: "unicode-fonts", engine: "xelatex", unicode: true },
-  // This package-set probe is outside the browser comparison set.
   { name: "packages", engine: "pdflatex", bibtex: true },
 ];
 
-const GENERATED = /\.(?:aux|bbl|bcf|blg|fdb_latexmk|fls|log|out|pdf|run\.xml|synctex\.gz|toc|xdv)$/;
+const GENERATED_MAIN = /^main\.(?:aux|bbl|bcf|blg|fdb_latexmk|fls|log|out|pdf|run\.xml|synctex\.gz|toc|xdv)$/;
 
 export function pagesFromLog(log) {
   const written = log.match(/Output written on [^(]*\((\d+) pages?/);
@@ -114,8 +113,10 @@ export function compileCorpus({ corpus = CORPUS, keepPdf = KEEP_PDF, env = proce
           const rel = relative(source, from);
           if (!rel) return true;
           const parts = rel.split(sep);
-          if (parts.includes("logs") || GENERATED.test(basename(from))) return false;
-          if (example.name === "article" && basename(from) === "article.bib") return false;
+          const file = basename(from);
+          if (parts.includes("logs")) return false;
+          if ((parts.length === 1 && GENERATED_MAIN.test(file)) || (parts.length > 1 && file.endsWith(".aux"))) return false;
+          if (example.name === "article" && file === "article.bib") return false;
           return true;
         },
       });

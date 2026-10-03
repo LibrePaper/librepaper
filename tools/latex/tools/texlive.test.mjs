@@ -12,6 +12,7 @@ const path = require('node:path');
 const name = path.basename(process.cwd());
 if (process.env.FAKE_FAIL === name) process.exit(19);
 if (process.env.FAKE_NO_OUTPUT === name) process.exit(0);
+if (process.env.FAKE_EXPECT_INPUT_PDF === name && !fs.existsSync('figures/diagram.pdf')) process.exit(20);
 if (name === 'broken') {
   fs.writeFileSync('main.log', 'Undefined control sequence.\\nFile chapters/missing.tex not found.\\nFatal error occurred\\n');
   process.exit(1);
@@ -35,6 +36,8 @@ async function fixture({ omitXeTeX = false, staleOutputs = false } = {}) {
     await mkdir(join(corpus, name, "logs"));
     await writeFile(join(corpus, name, "logs", "texlive.log"), `old ${name} log\n`);
   }
+  await mkdir(join(corpus, "paper", "figures"));
+  await writeFile(join(corpus, "paper", "figures", "diagram.pdf"), "source PDF asset");
   if (staleOutputs) {
     await writeFile(join(corpus, "paper", "main.log"), "Output written on main.pdf (4 pages, stale).\\n");
     await writeFile(join(corpus, "paper", "main.pdf"), "stale PDF");
@@ -55,12 +58,13 @@ async function fixture({ omitXeTeX = false, staleOutputs = false } = {}) {
 test("TeX Live records only positive examples and the intentional broken fixture", async () => {
   const temp = await fixture();
   try {
-    const record = compileCorpus({ corpus: temp.corpus, keepPdf: true, env: temp.env });
+    const record = compileCorpus({ corpus: temp.corpus, keepPdf: true, env: { ...temp.env, FAKE_EXPECT_INPUT_PDF: "paper" } });
     assert.deepEqual(Object.keys(record), fixtureNames);
     assert.equal(record.article.pages, 3);
     assert.equal(record.broken.pages, 0);
     assert.equal(record["unicode-fonts"].engine, "xelatex");
     assert.equal(JSON.parse(await readFile(join(temp.corpus, "pages.json"), "utf8"))["unicode-fonts"].pages, 1);
+    assert.equal(await readFile(join(temp.corpus, "paper", "figures", "diagram.pdf"), "utf8"), "source PDF asset");
     assert.equal(await readFile(join(temp.corpus, "unicode-fonts", "main.pdf"), "utf8"), "pdf");
     assert.match(await readFile(join(temp.corpus, "broken", "logs", "texlive.log"), "latin1"), /Fatal error occurred/);
   } finally {
