@@ -2,11 +2,9 @@
 title: "The CLI"
 ---
 
-LibrePaper is a server and a web app. The installed command starts its local companion; user commands also include `login`, `logout`, `list`, and `export`. `admin` operates a deployment.
-
 ## The companion
 
-The companion runs native tools (Quarto and Typst rendering) and holds document agents. After [installing LibrePaper](install.html), run `librepaper` in a terminal to start it in the background. The explicit `start` command does the same thing.
+After [installing LibrePaper](install.html), run `librepaper` in a terminal to start it in the background.
 
 ```sh
 librepaper                                      # start in background
@@ -24,34 +22,28 @@ librepaper local approve <code>                 # approve on a no-display machin
 librepaper local disconnect <origin>            # revoke a website pairing
 ```
 
-The older `librepaper local start`, `stop`, `status`, and `agent` commands remain available for compatibility. Prefer the root commands shown above.
-
-To render a document against a project folder on your disk, choose the folder under *Settings*, *Local app*, *Project folder* in the browser. Permissions and presets are also configured there. Any permission request triggers a dialog on this machine, which no website can click. On a machine with no display, check `companion.log` for the code and run `librepaper local approve <code>` within 5 minutes.
+On a machine with no display, check `companion.log` for the code and run `librepaper local approve <code>` within 5 minutes.
 
 ## Document commands
 
-For commands that contact your LibrePaper server, such as `login`, `list`, and `export`, pass its address with a flag or set an environment variable once:
+Pass server address with flag or environment variable:
 
 ```sh
 librepaper <COMMAND> --server https://librepaper.arelbundock.com
-# Or set once and omit the flag:
 export LIBREPAPER_SERVER="https://librepaper.arelbundock.com"
-librepaper <COMMAND>
 ```
 
 ## Authenticate
 
 ```sh
-librepaper login      # prints a code and URL
-librepaper logout     # deletes token (valid 90 days)
+librepaper login      # prints code and URL to sign in (valid 90 days)
+librepaper logout     # revoke token
 ```
-
-Open the URL in any browser to sign in. Press *Approve* to add the token to your terminal.
 
 ## List
 
 ```sh
-librepaper list       # shows ID, date, and title for each document
+librepaper list       # show ID, date, and title
 ```
 
 ## Export
@@ -59,25 +51,28 @@ librepaper list       # shows ID, date, and title for each document
 ```sh
 librepaper export c9k ./paper-copy              # immutable snapshot
 librepaper export c9k ./paper-copy --key URL    # read as share-link holder
-librepaper export c9k ./paper-copy --at "v1"    # historical snapshot
+librepaper export c9k ./paper-copy --at "v1"    # historical version
 ```
 
-To keep scheduled local ZIP copies of every project available to the signed-in
-account, including shared projects, use [account backups](backups.html) in the
-browser settings. This uses the companion and its native destination picker
-rather than a one-off CLI export.
+For scheduled local backups, see [account backups](backups.html).
 
 ## Operating a deployment
 
-- `librepaper admin serve` starts the server. See `--help` and the [hosting page](host.html) for flags.
-- `librepaper admin backup` and `librepaper admin restore` create and restore verified recovery points.
-- Check operational state: `curl http://127.0.0.1:8080/api/status`
+```sh
+librepaper admin serve --help              # start server with flags
+librepaper admin backup <dir> <dest>       # create recovery point
+librepaper admin restore <src> <dest>      # restore from backup
+curl http://127.0.0.1:8080/api/status      # check operational state
+```
+
+See [hosting page](host.html) for server flags.
 
 ## Agents
 
 ```sh
-librepaper agent list       # driven from document sidebar only
-librepaper agent add <id> -- <command>
+librepaper agent list              # list configured agents
+librepaper agent add <id> -- <cmd> # add agent command
+librepaper agent remove <id>       # remove agent
 ```
 
 See [agents page](agents.html).
