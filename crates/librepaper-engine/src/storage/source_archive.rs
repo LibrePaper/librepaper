@@ -235,7 +235,7 @@ pub fn encode(
     let mut tar_bytes = Vec::new();
     {
         let mut builder = tar::Builder::new(&mut tar_bytes);
-        builder.mode(tar::HeaderMode::Deterministic);
+        // Determinism is enforced per entry in `append_tar`.
         append_tar(&mut builder, MANIFEST_PATH, &manifest_bytes)?;
         for (path, bytes) in inline {
             append_tar(&mut builder, &format!("{FILE_PREFIX}{path}"), &bytes)?;

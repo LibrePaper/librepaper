@@ -160,21 +160,28 @@ impl Registry {
             *admitted = Some(existing.clone());
             return Ok(existing.clone());
         }
-        let sequencer = Arc::new(
-            Sequencer::admit(
-                document_id,
-                slug.to_string(),
-                self.catalog.clone(),
-                self.blobs.clone(),
-                self.config.clone(),
-                self.budget.clone(),
-                self.pending.clone(),
-                self.deployment_peer_key.clone(),
-                self.ledger.clone(),
-                self.compaction.clone(),
-            )
-            .await?,
-        );
+        let admission = Sequencer::admit(
+            document_id,
+            slug.to_string(),
+            self.catalog.clone(),
+            self.blobs.clone(),
+            self.config.clone(),
+            self.budget.clone(),
+            self.pending.clone(),
+            self.deployment_peer_key.clone(),
+            self.ledger.clone(),
+            self.compaction.clone(),
+        )
+        .await;
+        let sequencer = match admission {
+            Ok(sequencer) => Arc::new(sequencer),
+            Err(error) => {
+                // A failed admission must not leave its slot behind: ids that
+                // never admit (unknown documents) would otherwise accumulate.
+                self.admitting.lock().await.remove(&document_id);
+                return Err(error);
+            }
+        };
         self.resident
             .lock()
             .await
