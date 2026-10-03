@@ -212,6 +212,16 @@ function sourceHistory(n, until) {
   check(`the first loss scan stops at label 21 (looked at ${looked.size} including the newest-label probe)`, looked.size === 24);
 }
 
+{
+  let reads = 0;
+  const traced = inSource("stale-frontier", "2026-09-05T09:00:00Z");
+  const result = await wentAtMany("slug", [traced], sourceHistory(90, 80).labels, {}, async () => {
+    reads++;
+    return "before the passage of interest after";
+  }, () => false);
+  check("a stale passage batch stops after its current projection", reads === 1 && result[0] === null);
+}
+
 /* ------------------------------------------------------------ the answer */
 
 {
