@@ -4,8 +4,6 @@ title: "Running a server"
 
 ## Deploy
 
-LibrePaper is a single static binary with reader, renderers, and server compiled in.
-
 ### Quick start
 
 ```sh
@@ -58,9 +56,7 @@ Proxy must preserve `Host` header. Only one `admin serve` per database.
 
 ### Moderation
 
-Moderation commands connect directly to the deployment database selected by
-`--database-url` or `LIBREPAPER_DATABASE_URL`. Database access is the operator
-authorization boundary.
+Moderation commands connect to the database via `--database-url` or `LIBREPAPER_DATABASE_URL`. Database access is the operator authorization boundary.
 
 ```sh
 librepaper admin moderate block-account github-handle \
@@ -74,23 +70,17 @@ librepaper admin moderate unhide-project abusive-project \
   --actor "on-call@example.org" --reason "review completed"
 ```
 
-- Every command requires `--actor` and `--reason`; `moderation_audit` records
-  the actor, database timestamp, action, target, and reason. Accounts accept a
-  unique handle or UUID.
-- Blocking revokes existing sessions and denies future access and writes.
-  Unblocking permits a fresh sign-in; previously issued credentials stay
-  revoked.
-- Hiding preserves project data, history, assets, and grants while denying
-  document, asset, source, history, export, and new socket access. Unhiding
-  restores its previous access rules.
-- Existing sockets refresh authorization every two seconds and then disconnect;
-  frames already in flight may still arrive.
+Every command requires `--actor` and `--reason`. `moderation_audit` table records actor, timestamp, action, target, and reason. Accounts accept handle or UUID.
 
-Preserve `moderation_audit` with normal database backups.
+Blocking: revokes sessions, denies access and writes. Unblocking: permits fresh sign-in; previously issued credentials stay revoked.
+
+Hiding: preserves data while denying document, asset, source, history, export, and socket access. Unhiding restores previous access rules.
+
+Sockets refresh authorization every 2 seconds; existing frames in flight may still arrive. Preserve `moderation_audit` with normal backups.
 
 ## Storage
 
-`librepaper admin serve` stores catalog, objects, server state, and session secrets in `--data-directory` (default `librepaper-data`). Back up and restore to an empty database and non-existent path.
+`librepaper admin serve` stores to `--data-directory` (default `librepaper-data`).
 
 Storage limits:
 
@@ -105,7 +95,7 @@ Storage limits:
 librepaper admin serve --publisher-storage-limit 500 --deployment-storage-limit 10240
 ```
 
-Per-document log (`log_quota_mb` in advanced config) bounds edits. Backup and restore:
+Backup and restore:
 
 ```sh
 librepaper admin backup --data-directory /var/lib/librepaper /backups/librepaper-$(date +%F)
@@ -113,43 +103,34 @@ createdb librepaper_restore
 LIBREPAPER_DATABASE_URL=postgresql:///librepaper_restore librepaper admin restore /backups/librepaper-2026-09-13 /librepaper-restored
 ```
 
-See [cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md) for defaults, YAML schema, `/api/status` endpoint, and capacity accounting.
+See [cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md) for defaults and schema.
 
 ## Environment variables
 
-Flags map to env vars: `--foo-bar` becomes `LIBREPAPER_FOO_BAR` (flag wins if both set). See `librepaper admin serve --help` for the full list.
+Flags map to env vars: `--foo-bar` becomes `LIBREPAPER_FOO_BAR`. See `librepaper admin serve --help` for the full list.
 
-Advanced config in optional YAML (`--config PATH` or `LIBREPAPER_CONFIG`):
+Advanced config in optional YAML (`--config` or `LIBREPAPER_CONFIG`):
+- `trusted_proxies`: proxy networks (CIDR)
+- `backup`: `destination_class`, `frequency` (seconds), `retained_count`, `encrypted`, `warning_count`
 
-- `trusted_proxies`: list of proxy networks (CIDR)
-- `backup`: metadata for operator-managed backups (`destination_class`, `frequency` in seconds, `retained_count`, `encrypted`, `warning_count`)
+Secrets (environment only):
+- `LIBREPAPER_GITHUB_CLIENT_SECRET`
+- `LIBREPAPER_GOOGLE_CLIENT_SECRET`
 
-Secrets (environment-only):
-
-- `LIBREPAPER_GITHUB_CLIENT_SECRET`: GitHub OAuth client secret
-- `LIBREPAPER_GOOGLE_CLIENT_SECRET`: Google OAuth client secret
-
-Service settings (CLI flags also available):
-
-- `LIBREPAPER_ASSET_MIRROR`: HTTPS URL for wasm/LaTeX (default: project mirror)
-- `LIBREPAPER_EXPIRE_AFTER`: delete documents after duration, e.g. `24h` (default: never)
-- `LIBREPAPER_EXPIRE_FROM`: `updated` (default) or `created`
+Service settings:
+- `LIBREPAPER_ASSET_MIRROR`: HTTPS URL (default: project mirror)
+- `LIBREPAPER_EXPIRE_AFTER`: duration e.g. `24h` (default: never)
+- `LIBREPAPER_EXPIRE_FROM`: `updated` or `created` (default: updated)
 
 ## Fonts
-
-Serve custom Typst fonts from a directory:
 
 ```sh
 librepaper admin serve --typst-fonts /srv/librepaper/fonts
 ```
 
-## Browser compiler assets
-
-Browsers fetch renderers and LaTeX from an asset mirror, not from the app. `assets.lock` pins assets; nothing is rewritten, so old binaries keep working. To self-host, pass `--asset-mirror https://host/` with paths from `assets.lock`, HTTPS, and CORS for GET/HEAD. See [asset mirrors](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md).
-
 ## Rights
 
-`--publishers` lists who may upload; `--commenters` lists who may annotate. Both accept comma-separated entries:
+`--publishers`: who may upload; `--commenters`: who may annotate.
 
 ```sh
 librepaper admin serve --publishers alice,anne@example.org --commenters @example.org
@@ -159,20 +140,11 @@ librepaper admin serve --publishers alice,anne@example.org --commenters @example
 | --- | --- |
 | `alice` | GitHub login |
 | `alice@example.org` | Google account with verified email |
-| `@example.org` | any Google account on that domain (exact match after `@`) |
+| `@example.org` | any Google account on that domain (exact match) |
 | `any` | any signed-in account |
 | `anyone` | any signed-in account |
 
-For a direct `admin serve` deployment, `--publishers` has no default and
-`--commenters` defaults to `anyone`. Both are ceilings on signed-in accounts;
-document access and share links require sign-in. Docker Compose defaults both
-settings to `any`, so any signed-in account may publish and comment. Set either
-environment variable to a comma-separated allowlist to narrow access. The
-official public service allows any signed-in GitHub or Google account to
-publish, with 50 MiB storage and 30 project creation, fork, or figure uploads
-per account per rolling hour. Self-hosted deployments can set their own quotas.
-
-A domain matches exactly: `@example.org` admits `alice@example.org`, not `alice@mail.example.org`.
+Defaults: `--publishers` has no default; `--commenters` defaults to `anyone`. Both are ceilings; document access and share links require sign-in. Domain match is exact: `@example.org` admits `alice@example.org` only, not `alice@mail.example.org`.
 
 Forwarded client identity is trusted only from networks in advanced config:
 
@@ -182,45 +154,43 @@ trusted_proxies:
   - ::1/128
 ```
 
-Proxy must append actual address to `X-Forwarded-For`.
-
-Google sign-in: verified Gmail and Google Workspace only. After upgrading, sign in again and run `librepaper login`. Logout removes cookie; revoke session to invalidate copies.
+Proxy must append actual address to `X-Forwarded-For`. Google sign-in: verified Gmail and Google Workspace only.
 
 ## OAuth
 
-Publishing always needs at least one OAuth client, GitHub or Google.
+At least one OAuth client (GitHub or Google) is required.
 
-GitHub: create app at [github.com/settings/developers](https://github.com/settings/developers) with `/auth/callback`. Pass id via `--github-client-id` or `LIBREPAPER_GITHUB_CLIENT_ID`; secret via `LIBREPAPER_GITHUB_CLIENT_SECRET` only.
+**GitHub:** Create at [github.com/settings/developers](https://github.com/settings/developers) with `/auth/callback`. Pass:
+- `--github-client-id` or `LIBREPAPER_GITHUB_CLIENT_ID`
+- `LIBREPAPER_GITHUB_CLIENT_SECRET` only (env var)
 
-Google: create *Web application* at [console.cloud.google.com](https://console.cloud.google.com) with `/auth/callback/google`. Pass id via `--google-client-id` or `LIBREPAPER_GOOGLE_CLIENT_ID`; secret via `LIBREPAPER_GOOGLE_CLIENT_SECRET`. Publish consent screen.
-
-`librepaper logout` deletes terminal token.
+**Google:** Create Web application at [console.cloud.google.com](https://console.cloud.google.com) with `/auth/callback/google`. Pass:
+- `--google-client-id` or `LIBREPAPER_GOOGLE_CLIENT_ID`
+- `LIBREPAPER_GOOGLE_CLIENT_SECRET` only (env var)
+- Publish consent screen
 
 ## Retention
 
-Set lifetime for public deployments: `--document-expire-after 24h`. Use `--document-expire-from created` to expire from upload date.
+```sh
+librepaper admin serve --document-expire-after 24h              # delete docs after duration
+librepaper admin serve --document-expire-from created            # expire from upload (default: updated)
+```
 
 ## Containers
 
-`tools/deploy-docker` provides Compose for PostgreSQL, LibrePaper, HTTPS proxy, and internal monitoring. Use the tagged v0.0.9 release for the application image; v0.0.8 has no metrics endpoint. A locally built static musl binary remains available for source builds and forks. Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 certificates. Other names, such as `www`, get a 421 from the server: redirect them in the `Caddyfile` (example at its end).
+See [tools/deploy-docker](https://github.com/LibrePaper/librepaper/blob/main/tools/deploy-docker/README.md) for Docker Compose setup with PostgreSQL, HTTPS proxy, and monitoring.
 
 ```sh
-# From the repository root, configure the release image version in .env.
 cd tools/deploy-docker
 cp .env.example .env
-# Set DOMAIN, ACME_EMAIL, and independent random values
-# for POSTGRES_PASSWORD, POSTGRES_EXPORTER_PASSWORD, LIBREPAPER_ADMIN_PASSWORD.
-# Set both client ID and client secret for GitHub or Google OAuth.
-# The Compose defaults allow any signed-in account to publish and comment;
-# set LIBREPAPER_PUBLISHERS or LIBREPAPER_COMMENTERS to comma-separated
-# allowlists to narrow either permission.
+# Set DOMAIN, ACME_EMAIL, POSTGRES_PASSWORD, LIBREPAPER_ADMIN_PASSWORD
+# Set GitHub/Google OAuth client ID and secret
+# Set LIBREPAPER_PUBLISHERS and LIBREPAPER_COMMENTERS if needed
 docker compose up -d --build
 ```
 
-`DOCS_DOMAIN` defaults to `docs.$DOMAIN`; both names must resolve to this host. The container uses `--no-local`. See [the Docker deployment guide](https://github.com/LibrePaper/librepaper/blob/main/tools/deploy-docker/README.md) for password rotation, backup, and release upgrades.
-
-The official instance also runs free, open-source Prometheus, Grafana, PostgreSQL exporter, and Node Exporter containers. Grafana is available at `/admin/monitoring/` on the app hostname and requires its built-in admin login. Prometheus and the exporters have no public ports; Caddy exposes only the Grafana path on the app hostname. The metrics listener binds inside the app container and reports aggregate counts and health, without user or document identifiers. See [production operations](dev/production.html#monitoring) for deployment, password retrieval, and rotation.
+Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 certificates. Other names get 421; redirect in `Caddyfile`. `DOCS_DOMAIN` defaults to `docs.$DOMAIN`.
 
 ## Privacy
 
-The default asset mirror sees your IP and asset requests. To self-host and keep requests private, use `--asset-mirror URL` with your binary's `assets.lock` paths, HTTPS, and CORS for GET/HEAD.
+Default asset mirror sees your IP and asset requests. To self-host, use `--asset-mirror URL` with HTTPS and CORS for GET/HEAD.
