@@ -200,6 +200,7 @@ export function parseQuarto(source, { path = "main.qmd" } = {}) {
         const raw = lines.slice(fence.startLine + 1, endLine);
         const optionLines = [];
         while (raw.length && OPTION.test(raw[0])) optionLines.push(raw.shift());
+        /** @type {Record<string, unknown>} */
         const options = {};
         for (const optionLine of optionLines) {
           const match = OPTION.exec(optionLine);

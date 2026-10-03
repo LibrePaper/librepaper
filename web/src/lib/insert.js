@@ -1,6 +1,6 @@
 // Semantic actions shared by the navbar and the source-format adapters.
 /**
- * @typedef {(id: string, options: InsertOptions, context: InsertContext) => string | InsertionResult} BuildFormatter
+ * @typedef {(id: string, options: InsertOptions, context: NormalizedInsertContext) => string | InsertionResult} BuildFormatter
  */
 import { buildLatex } from './insert-latex.js';
 import { buildTypst } from './insert-typst.js';
@@ -271,7 +271,7 @@ export function gatherInsertTargets(input = {}) {
 }
 /**
  * @param {string} value
- * @param {InsertContext} c
+ * @param {NormalizedInsertContext} c
  * @param {string} [prefix='']
  * @returns {string}
  */
@@ -292,7 +292,7 @@ function uniqueLabel(value,c,prefix='') {
 
 // Metadata edits address the captured source, never a generated snippet.
 /**
- * @param {InsertContext} c
+ * @param {NormalizedInsertContext} c
  * @param {Record<string, string>} additions
  * @returns {EditOperation[]}
  */
@@ -313,7 +313,7 @@ function metadata(c, additions) {
 /**
  * @param {string} id
  * @param {InsertOptions} o
- * @param {InsertContext} c
+ * @param {NormalizedInsertContext} c
  * @returns {{text: string; placeholder: string}}
  */
 function markdownMath(id,o,c) {
@@ -342,7 +342,7 @@ function markdownMath(id,o,c) {
 /**
  * @param {string} id
  * @param {InsertOptions} o
- * @param {InsertContext} c
+ * @param {NormalizedInsertContext} c
  * @returns {InsertionResult}
  */
 function buildMarkdown(id,o,c) {

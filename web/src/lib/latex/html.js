@@ -56,6 +56,7 @@ export function createHtmlCompiler({
     queued = null;
   }
 
+  /** @param {string} base @param {Record<string, unknown>} [settings] */
   async function configuration(base, settings = {}) {
     base = new URL(base, globalThis.location?.href || "http://localhost/").href;
     if (!base.endsWith("/")) base += "/";
@@ -66,9 +67,6 @@ export function createHtmlCompiler({
           if (!response.ok) throw new Error(`LaTeX release unavailable (${response.status})`);
           const data = await response.json();
           if (data.format !== 2) throw new Error("Unsupported LaTeX release format");
-          if (typeof data.id !== "string" || !data.files || typeof data.files !== "object" || !data.engines || typeof data.engines !== "object") {
-            throw new Error("Invalid LaTeX release manifest");
-          }
           return /** @type {LatexRelease} */ (data);
         })();
         pinnedRequest = { base, pending };
