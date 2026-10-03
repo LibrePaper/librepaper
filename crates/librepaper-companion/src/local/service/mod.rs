@@ -905,7 +905,7 @@ async fn run_worker(inner: Arc<Inner>) {
             entry.files = outcome.files;
             entry.finished_at = Some(Instant::now());
             if let Err(error) = persist_quarto_job(entry) {
-                eprintln!("could not persist completed local Quarto job {id}: {error}");
+                tracing::warn!("could not persist completed local Quarto job {id}: {error}");
             }
         }
     }
