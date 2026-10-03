@@ -207,7 +207,14 @@ impl ServiceFlags {
                 die(format!("invalid advanced backup policy: {error}"));
             }
             if let Some(proxies) = file.trusted_proxies {
-                config.cost.trusted_proxies = proxies;
+                match proxies
+                    .iter()
+                    .map(|s| librepaper_base::config::parse_trusted_proxy(s))
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(networks) => config.cost.trusted_proxies = networks,
+                    Err(error) => die(format!("invalid trusted_proxies: {error}")),
+                }
             }
             if let Err(error) = config.set_peer_queue(file.session_peer_queue) {
                 die(format!("invalid advanced session policy: {error}"));
