@@ -79,6 +79,11 @@
   const shownBuiltIn = $derived(shownTemplates.filter((each) => !each.custom));
   const shownCustom = $derived(shownTemplates.filter((each) => each.custom));
   const chosenTemplate = $derived(allTemplates.find((each) => each.id === templateId));
+  function reconcileTemplateSelection() {
+    const shown = shownTemplates;
+    if (!shown.some((each) => each.id === templateId)) templateId = shown[0]?.id ?? "";
+  }
+  $effect(() => reconcileTemplateSelection());
   // A template that does not offer the filtered format falls back to its
   // first, rather than refusing the click.
   const format = $derived.by(() => {
@@ -791,6 +796,10 @@
   async function create(event) {
     event.preventDefault();
     if (busy) return;
+    if (!chosenTemplate || !shownTemplates.some((each) => each.id === chosenTemplate.id)) {
+      nameError = "Choose a visible template.";
+      return;
+    }
     const named = name.trim();
     if (!named) {
       nameError = "Give the project a name.";

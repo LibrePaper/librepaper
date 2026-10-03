@@ -54,6 +54,7 @@ let biberModule;
 let resourcesOverride;
 let fetchImpl = (...args) => fetch(...args);
 let nowImpl = () => Date.now();
+let deadlineMs = DEADLINE_MS;
 
 let release = null;
 let releasePromise = null;
@@ -146,29 +147,76 @@ function retireWorker() {
 async function loadRelease() {
   if (release) return release;
   if (!releasePromise) {
-    releasePromise = fetchImpl(absoluteBase() + "release.json").then(async (response) => {
+    const requestedBase = base;
+    let pending;
+    pending = fetchImpl(absoluteBase() + "release.json").then(async (response) => {
       if (!response.ok) throw new Error(`no LaTeX release at ${base} (${response.status})`);
       const data = await response.json();
       if (data.format !== 2) {
         throw new Error(`this LaTeX release is format ${data.format ?? "unknown"}, but this build only speaks format 2; rebuild the mirror with make mirror in wasm-latex`);
       }
-      release = data;
-      return release;
+      // A request abandoned by a timeout or mirror switch must not repopulate
+      // the cache for the newer request.
+      if (releasePromise === pending && base === requestedBase) release = data;
+      return data;
     });
+    releasePromise = pending;
   }
+  const pending = releasePromise;
   try {
-    return await releasePromise;
+    return await pending;
   } finally {
     // A failed fetch must not poison the module: the next compile tries
     // again rather than repeating a network error forever from cache.
-    if (!release) releasePromise = null;
+    if (!release && releasePromise === pending) releasePromise = null;
   }
+}
+
+function timeoutError(what = "the compile") {
+  return named("WorkerTimeout", `${what} exceeded its time budget`);
+}
+
+function remaining(deadlineAt) {
+  return Math.max(0, deadlineAt - nowImpl());
+}
+
+function withinDeadline(promise, deadlineAt, what, onTimeout, signal) {
+  const work = Promise.resolve(promise);
+  // When the budget is already gone, the caller still owns this operation;
+  // consume its eventual rejection even though the job stops waiting now.
+  work.catch(() => {});
+  if (signal?.aborted) return Promise.reject(supersededError());
+  const ms = remaining(deadlineAt);
+  if (!ms) {
+    onTimeout?.();
+    return Promise.reject(timeoutError(what));
+  }
+  let timer;
+  let abort;
+  const races = [
+    work,
+    new Promise((_, reject) => { timer = setTimeout(() => { onTimeout?.(); reject(timeoutError(what)); }, ms); }),
+  ];
+  if (signal) races.push(new Promise((_, reject) => {
+    abort = () => reject(supersededError());
+    signal.addEventListener("abort", abort, { once: true });
+  }));
+  return Promise.race(races).finally(() => {
+    clearTimeout(timer);
+    if (abort) signal.removeEventListener("abort", abort);
+  });
+}
+
+function deadlineCall(target, cmd, payload, deadlineAt) {
+  const ms = remaining(deadlineAt);
+  if (!ms) return Promise.reject(timeoutError(`worker ${cmd}`));
+  return call(target, cmd, payload, { timeoutMs: ms });
 }
 
 /// Called by the reader when a document opens. Resets the queue, the
 /// session route and every per-project cache when the project itself
 /// changes; a settings-only reconfigure of the same project is `setSettings`.
-export function configure({ project, settings: nextSettings, mayCompile = true } = {}) {
+export function configure({ project, settings: nextSettings } = {}) {
   const changedProject = project !== currentProject;
   currentProject = project;
   currentSettings = normalizeSettings(nextSettings);
@@ -185,7 +233,6 @@ export function configure({ project, settings: nextSettings, mayCompile = true }
     engine: currentSettings.engine === "auto" ? null : currentSettings.engine,
     release: null,
   });
-  void mayCompile; // reserved for the reader's own read-only gating, not this module's
 }
 
 export function settings() {
@@ -308,7 +355,7 @@ function call(target, cmd, payload, { timeoutMs = 0 } = {}) {
   });
 }
 
-async function ensureWorker(releaseEntry) {
+async function ensureWorker(releaseEntry, deadlineAt) {
   if (worker && configuredRelease === releaseEntry.id) return worker;
   if (worker) retireWorker();
   // The literal `new Worker(new URL(..., import.meta.url), { type: "module" })`
@@ -326,7 +373,7 @@ async function ensureWorker(releaseEntry) {
   // The worker resolves every engine and package URL against this, and a
   // The worker receives the pinned release directory URL, so all release
   // paths resolve against the direct mirror rather than an app route.
-  await call(target, "configure", { base: absoluteBase(), release: releaseEntry });
+  await deadlineCall(target, "configure", { base: absoluteBase(), release: releaseEntry }, deadlineAt);
   configuredRelease = releaseEntry.id;
   return target;
 }
@@ -459,6 +506,7 @@ async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, st
 // interfaces.md section 2.8) -------------------------------------------------
 
 async function runCompile({ tree, jobGeneration: generationAtStart, token, startedAt }) {
+  const deadlineAt = startedAt + deadlineMs;
   const checkpoint = () => {
     if (token.cancelled) throw supersededError();
   };
@@ -467,7 +515,13 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
   let releaseEntry;
   try {
-    releaseEntry = await loadRelease();
+    const loadingRelease = loadRelease();
+    const pendingRelease = releasePromise;
+    releaseEntry = await withinDeadline(loadingRelease, deadlineAt, "LaTeX release load", () => {
+      // A timed-out fetch/body read must not pin later queued jobs to the
+      // same unresolved cache promise. The old request may finish harmlessly.
+      if (!release && releasePromise === pendingRelease) releasePromise = null;
+    }, token.abort.signal);
   } catch (error) {
     checkpoint();
     const inputs = await snapshotDigest(tree).catch(() => "");
@@ -484,7 +538,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       attempts: [],
       startedAt,
       ok: false,
-      failure: { kind: "resources", message: String(error?.message || error), stage: "browser" },
+      failure: { kind: error?.name === "WorkerTimeout" ? "timeout" : "resources", message: String(error?.message || error), stage: "browser" },
       provenance: baseProvenance(engine, null),
     });
   }
@@ -515,7 +569,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
   let target;
   try {
-    target = await ensureWorker(releaseEntry);
+    target = await ensureWorker(releaseEntry, deadlineAt);
   } catch (error) {
     checkpoint();
     return handleBrowserFailure({
@@ -526,7 +580,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       attempts,
       startedAt,
       signal: token.abort.signal,
-      kind: classifyWorkerError(error, "init"),
+      kind: error?.name === "WorkerTimeout" ? "timeout" : classifyWorkerError(error, "init"),
       message: String(error?.message || error),
     });
   }
@@ -536,7 +590,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
   const generated = lastStaged && lastStaged.project === currentProject ? lastStaged.generated : {};
   try {
-    await call(target, "stage", { engine, tree, generated });
+    await deadlineCall(target, "stage", { engine, tree, generated }, deadlineAt);
   } catch (error) {
     checkpoint();
     return handleBrowserFailure({
@@ -547,7 +601,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       attempts,
       startedAt,
       signal: token.abort.signal,
-      kind: classifyWorkerError(error, "resources"),
+      kind: error?.name === "WorkerTimeout" ? "timeout" : classifyWorkerError(error, "resources"),
       message: String(error?.message || error),
     });
   }
@@ -561,8 +615,6 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   let bibliographyProvenance = null;
   let bibliographyTools = {};
   let passes = 0;
-  const deadlineAt = startedAt + DEADLINE_MS;
-
   for (;;) {
     checkpoint();
     if (nowImpl() > deadlineAt) {
@@ -584,7 +636,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
     const beforeGenerated = pickGenerated(outputs);
     let reply;
     try {
-      reply = await call(target, "tex", { engine, main: tree.main }, { timeoutMs: Math.max(1000, deadlineAt - nowImpl()) });
+      reply = await deadlineCall(target, "tex", { engine, main: tree.main }, deadlineAt);
     } catch (error) {
       checkpoint();
       const timedOut = error?.name === "WorkerTimeout";
@@ -628,7 +680,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
     let indexChanged = false;
     if (inspected.makeindex) {
       try {
-        const idx = await call(target, "makeindex", { stem });
+        const idx = await deadlineCall(target, "makeindex", { stem }, deadlineAt);
         const ind = toBytes(idx.ind);
         if (!(idx.status === 0 || idx.status === 1) || !ind) {
           throw new Error(idx.ilg || "MakeIndex did not produce an index.");
@@ -636,10 +688,14 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         const previous = toBytes(outputs[`${stem}.ind`]);
         indexChanged = !previous || previous.length !== ind.length || previous.some((byte, i) => byte !== ind[i]);
         outputs[`${stem}.ind`] = ind;
-        await call(target, "write", { path: `${stem}.ind`, bytes: ind.buffer || ind });
+        await deadlineCall(target, "write", { path: `${stem}.ind`, bytes: ind.buffer || ind }, deadlineAt);
         checkpoint();
       } catch (error) {
         checkpoint();
+        if (error?.name === "WorkerTimeout") {
+          attempts.push({ stage: "makeindex", backend: "browser", ok: false, log: String(error.message), reason: "timeout" });
+          return handleBrowserFailure({ job, tree, engine, releaseId, attempts, startedAt, signal: token.abort.signal, kind: "timeout", message: String(error.message) });
+        }
         attempts.push({ stage: "makeindex", backend: "browser", ok: false, log: String(error?.message || error), reason: "index" });
         // TeX has already produced a usable PDF. Keep it visible and retain
         // the failed helper attempt as diagnostic provenance; a broken index
@@ -668,15 +724,29 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       } else if (useBiber) {
         const request = { job, stem, main: tree.main, bcf: controlBytes, files, identity };
         statusStore.set({ phase: "browser-biber", message: "Updating bibliography in browser", backend: "browser" });
+        const biberAbort = new AbortController();
+        const relayAbort = () => biberAbort.abort();
+        token.abort.signal.addEventListener("abort", relayAbort, { once: true });
+        let biberTimedOut = false;
         try {
-          const backend = biberOverride !== undefined ? biberOverride : (biberModule ||= await import("./latex/biber.js"));
-          bibResult = await backend.runBiber(request, {
-            base: absoluteBase(), release: releaseEntry, signal: token.abort.signal,
-            onProgress: progress => { if (!token.cancelled) statusStore.set({ progress }); },
-          });
+          bibResult = await withinDeadline((async () => {
+            const backend = biberOverride !== undefined ? biberOverride : (biberModule ||= await import("./latex/biber.js"));
+            if (token.cancelled || biberAbort.signal.aborted) throw supersededError();
+            return backend.runBiber(request, {
+              base: absoluteBase(), release: releaseEntry, signal: biberAbort.signal,
+              onProgress: progress => { if (!token.cancelled) statusStore.set({ progress }); },
+            });
+          })(), deadlineAt, "browser Biber", () => { biberTimedOut = true; biberAbort.abort(); }, token.abort.signal);
         } catch (error) {
+          if (token.cancelled || error?.name === "Superseded") throw supersededError();
+          if (biberTimedOut || error?.name === "WorkerTimeout" || nowImpl() >= deadlineAt) {
+            return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "timeout", message: "The compile exceeded its time budget.", stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId) });
+          }
           if (token.cancelled || error?.name === "AbortError") throw supersededError();
           bibResult = { ok: false, error: String(error?.message || error), blg: String(error), tool: { backend: "browser" } };
+        } finally {
+          token.abort.signal.removeEventListener("abort", relayAbort);
+          if (!bibResult && !token.cancelled) biberAbort.abort();
         }
         attempts.push({ stage: "browser-biber", backend: "browser", ok: bibResult.ok, log: bibResult.blg || "", tool: bibResult.tool?.version });
         if (!bibResult.ok) return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "bibliography", message: bibResult.error || bibResult.blg || "Biber failed", stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId) });
@@ -686,7 +756,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       } else {
         let reply2;
         try {
-          reply2 = await call(target, "bibtex", { stem, eight: inspected.bibtex8 });
+          reply2 = await deadlineCall(target, "bibtex", { stem, eight: inspected.bibtex8 }, deadlineAt);
         } catch (error) {
           checkpoint();
           attempts.push({ stage: "browser", backend: "browser", ok: false, log: String(error?.message || error), reason: "bibliography" });
@@ -696,7 +766,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
             startedAt,
             ok: false,
             log: finalLog,
-            failure: { kind: classifyWorkerError(error, "bibliography"), message: String(error?.message || error), stage: "bibtex" },
+            failure: { kind: error?.name === "WorkerTimeout" ? "timeout" : classifyWorkerError(error, "bibliography"), message: String(error?.message || error), stage: "bibtex" },
             provenance: baseProvenance(engine, releaseId),
           });
         }
@@ -718,8 +788,9 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         bibliographyChanged = !previous || previous.length !== bibResult.bbl.length || previous.some((byte, i) => byte !== bibResult.bbl[i]);
         outputs[`${stem}.bbl`] = bibResult.bbl;
         try {
-          await call(target, "write", { path: `${stem}.bbl`, bytes: bibResult.bbl.buffer || bibResult.bbl });
-        } catch {
+          await deadlineCall(target, "write", { path: `${stem}.bbl`, bytes: bibResult.bbl.buffer || bibResult.bbl }, deadlineAt);
+        } catch (error) {
+          if (error?.name === "WorkerTimeout") return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "timeout", message: error.message, stage: "write-bibliography" }, provenance: baseProvenance(engine, releaseId) });
           /* the next tex pass will simply see the same undefined citations */
         }
         checkpoint();
@@ -888,7 +959,7 @@ export const resources = {
 /// Test-only injection. Not part of the public contract --
 /// `latex-controller.mjs` is the only caller.
 export const _testing = {
-  inject({ worker: WorkerOverride, biber: browserBiberModule, resources: resourcesModule, fetch: fetchOverride, now } = {}) {
+  inject({ worker: WorkerOverride, biber: browserBiberModule, resources: resourcesModule, fetch: fetchOverride, now, deadlineMs: deadlineOverride } = {}) {
     if (WorkerOverride !== undefined) WorkerClass = WorkerOverride;
     if (browserBiberModule !== undefined) biberOverride = browserBiberModule;
     if (resourcesModule !== undefined) resourcesOverride = resourcesModule;
@@ -901,6 +972,7 @@ export const _testing = {
       releasePromise = null;
     }
     if (now !== undefined) nowImpl = now;
+    if (deadlineOverride !== undefined) deadlineMs = deadlineOverride;
   },
   reset() {
     WorkerClass = typeof Worker !== "undefined" ? Worker : null;
@@ -910,6 +982,7 @@ export const _testing = {
     resourcesOverride = undefined;
     fetchImpl = (...args) => fetch(...args);
     nowImpl = () => Date.now();
+    deadlineMs = DEADLINE_MS;
     release = null;
     releasePromise = null;
   },

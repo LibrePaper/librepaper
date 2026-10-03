@@ -11,6 +11,7 @@
 // untrusted input rather than as fact.
 
 import { createMathTypesetter } from "../lib/math.js";
+import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
 
 (() => {
   // Where this agent is allowed to speak. It is injected into a document on
@@ -282,24 +283,15 @@ import { createMathTypesetter } from "../lib/math.js";
       ? item.color.toLowerCase() : null;
 
   // Those ranges are offsets into the text as it was, and the text has just
-  // changed. Typing is one edit at one place, so the difference is entirely
-  // described by where the two texts stop agreeing and how much longer or
-  // shorter the new one is: everything after that point moves by exactly that
-  // much. Without this the marks are painted a few characters off until the
+  // changed. The common prefix and suffix isolate the edited interval, so
+  // ranges crossing it keep their outside text anchored while later offsets
+  // move by the length delta. Without this the marks are painted off until the
   // sidebar's own answer lands, which reads as a twitch on every keystroke.
   function shiftRanges(ranges) {
     const before = published || "";
     scan();
     const after = text();
-    let same = 0;
-    while (same < before.length && same < after.length && before[same] === after[same]) same++;
-    const delta = after.length - before.length;
-    if (!delta) return ranges;
-    return ranges.map((range) =>
-      range.start >= same
-        ? { ...range, start: range.start + delta, end: range.end + delta }
-        : range,
-    );
+    return shiftAnnotationRanges(before, after, ranges);
   }
 
   function highlight(ranges) {

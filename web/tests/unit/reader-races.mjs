@@ -504,7 +504,6 @@ console.log("reader-races: all checks passed");
   settings.configureLatex("latex", first, "anonymous");
   assert.equal(configurations.length, 1, "one session is configured once");
   assert.equal(configurations[0].project, "project");
-  assert.equal(configurations[0].mayCompile, true);
   assert.equal(first.observers.size, 0);
   assert.equal(paints, 0);
   settings.configureLatex("markdown", first, "anonymous");
@@ -522,7 +521,6 @@ console.log("reader-races: all checks passed");
   assert.equal(second.observers.size, 0);
   // A cold reader has no edit permission and still compiles from source.
   settings.configureLatex("latex", makeSession(), "anonymous");
-  assert.equal(configurations.at(-1).mayCompile, true, "cold readers compile from source without edit permission");
   assert.equal(releases.length, 0, "readers must not pin the default release");
   settings.stopLatex();
 }

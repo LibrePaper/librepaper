@@ -11,11 +11,9 @@
 // frontier and is not in the text now, so there is a label between the
 // two where it stopped being found.
 //
-// Finding it is a search, not a walk. "Found" only goes one way -- a passage
-// that came back would be a passage that was never gone in a way anybody means
-// -- so a bisection finds the moment in a handful of labels rather than
-// all of them, and each one it looks at is cached for every other comment that
-// asks about the same moment.
+// Finding it is an ordered walk: edits can remove a passage and later
+// reintroduce it, so bisection cannot identify its first loss. Each label
+// response is cached for other comments that ask about the same moment.
 //
 // This is deliberately not the word-level diff. What replaced the passage is
 // `history.js`'s `wordDiff` and needs the diff crate in the browser; what is
@@ -30,9 +28,8 @@ import * as history from "./history.js";
 import { MOMENT } from "./moment.js";
 
 // Passage lookups can outlive a single comment card in a long-lived reader.
-// A bisection reads the same handful of labels for every comment it
-// walks, so the entries are what make an N-comment review cost a history's
-// worth of requests rather than N of them.
+// Cached label responses can be reused across comments, avoiding refetching
+// the same historical source for every comment.
 const CACHE_LIMIT = 64;
 
 // A label SHA can be shared by documents and a reader can arrive with a
@@ -143,9 +140,9 @@ export function tracedBy(comment, paths) {
 ///
 /// `labels` is the manifest, oldest first. A comment always carries its
 /// own frontier now, never a label (§7.3: nothing writes a label for a
-/// comment), so the search always starts at that exact position rather than
-/// at a manifest entry, and ends at the newest, where the caller has already
-/// established that the passage is gone. Returns the manifest entry, or null
+/// comment), so the search starts at that exact position rather than at a
+/// manifest entry. Labels may show the passage disappearing and returning,
+/// so inspect them in order and return the first loss. Returns that entry, or null
 /// when there is nothing to say: no history to look in, or a passage that
 /// turns out still to be there.
 export async function wentAt(slug, traced, labels, headers = {}, atSource = sourceTextAt) {
@@ -153,7 +150,11 @@ export async function wentAt(slug, traced, labels, headers = {}, atSource = sour
 
   // Every label supplies the name this same file had at that moment.
   const selector = traced.selector;
-  const read = (sha) => atSource(slug, sha, { file_id: traced.file_id }, headers);
+  const textBySha = new Map();
+  const read = (sha) => {
+    if (!textBySha.has(sha)) textBySha.set(sha, atSource(slug, sha, { file_id: traced.file_id }, headers));
+    return textBySha.get(sha);
+  };
 
   // Read the comment's own recorded position first. Falling back to the
   // oldest label would lose passages introduced later in the
@@ -168,18 +169,14 @@ export async function wentAt(slug, traced, labels, headers = {}, atSource = sour
   if (!Number.isFinite(created)) return null;
   const after = labels.filter((point) => (Date.parse(point.at) || 0) >= created);
   if (!after.length) return null;
-  let low = -1; // the frontier itself, already proved to contain the passage
-  let high = after.length - 1;
-  const newestText = await read(after[high].sha);
+  const newestText = await read(after.at(-1).sha);
   if (typeof newestText !== "string" || holds(newestText, selector)) return null;
-  while (high - low > 1) {
-    const middle = (low + high) >> 1;
-    const middleText = await read(after[middle].sha);
-    if (typeof middleText !== "string") return null;
-    if (holds(middleText, selector)) low = middle;
-    else high = middle;
+  for (const point of after) {
+    const text = await read(point.sha);
+    if (typeof text !== "string") return null;
+    if (!holds(text, selector)) return point;
   }
-  return after[high];
+  return null;
 }
 
 /// Finds what replaced a comment's quotation between two versions. The

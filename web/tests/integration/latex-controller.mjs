@@ -40,6 +40,10 @@ class FakeWorker {
   postMessage(message) {
     if (this.dead) throw new Error("posted to a terminated worker");
     this.messages.push(message);
+    if (FakeWorker.dropNextCommand === message.cmd) {
+      FakeWorker.dropNextCommand = null;
+      return; // emulate a worker that accepts an RPC but never answers it
+    }
     Promise.resolve().then(async () => {
       if (this.dead) return;
       try {
@@ -83,6 +87,7 @@ class FakeWorker {
 }
 
 FakeWorker.totalBibtexCalls = 0;
+FakeWorker.dropNextCommand = null;
 
 let liveWorker = null;
 FakeWorker.onCreate = (instance) => {
@@ -307,12 +312,10 @@ function nextProject() {
 // ============================================================================
 {
   const project = nextProject();
-  // The first call becomes `startedAt`; the second is the deadline check
-  // ahead of the first pass (must still say "on time" or no pass would ever
-  // run); every call after that -- the deadline check ahead of the second
-  // pass -- reports the budget already spent.
+  // Hold the fake clock inside budget through release loading, worker setup,
+  // staging and the first TeX pass; advance beyond it before pass two.
   let calls = 0;
-  const fakeNow = () => (calls++ < 2 ? 0 : latex.DEADLINE_MS + 1000);
+  const fakeNow = () => (calls++ < 6 ? 0 : latex.DEADLINE_MS + 1000);
   latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, now: fakeNow });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
@@ -331,6 +334,97 @@ function nextProject() {
 
   latex._testing.inject({ now: () => Date.now() });
 }
+
+// A hung release fetch cannot hold the queued job behind the same pending
+// cache promise after its deadline; each caller still gets an ordinary result.
+{
+  latex.at("/deadline-resource/");
+  let fetches = 0;
+  latex._testing.inject({
+    worker: FakeWorker,
+    deadlineMs: 200,
+    fetch: async () => {
+      fetches++;
+      if (fetches === 1) return new Promise(() => {});
+      return jsonResponse(RELEASE);
+    },
+  });
+  latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
+  const blocked = latex.compile(tree("main.tex", "resource timeout"));
+  const queued = latex.compile(tree("main.tex", "resource retry"));
+  const expired = await blocked;
+  assert.equal(expired.failure.kind, "timeout");
+  assert.equal((await queued).ok, true, "the next release fetch and worker job make progress");
+  assert.equal(fetches, 2, "a timed-out pending release promise was evicted");
+}
+
+// A worker RPC timeout retires the non-responsive worker and rejects its
+// pending call; a queued compile then configures a fresh worker and completes.
+{
+  latex.at("/deadline-config/");
+  const previousWorker = worker();
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, deadlineMs: 200 });
+  latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
+  FakeWorker.dropNextCommand = "configure";
+  const blocked = latex.compile(tree("main.tex", "configure timeout"));
+  const firstWorker = await untilWorker(previousWorker);
+  await untilMessage(firstWorker, (message) => message.cmd === "configure");
+  const queued = latex.compile(tree("main.tex", "configure retry"));
+  assert.equal((await blocked).failure.kind, "timeout");
+  assert.equal(firstWorker.dead, true, "a timed-out setup worker is retired");
+  assert.equal((await queued).ok, true, "a queued compile configures a fresh worker");
+}
+
+// The Biber asset waiter is scoped to its compile: canceling while it is
+// waiting aborts that waiter and never starts a Biber worker later.
+{
+  latex.at("/deadline-biber-cancel/");
+  const previousWorker = worker();
+  let biberSignal = null;
+  latex._testing.inject({
+    worker: FakeWorker,
+    fetch: fakeFetch,
+    deadlineMs: 500,
+    biber: { runBiber: (_request, { signal }) => {
+      biberSignal = signal;
+      return new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true }));
+    } },
+  });
+  latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
+  FakeWorker.nextTexReplies = [{
+    status: 0, pdf: PDF, synctex: null,
+    log: "Please (re)run Biber on the file: main\n",
+    outputs: { "main.bcf": enc.encode('<bcf:controlfile><bcf:datasource type="file">refs.bib</bcf:datasource></bcf:controlfile>') },
+  }];
+  const waiting = latex.compile(tree("main.tex", "biber wait", { "refs.bib": enc.encode("@book{x,}") }));
+  const compilingWorker = await untilWorker(previousWorker);
+  await until(() => biberSignal !== null);
+  latex.cancel();
+  await assert.rejects(waiting, (error) => error.name === "Superseded");
+  assert.equal(biberSignal.aborted, true, "cancel aborts the per-job Biber load/run signal");
+  assert.ok(compilingWorker.dead === false, "canceling a Biber waiter leaves the reusable TeX worker intact");
+}
+
+// A helper RPC timeout retires its non-responsive worker and the queued job
+// advances on a fresh instance.
+{
+  latex.at("/deadline-helper/");
+  const previousWorker = worker();
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, deadlineMs: 200 });
+  latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
+  FakeWorker.dropNextCommand = "makeindex";
+  FakeWorker.nextTexReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: { "main.idx": enc.encode("\\indexentry{alpha}{1}\n") } }];
+  const blocked = latex.compile(tree("main.tex", "helper timeout"));
+  const firstWorker = await untilWorker(previousWorker);
+  await untilMessage(firstWorker, (message) => message.cmd === "makeindex");
+  const queued = latex.compile(tree("main.tex", "helper retry"));
+  const expired = await blocked;
+  assert.equal(expired.failure.kind, "timeout");
+  assert.equal(firstWorker.dead, true, "the timed-out helper worker was retired");
+  assert.equal((await queued).ok, true, "the queued compile progresses on a fresh worker");
+}
+
+latex._testing.inject({ deadlineMs: latex.DEADLINE_MS });
 
 // ============================================================================
 // 12. A discarded (canceled) job's result, however late it arrives, never

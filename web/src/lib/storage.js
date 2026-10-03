@@ -57,7 +57,15 @@ const memoryKeys = new Map();
 export function takeKeyFromFragment(slug) {
   const found = /(?:^|[#&])k=([^&]+)/.exec(location.hash || "");
   if (!found) return keyFor(slug);
-  const key = decodeURIComponent(found[1]);
+  let key;
+  try {
+    key = decodeURIComponent(found[1]);
+  } catch {
+    // A malformed escape is untrusted URL input. Remove it from the address
+    // bar just like a valid key, but never let it prevent the reader loading.
+    history.replaceState(null, "", location.pathname + location.search);
+    return keyFor(slug);
+  }
   memoryKeys.set(slug, key);
   const keys = read(KEYS, {});
   keys[slug] = key;

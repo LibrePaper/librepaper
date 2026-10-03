@@ -91,7 +91,6 @@ const enc = new TextEncoder();
   const base = { kind: "biber", controlBytes: bcfA, files: filesA, engine: "pdflatex", release: "r1", tool: "biber" };
 
   const id1 = await bibliography.identity(base);
-  const id1Again = await bibliography.identity({ ...base, controlBytes: enc.encode(bcfA.toString()) });
   assert.equal(id1, await bibliography.identity(base), "identical input is deterministic");
 
   // A prose-only edit changes neither the control bytes nor any bib/style
@@ -118,7 +117,6 @@ const enc = new TextEncoder();
   assert.notEqual(await bibliography.identity({ ...base, release: "r2" }), id1);
   assert.notEqual(await bibliography.identity({ ...base, tool: "biber-2.20" }), id1);
 
-  void id1Again;
 }
 
 console.log("latex bibliography: detection and identity fixtures passed");

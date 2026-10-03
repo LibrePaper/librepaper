@@ -7,6 +7,13 @@ import { untar, fetchNeeds, renderResolving, ROUNDS } from "../../src/lib/needs.
 import { needsOf } from "../../src/lib/renderer-wasm.js";
 
 const encoder = new TextEncoder();
+const response = (bytes, ok = true) => ({
+  ok,
+  status: ok ? 200 : 404,
+  body: new Blob([bytes]).stream(),
+  arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  json: async () => JSON.parse(new TextDecoder().decode(bytes)),
+});
 
 function tarOf(files) {
   const chunks = [];
@@ -42,19 +49,12 @@ const font = Uint8Array.of(0, 1, 0, 0, 9, 9, 9);
 globalThis.fetch = async (url) => {
   url = String(url);
   fetches.push(url);
-  const body = (bytes, ok = true) => ({
-    ok,
-    status: ok ? 200 : 404,
-    body: new Blob([bytes]).stream(),
-    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-    json: async () => JSON.parse(new TextDecoder().decode(bytes)),
-  });
-  if (url === "https://packages.typst.org/preview/mini-0.1.0.tar.gz") return body(new Uint8Array(gzipSync(tar)));
+  if (url === "https://packages.typst.org/preview/mini-0.1.0.tar.gz") return response(new Uint8Array(gzipSync(tar)));
   if (url === "https://example.org/api/fonts/index.json") {
-    return body(encoder.encode(JSON.stringify({ families: { "stand in": ["abc123/StandIn.ttf"] } })));
+    return response(encoder.encode(JSON.stringify({ families: { "stand in": ["abc123/StandIn.ttf"] } })));
   }
-  if (url === "https://example.org/api/fonts/abc123/StandIn.ttf") return body(font);
-  return body(new Uint8Array(), false);
+  if (url === "https://example.org/api/fonts/abc123/StandIn.ttf") return response(font);
+  return response(new Uint8Array(), false);
 };
 
 const needs = {
@@ -76,13 +76,27 @@ console.log("needs: fetching packages and fonts into the map passed");
 {
   const previousFetch = globalThis.fetch;
   let failures = 0;
-  globalThis.fetch = async () => { failures += 1; return body(new Uint8Array(), false); };
+  globalThis.fetch = async () => { failures += 1; return response(new Uint8Array(), false); };
   try {
     const missing = { fonts: ["missing"] };
     const missingOptions = { fontsIndex: "https://missing.example/fonts.json" };
-    await fetchNeeds(missing, new Map(), missingOptions);
+    assert.equal(await fetchNeeds(missing, new Map(), missingOptions), false, "a non-OK index response adds no font files");
     await fetchNeeds(missing, new Map(), missingOptions);
     assert.equal(failures, 1, "a failed font index is held through the retry backoff");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+}
+
+{
+  const previousFetch = globalThis.fetch;
+  let failures = 0;
+  globalThis.fetch = async () => { failures += 1; throw new TypeError("offline"); };
+  try {
+    const missing = { fonts: ["offline family"] };
+    const result = await fetchNeeds(missing, new Map(), { fontsIndex: "https://offline.example/fonts.json" });
+    assert.equal(result, false, "a network error falls back without adding assets");
+    assert.equal(failures, 1);
   } finally {
     globalThis.fetch = previousFetch;
   }

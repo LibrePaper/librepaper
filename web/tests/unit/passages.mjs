@@ -1,12 +1,7 @@
 // Where a passage went, against a history the test writes.
 //
-// The search is a bisection over the labels after the frontier a comment
-// was made on, and what makes it correct is that "found" only goes one way.
-// What is checked here is that it lands on the first moment the passage is
-// missing rather than on any moment it is missing, that it says nothing when
-// there is nothing to say, and that it costs a handful of label reads
-// rather than one per label -- which is why it is a bisection and not a
-// walk.
+// The search scans labels after the comment frontier in order because later
+// edits can reintroduce a passage after it disappears.
 
 import { replacementAt, sourceTextAt, tracedBy, wentAt } from "../../src/lib/passages.js";
 import { hunks } from "../../src/lib/history.js";
@@ -140,9 +135,8 @@ function sourceHistory(n, until) {
     const otherKey = await sourceTextAt("doc-a", sha, "main.md", { "X-LibrePaper-Key": "two" });
     check("failed source label fetches are retried", failed && a === "A");
     check("source label cache keys include the document", b === "B" && documentFetches === 3);
-    // A label already fetched under one authorization is reused under
-    // that same authorization -- a bisection asks about the same handful of
-    // moments for every comment it walks -- and never under another. The
+    // A label already fetched under one authorization is reused by later
+    // comments asking about that moment, and never reused under another. The
     // scope is part of the key, so a second link key fetches its own copy
     // rather than reading one it was never shown.
     check("a label is reused within one link context",
@@ -178,7 +172,7 @@ function sourceHistory(n, until) {
   const { labels, atSource, looked } = sourceHistory(32, 20);
   const found = await wentAt("slug", inSource("own", "2026-09-05T08:00:00Z"), labels, {}, atSource);
   check("a source anchor finds the first moment the source no longer holds it", found?.sha === labels[21].sha);
-  check(`a bisection over the source, not a walk (looked at ${looked.size} of 32)`, looked.size <= 8);
+  check(`the first loss scan stops at label 21 (looked at ${looked.size} including the newest-label probe)`, looked.size === 24);
 }
 
 /* ------------------------------------------------------------ the answer */
@@ -187,7 +181,7 @@ function sourceHistory(n, until) {
   const { labels, atSource, looked } = sourceHistory(32, 20);
   const found = await wentAt("slug", inSource("own", labels[10].at), labels, {}, atSource);
   check("the comment's own frontier starts the source search after its timestamp", found?.sha === labels[21].sha);
-  check("source history is bisected", looked.size <= 8);
+  check("source history stops at the first missing label", looked.size === 14);
 }
 
 {
@@ -204,15 +198,38 @@ function sourceHistory(n, until) {
 
 {
   const { labels } = sourceHistory(12, 11);
-  const texts = new Map(labels.map((point, index) => [
-    point.sha,
+  const texts = new Map(labels.map((point, index) => [point.sha,
     index < 4 || (index >= 7 && index < 10)
+      ? "before the passage of interest after" : "before after",
+  ]));
+  const frontier = inSource("comment-frontier-before-removal", "2026-09-05T09:07:30Z");
+  const found = await wentAt("slug", frontier, labels, {}, async (_slug, sha) =>
+    sha === `${MOMENT}comment-frontier-before-removal` ? "before the passage of interest after" : texts.get(sha));
+  check("a frontier ignores removals before the comment and finds the later loss", found?.sha === labels[10].sha);
+}
+
+{
+  const { labels } = sourceHistory(12, 11);
+  const texts = new Map(labels.map((point, index) => [point.sha,
+    index === 8 || index === 10
       ? "before the passage of interest after" : "before after",
   ]));
   const frontier = inSource("comment-frontier", "2026-09-05T09:07:30Z");
   const found = await wentAt("slug", frontier, labels, {}, async (_slug, sha) =>
     sha === `${MOMENT}comment-frontier` ? "before the passage of interest after" : texts.get(sha));
-  check("a frontier ignores removals that happened before the comment", found?.sha === labels[10].sha);
+  check("a frontier finds the first removal even when the passage later returns", found?.sha === labels[9].sha);
+}
+
+{
+  const { labels } = sourceHistory(12, 11);
+  const texts = new Map(labels.map((point, index) => [point.sha,
+    index === 8 || index === 10 || index === 11
+      ? "before the passage of interest after" : "before after",
+  ]));
+  const frontier = inSource("comment-frontier-current", "2026-09-05T09:07:30Z");
+  const found = await wentAt("slug", frontier, labels, {}, async (_slug, sha) =>
+    sha === `${MOMENT}comment-frontier-current` ? "before the passage of interest after" : texts.get(sha));
+  check("a passage present again at the newest label has no current loss point", found === null);
 }
 
 check("a selected part of a rewritten word has no identifiable replacement",
