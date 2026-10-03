@@ -6,7 +6,7 @@
   // reflow that comes with it -- is applied once, on release.
   import { clamp, edgeAt, grows, range, reset as resetOf, sizeAt, snapped, step } from "../lib/panes.js";
 
-  let { pane, label, panes, controls, aside, onsize, onguide, ongrab } = $props();
+  let { pane, label, panes, controls, aside = undefined, onsize, onguide, ongrab } = $props();
 
   let element = $state(null);
   // What the separator says about itself: where it is, and the two places it

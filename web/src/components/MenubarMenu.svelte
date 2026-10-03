@@ -5,7 +5,7 @@
 
   // One word in the bar and the panel behind it. The open state is the bar's,
   // so a click on File followed by a slide onto Edit reads as one gesture.
-  let { id, label, disabled = false, onselect, onopen, children, ...rest } = $props();
+  let { id, label, disabled = false, onselect = undefined, onopen = undefined, children, ...rest } = $props();
 
   // A menu can leave the bar while it is open -- Edit goes when the source
   // pane closes -- and the bar would otherwise stay engaged, opening every

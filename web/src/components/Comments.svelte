@@ -50,7 +50,7 @@
     // all. It is not an empty state -- someone who has read one comment still
     // has to be told where the next one comes from -- so it stays put.
     hint = "Select text in the preview window to comment.",
-    onhistory,
+    onhistory = undefined,
     cardIdPrefix = "comment",
     // The id of the annotation the page has singled out, if any.
     selected = "",

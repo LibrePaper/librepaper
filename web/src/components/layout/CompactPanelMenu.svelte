@@ -2,6 +2,7 @@
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import Icon from "../Icon.svelte";
+  import { retargetElementAttributes } from "../element-attributes.js";
 
   let { tabs = [], panel = "", open = false, onselect, onsettings } = $props();
 
@@ -92,7 +93,7 @@
       </Menu.Item>
       <Menu.Item value="home" class="menuitem workspace-action" data-workspace-action="home">
         {#snippet element(attributes)}
-          <a {...attributes} href="/" class="menuitem workspace-action" data-workspace-action="home">
+          <a {...retargetElementAttributes(attributes)} href="/" class="menuitem workspace-action" data-workspace-action="home">
             <span class="menuitem-check" aria-hidden="true"></span>
             <Icon name="home" size="1rem" />
             <span class="menuitem-label">Home</span>
@@ -101,7 +102,7 @@
       </Menu.Item>
       <Menu.Item value="docs" class="menuitem workspace-action" data-workspace-action="docs">
         {#snippet element(attributes)}
-          <a {...attributes} href="/documentation" class="menuitem workspace-action" data-workspace-action="docs">
+          <a {...retargetElementAttributes(attributes)} href="/documentation" class="menuitem workspace-action" data-workspace-action="docs">
             <span class="menuitem-check" aria-hidden="true"></span>
             <Icon name="help" size="1rem" />
             <span class="menuitem-label">Docs</span>
