@@ -12,6 +12,10 @@
 
 use super::*;
 
+#[cfg(test)]
+#[path = "history_authorization_tests.rs"]
+mod history_authorization_tests;
+
 /// The longest a label's name may be, in characters. Long enough for
 /// "submitted after review, second round" and short enough that the history
 /// panel is a list of names rather than of paragraphs.
@@ -842,18 +846,11 @@ impl Server {
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (entry, who) = match self
-            .entry_viewer(slug, request.headers(), arrival, None)
+        if let Err(response) = self
+            .entry_at_least(slug, request.headers(), arrival, None, Role::Editor)
             .await
         {
-            Ok(result) => result,
-            Err(response) => return response,
-        };
-        if self.needs_sign_in(&entry, &who) {
-            return sign_in_to_read();
-        }
-        if !who.at_least(Role::Editor) {
-            return plain(404, "not found");
+            return response;
         }
         let body = match to_bytes(request.into_body(), 16 * 1024).await {
             Ok(body) => body,
@@ -889,17 +886,13 @@ impl Server {
         };
         // The owner may have transferred the document, or a link may have
         // been revoked, while the request body was being read.
-        let (current_entry, current_who) =
-            match self.entry_viewer(slug, &headers, arrival, None).await {
-                Ok(result) => result,
-                Err(response) => return response,
-            };
-        if self.needs_sign_in(&current_entry, &current_who) {
-            return sign_in_to_read();
-        }
-        if !current_who.at_least(Role::Editor) {
-            return plain(404, "not found");
-        }
+        let (_current_entry, current_who) = match self
+            .entry_at_least(slug, &headers, arrival, None, Role::Editor)
+            .await
+        {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
         let label = match self.store.catalog.label(room.document_id, label_id).await {
             Ok(Some(label)) => label,
             Ok(None) => return plain(404, "not found"),
@@ -975,18 +968,11 @@ impl Server {
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (entry, who) = match self
-            .entry_viewer(slug, request.headers(), arrival, None)
+        if let Err(response) = self
+            .entry_at_least(slug, request.headers(), arrival, None, Role::Editor)
             .await
         {
-            Ok(result) => result,
-            Err(response) => return response,
-        };
-        if self.needs_sign_in(&entry, &who) {
-            return sign_in_to_read();
-        }
-        if !who.at_least(Role::Editor) {
-            return plain(404, "not found");
+            return response;
         }
         let _body = match to_bytes(request.into_body(), 16 * 1024).await {
             Ok(body) => body,
@@ -998,17 +984,13 @@ impl Server {
         };
         // The owner may have transferred the document, or a link may have
         // been revoked, while the request body was being read.
-        let (current_entry, current_who) =
-            match self.entry_viewer(slug, &headers, arrival, None).await {
-                Ok(result) => result,
-                Err(response) => return response,
-            };
-        if self.needs_sign_in(&current_entry, &current_who) {
-            return sign_in_to_read();
-        }
-        if !current_who.at_least(Role::Editor) {
-            return plain(404, "not found");
-        }
+        let (_, current_who) = match self
+            .entry_at_least(slug, &headers, arrival, None, Role::Editor)
+            .await
+        {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
         // Check if another editor has the document open. The caller's own tab
         // may hold one editor socket, which is why the bound is 1, not 0.
         if room.editors().await > 1 {
