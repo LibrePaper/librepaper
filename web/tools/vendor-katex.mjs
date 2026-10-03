@@ -3,9 +3,9 @@
 // Markdown carries its math as TeX, in spans the renderer tags and leaves
 // alone (see wasm-markdown). Typesetting is the reader's: the agent inside
 // the document frame loads KaTeX and renders every span it finds. That frame
-// is on the documents origin, whose CSP allows scripts from itself and nowhere
-// in particular, so KaTeX is served from here rather than from a CDN -- the
-// same reason the LaTeX distribution is.
+// is on the documents origin, whose current CSP also allows HTTPS scripts.
+// KaTeX is served from here so the application pins the math renderer with
+// its own release instead of depending on a CDN.
 //
 // The files land under /assets/, named for the version, so they are cached
 // for a year like everything else the bundler puts there, and a new KaTeX is

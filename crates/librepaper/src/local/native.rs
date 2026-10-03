@@ -1,10 +1,14 @@
-//! Running one subprocess under the local service's confinement.
+//! Running one subprocess with bounded lifecycle and captured output.
 //!
 //! Every process started here is an explicit argument array against an
 //! app-resolved absolute path, with a cleared environment. Cancellation and
 //! the deadline kill the whole process group, and both pipes are drained for
 //! the process's whole lifetime so a verbose tool cannot deadlock on a full
 //! pipe; the retained log is the bounded tail.
+//!
+//! This is process hygiene, not an operating-system security boundary: the
+//! tool runs with the user's permissions. Capabilities report confinement as
+//! `none` until a sandbox is actually enforced.
 //!
 //! The builders (`builders/`) and tool discovery are the callers. LaTeX is
 //! built in the browser, so no TeX engine, BibTeX, Biber or makeindex is
