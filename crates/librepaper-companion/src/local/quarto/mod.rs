@@ -428,11 +428,7 @@ fn quarto_version_parts(value: &str) -> Option<(u32, u32)> {
 }
 
 fn executable(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())?
-        .into_iter()
-        .map(|dir| dir.join(name))
-        .find(|path| path.is_file())
+    which::which(name).ok()
 }
 
 pub(crate) fn find_quarto() -> Option<PathBuf> {

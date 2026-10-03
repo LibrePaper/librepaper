@@ -190,12 +190,11 @@ pub fn executable(which: Integration) -> Option<PathBuf> {
         }
     }
     if let Some(path) = get(which).path {
-        let exe = if path.is_dir() {
-            path.join(which.program())
-        } else {
-            path
-        };
-        return exe.is_file().then_some(exe);
+        if path.is_dir() {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            return which::which_in(which.program(), Some(path.as_os_str()), cwd).ok();
+        }
+        return path.is_file().then_some(path);
     }
     crate::local::tools::find(which.override_var(), which.as_str())
 }

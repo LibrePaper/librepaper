@@ -132,10 +132,9 @@ fn home_dir() -> Option<PathBuf> {
 /// are preserved as-is: this never shells out to find the file, only
 /// `std::fs` metadata, so nothing here re-tokenises the path.
 fn find_tool(tool: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    let name = super::tools::exe_name(tool);
+    let cwd = std::env::current_dir().unwrap_or_default();
     for dir in dirs {
-        let candidate = dir.join(&name);
-        if candidate.is_file() {
+        if let Ok(candidate) = which::which_in(tool, Some(dir.as_os_str()), &cwd) {
             return std::fs::canonicalize(&candidate).ok().or(Some(candidate));
         }
     }

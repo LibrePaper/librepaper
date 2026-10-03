@@ -67,12 +67,7 @@ pub(crate) fn find(override_var: &str, tool: &str) -> Option<PathBuf> {
     if let Some(path) = configured.filter(|path| path.is_file()) {
         return Some(path);
     }
-    let name = exe_name(tool);
-    std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())?
-        .into_iter()
-        .map(|dir| dir.join(&name))
-        .find(|path| path.is_file())
+    which::which(tool).ok()
 }
 
 /// The name an executable actually has on this platform.
