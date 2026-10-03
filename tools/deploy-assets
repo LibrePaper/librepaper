@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Build, check and publish the browser assets: the wasm modules and the LaTeX
-# mirror that DEFAULT_ASSET_MIRROR names (an OVH S3 bucket).
+# mirror that DEFAULT_ASSET_MIRROR names (an OVH S3 bucket by default).
 #
 # The bucket holds wasm/<sha256>/<module>.wasm and latex/<sha256>/ (the release
 # assets.lock pins). Nothing is ever deleted, so older binaries keep working.
@@ -41,6 +41,7 @@ Environment:
   MIRROR=DIR      LaTeX mirror directory (default ../wasm-latex/mirror)
   KEYS=FILE       sops-encrypted keys (default tools/deploy-keys.yaml)
   S3_BUCKET=NAME  bucket name (default: derived from OVH_S3_ARN)
+  S3_PUBLIC_BASE_URL=URL  public HTTPS URL for bucket probes; required with custom S3_ENDPOINT or S3_REGION
 USAGE
 }
 
@@ -48,6 +49,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 MIRROR="${MIRROR:-../wasm-latex/mirror}"
+DEPLOY_ASSET_CONNECT_TIMEOUT=5
+DEPLOY_ASSET_REQUEST_TIMEOUT=20
+
+bounded_curl() {
+  curl --connect-timeout "$DEPLOY_ASSET_CONNECT_TIMEOUT" --max-time "$DEPLOY_ASSET_REQUEST_TIMEOUT" "$@"
+}
 
 cmd_build() {
   make -C "$(dirname "$MIRROR")/" mirror
@@ -107,18 +114,21 @@ push_mirrors() {
 # Verify: fetch public URL with Origin header; expect 200 + access-control-allow-origin.
 verify_public() {
   local KEY="$1"
-  local VERIFY_URL="https://$S3_BUCKET.s3.$S3_REGION.io.cloud.ovh.net/$KEY"
-  local HEADERS HTTP_CODE
-  HEADERS=$(curl -s -o /dev/null -D - -H "Origin: https://example.com" "$VERIFY_URL")
-  HTTP_CODE=$(printf "%s" "$HEADERS" | head -1 | cut -d" " -f2)
+  local VERIFY_URL="${S3_PUBLIC_BASE_URL%/}/$KEY"
+  local PROBE_ORIGIN="https://example.com"
+  local RESPONSE HEADERS HTTP_CODE ALLOW_ORIGIN
+  RESPONSE=$(bounded_curl -sS -o /dev/null -D - -w $'\n%{http_code}' -H "Origin: $PROBE_ORIGIN" "$VERIFY_URL")
+  HTTP_CODE="${RESPONSE##*$'\n'}"
+  HEADERS="${RESPONSE%$'\n'*}"
 
   if [ "$HTTP_CODE" != "200" ]; then
     printf '%s\n' "Error: verification failed for $KEY (HTTP $HTTP_CODE)" >&2
     exit 1
   fi
 
-  if ! printf '%s' "$HEADERS" | grep -qi "access-control-allow-origin"; then
-    printf '%s\n' "Error: CORS header missing in response for $KEY" >&2
+  ALLOW_ORIGIN=$(printf '%s\n' "$HEADERS" | tr -d '\r' | awk 'tolower($1)=="access-control-allow-origin:" {print $2}' | tail -n 1)
+  if [ "$ALLOW_ORIGIN" != '*' ] && [ "$ALLOW_ORIGIN" != "$PROBE_ORIGIN" ]; then
+    printf '%s\n' "Error: CORS origin for $KEY is '${ALLOW_ORIGIN:-missing}', expected '$PROBE_ORIGIN' or '*'" >&2
     exit 1
   fi
 }
@@ -141,7 +151,7 @@ cmd_publish() {
   # the modules anonymously, and the LaTeX release's source link is its licence
   # obligation. A draft release answers 404 to anyone signed out. Cheap, so before the smoke.
   printf '%s\n' "publish: 2/6 check GitHub releases"
-  public() { [ "$(curl -sIL -o /dev/null -w '%{http_code}' "$1")" = 200 ] || { printf '%s\n' "Error: $2 is not publicly downloadable (a draft release?): $1" >&2; exit 1; }; }
+  public() { [ "$(bounded_curl -sSIL -o /dev/null -w '%{http_code}' "$1")" = 200 ] || { printf '%s\n' "Error: $2 is not publicly downloadable (a draft release?): $1" >&2; exit 1; }; }
   local module repo tag _
   while read -r module repo tag _; do
     [ "$module" = latex ] && continue
@@ -177,9 +187,32 @@ cmd_publish() {
     exit 1
   fi
 
+  # Require a public URL when the S3 API target is overridden. S3 endpoint
+  # hostnames do not determine a provider's public object URL convention.
+  local custom_s3_target=0
+  if [ -n "${S3_ENDPOINT:-}" ] || [ -n "${S3_REGION:-}" ]; then custom_s3_target=1; fi
+
   # Honor environment variable overrides for S3 endpoint and region.
   S3_ENDPOINT="${S3_ENDPOINT:-$OVH_S3_ENDPOINT}"
   S3_REGION="${S3_REGION:-$OVH_S3_REGION}"
+
+  if [ -z "${S3_PUBLIC_BASE_URL:-}" ]; then
+    if [ "$custom_s3_target" = 1 ]; then
+      printf '%s\n' "Error: set S3_PUBLIC_BASE_URL when overriding S3_ENDPOINT or S3_REGION" >&2
+      exit 1
+    fi
+    S3_PUBLIC_BASE_URL="https://$S3_BUCKET.s3.$S3_REGION.io.cloud.ovh.net"
+  fi
+  case "$S3_PUBLIC_BASE_URL" in
+    https://*) ;;
+    *) printf '%s\n' 'Error: S3_PUBLIC_BASE_URL must be an HTTPS URL' >&2; exit 1 ;;
+  esac
+  case "$S3_PUBLIC_BASE_URL" in
+    *\?* | *\#*) printf '%s\n' 'Error: S3_PUBLIC_BASE_URL must not include a query or fragment' >&2; exit 1 ;;
+  esac
+  case "$S3_PUBLIC_BASE_URL" in
+    https://*@*) printf '%s\n' 'Error: S3_PUBLIC_BASE_URL must not include credentials' >&2; exit 1 ;;
+  esac
 
   # Export AWS credentials (read-only here, not echoed), honoring overrides.
   export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-$OVH_S3_USER}"
@@ -219,7 +252,7 @@ cmd_publish() {
 
   # Verify that bucket root listing is not public.
   local LIST_RESPONSE
-  LIST_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "https://$S3_BUCKET.s3.$OVH_S3_REGION.io.cloud.ovh.net/")
+  LIST_RESPONSE=$(bounded_curl -sS -o /dev/null -w "%{http_code}" "${S3_PUBLIC_BASE_URL%/}/")
   if [ "$LIST_RESPONSE" = "200" ]; then
     printf '%s\n' "Error: bucket listing is public (should be private)" >&2
     exit 1

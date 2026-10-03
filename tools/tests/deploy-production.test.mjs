@@ -46,6 +46,7 @@ function fixture({
   const prometheusCountFile = path.join(root, 'prometheus-count');
   const makeCalledFile = path.join(root, 'make-called');
   const oauthCallsFile = path.join(root, 'oauth-calls');
+  const curlCallsFile = path.join(root, 'curl-calls');
   writeFileSync(adminPasswordFile, adminPassword);
   writeFileSync(exporterPasswordFile, exporterPassword);
 
@@ -128,12 +129,13 @@ case "$command" in
 esac`);
 mockCommand(bin, 'curl', `
 set -eu
-out= headers= format= url= config= followed=no
+out= headers= format= url= config= followed=no connect_timeout= max_time=
 for arg do case "$arg" in *admin-secret*|*exporter-secret*|*pg-secret*|*github-secret*|*google-id*|*google-secret*) exit 92 ;; esac; done
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --config) config="$2"; shift 2 ;;
-    --connect-timeout|--max-time) shift 2 ;;
+    --connect-timeout) connect_timeout="$2"; shift 2 ;;
+    --max-time) max_time="$2"; shift 2 ;;
     -o) out="$2"; shift 2 ;;
     -D) headers="$2"; shift 2 ;;
     -w) format="$2"; shift 2 ;;
@@ -142,6 +144,7 @@ while [ "$#" -gt 0 ]; do
     *) url="$1"; shift ;;
   esac
 done
+printf '%s\t%s\t%s\n' "$url" "$connect_timeout" "$max_time" >> "$CURL_CALLS_FILE"
 if [ -n "$config" ]; then
   [ "$(stat -c %a "$config")" = 600 ]
   grep -q 'user = "admin:admin-secret"' "$config"
@@ -218,6 +221,7 @@ exit 0`);
       PROMETHEUS_TRANSIENT_FAILURES: String(prometheusTransientFailures),
       MAKE_CALLED_FILE: makeCalledFile,
       OAUTH_CALLS_FILE: oauthCallsFile,
+      CURL_CALLS_FILE: curlCallsFile,
       GOOGLE_CLIENT_ID: String(googleClientId ?? ''),
       GOOGLE_CLIENT_SECRET: String(googleClientSecret ?? ''),
       GOOGLE_CLIENT_ID_PRESENT: googleClientIdPresent ? '1' : '0',
@@ -243,10 +247,11 @@ test('deploy writes Google OAuth credentials to .env and keeps them out of outpu
     const result = runProduction(f, 'deploy');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /8 keys decrypted/);
-    assert.match(result.stdout, /13 settings/);
+    assert.match(result.stdout, /15 settings/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
+    assert.equal(envFile.trimEnd().split('\n').length, 15);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
   } finally {
     f.cleanup();
@@ -259,10 +264,11 @@ test('deploy-local writes Google OAuth credentials to .env and keeps them out of
     const result = runProduction(f, 'deploy-local');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /8 keys decrypted/);
-    assert.match(result.stdout, /13 settings/);
+    assert.match(result.stdout, /15 settings/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
+    assert.equal(envFile.trimEnd().split('\n').length, 15);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
   } finally {
     f.cleanup();
@@ -303,6 +309,25 @@ test('verify checks both OAuth providers with unfollowed matching authorization 
     assert.match(result.stdout, /google OAuth redirect answers/i);
     const calls = readFileSync(f.oauthCallsFile, 'utf8').trim().split('\n');
     assert.deepEqual(calls, ['github\tno', 'google\tno']);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('verify bounds every HTTP request and passes the health probe its remaining deadline', () => {
+  const f = fixture();
+  try {
+    const result = spawnSync(deploy, ['verify'], { cwd: repo, env: f.env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const requests = readFileSync(path.join(f.root, 'curl-calls'), 'utf8').trim().split('\n')
+      .map((line) => line.split('\t'));
+    assert.ok(requests.length > 0);
+    for (const [url, connectTimeout, maxTime] of requests) {
+      assert.ok(Number(connectTimeout) > 0, `${url} is missing a connect timeout`);
+      assert.ok(Number(maxTime) > 0, `${url} is missing a total timeout`);
+    }
+    const health = requests.find(([url]) => url === 'https://app.librepaper.org/health');
+    assert.deepEqual(health, ['https://app.librepaper.org/health', '5', '120']);
   } finally {
     f.cleanup();
   }
