@@ -6,6 +6,8 @@
 use serde::Serialize;
 use std::path::PathBuf;
 
+pub mod socket_budget;
+
 /// The public static asset mirror used when an operator does not host a copy:
 /// the browser wasm modules under `wasm/<sha256>/` and the pinned LaTeX
 /// release under `latex/<sha256>/`. Browsers fetch them directly; the origin never proxies these
@@ -104,7 +106,7 @@ pub struct Configuration {
     #[serde(skip)]
     pub cost: CostPolicy,
     #[serde(skip)]
-    pub sockets: crate::server::socket_budget::SocketPolicy,
+    pub sockets: crate::config::socket_budget::SocketPolicy,
     /// Optional reporting metadata for operator-managed backups.
     pub backup: BackupPolicy,
 
@@ -422,7 +424,7 @@ impl Default for Configuration {
                 uploads_per_hour: 30,
             },
             cost: CostPolicy::default(),
-            sockets: crate::server::socket_budget::SocketPolicy::default(),
+            sockets: crate::config::socket_budget::SocketPolicy::default(),
             backup: BackupPolicy::default(),
             // What the upload form takes. Every one of these is a source
             // format `document_format` names and `storable_source` allows, so

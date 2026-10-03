@@ -78,7 +78,7 @@ pub mod serve;
 mod sharing;
 mod signin;
 mod socket;
-pub mod socket_budget;
+pub use crate::config::socket_budget;
 mod suggestions;
 #[cfg(test)]
 mod trim_http_tests;

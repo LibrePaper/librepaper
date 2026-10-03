@@ -123,7 +123,7 @@ impl Server {
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
         let _socket_permit = match self.socket_budget.admit(
             socket_id,
-            crate::server::socket_budget::SocketIdentity {
+            crate::config::socket_budget::SocketIdentity {
                 network: connection.network.clone(),
                 principal: connection.principal.clone(),
                 document: slug.clone(),
