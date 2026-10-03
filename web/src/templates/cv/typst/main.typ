@@ -4,7 +4,7 @@
 
 #align(center, text(size: 20pt, weight: "bold", [#author]))
 
-#align(center, text(size: 10pt, [Email: your.email@example.com | Phone: (123) 456-7890 | Address: City, State]))
+#align(center, text(size: 10pt, [Email: your.email\@example.com | Phone: (123) 456-7890 | Address: City, State]))
 
 #set heading(level: 1, numbering: none)
 
