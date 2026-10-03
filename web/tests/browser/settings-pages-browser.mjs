@@ -220,7 +220,7 @@ try {
   assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   await until("offline render settings", () => present(["render-latex-engine"]).then((found) => found.length === 1), 5000);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="LaTeX engine"]').disabled`), false);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Typst renderer"]').disabled`), false);
+  assert.equal(await b.evaluate(`document.querySelector("#calepin-status .setting-status-pill")?.textContent.trim()`), "Not checked");
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Executable path"]')?.disabled`), true);
