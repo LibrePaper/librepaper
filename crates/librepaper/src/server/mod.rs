@@ -56,6 +56,8 @@ mod figures;
 pub mod fonts;
 mod history;
 #[cfg(test)]
+mod http_test_support;
+#[cfg(test)]
 mod history_frontier_tests;
 mod host_metrics;
 #[cfg(test)]

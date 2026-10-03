@@ -14,139 +14,36 @@
 //! it requires `LIBREPAPER_TEST_POSTGRES_URL` to point to a disposable
 //! database and a serial run (`--test-threads=1`).
 
-use std::sync::Arc;
-
 use axum::http::{HeaderMap, HeaderValue};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::auth::{
-    sign_agent_grant, sign_device, AgentGrant, GithubApp, Identity, Policy, PROVIDER_GITHUB,
-};
-use crate::config::Configuration;
-use crate::document::store::{DocumentInput, MutationActor, Role, Store};
-use crate::log::Registry;
-use crate::room::{Message as RoomMessage, Rooms};
+use crate::auth::{sign_agent_grant, sign_device, AgentGrant, Identity, PROVIDER_GITHUB};
+use crate::document::store::Role;
+use crate::room::Message as RoomMessage;
 use crate::server::origins::Origins;
-use crate::storage::blob::FsStore;
-use crate::storage::postgres::NewAccount;
-use crate::storage::postgres::PostgresCatalog;
 
 use super::{Server, Viewer};
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";
-
-struct Deployment {
-    server: Server,
-    catalog: Arc<PostgresCatalog>,
-    slug: String,
-    owner_id: Uuid,
-    owner_session_generation: String,
-    _writer: crate::storage::postgres::WriterLease,
-    _objects: tempfile::TempDir,
+async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> {
+    super::http_test_support::deployment(
+        crate::document::store::DocumentInput {
+            slug: slug.into(),
+            title: "A Paper".into(),
+            source: PAPER.into(),
+            source_format: "markdown".into(),
+            main: "paper.md".into(),
+        },
+        Vec::new(),
+        "owner",
+        "any",
+    )
+    .await
 }
 
-/// One document, one owner, reachable both the way `apply_from` is called in
-/// `comment_http_tests.rs` (a hand-resolved `Viewer`) and the way a real
-/// request reaches `handle_label_read` (a bearer token `Server::viewer`
-/// resolves from headers) -- this file needs the second for the route it is
-/// proving, which `comment_http_tests.rs`'s fixture never exercises.
-async fn deployment(slug: &str) -> Option<Deployment> {
-    let catalog = crate::tests::catalog().await?;
-    let writer = catalog.claim_writer().await.unwrap();
-    let owner = catalog
-        .create_account(NewAccount {
-            kind: "registered".into(),
-            provider: Some("test".into()),
-            provider_subject: Some("owner".into()),
-            handle: "owner".into(),
-            display_name: "Owner".into(),
-            email: None,
-        })
-        .await
-        .unwrap();
-    let objects = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
-        Arc::new(FsStore::new(objects.path(), false));
-    let config = Arc::new(Configuration::default());
-    let registry = Registry::new(
-        catalog.clone(),
-        blobs.clone(),
-        config.clone(),
-        "deployment".into(),
-    );
-    let rooms = Rooms::new(
-        catalog.clone(),
-        blobs.clone(),
-        config.clone(),
-        registry.clone(),
-    );
-    let (worker, background) = crate::storage::worker::Worker::new(
-        catalog.clone(),
-        blobs.clone(),
-        registry.clone(),
-        config.clone(),
-    );
-    tokio::spawn(worker.run());
-    let store = Store::open_with_catalog(
-        blobs.clone(),
-        config.clone(),
-        catalog.clone(),
-        registry.clone(),
-    );
-    let actor = MutationActor {
-        account_id: owner.id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: owner.session_generation.to_string(),
-        link_hash: String::new(),
-        policy_editor: true,
-        policy_comment: true,
-        automation: false,
-        unowned_publisher: false,
-    };
-    store
-        .put_directory_as_actor(
-            DocumentInput {
-                slug: slug.into(),
-                title: "A Paper".into(),
-                source: PAPER.into(),
-                source_format: "markdown".into(),
-                main: "paper.md".into(),
-            },
-            Vec::new(),
-            actor,
-        )
-        .await
-        .unwrap();
-    // `provider_configured` (server/mod.rs) needs a non-empty client id to
-    // grant edit ceiling to a GitHub-provider identity; nothing here ever
-    // calls out to GitHub, since a device token never goes through
-    // `check_token`.
-    let app = GithubApp {
-        client_id: "test-client".into(),
-        ..GithubApp::default()
-    };
-    let server = Server::new(
-        store,
-        rooms,
-        background,
-        std::collections::HashMap::new(),
-        app,
-        vec![0u8; 32],
-        config.clone(),
-        Policy::parse_publishers("owner").unwrap(),
-        Policy::parse("any"),
-    );
-    Some(Deployment {
-        server,
-        catalog,
-        slug: slug.into(),
-        owner_id: owner.id,
-        owner_session_generation: owner.session_generation.to_string(),
-        _writer: writer,
-        _objects: objects,
-    })
-}
+
+use super::http_test_support::{owner_bearer, Deployment};
 
 fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) -> Viewer {
     Viewer {
@@ -168,28 +65,6 @@ fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) 
     }
 }
 
-/// An `Authorization: Bearer` header carrying a device token for the owner
-/// account, the credential a real signed-in caller's browser sends and the
-/// one `handle_label_read`'s `entry_viewer` actually resolves a role from --
-/// unlike `apply_from`, which takes an already-resolved `Viewer` and never
-/// looks at headers at all.
-fn owner_bearer(deployment: &Deployment) -> HeaderMap {
-    let identity = Identity {
-        provider: PROVIDER_GITHUB.into(),
-        id: deployment.owner_id.to_string(),
-        handle: "owner".into(),
-        name: "Owner".into(),
-        picture: String::new(),
-        session_generation: deployment.owner_session_generation.clone(),
-    };
-    let token = sign_device(&[0u8; 32], &identity, crate::util::now_unix() + 3600);
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "authorization",
-        HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-    );
-    headers
-}
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
