@@ -500,10 +500,22 @@ function nextProject() {
     assert.equal(await until(() => digestStarted), true, "the job reaches source hashing before the deadline");
     FakeWorker.nextTexReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: {} }];
     const queuedAfterDigest = latex.compile(tree("main.tex", "queued after source digest timeout"));
+    let queuedDigestSettled = false;
+    let queuedDigestResult;
+    let queuedDigestError;
+    queuedAfterDigest.then((result) => {
+      queuedDigestResult = result;
+      queuedDigestSettled = true;
+    }, (error) => {
+      queuedDigestError = error;
+      queuedDigestSettled = true;
+    });
     const digestTimeout = await expiringDigest;
     assert.equal(digestTimeout.failure.kind, "timeout", "source hashing is covered by the whole-job deadline");
     assert.equal(digestTimeout.job.snapshot, "", "the failed pre-job digest is not reported as a completed snapshot");
-    assert.equal((await queuedAfterDigest).ok, true, "the queue proceeds while the expired digest remains held");
+    assert.equal(await until(() => queuedDigestSettled, 10_000), true, "the queue settles while the expired digest remains held");
+    assert.equal(queuedDigestError, undefined, "the queued compile does not reject");
+    assert.equal(queuedDigestResult.ok, true, "the queued compile succeeds before the old digest is released");
   } finally {
     releaseDigest();
     if (digestStarted) await finished;
@@ -551,11 +563,23 @@ function nextProject() {
     assert.equal(await until(() => identityStarted), true, "the source snapshot reaches bibliography identity before timeout");
     compilingWorker.texReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: {} }];
     const queued = latex.compile(tree("main.tex", "queued after identity timeout"));
+    let queuedIdentitySettled = false;
+    let queuedIdentityResult;
+    let queuedIdentityError;
+    queued.then((result) => {
+      queuedIdentityResult = result;
+      queuedIdentitySettled = true;
+    }, (error) => {
+      queuedIdentityError = error;
+      queuedIdentitySettled = true;
+    });
 
     const timedOut = await expiring;
     assert.equal(timedOut.failure.kind, "timeout", "stalled identity hashing consumes the compile deadline");
     assert.match(timedOut.job.snapshot, /^[0-9a-f]{64}$/, "the completed source snapshot remains attached to the timeout result");
-    assert.equal((await queued).ok, true, "the queue advances while the old digest remains held");
+    assert.equal(await until(() => queuedIdentitySettled, 10_000), true, "the queue settles while the old identity remains held");
+    assert.equal(queuedIdentityError, undefined, "the queued compile does not reject");
+    assert.equal(queuedIdentityResult.ok, true, "the queued compile succeeds before the old identity is released");
     assert.equal(compilingWorker.dead, false, "a hashing timeout does not retire the responsive worker");
   } finally {
     releaseIdentity();
