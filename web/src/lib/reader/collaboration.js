@@ -36,9 +36,9 @@ import { createGeneration } from "./generation.js";
 
 /** @typedef {{ document_id?: string, created_at?: string, commenting_as?: string, role?: string, can_edit?: boolean, can_moderate?: boolean, can_see_sharing?: boolean, [key: string]: unknown }} CollaborationDocument */
 /** @typedef {{ type?: string, [key: string]: unknown }} RoomMessage */
-/** @typedef {{ events: Array<{ target: string, path?: string[] }> }} DirectoryBatch */
 /** @typedef {Parameters<typeof import("../collab.js").join>[0]} JoinOptions */
 /** @typedef {ReturnType<typeof import("../project-session.js").createProjectSession>} ReaderSession */
+/** @typedef {Parameters<Parameters<ReaderSession["onFiles"]>[0]>[0]} DirectoryEvents */
 /** @typedef {typeof import("../collab.js")} CollaborationModule */
 /** @typedef {Parameters<NonNullable<Parameters<typeof import("../project-session.js").createProjectSession>[0]["onState"]>>[0]} CollaborationState */
 
@@ -58,7 +58,7 @@ const capability = (document_) => JSON.stringify([
  * onPeers?: (count: number) => void, onState?: (state: CollaborationState) => void,
  * onSession?: (session: ReaderSession) => void,
  * onDocumentChanged?: (reason: string) => void, onSource?: (session: ReaderSession) => void,
- * onSwap?: (session: ReaderSession) => void, onFiles?: (events: DirectoryBatch["events"], session: ReaderSession) => void,
+ * onSwap?: (session: ReaderSession) => void, onFiles?: (events: DirectoryEvents, session: ReaderSession) => void,
  * onAwareness?: (session: ReaderSession) => void,
  * sourceSync?: boolean, retryMs?: number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout,
  * }} options

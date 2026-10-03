@@ -17,9 +17,9 @@ import * as figures from "../figures.js";
 import * as renderers from "../renderers.js";
 import { authHeaders, uploadAsset } from "../api.js";
 
-/** @typedef {{ id: string, path: string, kind: "text" | "asset", sha?: string, main?: boolean }} WorkspaceFile */
 /** @typedef {ReturnType<typeof import("../collab.js").join>} WorkspaceSession */
-/** @typedef {{ text_extensions?: string[], asset_extensions?: string[], derived_extensions?: string[], max_path?: number, [key: string]: unknown }} WorkspaceRules */
+/** @typedef {ReturnType<WorkspaceSession["list"]>[number]} WorkspaceFile */
+/** @typedef {Parameters<WorkspaceSession["setRules"]>[0]} WorkspaceRules */
 
 /** @param {{ slug: string, key?: string, arrivedFile?: string, say?: (message: string) => void, paint?: () => void, retarget?: () => void, onarrived?: (file: WorkspaceFile) => void, upload?: typeof uploadAsset, gather?: typeof figures.gather }} options */
 export function createWorkspace({

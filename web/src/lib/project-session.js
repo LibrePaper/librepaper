@@ -814,7 +814,6 @@ export function createProjectSession({
     },
 
     /** @param {ProjectFile} entry @param {string} path @param {ProjectRules} rules */
-    /** @param {ProjectFile} entry @param {string} path @param {ProjectRules} rules */
     duplicateEntry(entry, path, rules) {
       if (!mayEdit) throw new Error("This project is read-only.");
       const file = this.list().find((file) => file.kind === entry.kind && file.id === entry.id && file.path === entry.path);

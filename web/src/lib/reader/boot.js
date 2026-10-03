@@ -8,7 +8,6 @@ import { createGeneration } from "./generation.js";
 /** @typedef {{ title?: string, docs_origin?: string, document_id?: string, created_at?: string, role?: string, can_edit?: boolean, can_moderate?: boolean, can_see_sharing?: boolean, [key: string]: unknown }} ReaderDocument */
 /** @typedef {Error & { status?: number }} ReaderBootError */
 
-
 /** @param {{
  * slug: string, key?: string, fetcher?: typeof fetch,
  * whoami?: () => Promise<ReaderIdentity>,
