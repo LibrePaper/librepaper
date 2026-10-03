@@ -38,7 +38,7 @@ pub fn local_path(next: &str) -> String {
 pub fn client_address(peer: SocketAddr, headers: &HeaderMap, trusted: &[ipnet::IpNet]) -> String {
     let peer = normalized_ip(peer.ip());
     let fallback = peer.to_string();
-    if !trusted.iter().any(|network| network.contains(peer)) {
+    if !trusted.iter().any(|network| network.contains(&peer)) {
         return fallback;
     }
     let values: Vec<_> = headers.get_all("x-forwarded-for").iter().collect();
@@ -65,7 +65,7 @@ pub fn client_address(peer: SocketAddr, headers: &HeaderMap, trusted: &[ipnet::I
     chain
         .into_iter()
         .rev()
-        .find(|ip| !trusted.iter().any(|network| network.contains(*ip)))
+        .find(|ip| !trusted.iter().any(|network| network.contains(ip)))
         .map(|ip| ip.to_string())
         .unwrap_or(fallback)
 }
@@ -161,11 +161,11 @@ mod proxy_tests {
         );
         let mapped_net =
             librepaper_base::config::parse_trusted_proxy(" ::ffff:127.0.0.1/128 ").unwrap();
-        assert!(mapped_net.contains("127.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(mapped_net.contains(&"127.0.0.1".parse::<IpAddr>().unwrap()));
         let subnet: ipnet::IpNet = "2001:db8::/32".parse().unwrap();
-        assert!(subnet.contains("2001:db8:1::1".parse::<IpAddr>().unwrap()));
+        assert!(subnet.contains(&"2001:db8:1::1".parse::<IpAddr>().unwrap()));
         let all_zeros: ipnet::IpNet = "::/0".parse().unwrap();
-        assert!(!all_zeros.contains("127.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(!all_zeros.contains(&"127.0.0.1".parse::<IpAddr>().unwrap()));
         assert_eq!(client_network("2001:db8:1:2:3:4:5:6"), "2001:db8:1:2::/64");
     }
 }

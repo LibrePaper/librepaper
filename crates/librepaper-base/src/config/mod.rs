@@ -3,7 +3,7 @@
 //! server reads them directly. A limit changed here changes everywhere on the
 //! next build.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -263,10 +263,7 @@ pub struct CostPolicy {
     pub work_concurrency: usize,
     /// TCP peers whose X-Forwarded-For header may be used for client identity.
     /// An empty list means the TCP peer address is authoritative.
-    #[serde(
-        deserialize_with = "deserialize_trusted_proxies",
-        serialize_with = "serialize_trusted_proxies"
-    )]
+    #[serde(serialize_with = "serialize_trusted_proxies")]
     pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
@@ -326,10 +323,10 @@ pub fn parse_trusted_proxy(value: &str) -> Result<ipnet::IpNet, String> {
                 if let Some(mapped_v4) = ip.to_ipv4_mapped() {
                     ipnet::IpNet::V4(ipnet::Ipv4Net::new(mapped_v4, 32).unwrap())
                 } else {
-                    ipnet::IpNet::new(address, bits as u8).unwrap()
+                    ipnet::IpNet::new(address, bits).unwrap()
                 }
             } else {
-                ipnet::IpNet::new(address, bits as u8).unwrap()
+                ipnet::IpNet::new(address, bits).unwrap()
             };
             Ok(net)
         };
@@ -355,17 +352,6 @@ pub fn parse_trusted_proxy(value: &str) -> Result<ipnet::IpNet, String> {
     }
     ipnet::IpNet::new(address, prefix)
         .map_err(|_| format!("trusted_proxies entry {value:?} is not a valid network"))
-}
-
-fn deserialize_trusted_proxies<'de, D>(deserializer: D) -> Result<Vec<ipnet::IpNet>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let strings: Vec<String> = Vec::deserialize(deserializer)?;
-    strings
-        .into_iter()
-        .map(|s| parse_trusted_proxy(&s).map_err(serde::de::Error::custom))
-        .collect()
 }
 
 fn serialize_trusted_proxies<S>(networks: &[ipnet::IpNet], serializer: S) -> Result<S::Ok, S::Error>
