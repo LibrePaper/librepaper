@@ -105,7 +105,7 @@ Hosting, database and object-storage providers see what they store.
 - **Checkpoints:** kept until document is deleted
 - **Edit history:** kept whole for the life of the document
 - **Sessions:** 30 days; invalidated by sign-out or account erasure
-- **Backups:** encrypted, up to 60 days
+- **Backups:** encrypted, up to 90 days
 
 Deleting a document deletes files, comments, replies, checkpoints and share links.
 
@@ -119,7 +119,7 @@ Deleting a document deletes files, comments, replies, checkpoints and share link
 4. Account record deleted once documents are gone
 
 When you delete your account, your personal information is removed from our
-active systems. Residual copies may remain in encrypted backups for up to 60
+active systems. Residual copies may remain in encrypted backups for up to 90
 days. Backup data is not accessible through the service or used for any other
 purpose and is automatically deleted as backups expire. If a backup is
 restored, previously completed deletion requests are reapplied.
