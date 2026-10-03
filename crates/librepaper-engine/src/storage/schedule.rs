@@ -94,6 +94,12 @@ pub struct Due {
     pub rescan: bool,
 }
 
+impl Default for Deadlines {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Deadlines {
     pub fn new() -> Self {
         Self {
@@ -283,6 +289,10 @@ impl Deadlines {
     /// How many tasks are remembered right now (armed or not).
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// How many deadlines this map has refused since the process started.

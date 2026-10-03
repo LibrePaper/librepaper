@@ -81,6 +81,12 @@ pub struct Outbox {
     pub at: VersionVector,
 }
 
+impl Default for Outbox {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Outbox {
     pub fn new() -> Self {
         let doc = LoroDoc::new();
