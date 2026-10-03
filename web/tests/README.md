@@ -37,7 +37,7 @@ coverage.
 `assistant`, `assistant-preview`, `assistant-review`, `build-catalog`,
 `build-preferences`, `citations`, `collab-awareness`, `commands`,
 `companion-status`, `deployment-helper`, `diagnostics`, `downloads`, `file-manager`,
-`browser-executable`, `browser-suite-selection`, `frame-overlays`, `generation`, `history-calendar`, `insert`, `landing`,
+`browser-executable`, `frame-overlays`, `generation`, `history-calendar`, `insert`, `landing`,
 `latex-biber`, `latex-bibliography`, `latex-driver`, `latex-engine`,
 `latex-log`, `latex-reader`, `loro-codemirror`, `math`, `offline-projects`,
 `orphan`, `outline`, `panels`, `passage-trace`, `passages`, `pdf-fit`,

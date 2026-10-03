@@ -46,8 +46,7 @@ suite_browser() {
 		printf '%s: ' "$(basename "$test")"
 		test_args=()
 		if [ "$(basename "$test")" = "latex-browser.mjs" ]; then
-			test_arg="$(node web/tools/browser-suite-selection.mjs "$test")"
-			test_args=("$test_arg")
+			test_args=(chromium)
 		fi
 		log="$(mktemp "${TMPDIR:-/tmp}/librepaper-browser-test.XXXXXX")"
 		if (cd web && timeout 900 node "../$test" "${test_args[@]}" >"$log" 2>&1); then
