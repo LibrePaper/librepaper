@@ -1170,8 +1170,8 @@ impl Server {
         let files = projected.projection.files.clone();
         let snapshot = crate::document::projection::ProjectSnapshot {
             sha: tree_sha,
-            tree: projected.projection,
-            texts: projected.texts,
+            tree: projected.projection.clone(),
+            texts: projected.texts.clone(),
         };
         let response = SnapshotResponse {
             version: 1,
