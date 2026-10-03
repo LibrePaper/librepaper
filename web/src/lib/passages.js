@@ -145,37 +145,86 @@ export function tracedBy(comment, paths) {
 /// so inspect them in order and return the first loss. Returns that entry, or null
 /// when there is nothing to say: no history to look in, or a passage that
 /// turns out still to be there.
-export async function wentAt(slug, traced, labels, headers = {}, atSource = sourceTextAt) {
-  if (!labels?.length || !traced?.frontier) return null;
+export async function wentAtMany(slug, tracedList, labels, headers = {}, atSource = sourceTextAt, isCurrent = () => true) {
+  const answers = Array(tracedList.length).fill(null);
+  if (!labels?.length) return answers;
 
-  // Every label supplies the name this same file had at that moment.
-  const selector = traced.selector;
-  // Read the comment's own recorded position first. Falling back to the
-  // oldest label would lose passages introduced later in the
-  // document's life.
-  const ownText = await atSource(slug, MOMENT + traced.frontier, { file_id: traced.file_id }, headers);
-  if (typeof ownText !== "string" || !holds(ownText, selector)) return null;
-
-  // A comment's own frontier is not itself in the label manifest. Its
-  // timestamp gives the lower bound: older removals and reintroductions are
-  // unrelated to a passage known to exist when this comment was written.
-  const created = Date.parse(traced.created);
-  if (!Number.isFinite(created)) return null;
-  const after = labels.filter((point) => (Date.parse(point.at) || 0) >= created);
-  if (!after.length) return null;
-  const newest = after.at(-1);
-  const newestText = await atSource(slug, newest.sha, { file_id: traced.file_id }, headers);
-  if (typeof newestText !== "string" || holds(newestText, selector)) return null;
-  for (const point of after) {
-    // Retain only the newest response. A per-walk map grows with the full
-    // label history; the shared bounded source cache handles ordinary reuse.
-    const text = point.sha === newest.sha
-      ? newestText
-      : await atSource(slug, point.sha, { file_id: traced.file_id }, headers);
-    if (typeof text !== "string") return null;
-    if (!holds(text, selector)) return point;
+  // Validate each comment against its own frontier before comparing it with
+  // the shared label timeline. State is proportional to comments, while
+  // historical source text is read one label at a time below.
+  const groups = new Map();
+  for (const [index, traced] of tracedList.entries()) {
+    if (!traced?.frontier) continue;
+    const ownText = await atSource(slug, MOMENT + traced.frontier, { file_id: traced.file_id }, headers);
+    if (!isCurrent()) return answers;
+    if (typeof ownText !== "string" || !holds(ownText, traced.selector)) continue;
+    const created = Date.parse(traced.created);
+    if (!Number.isFinite(created)) continue;
+    const start = labels.findIndex((point) => (Date.parse(point.at) || 0) >= created);
+    if (start < 0) continue;
+    const key = traced.file_id;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ index, traced, start });
   }
-  return null;
+
+  if (!groups.size) return answers;
+  const newest = labels.at(-1);
+  const active = new Map();
+  for (const [fileId, candidates] of groups) {
+    const newestText = await atSource(slug, newest.sha, { file_id: fileId }, headers);
+    if (!isCurrent()) return answers;
+    if (typeof newestText !== "string") continue;
+    const stillPresent = new Set(candidates
+      .filter(({ traced }) => holds(newestText, traced.selector))
+      .map(({ index }) => index));
+    const remaining = candidates.filter(({ index }) => !stillPresent.has(index));
+    if (remaining.length) active.set(fileId, remaining);
+  }
+
+  // All comments for a label are evaluated before advancing to the next one.
+  // This shares each bounded source response across its consumers even when
+  // comments have different creation times; no per-history text map grows.
+  for (let at = 0; at < labels.length && active.size; at += 1) {
+    const point = labels[at];
+    for (const [fileId, candidates] of active) {
+      const eligible = candidates.filter(({ start }) => start <= at);
+      if (!eligible.length) continue;
+      // The newest label was already read for each active group. Every
+      // remaining candidate is known absent there, so resolve any survivors
+      // at that point without retaining or fetching its text again.
+      if (at === labels.length - 1) {
+        for (const { index } of eligible) answers[index] = point;
+        active.delete(fileId);
+        continue;
+      }
+      const text = await atSource(slug, point.sha, { file_id: fileId }, headers);
+      if (!isCurrent()) return answers;
+      if (typeof text !== "string") {
+        const unresolved = new Set(eligible.map(({ index }) => index));
+        const remaining = candidates.filter(({ index }) => !unresolved.has(index));
+        if (remaining.length) active.set(fileId, remaining);
+        else active.delete(fileId);
+        continue;
+      }
+      const found = new Set();
+      for (const candidate of eligible) {
+        if (!holds(text, candidate.traced.selector)) {
+          answers[candidate.index] = point;
+          found.add(candidate.index);
+        }
+      }
+      if (found.size) {
+        const remaining = candidates.filter(({ index }) => !found.has(index));
+        if (remaining.length) active.set(fileId, remaining);
+        else active.delete(fileId);
+      }
+    }
+  }
+  return answers;
+}
+
+export async function wentAt(slug, traced, labels, headers = {}, atSource = sourceTextAt) {
+  return (await wentAtMany(slug, [traced], labels, headers, atSource))[0] ?? null;
 }
 
 /// Finds what replaced a comment's quotation between two versions. The

@@ -34,7 +34,10 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
     loadLabels,
     passages: {
       tracedBy: realPassages.tracedBy,
-      wentAt: async (_slug, traced) => { calls.push(`went:${traced.selector.exact}`); return { sha: "sha-1" }; },
+      wentAtMany: async (_slug, traced) => traced.map((item) => {
+        calls.push(`went:${item.selector.exact}`);
+        return { sha: "sha-1" };
+      }),
       sourceTextAt: async () => "old source",
       replacementAt: async () => "what stands there now",
       ...passages,
@@ -51,6 +54,27 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   assert.deepEqual(calls, ["went:a", "went:b"]);
   assert.deepEqual(Object.keys(trace.state.went), ["a", "b"]);
   assert.deepEqual(trace.state.replacements, { a: "what stands there now", b: "what stands there now" });
+}
+
+// The production history reader accepts all orphan traces as one ordered
+// batch, allowing it to share each bounded source projection across comments.
+{
+  let state = { source: 1, visible: "visible" };
+  let batches = 0;
+  const { trace, calls } = build({
+    current: () => state,
+    passages: {
+      wentAtMany: async (_slug, traced) => {
+        batches++;
+        assert.deepEqual(traced.map((item) => item.selector.exact), ["a", "b"]);
+        return [{ sha: "sha-a" }, { sha: "sha-b" }];
+      },
+    },
+  });
+  await trace.trace({ comments: [orphan("a"), orphan("b")], tree, labels: [{ sha: "sha-1" }] });
+  assert.equal(batches, 1, "all orphan comments enter one history batch");
+  assert.deepEqual(trace.state.went, { a: { sha: "sha-a" }, b: { sha: "sha-b" } });
+  assert.deepEqual(calls, [], "the per-comment fallback is not also called");
 }
 
 // A comment that still anchors is not walked, and neither is one about the
@@ -90,7 +114,10 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   const { trace } = build({
     current: () => state,
     passages: {
-      wentAt: async () => { state = { source: 2, visible: "visible" }; return { sha: "sha-1" }; },
+      wentAtMany: async (_slug, traced) => {
+        state = { source: 2, visible: "visible" };
+        return traced.map(() => ({ sha: "sha-1" }));
+      },
     },
   });
   await trace.trace({ comments: [orphan("a")], tree, labels: [{ sha: "sha-1" }] });
@@ -106,9 +133,9 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   const { trace } = build({
     current: () => state,
     passages: {
-      wentAt: async (_slug, comment) => {
+      wentAtMany: async (_slug, traced) => {
         if (first) { first = false; await held; }
-        return { sha: `sha-${comment.id}` };
+        return traced.map((item) => ({ sha: `sha-${item.selector.exact}` }));
       },
     },
   });
@@ -144,7 +171,7 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   const { trace } = build({
     current: () => state,
     passages: {
-      wentAt: async () => { attempts++; throw new Error("that label is gone"); },
+      wentAtMany: async () => { attempts++; throw new Error("that label is gone"); },
     },
   });
   const comments = [orphan("a")];
@@ -152,6 +179,26 @@ function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   await trace.trace({ comments, tree, labels: [{ sha: "sha-1" }] });
   assert.equal(attempts, 2, "a failed walk is tried again rather than remembered");
   assert.deepEqual(trace.state.went, {});
+}
+
+// The loss point is useful even if the separate replacement lookup fails.
+// Retrying that failed lookup must not discard or hide the point already read.
+{
+  let state = { source: 1, visible: "visible" };
+  let replacements = 0;
+  const { trace } = build({
+    current: () => state,
+    passages: {
+      wentAtMany: async (_slug, traced) => traced.map(() => ({ sha: "lost-at" })),
+      replacementAt: async () => { replacements++; throw new Error("comparison unavailable"); },
+    },
+  });
+  const comments = [orphan("a")];
+  await trace.trace({ comments, tree, labels: [{ sha: "lost-at" }] });
+  assert.deepEqual(trace.state.went, { a: { sha: "lost-at" } });
+  await trace.trace({ comments, tree, labels: [{ sha: "lost-at" }] });
+  assert.equal(replacements, 2, "a failed replacement comparison is retried");
+  assert.deepEqual(trace.state.went, { a: { sha: "lost-at" } });
 }
 
 console.log("passage trace: where a lost passage went, and which walk may say so");

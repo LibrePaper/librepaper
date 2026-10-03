@@ -436,7 +436,7 @@ function baseProvenance(engine, release) {
   return { backend: "browser", bibliography: null, engine, release, tools: {} };
 }
 
-function buildResult({ job, attempts, startedAt, ok, pdf = null, synctex = null, log = "", diagnostics, failure, provenance }) {
+function buildResult({ job, attempts, startedAt, ok, pdf = null, synctex = null, log = "", diagnostics = undefined, failure, provenance }) {
   return {
     ok,
     pdf: pdf || null,
@@ -964,6 +964,7 @@ export const resources = {
 /// Test-only injection. Not part of the public contract --
 /// `latex-controller.mjs` is the only caller.
 export const _testing = {
+  /** @param {{ worker?: any, biber?: any, resources?: any, fetch?: typeof fetch, now?: () => number, deadlineMs?: number }} [options] */
   inject({ worker: WorkerOverride, biber: browserBiberModule, resources: resourcesModule, fetch: fetchOverride, now, deadlineMs: deadlineOverride } = {}) {
     if (WorkerOverride !== undefined) WorkerClass = WorkerOverride;
     if (browserBiberModule !== undefined) biberOverride = browserBiberModule;

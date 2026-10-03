@@ -15,14 +15,12 @@
 
 import { read as readPreferences } from "../build-preferences.js";
 import * as defaultLatex from "../latex.js";
-import * as defaultRenderers from "../renderers.js";
 
 export function createBuildSettings({
   slug,
   origin,
   read = readPreferences,
   latex = defaultLatex,
-  renderers = defaultRenderers,
   // Everything in flight stops when the preference or the reader changes.
   // Takes the new preference, because which local preview may survive
   // depends on which tool was chosen.

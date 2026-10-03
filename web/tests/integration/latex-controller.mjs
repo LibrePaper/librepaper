@@ -400,6 +400,7 @@ function nextProject() {
   const expired = latex.compile(tree("main.tex", "biber timeout", { "refs.bib": enc.encode("@book{x,}") }));
   const firstWorker = await untilWorker(previousWorker);
   await until(() => reportLateProgress !== undefined);
+  firstWorker.texReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: {} }];
   const queued = latex.compile(tree("main.tex", "after biber timeout"));
   assert.equal((await expired).failure.kind, "timeout");
   assert.equal(firstWorker.dead, false, "the reusable TeX worker is not retired for a Biber timeout");
