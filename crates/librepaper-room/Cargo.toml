@@ -11,6 +11,9 @@ repository.workspace = true
 doctest = false
 
 [dependencies]
+html-escape.workspace = true
+tracing.workspace = true
+moka.workspace = true
 sqlx.workspace = true
 librepaper-base = { path = "../librepaper-base" }
 librepaper-document = { path = "../librepaper-document" }
@@ -35,5 +38,3 @@ tempfile.workspace = true
 regex.workspace = true
 # Test-only: render markdown in the locate corpus test.
 comrak.workspace = true
-# Test-only: decode entities in the locate corpus test.
-html-escape.workspace = true

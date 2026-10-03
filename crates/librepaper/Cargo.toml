@@ -71,6 +71,8 @@ name = "writer_socket_bench"
 path = "tests/writer_socket_bench.rs"
 
 [dependencies]
+tracing-subscriber.workspace = true
+tracing.workspace = true
 tokio.workspace = true
 axum.workspace = true
 serde.workspace = true

@@ -12,6 +12,10 @@ build = "build.rs"
 doctest = false
 
 [dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+governor.workspace = true
+ipnet.workspace = true
 librepaper-base = { path = "../librepaper-base" }
 librepaper-document = { path = "../librepaper-document" }
 librepaper-engine = { path = "../librepaper-engine" }
