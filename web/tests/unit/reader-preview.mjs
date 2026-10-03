@@ -47,8 +47,8 @@ assert.match(readerSource, /configureLatex\(sourceFormat, readerProjectOwner\)/)
 // that render began, never a refreshed project's live identity.
 assert.match(previewSource, /const capturedProjectDigest = start\.projectDigest \|\| ""/);
 assert.match(previewSource, /onRendered\(identity, capturedProjectDigest\)/);
-assert.match(readerSource, /const renderedProjectCurrent = \$derived/);
-assert.match(readerSource, /shownVerbs = \$derived\(pending && renderedProjectCurrent/);
+assert.match(readerSource, /const renderedProjectCurrent = \$derived\.by\(\(\) =>\s*mayEdit \|\|/);
+assert.match(readerSource, /shownVerbs = \$derived\.by\(\(\) => pending && renderedProjectCurrent/);
 assert.match(readerSource, /current page is still rendering/);
 assert.match(viteSource, /let watchingBuild = false;[\s\S]*?configResolved\(config\) \{ watchingBuild = Boolean\(config\.build\.watch\); \}[\s\S]*?if \(watchingBuild\)/);
 assert.match(offlineSource, /request\.onblocked = \(\) => \{[\s\S]*?blocked = true;[\s\S]*?reject\(/);
