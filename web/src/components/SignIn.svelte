@@ -25,11 +25,11 @@
     <p class="signin-description">
       Sign in to read, comment, edit, and create documents and projects.
     </p>
-    <!-- The service is young and may change; a local copy via the companion app is
-         the safest way to preserve your work. -->
+    <!-- The service is young and may change under people, so a local copy kept
+         by the companion is the safety net. -->
     <div class="signin-warning" role="note">
       <p><strong>LibrePaper is experimental.</strong> The website and service may change at any time.</p>
-      <p>We recommend you use the <a href="/docs/install.html">companion app</a> to make automatic local backups of your projects as you edit them.</p>
+      <p>We recommend you use the <a href="https://librepaper.org/install.html">companion app</a> to make automatic local backups of your projects as you edit them.</p>
     </div>
     <div class="signin-providers">
       {#each providers.filter((provider) => (me.providers ?? []).includes(provider)) as provider (provider)}
