@@ -24,6 +24,7 @@ export const HOLD_FOR_MS = 600;
 /// Smooths `busy` for display. `onchange` is called with the shown value
 /// whenever it changes, which is what the page renders from; `set` takes the
 /// true value as often as it likes.
+/** @param {{ appearAfter?: number, holdFor?: number, onchange?: (shown: boolean) => void, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout, now?: () => number }} [options] */
 export function createSteadyBusy({
   appearAfter = APPEAR_AFTER_MS,
   holdFor = HOLD_FOR_MS,

@@ -7,7 +7,7 @@
     onsend,
     draft: controlledDraft = undefined,
     initialDraft = "",
-    ondraft,
+    ondraft = undefined,
     onstop = null,
     stopLabel = "Stop",
   } = $props();

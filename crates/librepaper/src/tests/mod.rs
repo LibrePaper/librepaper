@@ -1,7 +1,9 @@
 //! Catalog v3 integration coverage lives with the PostgreSQL repositories.
 //!
-//! Database tests use `LIBREPAPER_TEST_POSTGRES_URL` and are skipped when the
-//! variable is absent so ordinary source builds do not require a daemon.
+//! Database tests are marked `#[ignore]`, so ordinary test runs do not need a
+//! database. Explicitly selecting one requires `LIBREPAPER_TEST_POSTGRES_URL`
+//! to point to a disposable PostgreSQL database; run these tests serially
+//! (`--test-threads=1`) because each test resets the catalogue.
 //!
 //! What lives here is the part every one of those harnesses had its own copy
 //! of: the opt-in, the connection, the migration and the reset. Not the
@@ -42,15 +44,26 @@ pub(crate) async fn reset(catalog: &PostgresCatalog) {
         .expect("reset deployment storage accounting");
 }
 
-/// A migrated, empty catalogue, or `None` when no database was configured --
-/// which is what makes a gated test skip rather than fail on a machine with
-/// no PostgreSQL.
+/// A migrated, empty catalogue.
+///
+/// The `Option` return is retained because many fixtures already propagate
+/// it with `?`; database-dependent tests are explicitly `#[ignore]` instead
+/// of using `None` as an implicit skip. Selecting one requires a configured
+/// disposable database and a serial test run.
 pub(crate) async fn catalog() -> Option<Arc<PostgresCatalog>> {
-    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").unwrap_or_else(|_| {
+        panic!(
+            "LIBREPAPER_TEST_POSTGRES_URL is required for this ignored PostgreSQL test; set it to a disposable PostgreSQL database URL and rerun with --test-threads=1"
+        )
+    });
+    assert!(
+        !url.trim().is_empty(),
+        "LIBREPAPER_TEST_POSTGRES_URL is empty; set it to a disposable PostgreSQL database URL and rerun with --test-threads=1"
+    );
     let catalog = Arc::new(
         PostgresCatalog::connect(PostgresOptions::new(url))
             .await
-            .expect("connect to the test catalogue"),
+            .expect("could not connect to LIBREPAPER_TEST_POSTGRES_URL; check that it is a valid PostgreSQL URL and points to a running disposable database"),
     );
     catalog.migrate().await.expect("apply the current schema");
     reset(&catalog).await;

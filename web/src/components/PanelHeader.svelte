@@ -1,7 +1,7 @@
 <script>
   // The selected rail icon identifies the panel visually. Keep its heading
   // available to assistive technology without reserving a title row.
-  let { title, meta = "", actions, children } = $props();
+  let { title, meta = "", actions = undefined, children = undefined } = $props();
 </script>
 
 <h2 class="sr-only">{title}</h2>

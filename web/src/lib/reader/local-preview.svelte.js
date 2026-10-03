@@ -13,6 +13,13 @@
 
 import { createGeneration } from "./generation.js";
 
+/** @typedef {NonNullable<Parameters<typeof import("../companion/client.js").syncWorkspace>[0]["tree"]>} LocalPreviewTree */
+/** @typedef {NonNullable<NonNullable<Parameters<typeof import("../companion/client.js").startLocalPreview>[0]>["options"]>} LocalPreviewOptions */
+/** @typedef {NonNullable<NonNullable<Parameters<typeof import("../companion/client.js").startLocalPreview>[0]>["job"]>} LocalPreviewJob */
+/** @typedef {Awaited<ReturnType<typeof import("../companion/client.js").startLocalPreview>>} LocalPreviewSession */
+/** @typedef {Pick<typeof import("../companion/client.js"), "syncWorkspace" | "localPreviewPage" | "localPreviewStatus" | "startLocalPreview" | "stopLocalPreview">} LocalPreviewClient */
+/** @typedef {Parameters<ReturnType<typeof import("./frame-preview.js").createFramePreview>["publish"]>[0]} LocalPreviewPayload */
+
 const POLL_FAST_MS = 500;
 const POLL_SLOW_MS = 1000;
 const STATUS_POLL_MS = 5000;
@@ -25,6 +32,17 @@ function etagToSha(etag) {
   return String(etag || "").replace(/^W\//, "").replace(/^"/, "").replace(/"$/, "");
 }
 
+/** @param {{
+ * local: LocalPreviewClient, publish: (payload: LocalPreviewPayload) => unknown,
+ * treeNow: () => LocalPreviewTree | Promise<LocalPreviewTree>, entrypointOf: (tree: LocalPreviewTree) => string,
+ * optionsOf: (tree: LocalPreviewTree) => LocalPreviewOptions,
+ * jobOf?: (tree: LocalPreviewTree) => LocalPreviewJob,
+ * engine: string, label?: string, isDisposed?: () => boolean,
+ * onStartingChange?: (starting: boolean) => void, onEnded?: () => void,
+ * setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>,
+ * clearTimer?: (timer: ReturnType<typeof setTimeout> | null) => void,
+ * }} options
+ */
 export function createLocalPreview({
   local,
   publish,
@@ -42,10 +60,11 @@ export function createLocalPreview({
   onEnded,
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (timer) => clearTimeout(timer),
-} = {}) {
+}) {
   // What the page draws. Owned here rather than mirrored into the page
   // through callbacks: these are facts about a preview, the preview is this
   // module, and a mirror is one more thing that can disagree.
+  /** @type {{ session: LocalPreviewSession | null, starting: boolean, rendering: boolean, error: string }} */
   const state = $state({
     session: null, // the bridge's { id, url, ... }, or null while idle
     starting: false,
@@ -253,6 +272,7 @@ export function createLocalPreview({
   // yet, and tears down -- reporting the fallback through `onEnded` -- the
   // moment it stops holding. The whole of what a caller's own `$effect` needs
   // to drive automatic start/stop.
+  /** @param {string | false} active */
   async function reconcile(active) {
     const stale = reconciliations.begin();
     const next = active || null;

@@ -49,6 +49,34 @@ try {
 }
 assert.equal(closed, true);
 
+// renameFile accepts the old asset id or text id and must not infer
+// existence from a LoroMap API that does not exist. Missing entries stay
+// absent, and a reader cannot use the legacy mutator to change the directory.
+{
+  const directory = createProjectSession({ send: () => {}, onState: () => {} });
+  const reader = createProjectSession({ send: () => {}, onState: () => {}, mayEdit: false });
+  try {
+    const textId = directory.addText("before.md", "body");
+    directory.renameFile(textId, "after.md");
+    assert.equal(directory.paths.get(textId), "after.md");
+
+    const sha = "a".repeat(64);
+    directory.putAsset("figure.png", sha);
+    directory.renameFile("figure.png", "renamed.png", "asset");
+    assert.equal(directory.assets.get("figure.png"), undefined);
+    assert.equal(directory.assets.get("renamed.png"), sha);
+
+    directory.renameFile("missing-id", "ghost.md");
+    directory.renameFile("missing-asset", "ghost.png", "asset");
+    assert.equal(directory.paths.get("missing-id"), undefined);
+    assert.equal(directory.list().some((file) => file.path.startsWith("ghost")), false);
+    assert.throws(() => reader.renameFile("anything", "ghost.md", "text"), /read-only/);
+  } finally {
+    directory.leave();
+    reader.leave();
+  }
+}
+
 // A swap is the main file becoming a different file. Editing the main file is
 // not one: everything hanging off `onSwap` rebuilds itself, so a swap per
 // keystroke used to throw the editor -- and the caret with it -- back to the
@@ -906,6 +934,55 @@ const gate = () => {
       "a refused baseline does not re-open the document on a socket that has gone");
   } finally {
     joiner.leave();
+  }
+}
+
+// If a referenced baseline expires while this socket is still active, ask
+// for the document again using the session's current vector. A local edit
+// made while the fetch is pending remains in the document and is advertised
+// by that retry.
+{
+  const { head } = sourceLog();
+  const held = gate();
+  const entered = gate();
+  const sent = [];
+  let ambientOpenCalls = 0;
+  const previousOpen = globalThis.open;
+  globalThis.open = () => {
+    ambientOpenCalls += 1;
+    return { window: true };
+  };
+  const joiner = createProjectSession({
+    send: (message) => sent.push(message),
+    onState: () => {},
+    presenceId: () => "active-restart-baseline",
+    fetchReference: async () => {
+      entered.resolve();
+      await held.promise;
+      const error = new Error("that baseline is gone");
+      error.restartBaseline = true;
+      throw error;
+    },
+  });
+  try {
+    const startPromise = joiner.start({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()),
+      ref: "https://example.test/base", digest: "0".repeat(64), updates: [],
+    });
+    await entered.promise;
+    const localId = joiner.addText("local.md", "offline edit");
+    held.resolve();
+    await startPromise;
+    const retries = sent.filter((message) => message.type === "doc-open");
+    assert.equal(retries.length, 1);
+    assert.equal(retries[0].protocol, "librepaper.room.v3");
+    assert.equal(joiner.textOf(localId).toString(), "offline edit");
+    assert.equal(VersionVector.decode(decode(retries[0].vector)).compare(joiner.doc.oplogVersion()), 0);
+    assert.equal(ambientOpenCalls, 0);
+  } finally {
+    joiner.leave();
+    if (previousOpen === undefined) delete globalThis.open;
+    else globalThis.open = previousOpen;
   }
 }
 

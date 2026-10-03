@@ -89,7 +89,8 @@ async fn deployment_mode_with_policy(
     policy: Option<StoragePolicy>,
 ) -> Option<Deployment> {
     let catalog = if let Some(policy) = policy {
-        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database; run with --test-threads=1");
         let mut options = PostgresOptions::new(url);
         options.policy = policy;
         let catalog = Arc::new(PostgresCatalog::connect(options).await.unwrap());

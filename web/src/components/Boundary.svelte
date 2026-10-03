@@ -31,7 +31,7 @@
         been sent anywhere or lost — a document you were editing is still in
         this browser, and reloading will pick it up again.
       </p>
-      <p class="crash-detail">{error?.message || "An unknown error"}</p>
+      <p class="crash-detail">{error && typeof error === "object" && "message" in error ? String(error.message) : "An unknown error"}</p>
       <div class="crash-actions">
         <!-- Trying again costs nothing and sometimes works: a chunk that
              failed to load is fetched again, and a bad bit of state is built

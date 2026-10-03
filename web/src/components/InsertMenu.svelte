@@ -5,12 +5,33 @@
   import { rankEntries, entryLabel } from "../lib/bibliography.js";
   import { INSERT_ACTIONS, insertionAvailability, buildInsertion, gatherInsertEnvironments, gatherInsertTargets, insertEnvironmentFields } from "../lib/insert.js";
 
+  /** @typedef {import("../lib/insert.js").InsertContext} InsertContext */
+  /** @typedef {import("../lib/insert.js").InsertOptions} InsertOptions */
+  /** @typedef {import("../lib/insert.js").InsertionDraft} InsertionDraft */
+  /** @typedef {import("../lib/insert.js").InsertionResult} InsertionResult */
+  /** @typedef {import("../lib/insert.js").FinalInsertion} FinalInsertion */
+  /** @typedef {{key?: string; [field: string]: unknown}} InsertBibliographyEntry */
+  /** @typedef {Omit<InsertContext, "bibliography"> & {bibliography?: InsertBibliographyEntry[] | {entries: InsertBibliographyEntry[]}; targetId?: string}} InsertMenuContext */
+  /** @typedef {{
+   * getContext?: () => InsertMenuContext | null;
+   * oninsert?: (result: FinalInsertion, context: InsertMenuContext) => unknown;
+   * onupload?: (file: File) => Promise<string>;
+   * onpreview?: (path: string) => Promise<string | null | undefined>;
+   * onfocus?: () => void;
+   * oncancel?: (context: InsertMenuContext | null) => void;
+   * disabled?: boolean;
+   * }} InsertMenuProps */
+  /** @type {InsertMenuProps} */
   let { getContext, oninsert, onupload, onpreview, onfocus, oncancel, disabled = false } = $props();
 
+  /** @type {string | null} */
   let dialog = $state(null);
   let dialogOpen = $state(false);
+  /** @type {InsertMenuContext | null} */
   let captured = $state(null);
+  /** @type {InsertMenuContext | null} */
   let menuContext = $state(null);
+  /** @type {InsertionDraft} */
   let draft = $state({});
   let query = $state("");
   let busy = $state(false);
@@ -18,6 +39,7 @@
   let preview = $state(null);
   let dialogGeneration = 0;
 
+  /** @type {Array<[string, string[]]>} */
   const groups = [
     ["Structure", ["heading", "abstract", "appendix", "toc"]],
     ["Figures and tables", ["figure", "table"]],
@@ -30,6 +52,7 @@
     ["Advanced", ["custom-environment"]]
   ];
 
+  /** @type {Record<string, InsertionDraft>} */
   const defaults = {
     heading: { text: "", level: "1", numbered: true, label: "" }, abstract: {}, appendix: {}, toc: {},
     figure: { path: "", caption: "", label: "", width: "" },
@@ -44,10 +67,17 @@
     columns: { columns: 2, gap: "" }, "custom-environment": { environment: "", title: "" }
   };
 
-  const actionById = (id) => INSERT_ACTIONS?.find((action) => action.id === id) || { id, label: id };
+  const actionById = (id) => INSERT_ACTIONS.find((action) => action.id === id);
+  /** @returns {InsertMenuContext} */
   function contextNow() { return menuContext || getContext?.() || { format: "markdown", path: "", text: "", selection: { from: 0, to: 0, text: "" } }; }
-  function availability(id, context) { return insertionAvailability?.(id, context) || { enabled: true }; }
-  function actionLabel(id) { return actionById(id).label || id; }
+  /** @param {InsertMenuContext} context @returns {InsertContext} */
+  function insertionContext(context) {
+    const { bibliography, ...base } = context;
+    const entries = Array.isArray(bibliography) ? bibliography : bibliography?.entries;
+    return entries ? { ...base, bibliography: entries } : base;
+  }
+  function availability(id, context) { return insertionAvailability?.(id, insertionContext(context)) || { enabled: true }; }
+  function actionLabel(id) { return actionById(id)?.label || id; }
   function closeDialog() {
     const target = captured;
     dialogGeneration += 1;
@@ -56,11 +86,18 @@
     dialog = null;
     oncancel?.(target);
   }
+  /** @returns {InsertionDraft} */
   function insertionOptions() { return { ...draft, title: draft.title || draft.text, src: draft.path, arguments: draft.argumentsText ? draft.argumentsText.split("\n") : [] }; }
-  function safeBuild(id, options, context) {
-    try { error = ""; return buildInsertion(id, options, context); }
-    catch (cause) { const message = cause?.message || "This insertion is not valid yet."; error = message; return { text: "", notes: [message], additionalEdits: [] }; }
+  /** @param {unknown} cause @param {string} fallback @returns {string} */
+  function errorMessage(cause, fallback) {
+    return cause && typeof cause === "object" && "message" in cause ? String(cause.message) : fallback;
   }
+  /** @param {string} id @param {InsertionDraft} options @param {InsertMenuContext} context @returns {InsertionResult} */
+  function safeBuild(id, options, context) {
+    try { error = ""; return buildInsertion(id, options, insertionContext(context)); }
+    catch (cause) { const message = errorMessage(cause, "This insertion is not valid yet."); error = message; return { text: "", notes: [message], additionalEdits: [] }; }
+  }
+  /** @param {string} id */
   function startsDialog(id) {
     const context = contextNow();
     dialogGeneration += 1;
@@ -75,18 +112,19 @@
       if (generation !== dialogGeneration) return;
       dialog = id;
       dialogOpen = true;
-      preview = safeBuild(id, insertionOptions(), captured);
+      preview = safeBuild(id, insertionOptions(), context);
     }, 0);
   }
+  /** @param {string} id */
   function choose(id) {
     const context = contextNow();
     const state = availability(id, context);
     if (!state.enabled) return;
     captured = context;
-    const needsDialog = actionById(id).dialog;
+    const needsDialog = actionById(id)?.dialog;
     if (needsDialog) startsDialog(id);
     else {
-      const result = safeBuild(id, {}, captured);
+      const result = safeBuild(id, {}, context);
       if (!result.text || result.notes?.length || result.additionalEdits?.length) {
         draft = {};
         const generation = ++dialogGeneration;
@@ -96,28 +134,29 @@
           dialogOpen = true;
           preview = result;
         }, 0);
-      } else void insert(id, {}, captured);
+      } else void insert(id, {}, context);
     }
   }
+  /** @param {string} id @param {InsertionDraft} options @param {InsertMenuContext} context */
   function insert(id, options, context) {
     let result;
-    try { result = buildInsertion(id, options, context); }
-    catch (cause) { error = cause?.message || "This insertion is not valid yet."; return; }
-    if (result?.error) { error = result.error; return; }
+    try { result = buildInsertion(id, options, insertionContext(context)); }
+    catch (cause) { error = errorMessage(cause, "This insertion is not valid yet."); return; }
     try { oninsert?.(result, context); }
-    catch (cause) { error = cause?.message || "The insertion target changed."; dialog = id; dialogOpen = true; return; }
+    catch (cause) { error = errorMessage(cause, "The insertion target changed."); dialog = id; dialogOpen = true; return; }
     dialogGeneration += 1;
     dialogOpen = false;
     dialog = null;
     setTimeout(() => onfocus?.(), 0);
   }
   async function submit() {
-    if (!dialog || busy) return;
+    if (!dialog || !captured || busy) return;
     busy = true;
-    try { await insert(dialog, { ...insertionOptions(), citationKeys: draft.keys }, captured); }
-    catch (cause) { error = cause?.message || "Could not generate this insertion."; }
+    try { await insert(dialog, insertionOptions(), captured); }
+    catch (cause) { error = errorMessage(cause, "Could not generate this insertion."); }
     finally { busy = false; }
   }
+  /** @param {Event & {currentTarget: HTMLInputElement}} event */
   async function upload(event) {
     const file = event.currentTarget.files?.[0];
     if (!file || !onupload) return;
@@ -127,17 +166,20 @@
       const path = await onupload(file);
       if (generation === dialogGeneration && dialog === "figure") draft.path = path;
     }
-    catch (cause) { error = cause?.message || "Could not upload the image."; }
+    catch (cause) { error = errorMessage(cause, "Could not upload the image."); }
     finally { if (generation === dialogGeneration && dialog === "figure") busy = false; }
   }
+  /** @returns {InsertBibliographyEntry[]} */
   function entries() { return Array.isArray(captured?.bibliography) ? captured.bibliography : captured?.bibliography?.entries || []; }
   const filteredEntries = $derived(rankEntries(entries(), query).slice(0, 30));
   const files = $derived((captured?.files || []).map((file) => typeof file === "string" ? file : file.path).filter((path) => (captured?.format === "latex" ? /\.bib$/i : captured?.format === "typst" ? /\.(bib|ya?ml)$/i : /\.(bib|json|ya?ml)$/i).test(path || "")));
   const selectedImage = $derived((captured?.files || []).find((file) => (typeof file === "string" ? file : file.path) === draft.path));
-  const references = $derived(gatherInsertTargets(captured || {}).map((ref) => ref));
-  const environmentFields = $derived(insertEnvironmentFields(draft.environment, captured || {}));
-  const environments = $derived(gatherInsertEnvironments(captured || {}).map((env) => typeof env === "string" ? env : env.name));
-  const needsText = (id) => ["heading", "link"].includes(id);
+  const selectedImagePreview = $derived(selectedImage && typeof selectedImage !== "string" ? selectedImage.url : undefined);
+  const references = $derived(gatherInsertTargets(insertionContext(captured || {})));
+  const environmentFields = $derived(insertEnvironmentFields(draft.environment || "", insertionContext(captured || {})));
+  const environments = $derived(gatherInsertEnvironments(insertionContext(captured || {})));
+  /** @param {string | null} id */
+  const needsText = (id) => ["heading", "link"].includes(id || "");
   $effect(() => {
     if (dialog && captured && dialogOpen) preview = safeBuild(dialog, insertionOptions(), captured);
   });
@@ -153,7 +195,7 @@
     {#each ids as id}
       {@const state = availability(id, menuContext || {})}
       <Menu.Item value={id} class="menuitem" disabled={!state.enabled}>
-        <span class="menuitem-label">{actionLabel(id)}{#if actionById(id).dialog}…{/if}</span>
+        <span class="menuitem-label">{actionLabel(id)}{#if actionById(id)?.dialog}…{/if}</span>
         {#if state.reason}<span class="insert-reason">{state.reason}</span>{/if}
       </Menu.Item>
     {/each}
@@ -186,7 +228,7 @@
     {#if draft.path}<p class="panel-muted">{draft.path}</p>{/if}
     {#if draft.path && onpreview}
       {#await onpreview(draft.path) then url}{#if url}<img class="insert-image-preview" src={url} alt="Selected project asset" />{/if}{/await}
-    {:else if selectedImage?.url}<img class="insert-image-preview" src={selectedImage.url} alt="Selected project asset" />{/if}
+    {:else if selectedImagePreview}<img class="insert-image-preview" src={selectedImagePreview} alt="Selected project asset" />{/if}
     <label class="label">Caption <input class="input" bind:value={draft.caption} /></label>
     <label class="label">Label <input class="input" placeholder="fig:example" bind:value={draft.label} /></label>
     <label class="label">Width <input class="input" placeholder="e.g. 80% or 0.8\linewidth" bind:value={draft.width} /></label>
@@ -198,7 +240,7 @@
   {:else if dialog === "bibliography"}
     <label class="label">Bibliography file <select class="select" bind:value={draft.file}><option value="">Choose a file…</option>{#each files as file}<option value={file}>{file}</option>{/each}</select></label>
   {:else if dialog === "cross-reference"}
-    <label class="label">Reference <select class="select" bind:value={draft.target}><option value="">Choose a heading, figure, table, or equation…</option>{#each references as ref}{@const value = typeof ref === "string" ? ref : (ref.id || ref.label || ref.key)}<option value={value}>{value}</option>{/each}</select></label>
+    <label class="label">Reference <select class="select" bind:value={draft.target}><option value="">Choose a heading, figure, table, or equation…</option>{#each references as ref}{@const value = ref.id || ref.label}<option value={value}>{value}</option>{/each}</select></label>
   {:else if dialog === "matrix"}
     <div class="grid grid-cols-2 gap-3"><label class="label">Rows <input class="input" type="number" min="1" max="20" bind:value={draft.rows} /></label><label class="label">Columns <input class="input" type="number" min="1" max="20" bind:value={draft.columns} /></label></div>
     <label class="label">Brackets <select class="select" bind:value={draft.brackets}><option value="parentheses">( )</option><option value="brackets">Square brackets</option><option value="braces">Curly braces</option><option value="bars">Vertical bars</option><option value="doublebars">Double bars</option><option value="none">None</option></select></label>

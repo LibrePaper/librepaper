@@ -11,6 +11,7 @@
   // Nothing here approves on its own. A link is something somebody else can
   // send you, and approving from the link alone would put your identity on
   // their terminal; the button, and the POST behind it, are what stop that.
+  /** @type {{name?: string}} */
   let me = $state({});
   let done = $state(false);
   let error = $state("");

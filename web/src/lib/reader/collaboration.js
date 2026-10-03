@@ -34,6 +34,14 @@ import { keyHeaders } from "../api.js";
 import { assertSameProject, projectIdentity } from "../project-identity.js";
 import { createGeneration } from "./generation.js";
 
+/** @typedef {{ document_id?: string, created_at?: string, commenting_as?: string, role?: string, can_edit?: boolean, can_moderate?: boolean, can_see_sharing?: boolean, [key: string]: unknown }} CollaborationDocument */
+/** @typedef {{ type?: string, [key: string]: unknown }} RoomMessage */
+/** @typedef {{ events: Array<{ target: string, path?: string[] }> }} DirectoryBatch */
+/** @typedef {Parameters<typeof import("../collab.js").join>[0]} JoinOptions */
+/** @typedef {ReturnType<typeof import("../project-session.js").createProjectSession>} ReaderSession */
+/** @typedef {typeof import("../collab.js")} CollaborationModule */
+/** @typedef {Parameters<NonNullable<Parameters<typeof import("../project-session.js").createProjectSession>[0]["onState"]>>[0]} CollaborationState */
+
 const capability = (document_) => JSON.stringify([
   document_?.role ?? null,
   document_?.can_edit ?? null,
@@ -41,6 +49,20 @@ const capability = (document_) => JSON.stringify([
   document_?.can_see_sharing ?? null,
 ]);
 
+/** @param {{
+ * slug: string, key?: string, fetcher?: typeof fetch,
+ * openRoom?: typeof defaultOpenRoom,
+ * collab?: CollaborationModule | null,
+ * getIdentity?: () => string, getCanEdit?: () => boolean,
+ * onMessage?: (message: RoomMessage) => void, onConnected?: (up: boolean) => void,
+ * onPeers?: (count: number) => void, onState?: (state: CollaborationState) => void,
+ * onSession?: (session: ReaderSession) => void,
+ * onDocumentChanged?: (reason: string) => void, onSource?: (session: ReaderSession) => void,
+ * onSwap?: (session: ReaderSession) => void, onFiles?: (events: DirectoryBatch["events"], session: ReaderSession) => void,
+ * onAwareness?: (session: ReaderSession) => void,
+ * sourceSync?: boolean, retryMs?: number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout,
+ * }} options
+ */
 export function createReaderCollaboration({
   slug,
   key = "",
@@ -85,6 +107,7 @@ export function createReaderCollaboration({
     retryTimer = null;
   }
 
+  /** @param {RoomMessage} message */
   function send(message) {
     // Updates made while a socket is reconnecting remain in the local
     // document. `start()` catches them up after the server identity check.
@@ -103,6 +126,7 @@ export function createReaderCollaboration({
     session = null;
   }
 
+  /** @param {CollaborationDocument} nextDocument */
   function join(nextDocument) {
     disposeSession();
     document_ = nextDocument;
@@ -139,11 +163,13 @@ export function createReaderCollaboration({
     return active;
   }
 
+  /** @param {string} reason */
   function changed(reason) {
     clearRetry();
     onDocumentChanged(reason);
   }
 
+  /** @param {boolean} up */
   async function reconnect(up) {
     if (disposed) return;
     const stale = reconnects.begin();
@@ -188,6 +214,7 @@ export function createReaderCollaboration({
     }
   }
 
+  /** @param {CollaborationDocument} nextDocument */
   function openLocal(nextDocument) {
     if (disposed) return null;
     if (session) return session;
@@ -207,6 +234,7 @@ export function createReaderCollaboration({
     return session;
   }
 
+  /** @param {CollaborationDocument} nextDocument */
   function start(nextDocument) {
     openLocal(nextDocument);
     connect();

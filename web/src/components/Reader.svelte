@@ -117,8 +117,12 @@
 
   /* ------------------------------------------------------------ the document */
 
+  /** @typedef {{title?: string; docs_origin?: string; document_id?: string; created_at?: string; role?: string; can_edit?: boolean; can_moderate?: boolean; can_see_sharing?: boolean; commenting_as?: string}} ReaderDocument */
+  /** @typedef {{id?: string; name?: string; handle?: string; provider?: string; providers?: string[]; comments_need_login?: boolean}} ReaderUser */
+  /** @type {ReaderDocument} */
   let doc = $state({});
   let documentNeedsSignIn = $state(false);
+  /** @type {boolean} */
   let readerDisposed = false;
   let docsOrigin = $state(null);
   let frameSrc = $state(null);
@@ -139,6 +143,7 @@
   const previewCacheKey = () => `${SLUG}:${doc?.created_at || "unknown"}`;
   let offlinePrepared = $state(false);
   let preparingOffline = $state(false);
+  /** @type {ReaderUser} */
   let me = $state({ id: "" });
   const backupStatus = $derived(backupStatusStore.status);
   const backupPillGood = $derived(Boolean(
@@ -348,7 +353,7 @@
   // it. The permission is remembered per document in this browser, and the
   // companion is reached only when both permission and format match what is
   // being read.
-  const localExecutionRelevant = $derived(["quarto", "typst"].includes(sourceFormat) && mayEdit);
+  const localExecutionRelevant = $derived.by(() => ["quarto", "typst"].includes(sourceFormat) && mayEdit);
 
   // Turning it on, once the dialog has been answered: put this format's
   // engine on the local tool, reach the companion, and remember the
@@ -594,10 +599,10 @@
   //
   // What the bar offers over what is selected. Nothing is offered when
   // nothing is.
-  const renderedProjectCurrent = $derived(
+  const renderedProjectCurrent = $derived.by(() =>
     mayEdit || Boolean(renderedProjectDigest && renderedProjectDigest === currentProject?.project_digest),
   );
-  const shownVerbs = $derived(pending && renderedProjectCurrent ? VERBS : []);
+  const shownVerbs = $derived.by(() => pending && renderedProjectCurrent ? VERBS : []);
   let highlightColor = $state(HIGHLIGHT_COLORS[0]);
   let palette = $state(false);
   let pending = $state(null);
@@ -1679,18 +1684,16 @@
   // connected, editable, and not looking at history. `editing` (the source
   // pane) is not required -- an editor who has not opened it yet still gets
   // the live pane the moment they are able to edit.
-  const quartoLiveActive = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit &&
-      localAppStatus.state === "connected",
+  const quartoLiveActive = $derived.by(() =>
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && localAppStatus.state === "connected",
   );
 
   // Whether this browser should be showing a Typst document's chunks run by
   // Calepin on this computer rather than this browser's own Typst rendering:
   // the calepin mode chosen, paired, connected, the calepin command itself
   // found, editable, and not looking at history.
-  const calepinActive = $derived(
-    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit &&
-      localAppStatus.state === "connected" && localQuarto.calepinAvailable(),
+  const calepinActive = $derived.by(() =>
+    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit && localAppStatus.state === "connected" && localQuarto.calepinAvailable(),
   );
 
   async function localPreviewTreeNow() {
@@ -2132,17 +2135,17 @@
   // not conditioned on the source pane being open: HTML is the default output
   // of every format, so somebody who only reads the document gets the same
   // page its author is looking at rather than a paged fallback.
-  const previewFormat = $derived(
+  const previewFormat = $derived.by(() =>
     ((displayedFormat === "typst" && typstOutput === "html") ||
       (displayedFormat === "latex" && latexOutput === "html")) ? "html" : displayedFormat,
   );
-  const previewOutputKind = $derived(
+  const previewOutputKind = $derived.by(() =>
     ["markdown", "quarto"].includes(displayedFormat) && buildPreferences.output === "pdf"
       ? "pdf"
       : renderers.outputKind(previewFormat),
   );
-  const typstHtmlPreview = $derived(displayedFormat === "typst" && typstOutput === "html");
-  const latexHtmlPreview = $derived(displayedFormat === "latex" && latexOutput === "html");
+  const typstHtmlPreview = $derived.by(() => displayedFormat === "typst" && typstOutput === "html");
+  const latexHtmlPreview = $derived.by(() => displayedFormat === "latex" && latexOutput === "html");
   const paintsTheFrame = $derived(true);
 
   /* -------------------------------------------------------------- LaTeX */
@@ -2686,7 +2689,7 @@
   // its comments first. History is available to compare review rounds; files
   // and editor settings remain in the editor workspace.
   const panel = $derived(prefs.panel);
-  const chatVisible = $derived(panel === "collaboration" && prefs.collaborationTab === "chat" && shown.comments);
+  const chatVisible = $derived.by(() => panel === "collaboration" && prefs.collaborationTab === "chat" && shown.comments);
   $effect(() => { if (chatVisible) unreadChat = false; });
   // Mount panels on their first visit and retain them across view changes.
   // This preserves scroll positions, expanded folders and unsent chat drafts.
@@ -3074,7 +3077,6 @@
   const files = $derived(ws.files);
   const folders = $derived(ws.folders);
   const openFile = $derived(ws.openFile);
-  const peersByFile = $derived(ws.peersByFile);
   const rules = $derived(ws.rules);
   const shownFigure = $derived(ws.figure);
   const figureUrl = $derived(ws.figureUrl);
@@ -3377,8 +3379,7 @@
         // reader with no source of its own to fall back to. Carry the status
         // so the catch below can say that plainly rather than the generic
         // "could not be loaded" a transient network failure gets.
-        const failure = new Error(body.error || "The current project could not be loaded.");
-        failure.status = response.status;
+        const failure = Object.assign(new Error(body.error || "The current project could not be loaded."), { status: response.status });
         throw failure;
       }
       const next = await response.json();
@@ -3747,8 +3748,8 @@
     await tick();
     const slot = document.getElementById(slotId(name));
     if (!slot) return;
-    const first = [...slot.querySelectorAll(FOCUSABLE)].find((node) => node.offsetParent !== null);
-    if (first) return first.focus();
+    const first = [...slot.querySelectorAll(FOCUSABLE)].find((node) => node instanceof HTMLElement && node.offsetParent !== null);
+    if (first instanceof HTMLElement) return first.focus();
     slot.tabIndex = -1;
     slot.focus();
   }
@@ -4019,7 +4020,7 @@
        of these its rail has selected; none of it travels through the column
        as props, so a panel can grow a field without the column hearing of it. -->
   {#snippet filesPanel()}
-    <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile} preview={previewMain || session?.mainPath() || ""}
+    <Files bind:this={fileList} {files} {folders} open={openFile} preview={previewMain || session?.mainPath() || ""}
       {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
@@ -4296,7 +4297,7 @@
   {/snippet}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
-           away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || projectUnreadable} />
+           away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || Boolean(projectUnreadable)} />
 
   <!-- On compact screens the document/source choice lives beside the panel
        menu at the bottom edge, leaving the top bar for project controls. -->
