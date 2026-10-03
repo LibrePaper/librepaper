@@ -1,3 +1,6 @@
+#let title = "{{title}}"
+#let author = "{{author}}"
+
 #let problem(points, body) = {
   set block(spacing: 1em)
   [
@@ -6,11 +9,11 @@
   ]
 }
 
-#set document(title: "{{title}}", author: "{{author}}")
+#set document(title: title, author: author)
 
-#align(center, text(size: 18pt, weight: "bold", [{{title}}]))
+#align(center, text(size: 18pt, weight: "bold", [#title]))
 
-#align(center, text(size: 12pt, [{{author}}]))
+#align(center, text(size: 12pt, [#author]))
 
 #problem(10, [
   Solve the following equation:

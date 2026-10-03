@@ -1,6 +1,7 @@
 #let author = "{{author}}"
+#let subject = "{{title}}"
 
-#set document(title: "{{title}}")
+#set document(title: subject)
 
 #author
 Your Address
@@ -14,7 +15,7 @@ City, State ZIP Code
 
 Dear Recipient,
 
-{{title}}
+#subject
 
 I am writing to you regarding the matter discussed above. Please find details and context in the following paragraphs.
 

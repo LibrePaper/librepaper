@@ -1,11 +1,11 @@
 ---
-title: "{{title}}"
-author: "{{author}}"
 bibliography: references.bib
 bibliography-style: apa
 ---
 
 # {{title}}
+
+{{author}}
 
 ## Abstract
 
