@@ -2,7 +2,7 @@
 title: "Local backups"
 ---
 
-Companion backs up all projects available to the signed-in account. Open *Settings* → *Backups* and set a destination folder. Interval: 1, 5, 15, 30, or 60 minutes (default 5). Companion must be running; start with `librepaper`.
+Turn backups on in Settings and pick a folder. Interval: 1, 5, 15, 30, or 60 minutes (default 5). Companion must be running; start with `librepaper`.
 
 Each ZIP contains project source and assets only (no comments, suggestions, history). Backups use project stable ID; renaming does not change archive names. Only the latest ZIP per project is kept; older versions are replaced.
 

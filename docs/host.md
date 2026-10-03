@@ -1,5 +1,5 @@
 ---
-title: "Running a server"
+title: "Self-hosting"
 ---
 
 ## Deploy
@@ -107,7 +107,7 @@ See [cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/co
 
 ## Environment variables
 
-Flags map to env vars: `--foo-bar` becomes `LIBREPAPER_FOO_BAR`. See `librepaper admin serve --help` for the full list.
+Every flag has an environment variable; `librepaper admin serve --help` names each one.
 
 Advanced config in optional YAML (`--config` or `LIBREPAPER_CONFIG`):
 - `trusted_proxies`: proxy networks (CIDR)
@@ -119,8 +119,8 @@ Secrets (environment only):
 
 Service settings:
 - `LIBREPAPER_ASSET_MIRROR`: HTTPS URL (default: project mirror)
-- `LIBREPAPER_EXPIRE_AFTER`: duration e.g. `24h` (default: never)
-- `LIBREPAPER_EXPIRE_FROM`: `updated` or `created` (default: updated)
+- `--document-expire-after` / `LIBREPAPER_EXPIRE_AFTER`: duration e.g. `24h` (default: never)
+- `--document-expire-from` / `LIBREPAPER_EXPIRE_FROM`: `updated` or `created` (default: updated)
 
 ## Fonts
 
@@ -141,8 +141,7 @@ librepaper admin serve --publishers alice,anne@example.org --commenters @example
 | `alice` | GitHub login |
 | `alice@example.org` | Google account with verified email |
 | `@example.org` | any Google account on that domain (exact match) |
-| `any` | any signed-in account |
-| `anyone` | any signed-in account |
+| `any` or `anyone` | any signed-in account |
 
 Defaults: `--publishers` has no default; `--commenters` defaults to `anyone`. Both are ceilings; document access and share links require sign-in. Domain match is exact: `@example.org` admits `alice@example.org` only, not `alice@mail.example.org`.
 
@@ -171,10 +170,7 @@ At least one OAuth client (GitHub or Google) is required.
 
 ## Retention
 
-```sh
-librepaper admin serve --document-expire-after 24h              # delete docs after duration
-librepaper admin serve --document-expire-from created            # expire from upload (default: updated)
-```
+See environment variables above.
 
 ## Containers
 
@@ -194,3 +190,5 @@ Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 cert
 ## Privacy
 
 Default asset mirror sees your IP and asset requests. To self-host, use `--asset-mirror URL` with HTTPS and CORS for GET/HEAD.
+
+[Privacy duties for operators](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/privacy-operators.md) covers publishing a notice and answering data requests.

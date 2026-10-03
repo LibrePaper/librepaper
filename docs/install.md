@@ -53,4 +53,4 @@ librepaper --at-login                # start at login too
 librepaper status                    # address, pairings, tools, agents
 ```
 
-Then authorize in *Settings* → *Local app* → **Connect**. See [the CLI reference](cli.html#the-companion) for more commands. To build from a checkout, see [building from source](architecture.html#building-from-source).
+See [the CLI reference](cli.html#the-companion) for more commands. To build from a checkout, see [building from source](architecture.html#building-from-source).
