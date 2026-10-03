@@ -1250,7 +1250,7 @@ console.log('reader-races: explicit preview selection, auxiliary files, rename a
 // Main and secondary previews never expose the retired rendering store.
 assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//);
 
-// Desktop View and the compact menu dispatch the same preview commands.
+// View dispatches preview, local execution and layout commands at every width.
 {
   const commands = [];
   const ctx = context({
@@ -1258,16 +1258,14 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
     toggleLocalExecution: () => commands.push('local-execution'),
     setLatexOutput: mode => commands.push(`latex-${mode}`),
     chose: value => commands.push(value),
-    FILE_COMMANDS: [],
   });
   vm.runInContext(body('  function chooseViewCommand(value)', '  // The File menu.'), ctx);
-  vm.runInContext(body('  function chooseCompactCommand(value)', '  /* ------------------------------------------------------------------- boot */'), ctx);
-  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("local-execution"); chooseCompactCommand("local-execution"); chooseViewCommand("layout-split")', ctx);
-  assert.deepEqual(commands, ['file','local-execution','local-execution','layout-split']);
-  vm.runInContext('chooseViewCommand("preview-latex-html"); chooseCompactCommand("preview-latex-pdf")', ctx);
+  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("local-execution"); chooseViewCommand("layout-split")', ctx);
+  assert.deepEqual(commands, ['file','local-execution','layout-split']);
+  vm.runInContext('chooseViewCommand("preview-latex-html"); chooseViewCommand("preview-latex-pdf")', ctx);
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
-  const view = body('{#snippet viewItems()}', '<Nav {me}>');
-  const file = body('{#snippet fileItems()}', '{#snippet layoutItems()}');
+  const view = body('{#snippet viewItems()}', '{/snippet}');
+  const file = body('{#snippet fileItems()}', '{/snippet}');
   assert.match(view, /Preview this file/);
   assert.match(view, /@render previewItems\(\)/);
   // Local execution is its own section of the View menu, not another engine.
@@ -1279,8 +1277,12 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   assert.match(file, /value="settings"/);
   assert.match(file, /value="compile"/);
   assert.doesNotMatch(reader, /label="Tools"/);
+  const menus = body('{#snippet menus()}', '{#snippet children()}');
+  assert.match(menus, /<MenubarMenu id="file" label="File"/);
+  assert.match(menus, /<MenubarMenu id="edit" label="Edit"/);
+  assert.match(menus, /<MenubarMenu id="view" label="View"/);
 }
-console.log('reader-races: View and compact menus expose the same explicit preview controls');
+console.log('reader-races: View menu exposes explicit preview controls at every width');
 
 // Restoring replaces every file in the project, so what it discards has to be
 // what the reader was shown. A write that lands while the dialog is open --

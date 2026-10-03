@@ -130,19 +130,23 @@ try {
     'Remote settings exposes its connected state');
   await click('[aria-label="Close"]');
 
-  // A phone runs no local app, so the Local pill goes; Remote and Backup stay,
-  // each shrunk to its dot and named by its aria-label.
+  // Narrow windows keep all three named connection status dots visible.
   await b.resize(390,844); await flush();
   const pills = await b.evaluate(`Array.from(document.querySelectorAll('.connection-pill')).map(pill => {
     const box=pill.getBoundingClientRect();
-    return {name:pill.getAttribute('aria-label'),local:pill.classList.contains('local-pill'),visible:Boolean(pill.getClientRects().length && getComputedStyle(pill).visibility !== 'hidden'),left:box.left,right:box.right};
+    return {name:pill.getAttribute('aria-label'),visible:Boolean(pill.getClientRects().length && getComputedStyle(pill).visibility !== 'hidden'),left:box.left,right:box.right,top:box.top,bottom:box.bottom};
   })`);
-  assert.equal(pills.length,3,'all connection controls remain in the mobile navbar markup');
+  assert.equal(pills.length,3,'all three connection controls remain in the narrow navbar');
   for (const pill of pills) {
-    assert.equal(pill.visible,!pill.local,`${pill.name} is ${pill.local ? 'hidden' : 'visible'} on mobile`);
-    if (!pill.local) assert.ok(pill.left >= -1 && pill.right <= 391,`${pill.name} stays inside the mobile viewport: ${JSON.stringify(pill)}`);
+    assert.equal(pill.visible,true,`${pill.name} is visible in a narrow window`);
+    assert.ok(pill.left >= -1 && pill.right <= 391 && pill.top >= -1 && pill.bottom <= 845,
+      `${pill.name} stays inside the narrow viewport: ${JSON.stringify(pill)}`);
   }
-  assert.ok(pills.find(pill => pill.name.includes('Backup'))?.visible,'Backup remains available in the mobile navbar');
+  for (let i=0; i<pills.length; i++) for (let j=i+1; j<pills.length; j++) {
+    const a=pills[i], c=pills[j];
+    assert.ok(a.right <= c.left || c.right <= a.left || a.bottom <= c.top || c.bottom <= a.top,
+      `${a.name} and ${c.name} do not overlap`);
+  }
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log('connections-browser: status pills, settings pages, local install links, and mobile bounds passed');
+  console.log('connections-browser: status pills, settings pages, local install links, and narrow-window bounds passed');
 } finally { await b?.close(); serverHttp?.close(); rmSync(temp,{recursive:true,force:true}); }
