@@ -65,6 +65,10 @@ name = "projection_fixtures"
 path = "tests/projection_fixtures.rs"
 
 [[test]]
+name = "storage_benchmarks"
+path = "tests/storage_benchmarks.rs"
+
+[[test]]
 name = "writer_socket_bench"
 path = "tests/writer_socket_bench.rs"
 

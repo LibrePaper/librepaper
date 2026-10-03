@@ -37,12 +37,12 @@ use futures_util::future::join_all;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
-use super::{
+use librepaper::postgres::{
     AccountRecord, Authority, NewAccount, NewDocument, PostgresCatalog, PostgresOptions,
     StoragePolicy, WriterLease,
 };
-use crate::document::session;
-use crate::log::{FlushReason, Registry};
+use librepaper::session;
+use librepaper::log::{FlushReason, Registry};
 
 fn micros(start: Instant) -> u64 {
     start.elapsed().as_micros().try_into().unwrap_or(u64::MAX)
@@ -142,17 +142,17 @@ async fn typing_throughput_release_benchmark() {
     // writes no base (it never compacts) and reads none, so the store is
     // only here to satisfy the registry's constructor.
     let scratch = tempfile::tempdir().expect("scratch blob directory");
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
-        crate::storage::blob::FsStore::new(scratch.path().to_path_buf(), false),
+    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(
+        librepaper::FsStore::new(scratch.path().to_path_buf(), false),
     );
     // The expansion measurement below keeps many documents resident at once
     // on purpose (see the comment at that block). The default 512 MiB
     // budget would start evicting cold entries partway through that, which
     // would make the RSS delta undercount -- so this run gets a budget wide
     // enough that admission never interferes with the measurement.
-    let config = Arc::new(crate::config::Configuration {
+    let config = Arc::new(librepaper::config::Configuration {
         memory_budget_bytes: u64::MAX / 4,
-        ..crate::config::Configuration::default()
+        ..librepaper::config::Configuration::default()
     });
     let registry = Registry::new(
         catalog.clone(),
@@ -184,7 +184,7 @@ async fn typing_throughput_release_benchmark() {
                 opening.clone()
             )
             .await,
-        crate::log::Ingested::Accepted
+        librepaper::log::Ingested::Accepted
     ));
     sequencer
         .flush(FlushReason::Barrier)
@@ -273,12 +273,12 @@ async fn typing_throughput_release_benchmark() {
                         .await;
                     latencies.push(micros(at));
                     match outcome {
-                        crate::log::Ingested::Accepted => {
+                        librepaper::log::Ingested::Accepted => {
                             vector = session::encode_vector(&doc);
                             accepted += 1;
                             break;
                         }
-                        crate::log::Ingested::Retryable(reason) => {
+                        librepaper::log::Ingested::Retryable(reason) => {
                             retried += 1;
                             if Instant::now() >= deadline {
                                 terminal = Some(format!("retryable at deadline: {reason}"));
@@ -434,7 +434,7 @@ async fn typing_throughput_release_benchmark() {
         name: &str,
         count: usize,
         edits: usize,
-        hold: &mut Vec<Arc<crate::log::Sequencer>>,
+        hold: &mut Vec<Arc<librepaper::log::Sequencer>>,
     ) -> u64 {
         let owner = authority
             .account_id
@@ -475,7 +475,7 @@ async fn typing_throughput_release_benchmark() {
                         session::encode_state(&doc)
                     )
                     .await,
-                crate::log::Ingested::Accepted
+                librepaper::log::Ingested::Accepted
             ));
             // The typed cohort accumulates a real op history on top: the
             // same document, reached by many small edits rather than one.
@@ -529,7 +529,7 @@ async fn typing_throughput_release_benchmark() {
         log_bytes_total
     }
 
-    let mut held: Vec<Arc<crate::log::Sequencer>> = Vec::new();
+    let mut held: Vec<Arc<librepaper::log::Sequencer>> = Vec::new();
     let expansion_rss_before = resident_bytes();
     let uploaded_log_bytes = expansion_cohort(
         &catalog,
@@ -657,7 +657,7 @@ async fn typing_throughput_release_benchmark() {
         // measurement could not be taken -- see `expansion_measurement` for
         // why -- and a null here must not be read as a small number.
         "measured_expansion_factor": expansion,
-        "configured_expansion_factor": crate::log::budget::DEFAULT_EXPANSION,
+        "configured_expansion_factor": librepaper::log::budget::DEFAULT_EXPANSION,
         "wal_bytes": wal_bytes,
     });
     let output = serde_json::to_string_pretty(&report).expect("report JSON");
@@ -807,20 +807,20 @@ async fn compaction_cost_release_benchmark() {
     let blob_root = std::env::var("LIBREPAPER_BENCHMARK_BLOB_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| scratch.path().to_path_buf());
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
-        Arc::new(crate::storage::blob::FsStore::new(blob_root.clone(), false));
-    let config = Arc::new(crate::config::Configuration {
+    let blobs: Arc<dyn librepaper::BlobStore> =
+        Arc::new(librepaper::FsStore::new(blob_root.clone(), false));
+    let config = Arc::new(librepaper::config::Configuration {
         // The seeding loop below writes a document's whole history as fast
         // as it can, which is not a person and must not be rate-limited
         // into taking an hour. The measured stages are unaffected: nothing
         // in §8.4 consults either of these.
         log_quota_bytes: usize::MAX / 4,
         memory_budget_bytes: u64::MAX / 4,
-        session: crate::config::SessionLimit {
+        session: librepaper::config::SessionLimit {
             updates_per_minute: 10_000_000,
-            ..crate::config::Configuration::default().session
+            ..librepaper::config::Configuration::default().session
         },
-        ..crate::config::Configuration::default()
+        ..librepaper::config::Configuration::default()
     });
     let registry = Registry::new(
         catalog.clone(),
@@ -873,14 +873,14 @@ async fn compaction_cost_release_benchmark() {
         // at max_update_bytes, so a large enough document cannot be
         // uploaded in one batch at all. That is a boundary worth recording
         // rather than a harness fault, and the shapes after it still run.
-        if !matches!(admitted, crate::log::Ingested::Accepted) {
+        if !matches!(admitted, librepaper::log::Ingested::Accepted) {
             measurements.push(json!({
                 "edits": edits,
                 "seed_kib": seed_kib,
                 "seed_bytes_actual": seed_len,
                 "opening_update_bytes": opening.len(),
                 "seed_refused": format!("{admitted:?}"),
-                "max_update_bytes": crate::log::sequencer::max_update_bytes(config.log_quota_bytes),
+                "max_update_bytes": librepaper::log::sequencer::max_update_bytes(config.log_quota_bytes),
             }));
             continue;
         }
@@ -924,7 +924,7 @@ async fn compaction_cost_release_benchmark() {
                             update
                         )
                         .await,
-                    crate::log::Ingested::Accepted
+                    librepaper::log::Ingested::Accepted
                 ),
                 "seeding edit {edit} was not accepted"
             );
@@ -1005,10 +1005,10 @@ async fn compaction_cost_release_benchmark() {
                         .await;
                     samples.push((at, micros(at)));
                     match outcome {
-                        crate::log::Ingested::Accepted => vector = session::encode_vector(&doc),
+                        librepaper::log::Ingested::Accepted => vector = session::encode_vector(&doc),
                         // Back-pressure is not a reason to stop: a real
                         // client resends. Anything else is structural.
-                        crate::log::Ingested::Retryable(_) => {}
+                        librepaper::log::Ingested::Retryable(_) => {}
                         other => {
                             terminal = Some(format!("{other:?}"));
                             break;
@@ -1075,7 +1075,7 @@ async fn compaction_cost_release_benchmark() {
                 "rows_before": rows_before,
                 "reconstruction_us": reconstruction_us,
                 "reconstruction_failed": error.to_string(),
-                "build_deadline_seconds": crate::log::sequencer::BUILD_DEADLINE.as_secs(),
+                "build_deadline_seconds": librepaper::log::sequencer::BUILD_DEADLINE.as_secs(),
                 "editor_samples": samples.len(),
                 "editor_terminal_reason": typist_terminal,
                 "memory": {
@@ -1097,7 +1097,7 @@ async fn compaction_cost_release_benchmark() {
                 .expect("a flush before the snapshot");
             let at = Instant::now();
             let taken = sequencer
-                .snapshot_at_log_vector(crate::log::sequencer::SnapshotMode::Full)
+                .snapshot_at_log_vector(librepaper::log::sequencer::SnapshotMode::Full)
                 .await
                 .expect("a snapshot attempt");
             if let Some(taken) = taken {
@@ -1114,11 +1114,11 @@ async fn compaction_cost_release_benchmark() {
 
         // Step 4.
         let at = Instant::now();
-        crate::storage::worker::prove_coverage(
+        librepaper::worker::prove_coverage(
             &snapshot,
             &log_vector,
             changes,
-            crate::log::sequencer::SnapshotMode::Full,
+            librepaper::log::sequencer::SnapshotMode::Full,
         )
         .expect("the snapshot covers the log");
         let verification_us = micros(at);
@@ -1131,7 +1131,7 @@ async fn compaction_cost_release_benchmark() {
         let compressed = zstd::stream::encode_all(std::io::Cursor::new(&snapshot[..]), 3)
             .expect("compress the snapshot");
         let compression_us = micros(at);
-        let storage = crate::storage::collaboration::CollaborationStorage::new(
+        let storage = librepaper::collaboration::CollaborationStorage::new(
             catalog.clone(),
             blobs.clone(),
         );
@@ -1140,7 +1140,7 @@ async fn compaction_cost_release_benchmark() {
             .write_base(
                 document_id,
                 &snapshot,
-                crate::config::Configuration::default().log_quota_bytes,
+                librepaper::config::Configuration::default().log_quota_bytes,
             )
             .await
             .expect("write the base");
@@ -1156,7 +1156,7 @@ async fn compaction_cost_release_benchmark() {
                 through,
                 &log_vector,
                 written,
-                crate::storage::collaboration::superseded_base_deadline(),
+                librepaper::collaboration::superseded_base_deadline(),
                 false,
             )
             .await
@@ -1302,7 +1302,7 @@ async fn seed_concurrent_document(
     seed_kib: usize,
     edits: usize,
     edits_per_row: usize,
-) -> Result<(uuid::Uuid, Arc<crate::log::Sequencer>, usize), Value> {
+) -> Result<(uuid::Uuid, Arc<librepaper::log::Sequencer>, usize), Value> {
     let owner = authority
         .account_id
         .expect("the benchmark owner is a registered account");
@@ -1337,14 +1337,14 @@ async fn seed_concurrent_document(
             opening.clone(),
         )
         .await;
-    if !matches!(admitted, crate::log::Ingested::Accepted) {
+    if !matches!(admitted, librepaper::log::Ingested::Accepted) {
         return Err(json!({
             "slug": slug,
             "seed_kib": seed_kib,
             "seed_bytes_actual": seed_len,
             "opening_update_bytes": opening.len(),
             "seed_refused": format!("{admitted:?}"),
-            "max_update_bytes": crate::log::sequencer::max_update_bytes(crate::config::Configuration::default().log_quota_bytes),
+            "max_update_bytes": librepaper::log::sequencer::max_update_bytes(librepaper::config::Configuration::default().log_quota_bytes),
         }));
     }
     sequencer
@@ -1383,7 +1383,7 @@ async fn seed_concurrent_document(
                         update
                     )
                     .await,
-                crate::log::Ingested::Accepted
+                librepaper::log::Ingested::Accepted
             ),
             "seeding edit {edit} for {slug} was not accepted"
         );
@@ -1409,9 +1409,9 @@ async fn seed_concurrent_document(
 /// not take the rest of the cohort down with it.
 async fn compact_seeded_document(
     document_id: uuid::Uuid,
-    sequencer: Arc<crate::log::Sequencer>,
+    sequencer: Arc<librepaper::log::Sequencer>,
     catalog: Arc<PostgresCatalog>,
-    blobs: Arc<dyn crate::storage::blob::BlobStore>,
+    blobs: Arc<dyn librepaper::BlobStore>,
     snapshot_attempts_max: usize,
     keystroke: Duration,
 ) -> Result<Value, Value> {
@@ -1432,7 +1432,7 @@ async fn compact_seeded_document(
         return Err(json!({
             "reconstruction_us": reconstruction_us,
             "reconstruction_failed": error.to_string(),
-            "build_deadline_seconds": crate::log::sequencer::BUILD_DEADLINE.as_secs(),
+            "build_deadline_seconds": librepaper::log::sequencer::BUILD_DEADLINE.as_secs(),
         }));
     }
 
@@ -1445,7 +1445,7 @@ async fn compact_seeded_document(
             .expect("a flush before the snapshot");
         let at = Instant::now();
         let taken = sequencer
-            .snapshot_at_log_vector(crate::log::sequencer::SnapshotMode::Full)
+            .snapshot_at_log_vector(librepaper::log::sequencer::SnapshotMode::Full)
             .await
             .expect("a snapshot attempt");
         if let Some(taken) = taken {
@@ -1465,11 +1465,11 @@ async fn compact_seeded_document(
 
     // Step 4.
     let at = Instant::now();
-    crate::storage::worker::prove_coverage(
+    librepaper::worker::prove_coverage(
         &snapshot,
         &log_vector,
         changes,
-        crate::log::sequencer::SnapshotMode::Full,
+        librepaper::log::sequencer::SnapshotMode::Full,
     )
     .expect("the snapshot covers the log");
     let verification_us = micros(at);
@@ -1479,13 +1479,13 @@ async fn compact_seeded_document(
     let compressed = zstd::stream::encode_all(std::io::Cursor::new(&snapshot[..]), 3)
         .expect("compress the snapshot");
     let compression_us = micros(at);
-    let storage = crate::storage::collaboration::CollaborationStorage::new(catalog.clone(), blobs);
+    let storage = librepaper::collaboration::CollaborationStorage::new(catalog.clone(), blobs);
     let at = Instant::now();
     let written = storage
         .write_base(
             document_id,
             &snapshot,
-            crate::config::Configuration::default().log_quota_bytes,
+            librepaper::config::Configuration::default().log_quota_bytes,
         )
         .await
         .expect("write the base");
@@ -1501,7 +1501,7 @@ async fn compact_seeded_document(
             through,
             &log_vector,
             written,
-            crate::storage::collaboration::superseded_base_deadline(),
+            librepaper::collaboration::superseded_base_deadline(),
             false,
         )
         .await
@@ -1630,16 +1630,16 @@ async fn concurrent_compaction_release_benchmark() {
     let blob_root = std::env::var("LIBREPAPER_BENCHMARK_BLOB_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| scratch.path().to_path_buf());
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
-        Arc::new(crate::storage::blob::FsStore::new(blob_root.clone(), false));
-    let config = Arc::new(crate::config::Configuration {
+    let blobs: Arc<dyn librepaper::BlobStore> =
+        Arc::new(librepaper::FsStore::new(blob_root.clone(), false));
+    let config = Arc::new(librepaper::config::Configuration {
         log_quota_bytes: usize::MAX / 4,
         memory_budget_bytes: u64::MAX / 4,
-        session: crate::config::SessionLimit {
+        session: librepaper::config::SessionLimit {
             updates_per_minute: 10_000_000,
-            ..crate::config::Configuration::default().session
+            ..librepaper::config::Configuration::default().session
         },
-        ..crate::config::Configuration::default()
+        ..librepaper::config::Configuration::default()
     });
     let registry = Registry::new(
         catalog.clone(),
@@ -1649,7 +1649,7 @@ async fn concurrent_compaction_release_benchmark() {
     );
 
     let cores_available = std::thread::available_parallelism().map_or(1, |cores| cores.get());
-    let admission_bound = crate::log::admission::concurrency();
+    let admission_bound = librepaper::log::admission::concurrency();
 
     let mut cohorts = Vec::new();
     for n in cohort_sizes.iter().copied() {
@@ -1742,8 +1742,8 @@ async fn concurrent_compaction_release_benchmark() {
                         .await;
                     samples.push((at, micros(at)));
                     match outcome {
-                        crate::log::Ingested::Accepted => vector = session::encode_vector(&doc),
-                        crate::log::Ingested::Retryable(_) => {}
+                        librepaper::log::Ingested::Accepted => vector = session::encode_vector(&doc),
+                        librepaper::log::Ingested::Retryable(_) => {}
                         other => {
                             terminal = Some(format!("{other:?}"));
                             break;
@@ -2154,7 +2154,7 @@ type Pending = Arc<std::sync::Mutex<std::collections::HashMap<i64, Instant>>>;
 /// `Sender` a socket would hold, rather than a flush return value the
 /// server never sends anybody.
 fn acknowledgement_reader(
-    mut rx: crate::storage::outgoing::Receiver,
+    mut rx: librepaper::outgoing::Receiver,
     pending: Pending,
 ) -> tokio::task::JoinHandle<Vec<u64>> {
     tokio::spawn(async move {
@@ -2162,8 +2162,8 @@ fn acknowledgement_reader(
         while let Some(queued) = rx.recv().await {
             let (outgoing, _reservation) = queued.into_parts();
             let text = match &outgoing {
-                crate::storage::outgoing::Outgoing::Text(text) => text.to_string(),
-                crate::storage::outgoing::Outgoing::SharedText(text) => text.to_string(),
+                librepaper::outgoing::Outgoing::Text(text) => text.to_string(),
+                librepaper::outgoing::Outgoing::SharedText(text) => text.to_string(),
                 _ => continue,
             };
             let Ok(value) = serde_json::from_str::<Value>(&text) else {
@@ -2234,7 +2234,7 @@ fn capacity_arrivals(
 /// remains visible, and acknowledgement latency includes the queue delay.
 #[allow(clippy::too_many_arguments)]
 async fn capacity_editor(
-    sequencer: Arc<crate::log::Sequencer>,
+    sequencer: Arc<librepaper::log::Sequencer>,
     socket: u64,
     peer: u64,
     principal: String,
@@ -2245,7 +2245,7 @@ async fn capacity_editor(
     deadline: Instant,
     interval: Duration,
 ) -> EditorReport {
-    use crate::storage::outgoing::Sender;
+    use librepaper::outgoing::Sender;
 
     let mut report = EditorReport {
         offered: scheduled_edits(deadline.duration_since(started_at), interval),
@@ -2257,7 +2257,7 @@ async fn capacity_editor(
     let pending: Pending = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let reader = acknowledgement_reader(rx, pending.clone());
     if let Err(error) = sequencer
-        .join(socket, crate::log::Role::Editor, &peer_key, tx, None)
+        .join(socket, librepaper::log::Role::Editor, &peer_key, tx, None)
         .await
     {
         report.terminal = Some(format!("join failed: {error}"));
@@ -2324,12 +2324,12 @@ async fn capacity_editor(
                 break;
             };
             match outcome {
-                crate::log::Ingested::Accepted => {
+                librepaper::log::Ingested::Accepted => {
                     vector = session::encode_vector(&doc);
                     report.accepted += 1;
                     break;
                 }
-                crate::log::Ingested::Retryable(reason) => {
+                librepaper::log::Ingested::Retryable(reason) => {
                     report.retried += 1;
                     if Instant::now() >= deadline {
                         report.terminal = Some(format!("retryable at deadline: {reason}"));
@@ -2445,12 +2445,12 @@ async fn active_document_capacity_benchmark() {
     }
 
     let scratch = tempfile::tempdir().expect("scratch blob directory");
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
-        crate::storage::blob::FsStore::new(scratch.path().to_path_buf(), false),
+    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(
+        librepaper::FsStore::new(scratch.path().to_path_buf(), false),
     );
-    let config = Arc::new(crate::config::Configuration {
+    let config = Arc::new(librepaper::config::Configuration {
         memory_budget_bytes: u64::MAX / 4,
-        ..crate::config::Configuration::default()
+        ..librepaper::config::Configuration::default()
     });
     let registry = Registry::new(
         catalog.clone(),
@@ -2479,7 +2479,7 @@ async fn active_document_capacity_benchmark() {
             sequencer
                 .ingest(0, "seed", &principal, 0, opening.clone())
                 .await,
-            crate::log::Ingested::Accepted
+            librepaper::log::Ingested::Accepted
         ));
         sequencer
             .flush(FlushReason::Barrier)
@@ -2792,40 +2792,40 @@ fn status_histogram(samples: &[HttpSample]) -> Value {
 /// away at the door, which would time an authorization refusal instead of
 /// the document-open path §2.3 describes.
 async fn start_http_harness(
-    blobs: Arc<dyn crate::storage::blob::BlobStore>,
-    config: Arc<crate::config::Configuration>,
+    blobs: Arc<dyn librepaper::BlobStore>,
+    config: Arc<librepaper::config::Configuration>,
     catalog: Arc<PostgresCatalog>,
     registry: Arc<Registry>,
-    background: crate::storage::worker::Handle,
+    background: librepaper::worker::Handle,
     writer: WriterLease,
     owner: &AccountRecord,
-) -> (Arc<crate::server::Server>, String, reqwest::Client, String) {
-    let rooms = crate::room::Rooms::new(
+) -> (Arc<librepaper::Server>, String, reqwest::Client, String) {
+    let rooms = librepaper::Rooms::new(
         catalog.clone(),
         blobs.clone(),
         config.clone(),
         registry.clone(),
     );
-    let store = crate::storage::store::Store::open_with_catalog(
+    let store = librepaper::Store::open_with_catalog(
         blobs.clone(),
         config.clone(),
         catalog.clone(),
         registry.clone(),
     );
     let key = vec![7_u8; 32];
-    let mut server = crate::server::Server::new(
+    let mut server = librepaper::Server::new(
         store,
         rooms,
         background,
         std::collections::HashMap::new(),
-        crate::auth::GithubApp {
+        librepaper::GithubApp {
             client_id: "benchmark".into(),
-            ..crate::auth::GithubApp::default()
+            ..librepaper::GithubApp::default()
         },
         key.clone(),
         config.clone(),
-        crate::auth::Policy::parse_publishers(&owner.handle).expect("benchmark publisher policy"),
-        crate::auth::Policy::parse(""),
+        librepaper::Policy::parse_publishers(&owner.handle).expect("benchmark publisher policy"),
+        librepaper::Policy::parse(""),
     );
     server.install_writer(writer);
     let server = Arc::new(server);
@@ -2841,7 +2841,7 @@ async fn start_http_harness(
         let _ = axum::serve(listener, service).await;
     });
 
-    let identity = crate::auth::Identity {
+    let identity = librepaper::Identity {
         provider: "github".into(),
         id: owner.id.to_string(),
         handle: owner.handle.clone(),
@@ -2849,8 +2849,8 @@ async fn start_http_harness(
         picture: String::new(),
         session_generation: owner.session_generation.to_string(),
     };
-    let cookie = crate::auth::sign_session(&key, &identity, crate::util::now_unix() + 3600);
-    let cookie_header = format!("{}={}", crate::auth::SESSION_COOKIE, cookie);
+    let cookie = librepaper::sign_session(&key, &identity, librepaper::now_unix() + 3600);
+    let cookie_header = format!("{}={}", librepaper::SESSION_COOKIE, cookie);
     (
         server,
         format!("http://{addr}"),
@@ -2916,10 +2916,10 @@ async fn mixed_traffic_capacity_benchmark() {
     let writer = catalog.claim_writer().await.expect("writer lease");
 
     let scratch = tempfile::tempdir().expect("scratch blob directory");
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
-        crate::storage::blob::FsStore::new(scratch.path().to_path_buf(), false),
+    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(
+        librepaper::FsStore::new(scratch.path().to_path_buf(), false),
     );
-    let mut base_config = crate::config::Configuration {
+    let mut base_config = librepaper::config::Configuration {
         memory_budget_bytes: u64::MAX / 4,
         ..Default::default()
     };
@@ -2935,7 +2935,7 @@ async fn mixed_traffic_capacity_benchmark() {
         config.clone(),
         "benchmark".to_string(),
     );
-    let (worker, background) = crate::storage::worker::Worker::new(
+    let (worker, background) = librepaper::worker::Worker::new(
         catalog.clone(),
         blobs.clone(),
         registry.clone(),
@@ -2978,7 +2978,7 @@ async fn mixed_traffic_capacity_benchmark() {
             sequencer
                 .ingest(0, "seed", &principal, 0, opening.clone())
                 .await,
-            crate::log::Ingested::Accepted
+            librepaper::log::Ingested::Accepted
         ));
         sequencer
             .flush(FlushReason::Barrier)
@@ -3214,10 +3214,10 @@ async fn reconnect_burst_capacity_benchmark() {
     let writer = catalog.claim_writer().await.expect("writer lease");
 
     let scratch = tempfile::tempdir().expect("scratch blob directory");
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
-        crate::storage::blob::FsStore::new(scratch.path().to_path_buf(), false),
+    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(
+        librepaper::FsStore::new(scratch.path().to_path_buf(), false),
     );
-    let mut base_config = crate::config::Configuration {
+    let mut base_config = librepaper::config::Configuration {
         memory_budget_bytes: u64::MAX / 4,
         ..Default::default()
     };
@@ -3248,7 +3248,7 @@ async fn reconnect_burst_capacity_benchmark() {
             sequencer
                 .ingest(0, "seed", &owner.id.to_string(), 0, opening)
                 .await,
-            crate::log::Ingested::Accepted
+            librepaper::log::Ingested::Accepted
         ));
         sequencer
             .flush(FlushReason::Barrier)
@@ -3267,7 +3267,7 @@ async fn reconnect_burst_capacity_benchmark() {
         config.clone(),
         "benchmark-burst".to_string(),
     );
-    let (worker, background) = crate::storage::worker::Worker::new(
+    let (worker, background) = librepaper::worker::Worker::new(
         catalog.clone(),
         blobs.clone(),
         registry.clone(),
@@ -3432,10 +3432,10 @@ async fn maintenance_backlog_capacity_benchmark() {
     let _writer = catalog.claim_writer().await.expect("writer lease");
 
     let scratch = tempfile::tempdir().expect("scratch blob directory");
-    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
-        crate::storage::blob::FsStore::new(scratch.path().to_path_buf(), false),
+    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(
+        librepaper::FsStore::new(scratch.path().to_path_buf(), false),
     );
-    let mut base_config = crate::config::Configuration {
+    let mut base_config = librepaper::config::Configuration {
         memory_budget_bytes: u64::MAX / 4,
         ..Default::default()
     };
@@ -3447,7 +3447,7 @@ async fn maintenance_backlog_capacity_benchmark() {
         config.clone(),
         "benchmark".to_string(),
     );
-    let (worker, background) = crate::storage::worker::Worker::new(
+    let (worker, background) = librepaper::worker::Worker::new(
         catalog.clone(),
         blobs.clone(),
         registry.clone(),
@@ -3565,18 +3565,18 @@ async fn maintenance_backlog_capacity_benchmark() {
                         .ingest(peer, &principal, &principal, push_seq, push_update.clone())
                         .await
                     {
-                        crate::log::Ingested::Accepted => {
+                        librepaper::log::Ingested::Accepted => {
                             let _ = sequencer.flush(FlushReason::Barrier).await;
                             push_landed_us = Some(micros(queued_at));
                             push_outcome = "accepted";
                         }
-                        crate::log::Ingested::Retryable(retry) if retry.reason == "log_quota" => {
+                        librepaper::log::Ingested::Retryable(retry) if retry.reason == "log_quota" => {
                             refusals += 1;
                             let now_us = micros(queued_at);
                             first_refusal_us.get_or_insert(now_us);
                             last_refusal_us = Some(now_us);
                         }
-                        crate::log::Ingested::Retryable(_) => {}
+                        librepaper::log::Ingested::Retryable(_) => {}
                         _ => push_outcome = "refused_structural",
                     }
                 }

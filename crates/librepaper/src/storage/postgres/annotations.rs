@@ -33,7 +33,7 @@ use super::{Error, PostgresCatalog, Result};
 
 /// The largest page [`PostgresCatalog::annotations`] returns, and so the most
 /// annotation ids [`PostgresCatalog::replies`] accepts in one call. A page
-/// size, not a document size: [`crate::room::comments`] walks as many pages
+/// size, not a document size: `room::comments` walks as many pages
 /// as a document has, and the transport's own page ceiling
 /// (`COMMENT_PAGE_MAX`) sits below this one.
 pub const ANNOTATION_PAGE_MAX: i64 = 500;
@@ -903,7 +903,7 @@ impl PostgresCatalog {
     /// This used to be a single unpaged read with `LIMIT 5001` and a refusal
     /// above 5,000 rows, which made a document whose threads had grown past
     /// that ceiling unloadable altogether rather than merely slow. The cursor
-    /// turns the ceiling into a page size that [`crate::room::comments::load`]
+    /// turns the ceiling into a page size that `room::comments::load`
     /// walks to the end.
     pub async fn replies(
         &self,

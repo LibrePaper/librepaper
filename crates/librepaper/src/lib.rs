@@ -125,16 +125,27 @@ pub mod source_archive {
 /// The catalogue the deployment-shaped tests stand a server on.
 pub mod postgres {
     pub use crate::storage::postgres::{
-        AccountRecord, Error, MutationAuthorization, NewAccount, NewAnnotation, NewDocument,
-        NewReply, PostgresCatalog, PostgresOptions,
+        AccountRecord, Authority, Error, MutationAuthorization, NewAccount, NewAnnotation,
+        NewDocument,
+        NewReply, PostgresCatalog, PostgresOptions, StoragePolicy, WriterLease,
     };
 }
 
 /// The background worker, which those tests run so deletion and compaction
 /// behave as they do in a deployment.
 pub mod worker {
-    pub use crate::storage::worker::{Handle, Worker};
+    pub use crate::storage::worker::{prove_coverage, Handle, Worker};
 }
+/// The collaboration storage the whole-stack benchmarks measure.
+pub mod collaboration {
+    pub use crate::storage::collaboration::{superseded_base_deadline, CollaborationStorage};
+}
+
+/// The channel types a socket and a room talk through.
+pub mod outgoing {
+    pub use crate::storage::outgoing::{Outgoing, Receiver, Sender};
+}
+
 // What the deployment-shaped tests in `tests/` assemble: a whole server,
 // built from the same types `server::serve` builds it from. Those tests
 // (SPEC-server-is-a-log §14.2) are about the deployment rather than about a
@@ -145,7 +156,10 @@ pub mod worker {
 // rest of what it takes to stand one up and drive it the way a browser or
 // the sharing route actually does: a running `Server` behind a real socket,
 // authenticated the same way a signed-in owner and a share-link guest are.
-pub use auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
+pub use auth::{
+    sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB, SESSION_COOKIE,
+};
+pub use util::now_unix;
 pub use storage::store::Store;
 pub use librepaper_shell::ShellFile;
 pub use room::{Room, Rooms};

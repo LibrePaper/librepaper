@@ -3251,8 +3251,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod benchmarks;
 pub use access::AccessRole;
 pub use annotations::{
     original_anchor_from_record, presentation_from_record, AnnotationRecord, AnnotationState,
