@@ -31,7 +31,7 @@ use librepaper_base::auth::{
     VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
-use crate::document::render::{title_from_html, title_from_markdown};
+use librepaper_document::document::render::{title_from_html, title_from_markdown};
 use crate::room::{
     decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
     Sender,
@@ -1398,7 +1398,7 @@ impl Server {
             })
             .unwrap_or_default();
         let role = entry.role_of(&who.id, &link, self.ceiling_for(&who.identity()), now);
-        let metadata = crate::results::document_metadata(&entry.source_format);
+        let metadata = librepaper_document::results::document_metadata(&entry.source_format);
         json!({
             "slug": entry.slug,
             "title": entry.title,

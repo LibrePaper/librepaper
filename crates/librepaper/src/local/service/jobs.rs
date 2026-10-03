@@ -333,7 +333,7 @@ pub(super) async fn handle_jobs_post(
                     }
                 };
                 if bytes.len() as u64 != entry.size
-                    || crate::results::sha256(&bytes) != entry.sha256
+                    || librepaper_document::results::sha256(&bytes) != entry.sha256
                 {
                     return write_json(
                         400,

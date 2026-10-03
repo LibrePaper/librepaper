@@ -109,6 +109,8 @@ include_dir.workspace = true
 librepaper-shell = { path = "../librepaper-shell" }
 # Configuration, identity and shared helpers.
 librepaper-base = { path = "../librepaper-base" }
+# What a document is, whoever serves it.
+librepaper-document = { path = "../librepaper-document" }
 # The command line.
 clap.workspace = true
 # The blob store is a trait with async methods behind a pointer.

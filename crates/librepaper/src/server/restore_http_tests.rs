@@ -79,11 +79,11 @@ async fn a_restore_keeps_what_it_replaced() {
     // keep it.
     let (vector, edited) = room
         .log()
-        .with_head(|doc| (crate::document::session::encode_vector(doc), doc.fork()))
+        .with_head(|doc| (librepaper_document::document::session::encode_vector(doc), doc.fork()))
         .await
         .unwrap();
-    crate::document::session::put_text(&edited, "paper.md", EDITED);
-    let update = crate::document::session::encode_diff(&edited, &vector).unwrap();
+    librepaper_document::document::session::put_text(&edited, "paper.md", EDITED);
+    let update = librepaper_document::document::session::encode_diff(&edited, &vector).unwrap();
     let ingested = room
         .ingest(999, "editor-999", "editor-999", 1, update)
         .await;

@@ -258,7 +258,7 @@ fn manifest_tree_digest(manifest: &[ManifestEntry], uploads: &[(String, Vec<u8>)
 fn input_manifest_digest(manifest: &[ManifestEntry]) -> String {
     let mut entries = manifest.to_vec();
     entries.sort_by(|left, right| left.path.cmp(&right.path));
-    crate::results::sha256(&serde_json::to_vec(&entries).expect("manifest entries serialize"))
+    librepaper_document::results::sha256(&serde_json::to_vec(&entries).expect("manifest entries serialize"))
 }
 
 /// One job's live state: what `GET jobs/<id>` answers with, plus everything
@@ -703,7 +703,7 @@ fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry>
                 break;
             };
             if expected.size != bytes.len() as u64
-                || expected.sha256 != crate::results::sha256(&bytes)
+                || expected.sha256 != librepaper_document::results::sha256(&bytes)
             {
                 file_error = true;
                 break;
@@ -801,10 +801,10 @@ fn persist_quarto_job(id: &str, entry: &JobEntry) -> Result<(), String> {
         let Some(expected) = entry.status.outputs.get(name) else {
             return Err(format!("missing output descriptor: {name}"));
         };
-        if expected.size != bytes.len() as u64 || expected.sha256 != crate::results::sha256(bytes) {
+        if expected.size != bytes.len() as u64 || expected.sha256 != librepaper_document::results::sha256(bytes) {
             return Err(format!("output descriptor does not match bytes: {name}"));
         }
-        let storage = format!("{}.bin", crate::results::sha256(name.as_bytes()));
+        let storage = format!("{}.bin", librepaper_document::results::sha256(name.as_bytes()));
         let path = files_root.join(&storage);
         let mut file = OpenOptions::new()
             .write(true)

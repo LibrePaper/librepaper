@@ -2590,7 +2590,7 @@ mod tests {
         let account = seed_account(&catalog, &format!("coverage-{tag}")).await;
         let document = seed_document(&catalog, account.id, &format!("coverage-{tag}")).await;
 
-        let doc = crate::document::session::new_doc();
+        let doc = librepaper_document::document::session::new_doc();
         doc.set_peer_id(1).unwrap();
         doc.get_text("body").insert(0, "hello").unwrap();
         doc.commit();
@@ -2693,7 +2693,7 @@ mod tests {
         let account = seed_account(&catalog, &format!("sweep-{tag}")).await;
         let document = seed_document(&catalog, account.id, &format!("sweep-{tag}")).await;
 
-        let doc = crate::document::session::new_doc();
+        let doc = librepaper_document::document::session::new_doc();
         doc.set_peer_id(1).unwrap();
         doc.get_text("body").insert(0, "alpha").unwrap();
         doc.commit();
@@ -2894,7 +2894,7 @@ mod tests {
         let account = seed_account(&catalog, &format!("join-{tag}")).await;
         let document = seed_document(&catalog, account.id, &format!("join-{tag}")).await;
 
-        let doc = crate::document::session::new_doc();
+        let doc = librepaper_document::document::session::new_doc();
         doc.set_peer_id(1).unwrap();
         doc.get_text("body").insert(0, "alpha").unwrap();
         doc.commit();

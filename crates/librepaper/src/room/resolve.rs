@@ -35,7 +35,7 @@ use serde_json::json;
 
 use super::text::slice16;
 use super::{Comment, Room};
-use crate::document::session::{self, CursorResolutionError};
+use librepaper_document::document::session::{self, CursorResolutionError};
 use crate::log::sequencer::SequencerError;
 use crate::storage::annotation::{
     AnchorSide, AnchorStatus, CommentTarget, DerivedAttachment, LiveSourceRange, OriginalAnchor,
@@ -122,7 +122,7 @@ impl Sources {
     ///
     /// Taking the projection the caller already has is also the cheap way
     /// round: every caller computed one beside this for the tree digest.
-    pub(crate) fn of(projected: &crate::document::projection::Projected) -> Sources {
+    pub(crate) fn of(projected: &librepaper_document::document::projection::Projected) -> Sources {
         let mut units = std::collections::HashMap::new();
         for (path, entry) in &projected.projection.files {
             // An asset has no id and no text: it is at a path, not in one.
@@ -142,7 +142,7 @@ impl Sources {
     #[cfg(test)]
     pub(crate) fn of_doc(doc: &loro::LoroDoc) -> Sources {
         let config = librepaper_base::config::Configuration::default();
-        Sources::of(&crate::document::projection::project(doc, &config.paths()))
+        Sources::of(&librepaper_document::document::projection::project(doc, &config.paths()))
     }
 
     fn units_of(&self, file_id: &str) -> Option<&[u16]> {
@@ -619,7 +619,7 @@ pub(crate) const ATTACHMENT_FRAME_MAX: usize = 200;
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::document::session;
+    use librepaper_document::document::session;
     use crate::storage::annotation::FileId;
 
     /// A document with one text file, the way a publish builds one.
@@ -680,7 +680,7 @@ pub(super) mod tests {
         );
 
         let config = librepaper_base::config::Configuration::default();
-        let projected = crate::document::projection::project(&doc, &config.paths());
+        let projected = librepaper_document::document::projection::project(&doc, &config.paths());
         assert_eq!(
             projected.projection.files.len(),
             2,

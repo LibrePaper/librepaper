@@ -8,7 +8,7 @@ use tokio::net::TcpListener;
 
 use librepaper_base::auth::{session_key_file, GithubApp, GoogleApp, Policy};
 use librepaper_base::config::Configuration;
-use crate::document::retention::{describe_seconds, parse_expire_from, parse_retention};
+use librepaper_document::document::retention::{describe_seconds, parse_expire_from, parse_retention};
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
 use crate::storage::store::Store;

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::document::session;
+use librepaper_document::document::session;
 use crate::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
 use crate::room::Room;
 use crate::storage::postgres::{LabelRecord, NewLabel, PostgresCatalog};

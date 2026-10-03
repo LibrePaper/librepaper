@@ -60,7 +60,7 @@ impl Server {
             Ok(projected) => projected,
             Err(error) => return sequencer_reply(&error),
         };
-        if !crate::document::render::is_quarto(&projected.projection.main) {
+        if !librepaper_document::document::render::is_quarto(&projected.projection.main) {
             return write_json(400, &json!({"error":"document is not Quarto source"}));
         }
         if projected.projection.digest() != input.tree_sha256 {

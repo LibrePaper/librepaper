@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use librepaper_base::config::Configuration;
-use crate::document::paths::{check, Kind};
+use librepaper_document::document::paths::{check, Kind};
 use crate::log::{Command, CommandError, Evidence, Head, PreparedSource, Registry};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{
@@ -555,28 +555,28 @@ impl Command for ReplaceProject {
                 texts.iter().map(|(path, _)| path.as_str()).collect();
             let wanted_assets: std::collections::HashSet<&str> =
                 assets.iter().map(|(path, _)| path.as_str()).collect();
-            for path in crate::document::session::text_ids_of(draft).into_keys() {
+            for path in librepaper_document::document::session::text_ids_of(draft).into_keys() {
                 if !wanted_texts.contains(path.as_str()) {
-                    crate::document::session::remove_path(draft, &path);
+                    librepaper_document::document::session::remove_path(draft, &path);
                 }
             }
-            for path in crate::document::session::assets_of(draft).into_keys() {
+            for path in librepaper_document::document::session::assets_of(draft).into_keys() {
                 if !wanted_assets.contains(path.as_str()) {
-                    crate::document::session::remove_asset(draft, &path);
+                    librepaper_document::document::session::remove_asset(draft, &path);
                 }
             }
             let mut main_id = String::new();
             for (path, body) in texts {
-                let id = crate::document::session::put_text(draft, path, body);
+                let id = librepaper_document::document::session::put_text(draft, path, body);
                 if path == main {
                     main_id = id;
                 }
             }
             for (path, digest) in assets {
-                crate::document::session::put_asset(draft, path, digest);
+                librepaper_document::document::session::put_asset(draft, path, digest);
             }
             if !main_id.is_empty() {
-                crate::document::session::set_main(draft, &main_id);
+                librepaper_document::document::session::set_main(draft, &main_id);
             }
             Ok(())
         })
@@ -975,7 +975,7 @@ impl Store {
             .map_err(|error| error.to_string())?;
         let rules = self.config.paths();
         let projected = sequencer
-            .with_head(|doc| crate::document::projection::project(doc, &rules))
+            .with_head(|doc| librepaper_document::document::projection::project(doc, &rules))
             .await
             .map_err(|error| error.to_string())?;
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -1650,5 +1650,5 @@ pub fn digest_of(text: &str) -> String {
     digest_of_bytes(text.as_bytes())
 }
 pub fn digest_of_bytes(bytes: &[u8]) -> String {
-    crate::results::sha256(bytes)
+    librepaper_document::results::sha256(bytes)
 }

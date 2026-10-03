@@ -354,7 +354,7 @@ async fn finish_render(watch: &SessionWatch) {
     let note = match watch.adapter.output_path(&watch.root) {
         Some(path) => match wait_stable_then_read(&path).await {
             Some(bytes) if looks_complete(watch.adapter.kind(), &watch.entrypoint, &bytes) => {
-                let sha256 = crate::results::sha256(&bytes);
+                let sha256 = librepaper_document::results::sha256(&bytes);
                 let mut latest = watch.latest.lock().await;
                 *latest = Some(Artifact {
                     kind: watch.adapter.kind(),

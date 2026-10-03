@@ -106,11 +106,11 @@ fn revealjs_bundle_preserves_format_and_freshness_context() {
     let manifest = bundle.to_storage_manifest("doc", "revision");
     assert_eq!(
         manifest.context.format,
-        crate::results::OutputFormat::Revealjs
+        librepaper_document::results::OutputFormat::Revealjs
     );
     assert_eq!(
         manifest.artifact.as_ref().expect("artifact").kind,
-        crate::results::ArtifactKind::Html
+        librepaper_document::results::ArtifactKind::Html
     );
     assert_eq!(
         serde_json::to_value(&manifest).expect("JSON")["context"]["format"],
@@ -121,9 +121,9 @@ fn revealjs_bundle_preserves_format_and_freshness_context() {
     // used to say this in its own vocabulary and nothing in production ever
     // asked it, so the comparison is made directly against the fingerprint
     // the bundle actually carries.
-    let parsed = crate::quarto::parse_qmd(source, "paper.qmd");
+    let parsed = librepaper_document::quarto::parse_qmd(source, "paper.qmd");
     assert_eq!(
-        crate::quarto::computation_fingerprint_for_format(
+        librepaper_document::quarto::computation_fingerprint_for_format(
             &parsed,
             "paper.qmd",
             "revealjs",
@@ -539,7 +539,7 @@ fn frozen_project_config_rejects_selected_environment_profile() {
 
 #[test]
 fn frozen_document_metadata_rejects_quoted_and_flow_filters() {
-    let quoted = crate::quarto::parse_qmd(
+    let quoted = librepaper_document::quarto::parse_qmd(
         "---\nformat: html\n'filters': [custom.lua]\n---\ntext\n",
         "paper.qmd",
     );
@@ -547,7 +547,7 @@ fn frozen_document_metadata_rejects_quoted_and_flow_filters() {
         .unwrap_err()
         .contains("execution-bearing"));
 
-    let flow = crate::quarto::parse_qmd(
+    let flow = librepaper_document::quarto::parse_qmd(
         "---\nformat: {html: {filters: [custom.lua]}}\n---\ntext\n",
         "paper.qmd",
     );
@@ -560,7 +560,7 @@ fn frozen_cache_identity_covers_profiles_parameters_and_dependencies() {
     let parameters = BTreeMap::from([("seed".into(), serde_json::json!(7))]);
     let profiles = vec!["review".to_string()];
     let dependencies = vec!["data.csv\0deadbeef".to_string()];
-    let parameters_sha256 = crate::results::parameters_sha256(&parameters);
+    let parameters_sha256 = librepaper_document::results::parameters_sha256(&parameters);
     let computation = computation_fingerprint(
         source,
         "paper.qmd",
@@ -681,7 +681,7 @@ fn isolated_snapshot_root_is_canonicalized_before_use() {
 #[test]
 fn computation_fingerprint_includes_declared_snapshot_inputs() {
     let source = "```{r}\nread.csv('data/input.csv')\n```\n";
-    let parameters = crate::results::parameters_sha256(&BTreeMap::new());
+    let parameters = librepaper_document::results::parameters_sha256(&BTreeMap::new());
     let dependencies = vec!["data/input.csv\0deadbeef".to_string()];
     let adapter = computation_fingerprint(
         source,
@@ -691,9 +691,9 @@ fn computation_fingerprint_includes_declared_snapshot_inputs() {
         Some(&parameters),
         &dependencies,
     );
-    let mut parsed = crate::quarto::parse_qmd(source, "paper.qmd");
+    let mut parsed = librepaper_document::quarto::parse_qmd(source, "paper.qmd");
     parsed.dependencies = dependencies;
-    let browser_contract = crate::quarto::computation_fingerprint_for_format(
+    let browser_contract = librepaper_document::quarto::computation_fingerprint_for_format(
         &parsed,
         "paper.qmd",
         "html",
@@ -828,7 +828,7 @@ async fn real_quarto_render_reports_success_and_retains_a_failure_log() {
             },
             "manifest": [{
                 "path": "paper.qmd",
-                "sha256": crate::results::sha256(source.as_bytes()),
+                "sha256": librepaper_document::results::sha256(source.as_bytes()),
                 "size": source.len() as u64,
             }],
         }))

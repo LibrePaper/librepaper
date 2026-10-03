@@ -390,7 +390,7 @@ pub fn sha256(bytes: &[u8]) -> String {
 /// number formatting differs between serde_json and JavaScript at exponent
 /// boundaries, so numbers use their IEEE-754 bits while strings retain their
 /// exact UTF-8 bytes.  Length prefixes make embedded NULs unambiguous.
-pub(crate) fn parameters_sha256(parameters: &BTreeMap<String, serde_json::Value>) -> String {
+pub fn parameters_sha256(parameters: &BTreeMap<String, serde_json::Value>) -> String {
     let mut material = String::from("librepaper-quarto-parameters-v1\0");
     for (key, value) in parameters {
         let _ = write!(material, "{}:", key.len());

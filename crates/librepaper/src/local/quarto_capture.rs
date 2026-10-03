@@ -7,8 +7,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::quarto;
-use crate::results::{
+use librepaper_document::quarto;
+use librepaper_document::results::{
     sha256, CellCoverage, CellRecord, Diagnostic, DiagnosticSeverity, OutputKind, OutputRecord,
     MAX_BLOB_BYTES, MAX_MANIFEST_BYTES,
 };
@@ -23,7 +23,7 @@ pub fn filter() -> &'static str {
 pub fn inline_capture_records(
     source: &str,
     source_path: &str,
-) -> Vec<crate::quarto::InlineExpression> {
+) -> Vec<librepaper_document::quarto::InlineExpression> {
     let parsed = quarto::parse_qmd(source, source_path);
     let lines: Vec<_> = source.lines().collect();
     parsed
@@ -93,7 +93,7 @@ struct CapturedOutput {
 
 pub struct Capture {
     pub cells: Vec<CellRecord>,
-    pub inline_results: Vec<crate::results::InlineResult>,
+    pub inline_results: Vec<librepaper_document::results::InlineResult>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -251,7 +251,7 @@ pub fn collect(
                     start_line: Some(record.line),
                 });
             } else {
-                inline_results.push(crate::results::InlineResult {
+                inline_results.push(librepaper_document::results::InlineResult {
                     id: record.id.clone(),
                     expression: record.expression.clone(),
                     source_path: source_path.into(),

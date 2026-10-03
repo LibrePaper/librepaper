@@ -53,7 +53,7 @@ fn projection_wire(
     metadata: MomentMetadata<'_>,
     storage_id: &str,
     source_format: &str,
-    projected: &crate::document::projection::Projected,
+    projected: &librepaper_document::document::projection::Projected,
 ) -> Value {
     let MomentMetadata {
         sha,
@@ -178,14 +178,14 @@ impl crate::log::Command for Restore {
                 texts.iter().map(|(_, _, id)| id.as_str()).collect();
             let wanted_assets: std::collections::HashSet<&str> =
                 assets.iter().map(|(path, _)| path.as_str()).collect();
-            for (path, id) in crate::document::session::text_ids_of(draft) {
+            for (path, id) in librepaper_document::document::session::text_ids_of(draft) {
                 if !wanted_texts.contains(path.as_str()) && !wanted_ids.contains(id.as_str()) {
-                    crate::document::session::remove_path(draft, &path);
+                    librepaper_document::document::session::remove_path(draft, &path);
                 }
             }
-            for path in crate::document::session::assets_of(draft).into_keys() {
+            for path in librepaper_document::document::session::assets_of(draft).into_keys() {
                 if !wanted_assets.contains(path.as_str()) {
-                    crate::document::session::remove_asset(draft, &path);
+                    librepaper_document::document::session::remove_asset(draft, &path);
                 }
             }
             // Identity, not just words. A restore rewrites the document to
@@ -204,7 +204,7 @@ impl crate::log::Command for Restore {
             // `put_text` already applies a minimal `LoroText::update` diff
             // to a file that is still there, which covers the first two; the
             // two branches below cover the third.
-            let live_paths = crate::document::session::text_ids_of(draft);
+            let live_paths = librepaper_document::document::session::text_ids_of(draft);
             let mut path_of_id: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
             for (path, id) in &live_paths {
@@ -217,12 +217,12 @@ impl crate::log::Command for Restore {
                     // rather than replacing it, so the carets and the
                     // authorship attached to that `LoroText` come with it.
                     if moved_to != path {
-                        crate::document::session::rename_path(draft, moved_to, path);
+                        librepaper_document::document::session::rename_path(draft, moved_to, path);
                     }
-                    crate::document::session::put_text(draft, path, body);
+                    librepaper_document::document::session::put_text(draft, path, body);
                     original.clone()
                 } else if !original.is_empty()
-                    && crate::document::session::put_text_with_id(draft, original, path, body)
+                    && librepaper_document::document::session::put_text_with_id(draft, original, path, body)
                 {
                     // Deleted since the state being restored. It comes back
                     // as itself: the comments anchored to it name this id.
@@ -231,17 +231,17 @@ impl crate::log::Command for Restore {
                     // the live document holds.
                     original.clone()
                 } else {
-                    crate::document::session::put_text(draft, path, body)
+                    librepaper_document::document::session::put_text(draft, path, body)
                 };
                 if path == main {
                     main_id = id;
                 }
             }
             for (path, digest) in assets {
-                crate::document::session::put_asset(draft, path, digest);
+                librepaper_document::document::session::put_asset(draft, path, digest);
             }
             if !main_id.is_empty() {
-                crate::document::session::set_main(draft, &main_id);
+                librepaper_document::document::session::set_main(draft, &main_id);
             }
             Ok(())
         })

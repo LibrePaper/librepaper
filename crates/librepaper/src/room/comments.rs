@@ -42,7 +42,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use librepaper_base::config::Configuration;
-use crate::document::session;
+use librepaper_document::document::session;
 use crate::log::sequencer::{
     Command as SequencerCommand, CommandError, Evidence, Head, PreparedSource, Rung,
 };
@@ -2636,7 +2636,7 @@ pub fn comment_revision(state: &AnnotationState) -> String {
 #[cfg(test)]
 mod utf16_suggestion_tests {
     use super::{proposed_from_branch, replace_utf16_span, Comment};
-    use crate::document::session;
+    use librepaper_document::document::session;
     use crate::storage::annotation::{
         AnchorSide, CommentTarget, FileId, OriginalAnchor, SourceTextTarget,
     };

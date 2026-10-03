@@ -45,7 +45,7 @@ pub(crate) fn collect_bundle_with_dependencies(
     let main_path = project.join(&options.main);
     let source =
         std::fs::read_to_string(&main_path).map_err(|e| format!("read {}: {e}", options.main))?;
-    let parsed_source = crate::quarto::parse_qmd(&source, &options.main);
+    let parsed_source = librepaper_document::quarto::parse_qmd(&source, &options.main);
     let cells: Vec<QuartoCell> = parsed_source
         .cells
         .iter()
@@ -96,7 +96,7 @@ pub(crate) fn collect_bundle_with_dependencies(
             assets.push(QuartoAsset {
                 path: relative.clone(),
                 sha256: digest,
-                mime: crate::results::canonical_mime(&relative, mime_for(&relative)).into(),
+                mime: librepaper_document::results::canonical_mime(&relative, mime_for(&relative)).into(),
                 size: bytes.len() as u64,
             });
         }
@@ -137,7 +137,7 @@ pub(crate) fn collect_bundle_with_dependencies(
             assets.push(QuartoAsset {
                 path: relative.clone(),
                 sha256: sha256(&bytes),
-                mime: crate::results::canonical_mime(&relative, mime_for(&relative)).into(),
+                mime: librepaper_document::results::canonical_mime(&relative, mime_for(&relative)).into(),
                 size: bytes.len() as u64,
             });
         }
@@ -166,7 +166,7 @@ pub(crate) fn collect_bundle_with_dependencies(
     if has_manifest {
         coverage.cell_outputs = "partial".into();
     }
-    let parameters_sha256 = crate::results::parameters_sha256(&options.parameters);
+    let parameters_sha256 = librepaper_document::results::parameters_sha256(&options.parameters);
     let profiles: Vec<String> = options.profile.iter().cloned().collect();
     let format_name = options.format.as_str();
     // Keep the durable computation identity sensitive to every shared input
@@ -193,7 +193,7 @@ pub(crate) fn collect_bundle_with_dependencies(
     let context_id = format!("ctx-{}", &sha256(context_material.as_bytes())[..16]);
     let now = timestamp();
     Ok(QuartoBundle {
-        schema: crate::results::BUNDLE_SCHEMA.into(),
+        schema: librepaper_document::results::BUNDLE_SCHEMA.into(),
         render_id: opaque_id(),
         source: QuartoSource {
             revision: None,
@@ -300,7 +300,7 @@ pub(crate) fn import_artifact(
         if total_bytes > MAX_QUARTO_OUTPUT_BYTES {
             return Err("imported artifact exceeds its aggregate size limit".into());
         }
-        let mime = crate::results::canonical_mime(&relative, mime_for(&relative)).to_string();
+        let mime = librepaper_document::results::canonical_mime(&relative, mime_for(&relative)).to_string();
         assets.push(QuartoAsset {
             path: relative,
             sha256: sha256(&bytes),
@@ -312,7 +312,7 @@ pub(crate) fn import_artifact(
     let context_material = format!("librepaper-quarto-selection-v1\0{format}\0\0");
     let context = sha256(context_material.as_bytes());
     Ok(QuartoBundle {
-        schema: crate::results::BUNDLE_SCHEMA.into(),
+        schema: librepaper_document::results::BUNDLE_SCHEMA.into(),
         render_id: opaque_id(),
         source: QuartoSource {
             revision: None,
@@ -326,7 +326,7 @@ pub(crate) fn import_artifact(
             computation_sha256: context.clone(),
             format: format.into(),
             profiles: Vec::new(),
-            parameters_sha256: crate::results::parameters_sha256(&BTreeMap::new()),
+            parameters_sha256: librepaper_document::results::parameters_sha256(&BTreeMap::new()),
         },
         provenance: QuartoProvenance {
             kind: "imported-artifact".into(),

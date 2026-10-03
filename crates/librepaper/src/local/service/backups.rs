@@ -2040,7 +2040,7 @@ mod tests {
     #[derive(Clone)]
     struct BackupFixture {
         account_id: String,
-        projection: crate::document::projection::Projection,
+        projection: librepaper_document::document::projection::Projection,
         text: String,
     }
 
@@ -2072,13 +2072,13 @@ mod tests {
 
     async fn start_backup_fixture(account_id: String) -> (String, tokio::task::JoinHandle<()>) {
         let text = "# scheduled backup\n".to_string();
-        let mut projection = crate::document::projection::Projection {
+        let mut projection = librepaper_document::document::projection::Projection {
             main: "project.md".into(),
             ..Default::default()
         };
         projection.files.insert(
             "project.md".into(),
-            crate::document::projection::Entry {
+            librepaper_document::document::projection::Entry {
                 kind: "text".into(),
                 id: "test-text".into(),
                 digest: hex::encode(sha2::Sha256::digest(text.as_bytes())),

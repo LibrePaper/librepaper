@@ -1100,12 +1100,12 @@ mod selection_tests {
         // is under test is the anchoring, and a hand-made view keeps the
         // failure about that. The type is the sequencer's own, so it
         // cannot drift from the shape a capture really holds.
-        let projection = crate::document::projection::Projection {
+        let projection = librepaper_document::document::projection::Projection {
             main: path.into(),
             main_id: "f1".into(),
             files: [(
                 path.to_string(),
-                crate::document::projection::Entry {
+                librepaper_document::document::projection::Entry {
                     kind: "text".into(),
                     id: "f1".into(),
                     digest: hex::encode(<sha2::Sha256 as sha2::Digest>::digest(text.as_bytes())),
@@ -1118,7 +1118,7 @@ mod selection_tests {
         };
         let snapshot = QuerySnapshot {
             tree_digest: "rev".into(),
-            projected: std::sync::Arc::new(crate::document::projection::Projected {
+            projected: std::sync::Arc::new(librepaper_document::document::projection::Projected {
                 projection,
                 texts: [(path.to_string(), text.to_string())].into_iter().collect(),
             }),

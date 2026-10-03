@@ -936,7 +936,7 @@ impl Worker {
         } else {
             projected.projection.main.clone()
         };
-        let format = crate::document::render::document_format(&main)
+        let format = librepaper_document::document::render::document_format(&main)
             .map(str::to_string)
             .unwrap_or_else(|| document.source_format.clone());
         let encoded = super::source_archive::encode(
@@ -1768,7 +1768,7 @@ mod tests {
     }
 
     fn document_with(text: &str) -> LoroDoc {
-        let doc = crate::document::session::new_doc();
+        let doc = librepaper_document::document::session::new_doc();
         doc.set_peer_id(7).unwrap();
         doc.get_text("body").insert(0, text).unwrap();
         doc.commit();

@@ -132,7 +132,7 @@ async fn fetch_live_project(
     if status != 200 {
         return Err(format!("could not capture project snapshot ({status})"));
     }
-    let snapshot: crate::document::projection::ProjectSnapshot = serde_json::from_value(raw)
+    let snapshot: librepaper_document::document::projection::ProjectSnapshot = serde_json::from_value(raw)
         .map_err(|error| format!("invalid project snapshot: {error}"))?;
     if snapshot.sha != snapshot.tree.digest() {
         return Err("project snapshot digest does not match its identity".into());

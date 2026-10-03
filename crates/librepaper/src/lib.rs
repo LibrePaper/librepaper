@@ -26,11 +26,8 @@ mod cli;
 // spell it.
 pub use librepaper_base::config;
 pub mod config;
-mod document;
 mod local;
 pub mod log;
-mod quarto;
-mod results;
 mod room;
 mod server;
 mod storage;
@@ -59,7 +56,7 @@ pub use automation::peer;
 /// (`tools/fuzz/fuzz_targets/paths.rs`) runs every one of these on whatever
 /// libFuzzer produces.
 pub mod paths {
-    pub use crate::document::paths::{
+    pub use librepaper_document::document::paths::{
         check, collision_key, kind_of, normalise, placeholder, suffixed, Rules,
     };
 }
@@ -68,7 +65,7 @@ pub mod paths {
 /// is fuzzed (`tools/fuzz/fuzz_targets/document.rs`,
 /// `tools/fuzz/fuzz_targets/update.rs`).
 pub mod session {
-    pub use crate::document::session::{
+    pub use librepaper_document::document::session::{
         apply_edits_at, apply_update, decode_update, encode_diff, encode_state, encode_vector,
         main_path, new_doc, paths_of, put_asset, put_text, replace_text, set_main, text_of, Edit,
         ASSETS, FILES, MAIN, META, PATHS,
@@ -79,7 +76,7 @@ pub mod session {
 /// (`tests/projection_fixtures.rs`) and a fuzz target
 /// (`tools/fuzz/fuzz_targets/document.rs`) hold it to its definition.
 pub mod projection {
-    pub use crate::document::projection::{
+    pub use librepaper_document::document::projection::{
         paths::MAX_SEGMENTS, project, Entry, Projected, Projection, ROOTS,
     };
 }

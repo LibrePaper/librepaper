@@ -241,7 +241,7 @@ mod tests {
             }),
             manifest: vec![ManifestEntry {
                 path: "paper.qmd".into(),
-                sha256: crate::results::sha256(source),
+                sha256: librepaper_document::results::sha256(source),
                 size: source.len() as u64,
             }],
             source: None,

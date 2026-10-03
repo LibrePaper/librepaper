@@ -14,7 +14,7 @@
 //! TRUNCATE the database they are pointed at.
 
 use super::*;
-use crate::document::session;
+use librepaper_document::document::session;
 use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };

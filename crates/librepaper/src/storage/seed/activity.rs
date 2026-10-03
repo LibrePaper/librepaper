@@ -39,7 +39,7 @@ use loro::ExportMode;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::document::session;
+use librepaper_document::document::session;
 use crate::log::frame::{self, Batch};
 use crate::storage::postgres::{Authority, FlushRow, NewLabel, PostgresCatalog};
 

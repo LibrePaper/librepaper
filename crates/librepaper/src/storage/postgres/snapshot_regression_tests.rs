@@ -191,7 +191,7 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
         .unwrap();
     let root = tempfile::tempdir().unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(root.path(), false));
-    let source = crate::document::session::new_doc();
+    let source = librepaper_document::document::session::new_doc();
     source.set_peer_id(1).unwrap();
     let mut snapshots = Vec::new();
     for sequence in 1..=3 {

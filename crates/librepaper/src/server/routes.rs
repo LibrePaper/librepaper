@@ -1491,7 +1491,7 @@ impl Server {
             .unwrap_or_default();
         let role = who.role;
         let owned = role.at_least(Role::Editor);
-        let metadata = crate::results::document_metadata(&entry.source_format);
+        let metadata = librepaper_document::results::document_metadata(&entry.source_format);
         // What the comment form would sign this caller's name as, if they
         // said something right now: the account name when there is one,
         // otherwise the pseudonym their visitor cookie earns them, or ""

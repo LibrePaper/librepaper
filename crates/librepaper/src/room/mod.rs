@@ -262,7 +262,7 @@ impl Room {
     /// caller turns that into a 503.
     pub async fn projection(
         &self,
-    ) -> Result<Arc<crate::document::projection::Projected>, SequencerError> {
+    ) -> Result<Arc<librepaper_document::document::projection::Projected>, SequencerError> {
         self.log.projection().await
     }
 
@@ -781,14 +781,14 @@ impl Rooms {
 /// What to call the one file a document turns out to have. The index entry's
 /// own `main` if it has one; otherwise the name its format implies.
 pub fn main_path_for(named: &str, format: &str) -> String {
-    crate::document::render::main_path_for(named, format)
+    librepaper_document::document::render::main_path_for(named, format)
 }
 
 /// The format a main file's own extension implies, the inverse of
 /// `main_path_for`. Empty for an extension none of the formats claim, which
 /// the caller reads as "keep what was there".
 pub fn format_from_path(path: &str) -> String {
-    crate::document::render::document_format(path)
+    librepaper_document::document::render::document_format(path)
         .unwrap_or_default()
         .to_string()
 }

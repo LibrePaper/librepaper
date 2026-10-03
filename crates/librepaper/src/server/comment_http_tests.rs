@@ -318,10 +318,10 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
     // inserts a paragraph above the quoted sentence.
     let (vector, edited) = room
         .log()
-        .with_head(|doc| (crate::document::session::encode_vector(doc), doc.fork()))
+        .with_head(|doc| (librepaper_document::document::session::encode_vector(doc), doc.fork()))
         .await
         .unwrap();
-    crate::document::session::put_text(
+    librepaper_document::document::session::put_text(
         &edited,
         "paper.md",
         &format!(
@@ -329,7 +329,7 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
             &PAPER[21..]
         ),
     );
-    let update = crate::document::session::encode_diff(&edited, &vector).unwrap();
+    let update = librepaper_document::document::session::encode_diff(&edited, &vector).unwrap();
     let ingested = room
         .ingest(999, "editor-999", "editor-999", 1, update)
         .await;
@@ -842,7 +842,7 @@ async fn snapshot_exposes_the_shared_cli_project_snapshot_wire_fields() {
     assert_eq!(payload["protocol"], "librepaper.snapshot.v1");
     assert!(payload.get("digest").is_none());
     assert!(payload.get("projection").is_none());
-    let snapshot: crate::document::projection::ProjectSnapshot =
+    let snapshot: librepaper_document::document::projection::ProjectSnapshot =
         serde_json::from_value(payload.clone()).unwrap();
     assert_eq!(snapshot.sha, snapshot.tree.digest());
     assert_eq!(snapshot.tree.main, "paper.md");

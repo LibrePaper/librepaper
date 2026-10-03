@@ -35,8 +35,8 @@ struct SnapshotResponse<C> {
     format: String,
     main: String,
     #[serde(flatten)]
-    project: crate::document::projection::ProjectSnapshot,
-    files: std::collections::BTreeMap<String, crate::document::projection::Entry>,
+    project: librepaper_document::document::projection::ProjectSnapshot,
+    files: std::collections::BTreeMap<String, librepaper_document::document::projection::Entry>,
     source: String,
     source_sha: String,
     comments: C,
@@ -710,15 +710,15 @@ impl Server {
             // arrived. Typst and LaTeX reach here from `publish <directory>`
             // rather than from the upload form, which takes what a browser can
             // drop; a paper is the ordinary case either way.
-            if let Some(format) = crate::document::render::document_format(&filename) {
+            if let Some(format) = librepaper_document::document::render::document_format(&filename) {
                 if title.trim().is_empty() {
                     title = match format {
-                        "typst" => crate::document::render::title_from_typst(&html),
+                        "typst" => librepaper_document::document::render::title_from_typst(&html),
                         "markdown" => title_from_markdown(&html),
-                        "quarto" => crate::document::render::title_from_quarto(&html),
+                        "quarto" => librepaper_document::document::render::title_from_quarto(&html),
                         // There is no TeX here to ask, so the `\title` is
                         // scanned for; see `render::title_from_latex`.
-                        "latex" => crate::document::render::title_from_latex(&html),
+                        "latex" => librepaper_document::document::render::title_from_latex(&html),
                         // An HTML document's source is its own bytes, through
                         // the identity renderer, so it opens in the editor like
                         // the others.
@@ -786,10 +786,10 @@ impl Server {
                 &json!({"error": "this deployment cannot store a document in that format"}),
             ));
         }
-        let expected_engine = crate::results::document_metadata(&source_format).execution_engine;
-        let expected_draft = crate::results::document_metadata(&source_format).draft_format;
+        let expected_engine = librepaper_document::results::document_metadata(&source_format).execution_engine;
+        let expected_draft = librepaper_document::results::document_metadata(&source_format).draft_format;
         if let Some(raw_engine) = requested_engine {
-            let supplied = crate::results::ExecutionEngine::parse(&raw_engine)
+            let supplied = librepaper_document::results::ExecutionEngine::parse(&raw_engine)
                 .map_err(|error| write_json(400, &json!({"error": error})))?;
             if supplied != expected_engine {
                 return Err(write_json(
@@ -799,7 +799,7 @@ impl Server {
             }
         }
         if let Some(raw_draft) = requested_draft_format {
-            let supplied = crate::results::DraftFormat::parse(&raw_draft)
+            let supplied = librepaper_document::results::DraftFormat::parse(&raw_draft)
                 .map_err(|error| write_json(400, &json!({"error": error})))?;
             if supplied != expected_draft {
                 return Err(write_json(
@@ -830,9 +830,9 @@ impl Server {
         let mut kept = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         if !main.is_empty() {
-            match crate::document::paths::check(&self.config.paths(), &main) {
-                Ok(crate::document::paths::Kind::Text) => {}
-                Ok(crate::document::paths::Kind::Asset) => {
+            match librepaper_document::document::paths::check(&self.config.paths(), &main) {
+                Ok(librepaper_document::document::paths::Kind::Text) => {}
+                Ok(librepaper_document::document::paths::Kind::Asset) => {
                     return Err(write_json(
                         400,
                         &json!({"error": format!("{main} cannot be the main file; it is a figure")}),
@@ -840,20 +840,20 @@ impl Server {
                 }
                 Err(why) => return Err(write_json(400, &json!({"error": why}))),
             }
-            seen.insert(crate::document::paths::collision_key(&main));
+            seen.insert(librepaper_document::document::paths::collision_key(&main));
         }
         for (path, bytes) in sent {
-            let kind = match crate::document::paths::check(&self.config.paths(), &path) {
+            let kind = match librepaper_document::document::paths::check(&self.config.paths(), &path) {
                 Ok(kind) => kind,
                 Err(why) => return Err(write_json(400, &json!({"error": why}))),
             };
-            if !seen.insert(crate::document::paths::collision_key(&path)) {
+            if !seen.insert(librepaper_document::document::paths::collision_key(&path)) {
                 return Err(write_json(
                     400,
                     &json!({"error": format!("{path}: two files cannot share one name")}),
                 ));
             }
-            kept.push((crate::document::paths::normalise(&path), kind, bytes));
+            kept.push((librepaper_document::document::paths::normalise(&path), kind, bytes));
         }
         if seen.len() > self.config.max_files {
             return Err(write_json(
@@ -885,8 +885,8 @@ impl Server {
     #[allow(clippy::result_large_err)] // as read_upload: the error is a response
     pub(super) fn preflight_directory(&self, parsed: &Upload) -> Result<(), Reply> {
         for (path, bytes) in &parsed.files {
-            match crate::document::paths::check(&self.config.paths(), path) {
-                Ok(crate::document::paths::Kind::Text) => {
+            match librepaper_document::document::paths::check(&self.config.paths(), path) {
+                Ok(librepaper_document::document::paths::Kind::Text) => {
                     if std::str::from_utf8(bytes).is_err() {
                         return Err(write_json(
                             400,
@@ -894,7 +894,7 @@ impl Server {
                         ));
                     }
                 }
-                Ok(crate::document::paths::Kind::Asset) => {}
+                Ok(librepaper_document::document::paths::Kind::Asset) => {}
                 Err(why) => return Err(write_json(400, &json!({"error": why}))),
             }
         }
@@ -1169,7 +1169,7 @@ impl Server {
         let tree_sha = projected.projection.digest();
         let main = projected.projection.main.clone();
         let files = projected.projection.files.clone();
-        let snapshot = crate::document::projection::ProjectSnapshot {
+        let snapshot = librepaper_document::document::projection::ProjectSnapshot {
             sha: tree_sha,
             tree: projected.projection.clone(),
             texts: projected.texts.clone(),

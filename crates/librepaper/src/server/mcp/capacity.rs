@@ -96,7 +96,8 @@ impl Drop for Permit<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{auth::Identity, server::Role};
+    use crate::server::Role;
+    use librepaper_base::auth::Identity;
     use serde_json::Value;
 
     fn viewer(account: &str, link: &str) -> Viewer {

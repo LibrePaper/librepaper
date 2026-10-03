@@ -62,9 +62,9 @@ pub struct QuartoBundle {
     #[serde(default)]
     pub assets: Vec<QuartoAsset>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub inline_results: Vec<crate::results::InlineResult>,
+    pub inline_results: Vec<librepaper_document::results::InlineResult>,
     #[serde(default)]
-    pub diagnostics: Vec<crate::results::Diagnostic>,
+    pub diagnostics: Vec<librepaper_document::results::Diagnostic>,
     pub coverage: QuartoCoverage,
 }
 
@@ -148,8 +148,8 @@ impl QuartoBundle {
         &self,
         document_id: &str,
         revision: &str,
-    ) -> crate::results::BundleManifest {
-        use crate::results::{
+    ) -> librepaper_document::results::BundleManifest {
+        use librepaper_document::results::{
             ArtifactDescriptor, ArtifactKind, AssetDescriptor, BundleManifest, CellCoverage,
             CellRecord, ComputationEvidence, Coverage, CoverageLevel, ExternalInputs, OutputFormat,
             OutputKind, OutputRecord, ProvenanceKind, RenderContext, SourceReference, Verification,
@@ -209,8 +209,8 @@ impl QuartoBundle {
             })
             .collect();
         BundleManifest {
-            engine: crate::results::ExecutionEngine::Quarto,
-            schema: crate::results::BUNDLE_SCHEMA.into(),
+            engine: librepaper_document::results::ExecutionEngine::Quarto,
+            schema: librepaper_document::results::BUNDLE_SCHEMA.into(),
             render_id: self.render_id.clone(),
             document_id: document_id.into(),
             source: SourceReference {
@@ -241,7 +241,7 @@ impl QuartoBundle {
                 parameters_sha256: (!self.context.parameters_sha256.is_empty())
                     .then(|| self.context.parameters_sha256.clone()),
             },
-            provenance: crate::results::Provenance {
+            provenance: librepaper_document::results::Provenance {
                 kind: if self.provenance.kind.starts_with("imported") {
                     ProvenanceKind::Imported
                 } else {
@@ -268,7 +268,7 @@ impl QuartoBundle {
                 entrypoint: artifact.entrypoint.clone(),
                 sha256: artifact.sha256.clone(),
                 size: artifact.size,
-                mime: crate::results::canonical_mime(
+                mime: librepaper_document::results::canonical_mime(
                     &artifact.entrypoint,
                     mime_for(&artifact.entrypoint),
                 )
@@ -279,7 +279,7 @@ impl QuartoBundle {
                 .assets
                 .iter()
                 .map(|asset| AssetDescriptor {
-                    role: crate::results::AssetRole::Display,
+                    role: librepaper_document::results::AssetRole::Display,
                     path: asset.path.clone(),
                     sha256: asset.sha256.clone(),
                     mime: asset.mime.clone(),
@@ -355,9 +355,9 @@ pub(crate) fn computation_fingerprint(
     parameters_sha256: Option<&str>,
     dependencies: &[String],
 ) -> String {
-    let mut document = crate::quarto::parse_qmd(source, entrypoint);
+    let mut document = librepaper_document::quarto::parse_qmd(source, entrypoint);
     document.dependencies = dependencies.to_vec();
-    crate::quarto::computation_fingerprint_for_format(
+    librepaper_document::quarto::computation_fingerprint_for_format(
         &document,
         entrypoint,
         format,
@@ -882,7 +882,7 @@ pub async fn run_job_with_bindings(
                                 bundle.assets.push(QuartoAsset {
                                     path: path.into(),
                                     sha256: sha256(&bytes),
-                                    mime: crate::results::canonical_mime(path, mime_for(path))
+                                    mime: librepaper_document::results::canonical_mime(path, mime_for(path))
                                         .into(),
                                     size: bytes.len() as u64,
                                 });
@@ -943,8 +943,8 @@ pub async fn run_job_with_bindings(
                 log.push_str("\nQuarto collector error: ");
                 log.push_str(&error);
                 log.push('\n');
-                bundle.diagnostics.push(crate::results::Diagnostic {
-                    severity: crate::results::DiagnosticSeverity::Error,
+                bundle.diagnostics.push(librepaper_document::results::Diagnostic {
+                    severity: librepaper_document::results::DiagnosticSeverity::Error,
                     message: "Quarto collector could not map executed cell outputs".into(),
                     source_path: Some(main_name.into()),
                     start_line: None,
@@ -964,8 +964,8 @@ pub async fn run_job_with_bindings(
         } else {
             log.push_str("\nQuarto collector did not produce a capture manifest\n");
         }
-        bundle.diagnostics.push(crate::results::Diagnostic {
-            severity: crate::results::DiagnosticSeverity::Error,
+        bundle.diagnostics.push(librepaper_document::results::Diagnostic {
+            severity: librepaper_document::results::DiagnosticSeverity::Error,
             message: if options.render_scope == protocol::QuartoRenderScope::Project {
                 "Project-scope Quarto output has no verified per-page cell capture".into()
             } else {
@@ -986,7 +986,7 @@ pub async fn run_job_with_bindings(
         .as_deref()
         == Some(source_before.as_str());
     if !source_matches {
-        let parameters_sha256 = crate::results::parameters_sha256(&options.parameters);
+        let parameters_sha256 = librepaper_document::results::parameters_sha256(&options.parameters);
         let profiles: Vec<String> = options.profile.iter().cloned().collect();
         bundle.context.computation_sha256 = computation_fingerprint(
             &source_before,
@@ -1592,8 +1592,8 @@ fn ensure_no_symlink_components(root: &Path, path: &Path) -> Result<(), String> 
     Ok(())
 }
 
-fn local_cell(cell: crate::results::CellRecord) -> QuartoCell {
-    use crate::results::{CellCoverage, OutputKind};
+fn local_cell(cell: librepaper_document::results::CellRecord) -> QuartoCell {
+    use librepaper_document::results::{CellCoverage, OutputKind};
     let coverage = match cell.coverage {
         CellCoverage::Captured => "captured",
         CellCoverage::IntentionallyHidden => "hidden",
@@ -1988,7 +1988,7 @@ fn reject_frozen_sidecars(
 }
 
 fn reject_frozen_front_matter(
-    parsed: &crate::quarto::QmdDocument,
+    parsed: &librepaper_document::quarto::QmdDocument,
     requested_format: &str,
 ) -> Result<(), String> {
     let Some(front_matter) = parsed.front_matter.as_deref() else {
@@ -2069,7 +2069,7 @@ fn frozen_preflight(
 ) -> Result<(), String> {
     frozen_project_config_for_options(project, main_name, profile.map(String::as_str))?;
     verify_frozen_profile(project, profile, dependencies, format)?;
-    let parsed = crate::quarto::parse_qmd(source, main_name);
+    let parsed = librepaper_document::quarto::parse_qmd(source, main_name);
     reject_frozen_front_matter(&parsed, format)?;
     verify_frozen_includes(project, main_name, &parsed.includes, dependencies, format)?;
     let main_path = Path::new(main_name);
@@ -2239,7 +2239,7 @@ fn verify_frozen_includes(
                         String::from_utf8(bytes)
                             .map_err(|_| "frozen Quarto include is not UTF-8".to_string())
                     })?;
-                let included_document = crate::quarto::parse_qmd(&included, &path);
+                let included_document = librepaper_document::quarto::parse_qmd(&included, &path);
                 reject_frozen_front_matter(&included_document, format)?;
                 pending.push((path, included_document.includes));
             }
@@ -2343,7 +2343,7 @@ fn persist_frozen_cache_identity(
         return Err("Quarto freezer record does not match the rendered source".into());
     }
     let profiles: Vec<String> = options.profile.iter().cloned().collect();
-    let parameters_sha256 = crate::results::parameters_sha256(&options.parameters);
+    let parameters_sha256 = librepaper_document::results::parameters_sha256(&options.parameters);
     let computation_sha256 = computation_fingerprint(
         source,
         &options.main,
@@ -2408,7 +2408,7 @@ fn verify_frozen_cache_identity(
         .and_then(serde_json::Value::as_object)
         .ok_or("frozen Quarto cache has no explicit context identity")?;
     let profiles: Vec<String> = profile.cloned().into_iter().collect();
-    let parameters_sha256 = crate::results::parameters_sha256(parameters);
+    let parameters_sha256 = librepaper_document::results::parameters_sha256(parameters);
     let expected = computation_fingerprint(
         source,
         main,

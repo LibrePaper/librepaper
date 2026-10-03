@@ -16,7 +16,7 @@
 //! the rest of the catalogue coverage.
 
 use super::*;
-use crate::document::session;
+use librepaper_document::document::session;
 use crate::log::Registry;
 use crate::storage::annotation::{AnchorStatus, CommentTarget};
 use crate::storage::blob::FsStore;

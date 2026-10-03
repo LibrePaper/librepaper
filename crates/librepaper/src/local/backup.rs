@@ -61,7 +61,7 @@ struct Snapshot {
     #[serde(rename = "project_digest")]
     digest: String,
     #[serde(rename = "tree")]
-    projection: crate::document::projection::Projection,
+    projection: librepaper_document::document::projection::Projection,
     #[serde(default)]
     texts: BTreeMap<String, String>,
 }
@@ -1079,13 +1079,13 @@ mod tests {
             } else {
                 "# revised paper"
             };
-            let entry = crate::document::projection::Entry {
+            let entry = librepaper_document::document::projection::Entry {
                 kind: "text".into(),
                 id: "text-id".into(),
                 digest: hex::encode(Sha256::digest(body.as_bytes())),
                 bytes: body.len() as u64,
             };
-            let mut projection = crate::document::projection::Projection {
+            let mut projection = librepaper_document::document::projection::Projection {
                 main: "paper.md".into(),
                 ..Default::default()
             };
@@ -1093,7 +1093,7 @@ mod tests {
             let asset_bytes = b"\x00\x01\xff";
             projection.files.insert(
                 "images/plot.bin".into(),
-                crate::document::projection::Entry {
+                librepaper_document::document::projection::Entry {
                     kind: "asset".into(),
                     id: String::new(),
                     digest: hex::encode(Sha256::digest(asset_bytes)),
@@ -1103,7 +1103,7 @@ mod tests {
             let dated_note = "A colon is part of this valid filename.";
             projection.files.insert(
                 "notes:2026.md".into(),
-                crate::document::projection::Entry {
+                librepaper_document::document::projection::Entry {
                     kind: "text".into(),
                     id: "note-id".into(),
                     digest: hex::encode(Sha256::digest(dated_note.as_bytes())),
@@ -1122,13 +1122,13 @@ mod tests {
                 b"\x00\x02\xff".as_slice()
             };
             let digest = hex::encode(Sha256::digest(bytes));
-            let entry = crate::document::projection::Entry {
+            let entry = librepaper_document::document::projection::Entry {
                 kind: "asset".into(),
                 id: String::new(),
                 digest,
                 bytes: 0,
             };
-            let mut projection = crate::document::projection::Projection::default();
+            let mut projection = librepaper_document::document::projection::Projection::default();
             projection.files.insert("images/plot.bin".into(), entry);
             Json(json!({
                 "project_digest": projection.digest(),

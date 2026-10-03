@@ -1,0 +1,21 @@
+# What a document is, whoever serves it. Internal to librepaper.
+[package]
+name = "librepaper-document"
+version.workspace = true
+edition.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+librepaper-base = { path = "../librepaper-base" }
+hex.workspace = true
+loro.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+unicode-normalization.workspace = true

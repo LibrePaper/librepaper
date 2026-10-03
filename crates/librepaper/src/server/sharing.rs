@@ -87,7 +87,7 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
     let seconds = if asked.is_empty() {
         LINK_DEFAULT_SECONDS
     } else {
-        crate::document::retention::parse_retention(asked)
+        librepaper_document::document::retention::parse_retention(asked)
             .map_err(|_| "an expiry is a duration such as 180d or 24h, or 'never'".to_string())?
     };
     if seconds <= 0 {
