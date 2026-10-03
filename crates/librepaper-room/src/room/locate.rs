@@ -139,6 +139,10 @@ fn named_entity(entity: &str) -> Option<char> {
     Some(if only == '\u{a0}' { ' ' } else { only })
 }
 
+/// How far to look for the `;` of an entity: `&`, the longest HTML5 entity
+/// name (`CounterClockwiseContourIntegral`, 31 characters) and `;`.
+const ENTITY_SCAN_BYTES: usize = 1 + 31 + 1;
+
 fn numeric_entity(body: &str) -> Option<char> {
     let digits = body.strip_prefix('#')?;
     let code = if let Some(hex) = digits.strip_prefix(['x', 'X']) {
@@ -190,10 +194,10 @@ pub fn flatten(text: &str, html: bool) -> Flat {
             // An entity is a word spelled sideways. Decode it at its own
             // first character and let the rest of it collapse as whitespace,
             // so the offsets on either side still hold.
-            // An entity is short, so look no further than twelve bytes --
+            // An entity is short, so look no further than the longest one,
             // and not into the middle of a character, which is a slice the
             // language refuses.
-            let mut limit = rest.len().min(12);
+            let mut limit = rest.len().min(ENTITY_SCAN_BYTES);
             while !rest.is_char_boundary(limit) {
                 limit -= 1;
             }
@@ -761,6 +765,23 @@ mod tests {
         }];
         let found = locate(&files, &quote("caf\u{e9} \u{2014} open", "", "")).unwrap();
         assert_eq!(found.exact, "caf&eacute; &mdash; open");
+    }
+
+    #[test]
+    fn a_long_entity_name_anchors_and_keeps_utf16_offsets() {
+        let text = "<p>\u{1f600} a &LeftRightArrow; b</p>\n";
+        let files = vec![Candidate {
+            file_id: "f1",
+            path: "index.html",
+            text,
+        }];
+        let found = locate(&files, &quote("a \u{2194} b", "", "")).unwrap();
+        let units: Vec<u16> = text.encode_utf16().collect();
+        assert_eq!(
+            slice16(&units, found.start_utf16 as usize, found.end_utf16 as usize),
+            "a &LeftRightArrow; b"
+        );
+        assert_eq!(found.exact, "a &LeftRightArrow; b");
     }
 
     #[test]
