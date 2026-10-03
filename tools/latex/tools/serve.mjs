@@ -112,7 +112,6 @@ const server = createServer(async (request, response) => {
       count(url, bytes.length);
       response.writeHead(upstream.status, {
         'content-type': upstream.headers.get('content-type') || typeOf(url),
-        'access-control-allow-origin': '*',
         'cache-control': upstream.headers.get('cache-control') || cacheControl(url),
       });
       response.end(bytes);
@@ -120,7 +119,7 @@ const server = createServer(async (request, response) => {
     }
     const path = resolvePath(url);
     if (!path) {
-      response.writeHead(404, { "content-type": "text/plain", "access-control-allow-origin": "*" });
+      response.writeHead(404, { "content-type": "text/plain" });
       response.end("not found");
       return;
     }
@@ -128,7 +127,6 @@ const server = createServer(async (request, response) => {
     count(url, bytes.length);
     response.writeHead(200, {
       "content-type": typeOf(path),
-      "access-control-allow-origin": "*",
       "cache-control": cacheControl(url),
     });
     response.end(bytes);
