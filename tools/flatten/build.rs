@@ -11,6 +11,7 @@
 // - assets.lock pinned wasm digests, copied into OUT_DIR for include_str!
 // - .sqlx/      the offline query cache
 // - skills/     the compiled-in skills bundle
+// - docs/       protocol docs and tutorials, compiled in through LIBREPAPER_DOCS
 
 use std::path::Path;
 
@@ -28,6 +29,11 @@ fn main() {
     // The shell crate's build.rs sets the same variable to its own dist/.
     let dist = root.join("dist");
     println!("cargo:rustc-env=LIBREPAPER_SHELL_DIST={}", dist.display());
+
+    // The facade's build.rs sets the same variable to the repository's docs/.
+    let docs = root.join("docs");
+    println!("cargo:rustc-env=LIBREPAPER_DOCS={}", docs.display());
+    println!("cargo:rustc-env=LIBREPAPER_SKILLS={}", root.join("skills").display());
 
     // The shell crate's build.rs does the same copy: the pinned digests are
     // compiled in, so a change to the file is a change to the binary.

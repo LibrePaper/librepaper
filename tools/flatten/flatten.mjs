@@ -36,6 +36,10 @@ const ROOT_INPUTS = [
   { from: "web/dist", to: "dist", required: true },
   { from: ".sqlx", to: ".sqlx" },
   { from: "skills", to: "skills" },
+  // include_str! and include_bytes! of the protocol docs and tutorials, through
+  // LIBREPAPER_DOCS.
+  { from: "docs/dev/protocol", to: "docs/dev/protocol", required: true },
+  { from: "docs/examples", to: "docs/examples", required: true },
 ];
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -153,7 +157,7 @@ function ruleInputCollisions(ctx) {
   const seen = new Map();
   // While the repository root still has the input, no crate may stage the name.
   for (const { from, to } of ROOT_INPUTS) {
-    if (existsSync(join(ctx.root, from))) seen.set(to, `the repository root (${from})`);
+    if (existsSync(join(ctx.root, from))) seen.set(to.split("/")[0], `the repository root (${from})`);
   }
   for (const crate of [ctx.facade, ...ctx.subs]) {
     for (const name of inputsOf(crate)) {
@@ -708,6 +712,7 @@ function build(ws, out) {
       continue;
     }
     if (existsSync(join(out, to))) die(`${to} is provided by a crate and by the repository root (${from}); remove the root copy`);
+    mkdirSync(dirname(join(out, to)), { recursive: true });
     cpSync(src, join(out, to), { recursive: true });
     staged.push(to);
   }

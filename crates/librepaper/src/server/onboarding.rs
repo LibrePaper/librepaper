@@ -17,19 +17,19 @@ const STARTERS: [Starter; 5] = [
         main: "librepaper.md",
         title: "Learn LibrePaper with Markdown",
         format: "markdown",
-        source: include_str!("../../../../docs/examples/tutorial-markdown/librepaper.md"),
+        source: include_str!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-markdown/librepaper.md")),
         files: &[
             (
                 "sections/rendering.md",
-                include_bytes!("../../../../docs/examples/tutorial-markdown/sections/rendering.md"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-markdown/sections/rendering.md")),
             ),
             (
                 "librepaper-icon.png",
-                include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-markdown/librepaper-icon.png")),
             ),
             (
                 "references.bib",
-                include_bytes!("../../../../docs/examples/tutorial-markdown/references.bib"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-markdown/references.bib")),
             ),
         ],
     },
@@ -37,19 +37,19 @@ const STARTERS: [Starter; 5] = [
         main: "librepaper.typ",
         title: "Learn LibrePaper with Typst",
         format: "typst",
-        source: include_str!("../../../../docs/examples/tutorial-typst/librepaper.typ"),
+        source: include_str!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-typst/librepaper.typ")),
         files: &[
             (
                 "sections/rendering.typ",
-                include_bytes!("../../../../docs/examples/tutorial-typst/sections/rendering.typ"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-typst/sections/rendering.typ")),
             ),
             (
                 "librepaper-icon.png",
-                include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-markdown/librepaper-icon.png")),
             ),
             (
                 "references.bib",
-                include_bytes!("../../../../docs/examples/tutorial-typst/references.bib"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-typst/references.bib")),
             ),
         ],
     },
@@ -57,19 +57,19 @@ const STARTERS: [Starter; 5] = [
         main: "librepaper.html",
         title: "Learn LibrePaper with HTML",
         format: "html",
-        source: include_str!("../../../../docs/examples/tutorial-html/librepaper.html"),
+        source: include_str!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-html/librepaper.html")),
         files: &[
             (
                 "sections/rendering.html",
-                include_bytes!("../../../../docs/examples/tutorial-html/sections/rendering.html"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-html/sections/rendering.html")),
             ),
             (
                 "librepaper-icon.png",
-                include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-markdown/librepaper-icon.png")),
             ),
             (
                 "references.bib",
-                include_bytes!("../../../../docs/examples/tutorial-html/references.bib"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-html/references.bib")),
             ),
         ],
     },
@@ -77,19 +77,19 @@ const STARTERS: [Starter; 5] = [
         main: "librepaper.tex",
         title: "Learn LibrePaper with LaTeX",
         format: "latex",
-        source: include_str!("../../../../docs/examples/tutorial-latex/librepaper.tex"),
+        source: include_str!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-latex/librepaper.tex")),
         files: &[
             (
                 "sections/rendering.tex",
-                include_bytes!("../../../../docs/examples/tutorial-latex/sections/rendering.tex"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-latex/sections/rendering.tex")),
             ),
             (
                 "references.bib",
-                include_bytes!("../../../../docs/examples/tutorial-latex/references.bib"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-latex/references.bib")),
             ),
             (
                 "librepaper-icon.png",
-                include_bytes!("../../../../docs/examples/tutorial-latex/librepaper-icon.png"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-latex/librepaper-icon.png")),
             ),
         ],
     },
@@ -97,19 +97,19 @@ const STARTERS: [Starter; 5] = [
         main: "librepaper.qmd",
         title: "Learn LibrePaper with Quarto",
         format: "quarto",
-        source: include_str!("../../../../docs/examples/tutorial-quarto/librepaper.qmd"),
+        source: include_str!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-quarto/librepaper.qmd")),
         files: &[
             (
                 "sections/rendering.qmd",
-                include_bytes!("../../../../docs/examples/tutorial-quarto/sections/rendering.qmd"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-quarto/sections/rendering.qmd")),
             ),
             (
                 "librepaper-icon.png",
-                include_bytes!("../../../../docs/examples/tutorial-markdown/librepaper-icon.png"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-markdown/librepaper-icon.png")),
             ),
             (
                 "references.bib",
-                include_bytes!("../../../../docs/examples/tutorial-quarto/references.bib"),
+                include_bytes!(concat!(env!("LIBREPAPER_DOCS"), "/examples/tutorial-quarto/references.bib")),
             ),
         ],
     },
