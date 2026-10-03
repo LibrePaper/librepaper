@@ -76,7 +76,7 @@
     { id: "commenter", label: "Comment", help: "Read and comment" },
     { id: "editor", label: "Edit", help: "Apply source changes when asked", warn: true },
   ];
-  const currentRole = $derived(!caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
+  const currentRole = $derived.by(() => !caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
   // Without sharing rights the panel can only hand out the access the reader
   // already holds, so the other rows are visible but not selectable.
   const roleOffered = (entry) => canShare || currentRole === entry.id;

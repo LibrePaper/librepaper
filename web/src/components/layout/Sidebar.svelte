@@ -37,7 +37,7 @@
     // layout switch, shortcuts and way home there; the landing page has no
     // home to go to and puts only help. A snippet rather than a list of flags,
     // because this component has no business knowing what a layout is.
-    controls,
+    controls = undefined,
     // Whether the column can be dragged wider, and whether a panel is even
     // expected. The landing page's rail is navigation with nothing beside it,
     // so it takes neither.
@@ -47,14 +47,14 @@
     // The landing page can ask for visible destination names in its compact
     // bottom rail. Reader rails keep their icon-only shape.
     compactLabels = false,
-    panes,
-    sidebarPane,
-    onsize,
-    onguide,
-    ongrab,
-    onselectpanel,
-    oncyclelayout,
-    ondrop,
+    panes = undefined,
+    sidebarPane = undefined,
+    onsize = undefined,
+    onguide = undefined,
+    ongrab = undefined,
+    onselectpanel = undefined,
+    oncyclelayout = undefined,
+    ondrop = undefined,
   } = $props();
 </script>
 

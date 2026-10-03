@@ -78,7 +78,8 @@ export function candidateTree(candidate) {
 // The server always sends a candidate reference (`request.candidate`): a
 // manifest plus the source files the agent client fetched over authenticated
 // same-origin requests, never inline edits carried in the chat frame itself.
-export async function previewCandidate({ request, tree: sourceTree, render, title = async () => "", digest = snapshotDigest }) {
+/** @param {{request: {candidate?: {main?: string, files?: Record<string, object>, texts?: Record<string, string>, settings?: object, base_revision?: string, revision?: string}, base_revision?: string, revision?: string}, tree?: {main?: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array>, digests?: Record<string, string>, files?: Record<string, object>}, render: (tree: object, title: string) => Promise<{html?: string|null, pdf?: Uint8Array|null, diagnostics?: object[], provenance?: {engine?: string}, ok?: boolean}>, title?: (tree: object) => Promise<string>, digest?: (tree: object) => Promise<string>}} options */
+export async function previewCandidate({ request, tree: sourceTree, render, title = async (_tree) => "", digest = snapshotDigest }) {
   const referenced = request?.candidate;
   if (!referenced) throw new Error("Candidate reference is required.");
   const tree = capturePreviewTree(candidateTree(referenced));

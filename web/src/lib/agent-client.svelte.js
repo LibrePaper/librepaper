@@ -89,6 +89,7 @@ function boundedDiagnostics(value) {
 /** Browser side of the persistent runner channel. The runner owns the model
  * session; this client owns socket lifetime, bounded local history, task
  * state, and dispatching the runner's preview requests to `onpreview`. */
+/** @param {{origin?: string, project?: string, slug?: string, link?: string, fetcher?: typeof fetch, WebSocketImpl?: typeof WebSocket, storage?: Storage|null, onpreview?: ((request: object) => void)|null}} [options] */
 export function createAgentClient({ origin = globalThis.location?.origin || "", project,
   slug = project, link: initialLink = "", fetcher = globalThis.fetch,
   WebSocketImpl = globalThis.WebSocket, storage = globalThis.localStorage,
@@ -198,7 +199,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
         method, headers, body: body === undefined ? undefined : JSON.stringify(body),
         credentials: "same-origin", cache: "no-store", signal });
       const result = await response.json().catch(() => ({}));
-      if (!response.ok) { const error = new Error(result.error || `Assistant request failed (${response.status}).`); error.status = response.status; throw error; }
+      if (!response.ok) throw Object.assign(new Error(result.error || `Assistant request failed (${response.status}).`), { status: response.status });
       return result;
     });
   }
@@ -363,6 +364,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   }
   // Shared by `transmit` and `respond`: register a pending acknowledgement,
   // time it out, and (when the frame carries a delivery) mark it uncertain.
+  /** @param {string} ackId @param {{message?: {id: string}, timeoutMessage?: string}} [options] */
   function awaitAck(ackId, { message, timeoutMessage = "The assistant did not acknowledge the request." } = {}) {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {

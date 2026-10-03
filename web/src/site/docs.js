@@ -16,7 +16,8 @@ mount(SiteBar, { target: document.getElementById("siteBar") });
 // adds the two things a reader expects of something that covers the page and
 // that the element does not do by itself: Escape shuts it, and so does
 // reaching past it.
-const drawer = document.querySelector(".sitenav-drawer");
+const drawerElement = document.querySelector("details.sitenav-drawer");
+const drawer = drawerElement instanceof HTMLDetailsElement ? drawerElement : null;
 if (drawer) {
   // The markup ships open so that a reader with no script keeps the
   // navigation at every width. With a script, the drawer is a drawer only
@@ -38,7 +39,7 @@ if (drawer) {
     }
   });
   addEventListener("click", (event) => {
-    if (drawer.open && !wide.matches && !drawer.contains(event.target)) drawer.open = false;
+    if (drawer.open && !wide.matches && event.target instanceof Node && !drawer.contains(event.target)) drawer.open = false;
   });
 }
 
@@ -56,7 +57,8 @@ if (drawer) {
 // Storage can be absent or throw outright in a private window or with site
 // data blocked, so every access is guarded: a column that cannot remember
 // behaves as it did before.
-const rail = document.querySelector(".sitenav");
+const railElement = document.querySelector(".sitenav");
+const rail = railElement instanceof HTMLElement ? railElement : null;
 if (rail) {
   const key = "librepaper.docs.sitenav.scroll";
 
@@ -107,9 +109,10 @@ if (rail) {
 /* ---------------------------------------------------------------- images */
 
 const lightbox = document.getElementById("imageLightbox");
+const dialog = lightbox instanceof HTMLDialogElement ? lightbox : null;
 const expanded = lightbox?.querySelector("img");
 
-if (lightbox && expanded) {
+if (dialog && expanded) {
   for (const thumbnail of document.querySelectorAll(".prose img")) {
     thumbnail.tabIndex = 0;
     thumbnail.setAttribute("role", "button");
@@ -117,7 +120,7 @@ if (lightbox && expanded) {
     const open = () => {
       expanded.src = thumbnail.src;
       expanded.alt = thumbnail.alt;
-      lightbox.showModal();
+      dialog.showModal();
     };
     thumbnail.addEventListener("click", open);
     thumbnail.addEventListener("keydown", (event) => {
@@ -127,9 +130,9 @@ if (lightbox && expanded) {
       }
     });
   }
-  lightbox.querySelector("button").addEventListener("click", () => lightbox.close());
-  lightbox.addEventListener("click", (event) => {
-    if (event.target === lightbox) lightbox.close();
+  dialog.querySelector("button")?.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
   });
 }
 

@@ -6,6 +6,7 @@
   // The page the server shows when there is more than one way in. It is served
   // for /auth/login, so the choice is made here and every other page can link
   // to the one address without knowing what this deployment configured.
+  /** @type {{providers?: string[]}} */
   let me = $state({});
   $effect(() => {
     whoami().then((who) => (me = who ?? {}));

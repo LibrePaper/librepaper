@@ -15,6 +15,7 @@ export async function cacheCurrentShell() {
   const resources = performance.getEntriesByType?.("resource") || [];
   const urls = [location.href, location.origin + "/"];
   for (const entry of resources) {
+    if (!(entry instanceof PerformanceResourceTiming)) continue;
     if (!["script", "link"].includes(entry.initiatorType)) continue;
     const url = new URL(entry.name, location.href);
     if (url.origin === location.origin) urls.push(url.href);

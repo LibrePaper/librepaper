@@ -4,6 +4,11 @@ import { renderResolving } from "./needs.js";
 // What earlier compiles fetched -- packages and fonts -- for the life of
 // this worker. See `needs.js`.
 const fetched = new Map();
+/** @typedef {{tree: object, title: string, format?: string, old?: string, new?: string, source?: string}} RendererArgs */
+/** @typedef {{id: string, url: string, operation: string, args: RendererArgs}} RendererRequest */
+/** @typedef {{location: Location, onmessage: ((event: MessageEvent<RendererRequest>) => void) | null, postMessage: (message: unknown, transfer?: Transferable[]) => void}} RendererWorkerScope */
+/** @type {RendererWorkerScope} */
+const rendererScope = /** @type {RendererWorkerScope} */ (/** @type {unknown} */ (self));
 
 function fontsIndex() {
   try {
@@ -33,7 +38,7 @@ async function render(wasm, tree, title, format) {
 
 // Keep ABI operations ordered even while the module is downloading.
 let queue = Promise.resolve();
-self.onmessage = ({ data: { id, url, operation, args } }) => {
+rendererScope.onmessage = ({ data: { id, url, operation, args } }) => {
   queue = queue.then(async () => {
     try {
       const wasm = await load(url);
@@ -52,9 +57,9 @@ self.onmessage = ({ data: { id, url, operation, args } }) => {
       else if (operation === "failure") result = call(wasm, "failure_page", args.title).text;
       else if (operation !== "warm") throw new Error(`Unknown renderer operation: ${operation}`);
       const transfer = result?.pdf instanceof ArrayBuffer ? [result.pdf] : [];
-      self.postMessage({ id, result }, transfer);
+      rendererScope.postMessage({ id, result }, transfer);
     } catch (error) {
-      self.postMessage({ id, error: error.message || String(error) });
+      rendererScope.postMessage({ id, error: error.message || String(error) });
     }
   });
 };

@@ -21,7 +21,7 @@
 // The top-level await is the point: every importer of this module is reached
 // through a dynamic `import()`, so awaiting here holds only the chunk that
 // actually needs a CRDT, and a reader who never edits never loads it at all.
-import init from "loro-crdt/web";
+import init from "loro-crdt/web/loro_wasm.js";
 
 await init();
 

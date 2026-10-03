@@ -5,6 +5,10 @@ import { fetchVerified } from "./resources.js";
 
 const DEADLINE_MS = 240_000;
 
+/** @typedef {{url: string, sha256: string, size: number}} LatexAsset */
+/** @typedef {{worker: string, files?: string[]}} LatexEngineSpec */
+/** @typedef {{format: number, id: string, files: Record<string, LatexAsset>, bundles?: {index: string, sha256: string}, engines: {latexml?: LatexEngineSpec}}} LatexRelease */
+
 function superseded() {
   return Object.assign(new Error("Preview superseded"), { name: "Superseded" });
 }
@@ -17,9 +21,10 @@ function projectPath(path) {
   return path;
 }
 
+/** @param {{makeEngine?: typeof createEngine, request?: (input: string|URL, init?: RequestInit) => Promise<Response>, verified?: (release: LatexRelease,url: string,metadata: {sha256: string,size: number}) => Promise<Response>, deadline?: number}} [options] */
 export function createHtmlCompiler({
   makeEngine = createEngine,
-  request = (...args) => fetch(...args),
+  request = (input, init) => fetch(input, init),
   verified = fetchVerified,
   deadline = DEADLINE_MS,
 } = {}) {
@@ -59,7 +64,10 @@ export function createHtmlCompiler({
           if (!response.ok) throw new Error(`LaTeX release unavailable (${response.status})`);
           const data = await response.json();
           if (data.format !== 2) throw new Error("Unsupported LaTeX release format");
-          return data;
+          if (typeof data.id !== "string" || !data.files || typeof data.files !== "object" || !data.engines || typeof data.engines !== "object") {
+            throw new Error("Invalid LaTeX release manifest");
+          }
+          return /** @type {LatexRelease} */ (data);
         })();
         pinnedRequest = { base, pending };
       }

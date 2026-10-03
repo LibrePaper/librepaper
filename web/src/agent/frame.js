@@ -21,7 +21,8 @@ import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
   // all of it. There is exactly one reader entitled to hear from this agent,
   // it is named when the script is injected, and without that name the agent
   // says nothing rather than saying it to everybody.
-  const readerParameter = new URL(document.currentScript.src).searchParams.get("reader");
+  const script = /** @type {HTMLScriptElement | null} */ (document.currentScript);
+  const readerParameter = script ? new URL(script.src).searchParams.get("reader") : null;
   let READER = "";
   try { READER = readerParameter ? new URL(readerParameter).origin : ""; } catch { READER = ""; }
   let table = null; // {nodes, starts, index, joined}
@@ -169,6 +170,7 @@ import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
   // running text for as long as the document is open, and a saturated wash
   // would fight the words it is meant to mark. Kept in step with the tool
   // buttons and the sidebar labels, which use the same hues.
+  /** @type {Record<string, [number, number]>} */
   const TINTS = {
     commenting: [42, 55],
     highlighting: [145, 28],
@@ -176,10 +178,13 @@ import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
     // reads as provisional beside an ordinary comment's warmer tint.
     editing: [0, 20],
   };
+  /** @type {[number, number]} */
   const NEUTRAL = [220, 12]; // resolved: the colour has served its purpose
+  /** @param {string} motivation @returns {[number, number]} */
   const tintOf = (motivation) => TINTS[motivation] || TINTS.commenting;
   // Each annotation stacked on the same words takes the wash a step deeper,
   // stopping where dark text would start to struggle against it.
+  /** @param {[number, number]} tint @param {number} depth @param {number} [alpha] */
   const wash = ([hue, saturation], depth, alpha = 1) =>
     `hsl(${hue} ${saturation}% ${Math.max(70, 90 - (Math.min(depth, 5) - 1) * 5)}% / ${alpha})`;
   const edge = ([hue, saturation]) => `hsl(${hue} ${Math.min(saturation + 10, 60)}% 45%)`;
@@ -206,7 +211,7 @@ import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
     let total = 0;
     let node;
     while ((node = walker.nextNode())) {
-      if (node.nodeType === Node.TEXT_NODE) {
+      if (node instanceof Text) {
         const parent = node.parentElement;
         if (parent && ["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) continue;
         if (parent?.closest("[data-librepaper-synthetic], [data-librepaper-deletion]")) continue;
@@ -266,12 +271,16 @@ import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
   // repaint, so the ring is put back after each one rather than kept on a node.
   let selectedId = "";
   function applySelected() {
-    document.querySelectorAll("[data-librepaper-selected]").forEach((node) => delete node.dataset.librepaperSelected);
+    document.querySelectorAll("[data-librepaper-selected]").forEach((node) => {
+      if (node instanceof HTMLElement) delete node.dataset.librepaperSelected;
+    });
     if (!selectedId) return;
     const id = CSS.escape(selectedId);
     document
       .querySelectorAll(`mark[data-librepaper~="${id}"]`)
-      .forEach((node) => (node.dataset.librepaperSelected = ""));
+      .forEach((node) => {
+        if (node instanceof HTMLElement) node.dataset.librepaperSelected = "";
+      });
   }
   function select(id) {
     selectedId = id == null ? "" : String(id);
@@ -657,7 +666,7 @@ import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
   // takes a key away from a document that wants one.
   document.addEventListener("keydown", (event) => {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
-    const target = event.target;
+    const target = event.target instanceof Element ? event.target : null;
     if (target?.isContentEditable || target?.closest?.("input,textarea,select,[contenteditable]")) return;
     if (event.key === "Escape") {
       post({ type: "disarm" });

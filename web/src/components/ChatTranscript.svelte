@@ -11,10 +11,10 @@
     label = "Conversation",
     roleLabel = (message) => message.creator || message.role,
     authorKey = (message) => `${message.role || ""}:${message.creator || ""}`,
-    onresult,
+    onresult = undefined,
     authors = true,
     quiet = false,
-    after,
+    after = undefined,
   } = $props();
   let transcript = $state();
   let following = true;

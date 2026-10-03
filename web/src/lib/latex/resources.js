@@ -28,16 +28,22 @@ const PREFIX = "librepaper-latex-";
 const REMEMBER_KEY = "librepaper-latex-used";
 const REMEMBER_LIMIT = 2000;
 
+/** @typedef {{digest?: string}} LatexRelease */
+/** @typedef {{sha256?: string, size?: number, signal?: AbortSignal}} VerificationMetadata */
+/** @typedef {{url: string, sha256: string, size: number, scope?: string}} ResourceEntry */
+
 /// The Cache Storage name for one release: short (16 hex chars of the
 /// release's own digest) so it stays readable in devtools, and derived from
 /// the digest rather than the id so a re-signed manifest entry with the same
 /// id but different bytes gets its own cache instead of silently reusing a
 /// stale one.
+/** @param {LatexRelease} release */
 export function namespace(release) {
   const digest = release?.digest ?? "";
   return `${PREFIX}${digest.slice(0, 16)}`;
 }
 
+/** @param {VerificationMetadata} [metadata] */
 function requiredMetadata({ sha256, size } = {}) {
   if (typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) {
     throw new Error("manifest metadata must include a valid sha256 digest");
@@ -48,6 +54,7 @@ function requiredMetadata({ sha256, size } = {}) {
   return { sha256, size };
 }
 
+/** @param {LatexRelease} release */
 async function openStore(release) {
   if (!globalThis.caches?.open) return null;
   return caches.open(namespace(release)).catch(() => null);
@@ -60,6 +67,7 @@ async function openStore(release) {
 /// in the session is worse than one slow refetch. A network error or a
 /// non-2xx response throws and is never written to the cache: a transient
 /// failure must not become a permanent "this file does not exist" entry.
+/** @param {LatexRelease} release @param {string|URL} url @param {VerificationMetadata} [metadata] */
 export async function fetchVerified(release, url, { sha256, size, signal } = {}) {
   ({ sha256, size } = requiredMetadata({ sha256, size }));
   const store = await openStore(release);
@@ -101,6 +109,7 @@ export async function fetchVerified(release, url, { sha256, size, signal } = {})
 /// here where progress can still be reported per completion.
 const PREFETCH_CONCURRENCY = 6;
 
+/** @param {LatexRelease} release @param {ResourceEntry[]} entries @param {(progress: {done: number,total: number,scope: string}) => void} [onProgress] */
 export async function prefetch(release, entries, onProgress) {
   const list = Array.isArray(entries) ? entries : [];
   const total = list.length;

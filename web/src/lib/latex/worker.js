@@ -585,7 +585,8 @@ self.onmessage = async (event) => {
   const { id } = message ?? {};
   try {
     const reply = await worker.handle(message);
-    const { __transfer, ...rest } = reply;
+    const __transfer = "__transfer" in reply ? reply.__transfer : [];
+    const { __transfer: _transfer, ...rest } = reply;
     self.postMessage({ id, ...rest }, __transfer ?? []);
   } catch (error) {
     self.postMessage({ id, failed: String(error?.message || error) });

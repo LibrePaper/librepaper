@@ -2,6 +2,7 @@ import { read, write } from "./storage.js";
 
 // Keep the complete submission until the server acknowledges it. A reload or
 // a reconnect never treats a missing acknowledgment as a successful write.
+/** @param {{slug: string, changed?: (items: {message: object, error: string}[]) => void}} options */
 export function submissions({ slug, changed = () => {} }) {
   const key = `librepaper-submissions-${slug}`;
   const saved = read(key, []);

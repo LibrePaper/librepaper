@@ -100,6 +100,7 @@ function parseParameters(value) {
  * `parameters` may be the JSON text from a textarea or an already parsed
  * object, which also makes saved preferences easy to validate on load.
  */
+/** @param {{format?: string|null, profile?: string|null, parameters?: unknown, parametersText?: string}} [options] */
 export function parseRenderOptions({ format = null, profile = null, parameters = null, parametersText } = {}) {
   const parameterInput = parameters === null && parametersText !== undefined ? parametersText : parameters;
   return {

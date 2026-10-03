@@ -1,6 +1,6 @@
 // Semantic actions shared by the navbar and the source-format adapters.
 /**
- * @typedef {(id: string, options: InsertOptions, context: any) => string | InsertionResult} BuildFormatter
+ * @typedef {(id: string, options: InsertOptions, context: InsertContext) => string | InsertionResult} BuildFormatter
  */
 import { buildLatex } from './insert-latex.js';
 import { buildTypst } from './insert-typst.js';
@@ -47,6 +47,8 @@ const scholarly = new Set(['theorem','lemma','proposition','definition','proof',
  * @typedef {{from: number; to: number; text: string}} Selection
  */
 
+/** @typedef {{path: string, text?: string, url?: string, sha?: string, kind?: string} | string} InsertFile */
+
 /**
  * @typedef InsertContext
  * @type {object}
@@ -56,7 +58,9 @@ const scholarly = new Set(['theorem','lemma','proposition','definition','proof',
  * @property {string} [mainText]
  * @property {string} [mainPath]
  * @property {Selection} [selection]
- * @property {{path: string; text: string}[]} [files]
+ * @property {InsertFile[]} [files]
+ * @property {object[]} [bibliography]
+ * @property {string} [targetId]
  */
 
 /**
@@ -84,7 +88,13 @@ const scholarly = new Set(['theorem','lemma','proposition','definition','proof',
  * @property {string} [environment]
  * @property {string} [brackets]
  * @property {boolean} [inMath]
+ * @property {string} [argumentsText]
+ * @property {string[]} [arguments]
  */
+
+/** @typedef {Omit<InsertOptions, 'level'|'rows'|'columns'> & {level?: number|string, rows?: number|string, columns?: number|string, text?: string, path?: string, argumentsText?: string}} InsertionDraft */
+
+/** @typedef {Omit<InsertContext, 'files'> & {text: string, selection: Selection, files: {path: string, text?: string, url?: string, sha?: string, kind?: string}[]}} NormalizedInsertContext */
 
 /**
  * @param {string} path
@@ -133,7 +143,8 @@ const url = value => { const s=plain(value).trim(); if (/^(?:javascript|data|vbs
  * @param {InsertContext} [c={}]
  * @returns {InsertContext & {text: string; selection: Selection; files: {path: string; text: string}[]}}
  */
-function context(c = {}) { const text=plain(c.text); const selection=c.selection || {from:text.length,to:text.length,text:''}; return {...c, text, selection, files:c.files || []}; }
+/** @param {InsertContext} [c] @returns {NormalizedInsertContext} */
+function context(c = {}) { const text=plain(c.text); const selection=c.selection || {from:text.length,to:text.length,text:''}; const files=(c.files || []).map(file=>typeof file==='string'?{path:file,text:''}:file); return {...c, text, selection, files}; }
 /**
  * @param {InsertContext} [input={}]
  * @returns {'code'|'comment'|'metadata'|'math'|'markup'}
@@ -429,13 +440,18 @@ function buildMarkdown(id,o,c) {
 
 /**
  * @param {string} id
- * @param {InsertOptions} [options={}]
+ * @param {InsertionDraft} [options={}]
  * @param {InsertContext} [input={}]
  * @returns {FinalInsertion}
  */
 export function buildInsertion(id, options = {}, input = {}) {
   const c=context(input), available=insertionAvailability(id,c);if(!available.enabled)throw Error(available.reason);
-  const o={...options, inMath: insertSyntaxContext(c)==='math'};
+  const draft={...options, inMath: insertSyntaxContext(c)==='math'};
+  const o={...draft,
+    ...(draft.level!==undefined?{level:Number(draft.level)}:{}),
+    ...(draft.rows!==undefined?{rows:Number(draft.rows)}:{}),
+    ...(draft.columns!==undefined?{columns:Number(draft.columns)}:{}),
+  };
   /** @type {[string, number][]} */
   const numericValidations = [['rows',100],['columns',30],['level',6]];
   for(const [key,max] of numericValidations) {

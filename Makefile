@@ -73,7 +73,7 @@ $(BIN): $(SOURCES) $(SHELL_OUT)
 # bundle needs that bundle to exist -- so the pages are built first.
 test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@cd web && bun run check
-	@cd web && bun run check:names
+	@cd web && bun run check:types
 	@cargo fmt --check
 	@node --test 'web/tools/*.test.mjs' 'tools/**/*.test.mjs'
 	@cargo clippy --workspace --all-targets -- -D warnings

@@ -1,6 +1,7 @@
 <script>
   import { Tooltip } from "@skeletonlabs/skeleton-svelte";
   import Icon from "./Icon.svelte";
+  import { retargetElementAttributes } from "./element-attributes.js";
 
   // One button, one shape. Every icon control in the application is this, so
   // they are the same square with the icon at the same size, rather than each
@@ -34,7 +35,7 @@
     // Optional visible text inside the button. `label` remains the full
     // accessible name.
     visibleLabel = null,
-    onclick,
+    onclick = undefined,
   } = $props();
 
   const TONES = {
@@ -53,7 +54,7 @@
   <Tooltip.Trigger>
     {#snippet element(attributes)}
       {#if href}
-        <a {...attributes} {href} class={classes} aria-label={label}>
+        <a {...retargetElementAttributes(attributes)} {href} class={classes} aria-label={label}>
           <Icon name={icon} {filled} />
           {#if visibleLabel}<span class="compact-label" aria-hidden="true">{visibleLabel}</span>{/if}
         </a>

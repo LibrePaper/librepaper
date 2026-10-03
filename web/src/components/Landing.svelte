@@ -36,6 +36,7 @@
   import { BUILT_IN, templateFiles } from "../lib/templates.js";
   import { preparedProjects } from "../lib/offline-projects.js";
 
+  /** @type {{can_publish?: boolean; name?: string; handle?: string; publishers?: string}} */
   let me = $state({});
   // Whether /api/me answered at all. Without it the signed-out page is also
   // the page shown while the request is in flight and the page shown when the
@@ -67,6 +68,7 @@
   let formatOverride = $state("");
   // The caller's own templates, as the server lists them: projects. One list
   // serves the picker and the Templates place, so there is one loader.
+  /** @type {{slug: string; title: string; source_format: string; url: string}[]} */
   let templateRows = $state([]);
   // The same, in the shape of a built-in one, so the same filter and the same
   // cards serve both.
@@ -74,7 +76,10 @@
     id: row.slug, slug: row.slug, name: row.title, description: "", keywords: [],
     formats: [row.source_format], custom: true, url: row.url,
   })));
-  const allTemplates = $derived([...BUILT_IN, ...customTemplates]);
+  const allTemplates = $derived([
+    ...BUILT_IN.map((template) => ({ ...template, slug: template.id, custom: false, url: "" })),
+    ...customTemplates,
+  ]);
   const shownTemplates = $derived(matchTemplates(allTemplates, templateQuery, formatFilter));
   const shownBuiltIn = $derived(shownTemplates.filter((each) => !each.custom));
   const shownCustom = $derived(shownTemplates.filter((each) => each.custom));

@@ -57,9 +57,8 @@ async function fetchOne(slug, sha, headers) {
   }
 }
 
-/// Encode bytes as base64, using Buffer in Node and btoa in the browser.
+/// Encode bytes as base64 in the browser.
 export function toBase64(bytes) {
-  if (typeof Buffer !== "undefined") return Buffer.from(bytes).toString("base64");
   let binary = "";
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
@@ -127,9 +126,7 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
     if (!Object.prototype.hasOwnProperty.call(assets, path)) missing.push(path);
   }
   if (strict && missing.length) {
-    const error = new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
-    error.missing = missing;
-    throw error;
+    throw Object.assign(new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`), { missing });
   }
   return { assets, urls: where, missing };
 }

@@ -60,14 +60,23 @@ const lacking = new Set();
 const indexes = new Map();
 const INDEX_RETRY_MS = 30_000;
 
+/** @typedef {{families: Record<string, string[]>}} FontIndex */
+/** @param {unknown} value @returns {value is FontIndex} */
+function isFontIndex(value) {
+  if (!value || typeof value !== "object" || !("families" in value) || !value.families || typeof value.families !== "object") return false;
+  return Object.values(value.families).every((files) => Array.isArray(files) && files.every((file) => typeof file === "string"));
+}
+
 function fontIndex(url) {
   if (!url) return Promise.resolve(null);
   const held = indexes.get(url);
   if (held && (held.retryAt === 0 || held.retryAt > Date.now())) return held.promise;
   const pending = fetch(url)
-    .then((response) => {
+    .then(async (response) => {
       if (!response.ok) throw new Error(`font index request failed (${response.status})`);
-      return response.json();
+      const value = await response.json();
+      if (!isFontIndex(value)) throw new Error("invalid font index response");
+      return value;
     })
     .catch(() => {
       const failed = indexes.get(url);
@@ -81,6 +90,7 @@ function fontIndex(url) {
 /// Fetches what `needs` lists and the map does not have, into `fetched`.
 /// Resolves to whether anything arrived: a compile with nothing new to read
 /// would only say the same thing again.
+/** @param {{packages?: {url?: string, dir: string}[], fonts?: string[]}} needs @param {Map<string, Uint8Array>} fetched @param {{fontsIndex?: string}} [options] */
 export async function fetchNeeds(needs, fetched, { fontsIndex } = {}) {
   let arrived = false;
   for (const pkg of needs.packages || []) {
