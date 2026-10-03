@@ -131,8 +131,8 @@ Each item is a move or an inversion that the current single crate accepts today,
 
 ### Into `shell`
 
-- `server/shell.rs` becomes the whole crate: the `include_dir!` static, the `include_str!` of `assets.lock` and `ShellFile`. `server` depends on it. The facade keeps `pub use shell::ShellFile`.
-- Its `build.rs` is the `watch(web/dist)` and `assets.lock` half of today's build script and nothing else.
+- `server/shell.rs` becomes the whole crate: the `include_dir!` static, the `include_str!` of `assets.lock` and `ShellFile`. `server` depends on it. The facade keeps `pub use librepaper_shell::ShellFile`.
+- Its `build.rs` resolves `web/dist` and passes it to the code as `LIBREPAPER_SHELL_DIST` (`include_dir!("$LIBREPAPER_SHELL_DIST")`), watches every file under it, and copies `assets.lock` into `OUT_DIR`. Nothing else.
 
 ### Stays in the facade crate
 
@@ -172,7 +172,7 @@ Today one `build.rs` watches `assets.lock`, `.sqlx`, `skills/` and `web/dist`. C
 
 | input | reader | after the split |
 | --- | --- | --- |
-| `web/dist` | `shell` | Vite's `outDir` becomes `crates/librepaper-shell/dist` (gitignored). `include_dir!("$CARGO_MANIFEST_DIR/dist")`. The 16 references to `web/dist` (Makefile, `tools/suite`, CI, release and publish workflows, `dist-build-setup.yml`, browser tests, `docs/architecture/building.md`) are updated in the same commit. |
+| `web/dist` | `shell` | Stays where Vite builds it. The shell crate's `build.rs` canonicalizes `CARGO_MANIFEST_DIR/../../web/dist`, emits `cargo:rustc-env=LIBREPAPER_SHELL_DIST=<abs path>` and watches each file. The code does `include_dir!("$LIBREPAPER_SHELL_DIST")`. The flattener stages `dist/` at publish time, and the flat `build.rs` sets the same variable from it. None of the 16 `web/dist` references move. |
 | `.sqlx` | `engine` (and `seed` once it moves there) | Directory moves to `crates/librepaper-engine/.sqlx`. `tools/db sqlx-prepare` and `sqlx-check` already use `--workspace`; sqlx writes each crate's cache under that crate. `SQLX_OFFLINE` handling stays in the root `.cargo/config.toml` and in the engine crate's `build.rs` for packaged builds. |
 | `migrations/postgres` | `engine` | Moves with the SQL. |
 | `skills/` | `companion` | Either moves to `crates/librepaper-companion/skills` or the release workflow stages a copy there. Prefer the move; `skills/` has no other reader that cares where it is except the Makefile's source list. |
@@ -195,7 +195,7 @@ A script, checked in and run by CI on every pull request, that produces a self-c
 2. **Paths.** In every copied sub-crate file, rewrite `\bcrate::` to `crate::<name>::` and `\blibrepaper_(\w+)::` to `crate::$1::`. In the facade's own files rewrite only the second pattern, because the facade is the root. Append `mod base; mod document; mod engine; mod room; mod shell; mod server; mod companion; #[cfg(test)] mod testing;` to the facade's `lib.rs`. The modules are private at the root, so the facade's re-exports remain the only public surface, which is tighter than the development layout where every sub-crate `pub` is visible.
 3. **Inputs.** Copy each sub-crate's non-source inputs to the flat root at the same manifest-relative path: `dist/` and `assets.lock` from `shell`, `.sqlx/` and `migrations/` from `engine`, `skills/` from `companion`. Every `include_dir!`, `include_str!`, `sqlx::migrate!` and `env!("CARGO_MANIFEST_DIR")` path then resolves identically in both layouts.
 4. **Manifest.** Generate `Cargo.toml` from the root manifest: `[package]` from `[workspace.package]` plus the facade's metadata, `[dependencies]` as the union of every sub-crate's dependencies resolved against `[workspace.dependencies]`, `[target.*.dependencies]` and `[dev-dependencies]` likewise, `[[test]]` entries from the facade, profiles copied, `include` listing the staged inputs. Copy `Cargo.lock`, then run `cargo metadata --offline` once so Cargo prunes the `librepaper-*` entries, and fail if anything else in the lockfile changed.
-5. **Build script.** The flat `build.rs` is a checked-in file, `tools/flatten/build.rs`, that does what today's single build script does: watch `dist/`, `assets.lock`, `.sqlx`, `skills/`, set `SQLX_OFFLINE`. The sub-crates' individual build scripts are the pieces of it.
+5. **Build script.** The flat `build.rs` is a checked-in file, `tools/flatten/build.rs`, that does what today's single build script does: watch `dist/` and set `LIBREPAPER_SHELL_DIST` to it, `assets.lock`, `.sqlx`, `skills/`, set `SQLX_OFFLINE`. The sub-crates' individual build scripts are the pieces of it.
 
 The output is a normal crate. `cargo publish --dry-run --locked` on it, `cargo test` on it and `cargo install --path` on it are the acceptance tests, and the publish workflow runs `cargo publish` from that directory instead of the workspace.
 
@@ -236,7 +236,7 @@ Every stage ends with `cargo check --workspace --all-targets`, the full test sui
 
 ### Stage 1: shell
 
-- Extract `librepaper-shell`. Move the Vite `outDir` and update the 16 `web/dist` references.
+- Extract `librepaper-shell`. Its `build.rs` hands `web/dist` to the code through `LIBREPAPER_SHELL_DIST`; Vite's `outDir` and the 16 `web/dist` references do not change.
 - **Acceptance:** `bun run build` followed by `cargo check -v` compiles `librepaper-shell` and relinks the binary, and compiles nothing else.
 
 ### Stage 2: the seams, still inside one crate

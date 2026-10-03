@@ -11,10 +11,10 @@ use crate::config::Configuration;
 use crate::document::retention::{describe_seconds, parse_expire_from, parse_retention};
 use crate::document::store::Store;
 use crate::server::origins::{Origins, DOCS_PREFIX};
-use crate::server::shell::load_shell;
 use crate::server::Server;
 use crate::storage::{open_storage, StorageOptions};
 use crate::util::die;
+use librepaper_shell::load_shell;
 
 /// With no --port, serve takes the first free port in this range, so a second
 /// deployment on the same machine, or a port something else has already
@@ -285,7 +285,7 @@ pub async fn serve(options: ServeOptions) {
     // Read before anything is opened or a port is claimed: a mirror value
     // which cannot work is a typo the operator is still standing in front of.
     let assets = validate_asset_mirror(&options.asset_mirror).unwrap_or_else(|err| die(err));
-    let latex = format!("{assets}latex/{}/", crate::server::shell::latex_release());
+    let latex = format!("{assets}latex/{}/", librepaper_shell::latex_release());
     // Likewise the site. It becomes a destination a browser is sent to, so it
     // is an absolute http(s) origin or it is a mistake -- a bare host would
     // be read as a path on this deployment and send a signed-out reader to a
@@ -501,7 +501,7 @@ pub async fn serve(options: ServeOptions) {
     if assets == crate::config::DEFAULT_ASSET_MIRROR {
         println!(
             "  the project mirror promises only releases carried by this build (latex {})",
-            crate::server::shell::latex_release()
+            librepaper_shell::latex_release()
         );
     }
     if let Some(local) = &local {

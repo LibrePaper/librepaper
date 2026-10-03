@@ -99,8 +99,10 @@ regex.workspace = true
 # Timestamps in the index and the room, RFC 3339 like the Worker wrote them.
 time.workspace = true
 chrono-tz.workspace = true
-# The shell, compiled in: real .html, .css and .js files under web/dist.
+# The embedded guidance skills, compiled in.
 include_dir.workspace = true
+# The built browser app, compiled in.
+librepaper-shell = { path = "../librepaper-shell" }
 # The command line.
 clap.workspace = true
 # The blob store is a trait with async methods behind a pointer.
