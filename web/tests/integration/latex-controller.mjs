@@ -496,16 +496,19 @@ function nextProject() {
   });
   latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
   const expiringDigest = latex.compile(tree("main.tex", "source digest timeout"));
-  assert.equal(await until(() => digestStarted), true, "the job reaches source hashing before the deadline");
-  FakeWorker.nextTexReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: {} }];
-  const queuedAfterDigest = latex.compile(tree("main.tex", "queued after source digest timeout"));
-  const digestTimeout = await expiringDigest;
-  releaseDigest();
-  await finished;
-  assert.equal(digestTimeout.failure.kind, "timeout", "source hashing is covered by the whole-job deadline");
-  assert.equal(digestTimeout.job.snapshot, "", "the failed pre-job digest is not reported as a completed snapshot");
-  assert.equal((await queuedAfterDigest).ok, true, "the queue proceeds while the expired digest remains held");
-  latex._testing.inject({ snapshotDigest: projectionDigest.snapshotDigest, deadlineMs: latex.DEADLINE_MS });
+  try {
+    assert.equal(await until(() => digestStarted), true, "the job reaches source hashing before the deadline");
+    FakeWorker.nextTexReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: {} }];
+    const queuedAfterDigest = latex.compile(tree("main.tex", "queued after source digest timeout"));
+    const digestTimeout = await expiringDigest;
+    assert.equal(digestTimeout.failure.kind, "timeout", "source hashing is covered by the whole-job deadline");
+    assert.equal(digestTimeout.job.snapshot, "", "the failed pre-job digest is not reported as a completed snapshot");
+    assert.equal((await queuedAfterDigest).ok, true, "the queue proceeds while the expired digest remains held");
+  } finally {
+    releaseDigest();
+    if (digestStarted) await finished;
+    latex._testing.inject({ snapshotDigest: projectionDigest.snapshotDigest, deadlineMs: latex.DEADLINE_MS });
+  }
 }
 
 // The same deadline bounds bibliography identity work after TeX: a stalled
@@ -529,9 +532,11 @@ function nextProject() {
         identityStarted = true;
         await heldIdentity;
       }
-      const identity = await bibliography.identity(input);
-      identityFinished();
-      return identity;
+      try {
+        return await bibliography.identity(input);
+      } finally {
+        identityFinished();
+      }
     },
   });
   latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
@@ -540,20 +545,25 @@ function nextProject() {
     outputs: { "main.aux": enc.encode("\\bibdata{refs}\n\\citation{a}\n") },
   }];
   const expiring = latex.compile(tree("main.tex", "identity timeout", { "refs.bib": enc.encode("@book{x,}") }));
-  const compilingWorker = await untilWorker(previousWorker);
-  assert.equal(await until(() => identityStarted), true, "the source snapshot reaches bibliography identity before timeout");
-  compilingWorker.texReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: {} }];
-  const queued = latex.compile(tree("main.tex", "queued after identity timeout"));
+  let compilingWorker;
+  try {
+    compilingWorker = await untilWorker(previousWorker);
+    assert.equal(await until(() => identityStarted), true, "the source snapshot reaches bibliography identity before timeout");
+    compilingWorker.texReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: {} }];
+    const queued = latex.compile(tree("main.tex", "queued after identity timeout"));
 
-  const timedOut = await expiring;
-  releaseIdentity();
-  await finished;
-  assert.equal(timedOut.failure.kind, "timeout", "stalled identity hashing consumes the compile deadline");
-  assert.match(timedOut.job.snapshot, /^[0-9a-f]{64}$/, "the completed source snapshot remains attached to the timeout result");
-  assert.equal((await queued).ok, true, "the queue advances while the old digest is still held");
-  assert.equal(compilingWorker.dead, false, "a hashing timeout does not retire the responsive worker");
+    const timedOut = await expiring;
+    assert.equal(timedOut.failure.kind, "timeout", "stalled identity hashing consumes the compile deadline");
+    assert.match(timedOut.job.snapshot, /^[0-9a-f]{64}$/, "the completed source snapshot remains attached to the timeout result");
+    assert.equal((await queued).ok, true, "the queue advances while the old digest remains held");
+    assert.equal(compilingWorker.dead, false, "a hashing timeout does not retire the responsive worker");
+  } finally {
+    releaseIdentity();
+    if (identityStarted) await finished;
+    latex._testing.inject({ bibliographyIdentity: bibliography.identity, deadlineMs: latex.DEADLINE_MS });
+  }
+  await tick(1);
   assert.equal(compilingWorker.bibtexCalls.length, 0, "a late identity does not dispatch BibTeX after timeout");
-  latex._testing.inject({ bibliographyIdentity: bibliography.identity, deadlineMs: latex.DEADLINE_MS });
 }
 
 // Cancellation while bibliography hashing is in flight must stop the stale
