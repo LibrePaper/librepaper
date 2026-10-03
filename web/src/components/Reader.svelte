@@ -2662,6 +2662,11 @@
   let settingsOpen = $state(false);
   let settingsCategory = $state("editor");
   let projectFolderOpen = $state(false);
+  let savingTemplate = $state(false);
+  let templateModalOpen = $state(false);
+  let templateName = $state("");
+  let templateError = $state("");
+
   function openSettings(category = "editor") {
     // The editor category carries the shortcut table, and the table greys what
     // the source cannot currently do, so the editor is asked before the page
@@ -2944,6 +2949,7 @@
     if (value === "download-docx") return downloadDocx();
     if (value === "download-pdf" || value === "download-html") return downloadRendering(value.slice(9));
     if (value === "share" || value === "history") return openPanel(value);
+    if (value === "save-template") return openSaveTemplateModal();
     if (!["new-file", "new-folder", "upload"].includes(value)) return;
     await openPanel("files");
     await tick();
@@ -2986,6 +2992,38 @@
       saveBlob(file.blob, file.name);
     } catch (error) {
       say(error.message || "The rendered document could not be downloaded.", { kind: "problem", id: "reader:download-render" });
+    }
+  }
+
+  function openSaveTemplateModal() {
+    templateName = doc.title || "";
+    templateError = "";
+    templateModalOpen = true;
+  }
+
+  async function saveTemplate() {
+    const title = templateName.trim();
+    if (!title) {
+      templateError = "Give the template a name.";
+      return;
+    }
+    savingTemplate = true;
+    try {
+      const response = await fetch(`/api/documents/${SLUG}/template`, {
+        method: "POST",
+        headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (!response.ok) {
+        templateError = (await response.json().catch(() => ({}))).error || "The template could not be saved.";
+        return;
+      }
+      templateModalOpen = false;
+      say(`Saved "${title}" as a template.`, { id: "reader:saved-template" });
+    } catch (error) {
+      templateError = error?.message || "The template could not be saved.";
+    } finally {
+      savingTemplate = false;
     }
   }
 
@@ -3750,6 +3788,7 @@
     </Menu.Item>
     <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
   {/if}
+  {#if me?.id}<Menu.Item value="save-template" class="menuitem">Save as template...</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
   <!-- Only where the panel behind it is one this reader is offered: a menu
@@ -4334,6 +4373,18 @@
 
 <Modal bind:open={projectFolderOpen} title="Project folder">
   <ProjectFolderSetting {sourceFormat} main={previewMain} {mayEdit} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }} />
+</Modal>
+
+<Modal bind:open={templateModalOpen} title="Save as template"
+  onclose={() => { templateError = ""; templateName = ""; }}
+  confirm={{ label: savingTemplate ? "Saving..." : "Save", disabled: savingTemplate, onclick: saveTemplate }}>
+  {#snippet children()}
+    <label class="label">
+      <span class="label-text">Template name</span>
+      <input class="input" autofocus bind:value={templateName} />
+    </label>
+    {#if templateError}<p class="lp-text-error text-sm">{templateError}</p>{/if}
+  {/snippet}
 </Modal>
 
 <Modal bind:open={localExecutionConsent} title="Run this document's code on this computer?"
