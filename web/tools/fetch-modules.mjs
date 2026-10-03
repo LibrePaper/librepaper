@@ -55,6 +55,9 @@ if (latexRows.length !== 1 || latexRows[0].repo !== "wasm-latex") {
 if (entries.length !== expected.size || new Set(entries.map(({ module }) => module)).size !== expected.size || entries.some(({ module, repo }) => expected.get(module) !== repo)) {
   throw new Error("assets.lock must contain exactly the four required wasm modules plus one latex row");
 }
+if (only && !expected.has(only)) {
+  throw new Error(`unknown module ${only}; expected one of ${[...expected.keys()].join(", ")}`);
+}
 
 await mkdir(out, { recursive: true });
 let fetched = 0;

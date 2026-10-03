@@ -1,10 +1,9 @@
 # LibrePaper. `make` builds the single static binary into dist/.
 #
-# The application crate provides the server and CLI and links the pinned
-# renderer libraries directly. The web app in web/ is Svelte,
-# bundled by vite and installed by bun. The binary embeds the web build (from
-# web/dist) and serves it. The WASM renderers are not embedded: they are
-# published to the asset mirror (tools/deploy-assets publish) and browsers load them there.
+# The application crate provides the server and CLI. The web app in web/ is
+# Svelte, bundled by Vite and installed by Bun. The binary embeds the web build
+# (from web/dist) and serves it. Browser WASM renderers are separate pinned
+# inputs fetched into web/wasm and published to the asset mirror for browsers.
 
 # Local settings, kept out of the repository: the GitHub OAuth app and who may
 # publish. Copy .env.example to .env and fill it in. Values are read as Make
@@ -27,7 +26,7 @@ TYPST   := web/wasm/typst.wasm
 # nothing: what the pages are built from lives in web/src and web/public.
 SHELL_OUT := web/dist/index.html
 # The CodeMirror binding, fetched from the fork rather than vendored: see
-# loro-codemirror.lock and docs/loro-codemirror.md. Every fetched file is
+# loro-codemirror.lock and docs/dev/loro-codemirror.md. Every fetched file is
 # named, not just the entry point: moving the pin to a commit that changes
 # only sync.ts must still re-bundle the pages, and listing one file meant it
 # did not -- the fetch corrected the file and vite was never asked again.
@@ -43,10 +42,11 @@ PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(LCM)
 # rewrites every file in web/dist, which build.rs watches -- so editing the
 # landing page recompiled the whole crate. The site builds on its own: see the
 # site target at the bottom of this file.
-WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js)
-SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml assets.lock
+WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mjs web/tests/unit/vocabulary.js
+WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
+SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) $(shell find .sqlx -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
-.PHONY: help build install test check fmt serve demo demo-run wipe kill clean snapshot web pins site site-serve
+.PHONY: help build install test test-rust check fmt serve demo demo-run wipe kill clean snapshot web pins site site-serve
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -67,7 +67,7 @@ $(BIN): $(SOURCES) $(SHELL_OUT)
 	@# keeps its file open, which makes an overwrite fail with "text file
 	@# busy" while a rename just leaves it holding the old inode.
 	@cp target/release/librepaper $@.tmp && mv -f $@.tmp $@
-	@echo "$@ ($$(($$(stat -c%s $@) / 1024 / 1024)) MiB) -- deploys on its own"
+	@size=$$(wc -c < "$@"); echo "$@ ($$((size / 1024 / 1024)) MiB) -- deploys on its own"
 
 # The suite reads the built shell -- a test that asserts a page names its own
 # bundle needs that bundle to exist -- so the pages are built first.
@@ -86,10 +86,7 @@ test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 # relaxes durability under `cfg(test)` on its own; this is for the cases that
 # spawn the real binary, which is built without it. Nothing a test writes
 # outlives the run, so there is no crash for an fsync to survive.
-	@command -v cargo-nextest >/dev/null \
-		&& LIBREPAPER_FSYNC=false cargo nextest run --workspace \
-		|| { echo "cargo-nextest not installed (cargo install cargo-nextest); using cargo test"; \
-		     LIBREPAPER_FSYNC=false cargo test --workspace; }
+	@$(MAKE) --no-print-directory test-rust
 # Said out loud because a silent green `test` reads as "everything passes", and
 # it is not: the browser components and the Postgres-gated cases are both out
 # of this target on purpose, and both have hidden real faults while every
@@ -100,6 +97,16 @@ test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@echo "  LIBREPAPER_TEST_POSTGRES_URL=... \\"
 	@echo "    cargo test -p librepaper --lib -- --ignored --test-threads=1"
 	@echo "  make check                                test + browser + reader smoke in one go"
+
+# Keep runner discovery separate from runner execution: a failing nextest run
+# is a test failure, not a reason to retry with a runner that can hide it.
+test-rust:
+	@if command -v cargo-nextest >/dev/null; then \
+		LIBREPAPER_FSYNC=false cargo nextest run --workspace; \
+	else \
+		echo "cargo-nextest not installed (cargo install cargo-nextest); using cargo test"; \
+		LIBREPAPER_FSYNC=false cargo test --workspace; \
+	fi
 
 # One command that means what a green `test` looks like it means. The Postgres
 # cases stay out even here: they want a database to point at and they TRUNCATE
@@ -253,7 +260,7 @@ web: $(SHELL_OUT)
 
 $(SHELL_OUT): $(WEB) $(LCM)
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
-	@cd web && bun install --silent && bun run build
+	@cd web && bun install --frozen-lockfile --silent && bun run build
 
 
 # --- the pinned inputs -----------------------------------------------------
@@ -275,11 +282,12 @@ $(PINNED): | pins
 # A separate static artifact, not the shell above: docs/**/*.md rendered by
 # the same markdown engine the application embeds (web/tools/build-site.mjs),
 # wrapped in the sidebar from docs/nav.js, beside the landing page authored in
-# web/src/site/. Built by vite.site.config.js into docs/_site, which nothing
-# else reads and nothing deploys: `make site-serve` previews it locally.
+# web/src/site/. Built by vite.site.config.js into docs/_site, a separate
+# static output that `tools/deploy-production` publishes and `make site-serve`
+# previews locally.
 site: pins
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
-	@cd web && bun install --silent && bun run build:site
+	@cd web && bun install --frozen-lockfile --silent && bun run build:site
 
 site-serve: site
 	@cd web && bun run serve:site -- --port $(SITE_PORT) --strictPort
