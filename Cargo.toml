@@ -1,82 +1,60 @@
-# LibrePaper: the command line and the server, one binary.
-[package]
-name = "librepaper"
+# LibrePaper's workspace contains the application crate. Renderer implementations
+# and the shared text algorithms live in the sibling wasm-* repositories and are
+# consumed here through their pinned releases.
+#
+# The renderers themselves, and the word diff both sides share, live in
+# LibrePaper/wasm-* and are pinned by tag. See assets.lock for the
+# browser modules, which are fetched rather than built.
+[workspace]
+resolver = "2"
+members = ["crates/librepaper"]
+# The fuzz targets need libFuzzer and a nightly compiler, so they build on
+# their own: `tools/suite fuzz`, or `cargo fuzz --fuzz-dir tools/fuzz run <target>`.
+exclude = ["tools/fuzz", "tools/measure"]
+
+# Release packaging is managed by cargo-dist for the sole `librepaper` crate.
+[workspace.metadata.dist]
+cargo-dist-version = "0.33.0"
+ci = ["github"]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+installers = ["shell", "powershell"]
+install-updater = true
+github-build-setup = "../dist-build-setup.yml"
+install-success-msg = "LibrePaper Companion is installed. In a new terminal, run: librepaper. Then return to your browser."
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 4
+
+# cargo-dist builds and packages release artifacts with this profile.
+[profile.dist]
+inherits = "release"
+
+# The edit-test loop rebuilds one very large test binary, and full debuginfo
+# is the bulk of what it writes and links. Line tables keep backtraces
+# pointing at file and line -- which is all a failing assertion needs -- and
+# leave out the variable and type descriptions only a debugger reads.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+[workspace.package]
 version = "0.0.20"
 edition = "2021"
-publish = true
 license = "MIT"
-build = "crates/librepaper/build.rs"
 repository = "https://github.com/LibrePaper/librepaper"
-description = "A local-first collaborative paper editor and document server"
-readme = "README.md"
-keywords = ["document", "collaboration", "editor"]
-categories = ["command-line-utilities", "web-programming"]
-include = [
-    "Cargo.toml",
-    "LICENSE",
-    "README.md",
-    "crates/librepaper/build.rs",
-    "crates/librepaper/src/**",
-    "crates/librepaper/tests/**",
-    "crates/librepaper/migrations/postgres/**",
-    "crates/librepaper/assets/**",
-    "assets.lock",
-    ".sqlx/**",
-    "skills/**",
-    "web/dist/**",
-    "web/tests/fixtures/projection.json",
-    "web/src/lib/pdf/vendor/LICENSE",
-    "web/src/lib/pdf/vendor/README.md",
-    "web/src/styles/lucide-LICENSE.txt",
-    "tools/tests/*.sql",
-    "docs/examples/tutorial-*/**",
-    "docs/dev/protocol/**",
-]
-autotests = false
 
-[package.metadata.dist]
-# cargo-dist builds release artifacts from this same package.
-dist = true
-
-# The doc comments quote shell sessions and file layouts, not Rust: they are
-# read, never run.
-[lib]
-doctest = false
-path = "crates/librepaper/src/lib.rs"
-
-[[bin]]
-name = "librepaper"
-path = "crates/librepaper/src/main.rs"
-
-[[test]]
-name = "cli_surface"
-path = "crates/librepaper/tests/cli_surface.rs"
-
-[[test]]
-name = "deployment_gates"
-path = "crates/librepaper/tests/deployment_gates.rs"
-
-[[test]]
-name = "export_project_binary"
-path = "crates/librepaper/tests/export_project_binary.rs"
-
-[[test]]
-name = "frugal_mixed_bench"
-path = "crates/librepaper/tests/frugal_mixed_bench.rs"
-
-[[test]]
-name = "frugal_restore_verify"
-path = "crates/librepaper/tests/frugal_restore_verify.rs"
-
-[[test]]
-name = "projection_fixtures"
-path = "crates/librepaper/tests/projection_fixtures.rs"
-
-[[test]]
-name = "writer_socket_bench"
-path = "crates/librepaper/tests/writer_socket_bench.rs"
-
-[dependencies]
+[workspace.dependencies]
 ttf-parser = "0.25.1"
 # The server. WebSockets come with axum, so nothing here frames them by hand.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal", "process", "io-util", "io-std"] }
@@ -146,18 +124,14 @@ log = "0.4"
 tempfile = "3"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 object_store = { version = "0.14", features = ["aws", "fs"] }
-
 # Native dialogs for the companion's approval and folder prompts, with no
 # external programs. macOS and Windows use the system toolkits through rfd.
-[target.'cfg(any(target_os = "macos", windows))'.dependencies]
 rfd = "0.15"
-
 # Linux draws its own approval dialog (local::dialog) and asks the desktop
 # portal for folders. The release binary is static musl, so nothing here may
 # link or dlopen a C library: wayland-backend without `client_system` speaks
 # the protocol in Rust, sctk without `xkbcommon` (dialog.rs reads raw
 # keycodes), x11rb without `allow-unsafe-code`, ashpd over zbus.
-[target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 wayland-backend = { version = "0.3.17", default-features = false }
 wayland-client = "0.31.15"
@@ -166,11 +140,6 @@ x11rb = "0.14.0"
 ab_glyph = { version = "0.2.32", default-features = false, features = ["std"] }
 epaint_default_fonts = "0.36.2"
 tiny-skia = { version = "0.12.0", default-features = false, features = ["std"] }
-
-[dev-dependencies]
-# `start_paused` and `advance`, so the deadline tests move a clock instead of
-# waiting on one. Test builds only.
-tokio = { version = "1", features = ["test-util"] }
 # A font file for the tests to put in a library.
 typst-assets = { version = "=0.15.1", features = ["fonts"] }
 # Test-only: check that the family names our ttf-parser code extracts match
@@ -179,51 +148,3 @@ typst = "=0.15.1"
 # Test-only: render markdown in the locate corpus test.
 comrak = "0.54.0"
 sha1 = "0.10"
-# LibrePaper's workspace contains the application crate. Renderer implementations
-# and the shared text algorithms live in the sibling wasm-* repositories and are
-# consumed here through their pinned releases.
-#
-# The renderers themselves, and the word diff both sides share, live in
-# LibrePaper/wasm-* and are pinned by tag. See assets.lock for the
-# browser modules, which are fetched rather than built.
-[workspace]
-resolver = "2"
-# The fuzz targets need libFuzzer and a nightly compiler, so they build on
-# their own: `tools/suite fuzz`, or `cargo fuzz --fuzz-dir tools/fuzz run <target>`.
-exclude = ["tools/fuzz", "tools/measure"]
-
-# Release packaging is managed by cargo-dist for the sole `librepaper` crate.
-[workspace.metadata.dist]
-cargo-dist-version = "0.33.0"
-ci = ["github"]
-targets = [
-    "x86_64-unknown-linux-musl",
-    "aarch64-unknown-linux-musl",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
-]
-installers = ["shell", "powershell"]
-install-updater = true
-github-build-setup = "../dist-build-setup.yml"
-install-success-msg = "LibrePaper Companion is installed. In a new terminal, run: librepaper. Then return to your browser."
-
-[profile.release]
-opt-level = 3
-lto = "thin"
-strip = true
-codegen-units = 4
-
-# cargo-dist builds and packages release artifacts with this profile.
-[profile.dist]
-inherits = "release"
-
-# The edit-test loop rebuilds one very large test binary, and full debuginfo
-# is the bulk of what it writes and links. Line tables keep backtraces
-# pointing at file and line -- which is all a failing assertion needs -- and
-# leave out the variable and type descriptions only a debugger reads.
-[profile.dev]
-debug = "line-tables-only"
-
-[profile.test]
-debug = "line-tables-only"

@@ -60,7 +60,7 @@ fn visible_text(document: &str) -> String {
 }
 
 fn read(path: &str) -> String {
-    std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+    std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path))
         .expect("a tutorial file")
 }
 

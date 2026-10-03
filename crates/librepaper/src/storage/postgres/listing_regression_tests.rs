@@ -312,7 +312,7 @@ async fn run_sql_regression(script: &str) {
 async fn annotation_constraints_reject_incomplete_evidence() {
     run_sql_regression(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tools/tests/schema_constraints.sql"
+        "/../../tools/tests/schema_constraints.sql"
     )))
     .await;
 }
@@ -322,7 +322,7 @@ async fn annotation_constraints_reject_incomplete_evidence() {
 async fn archive_accounting_counts_objects_across_bulk_changes_and_cascades() {
     run_sql_regression(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tools/tests/archive_accounting.sql"
+        "/../../tools/tests/archive_accounting.sql"
     )))
     .await;
 }

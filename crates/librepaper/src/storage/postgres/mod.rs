@@ -42,7 +42,7 @@ pub use repository::{
 };
 
 static MIGRATOR: sqlx::migrate::Migrator =
-    sqlx::migrate!("./crates/librepaper/migrations/postgres");
+    sqlx::migrate!("./migrations/postgres");
 
 #[derive(Clone, Debug)]
 pub struct PostgresOptions {

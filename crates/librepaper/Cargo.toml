@@ -1,0 +1,173 @@
+# LibrePaper: the command line and the server, one binary.
+[package]
+name = "librepaper"
+version.workspace = true
+edition.workspace = true
+publish = true
+license.workspace = true
+build = "build.rs"
+repository.workspace = true
+description = "A local-first collaborative paper editor and document server"
+readme = "../../README.md"
+keywords = ["document", "collaboration", "editor"]
+categories = ["command-line-utilities", "web-programming"]
+# Cargo packages only files under this directory, so the root-level inputs
+# (README.md, LICENSE, assets.lock, .sqlx, skills, web/dist, docs, tools) cannot
+# be listed here. How the packaged inputs are gathered is resolved by the
+# flattener in Stage 7 of docs/dev/specs/SPEC-split-crates.md, so `cargo package`
+# is not expected to work between Stage 0 and Stage 7.
+include = [
+    "Cargo.toml",
+    "build.rs",
+    "src/**",
+    "tests/**",
+    "migrations/postgres/**",
+    "assets/**",
+]
+autotests = false
+
+[package.metadata.dist]
+# cargo-dist builds release artifacts from this same package.
+dist = true
+
+# The doc comments quote shell sessions and file layouts, not Rust: they are
+# read, never run.
+[lib]
+doctest = false
+path = "src/lib.rs"
+
+[[bin]]
+name = "librepaper"
+path = "src/main.rs"
+
+[[test]]
+name = "cli_surface"
+path = "tests/cli_surface.rs"
+
+[[test]]
+name = "deployment_gates"
+path = "tests/deployment_gates.rs"
+
+[[test]]
+name = "export_project_binary"
+path = "tests/export_project_binary.rs"
+
+[[test]]
+name = "frugal_mixed_bench"
+path = "tests/frugal_mixed_bench.rs"
+
+[[test]]
+name = "frugal_restore_verify"
+path = "tests/frugal_restore_verify.rs"
+
+[[test]]
+name = "projection_fixtures"
+path = "tests/projection_fixtures.rs"
+
+[[test]]
+name = "writer_socket_bench"
+path = "tests/writer_socket_bench.rs"
+
+[dependencies]
+ttf-parser.workspace = true
+# The server. WebSockets come with axum, so nothing here frames them by hand.
+tokio.workspace = true
+axum.workspace = true
+http-body-util.workspace = true
+futures-util.workspace = true
+# Every JSON body, in and out.
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+# GitHub and deployment HTTP. Match object_store's Reqwest generation so the
+# binary does not carry two HTTP/TLS client stacks. rustls rather than OpenSSL
+# keeps the client portable across release targets.
+reqwest.workspace = true
+# Digests, SigV4, and the signature on every cookie.
+sha2.workspace = true
+# Quarto's freezer names a cached computation by the MD5 of its source, so
+# reading that cache means computing the same digest. A format requirement,
+# not a security choice: nothing here trusts MD5 for anything.
+md5.workspace = true
+hmac.workspace = true
+base64.workspace = true
+hex.workspace = true
+rand.workspace = true
+# The slug pattern, which the shell shares as a string, and the handful of
+# patterns that read documents for seeding.
+regex.workspace = true
+# Timestamps in the index and the room, RFC 3339 like the Worker wrote them.
+time.workspace = true
+chrono-tz.workspace = true
+# The shell, compiled in: real .html, .css and .js files under web/dist.
+include_dir.workspace = true
+# The command line.
+clap.workspace = true
+# The blob store is a trait with async methods behind a pointer.
+async-trait.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+# Official protocol implementations. LibrePaper owns policy around them, not
+# JSON-RPC framing, protocol negotiation, or request correlation.
+agent-client-protocol.workspace = true
+rmcp.workspace = true
+# What a browser shows of a document, for anchoring seeded annotations.
+html-escape.workspace = true
+# The collaboration substrate (SPEC-loro.md). This version and `loro-crdt` in
+# web/package.json are one pin: see tools/check-loro-pin.sh.
+loro.workspace = true
+unicode-normalization.workspace = true
+# Source versions are deterministic tar streams stored as zstd blobs.
+zstd.workspace = true
+tar.workspace = true
+# `sync` is a WebSocket client, and axum's socket type is the server half of
+# the same library. Its rustls transport has no provider of its own; tls.rs
+# installs the AWS-LC provider used by Reqwest and object_store as well.
+tokio-tungstenite.workspace = true
+# Keep the explicit provider handle for tokio-tungstenite's rustls client. The
+# other HTTP and database clients select the same AWS-LC implementation.
+rustls.workspace = true
+fs2.workspace = true
+chacha20poly1305.workspace = true
+# PostgreSQL is the production catalogue. SQLx supplies the async pool and
+# compile-independent migrations; queries are exercised against PostgreSQL in
+# integration tests against the production database engine.
+sqlx.workspace = true
+uuid.workspace = true
+log.workspace = true
+tempfile.workspace = true
+zip.workspace = true
+object_store.workspace = true
+
+# Native dialogs for the companion's approval and folder prompts, with no
+# external programs. macOS and Windows use the system toolkits through rfd.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+rfd.workspace = true
+
+# Linux draws its own approval dialog (local::dialog) and asks the desktop
+# portal for folders. The release binary is static musl, so nothing here may
+# link or dlopen a C library: wayland-backend without `client_system` speaks
+# the protocol in Rust, sctk without `xkbcommon` (dialog.rs reads raw
+# keycodes), x11rb without `allow-unsafe-code`, ashpd over zbus.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd.workspace = true
+wayland-backend.workspace = true
+wayland-client.workspace = true
+smithay-client-toolkit.workspace = true
+x11rb.workspace = true
+ab_glyph.workspace = true
+epaint_default_fonts.workspace = true
+tiny-skia.workspace = true
+
+[dev-dependencies]
+# `start_paused` and `advance`, so the deadline tests move a clock instead of
+# waiting on one. Test builds only.
+tokio = { workspace = true, features = ["test-util"] }
+# A font file for the tests to put in a library.
+typst-assets.workspace = true
+# Test-only: check that the family names our ttf-parser code extracts match
+# the compiler's.
+typst.workspace = true
+# Test-only: render markdown in the locate corpus test.
+comrak.workspace = true
+sha1.workspace = true

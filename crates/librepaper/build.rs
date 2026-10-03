@@ -18,15 +18,18 @@ fn main() {
     println!(
         "cargo:rerun-if-changed={}",
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("assets.lock")
+            .join("../../assets.lock")
             .display()
     );
-    println!("cargo:rerun-if-changed=.sqlx");
-    let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills");
+    println!(
+        "cargo:rerun-if-changed={}",
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.sqlx").display()
+    );
+    let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
     println!("cargo:rerun-if-changed={}", skills.display());
     watch(&skills);
 
-    let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("web/dist");
+    let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/dist");
     // Every file, not just the directory: cargo compares the timestamp of what
     // it is told to watch, and editing a file inside a directory does not
     // change the directory. Naming the directory alone means a changed page or

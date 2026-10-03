@@ -3,7 +3,7 @@
 use include_dir::{include_dir, Dir};
 use std::path::{Component, Path};
 
-static BUNDLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/skills");
+static BUNDLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../skills");
 
 pub(super) fn read(name: &str, file: &Path) -> Result<&'static str, String> {
     if name.is_empty()

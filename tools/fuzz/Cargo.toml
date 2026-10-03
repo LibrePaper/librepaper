@@ -21,7 +21,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
-librepaper = { path = "../.." }
+librepaper = { path = "../../crates/librepaper" }
 # Pinned to what the binary uses, so a peer's raw write into the shared
 # document is made with the same encoder the room decodes.
 loro = "1.16"
