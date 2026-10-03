@@ -239,7 +239,7 @@ test("LaTeX preflight verifies release files, index, and relative bundle records
     await writeFile(join(dir, "release.json"), JSON.stringify({ ...release, format: 1 }));
     await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /unsupported release format/);
     await writeFile(join(dir, "release.json"), JSON.stringify({ ...release, engines: { pdftex: { worker: "worker.js", files: [] } } }));
-    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /no complete pdfTeX engine/);
+    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /pdfTeX engine has no valid worker inventory/);
     await writeFile(join(dir, "release.json"), JSON.stringify({ ...release, engines: { pdftex: { worker: "worker.js", files: ["worker.js"] } },
       files: { ...release.files, "worker.js": { ...release.files["worker.js"], size: 0 } } }));
     await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /non-empty file record/);

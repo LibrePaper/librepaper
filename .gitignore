@@ -27,8 +27,8 @@ target/
 # Installed dependencies are generated; keep manifests and lockfiles tracked.
 node_modules/
 
-# The LaTeX distributions, mirrored locally by tools/latex/tools/mirror.mjs. Hundreds of
-# megabytes of somebody else's release; a manifest and a script rebuild it.
+# The LaTeX distribution mirror is built and published by the wasm-latex
+# repository; local release payloads can be hundreds of megabytes.
 tools/latex/mirror/
 
 # What a TeX run leaves beside a document in tools/latex/corpus. The corpus keeps

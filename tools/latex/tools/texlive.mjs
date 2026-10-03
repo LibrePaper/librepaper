@@ -1,94 +1,154 @@
 #!/usr/bin/env node
-// The corpus, compiled on a TeX Live on this machine.
+// Compile the LaTeX corpus with a local TeX Live as an independent oracle.
+// Successful examples must produce a positive page count; `broken` is the one
+// intentional negative fixture and must fail with the diagnostics it contains.
+// All results are collected before any checked-in log/page fixture is replaced.
 //
-// Every example has to compile somewhere a person can check by hand, or the
-// page counts the browser distributions are measured against are only the
-// browser distributions agreeing with each other. So this runs the same
-// documents through the pdflatex, xelatex and bibtex on the PATH, writes the
-// log to `tools/latex/corpus/<doc>/logs/texlive.log`, and records the page count
-// in `tools/latex/corpus/pages.json`, which the headless check then holds each
-// distribution to.
-//
-// It writes nothing into the examples but the logs and the page counts: the
-// compile happens in a temporary directory, so no `.aux` litter reaches the
-// corpus and a re-run cannot be made green by a stale `.aux`.
-//
-//     node tools/latex/tools/texlive.mjs
+//     node tools/latex/tools/texlive.mjs [--pdf]
 
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CORPUS = join(dirname(HERE), "corpus");
-
-/// Which engine each example wants, and what it is for. The `xetex` example
-/// is the one pdfTeX must refuse, so it is compiled with xelatex here and its
-/// refusal is recorded rather than its page count.
-// `--pdf` keeps the PDF as well as the log. The viewer of step 4 has to draw
-// a real document -- pages, a hyphenated line end, a footnote, a ligature --
-// and the corpus is where those live. It is a build output rather than a
-// fixture: git ignores it, and a machine with no TeX Live skips the checks
-// that need it.
+const DEFAULT_CORPUS = join(dirname(HERE), "corpus");
+const CORPUS = DEFAULT_CORPUS;
 const KEEP_PDF = process.argv.includes("--pdf");
 
+/// The `xetex` sample tests rejection by pdfTeX; `unicode-fonts` is the
+/// independent positive XeTeX glyph-coverage sample using named Libertinus
+/// text/math fonts. `broken` is the only example expected to exit unsuccessfully.
 const EXAMPLES = [
   { name: "article", engine: "pdflatex", bibtex: true },
   { name: "paper", engine: "pdflatex", bibtex: true },
-  { name: "broken", engine: "pdflatex", bibtex: false },
-  { name: "xetex", engine: "xelatex", bibtex: false },
-  // Not part of the corpus the log parser and the distributions are held to.
-  // It exists to measure a package set: see tools/latex/corpus/packages/main.tex.
+  { name: "broken", engine: "pdflatex", negative: true },
+  { name: "xetex", engine: "xelatex" },
+  { name: "unicode-fonts", engine: "xelatex", unicode: true },
+  // This package-set probe is outside the browser comparison set.
   { name: "packages", engine: "pdflatex", bibtex: true },
 ];
 
-// The page count comes from the log, not from the PDF. Every TeX engine ends
-// a successful run with `Output written on main.pdf (3 pages, ...)`, and the
-// PDF itself hides its page tree inside a compressed object stream that
-// counting would have to inflate. The log line is the same on pdfTeX, XeTeX
-// and LuaTeX, and it is the number the browser distributions are held to.
+const GENERATED = /\.(?:aux|bbl|bcf|blg|fdb_latexmk|fls|log|out|pdf|run\.xml|synctex\.gz|toc|xdv)$/;
+
 export function pagesFromLog(log) {
   const written = log.match(/Output written on [^(]*\((\d+) pages?/);
   return written ? Number(written[1]) : 0;
 }
 
-const record = {};
-for (const example of EXAMPLES) {
-  const source = join(CORPUS, example.name);
-  const work = mkdtempSync(join(tmpdir(), `librepaper-latex-${example.name}-`));
-  cpSync(source, work, { recursive: true, filter: (from) => !from.includes("/logs") });
-  rmSync(join(work, "logs"), { recursive: true, force: true });
-
-  const run = (command, args) => {
-    try {
-      execFileSync(command, args, { cwd: work, stdio: "ignore" });
-    } catch {
-      /* a failing compile is a result, not a crash: the log is the point */
-    }
-  };
-  run(example.engine, ["-interaction=nonstopmode", "-synctex=1", "main.tex"]);
-  if (example.bibtex) {
-    run("bibtex", ["main"]);
-    run(example.engine, ["-interaction=nonstopmode", "-synctex=1", "main.tex"]);
+function run(command, args, cwd, env) {
+  try {
+    execFileSync(command, args, { cwd, env, stdio: "ignore" });
+    return 0;
+  } catch (error) {
+    if (error.code === "ENOENT") throw new Error(`required TeX Live command not found: ${command}`);
+    if (Number.isInteger(error.status)) return error.status;
+    throw new Error(`${command} could not complete (${error.signal || error.code || "unknown error"})`);
   }
-  run(example.engine, ["-interaction=nonstopmode", "-synctex=1", "main.tex"]);
-
-  const log = join(work, "main.log");
-  const logs = join(source, "logs");
-  mkdirSync(logs, { recursive: true });
-  const text = existsSync(log) ? readFileSync(log, "latin1") : "";
-  if (text) writeFileSync(join(logs, "texlive.log"), text, "latin1");
-  if (KEEP_PDF) {
-    const pdf = join(work, "main.pdf");
-    if (existsSync(pdf)) cpSync(pdf, join(source, "main.pdf"));
-  }
-  const count = pagesFromLog(text);
-  record[example.name] = { engine: example.engine, pages: count, synctex: existsSync(join(work, "main.synctex.gz")) };
-  console.log(`texlive: ${example.name.padEnd(8)} ${count} page(s) with ${example.engine}`);
-  rmSync(work, { recursive: true, force: true });
 }
 
-writeFileSync(join(CORPUS, "pages.json"), JSON.stringify(record, null, 2) + "\n");
-console.log(`texlive: page counts written to ${join(CORPUS, "pages.json")}`);
+function compile(example, work, keepPdf, env) {
+  const args = ["-interaction=nonstopmode", "-synctex=1", "main.tex"];
+  const status = run(example.engine, args, work, env);
+  if (example.negative) {
+    const log = join(work, "main.log");
+    if (status === 0 || !existsSync(log)) throw new Error("broken fixture unexpectedly compiled or produced no log");
+    const text = readFileSync(log, "latin1");
+    for (const diagnostic of ["Undefined control sequence.", "chapters/missing.tex", "Fatal error occurred"]) {
+      if (!text.includes(diagnostic)) throw new Error(`broken fixture log is missing expected diagnostic: ${diagnostic}`);
+    }
+    if (pagesFromLog(text) !== 0) throw new Error("broken fixture unexpectedly reports a successful page count");
+    return { text, pages: 0 };
+  }
+  if (status !== 0) throw new Error(`${example.name}: ${example.engine} exited with status ${status}`);
+  if (example.bibtex) {
+    const bibliographyStatus = run("bibtex", ["main"], work, env);
+    if (bibliographyStatus !== 0) throw new Error(`${example.name}: bibtex exited with status ${bibliographyStatus}`);
+    for (let pass = 0; pass < 2; pass += 1) {
+      const passStatus = run(example.engine, args, work, env);
+      if (passStatus !== 0) throw new Error(`${example.name}: ${example.engine} exited with status ${passStatus}`);
+    }
+  }
+  const log = join(work, "main.log");
+  if (!existsSync(log)) throw new Error(`${example.name}: ${example.engine} produced no main.log`);
+  const text = readFileSync(log, "latin1");
+  const pages = pagesFromLog(text);
+  if (pages < 1) throw new Error(`${example.name}: ${example.engine} log has no positive page count`);
+  if (!existsSync(join(work, "main.synctex.gz"))) throw new Error(`${example.name}: ${example.engine} produced no SyncTeX file`);
+  if (example.unicode && /Missing character:/i.test(text)) {
+    throw new Error(`${example.name}: XeTeX reported a missing glyph`);
+  }
+  if (keepPdf) {
+    const pdf = join(work, "main.pdf");
+    if (!existsSync(pdf) || readFileSync(pdf).length === 0) throw new Error(`${example.name}: ${example.engine} produced no non-empty PDF`);
+  }
+  return { text, pages };
+}
+
+function replaceAtomically(target, bytes) {
+  const temporary = `${target}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporary, bytes);
+    renameSync(temporary, target);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+// Compilation and outcome validation finish before the first replacement.
+// Each corpus file is renamed atomically; the set of renames is not a
+// cross-file filesystem transaction if the disk fails during publication.
+export function compileCorpus({ corpus = CORPUS, keepPdf = KEEP_PDF, env = process.env } = {}) {
+  const stage = mkdtempSync(join(tmpdir(), "librepaper-texlive-"));
+  const record = {};
+  const outputs = [];
+  try {
+    for (const example of EXAMPLES) {
+      const source = join(corpus, example.name);
+      const work = join(stage, example.name);
+      mkdirSync(work, { recursive: true });
+      cpSync(source, work, {
+        recursive: true,
+        filter: (from) => {
+          const rel = relative(source, from);
+          if (!rel) return true;
+          const parts = rel.split(sep);
+          if (parts.includes("logs") || GENERATED.test(basename(from))) return false;
+          if (example.name === "article" && basename(from) === "article.bib") return false;
+          return true;
+        },
+      });
+      const result = compile(example, work, keepPdf, env);
+      const log = join(work, "main.log");
+      outputs.push({ target: join(source, "logs", "texlive.log"), bytes: readFileSync(log) });
+      if (keepPdf && !example.negative) outputs.push({ target: join(source, "main.pdf"), bytes: readFileSync(join(work, "main.pdf")) });
+      record[example.name] = {
+        engine: example.engine,
+        pages: result.pages,
+        synctex: existsSync(join(work, "main.synctex.gz")),
+      };
+      console.log(`texlive: ${example.name.padEnd(13)} ${result.pages} page(s) with ${example.engine}`);
+    }
+
+    outputs.push({ target: join(corpus, "pages.json"), bytes: Buffer.from(`${JSON.stringify(record, null, 2)}\n`) });
+    for (const output of outputs) {
+      mkdirSync(dirname(output.target), { recursive: true });
+      replaceAtomically(output.target, output.bytes);
+    }
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
+  }
+  console.log(`texlive: page counts written to ${join(corpus, "pages.json")}`);
+  return record;
+}
+
+const invoked = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (invoked) {
+  try {
+    compileCorpus();
+  } catch (error) {
+    console.error(`texlive: ${error.message}`);
+    process.exitCode = 1;
+  }
+}
