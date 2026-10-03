@@ -24,17 +24,20 @@ async function makeMirrors(root, wasmName = "wasm dir", latexName = "latex mirro
   const id = hash(manifest);
   const release = join(latex, id);
   const asset = Buffer.from("latex engine");
+  const worker = Buffer.from("pdftex worker");
   const bundle = Buffer.from("bundle");
   const index = Buffer.from(JSON.stringify({ bundles: { core: { url: "bundle.tar", size: bundle.length, sha256: hash(bundle) } } }));
   await mkdir(join(release, "bundles"), { recursive: true });
   await writeFile(join(release, "MANIFEST.json"), manifest);
   await writeFile(join(release, "engine.js"), asset);
+  await writeFile(join(release, "worker.js"), worker);
   await writeFile(join(release, "bundles", "bundles.json"), index);
   await writeFile(join(release, "bundles", "bundle.tar"), bundle);
   await writeFile(join(release, "release.json"), JSON.stringify({
-    format: 2, id,
+    format: 2, id, engines: { pdftex: { worker: "worker.js", files: ["worker.js"] } },
     files: {
       engine: { url: "engine.js", size: asset.length, sha256: hash(asset) },
+      "worker.js": { url: "worker.js", size: worker.length, sha256: hash(worker) },
       "bundles.json": { url: "bundles/bundles.json", size: index.length, sha256: hash(index) },
     },
     bundles: { index: "bundles/bundles.json", count: 1, sha256: hash(index) },
@@ -109,7 +112,7 @@ test("dry run stages the wasm mirror, hashes both mirrors and skips SOPS, even w
       PATH: `${bin}:${process.env.PATH}`, MIRRORS_DRY_RUN: "1", WASM_DIR: paths.wasm, WASM_LOCK: paths.lock, MIRROR: paths.latex,
       SOPS_CALLED: join(root, "sops-called") } });
     assert.match(output, /Validated wasm: 1 files/);
-    assert.match(output, /Validated latex: 5 files/);
+    assert.match(output, /Validated latex: 6 files/);
     await assert.rejects(readFile(join(root, "sops-called")));
   } finally { await rm(root, { recursive: true, force: true }); }
 });

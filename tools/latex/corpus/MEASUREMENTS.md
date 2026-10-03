@@ -1,11 +1,23 @@
-# The distributions, measured
+# Historical distribution measurements
 
-Written by `node web/tests/browser/latex-browser.mjs --measure` against the local
-mirror `node tools/latex/tools/mirror.mjs` builds, in headless Chromium, on one machine.
-Bytes are what the mirror actually served, counted by `tools/latex/tools/serve.mjs`, with
-Cache Storage emptied before each distribution and the byte tally reset before
-each compile -- so a document's row is what a cold cache costs for that
-document alone, over and above the up-front row.
+This is a historical record of measurements made with mirror-building and
+browser-measurement tooling that has since moved to the separate wasm-latex
+repository or been removed. The old commands below describe how this record
+was produced; they are not runnable tools in this repository today. The values
+are not a claim about current releases or a current machine.
+
+The report first appears in this repository's initial commit
+(`13cdfee1e9968f0c586f86f01ef501394b6f93c6`), dated 2026-09-26. No separate
+measurement timestamp or upstream mirror revision was recorded, so that
+commit is repository provenance rather than proof of the exact run date or
+input release.
+
+The distributions were measured in headless Chromium on one machine. The
+values are bytes the mirror actually served, counted by
+`tools/latex/tools/serve.mjs` with Cache Storage emptied before each
+distribution and the byte tally reset before each compile -- so a document's
+row is what a cold cache cost for that document alone, over and above the
+up-front row.
 
 | distribution | what | bytes fetched | cold | warm | pages |
 | --- | --- | --- | --- | --- | --- |
@@ -51,16 +63,17 @@ between them, in two numbers.
 
 # The package set, measured
 
-Written by hand from `node tools/latex/tools/mirror.mjs --scheme` and a headless
-SwiftLaTeX pdfTeX compile against the mirror it built, on one machine.
+Historical handwritten measurements from the former
+`node tools/latex/tools/mirror.mjs --scheme` workflow and a headless SwiftLaTeX
+pdfTeX compile against its mirror, on one machine.
 
-The mirror as `latex-check.mjs --measure` left it held only the package
+The mirror as the former `latex-check.mjs --measure` workflow left it held only the package
 files the four corpus documents asked for -- 167 of them -- so any
 document that is not in the corpus failed at compile time on a missing
 `.sty`. A compiler that offers itself to an author cannot then refuse the
-packages the author uses, so the mirror now takes a
+packages the author uses, so that mirror took a
 package set chosen the way a distribution chooses one: by TeX Live
-collection. `node tools/latex/tools/mirror.mjs --scheme` mirrors
+collection. The former `node tools/latex/tools/mirror.mjs --scheme` workflow mirrored
 `latex-recommended`, `latex-extra`, `fonts-recommended` and `science`
 (TeX Live spells the last `mathscience`) into the SwiftLaTeX package
 layout, taking the file list from TeX Live's package database and the
@@ -100,7 +113,7 @@ nothing new exactly nothing. (`paper` reads lower than the 0.26 MB in
 the table above only because it now runs after `article` in the same
 browser and shares its cache; the two rows are not a like-for-like pair.)
 
-## The fifth document, and what it could not use
+## The then-fifth document, and what it could not use
 
 `tools/latex/corpus/packages/` asks for the four packages an ordinary paper
 asks for and the corpus does not. Two compile and two do not, for two
@@ -141,9 +154,10 @@ is somebody's decision.
 
 # TeXlyre BusyTeX, measured
 
-Written by hand from `node tools/latex/tools/mirror.mjs --only texlyre-busytex` and a
-headless Chromium compile against the mirror it built, on one machine, the
-same way and on the same corpus as the sections above -- plus the fifth
+Historical handwritten measurements from the former
+`node tools/latex/tools/mirror.mjs --only texlyre-busytex` workflow and a
+headless Chromium compile against its mirror, on one machine, the
+same way and on the same corpus as the sections above -- plus the then-fifth
 document, `tools/latex/corpus/packages/`, which the harness does not carry and
 which was driven through the same module by a scratch script.
 
@@ -180,7 +194,7 @@ unchanged. Both were measured.
 | texlyre-busytex (on demand) | packages | 2.24 MB | 16.9 s | 1.5 s | 0 -- see below |
 
 The `bundles` rows are the four in the table at the top of this file, measured
-by `latex-check.mjs --measure` in the same run as the other three
+by the former `latex-check.mjs --measure` workflow in the same run as the other three
 distributions; the `packages` row and every `on demand` row are from the
 scratch script. Read them the same way: a document's row is what a cold Cache
 Storage costs for that document alone, over and above the up-front row.
@@ -340,6 +354,6 @@ not a number to put on a card, and the endpoint mode that brings it down to
 130 MB is the mode whose mirror is incomplete and whose biber is broken. The
 work between here and the card is small and known: mirror the biblatex and
 pgf configuration files into the package half so the endpoint mode compiles
-the fifth document, and either fix or disable the biber backend so a
+the then-fifth document, and either fix or disable the biber backend so a
 `\addbibresource` document is told which backend it will get. Its entry in
 `tools/latex/tools/distributions.mjs` carries `shown: false` until then.
