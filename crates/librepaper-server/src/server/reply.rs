@@ -129,7 +129,8 @@ mod proxy_tests {
     #[test]
     fn malformed_missing_oversized_and_all_trusted_use_tcp_peer() {
         let peer = "127.0.0.1:8080".parse().unwrap();
-        let trusted: Vec<ipnet::IpNet> = vec!["127.0.0.1".parse().unwrap()];
+        let trusted: Vec<ipnet::IpNet> =
+            vec![librepaper_base::config::parse_trusted_proxy("127.0.0.1").unwrap()];
         for value in [
             None,
             Some("".to_string()),

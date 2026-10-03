@@ -335,6 +335,7 @@ impl GithubAccounts {
 
     #[cfg(test)]
     fn cache_len(&self) -> usize {
+        self.cache.run_pending_tasks();
         self.cache.entry_count() as usize
     }
 

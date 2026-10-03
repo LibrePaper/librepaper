@@ -343,6 +343,12 @@ mod tests {
             #[cfg(not(windows))]
             {
                 std::fs::write(bin_dir.join("quarto"), "#!/bin/sh").expect("write");
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    bin_dir.join("quarto"),
+                    std::fs::Permissions::from_mode(0o755),
+                )
+                .expect("chmod");
             }
             #[cfg(windows)]
             {
