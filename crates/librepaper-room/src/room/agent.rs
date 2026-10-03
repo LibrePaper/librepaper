@@ -703,7 +703,7 @@ impl Room {
             );
             let mut bytes = [0_u8; 16];
             bytes.copy_from_slice(&digest[..16]);
-            Uuid::from_bytes(bytes)
+            Uuid::new_v8(bytes)
         };
 
         let mut command = AgentPatchCommand {
