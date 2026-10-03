@@ -46,10 +46,15 @@ try {
   })).status, 400, "current labels require a retry identity");
   const labelRequestId = randomUUID();
   const firstLabel = await currentLabel(labelRequestId);
+  const laterRename = await api(`/api/documents/${source.slug}/history/${firstLabel.body.sha}`, {
+    method: "PATCH", body: { label: "Renamed by another editor" },
+  });
   const replayedLabel = await currentLabel(labelRequestId);
   assert.equal(firstLabel.status, 200, JSON.stringify(firstLabel.body));
+  assert.equal(laterRename.status, 200, JSON.stringify(laterRename.body));
   assert.equal(replayedLabel.status, 200, JSON.stringify(replayedLabel.body));
   assert.equal(replayedLabel.body.sha, firstLabel.body.sha, "an ambiguous retry returns the original current label");
+  assert.equal(replayedLabel.body.label, "Renamed by another editor", "a replay does not undo a later rename");
 
   assert.equal((await api(`/api/documents/${source.slug}/template`, { method: "POST", body: { title: "  " } })).status, 400);
   const requestId = randomUUID();

@@ -782,40 +782,47 @@ impl Server {
             Err(error) => return refused("open the room", &error),
         };
         let authority = who.document_authority(self.ceiling_for(&who.id));
-        let label_id = if current {
+        if current {
             // `Room::take_label` rather than a second label command of this
             // module's own: that one had no §7.2 replay lookup, so a retry
             // of the same request wrote a second row naming the same state.
+            // Name the row in that same command: a replay must not rename it
+            // back over a later explicit rename by another editor.
             match room
                 .take_label(
                     "label",
-                    None,
+                    (!label.is_empty()).then(|| label.clone()),
                     who.attribution(),
                     &authority,
                     request_id,
                 )
                 .await
             {
-                Ok(row) => row.id,
+                Ok(row) => write_json(
+                    200,
+                    &json!({"sha": row.id, "label": row.label.unwrap_or_default()}),
+                ),
                 Err(error) => return refused("label a version", &error),
             }
         } else {
-            uuid::Uuid::parse_str(sha).expect("checked by is_label_id")
-        };
-        let named = if label.is_empty() {
-            None
-        } else {
-            Some(label.as_str())
-        };
-        match self
-            .store
-            .catalog
-            .rename_label(room.document_id, label_id, named)
-            .await
-        {
-            Ok(true) => write_json(200, &json!({"sha": label_id, "label": label})),
-            Ok(false) => plain(404, "not found"),
-            Err(error) => write_json(503, &json!({"error": error.to_string(), "retryable": true})),
+            let label_id = uuid::Uuid::parse_str(sha).expect("checked by is_label_id");
+            let named = if label.is_empty() {
+                None
+            } else {
+                Some(label.as_str())
+            };
+            match self
+                .store
+                .catalog
+                .rename_label(room.document_id, label_id, named)
+                .await
+            {
+                Ok(true) => write_json(200, &json!({"sha": label_id, "label": label})),
+                Ok(false) => plain(404, "not found"),
+                Err(error) => {
+                    write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+                }
+            }
         }
     }
 
