@@ -587,19 +587,26 @@ pub(super) fn segments(path: &str) -> Vec<&str> {
 
 pub(super) fn bundled_documentation(path: &str) -> Option<&'static str> {
     match path {
-        "/skills/librepaper-document/SKILL.md" => Some(include_str!(
-            concat!(env!("LIBREPAPER_SKILLS"), "/librepaper-document/SKILL.md")
-        )),
-        "/skills/librepaper-document/references/install.md" => Some(include_str!(
-            concat!(env!("LIBREPAPER_SKILLS"), "/librepaper-document/references/install.md")
-        )),
-        "/skills/librepaper-document/references/editing.md" => Some(include_str!(
-            concat!(env!("LIBREPAPER_SKILLS"), "/librepaper-document/references/editing.md")
-        )),
-        "/docs/protocol/room-v2.md" => {
-            Some(include_str!(concat!(env!("LIBREPAPER_DOCS"), "/dev/protocol/room-v2.md")))
-        }
-        "/docs/protocol/chat.md" => Some(include_str!(concat!(env!("LIBREPAPER_DOCS"), "/dev/protocol/chat.md"))),
+        "/skills/librepaper-document/SKILL.md" => Some(include_str!(concat!(
+            env!("LIBREPAPER_SKILLS"),
+            "/librepaper-document/SKILL.md"
+        ))),
+        "/skills/librepaper-document/references/install.md" => Some(include_str!(concat!(
+            env!("LIBREPAPER_SKILLS"),
+            "/librepaper-document/references/install.md"
+        ))),
+        "/skills/librepaper-document/references/editing.md" => Some(include_str!(concat!(
+            env!("LIBREPAPER_SKILLS"),
+            "/librepaper-document/references/editing.md"
+        ))),
+        "/docs/protocol/room-v2.md" => Some(include_str!(concat!(
+            env!("LIBREPAPER_DOCS"),
+            "/dev/protocol/room-v2.md"
+        ))),
+        "/docs/protocol/chat.md" => Some(include_str!(concat!(
+            env!("LIBREPAPER_DOCS"),
+            "/dev/protocol/chat.md"
+        ))),
         _ => None,
     }
 }
