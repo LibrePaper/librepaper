@@ -15,10 +15,14 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
 const SHELL = join(REPO, "web", "dist");
 const CORPUS = join(dirname(HERE), "fixtures", "typst-corpus");
-const WASM = join(SHELL, "wasm", "typst.wasm");
+const WASM = join(REPO, "web", "wasm", "typst.wasm");
 
-if (!existsSync(join(SHELL, "viewer.html")) || !existsSync(WASM)) {
-  console.log("typst-viewer: no built viewer/WASM at web/dist; skipping (run `bun run build`)");
+if (!existsSync(join(SHELL, "viewer.html"))) {
+  console.log("typst-viewer: no built viewer at web/dist; skipping (run `bun run build` from web/)");
+  process.exit(0);
+}
+if (!existsSync(WASM)) {
+  console.log("typst-viewer: no pinned Typst WASM at web/wasm; skipping (run `tools/pins fetch` from the repository root)");
   process.exit(0);
 }
 
