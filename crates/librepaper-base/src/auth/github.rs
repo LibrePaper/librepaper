@@ -294,6 +294,15 @@ pub trait Accounts: Send + Sync {
 /// not-found accounts expire after GITHUB_ACCOUNT_NEGATIVE_TTL.
 struct GithubAccountExpiry;
 
+impl GithubAccountExpiry {
+    fn ttl_for(&self, value: &Option<Identity>) -> Option<Duration> {
+        match value {
+            Some(_) => Some(GITHUB_ACCOUNT_POSITIVE_TTL),
+            None => Some(GITHUB_ACCOUNT_NEGATIVE_TTL),
+        }
+    }
+}
+
 impl Expiry<String, Option<Identity>> for GithubAccountExpiry {
     fn expire_after_create(
         &self,
@@ -301,10 +310,17 @@ impl Expiry<String, Option<Identity>> for GithubAccountExpiry {
         value: &Option<Identity>,
         _created_at: std::time::Instant,
     ) -> Option<Duration> {
-        match value {
-            Some(_) => Some(GITHUB_ACCOUNT_POSITIVE_TTL),
-            None => Some(GITHUB_ACCOUNT_NEGATIVE_TTL),
-        }
+        self.ttl_for(value)
+    }
+
+    fn expire_after_update(
+        &self,
+        _key: &String,
+        value: &Option<Identity>,
+        _updated_at: std::time::Instant,
+        _duration_until_expiry: Option<Duration>,
+    ) -> Option<Duration> {
+        self.ttl_for(value)
     }
 }
 
