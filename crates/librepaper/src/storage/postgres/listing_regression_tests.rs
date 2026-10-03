@@ -97,7 +97,6 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
     let writer = catalog.claim_writer().await.unwrap();
     let owner = account(&catalog).await;
     let viewer = account(&catalog).await;
-    let other_viewer = account(&catalog).await;
     let document = document(&catalog, owner, "owned").await;
     catalog
         .set_grant(document, viewer, AccessRole::Reader)
@@ -138,33 +137,60 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
         .unwrap()
         .iter()
         .any(|row| row.id == document));
+    // Restoring this opened document removes only the hidden flag. Its open
+    // timestamp remains as a Recent mark.
     assert!(!catalog
-        .marks_for_documents(other_viewer, &[document])
+        .set_shared_hidden(viewer, document, false)
+        .await
+        .unwrap());
+    let restored = catalog
+        .marks_for_documents(viewer, &[document])
+        .await
+        .unwrap();
+    assert_eq!(restored.len(), 1);
+    assert!(!restored[0].shared_hidden);
+    assert_eq!(restored[0].favorited_at, before.favorited_at);
+    assert_eq!(restored[0].opened_at, before.opened_at);
+
+    // A different account's never-opened shared document exercises the
+    // hidden-only mark invariant through star, unstar and restore.
+    let other_viewer = account(&catalog).await;
+    let never_opened = document(&catalog, owner, "owned").await;
+    catalog
+        .set_grant(never_opened, other_viewer, AccessRole::Reader)
+        .await
+        .unwrap();
+    assert!(catalog
+        .set_shared_hidden(other_viewer, never_opened, true)
+        .await
+        .unwrap());
+    assert!(catalog
+        .marks_for_documents(viewer, &[never_opened])
         .await
         .unwrap()
-        .iter()
-        .any(|mark| mark.shared_hidden));
-
-    // Removing the star must retain a hidden-only mark and its open time.
+        .is_empty());
+    catalog
+        .set_favorite(other_viewer, never_opened, true)
+        .await
+        .unwrap();
     assert!(!catalog
-        .set_favorite(viewer, document, false)
+        .set_favorite(other_viewer, never_opened, false)
         .await
         .unwrap());
     let hidden_only = catalog
-        .marks_for_documents(viewer, &[document])
+        .marks_for_documents(other_viewer, &[never_opened])
         .await
         .unwrap();
     assert_eq!(hidden_only.len(), 1);
     assert!(hidden_only[0].shared_hidden);
     assert!(hidden_only[0].favorited_at.is_none());
-    assert_eq!(hidden_only[0].opened_at, before.opened_at);
-
+    assert!(hidden_only[0].opened_at.is_none());
     assert!(!catalog
-        .set_shared_hidden(viewer, document, false)
+        .set_shared_hidden(other_viewer, never_opened, false)
         .await
         .unwrap());
     assert!(catalog
-        .marks_for_documents(viewer, &[document])
+        .marks_for_documents(other_viewer, &[never_opened])
         .await
         .unwrap()
         .is_empty());

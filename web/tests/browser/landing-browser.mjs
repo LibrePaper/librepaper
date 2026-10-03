@@ -29,6 +29,7 @@ try {
     window.testCalls = [];
     window.failShared = false;
     const docs = ${JSON.stringify(documents)};
+    for (const doc of docs) doc.shared_hidden = sessionStorage.getItem('shared-hidden:' + doc.slug) === 'true';
     const trash = [{ slug: 'gone', title: 'Old project', role: 'owner', updated_at: '2026-09-10T12:00:00Z', purge_due: '2026-10-10T12:00:00Z' }];
     globalThis.fetch = async (url, init = {}) => {
       const path = String(url);
@@ -48,7 +49,10 @@ try {
       if (match && match[2] === 'shared') {
         if (window.failShared) return Response.json({ error: 'could not save shared preference' }, { status: 500 });
         const doc = docs.find(item => item.slug === match[1]);
-        if (doc) doc.shared_hidden = init.method === 'DELETE';
+        if (doc) {
+          doc.shared_hidden = init.method === 'DELETE';
+          sessionStorage.setItem('shared-hidden:' + doc.slug, String(doc.shared_hidden));
+        }
         return Response.json({ ok: true });
       }
       if (match && match[2] === 'rename') {
@@ -187,6 +191,30 @@ try {
   await until("shared project restored by undo", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(trigger("shared"))}))`));
   assert.equal(await tab.evaluate("testCalls.some(call => call.path === '/api/documents/shared/shared' && call.method === 'POST')"), true, "Undo restores the shared preference with POST");
   await key("Escape");
+  await flush();
+
+  // The desktop row action removes the same document. Its preference survives
+  // a reload, and All projects offers a direct way to show it in Shared again.
+  await click('.rail-item button[aria-label="Projects"]');
+  await until("all projects after undo", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(trigger("owned"))}))`));
+  await tab.resize(1100, 850);
+  await flush();
+  await click('.rail-item button[aria-label="Shared with me"]');
+  await until("desktop shared project", () => tab.evaluate('Boolean(document.querySelector(\'.project-actions button[aria-label="Remove Shared paper from Shared"]\'))'));
+  await click('.project-actions button[aria-label="Remove Shared paper from Shared"]');
+  await until("desktop shared project removed", () => tab.evaluate(`!document.querySelector(${JSON.stringify(trigger("shared"))})`));
+  await click('.rail-item button[aria-label="Projects"]');
+  const showAction = '.project-actions button[aria-label="Show Shared paper in Shared"]';
+  await until("desktop show action", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(showAction)}))`));
+  const currentUrl = await tab.evaluate("location.href");
+  await tab.navigate(currentUrl);
+  await until("hidden preference after reload", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(showAction)}))`));
+  await click(showAction);
+  await until("desktop restore request", () => tab.evaluate("testCalls.filter(call => call.path === '/api/documents/shared/shared' && call.method === 'POST').length >= 2"));
+  await click('.rail-item button[aria-label="Shared with me"]');
+  await until("shared project restored from All projects", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(trigger("shared"))}))`));
+  await click('.rail-item button[aria-label="Projects"]');
+  await tab.resize(390, 850);
   await flush();
 
   await click(trigger("owned"));
