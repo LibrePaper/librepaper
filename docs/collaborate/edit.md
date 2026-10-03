@@ -13,7 +13,7 @@ Owners and editors can download the whole project as a ZIP. Readers and commente
 
 ## Saving and co-editing
 
-Edits save automatically; CRDT ensures concurrent typing converges without waiting. The server holds the document source and relays updates, so closing the last tab loses nothing. Readers see the same live rendering as editors. They do not join CRDT synchronization or receive the operation history, but the reader app fetches a source projection (text, main-file metadata, and shared assets) to render the document. That source is readable by authorized readers in their browser; keep private inputs outside the shared project. See [rendering and live sync](../architecture/rendering.html) for the delivery boundary.
+Edits save automatically; CRDT ensures concurrent typing converges without waiting. The server holds the document source and relays updates, so closing the last tab loses nothing. Readers see the same live rendering as editors. They do not join CRDT synchronization or receive the operation history, but the parent reader app fetches a source projection (text, main-file metadata, and shared assets) and renders it before sending the preview to the isolated frame. That source is readable by authorized readers in their browser; keep private inputs outside the shared project. See [rendering and live sync](../architecture/rendering.html) for the delivery boundary.
 
 Comments retain their source checkpoint and passage; moved text updates the display but not the target.
 

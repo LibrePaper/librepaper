@@ -10,13 +10,13 @@ LaTeX engines and TeX Live packages are fetched from an HTTPS mirror from `latex
 
 Compilation runs in one worker per module. Markdown and Quarto produce flow HTML; LaTeX and Typst produce paged PDF. The deployment never renders or stores a compiler. The editor keeps the last successfully rendered page while the engine warms.
 
-There is no publish step and no stored rendered page. A reader sees the same head an editor sees, projected (text tree, main file, format, assets), identified by tree digest not version number. The reader requests this projection from the application origin; the app passes it to the isolated document frame. Opening, reconnecting and every edit resolve to fetch-and-render.
+There is no publish step and no stored rendered page. A reader sees the same head an editor sees, projected (text tree, main file, format, assets), identified by tree digest not version number. The parent reader requests this projection from the application origin and renders it; it sends the resulting preview to the isolated document frame. Opening, reconnecting and every edit resolve to fetch-and-render.
 
 The projection algorithm is implemented in Rust and JavaScript, held to the same behaviour by `web/tests/fixtures/projection.json`. When a document changes, the socket carries `source-changed {digest}` (digest only, not text). The reader refetches using digest as etag; unchanged files reuse cache.
 
 Readers and commenters never receive CRDT bytes or edit history; projections carry text and assets only.
 
-The application origin authorizes and returns projected source and assets to the reader app. It then supplies the projection to the isolated document frame; the separate document origin serves the frame shell and does not receive document access credentials in its URL. Reader link or account authority is rechecked on the application response. Assets use stable document-scoped paths with private revalidation. The projection is readable source, so a reader must not treat source-only files in a shared project as private.
+The application origin authorizes and returns projected source and assets to the parent reader app. That app renders the preview and sends rendered HTML or PDF bytes to the isolated document frame through origin-checked messaging; the frame does not receive the source projection or document access credentials in its URL. Reader link or account authority is rechecked on the application response. Assets use stable document-scoped paths with private revalidation. The projection remains readable source in the authorized reader's browser, so a reader must not treat source-only files in a shared project as private.
 
 ## Live collaboration
 
