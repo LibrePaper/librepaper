@@ -6,7 +6,8 @@
 // manifest is read through. How the order is then coarsened into what the
 // panel shows is checked in history-calendar.mjs.
 
-import { read, labelOrder, loadWithStatus, requestArchive } from "../../src/lib/history.js";
+import { read, label, labelOrder, loadWithStatus, requestArchive } from "../../src/lib/history.js";
+import { createTimeline } from "../../src/lib/reader/timeline.svelte.js";
 
 let failures = 0;
 function check(what, condition) {
@@ -123,6 +124,49 @@ const order = (points) => [...points].sort(labelOrder).map((point) => point.sha)
     await requestArchive("paper", "abc", {}, true);
     check("ordinary archive polls do not opt into retry", urls[0] === "/api/documents/paper/history/abc?archive=1");
     check("a fresh archive download can explicitly retry", urls[1] === "/api/documents/paper/history/abc?archive=1&retry=1");
+  } finally { globalThis.fetch = originalFetch; }
+}
+
+{
+  // A current-label response can be lost after the server commits. The
+  // timeline must retain that operation id across a retry of the same
+  // normalized label, while still forwarding the document key on both tries.
+  globalThis.$state ??= (value) => value;
+  const calls = [];
+  const history = {
+    loadWithStatus: async () => ({ labels: [] }),
+    label: async (...args) => {
+      calls.push(args);
+      if (calls.length === 1) throw new Error("response lost");
+      return {};
+    },
+  };
+  const timeline = createTimeline({ slug: "paper", key: "document-key", history });
+  await timeline.name("current", "  A   label  ");
+  await timeline.name("current", "A label");
+  check("current-label retry retains its operation id",
+    Boolean(calls[0][4]) && calls[0][4] === calls[1][4]);
+  check("current-label retry keeps the document capability header",
+    calls.every(([, , , headers]) => headers["X-LibrePaper-Key"] === "document-key"));
+  check("current-label retry keeps the shell request marker",
+    calls.every(([, , , headers]) => headers["X-LibrePaper-Client"] === "shell"));
+}
+
+{
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (_url, options) => {
+    request = options;
+    return { ok: true, json: async () => ({ sha: "same-label" }) };
+  };
+  try {
+    await label("paper", "current", "Named", {
+      "X-LibrePaper-Client": "shell",
+      "X-LibrePaper-Key": "document-key",
+    }, "stable-request-id");
+    check("label adapter sends the retry identity", JSON.parse(request.body).request_id === "stable-request-id");
+    check("label adapter preserves document credentials",
+      request.headers["X-LibrePaper-Key"] === "document-key");
   } finally { globalThis.fetch = originalFetch; }
 }
 

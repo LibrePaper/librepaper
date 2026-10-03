@@ -1357,14 +1357,27 @@ impl Server {
         let Ok(body) = to_bytes(request.into_body(), 1 << 16).await else {
             return write_json(400, &json!({"error": "bad request"}));
         };
-        let asked = serde_json::from_slice::<Value>(&body)
-            .ok()
+        let asked_body = serde_json::from_slice::<Value>(&body).ok();
+        let asked = asked_body
+            .as_ref()
             .and_then(|value| value.get("title")?.as_str().map(str::to_string))
             .unwrap_or_default();
         let asked = asked.trim().to_string();
         if asked.chars().count() > 200 {
             return write_json(400, &json!({"error": "that name is too long"}));
         }
+        let template_request_id = if as_template {
+            let request_id = asked_body
+                .as_ref()
+                .and_then(|value| value.get("request_id")?.as_str().map(str::to_string))
+                .and_then(|value| uuid::Uuid::parse_str(&value).ok());
+            let Some(request_id) = request_id else {
+                return write_json(400, &json!({"error": "a template save needs a stable request_id"}));
+            };
+            Some(request_id)
+        } else {
+            None
+        };
         if as_template && asked.is_empty() {
             return write_json(400, &json!({"error": "give the template a name"}));
         }
@@ -1397,47 +1410,100 @@ impl Server {
             Ok(id) => id,
             Err(_) => return write_json(401, &json!({"error": "invalid account"})),
         };
-        let upload_admission = match self
-            .store
-            .catalog
-            .reserve_upload_admission(account_id)
-            .await
-        {
-            Ok(id) => id,
-            Err(crate::storage::postgres::Error::Conflict(_)) => {
-                return write_json(
-                    429,
-                    &json!({"error": "too many uploads this hour; try later"}),
-                )
+        let template_source_id = if as_template {
+            match uuid::Uuid::parse_str(&entry.storage_id) {
+                Ok(id) => Some(id),
+                Err(_) => return write_json(404, &json!({"error": "not found"})),
             }
-            Err(error) => return write_json(503, &json!({"error": error.to_string()})),
+        } else {
+            None
+        };
+        let session_generation = match who.session_generation.parse::<i64>() {
+            Ok(generation) => generation,
+            Err(_) => return write_json(401, &json!({"error": "invalid account session"})),
+        };
+        let mut template_operation = if let (Some(request_id), Some(source_id)) =
+            (template_request_id, template_source_id)
+        {
+            match self
+                .store
+                .catalog
+                .template_operation(account_id, session_generation, request_id)
+                .await
+            {
+                Ok(operation) => operation,
+                Err(crate::storage::postgres::Error::Conflict(error)) => {
+                    return write_json(409, &json!({"error": error}))
+                }
+                Err(error) => return write_json(503, &json!({"error": error.to_string()})),
+            }
+        } else {
+            None
+        };
+        if let Some(operation) = &template_operation {
+            if Some(operation.source_document_id) != template_source_id
+                || operation.title != asked
+            {
+                return write_json(
+                    409,
+                    &json!({"error": "template request_id was reused with different input"}),
+                );
+            }
+            if operation.target.status != "active" {
+                return write_json(409, &json!({"error": "the saved template is no longer active"}));
+            }
+            if operation.complete {
+                return write_json(
+                    200,
+                    &json!({
+                        "slug": operation.target.slug,
+                        "title": operation.target.title,
+                        "url": format!("/docs/{}", operation.target.slug),
+                    }),
+                );
+            }
+        }
+        // A completed or pending replay already owns its original admission.
+        // Only a genuinely new operation consumes another hourly slot.
+        let upload_admission = if !as_template || template_operation.is_none() {
+            match self
+                .store
+                .catalog
+                .reserve_upload_admission(account_id)
+                .await
+            {
+                Ok(id) => Some(id),
+                Err(crate::storage::postgres::Error::Conflict(_)) => {
+                    return write_json(
+                        429,
+                        &json!({"error": "too many uploads this hour; try later"}),
+                    )
+                }
+                Err(error) => return write_json(503, &json!({"error": error.to_string()})),
+            }
+        } else {
+            None
         };
         let files = match self.store.project_files(slug).await {
             Ok(Some(files)) => files,
             Ok(None) => {
-                let _ = self
-                    .store
-                    .catalog
-                    .cancel_upload_admission(upload_admission)
-                    .await;
+                if let Some(admission) = upload_admission {
+                    let _ = self.store.catalog.cancel_upload_admission(admission).await;
+                }
                 return write_json(404, &json!({"error": "not found"}));
             }
             Err(error) => {
-                let _ = self
-                    .store
-                    .catalog
-                    .cancel_upload_admission(upload_admission)
-                    .await;
+                if let Some(admission) = upload_admission {
+                    let _ = self.store.catalog.cancel_upload_admission(admission).await;
+                }
                 eprintln!("could not read {slug} to fork it: {error}");
                 return write_json(503, &json!({"error": "could not read that project"}));
             }
         };
         if files.len() > self.config.max_files {
-            let _ = self
-                .store
-                .catalog
-                .cancel_upload_admission(upload_admission)
-                .await;
+            if let Some(admission) = upload_admission {
+                let _ = self.store.catalog.cancel_upload_admission(admission).await;
+            }
             return write_json(
                 413,
                 &json!({"error": format!("a document may hold {} files", self.config.max_files)}),
@@ -1451,7 +1517,7 @@ impl Server {
         // Always a fresh suffixed slug, never the bare title: two copies of
         // the same paper are the ordinary case here, and the second must not
         // land on the first.
-        let base = {
+        let mut base = {
             let stem = slugify(&title, &self.config);
             let stem = if stem.is_empty() {
                 "project".into()
@@ -1463,6 +1529,9 @@ impl Server {
                 crate::document::store::random_suffix(&self.config)
             )
         };
+        if let Some(operation) = &template_operation {
+            base = operation.target.slug.clone();
+        }
         let source = files
             .iter()
             .find(|(path, _)| path == &entry.main)
@@ -1480,12 +1549,67 @@ impl Server {
             main: entry.main.clone(),
             files: rest.clone(),
         }) {
-            let _ = self
+            if let Some(admission) = upload_admission {
+                let _ = self.store.catalog.cancel_upload_admission(admission).await;
+            }
+            return response;
+        }
+        if as_template && template_operation.is_none() {
+            let request_id = template_request_id.expect("template request id was checked above");
+            let source_id = template_source_id.expect("template source id was checked above");
+            let (operation, created) = match self
                 .store
                 .catalog
-                .cancel_upload_admission(upload_admission)
-                .await;
-            return response;
+                .begin_template_operation(
+                    request_id,
+                    source_id,
+                    crate::storage::postgres::NewDocument {
+                        slug: base.clone(),
+                        owner_id: account_id,
+                        owner_session_generation: Some(session_generation),
+                        ownership_mode: "owned".into(),
+                        title: title.clone(),
+                        source_format: entry.source_format.clone(),
+                        main_path: entry.main.clone(),
+                    },
+                )
+                .await
+            {
+                Ok(result) => result,
+                Err(crate::storage::postgres::Error::Conflict(error)) => {
+                    if let Some(admission) = upload_admission {
+                        let _ = self.store.catalog.cancel_upload_admission(admission).await;
+                    }
+                    return write_json(409, &json!({"error": error}));
+                }
+                Err(error) => {
+                    if let Some(admission) = upload_admission {
+                        let _ = self.store.catalog.cancel_upload_admission(admission).await;
+                    }
+                    return write_json(503, &json!({"error": error.to_string()}));
+                }
+            };
+            if !created {
+                // Another same-id request won the row-creation race; release
+                // this request's unused reservation, never the winner's.
+                if let Some(admission) = upload_admission {
+                    let _ = self.store.catalog.cancel_upload_admission(admission).await;
+                }
+            }
+            base = operation.target.slug.clone();
+            template_operation = Some(operation);
+        }
+        if let Some(operation) = &template_operation {
+            if operation.complete {
+                return write_json(
+                    200,
+                    &json!({
+                        "slug": operation.target.slug,
+                        "title": operation.target.title,
+                        "url": format!("/docs/{}", operation.target.slug),
+                    }),
+                );
+            }
         }
         let actor = crate::document::store::MutationActor {
             account_id: who.id.clone(),
@@ -1497,36 +1621,28 @@ impl Server {
             automation: false,
             unowned_publisher: false,
         };
-        match self
-            .store
-            .put_directory_as_actor(
-                DocumentInput {
-                    slug: base,
-                    title: title.clone(),
-                    source,
-                    source_format: entry.source_format.clone(),
-                    main: entry.main.clone(),
-                },
-                rest,
-                actor,
-            )
-            .await
-        {
+        let input = DocumentInput {
+            slug: base,
+            title: title.clone(),
+            source,
+            source_format: entry.source_format.clone(),
+            main: entry.main.clone(),
+        };
+        let saved = if let Some(operation) = &template_operation {
+            self.store
+                .put_template_directory_as_actor(
+                    input,
+                    rest,
+                    actor,
+                    template_request_id.expect("template request id was checked above"),
+                    operation.target.id,
+                )
+                .await
+        } else {
+            self.store.put_directory_as_actor(input, rest, actor).await
+        };
+        match saved {
             Ok(made) => {
-                if as_template {
-                    let marked = match uuid::Uuid::parse_str(&made.storage_id) {
-                        Ok(id) => self.store.catalog.mark_template(id).await.is_ok(),
-                        Err(_) => false,
-                    };
-                    if !marked {
-                        // An unmarked copy would sit in the project list under
-                        // a name meant for a template; send it to the trash
-                        // rather than leave it there.
-                        eprintln!("could not mark {} as a template", made.slug);
-                        let _ = self.store.begin_delete(&made.slug).await;
-                        return write_json(503, &json!({"error": "could not save the template"}));
-                    }
-                }
                 write_json(
                     200,
                     &json!({"slug": made.slug, "title": made.title, "url": format!("/docs/{}", made.slug)}),
@@ -1550,7 +1666,12 @@ impl Server {
     }
 
     /// The custom templates this account owns, as ordinary project rows.
-    pub(super) async fn handle_templates(&self, headers: &HeaderMap, arrival: &Arrival) -> Reply {
+    pub(super) async fn handle_templates(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        query: Option<&str>,
+    ) -> Reply {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
@@ -1561,13 +1682,33 @@ impl Server {
         if who.id.is_empty() {
             return write_json(401, &json!({"error": "sign in"}));
         }
-        match self.store.templates_page(&who.id).await {
-            Ok(entries) => {
+        let values: HashMap<String, String> = query
+            .map(|raw| {
+                url::form_urlencoded::parse(raw.as_bytes())
+                    .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let limit = values
+            .get("limit")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(200)
+            .clamp(1, 200);
+        let cursor = values
+            .get("after_updated")
+            .zip(values.get("after_id"))
+            .map(|(updated, id)| (updated.as_str(), id.as_str()));
+        match self.store.templates_page(&who.id, cursor, limit).await {
+            Ok((entries, next)) => {
                 let templates: Vec<Value> = entries
                     .iter()
                     .map(|entry| self.listing_row(entry, &who))
                     .collect();
-                write_json(200, &json!({"templates": templates}))
+                let mut body = json!({"templates": templates});
+                if let Some((after_updated, after_id)) = next {
+                    body["next_cursor"] = json!({"after_updated": after_updated, "after_id": after_id});
+                }
+                write_json(200, &body)
             }
             Err(error) => {
                 eprintln!("could not query templates: {error}");

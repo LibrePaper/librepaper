@@ -401,7 +401,10 @@ async fn a_template_leaves_the_project_listing_and_follows_its_document() {
     assert!(backed_up.contains(&template));
 
     assert_eq!(
-        ids(catalog.templates_by_owner(owner, 200).await.unwrap()),
+        ids(catalog
+            .templates_by_owner(owner, None, 200)
+            .await
+            .unwrap()),
         vec![template]
     );
     let flagged = catalog.template_ids(&[template, project]).await.unwrap();
@@ -411,7 +414,7 @@ async fn a_template_leaves_the_project_listing_and_follows_its_document() {
     // In the trash it is no longer offered, and it is still flagged there.
     catalog.mark_document_deleting(template).await.unwrap();
     assert!(catalog
-        .templates_by_owner(owner, 200)
+        .templates_by_owner(owner, None, 200)
         .await
         .unwrap()
         .is_empty());
@@ -428,6 +431,192 @@ async fn a_template_leaves_the_project_listing_and_follows_its_document() {
         .await
         .unwrap();
     assert!(catalog.template_ids(&[template]).await.unwrap().is_empty());
+    drop(writer);
+    catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn template_operations_hide_incomplete_rows_replay_and_page_stably() {
+    let catalog = test_catalog().await;
+    let writer = catalog.claim_writer().await.unwrap();
+    let owner = account(&catalog).await;
+    let source = document(&catalog, owner, "owned").await;
+    let generation = catalog.account(owner).await.unwrap().unwrap().session_generation;
+    let request_id = Uuid::new_v4();
+    let new_document = |slug: String, title: String| NewDocument {
+        slug,
+        owner_id: owner,
+        owner_session_generation: Some(generation),
+        ownership_mode: "owned".into(),
+        title,
+        source_format: "markdown".into(),
+        main_path: "main.md".into(),
+    };
+    let (pending, created) = catalog
+        .begin_template_operation(
+            request_id,
+            source,
+            new_document(format!("template-{}", Uuid::new_v4()), "Reusable".into()),
+        )
+        .await
+        .unwrap();
+    assert!(created);
+    assert!(!pending.complete);
+    assert!(!catalog
+        .visible_documents(Some(owner), None, 200, false)
+        .await
+        .unwrap()
+        .iter()
+        .any(|row| row.id == pending.target.id));
+    assert!(!catalog
+        .visible_documents(Some(owner), None, 200, true)
+        .await
+        .unwrap()
+        .iter()
+        .any(|row| row.id == pending.target.id), "backups omit unfinished templates");
+    assert!(!catalog
+        .templates_by_owner(owner, None, 200)
+        .await
+        .unwrap()
+        .iter()
+        .any(|row| row.id == pending.target.id));
+
+    let (replayed_pending, created) = catalog
+        .begin_template_operation(
+            request_id,
+            source,
+            new_document(format!("ignored-{}", Uuid::new_v4()), "Reusable".into()),
+        )
+        .await
+        .unwrap();
+    assert!(!created);
+    assert_eq!(replayed_pending.target.id, pending.target.id);
+    assert!(catalog
+        .begin_template_operation(
+            request_id,
+            source,
+            new_document(format!("ignored-{}", Uuid::new_v4()), "Changed".into()),
+        )
+        .await
+        .is_err());
+
+    // Two first attempts that race on one owner-scoped id reserve one row;
+    // only the winner's admission can be attached to the operation.
+    let concurrent_id = Uuid::new_v4();
+    let (left, right) = tokio::join!(
+        catalog.begin_template_operation(
+            concurrent_id,
+            source,
+            new_document(format!("template-{}", Uuid::new_v4()), "Concurrent".into()),
+        ),
+        catalog.begin_template_operation(
+            concurrent_id,
+            source,
+            new_document(format!("template-{}", Uuid::new_v4()), "Concurrent".into()),
+        ),
+    );
+    let (left, left_created) = left.unwrap();
+    let (right, right_created) = right.unwrap();
+    assert_ne!(left_created, right_created, "exactly one request reserves the operation");
+    assert_eq!(left.target.id, right.target.id, "both callers resume the same target");
+
+    // Completion performed in a command transaction remains invisible if
+    // that transaction rolls back, so a partial source write cannot publish
+    // a shelf entry.
+    let rollback_id = Uuid::new_v4();
+    let (rollback_pending, created) = catalog
+        .begin_template_operation(
+            rollback_id,
+            source,
+            new_document(format!("template-{}", Uuid::new_v4()), "Rollback".into()),
+        )
+        .await
+        .unwrap();
+    assert!(created);
+    let mut tx = catalog.pool().begin().await.unwrap();
+    catalog
+        .complete_template_operation(
+            &mut tx,
+            rollback_pending.target.id,
+            rollback_id,
+            0,
+            Some([9; 32]),
+        )
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert!(!catalog
+        .templates_by_owner(owner, None, 200)
+        .await
+        .unwrap()
+        .iter()
+        .any(|row| row.id == rollback_pending.target.id));
+    assert!(!catalog
+        .visible_documents(Some(owner), None, 200, true)
+        .await
+        .unwrap()
+        .iter()
+        .any(|row| row.id == rollback_pending.target.id));
+
+    let mut tx = catalog.pool().begin().await.unwrap();
+    catalog
+        .complete_template_operation(
+            &mut tx,
+            pending.target.id,
+            request_id,
+            0,
+            Some([7; 32]),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let (replayed_complete, created) = catalog
+        .begin_template_operation(
+            request_id,
+            source,
+            new_document(format!("ignored-{}", Uuid::new_v4()), "Reusable".into()),
+        )
+        .await
+        .unwrap();
+    assert!(!created);
+    assert!(replayed_complete.complete);
+    assert_eq!(replayed_complete.target.id, pending.target.id);
+
+    let older = document(&catalog, owner, "owned").await;
+    let newer = document(&catalog, owner, "owned").await;
+    catalog.mark_template(older).await.unwrap();
+    catalog.mark_template(newer).await.unwrap();
+    // Equal microsecond timestamps force the UUID tie-breaker to carry the
+    // cursor; the first row is then deleted before the next page is read.
+    sqlx::query("UPDATE documents SET updated_at='2026-01-02 03:04:05.123456+00' WHERE id=ANY($1)")
+        .bind(vec![pending.target.id, older, newer])
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    let mut before = None;
+    let mut found = Vec::new();
+    loop {
+        let page = catalog.templates_by_owner(owner, before, 1).await.unwrap();
+        if page.is_empty() {
+            break;
+        }
+        before = page.last().map(|row| (row.updated_at, row.id));
+        if found.is_empty() {
+            // The keyset boundary is the timestamp and immutable id, not a
+            // lookup of the cursor row: deleting it must not strand the walk.
+            sqlx::query("DELETE FROM documents WHERE id=$1")
+                .bind(page[0].id)
+                .execute(catalog.pool())
+                .await
+                .unwrap();
+        }
+        found.extend(page.into_iter().map(|row| row.id));
+    }
+    found.sort();
+    let mut expected = vec![pending.target.id, older, newer];
+    expected.sort();
+    assert_eq!(found, expected, "keyset pages cover each completed template once");
     drop(writer);
     catalog.close().await;
 }

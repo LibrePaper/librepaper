@@ -53,6 +53,9 @@ export function createTimeline({
   // on confirm. Kept apart from `baseline`, a JSON tree signature, because the
   // server's precondition is stated in frontiers, not in file contents.
   let restoreFrontier = "";
+  // A current-label request can commit while its HTTP response is lost. Keep
+  // its identity until a successful response so an explicit retry replays it.
+  const pendingCurrentLabels = new Map();
 
   /// Read the manifest. Only the newest read may write what it found: a
   /// slower earlier one finishing later would otherwise replace it.
@@ -128,12 +131,32 @@ export function createTimeline({
 
   /// Give a version a name people will recognize it by.
   async function name(sha, given) {
+    const normalizedLabel = Array.from(
+      given.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
+        .trim()
+        .split(/\s+/u)
+        .join(" "),
+    ).slice(0, 120).join("");
+    const operationKey = `${sha}\0${normalizedLabel}`;
+    let requestId;
+    if (sha === "current") {
+      requestId = pendingCurrentLabels.get(operationKey);
+      if (!requestId) {
+        requestId = globalThis.crypto?.randomUUID?.();
+        if (!requestId) {
+          state.problem = "This browser cannot safely retry a current label.";
+          return;
+        }
+        pendingCurrentLabels.set(operationKey, requestId);
+      }
+    }
     try {
-      await history.label(slug, sha, given, keyHeaders(key));
+      await history.label(slug, sha, given, keyHeaders(key), requestId);
     } catch (error) {
       state.problem = error.message || "That version could not be named.";
       return;
     }
+    if (sha === "current") pendingCurrentLabels.delete(operationKey);
     await load();
   }
 

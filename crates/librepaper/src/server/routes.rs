@@ -334,8 +334,9 @@ async fn templates(
     Extension(ctx): Extension<RequestContext>,
     request: Request<Body>,
 ) -> Reply {
+    let query = request.uri().query().map(str::to_string);
     server
-        .handle_templates(request.headers(), &ctx.arrival)
+        .handle_templates(request.headers(), &ctx.arrival, query.as_deref())
         .await
 }
 

@@ -284,7 +284,14 @@ async fn put_annotation(
             || existing.author_account_id != input.author_account_id
             || existing.author_key != input.author_key
             || existing.author_label != input.author_label
+            || existing.color != input.color
             || existing.proposal_id != input.proposal_id
+            || existing.render_digest != input.render_digest
+            || existing.rendered_exact != input.presentation.rendered_exact
+            || existing.rendered_prefix != input.presentation.rendered_prefix
+            || existing.rendered_suffix != input.presentation.rendered_suffix
+            || existing.rendered_position_utf16
+                != input.presentation.rendered_position_utf16.map(|at| at as i32)
             || !same_anchor(&existing, &input.original_anchor)?
         {
             return Err(Error::Conflict(
