@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>{{title}}</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }
+      h1, h2 { margin-top: 1.5em; }
+      table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+      th { background-color: #f5f5f5; }
+      .author { text-align: center; font-weight: bold; margin: 1em 0; }
+      math { font-style: italic; }
+    </style>
+  </head>
+  <body>
+    <h1>{{title}}</h1>
+    <div class="author">{{author}}</div>
+
+    <h2>Abstract</h2>
+    <p>This is an abstract of your research. It should briefly summarize the main objectives, methods, findings, and implications of your work.</p>
+
+    <h2>Introduction</h2>
+    <p>Start with a clear introduction that motivates the research. Explain the background, the problem statement, and your contribution.</p>
+    <p>A key insight from Smith (2020) was that methodologies must be carefully validated <a href="#ref-smith2020">(Smith, 2020)</a>. Building on this foundation, we examine new questions.</p>
+
+    <h2>Methods</h2>
+    <p>Describe your methodology. For a sample of size <math><mi>n</mi></math>, the standard error of a mean is</p>
+    <math display="block">
+      <mrow>
+        <mi>SE</mi><mo>=</mo><mfrac><mi>s</mi><msqrt><mi>n</mi></msqrt></mfrac>
+      </mrow>
+    </math>
+    <p>Our approach combines quantitative analysis with qualitative assessment.</p>
+
+    <table>
+      <thead>
+        <tr><th>Metric</th><th>Value</th><th>Unit</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Sample size</td><td>250</td><td>observations</td></tr>
+        <tr><td>Response rate</td><td>78.5</td><td>percent</td></tr>
+        <tr><td>Confidence level</td><td>95</td><td>percent</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Results</h2>
+    <p>Present your findings here. The analysis of the data revealed several interesting patterns.</p>
+    <p>As demonstrated by Johnson and Williams (2021), this phenomenon occurs across multiple domains <a href="#ref-johnson2021">(Johnson &amp; Williams, 2021)</a>.</p>
+
+    <h2>Discussion</h2>
+    <p>Discuss the implications of your results. What do they mean? How do they relate to existing literature?</p>
+
+    <h2>References</h2>
+    <ol>
+      <li id="ref-smith2020">Smith, J. (2020). Validation of research methodologies. <cite>Research Methods Quarterly</cite>, 15(3), 234-251.</li>
+      <li id="ref-johnson2021">Johnson, S., &amp; Williams, M. (2021). Cross-domain analysis of modern phenomena. <cite>International Journal of Studies</cite>, 28(2), 145-168.</li>
+    </ol>
+  </body>
+</html>

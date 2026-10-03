@@ -29,10 +29,11 @@
   import Row from "./layout/Row.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import { say } from "../lib/toast.svelte.js";
-  import { SHELL_HEADERS, get, me as whoami, upload } from "../lib/api.js";
+  import { SHELL_HEADERS, get, getPrivate, me as whoami, upload } from "../lib/api.js";
   import { day as isoDay, since } from "../lib/dates.js";
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
-  import { FORMATS, formatNamed, starterDocument } from "../lib/starter.js";
+  import { FORMATS, formatNamed, fillTemplate, matchTemplates } from "../lib/starter.js";
+  import { BUILT_IN, templateFiles } from "../lib/templates.js";
   import { preparedProjects } from "../lib/offline-projects.js";
 
   let me = $state({});
@@ -57,7 +58,35 @@
   const compactSort = $derived(`${sortBy}:${ascending ? "asc" : "desc"}`);
   let naming = $state(false);
   let name = $state("");
-  let format = $state(FORMATS[0].id);
+  // The picker in the New project dialog. The format filter is the one thing
+  // remembered between visits ("" is any); the rest starts fresh each time.
+  let templateQuery = $state("");
+  let formatFilter = $state("");
+  let templateId = $state("blank");
+  // The format chosen on the card when the filter is "any".
+  let formatOverride = $state("");
+  // The caller's own templates, as the server lists them: projects. One list
+  // serves the picker and the Templates place, so there is one loader.
+  let templateRows = $state([]);
+  // The same, in the shape of a built-in one, so the same filter and the same
+  // cards serve both.
+  const customTemplates = $derived(templateRows.map((row) => ({
+    id: row.slug, slug: row.slug, name: row.title, description: "", keywords: [],
+    formats: [row.source_format], custom: true, url: row.url,
+  })));
+  const allTemplates = $derived([...BUILT_IN, ...customTemplates]);
+  const shownTemplates = $derived(matchTemplates(allTemplates, templateQuery, formatFilter));
+  const shownBuiltIn = $derived(shownTemplates.filter((each) => !each.custom));
+  const shownCustom = $derived(shownTemplates.filter((each) => each.custom));
+  const chosenTemplate = $derived(allTemplates.find((each) => each.id === templateId));
+  // A template that does not offer the filtered format falls back to its
+  // first, rather than refusing the click.
+  const format = $derived.by(() => {
+    const offered = chosenTemplate?.formats ?? [];
+    if (offered.includes(formatFilter)) return formatFilter;
+    if (offered.includes(formatOverride)) return formatOverride;
+    return offered[0] ?? FORMATS[0].id;
+  });
   let nameError = $state("");
   let busy = $state(false);
   let confirming = $state(false);
@@ -157,6 +186,7 @@
     else url.searchParams.set("in", id);
     history.replaceState(null, "", url);
     if (id === "trash") void showTrash();
+    if (id === "templates") void loadTemplates();
   }
 
   /* ------------------------------------------------------------- the listing */
@@ -242,6 +272,7 @@
     shared: (doc) => !mine(doc) && !doc.shared_hidden,
     favorites: (doc) => doc.favorite,
     trash: () => true,
+    templates: () => true,
   };
 
   const PLACE_NAMES = Object.fromEntries(PROJECT_TABS.map((tab) => [tab.id, tab.says]));
@@ -256,6 +287,7 @@
       shared: "Nothing shared with you yet. A project opened from somebody's link lands here.",
       favorites: "No favorites yet. Star a project to keep it here.",
       trash: "The trash is empty.",
+      templates: "No templates yet. Open a project and choose File > Save as template.",
     }[place];
   }
 
@@ -265,7 +297,7 @@
   $effect(() => {
     if (needle.length >= 2) void learnPaths();
   });
-  const source = $derived(place === "trash" ? trashed : documents);
+  const source = $derived(place === "trash" ? trashed : place === "templates" ? templateRows : documents);
   const shown = $derived.by(() => {
     const list = source.filter((doc) => belongs[place](doc) && found(doc, needle).matches);
     // Recent has one order and it is the whole point of the place; the trash
@@ -489,6 +521,9 @@
       say(`${succeeded.length} project${plural} moved to the trash.`, { id: "landing:trashed" });
     }
     await showList();
+    // A template is a project, so trashing one from the picker or from the
+    // Templates place takes this path, and what it was listed in is stale.
+    if (naming || place === "templates") await loadTemplates();
   }
 
   async function restore(doc) {
@@ -610,6 +645,7 @@
       }
       doc.title = title;
       renaming = null;
+      if (place === "templates") await loadTemplates();
     } catch (error) {
       renameError = error?.message || "That name could not be saved.";
     }
@@ -643,6 +679,7 @@
     setTimeout(() => {
       if (action === "rename") askRename(doc);
       else if (action === "fork") askFork(doc);
+      else if (action === "from-template") askNameFrom(doc);
       else if (action === "favorite") void star(doc);
       else if (action === "hide-shared") void setSharedVisibility(doc, true);
       else if (action === "show-shared") void setSharedVisibility(doc, false);
@@ -686,17 +723,69 @@
 
   /* --------------------------------------------------------- a new project */
 
-  // Making a project and filling it are two acts, not one. This asks only for
-  // the name -- the one thing nothing else can supply -- and the format, which
-  // decides what the main file is called. Everything afterwards happens in the
-  // project's own file explorer, which already knows how to take a file, a
-  // folder, or an archive, and where to put it.
+  // Making a project and filling it are two acts, not one. This asks for the
+  // name -- the one thing nothing else can supply -- and for a template, which
+  // is a format and a first set of files. A built-in template is plain files
+  // filled in here; one of your own is a project, copied by the server like
+  // any fork. Everything afterwards happens in the project's own file
+  // explorer, which already knows how to take a file, a folder, or an archive.
+
+  const FORMAT_KEY = "librepaper.template-format";
+
+  function rememberedFormat() {
+    try {
+      const saved = localStorage.getItem(FORMAT_KEY) ?? "";
+      return FORMATS.some((each) => each.id === saved) ? saved : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function chooseFormat(id) {
+    formatFilter = id;
+    try {
+      localStorage.setItem(FORMAT_KEY, id);
+    } catch {
+      // Not remembering is a convenience lost, not an error.
+    }
+  }
+
+  function chooseTemplate(id) {
+    templateId = id;
+    formatOverride = "";
+  }
+
+  // Your own templates, for the dialog and for the Templates place alike.
+  async function loadTemplates() {
+    try {
+      templateRows = (await getPrivate("/api/templates")).templates ?? [];
+      if (!allTemplates.some((each) => each.id === templateId)) chooseTemplate("blank");
+    } catch {
+      // Signed out, or offline: the built-in templates are all there is.
+      templateRows = [];
+    }
+  }
 
   function askName(chosen) {
     name = "";
-    format = chosen || FORMATS[0].id;
+    templateQuery = "";
+    formatFilter = chosen || rememberedFormat();
+    chooseTemplate("blank");
     nameError = "";
     naming = true;
+    void loadTemplates();
+  }
+
+  // From a row in the Templates place: the dialog opens with that template
+  // already chosen, under any format, so its card is not filtered away.
+  function askNameFrom(doc) {
+    askName();
+    formatFilter = "";
+    chooseTemplate(doc.slug);
+  }
+
+  function askDeleteTemplate(template) {
+    askDelete({ slug: template.slug, title: template.name });
   }
 
   async function create(event) {
@@ -711,14 +800,24 @@
     busy = true;
     nameError = "";
     try {
-      // The same multipart publish a directory uses, with a directory of one
-      // file. The server names the format from that file's extension, so
-      // there is one way in rather than a second route for empty projects.
-      const starter = starterDocument(named, format);
-      const form = new FormData();
-      form.append("file", new Blob([starter.text], { type: "text/plain" }), starter.path);
-      form.append("title", named);
-      const response = await upload(form);
+      let response;
+      if (chosenTemplate?.custom) {
+        response = await fetch(`/api/documents/${chosenTemplate.slug}/fork`, {
+          method: "POST",
+          headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
+          body: JSON.stringify({ title: named }),
+        });
+      } else {
+        // The same multipart publish a directory uses. The server names the
+        // format from the main file's extension, and `main` says which file
+        // that is now that a template has more than one.
+        const files = fillTemplate(await templateFiles(templateId, format), format, { title: named, author: me.name });
+        const form = new FormData();
+        for (const file of files) form.append("file", new Blob([file.text], { type: "text/plain" }), file.path);
+        form.append("title", named);
+        form.append("main", `main.${formatNamed(format).extension}`);
+        response = await upload(form);
+      }
       if (!response.ok) {
         nameError = (await response.json().catch(() => ({}))).error || "The project could not be created.";
         return;
@@ -756,6 +855,7 @@
           await showList();
           await showOfflineProjects();
           if (place === "trash") await showTrash();
+          if (place === "templates") await loadTemplates();
         }
       });
   });
@@ -795,7 +895,7 @@
     <section class="projects">
       <h1 class="place-heading">{PLACE_NAMES[place]}</h1>
 
-      {#if narrow && ["projects", "shared", "favorites"].includes(place)}
+      {#if narrow && ["projects", "shared", "favorites", "templates"].includes(place)}
         <div class="compact-sort">
           <label for="project-sort">Sort</label>
           <select id="project-sort" class="select" value={compactSort}
@@ -852,7 +952,7 @@
         </div>
       {:else if place !== "trash"}
         <div class="toolbar">
-          <span class="row-count">{shown.length}{shown.length === 1 ? " project" : " projects"}</span>
+          <span class="row-count">{shown.length}{place === "templates" ? (shown.length === 1 ? " template" : " templates") : shown.length === 1 ? " project" : " projects"}</span>
         </div>
       {:else}
         <div class="toolbar">
@@ -956,6 +1056,16 @@
                     <Menu.Item value="purge" class="menuitem project-action-item" data-project-action="purge">
                       <Icon name="trash" size="1rem" /><span class="menuitem-label">Delete for good</span>
                     </Menu.Item>
+                  {:else if place === "templates"}
+                    <Menu.Item value="from-template" class="menuitem project-action-item" data-project-action="from-template">
+                      <Icon name="file-plus" size="1rem" /><span class="menuitem-label">New project from template</span>
+                    </Menu.Item>
+                    <Menu.Item value="rename" class="menuitem project-action-item" data-project-action="rename">
+                      <Icon name="pencil" size="1rem" /><span class="menuitem-label">Rename</span>
+                    </Menu.Item>
+                    <Menu.Item value="trash" class="menuitem project-action-item" data-project-action="trash">
+                      <Icon name="trash" size="1rem" /><span class="menuitem-label">Move to trash</span>
+                    </Menu.Item>
                   {:else}
                     {#if mine(doc)}
                       <Menu.Item value="rename" class="menuitem project-action-item" data-project-action="rename">
@@ -986,6 +1096,13 @@
                   {/if}
                 </ExplorerMenu>
               </Menu>
+            {:else if place === "templates"}
+              <span class="project-actions">
+                <IconButton icon="file-plus" title="New project from template" label="New project from {doc.title}" onclick={() => askNameFrom(doc)} />
+                <IconButton icon="pencil" title="Rename" label="Rename {doc.title}" onclick={() => askRename(doc)} />
+                <IconButton icon="trash" colour="lp-text-muted lp-hover-error"
+                            title="Move to trash" label="Move {doc.title} to the trash" onclick={() => askDelete(doc)} />
+              </span>
             {:else if place === "trash"}
               <span class="trash-actions">
                 <!-- The tooltip says the action; the accessible name says the
@@ -1063,12 +1180,31 @@
   </Page>
 {/if}
 
-<!-- A name and a format, because a project is a directory and a main file and
-     nothing here can guess either. The files come next, in the project. -->
+<!-- A name and a template, because a project is a directory and a main file
+     and nothing here can guess either. More files come next, in the project. -->
+{#snippet templateCard(template)}
+  <div class="tcard" class:picked={templateId === template.id}>
+    <button type="button" class="tcard-pick" aria-pressed={templateId === template.id}
+            onclick={() => chooseTemplate(template.id)}>
+      <span class="tcard-name" class:with-actions={template.custom}>{template.name}</span>
+      {#if template.description}<span class="tcard-say">{template.description}</span>{/if}
+      <span class="tcard-formats">
+        {#each template.formats as id}<span class="tcard-badge">{formatNamed(id).name}</span>{/each}
+      </span>
+    </button>
+    {#if template.custom}
+      <span class="tcard-actions">
+        <IconButton icon="pencil" title="Edit" label="Edit {template.name}" onclick={() => (location.href = template.url)} />
+        <IconButton icon="trash" title="Move to trash" label="Move {template.name} to the trash" onclick={() => askDeleteTemplate(template)} />
+      </span>
+    {/if}
+  </div>
+{/snippet}
+
 <Modal
   bind:open={naming}
   title="New project"
-  description="Name it, then drop your files into its explorer."
+  wide
   onclose={() => (nameError = "")}
   confirm={{ form: "new-project", label: busy ? "Creating…" : "Create project", disabled: busy, oncancel: () => (naming = false) }}
 >
@@ -1081,16 +1217,41 @@
           <input class="input" autofocus bind:this={nameInput} bind:value={name} />
         </label>
         <label class="label">
-          <span class="label-text">Format</span>
-          <select class="select" bind:value={format}>
-            {#each FORMATS as choice}
-              <option value={choice.id}>{choice.name}</option>
-            {/each}
-          </select>
-          <small class="lp-text-secondary">
-            The main file is main.{formatNamed(format).extension}; you can add, rename and replace it later.
-          </small>
+          <span class="label-text">Search templates</span>
+          <input class="input" type="search" placeholder="Search templates" bind:value={templateQuery} />
         </label>
+        <div class="tformats" role="group" aria-label="Format">
+          {#each [{ id: "", name: "Any" }, ...FORMATS] as choice}
+            <button type="button" class="btn btn-sm {formatFilter === choice.id ? 'lp-control-tonal-brand' : 'lp-control-outline'}"
+                    aria-pressed={formatFilter === choice.id} onclick={() => chooseFormat(choice.id)}>{choice.name}</button>
+          {/each}
+        </div>
+        <div class="tlist">
+          {#if !shownTemplates.length}
+            <p class="lp-text-secondary text-sm">No template matches.</p>
+          {/if}
+          {#if shownBuiltIn.length}
+            <div class="tgrid">
+              {#each shownBuiltIn as template (template.id)}{@render templateCard(template)}{/each}
+            </div>
+          {/if}
+          {#if shownCustom.length}
+            <h3 class="tgroup">Your templates</h3>
+            <div class="tgrid">
+              {#each shownCustom as template (template.id)}{@render templateCard(template)}{/each}
+            </div>
+          {/if}
+        </div>
+        {#if chosenTemplate && !chosenTemplate.custom && !formatFilter && chosenTemplate.formats.length > 1}
+          <label class="label">
+            <span class="label-text">Format</span>
+            <select class="select" value={format} onchange={(event) => (formatOverride = event.currentTarget.value)}>
+              {#each chosenTemplate.formats as id}
+                <option value={id}>{formatNamed(id).name}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
         {#if nameError}<p class="lp-text-error text-sm">{nameError}</p>{/if}
       </Stack>
     </form>
@@ -1157,6 +1318,23 @@
 
   .starters { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); }
   .starters-say { color: var(--color-text-secondary); font-size: var(--text-sm); margin-right: calc(var(--spacing)); }
+
+  /* The template picker. Cards fill the width in as many columns as fit, and
+     the list scrolls on its own so the name and the buttons stay in view. */
+  .tformats { display: flex; flex-wrap: wrap; gap: calc(var(--spacing) * 2); }
+  .tlist { max-height: 40vh; overflow-y: auto; display: flex; flex-direction: column; gap: calc(var(--spacing) * 3); }
+  .tgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: calc(var(--spacing) * 2); }
+  .tgroup { font-size: var(--text-sm); font-weight: 600; color: var(--color-text-secondary); margin: 0; }
+  .tcard { position: relative; display: flex; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-raised); }
+  .tcard.picked { border-color: var(--color-brand); background: var(--color-row-selected); }
+  .tcard-pick { display: flex; flex-direction: column; align-items: flex-start; gap: calc(var(--spacing)); flex: 1 1 auto; min-width: 0; padding: calc(var(--spacing) * 3); text-align: left; background: transparent; border: 0; border-radius: inherit; color: var(--color-text); cursor: pointer; }
+  .tcard-pick:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+  .tcard-name { font-weight: 600; overflow-wrap: anywhere; }
+  .tcard-name.with-actions { padding-right: 4rem; }
+  .tcard-say { font-size: var(--text-xs); color: var(--color-text-secondary); }
+  .tcard-formats { display: flex; flex-wrap: wrap; gap: calc(var(--spacing)); margin-top: auto; }
+  .tcard-badge { font-size: var(--text-xs); padding: 0 calc(var(--spacing) * 1.5); border-radius: 999px; background: var(--color-subtle); color: var(--color-text-secondary); }
+  .tcard-actions { position: absolute; top: calc(var(--spacing)); right: calc(var(--spacing)); display: inline-flex; }
 
   .toolbar { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-height: 2rem; }
   .toolbar .row-count { color: var(--color-text-secondary); font-size: var(--text-sm); }

@@ -736,6 +736,7 @@ impl Store {
         _owner_key: Option<&str>,
         cursor: Option<(&str, &str)>,
         limit: u32,
+        include_templates: bool,
     ) -> Result<Vec<IndexEntry>, CatalogError> {
         let catalog = &self.catalog;
         let account_id = account_id
@@ -759,8 +760,17 @@ impl Store {
             None => None,
         };
         let documents = catalog
-            .visible_documents(account_id, before, i64::from(limit))
+            .visible_documents(account_id, before, i64::from(limit), include_templates)
             .await?;
+        entries_from_documents(catalog, &documents).await
+    }
+
+    /// The custom templates this account owns, most recently changed first.
+    pub async fn templates_page(&self, account_id: &str) -> Result<Vec<IndexEntry>, CatalogError> {
+        let catalog = &self.catalog;
+        let account_id = uuid::Uuid::parse_str(account_id)
+            .map_err(|_| CatalogError::Invalid("invalid listing account".into()))?;
+        let documents = catalog.templates_by_owner(account_id, 200).await?;
         entries_from_documents(catalog, &documents).await
     }
 

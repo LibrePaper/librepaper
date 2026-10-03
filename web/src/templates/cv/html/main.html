@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Curriculum Vitae: {{author}}</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; }
+      h1 { text-align: center; margin: 0.5em 0; }
+      .contact { text-align: center; font-size: 0.9em; margin-bottom: 2em; }
+      h2 { border-bottom: 2px solid #333; padding-bottom: 0.3em; margin-top: 1.5em; }
+      .entry { display: grid; grid-template-columns: 150px 1fr; gap: 20px; margin-bottom: 1em; }
+      .entry-date { font-weight: bold; color: #666; }
+      .entry-title { font-weight: bold; }
+      .entry-org { color: #666; font-size: 0.95em; }
+    </style>
+  </head>
+  <body>
+    <h1>{{author}}</h1>
+    <div class="contact">Email: your.email@example.com | Phone: (123) 456-7890 | Address: City, State</div>
+
+    <h2>Education</h2>
+    <div class="entry">
+      <div class="entry-date">2020</div>
+      <div>
+        <div class="entry-title">Ph.D. in Your Field</div>
+        <div class="entry-org">University Name | City, State</div>
+      </div>
+    </div>
+    <div class="entry">
+      <div class="entry-date">2017</div>
+      <div>
+        <div class="entry-title">Master's Degree in Your Field</div>
+        <div class="entry-org">University Name | City, State</div>
+      </div>
+    </div>
+    <div class="entry">
+      <div class="entry-date">2015</div>
+      <div>
+        <div class="entry-title">Bachelor's Degree in Your Field</div>
+        <div class="entry-org">University Name | City, State</div>
+      </div>
+    </div>
+
+    <h2>Positions</h2>
+    <div class="entry">
+      <div class="entry-date">2021-present</div>
+      <div>
+        <div class="entry-title">Current Position</div>
+        <div class="entry-org">Organization Name | City, State</div>
+        <p>Brief description of responsibilities and accomplishments.</p>
+      </div>
+    </div>
+    <div class="entry">
+      <div class="entry-date">2017-2021</div>
+      <div>
+        <div class="entry-title">Previous Position</div>
+        <div class="entry-org">Organization Name | City, State</div>
+        <p>Brief description of responsibilities and accomplishments.</p>
+      </div>
+    </div>
+
+    <h2>Publications</h2>
+    <ul>
+      <li>Your Name (2023). A recent publication title. <cite>Journal Name</cite>, 45(3), 123-145.</li>
+      <li>Your Name (2022). Another publication title. <cite>Journal Name</cite>, 44(2), 98-112.</li>
+      <li>Your Name (2021). Earlier work on a topic. <cite>Journal Name</cite>, 43(1), 45-67.</li>
+    </ul>
+
+    <h2>Grants and Awards</h2>
+    <ul>
+      <li>Award Name (2023) - Organization Name</li>
+      <li>Grant Award (2022) - Funding Organization</li>
+      <li>Recognition (2021) - Institution Name</li>
+    </ul>
+
+    <h2>Skills</h2>
+    <ul>
+      <li>Research and analysis</li>
+      <li>Academic writing</li>
+      <li>Data visualization</li>
+      <li>Project management</li>
+      <li>Teaching and mentoring</li>
+    </ul>
+  </body>
+</html>

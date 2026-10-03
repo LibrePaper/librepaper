@@ -8,11 +8,13 @@
   import IconButton from "../IconButton.svelte";
   import SettingRow from "./SettingRow.svelte";
   import { loadStorageStatus, storageBytes, trimHistory } from "../../lib/quota-preferences.js";
+  import { SHELL_HEADERS } from "../../lib/api.js";
 
   let snapshot = $state(null);
   let loading = $state(true);
   let error = $state("");
   let trimErrors = $state({});
+  let deleteTemplateErrors = $state({});
   let alive = true;
   let generation = 0;
 
@@ -21,6 +23,9 @@
   let trimOpen = $state(false);
   let trimTarget = $state(null);
   let trimPending = $state(false);
+  let deleteTemplateOpen = $state(false);
+  let deleteTemplateTarget = $state(null);
+  let deleteTemplatePending = $state(false);
 
   const usage = $derived(snapshot?.usage);
   const documents = $derived(usage?.documents ?? []);
@@ -97,6 +102,34 @@
     }
   }
 
+  function openDeleteTemplateDialog(doc) {
+    deleteTemplateTarget = { title: nameOf(doc), slug: doc.slug };
+    deleteTemplateOpen = true;
+  }
+
+  async function confirmDeleteTemplate() {
+    const slug = deleteTemplateTarget?.slug;
+    if (!slug) return;
+    deleteTemplatePending = true;
+    deleteTemplateErrors = { ...deleteTemplateErrors, [slug]: "" };
+    try {
+      const response = await fetch(`/api/documents/${slug}/delete`, {
+        method: "POST",
+        headers: SHELL_HEADERS,
+      });
+      if (!response.ok) {
+        deleteTemplateErrors = { ...deleteTemplateErrors, [slug]: "The template could not be deleted." };
+        return;
+      }
+      void reload();
+    } catch (cause) {
+      if (alive) deleteTemplateErrors = { ...deleteTemplateErrors, [slug]: cause.message || "The template could not be deleted." };
+    } finally {
+      deleteTemplatePending = false;
+      deleteTemplateOpen = false;
+    }
+  }
+
   async function reload() {
     const job = ++generation;
     loading = true;
@@ -163,17 +196,26 @@
         {#each visibleDocs as doc (doc.id)}
           <div role="row" class="doc-row">
             <div role="cell" class="doc-title">
-              <a class="title-text" href="/docs/{doc.slug}" title={nameOf(doc)}>{nameOf(doc)}</a>
+              <div class="title-with-badge">
+                <a class="title-text" href="/docs/{doc.slug}" title={nameOf(doc)}>{nameOf(doc)}</a>
+                {#if doc.template}<span class="badge lp-tone-neutral">Template</span>{/if}
+              </div>
               {#if trimErrors[doc.slug]}<div class="trim-error">{trimErrors[doc.slug]}</div>{/if}
+              {#if deleteTemplateErrors[doc.slug]}<div class="trim-error">{deleteTemplateErrors[doc.slug]}</div>{/if}
             </div>
             <div role="cell" class="doc-storage">
               {@render bar(partsOf(doc), totalOf(doc) || 1, labelOf(partsOf(doc)), "doc-bar")}
               <span class="doc-total">{storageBytes(totalOf(doc))}</span>
             </div>
-            <div role="cell">
+            <div role="cell" class="doc-actions">
               <IconButton icon="history" title="Trim history" label={`Trim history for ${nameOf(doc)}`}
                           size="btn-icon-sm" disabled={doc.historyBytes === 0}
                           onclick={() => openTrimDialog(doc)} />
+              {#if doc.template}
+                <IconButton icon="trash" title="Delete template" label={`Delete template ${nameOf(doc)}`}
+                            size="btn-icon-sm"
+                            onclick={() => openDeleteTemplateDialog(doc)} />
+              {/if}
             </div>
           </div>
         {/each}
@@ -197,6 +239,13 @@
   {/if}
 </Modal>
 
+<Modal bind:open={deleteTemplateOpen} title="Delete template?"
+       confirm={{ label: deleteTemplatePending ? "Deleting..." : "Delete", tone: "error", disabled: deleteTemplatePending, onclick: confirmDeleteTemplate }}>
+  {#if deleteTemplateTarget}
+    <p>“<strong>{deleteTemplateTarget.title}</strong>” will move to the trash, where it stays for seven days. Until then you can put it back.</p>
+  {/if}
+</Modal>
+
 <style>
   .account-line { display: flex; align-items: center; gap: calc(var(--spacing) * 3); }
   .storage-bar { display: flex; height: 10px; border-radius: 9999px; overflow: hidden; background: var(--color-subtle); }
@@ -217,9 +266,11 @@
 
   .doc-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: calc(var(--spacing) * 3); align-items: center; min-height: 44px; padding: calc(var(--spacing) * 1) 0; border-bottom: 1px solid var(--color-divider); }
   .doc-row:last-child { border-bottom: 0; }
+  .title-with-badge { display: flex; align-items: center; gap: calc(var(--spacing) * 1); min-width: 0; }
   .title-text { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: inherit; text-decoration: none; }
   .title-text:hover, .title-text:focus-visible { text-decoration: underline; }
   .doc-storage { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
+  .doc-actions { display: flex; gap: calc(var(--spacing) * 1); }
   .doc-total { min-width: 4.5rem; text-align: right; white-space: nowrap; font-size: 0.875rem; font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
   .trim-error { color: var(--color-error-text); font-size: 0.75rem; }
   .no-match { color: var(--color-text-secondary); font-size: 0.875rem; }

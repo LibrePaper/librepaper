@@ -1,0 +1,5 @@
+{
+  "name": "Letter",
+  "description": "A formal letter with sender, recipient and signature.",
+  "keywords": ["cover letter", "reference", "correspondence"]
+}

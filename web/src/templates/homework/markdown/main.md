@@ -1,0 +1,65 @@
+# {{title}}
+
+**{{author}}**
+
+## Problem 1 (10 points)
+
+Solve the following equation:
+
+$$
+x^2 + 3x + 2 = 0
+$$
+
+(a) Find the roots of this quadratic equation.
+
+(b) Verify your solutions by substituting back into the original equation.
+
+_Space for answer:_
+
+---
+
+## Problem 2 (8 points)
+
+Calculate the derivative of the function:
+
+$$
+f(x) = 3x^3 - 2x^2 + x - 5
+$$
+
+Show your work step by step.
+
+_Space for answer:_
+
+---
+
+## Problem 3 (7 points)
+
+Evaluate the definite integral:
+
+$$
+\int_0^2 (2x + 1) \, dx
+$$
+
+(a) Set up the integral.
+
+(b) Compute the antiderivative.
+
+(c) Evaluate using the fundamental theorem of calculus.
+
+_Space for answer:_
+
+---
+
+## Problem 4 (5 points)
+
+Multiple choice: Which of the following is true?
+
+(a) All prime numbers are odd.
+
+(b) The sum of any two even numbers is even.
+
+(c) Every positive integer is a prime number.
+
+(d) Zero is a positive number.
+
+_Space for answer:_

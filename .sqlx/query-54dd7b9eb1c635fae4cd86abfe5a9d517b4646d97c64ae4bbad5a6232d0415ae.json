@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO document_templates(document_id) VALUES ($1)\n             ON CONFLICT (document_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "54dd7b9eb1c635fae4cd86abfe5a9d517b4646d97c64ae4bbad5a6232d0415ae"
+}

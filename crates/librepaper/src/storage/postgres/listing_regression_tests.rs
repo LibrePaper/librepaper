@@ -129,7 +129,7 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
         Some(AccessRole::Reader)
     );
     assert!(catalog
-        .visible_documents(Some(viewer), None, 200)
+        .visible_documents(Some(viewer), None, 200, false)
         .await
         .unwrap()
         .iter()
@@ -254,7 +254,7 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
     let mut seen = Vec::new();
     while seen.len() < expected.len() {
         let page = catalog
-            .visible_documents(Some(viewer), cursor, 2)
+            .visible_documents(Some(viewer), cursor, 2, false)
             .await
             .unwrap();
         assert!(!page.is_empty());
@@ -268,7 +268,7 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
     }
     assert_eq!(seen, expected);
     let all = catalog
-        .visible_documents(Some(viewer), None, 200)
+        .visible_documents(Some(viewer), None, 200, false)
         .await
         .unwrap();
     let actual: Vec<_> = all
@@ -277,7 +277,10 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
         .map(|row| row.id)
         .collect();
     assert_eq!(actual, expected);
-    let anonymous = catalog.visible_documents(None, None, 200).await.unwrap();
+    let anonymous = catalog
+        .visible_documents(None, None, 200, false)
+        .await
+        .unwrap();
     assert!(anonymous
         .into_iter()
         .filter(|row| fixture.contains(&row.id))
@@ -365,6 +368,66 @@ async fn concurrent_archive_references_charge_one_object_once() {
         .await
         .unwrap();
     assert_eq!(catalog.usage_bytes(None).await.unwrap(), before);
+    drop(writer);
+    catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_template_leaves_the_project_listing_and_follows_its_document() {
+    let catalog = test_catalog().await;
+    let writer = catalog.claim_writer().await.unwrap();
+    let owner = account(&catalog).await;
+    let template = document(&catalog, owner, "owned").await;
+    let project = document(&catalog, owner, "owned").await;
+    catalog.mark_template(template).await.unwrap();
+    // Marking again is not an error.
+    catalog.mark_template(template).await.unwrap();
+
+    let ids = |rows: Vec<super::super::DocumentRecord>| {
+        rows.into_iter().map(|row| row.id).collect::<Vec<_>>()
+    };
+    let listed = ids(catalog
+        .visible_documents(Some(owner), None, 200, false)
+        .await
+        .unwrap());
+    assert!(listed.contains(&project));
+    assert!(!listed.contains(&template));
+    // A backup keeps templates: they are the owner's data.
+    let backed_up = ids(catalog
+        .visible_documents(Some(owner), None, 200, true)
+        .await
+        .unwrap());
+    assert!(backed_up.contains(&template));
+
+    assert_eq!(
+        ids(catalog.templates_by_owner(owner, 200).await.unwrap()),
+        vec![template]
+    );
+    let flagged = catalog.template_ids(&[template, project]).await.unwrap();
+    assert!(flagged.contains(&template));
+    assert!(!flagged.contains(&project));
+
+    // In the trash it is no longer offered, and it is still flagged there.
+    catalog.mark_document_deleting(template).await.unwrap();
+    assert!(catalog
+        .templates_by_owner(owner, 200)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(catalog
+        .template_ids(&[template])
+        .await
+        .unwrap()
+        .contains(&template));
+
+    // The mark goes with the document row.
+    sqlx::query("DELETE FROM documents WHERE id=$1")
+        .bind(template)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    assert!(catalog.template_ids(&[template]).await.unwrap().is_empty());
     drop(writer);
     catalog.close().await;
 }
