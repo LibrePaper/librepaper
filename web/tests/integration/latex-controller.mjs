@@ -475,6 +475,8 @@ function nextProject() {
   const previousWorker = worker();
   let identityStarted;
   const started = new Promise((resolve) => { identityStarted = resolve; });
+  let identityFinished;
+  const finished = new Promise((resolve) => { identityFinished = resolve; });
   let releaseIdentity;
   const heldIdentity = new Promise((resolve) => { releaseIdentity = resolve; });
   let holdFirstIdentity = true;
@@ -487,7 +489,9 @@ function nextProject() {
         identityStarted();
         await heldIdentity;
       }
-      return bibliography.identity(input);
+      const identity = await bibliography.identity(input);
+      if (!holdFirstIdentity) identityFinished();
+      return identity;
     },
   });
   latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
@@ -508,7 +512,8 @@ function nextProject() {
   const bibtexBeforeRelease = FakeWorker.totalBibtexCalls;
 
   releaseIdentity();
-  await tick(4);
+  await finished;
+  await tick(1);
   assert.equal(FakeWorker.totalBibtexCalls, bibtexBeforeRelease, "the stale identity continuation does not dispatch BibTeX");
   assert.equal(compilingWorker.dead, false, "the stale job does not affect the replacement worker");
 }

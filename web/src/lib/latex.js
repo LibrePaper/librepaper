@@ -687,6 +687,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
     if (inspected.makeindex) {
       try {
         const idx = await deadlineCall(target, "makeindex", { stem }, deadlineAt);
+        checkpoint();
         const ind = toBytes(idx.ind);
         if (!(idx.status === 0 || idx.status === 1) || !ind) {
           throw new Error(idx.ilg || "MakeIndex did not produce an index.");
