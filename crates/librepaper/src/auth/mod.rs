@@ -595,7 +595,6 @@ fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
     }
 }
 
-
 /// "<token>.<signature>" for a freshly minted visitor token, so a browser
 /// cannot simply pick its own owner key.
 pub fn sign_visitor(key: &[u8], token: &str) -> String {
@@ -715,8 +714,6 @@ fn decode_session_key(raw: &[u8]) -> Option<Vec<u8>> {
         None
     }
 }
-
-
 
 /// A user code as the table keys it. People type them in whatever case their
 /// keyboard is in, and a hyphen is the shape a printed code invites.

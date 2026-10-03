@@ -684,8 +684,7 @@ impl Configuration {
 
         let quota = self.log_quota_bytes as u64;
         let resident = budget::estimate(quota, self.cache_expansion);
-        let transient =
-            budget::estimate(quota, budget::BUILD_TRANSIENT_EXPANSION);
+        let transient = budget::estimate(quota, budget::BUILD_TRANSIENT_EXPANSION);
         let needed = resident
             .checked_add(transient)
             .ok_or_else(|| "the memory budget requirement overflows".to_string())?;

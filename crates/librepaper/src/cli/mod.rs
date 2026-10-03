@@ -10,8 +10,8 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
 use crate::config::Configuration;
-use crate::local::cli::{LaunchArgs, LocalAgentCommand, LocalArgs, LocalCommand};
 use crate::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
+use crate::local::cli::{LaunchArgs, LocalAgentCommand, LocalArgs, LocalCommand};
 use crate::storage::StorageFlags;
 use crate::util::die;
 

@@ -17,11 +17,11 @@
 
 use super::*;
 use crate::document::session;
-use crate::storage::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
 use crate::storage::annotation::{AnchorStatus, CommentTarget};
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::Authority;
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 use serde_json::json;
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";
@@ -962,7 +962,9 @@ async fn edit_refinement_source(room: &Room, text: &str, sequence: i64) {
 }
 
 /// Whatever is already queued for a peer, as JSON.
-fn received(rx: &mut tokio::sync::mpsc::Receiver<crate::storage::outgoing::Outgoing>) -> Vec<Value> {
+fn received(
+    rx: &mut tokio::sync::mpsc::Receiver<crate::storage::outgoing::Outgoing>,
+) -> Vec<Value> {
     let mut out = Vec::new();
     while let Ok(frame) = rx.try_recv() {
         let text = match frame {

@@ -78,7 +78,8 @@ pub mod paths {
 /// `tools/fuzz/fuzz_targets/update.rs`).
 pub mod session {
     pub use crate::document::session::{
-        apply_edits_at, apply_update, decode_update, encode_state, main_path, new_doc, paths_of,
+        apply_edits_at, apply_update, decode_update, encode_diff, encode_state, encode_vector,
+        main_path, new_doc, paths_of,
         put_asset, put_text, replace_text, set_main, text_of, Edit, ASSETS, FILES, MAIN, META,
         PATHS,
     };
@@ -125,8 +126,7 @@ pub mod source_archive {
 pub mod postgres {
     pub use crate::storage::postgres::{
         AccountRecord, Authority, Error, MutationAuthorization, NewAccount, NewAnnotation,
-        NewDocument,
-        NewReply, PostgresCatalog, PostgresOptions, StoragePolicy, WriterLease,
+        NewDocument, NewReply, PostgresCatalog, PostgresOptions, StoragePolicy, WriterLease,
     };
 }
 
@@ -158,12 +158,12 @@ pub mod outgoing {
 pub use auth::{
     sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB, SESSION_COOKIE,
 };
-pub use util::now_unix;
-pub use storage::store::Store;
 pub use librepaper_shell::ShellFile;
 pub use room::{Room, Rooms};
 pub use server::Server;
 pub use storage::blob::{BlobStore, FsStore};
+pub use storage::store::Store;
+pub use util::now_unix;
 
 #[cfg(test)]
 mod tests;

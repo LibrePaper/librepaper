@@ -23,7 +23,6 @@ use crate::auth::{
     VISITOR_COOKIE,
 };
 use crate::config::Configuration;
-use crate::storage::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
@@ -31,6 +30,7 @@ use crate::storage::blob::FsStore;
 use crate::storage::postgres::{
     AccessRole, NewAccount, PostgresCatalog, PostgresOptions, StoragePolicy,
 };
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 
 use super::Server;
 

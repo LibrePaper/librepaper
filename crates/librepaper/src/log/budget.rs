@@ -13,8 +13,11 @@
 //! default.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use futures_util::future::BoxFuture;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
+use tokio::sync::Notify;
 
 pub use crate::config::budget::{estimate, BUILD_TRANSIENT_EXPANSION, DEFAULT_EXPANSION};
 

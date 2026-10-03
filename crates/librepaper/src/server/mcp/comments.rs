@@ -9,9 +9,9 @@
 //! module would have to guess about.
 
 use super::*;
+use crate::room;
 use crate::room::agent::OperationKey;
 use crate::room::proposals::{pending_proposal, validate_existing_action};
-use crate::room::{self, Comment};
 
 /// The id a newly created annotation gets, for a comment and for a suggestion
 /// alike.
@@ -470,6 +470,7 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::room::Comment;
 
     /// A suggestion shaped the way `room::comments` actually serves one:
     /// a proposal id and nothing in the `proposed`/`outcome` projections.

@@ -8,9 +8,9 @@ pub mod maintenance;
 pub(crate) mod outgoing;
 pub mod postgres;
 pub mod schedule;
-pub mod seed;
 #[cfg(test)]
 mod schedule_tests;
+pub mod seed;
 pub mod source;
 pub mod source_archive;
 pub mod store;

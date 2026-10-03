@@ -264,7 +264,6 @@ impl std::fmt::Debug for Reservation {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

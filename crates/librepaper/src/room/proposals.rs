@@ -1750,7 +1750,8 @@ pub fn validate_existing_action(
             "comment_id is required for this action",
         ));
     }
-    let comment = comment.ok_or_else(|| ActionRefusal::new("not_found", "comment does not exist"))?;
+    let comment =
+        comment.ok_or_else(|| ActionRefusal::new("not_found", "comment does not exist"))?;
     if supplied_version.is_empty() {
         return Err(ActionRefusal::new(
             "invalid_params",
@@ -1770,10 +1771,12 @@ pub fn validate_existing_action(
     // fenced again by the command itself at commit time.
     let suggestion = comment.motivation == "editing" && !comment.proposal.is_empty();
     match action {
-        "refine" if !(editor || (own && suggestion && !comment.resolved)) => Err(ActionRefusal::new(
-            "permission_changed",
-            "only the suggestion author or an editor may refine a pending suggestion",
-        )),
+        "refine" if !(editor || (own && suggestion && !comment.resolved)) => {
+            Err(ActionRefusal::new(
+                "permission_changed",
+                "only the suggestion author or an editor may refine a pending suggestion",
+            ))
+        }
         "reject" if !editor || !suggestion || comment.resolved => Err(ActionRefusal::new(
             "permission_changed",
             "editor access is required to reject a suggestion",

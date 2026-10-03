@@ -2,13 +2,13 @@
 //! under the state home, the device flow that fills it, and `logout`.
 
 use super::*;
-use crate::local::credentials::{
-    librepaper_dir, lock_tokens, stored_token_at, store_token_at, tokens_path,
-};
 #[cfg(test)]
 use crate::local::credentials::read_tokens;
 pub(crate) use crate::local::credentials::write_private_file;
 pub use crate::local::credentials::write_token;
+use crate::local::credentials::{
+    librepaper_dir, lock_tokens, store_token_at, stored_token_at, tokens_path,
+};
 pub(crate) use crate::local::paths::state_home_or_die as state_home;
 
 /// The token to send to `server`: an explicit `--token` (or the

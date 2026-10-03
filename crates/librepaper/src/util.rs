@@ -83,11 +83,7 @@ pub fn now_millis() -> i64 {
 /// every mutating document tool call, in the exact shape the server's
 /// `OperationKey::validate` requires, so the model never constructs one.
 pub fn new_request_key() -> String {
-    format!(
-        "v2.{}.{}",
-        now_millis(),
-        hex::encode(random_bytes(16))
-    )
+    format!("v2.{}.{}", now_millis(), hex::encode(random_bytes(16)))
 }
 
 pub fn timestamp() -> String {

@@ -4,9 +4,6 @@
 //! defaults and validates its limits from them; the log modules re-export
 //! them under their old names.
 
-use futures_util::future::BoxFuture;
-use tokio::sync::Notify;
-
 /// How much larger a decoded document is than the bytes it was loaded from.
 ///
 /// §14.1 says the spike sets this. The spike has now been run
@@ -105,8 +102,7 @@ pub fn max_update_bytes(log_quota_bytes: usize) -> usize {
 /// is the larger of the two.
 pub fn max_pending_charge(log_quota_bytes: usize) -> usize {
     let ceiling = BUFFER_CEILING_BYTES;
-    let single =
-        max_update_bytes(log_quota_bytes) + BATCH_HEADER_BYTES + MAX_PEER_KEY;
+    let single = max_update_bytes(log_quota_bytes) + BATCH_HEADER_BYTES + MAX_PEER_KEY;
     if single > ceiling {
         single
     } else {

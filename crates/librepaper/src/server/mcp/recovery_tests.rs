@@ -12,12 +12,12 @@ use uuid::Uuid;
 
 use crate::auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
 use crate::config::Configuration;
-use crate::storage::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::{AccessRole, NewAccount, PostgresCatalog};
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 
 use super::super::Server;
 

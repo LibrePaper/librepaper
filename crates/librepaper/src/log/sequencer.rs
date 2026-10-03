@@ -43,10 +43,9 @@ pub use crate::config::budget::{
     max_pending_charge, max_row_bytes, max_update_bytes, BUFFER_CEILING_BYTES, FLUSH_TRIGGER_BYTES,
 };
 use crate::config::Configuration;
-use crate::storage::outgoing::{Outgoing, Sender};
 use crate::storage::blob::BlobStore;
+use crate::storage::outgoing::{Outgoing, Sender};
 use crate::storage::postgres::{self, Authority, FlushRow, PostgresCatalog};
-
 
 /// A buffer non-empty for this long flushes even while somebody is still
 /// typing, so the log is never further behind the screen than this.
@@ -2568,7 +2567,8 @@ impl Sequencer {
     /// and an object-store round trip over as much as 32 MiB, and typing
     /// would stall for the whole of it. A base nothing points at yet is
     /// inert, so the caller writes it first and activates it here.
-    pub(crate) async fn compaction_gate(&self) -> CompactionGate<'_> {
+    /// Exposed for the whole-stack benchmarks, like `prove_coverage`.
+    pub async fn compaction_gate(&self) -> CompactionGate<'_> {
         let transaction = self.transaction.lock().await;
         let inner = self.inner.lock().await;
         CompactionGate {
@@ -2590,7 +2590,7 @@ impl Sequencer {
 
 /// Both of a sequencer's locks, held for the whole of §8.4 step 5. See
 /// [`Sequencer::compaction_gate`].
-pub(crate) struct CompactionGate<'a> {
+pub struct CompactionGate<'a> {
     _transaction: tokio::sync::MutexGuard<'a, ()>,
     inner: tokio::sync::MutexGuard<'a, Inner>,
     slug: &'a str,
@@ -2617,7 +2617,7 @@ impl CompactionGate<'_> {
     /// under-report `log_bytes()` from this moment on, compounding across
     /// compactions, which under-enforces the §9.1 log quota and reserves too
     /// little for a build under the §9.2 budget.
-    pub(crate) fn note_compacted(
+    pub fn note_compacted(
         &mut self,
         through: i64,
         vector: &[u8],

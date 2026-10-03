@@ -32,16 +32,16 @@ use crate::auth::{
 };
 use crate::config::Configuration;
 use crate::document::render::{title_from_html, title_from_markdown};
-use crate::storage::store::{
-    random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
-    Role, Store,
-};
 use crate::room::{
     decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
     Sender,
 };
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
+};
+use crate::storage::store::{
+    random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
+    Role, Store,
 };
 use crate::util::clean;
 use librepaper_shell::{renderers, ShellFile};

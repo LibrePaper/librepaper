@@ -10,8 +10,8 @@ use tokio::net::TcpListener;
 
 use clap::{Args, Subcommand};
 
-use crate::local::paths::state_home_or_die as state_home;
 use crate::local::pairing::{PairingStore, ServiceState};
+use crate::local::paths::state_home_or_die as state_home;
 use crate::local::protocol::{self, DEFAULT_PORT};
 use crate::local::service::{LocalService, NativeRunner, Runner};
 use crate::util::die;

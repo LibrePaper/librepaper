@@ -283,10 +283,10 @@ mod tests {
         Budget, Command, CommandError, Evidence, Head, PreparedSource, Role, Sequencer,
     };
     use crate::storage::annotation::{CommentTarget, OriginalAnchor, PresentationContext};
-    use crate::storage::outgoing::Sender;
     use crate::storage::blob::{BlobStore, FsStore};
     use crate::storage::collaboration::CollaborationStorage;
     use crate::storage::maintenance::Maintenance;
+    use crate::storage::outgoing::Sender;
 
     /// §8.4 step 5 end to end, for the catalogue tests that only care about
     /// where a base and its rows end up. Production splits these two -- the

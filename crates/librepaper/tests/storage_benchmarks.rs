@@ -37,12 +37,12 @@ use futures_util::future::join_all;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
+use librepaper::log::{FlushReason, Registry};
 use librepaper::postgres::{
     AccountRecord, Authority, NewAccount, NewDocument, PostgresCatalog, PostgresOptions,
     StoragePolicy, WriterLease,
 };
 use librepaper::session;
-use librepaper::log::{FlushReason, Registry};
 
 fn micros(start: Instant) -> u64 {
     start.elapsed().as_micros().try_into().unwrap_or(u64::MAX)
@@ -142,9 +142,10 @@ async fn typing_throughput_release_benchmark() {
     // writes no base (it never compacts) and reads none, so the store is
     // only here to satisfy the registry's constructor.
     let scratch = tempfile::tempdir().expect("scratch blob directory");
-    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(
-        librepaper::FsStore::new(scratch.path().to_path_buf(), false),
-    );
+    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(librepaper::FsStore::new(
+        scratch.path().to_path_buf(),
+        false,
+    ));
     // The expansion measurement below keeps many documents resident at once
     // on purpose (see the comment at that block). The default 512 MiB
     // budget would start evicting cold entries partway through that, which
@@ -1005,7 +1006,9 @@ async fn compaction_cost_release_benchmark() {
                         .await;
                     samples.push((at, micros(at)));
                     match outcome {
-                        librepaper::log::Ingested::Accepted => vector = session::encode_vector(&doc),
+                        librepaper::log::Ingested::Accepted => {
+                            vector = session::encode_vector(&doc)
+                        }
                         // Back-pressure is not a reason to stop: a real
                         // client resends. Anything else is structural.
                         librepaper::log::Ingested::Retryable(_) => {}
@@ -1131,10 +1134,8 @@ async fn compaction_cost_release_benchmark() {
         let compressed = zstd::stream::encode_all(std::io::Cursor::new(&snapshot[..]), 3)
             .expect("compress the snapshot");
         let compression_us = micros(at);
-        let storage = librepaper::collaboration::CollaborationStorage::new(
-            catalog.clone(),
-            blobs.clone(),
-        );
+        let storage =
+            librepaper::collaboration::CollaborationStorage::new(catalog.clone(), blobs.clone());
         let at = Instant::now();
         let written = storage
             .write_base(
@@ -1742,7 +1743,9 @@ async fn concurrent_compaction_release_benchmark() {
                         .await;
                     samples.push((at, micros(at)));
                     match outcome {
-                        librepaper::log::Ingested::Accepted => vector = session::encode_vector(&doc),
+                        librepaper::log::Ingested::Accepted => {
+                            vector = session::encode_vector(&doc)
+                        }
                         librepaper::log::Ingested::Retryable(_) => {}
                         other => {
                             terminal = Some(format!("{other:?}"));
@@ -2445,9 +2448,10 @@ async fn active_document_capacity_benchmark() {
     }
 
     let scratch = tempfile::tempdir().expect("scratch blob directory");
-    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(
-        librepaper::FsStore::new(scratch.path().to_path_buf(), false),
-    );
+    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(librepaper::FsStore::new(
+        scratch.path().to_path_buf(),
+        false,
+    ));
     let config = Arc::new(librepaper::config::Configuration {
         memory_budget_bytes: u64::MAX / 4,
         ..librepaper::config::Configuration::default()
@@ -2916,9 +2920,10 @@ async fn mixed_traffic_capacity_benchmark() {
     let writer = catalog.claim_writer().await.expect("writer lease");
 
     let scratch = tempfile::tempdir().expect("scratch blob directory");
-    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(
-        librepaper::FsStore::new(scratch.path().to_path_buf(), false),
-    );
+    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(librepaper::FsStore::new(
+        scratch.path().to_path_buf(),
+        false,
+    ));
     let mut base_config = librepaper::config::Configuration {
         memory_budget_bytes: u64::MAX / 4,
         ..Default::default()
@@ -3214,9 +3219,10 @@ async fn reconnect_burst_capacity_benchmark() {
     let writer = catalog.claim_writer().await.expect("writer lease");
 
     let scratch = tempfile::tempdir().expect("scratch blob directory");
-    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(
-        librepaper::FsStore::new(scratch.path().to_path_buf(), false),
-    );
+    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(librepaper::FsStore::new(
+        scratch.path().to_path_buf(),
+        false,
+    ));
     let mut base_config = librepaper::config::Configuration {
         memory_budget_bytes: u64::MAX / 4,
         ..Default::default()
@@ -3432,9 +3438,10 @@ async fn maintenance_backlog_capacity_benchmark() {
     let _writer = catalog.claim_writer().await.expect("writer lease");
 
     let scratch = tempfile::tempdir().expect("scratch blob directory");
-    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(
-        librepaper::FsStore::new(scratch.path().to_path_buf(), false),
-    );
+    let blobs: Arc<dyn librepaper::BlobStore> = Arc::new(librepaper::FsStore::new(
+        scratch.path().to_path_buf(),
+        false,
+    ));
     let mut base_config = librepaper::config::Configuration {
         memory_budget_bytes: u64::MAX / 4,
         ..Default::default()
@@ -3570,7 +3577,9 @@ async fn maintenance_backlog_capacity_benchmark() {
                             push_landed_us = Some(micros(queued_at));
                             push_outcome = "accepted";
                         }
-                        librepaper::log::Ingested::Retryable(retry) if retry.reason == "log_quota" => {
+                        librepaper::log::Ingested::Retryable(retry)
+                            if retry.reason == "log_quota" =>
+                        {
                             refusals += 1;
                             let now_us = micros(queued_at);
                             first_refusal_us.get_or_insert(now_us);

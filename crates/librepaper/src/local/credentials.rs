@@ -42,7 +42,6 @@ pub(crate) fn agent_token(
         .unwrap_or_else(|| cached(base, server))
 }
 
-
 /// Where every librepaper file lives under the state directory.
 pub(crate) fn librepaper_dir(base: &Path) -> PathBuf {
     base.join("librepaper")
@@ -62,7 +61,9 @@ pub(crate) fn load_tokens(base: &Path) -> std::collections::HashMap<String, Stri
     read_tokens(base).unwrap_or_default()
 }
 
-pub(crate) fn read_tokens(base: &Path) -> Result<std::collections::HashMap<String, String>, String> {
+pub(crate) fn read_tokens(
+    base: &Path,
+) -> Result<std::collections::HashMap<String, String>, String> {
     let path = tokens_path(base);
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
@@ -143,7 +144,7 @@ pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String
 /// nobody else. Kept as a thin wrapper over `write_private_file` because
 /// tests write a token to an arbitrary path directly, without going through
 /// `login`'s scoped cache.
-pub(crate) fn write_token(path: &Path, token: &str) -> Result<(), String> {
+pub fn write_token(path: &Path, token: &str) -> Result<(), String> {
     write_private_file(path, format!("{token}\n").as_bytes())
 }
 

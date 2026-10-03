@@ -4,11 +4,11 @@
 use super::*;
 use crate::log::sequencer::Ingested;
 use crate::log::CommandError;
-use crate::storage::outgoing::OutgoingSink;
 use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };
 use crate::room::Room;
+use crate::storage::outgoing::OutgoingSink;
 use crate::storage::postgres::{StoredProposal, StoredProposalOutcome};
 
 /// Bound both queue and transport writes so a slow peer cannot pin the reader

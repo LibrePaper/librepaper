@@ -52,11 +52,11 @@ use crate::storage::postgres::{
 };
 use crate::util::clean;
 
+use super::locate::{self, Quote};
+use super::{Room, WriteError};
 use crate::storage::annotation::{
     CommentTarget, DerivedAttachment, OriginalAnchor, PresentationContext, SourceTextTarget,
 };
-use super::locate::{self, Quote};
-use super::{Room, WriteError};
 
 // -- the model ---------------------------------------------------------
 

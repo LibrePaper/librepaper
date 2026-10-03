@@ -66,16 +66,16 @@ use uuid::Uuid;
 
 use futures_util::future::BoxFuture;
 
-use crate::log::tests::Outbox;
-use crate::log::*;
 use crate::config::Configuration;
 use crate::document::session;
-use crate::storage::store::{DocumentInput, MutationActor, Store};
+use crate::log::tests::Outbox;
+use crate::log::*;
 use crate::room::{AddComment, Rooms};
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::postgres::{
     Authority, MutationAuthorization, NewAccount, NewDocument, PostgresCatalog, PostgresOptions,
 };
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 use crate::storage::worker::{Task, Worker};
 
 async fn connect(url: String) -> Arc<PostgresCatalog> {
@@ -400,7 +400,10 @@ fn subscriber() -> crate::storage::outgoing::Sender {
     crate::storage::outgoing::Sender::channel(64, 1 << 20, None, None).0
 }
 
-fn editor_subscription() -> (crate::storage::outgoing::Sender, crate::storage::outgoing::Receiver) {
+fn editor_subscription() -> (
+    crate::storage::outgoing::Sender,
+    crate::storage::outgoing::Receiver,
+) {
     crate::storage::outgoing::Sender::channel(64, 1 << 20, None, None)
 }
 

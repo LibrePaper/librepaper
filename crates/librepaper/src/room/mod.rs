@@ -60,19 +60,19 @@ mod message;
 pub(crate) use crate::storage::outgoing;
 #[cfg(test)]
 mod proposal_round_trip_tests;
+pub(crate) mod proposals;
 #[cfg(test)]
 mod recovery_tests;
-pub(crate) mod proposals;
 pub(crate) mod resolve;
 pub(crate) mod text;
 
+pub use crate::util::{decode_update, encode_update};
 pub use annotation::OriginalAnchor;
 pub use command::Command as RoomCommand;
 pub use comments::*;
 pub use error::WriteError;
 pub use label::Attribution;
 pub use message::Message;
-pub use crate::util::{decode_update, encode_update};
 pub use outgoing::{Outgoing, Sender};
 
 /// One connected socket, as the room needs to know it.

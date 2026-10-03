@@ -348,7 +348,8 @@ impl BackupManager {
     async fn status(&self, inner: &Inner, origin: &str, account_id: &str) -> Value {
         let key = BackupConfig::key(origin, account_id);
         let mut config = self.config(origin, account_id).await;
-        let token_missing = crate::local::credentials::stored_token_at(&inner.state_home, origin).is_empty();
+        let token_missing =
+            crate::local::credentials::stored_token_at(&inner.state_home, origin).is_empty();
         if !token_missing
             && config.error.as_deref().is_some_and(is_identity_error)
             && self.should_recheck_login(&key)
@@ -1814,7 +1815,8 @@ mod tests {
         let cache_home = tempfile::tempdir().unwrap();
         let destination = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path(), cache_home.path()).await;
-        crate::local::credentials::store_token_at(&inner.state_home, &origin, "backup-test-token").unwrap();
+        crate::local::credentials::store_token_at(&inner.state_home, &origin, "backup-test-token")
+            .unwrap();
         let (pairing_token, _) = inner
             .pairing
             .issue(&origin, "identity outage test")
@@ -2132,7 +2134,8 @@ mod tests {
         account_id: &str,
         destination: &Path,
     ) {
-        crate::local::credentials::store_token_at(&inner.state_home, origin, "backup-test-token").unwrap();
+        crate::local::credentials::store_token_at(&inner.state_home, origin, "backup-test-token")
+            .unwrap();
         inner
             .pairing
             .issue(origin, "backup integration fixture")
