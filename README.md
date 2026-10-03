@@ -9,7 +9,7 @@ browser, share a link to it, and collect comments and highlights in real time.
 - Trivial to deploy: one static binary, on your laptop or on a small server
 - Export a complete, independent project copy from the CLI
 
-![A document open in LibrePaper, with highlighted passages and the comments sidebar.](docs/images/commenting.png)
+![The LibrePaper editor: LaTeX source on the left, the compiled paper with its figure, equation and table on the right.](docs/images/editor-latex.png)
 
 ## Try it
 

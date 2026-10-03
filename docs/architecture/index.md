@@ -23,4 +23,4 @@ Records describe what somebody did at a moment and cannot be edited afterwards. 
 3. A link holder holds exactly the role their link names; links expire.
 4. Documents are hostile; bytes uploaded run their own scripts inside the reader.
 
-Published documents are served from a second configured origin (separate host required). Documents may run their own code but not fetch code from other hosts. Messages between reader and document are origin-checked at both ends.
+Published documents are served in a sandboxed frame from a second configured origin (a separate host is required). The separate origin limits access to application credentials and authority; it does not make document content confidential from readers, nor does it block all external resources. The deployed content security policy permits HTTPS scripts and other network requests, so document code can contact third parties. Messages between reader and document are origin-checked at both ends. See [the response policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/specs/SPEC-security.md#rendering-and-outbound-requests) for the implemented policy and proposed restrictions.

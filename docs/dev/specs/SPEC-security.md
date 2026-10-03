@@ -13,7 +13,9 @@ builds and agent interfaces remain supported. Source paths below are relative
 to `crates/librepaper/src/` unless stated otherwise.
 
 - The operator controls binary, database and storage and can read plaintext;
-  there is no end-to-end encryption. Backup encryption protects copied backups.
+  there is no end-to-end encryption. The backup command writes a database dump
+  and referenced objects without encryption; encryption and retention require
+  separate operator-managed controls.
 - Sharing links are bearer credentials with role, expiry and revocation.
   Forwarding forwards authority. Local code execution requires separate consent.
 - Documents and agent context are hostile input. HTML runs in the document

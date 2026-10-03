@@ -13,8 +13,7 @@ None of those exist any more. There is no compatibility path: this is an
 unreleased protocol change and every consumer in the tree was moved.
 
 This is a transport change only. There is no admission limit on comments or
-replies today; whether to add one is a product question recorded in
-REVIEW-BIG-IDEAS.md.
+replies today; whether to add one is a separate product decision.
 
 ## 1. Pages and cursors
 
@@ -159,29 +158,14 @@ preview are fetched by *Show more replies* on that card.
   truncates and shows itself as partial rather than silently claiming to
   hold the rest.
 
-## 6. Exports
+## 6. Consumers and export
 
-`librepaper export DOCUMENT` streams. It walks the annotation cursor, and
-for every thread whose replies are incomplete it walks that thread's reply
-cursor, writing each comment to the output as it is rendered. The three
-renderers (`jsonld`, `markdown`, `response`) were split into
-header/item/footer so nothing collects a `Vec<Comment>` of the whole
-document on either side of the wire.
-
-- the server holds one page's rows and one pooled connection per request,
-  released before the body is written, so a slow consumer cannot pin a
-  database connection;
-- output goes to a temporary file, written as each comment is rendered and
-  renamed into place only after the traversal finishes. A failed page
-  aborts with a non-zero exit and no output file at all, not even the
-  temporary, so a partial export can never be mistaken for a complete one.
-  A pipe cannot be taken back: to stdout the bytes go as they are rendered,
-  and what says the export is not complete is the message on stderr and the
-  non-zero exit status;
-- consistency is §3's contract. The export also compares the rows it
-  wrote against the authoritative `total` the first page reported, and
-  prints a warning naming both figures when they differ, which is what
-  "the collection changed while this ran" looks like from the client.
+The companion's `librepaper export DOCUMENT DIRECTORY` command exports a project
+snapshot (source and assets); it does not traverse or export comments. The
+HTTP comment pages and room events described above are the current transport
+for clients that need to read annotations. A client can traverse those pages
+using the cursor and consistency rules in §§1–5, but there is no built-in
+Markdown, JSON-LD, or response-to-reviewers exporter.
 
 ## 7. Agents
 
@@ -217,7 +201,7 @@ depend on page size.
 | reply expansion | `REPLY_PREVIEW` per comment in a page; `THREAD_PAGE_MAX` per thread request |
 | anchor reattachment | the attachment cache only; re-resolution is bounded by its size, not by the document's comment count |
 | websocket payloads | `hello` = one page; every other comment frame names one row; attachment frames chunked at 200 |
-| export buffering | one page in the server, one page in the client |
+| comment transport buffering | one page in the server and one requested page in a client |
 | agent capture storage | source only; no comments stored in a view |
 
 Remaining limitations, stated honestly:

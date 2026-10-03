@@ -6,14 +6,14 @@ Edit Markdown, Quarto, Typst, HTML and LaTeX documents with source, rendering, a
 
 ## Files
 
-Owners and editors can download the whole project as a ZIP; others get only the rendered PDF or HTML.
+Owners and editors can download the whole project as a ZIP. Readers and commenters cannot use that project-download control, but their browser still receives the projected source files and shared assets needed to render the document. Do not put sensitive material in a shared project on the assumption that a reader can see only its rendered page.
 
 - File moves preserve collaborative text editing; references in source files are not rewritten.
 - A folder containing the main file cannot be deleted until another file becomes main.
 
 ## Saving and co-editing
 
-Edits save automatically; CRDT ensures concurrent typing converges without waiting. The server holds the document source and relays updates, so closing the last tab loses nothing. Readers see the same live rendering as editors but receive no editable source or project files.
+Edits save automatically; CRDT ensures concurrent typing converges without waiting. The server holds the document source and relays updates, so closing the last tab loses nothing. Readers see the same live rendering as editors. They do not join CRDT synchronization or receive the operation history, but the reader app fetches a source projection (text, main-file metadata, and shared assets) to render the document. That source is readable by authorized readers in their browser; keep private inputs outside the shared project. See [rendering and live sync](../architecture/rendering.html) for the delivery boundary.
 
 Comments retain their source checkpoint and passage; moved text updates the display but not the target.
 
@@ -27,7 +27,7 @@ Comments retain their source checkpoint and passage; moved text updates the disp
 | HTML | the identity | nothing |
 | LaTeX | the browser engine, fetched directly from the mirror | ~6 MB and requested packages from the mirror; these are not origin transfer |
 
-All formats are compiled to WebAssembly; no installation is needed. The same compiler runs in both editors and readers, so with the same source, renderer and settings, a document renders the same way for everyone. Rendering happens on editors' and readers' own devices; the server never compiles a document. Private inputs such as data files and bibliographies never reach reader browsers. Readers refetch only files whose digest changed.
+Browser renderers run in WebAssembly on editors' and readers' devices; the server does not compile documents. The reader receives the shared source projection and assets needed for rendering, not the full collaboration log. A companion can run local tools against a folder that is not uploaded. Readers refetch only files whose digest changed.
 
 ## Preview modes
 

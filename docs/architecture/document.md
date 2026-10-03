@@ -23,9 +23,9 @@ Each document's log is capped by `log_quota_mb` (advanced config, default 32 MB)
 
 PostgreSQL holds metadata, update logs and review state; the object store holds immutable blobs keyed by digest or never-reused names.
 
-Document state is persisted as a compressed base plus an ordered log in Postgres, compacted periodically. The base is full operation history compressed with zstd (a million keystrokes costs a few hundred kilobytes). There is no retention window on edit history.
+Document state is persisted as a compressed base plus an ordered log in Postgres, compacted periodically. History is retained by default, but an owner can explicitly trim older edit history and named versions; trimmed history cannot be recovered from the live document.
 
-A checkpoint records the whole directory as a canonical tree. Checkpoints are written when somebody labels a moment, restores an earlier version, commits from the command line, or a proposal is accepted.
+A checkpoint records the whole directory as a canonical tree. Checkpoints are written when somebody labels a moment, restores an earlier version, or accepts a proposal.
 
 Source archives are produced on request (keyed by tree digest), not at checkpoint time. They are content-addressed and the fastest way to retrieve a document at a point in time.
 
@@ -39,6 +39,6 @@ Storage limits:
 
 Owners can set softer history budgets and retention thresholds but cannot raise deployment hard limits. Documents may expire based on creation or last edit.
 
-`librepaper admin backup` writes a snapshot-consistent Postgres dump plus referenced objects and verifies it. `restore` restores into a fresh directory.
+`librepaper admin backup` writes a snapshot-consistent Postgres dump plus referenced objects and verifies it. The command does not encrypt or schedule backup copies. `restore` restores into a fresh database and directory; it does not independently replay account-deletion requests.
 
 Maintenance (compaction, archiving, deletion) runs on an in-process bounded queue. An idle deployment issues no maintenance queries. Reclamation releases storage only after physical deletion. Superseded objects become eligible after a grace period.

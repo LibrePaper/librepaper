@@ -21,7 +21,7 @@ Welcome to LibrePaper. Edit this sentence in the browser and watch the preview u
 
 \section{Source and preview}
 
-This file is \LaTeX. LibrePaper compiles PDF in the browser with a pinned WebAssembly engine and Biber. The server synchronizes the source and stores successful PDFs; it does not compile the document.
+This file is \LaTeX. LibrePaper compiles PDF in the browser with a pinned WebAssembly engine and Biber. The server synchronizes source but does not compile documents or store rendered PDFs.
 
 \section{A small scientific example}
 
@@ -43,7 +43,7 @@ Packages make the document's capabilities explicit: \texttt{amsmath} provides th
 
 \section{Working with other clients}
 
-A document previews as HTML by default; choose PDF in the Format menu for printed layout. Choose Automatic, pdfLaTeX, XeLaTeX, or LuaLaTeX in Settings; availability depends on the pinned browser release. A project export creates an independent local copy. Readers receive the stored PDF and do not need \LaTeX{} installed.
+A document previews as HTML by default; choose PDF in the Format menu for printed layout. Choose Automatic, pdfLaTeX, XeLaTeX, or LuaLaTeX in Settings; availability depends on the pinned browser release. A project export creates an independent local copy of source and assets. Readers render the shared source in their browser and do not need \LaTeX{} installed.
 
 \bibliographystyle{plain}
 \bibliography{references}

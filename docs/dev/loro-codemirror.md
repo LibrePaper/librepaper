@@ -174,10 +174,12 @@ against upstream unchanged. Offering it would mean asking upstream to drop two
 exported symbols for a difference of approach in code this build no longer
 depends on them for.
 
-When a release contains the fixes: delete `loro-codemirror.lock`, the two
-tools under `web/tools`, the `loro-codemirror` and `loro-update` targets and
-the `LCM` variables and the `$(LCM)` prerequisites in the Makefile, and the
-gitignore entry; restore the dependency in `web/package.json`; point the
+Retire the fork only after an upstream package release contains these fixes
+and the project has moved its imports to that release. Until then, the pinned
+lock, fetch tooling, `LCM_DIR`/`LCM` variables, and `$(LCM)` prerequisites are
+active build inputs and must stay together. At retirement, remove the lock,
+fetch tooling, active variable/prerequisite wiring, and gitignore entry;
+restore the dependency in `web/package.json`; point the
 `LoroExtensions` imports in `Editor.svelte` and `MergeEditor.svelte`, the two
 plugin-value imports in the test, and the `undo.ts` imports in
 `tests/browser/editor-browser.mjs` and `tests/browser/insert-browser.mjs`, at

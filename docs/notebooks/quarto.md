@@ -20,7 +20,7 @@ Markdown preview renders the source as Markdown in the browser with front matter
 
 Quarto preview produces HTML, RevealJS, or PDF. DOCX is available only as an export. LibrePaper previews one document at a time; website and book project renders are not supported.
 
-Nothing rendered is ever uploaded. The server holds only the `.qmd` source and its declared shared resources.
+Quarto executes locally and its generated output is not uploaded automatically. The hosted project does hold its shared source and resources. Authorized readers and commenters receive the source projection and shared assets needed for browser rendering, so keep private inputs outside the shared project. A separately published HTML file is a different document, not a privacy boundary around the source of this project.
 
 ## Trust
 
@@ -38,6 +38,6 @@ Publishing a project directory includes editorial resources and code, but skips 
 {"include": ["data/public.csv"]}
 ```
 
-Shared source and inputs are readable by owners and editors. Readers and commenters receive only explicitly published HTML and its display assets.
+Shared source, included inputs, and assets are readable by authorized readers as well as editors; readers receive a projection for rendering, not CRDT history. Keep private inputs in a local companion folder and do not add them to the shared project. A project export also contains shared source and assets.
 
 To render against a project folder on your disk instead of the hosted workspace, use binding commands; see [the companion](../cli.html#the-companion). Choosing a folder does not upload its contents. The website receives an opaque binding identifier, not the folder's absolute path.

@@ -6,42 +6,56 @@ format: html
 
 ## Problem 1 (10 points)
 
-Solve for $x$ in the following equation:
+Solve the following equation:
 
-$$2x + 5 = 13$$
+$$x^2 + 3x + 2 = 0$$
 
-**(a)** Show all steps of your work.
-
-[Space for your answer]
-
-**(b)** Verify your answer by substituting back into the original equation.
+**(a)** Find the roots of this quadratic equation.
 
 [Space for your answer]
 
-## Problem 2 (10 points)
-
-Prove the following statement:
-
-**(a)** State the hypothesis.
+**(b)** Verify your solutions by substituting back into the original equation.
 
 [Space for your answer]
 
-**(b)** Provide a complete proof or counterexample.
+## Problem 2 (8 points)
+
+Calculate the derivative of the function:
+
+$$f(x) = 3x^3 - 2x^2 + x - 5$$
+
+Show your work step by step.
 
 [Space for your answer]
 
-## Problem 3 (10 points)
+## Problem 3 (7 points)
 
-Answer the following questions:
+Evaluate the definite integral:
 
-**(a)** What is the significance of this concept?
+$$\int_0^2 (2x + 1) \, dx$$
 
-[Space for your answer]
-
-**(b)** How does it connect to what we learned previously?
+**(a)** Set up the integral.
 
 [Space for your answer]
 
-**(c)** Can you provide a real-world example?
+**(b)** Compute the antiderivative.
+
+[Space for your answer]
+
+**(c)** Evaluate using the fundamental theorem of calculus.
+
+[Space for your answer]
+
+## Problem 4 (5 points)
+
+Multiple choice: Which of the following is true?
+
+(a) All prime numbers are odd.
+
+(b) The sum of any two even numbers is even.
+
+(c) Every positive integer is a prime number.
+
+(d) Zero is a positive number.
 
 [Space for your answer]

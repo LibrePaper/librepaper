@@ -4,13 +4,13 @@ title: "History and revisions"
 
 ## What is kept
 
-Everything. Editing is recorded as a graph of operations, and that graph is
-retained in full, so any state the document has ever been in can be
-reproduced from it. Nothing is written on a timer and nothing is thinned as
-it ages.
+Editing history and named versions are retained by default while a document
+exists. An owner can explicitly trim older history and versions to reduce
+storage use. Trimming permanently removes that recovery information; it cannot
+be restored from the live document. See [storage and history](../architecture/document.html#storage-and-history).
 
 Versions are the moments somebody asked for: a checkpoint you name in the
-History panel, a restore, an accepted proposal, a commit from the CLI. Each
+History panel, a restore, or an accepted proposal. Each
 of those records the whole directory, so a chapter and the file that
 includes it can never come back out of step. A comment on the live draft is
 anchored to the moment it was made rather than to a version, so a round of

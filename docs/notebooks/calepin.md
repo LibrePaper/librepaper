@@ -23,7 +23,7 @@ Typst preview (in the browser, no code runs) is the default and always available
 
 Output is written beside the main file, same name, `.pdf` or `.html` extension.
 
-Nothing rendered is ever uploaded. The server holds only the Typst source and its declared shared resources.
+Calepin runs locally and its generated output is not uploaded automatically. The hosted project does hold its shared Typst source and resources. Authorized readers and commenters receive the source projection and shared assets needed for browser rendering, so keep private inputs outside the shared project.
 
 ## Project folder
 

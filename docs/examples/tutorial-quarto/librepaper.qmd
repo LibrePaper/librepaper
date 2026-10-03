@@ -45,7 +45,7 @@ Quarto combines Markdown prose with executable R or Python cells, captions, and 
 
 ## Working with other clients
 
-Bind the companion to a project folder when private inputs must remain on your computer. A project export creates an independent copy of shared source and assets. Uploading a finished HTML file creates an HTML document that readers can open without R, Python, or Quarto.
+Bind the companion to a project folder when private inputs must remain on your computer; readers of the shared project can read its projected source and assets. A project export creates an independent copy of shared source and assets. Uploading a finished HTML file creates an HTML document that readers can open without R, Python, or Quarto.
 
 ## References
 
