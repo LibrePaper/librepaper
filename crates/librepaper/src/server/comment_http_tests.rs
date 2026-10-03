@@ -856,8 +856,7 @@ fn multipart_upload(
     let mut body = Vec::new();
     for (name, filename, bytes) in parts {
         body.extend_from_slice(
-            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"")
-                .as_bytes(),
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"").as_bytes(),
         );
         if let Some(filename) = filename {
             body.extend_from_slice(format!("; filename=\"{filename}\"").as_bytes());
@@ -895,11 +894,7 @@ async fn upload_parser_rejects_invalid_utf8_in_single_and_selected_main_files() 
     ];
 
     for parts in [&single[..], &directory[..]] {
-        let response = match deployment
-            .server
-            .read_upload(multipart_upload(parts))
-            .await
-        {
+        let response = match deployment.server.read_upload(multipart_upload(parts)).await {
             Ok(_) => panic!("invalid UTF-8 main source was accepted"),
             Err(response) => response,
         };

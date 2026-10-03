@@ -20,12 +20,9 @@ pub(super) struct Upload {
 }
 
 fn main_source(path: &str, bytes: &[u8]) -> Result<String, Reply> {
-    std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| {
-        write_json(
-            400,
-            &json!({"error": format!("{path} is not valid UTF-8")}),
-        )
-    })
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|_| write_json(400, &json!({"error": format!("{path} is not valid UTF-8")})))
 }
 
 #[derive(serde::Serialize)]
