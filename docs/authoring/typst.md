@@ -24,12 +24,8 @@ that font installed.
 
 ## Typst documents with Calepin
 
-Ordinary Typst rendering — the browser's own compiler, described above — is
-unchanged. A Typst document with code chunks can also offer **Calepin
-preview** under Tools alongside **Typst preview** (the default): it runs
-`calepin watch` on your own computer, through the local app, and shows the
-resulting PDF in the usual PDF viewer, where comments work. This needs
-Calepin installed on the machine running the local app; pairing works
-exactly as it does for Quarto preview —
-one **Allow** click, no binding required. If Calepin isn't installed, the
-banner says so. Nothing rendered is ever uploaded.
+A Typst document with code chunks can also use Calepin preview, which runs
+`calepin watch` on your own computer through the local app and shows the
+resulting PDF in the viewer, where comments work. This requires Calepin
+installed on the machine running the local app. Pairing works exactly as it
+does for Quarto preview. Nothing rendered is ever uploaded.

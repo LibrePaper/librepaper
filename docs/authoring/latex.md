@@ -18,23 +18,19 @@ stay in browser storage so the next document costs nothing to fetch. The TeX eng
 their own licences, and Biber is AGPL-3.0. They are fetched at run time;
 their notices travel with the mirror.
 
-In the editor, **View → Preview format → HTML** selects a live LaTeXML
-preview; **PDF** returns to the printed layout. The choice is remembered in
-this browser for this document. HTML conversion runs in a separate WebAssembly
-worker and reuses the mirror's verified TeX package bundles. It requires a
-mirror release containing the `latexml` engine, built and hosted by
-[`wasm-latex`](https://github.com/LibrePaper/wasm-latex). The app contains only
-the adapter and preview controls. HTML is a transient reading view. An
-unsuccessful edit may leave the current preview visible while reporting
-conversion diagnostics; it does not create a stored rendering.
+HTML preview via LaTeXML conversion is available. HTML conversion runs in a
+separate WebAssembly worker and reuses the mirror's verified TeX package
+bundles. It requires a mirror release containing the `latexml` engine, built
+and hosted by [`wasm-latex`](https://github.com/LibrePaper/wasm-latex). HTML is a
+transient reading view; an unsuccessful edit may leave the current preview
+visible while reporting conversion diagnostics.
 
-The project engine (Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX) is a project
-setting in the Settings dialog. Every compile uses the release the server pins in `assets.lock`;
-documents do not pin a browser release. Automatic honours
-a `% !TEX program = xelatex` line in the main file, then looks for packages
-that only a Unicode engine can load, and otherwise uses pdfLaTeX. LuaLaTeX
-remains in the selector for release compatibility, but selecting it with the
-current release reports that it is not available in this release.
+The project engine (Automatic, pdfLaTeX, XeLaTeX or LuaLaTeX) is configurable
+per project. Every compile uses the release the server pins in `assets.lock`.
+Automatic honours a `% !TEX program = xelatex` line in the main file, then
+looks for packages that only a Unicode engine can load, and otherwise uses
+pdfLaTeX. LuaLaTeX remains available for release compatibility, but may not be
+available in the current release.
 
 BibTeX and Biber run in the browser when the release provides them. Biber
 documents use the release's bundled biblatex pairing. If browser Biber has an
@@ -43,47 +39,27 @@ local companion and continue typesetting in the browser. Bibliography input
 errors are shown directly and are not retried through another backend. If the
 companion is unavailable, the reader explains that local Biber is required.
 
-The local companion extends the online editor with the tools installed on
-your computer. Documents and collaboration stay in the website. Install the
-companion from the [install page](../install.html), then start it with
-`librepaper` in a terminal. The first connection asks permission for the
-named site and document; subsequent connections reuse that permission,
-including after restarting the companion.
+The local companion extends the online editor with tools installed on your
+computer. Install from the [install page](../install.html), then start it:
 
-*Settings*, *Local app* shows discovered tools, lets you disconnect the
-document, and offers **Start at login** and **Quit companion**, each confirmed
-in a dialog on this computer. Startup at login is optional. A browser may separately ask for
-permission to connect to a local service; allow that for the LibrePaper site
-you use. Compilation permissions do not grant the website access to these
-local management controls.
+```sh
+librepaper                           # start in the background
+librepaper --at-login                # also start every time you log in
+```
 
-The companion is the same binary as the CLI, and can be run and inspected from
-a terminal instead; see [the companion](../cli.html#the-companion).
+The first connection asks permission for the named site and document;
+subsequent connections reuse that permission, including after restarting the
+companion. Compilation permissions do not grant the website access to local
+management controls.
 
-Connect once from the document's Settings dialog and later fallbacks are
-automatic. When browser compilation fails outright (an engine that will not
-start, a package the mirror lacks, a crash, a TeX error), the reader asks the
-app to compile the whole project natively with your installed TeX, once per
-version of the source, and shows the result as an ordinary preview that says
-it was made locally. The app accepts structured jobs rather than commands,
-runs the tools with shell escape off, confines them with `bwrap` or
-`sandbox-exec` where the platform has them, and says so when it cannot. It
-never installs packages or changes your TeX installation.
+The companion is the same binary as the CLI; see [the companion](../cli.html#the-companion).
+
+When browser compilation fails (an engine that will not start, a package the
+mirror lacks, a crash, a TeX error), the reader falls back to compiling
+natively with your installed TeX, once per version of the source. The app
+accepts structured jobs rather than commands, runs the tools with shell escape
+off, confines them with `bwrap` or `sandbox-exec` where available, and says so
+when it cannot. It never installs packages or changes your TeX installation.
 
 A self-hoster can serve the browser distribution from their own mirror rather
-than the project one; see
-[Privacy](../host.html#privacy).
-
-`make demo` checks that the local LaTeX mirror build (`MIRROR=`, default `../wasm-latex/mirror`) holds release directories
-(`<sha256>/`, each described by `release.json`) with a complete engine
-release with its TeX Live bundles (`tools/latex/tools/check-mirror.mjs`; see
-`tools/deploy-assets check` and `tools/deploy-assets smoke`, MIRROR=). Older per-file mirrors
-and SwiftLaTeX/BusyTeX releases are rejected as legacy. `tools/deploy-assets smoke` compiles `docs/examples/tutorial-latex/librepaper.tex`
-in a fresh Chromium profile against MIRROR= and requires visible PDF pages
-and selectable text before you point a deployment at it.
-
-LibrePaper always serves the LaTeX editor and compiler configuration. Browsers
-fetch distribution files directly from the HTTPS mirror; the origin does not
-proxy or cache them. A directory path or an `http:` mirror is refused at
-startup. The browser verifies each file against the pinned release's `release.json`
-before use.
+than the project one; see [Privacy](../host.html#privacy).
