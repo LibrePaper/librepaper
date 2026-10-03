@@ -92,7 +92,7 @@ const scholarly = new Set(['theorem','lemma','proposition','definition','proof',
  * @property {string[]} [arguments]
  */
 
-/** @typedef {Omit<InsertOptions, 'level'|'rows'|'columns'> & {level?: number|string, rows?: number|string, columns?: number|string, text?: string, argumentsText?: string}} InsertionDraft */
+/** @typedef {Omit<InsertOptions, 'level'|'rows'|'columns'> & {level?: number|string, rows?: number|string, columns?: number|string, text?: string, path?: string, argumentsText?: string}} InsertionDraft */
 
 /**
  * @param {string} path
