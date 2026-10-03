@@ -11,8 +11,10 @@ import { FORMATS } from "./starter.js";
 
 /** @type {Record<string, {name: string, description?: string, keywords?: string[]}>} */
 const metadata = import.meta.glob("../templates/*/template.json", { eager: true, import: "default" });
+// Keep the glob expression literal for Vite while recording the ?raw plugin contract.
+const rawSources = import.meta.glob(["../templates/*/*/**", "!../templates/*/template.json"], { query: "?raw", import: "default" });
 /** @type {Record<string, () => Promise<string>>} */
-const sources = import.meta.glob(["../templates/*/*/**", "!../templates/*/template.json"], { query: "?raw", import: "default" });
+const sources = /** @type {Record<string, () => Promise<string>>} */ (rawSources);
 
 // Blank leads because it is what "New project" meant before there were
 // templates; the rest are in the order somebody scanning for one expects.

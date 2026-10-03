@@ -101,6 +101,7 @@ function parseParameters(value) {
  * object, which also makes saved preferences easy to validate on load.
  */
 /** @param {{format?: string|null, profile?: string|null, parameters?: unknown, parametersText?: string}} [options] */
+/** @returns {{format: string, profile: string, parameters: Record<string, unknown>}} */
 export function parseRenderOptions({ format = null, profile = null, parameters = null, parametersText } = {}) {
   const parameterInput = parameters === null && parametersText !== undefined ? parametersText : parameters;
   return {

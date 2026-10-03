@@ -47,7 +47,7 @@ function browserReferenceFetcher({ slug, key = "", fetcher = globalThis.fetch })
 }
 
 /** @typedef {Parameters<typeof createProjectSession>[0]} SessionOptions */
-/** @typedef {Omit<SessionOptions, "persistence"|"fetchReference"|"presenceId"|"presenceColour"> & {slug: string, documentId?: string, createdAt?: string, key?: string, persistence?: NonNullable<SessionOptions["persistence"]>, fetchReference?: (reference: string) => Promise<Uint8Array>, presenceId?: () => string, presenceColour?: () => string}} JoinOptions */
+/** @typedef {Omit<SessionOptions, "persistence"|"fetchReference"|"presenceId"|"presenceColour"> & {slug: string, documentId?: string, createdAt?: string, key?: string, persistence?: NonNullable<SessionOptions["persistence"]>, fetchReference?: (reference: string) => Promise<Uint8Array>, presenceId?: SessionOptions["presenceId"], presenceColour?: SessionOptions["presenceColour"]}} JoinOptions */
 /** @param {JoinOptions} options */
 export function join({ slug, documentId = "", createdAt = "", key = "", persistence, fetchReference, ...options }) {
   const identity = documentId
