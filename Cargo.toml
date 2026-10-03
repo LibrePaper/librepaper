@@ -90,7 +90,7 @@ serde_yaml = "0.9"
 # GitHub and deployment HTTP. Match object_store's Reqwest generation so the
 # binary does not carry two HTTP/TLS client stacks. rustls rather than OpenSSL
 # keeps the client portable across release targets.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "multipart"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "multipart", "form", "query"] }
 # Digests, SigV4, and the signature on every cookie.
 sha2 = "0.10"
 # Quarto's freezer names a cached computation by the MD5 of its source, so

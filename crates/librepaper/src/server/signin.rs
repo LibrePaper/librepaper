@@ -174,10 +174,6 @@ impl Server {
             })
             .unwrap_or_default();
         match path {
-            // Keep the configuration endpoint while released CLI clients may
-            // still begin device sign-in through it. Remove only with an
-            // announced release cutoff after that client support expires.
-            "/api/auth/config" => Some(write_json(200, &json!({"client_id": self.app.client_id}))),
             // The one door. The shell links here rather than to a provider,
             // so no page has to know which providers this deployment has.
             "/auth/login" => {
@@ -423,6 +419,10 @@ impl Server {
                 }
                 Some(response)
             }
+            // Retain while released CLI clients may begin device sign-in
+            // through this endpoint; remove only after an announced support
+            // cutoff expires.
+            "/api/auth/config" => Some(write_json(200, &json!({"client_id": self.app.client_id}))),
             // What this deployment will accept, so the upload page can refuse a
             // 30 MB mistake before it is sent rather than after.
             "/api/config" => Some(write_json(
