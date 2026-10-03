@@ -918,6 +918,10 @@ export function cancel() {
     activeToken.abort.abort();
     if (activeCallbacks) for (const reject of activeCallbacks.failing) reject(error);
     activeCallbacks = null;
+    // A pending RPC still has its own deadline timer. Do not let it outlive
+    // this job against a worker the replacement compile could reuse: retire
+    // the worker now, which settles every canceled RPC and clears its timer.
+    if (pendingCalls.size) retireWorker();
     running = false;
     activeToken = null;
   }

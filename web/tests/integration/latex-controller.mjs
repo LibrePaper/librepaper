@@ -459,6 +459,35 @@ function nextProject() {
   assert.equal((await queued).ok, true, "the queued compile progresses on a fresh worker");
 }
 
+// Canceling a hung helper must retire its worker before a replacement can
+// reuse it; otherwise the old helper's deadline retires the replacement's
+// in-flight RPC and makes that newer compile fail.
+{
+  latex.at("/deadline-helper-cancel/");
+  const previousWorker = worker();
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, deadlineMs: 1500 });
+  latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
+  FakeWorker.dropNextCommand = "makeindex";
+  FakeWorker.nextTexReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: { "main.idx": enc.encode("\\indexentry{alpha}{1}\n") } }];
+  const canceled = latex.compile(tree("main.tex", "cancel hung helper"));
+  const firstWorker = await untilWorker(previousWorker);
+  await untilMessage(firstWorker, (message) => message.cmd === "makeindex");
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  latex.cancel();
+  await assert.rejects(canceled, (error) => error.name === "Superseded");
+  assert.equal(firstWorker.dead, true, "cancel retires a worker with an unanswered helper RPC");
+
+  let finishReplacementTex;
+  FakeWorker.nextTexReplies = [() => new Promise((resolve) => { finishReplacementTex = resolve; })];
+  const replacement = latex.compile(tree("main.tex", "replacement compile"));
+  const replacementWorker = await untilWorker(firstWorker);
+  await untilMessage(replacementWorker, (message) => message.cmd === "tex");
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.equal(replacementWorker.dead, false, "the canceled helper's deadline cannot retire the replacement worker");
+  finishReplacementTex({ status: 0, pdf: PDF, synctex: null, log: "", outputs: {} });
+  assert.equal((await replacement).ok, true, "the replacement compile survives the canceled helper deadline");
+}
+
 latex._testing.inject({ deadlineMs: latex.DEADLINE_MS });
 
 // ============================================================================
