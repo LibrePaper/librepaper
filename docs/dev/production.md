@@ -14,6 +14,8 @@ The official instance at librepaper.org runs `tools/deploy-docker` on an OVHclou
 
 ## Release
 
+The Rust TLS clients share the AWS-LC provider. Direct Reqwest uses 0.13, matching the Reqwest generation used by object_store 0.14; Reqwest and object_store's AWS feature select AWS-LC. SQLx explicitly selects `runtime-tokio` with `tls-rustls-aws-lc-rs` rather than the `runtime-tokio-rustls` ring alias. `tokio-tungstenite` uses rustls without choosing a provider, so `tls.rs` installs AWS-LC before its WebSocket connection only when the process has no provider already, preserving an embedding caller's choice. The all-target dependency tree has no active ring path, and workspace all-target clippy passed for this feature selection.
+
 ```sh
 # Set this to the release tag matching the package version in Cargo.toml.
 VERSION=vX.Y.Z
