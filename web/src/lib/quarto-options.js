@@ -65,6 +65,7 @@ function parseParameters(value) {
   const keys = Object.keys(source);
   if (keys.length > MAX_PARAMETER_COUNT) invalid("at most 128 parameters are allowed");
 
+  /** @type {Record<string, unknown>} */
   const parameters = {};
   for (const key of keys) {
     if (byteLength(key) < 1 || byteLength(key) > MAX_PARAMETER_NAME_BYTES || !PARAMETER_NAME_RE.test(key)) {
@@ -100,8 +101,10 @@ function parseParameters(value) {
  * `parameters` may be the JSON text from a textarea or an already parsed
  * object, which also makes saved preferences easy to validate on load.
  */
-/** @param {{format?: string|null, profile?: string|null, parameters?: unknown, parametersText?: string}} [options] */
-/** @returns {{format: string, profile: string, parameters: Record<string, unknown>}} */
+/**
+ * @param {{format?: string|null, profile?: string|null, parameters?: unknown, parametersText?: string}} [options]
+ * @returns {{format: string, profile: string, parameters: Record<string, unknown>}}
+ */
 export function parseRenderOptions({ format = null, profile = null, parameters = null, parametersText } = {}) {
   const parameterInput = parameters === null && parametersText !== undefined ? parametersText : parameters;
   return {
