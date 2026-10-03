@@ -207,53 +207,11 @@ impl ServiceFlags {
                 die(format!("invalid advanced backup policy: {error}"));
             }
             if let Some(proxies) = file.trusted_proxies {
-                let parsed_proxies: Result<Vec<_>, _> = proxies
-                    .into_iter()
-                    .map(|s| {
-                        use std::net::IpAddr;
-                        let s = s.trim();
-                        if s.is_empty() || s.len() > 64 {
-                            return Err(format!(
-                                "trusted_proxies entry {s:?} is empty or too long"
-                            ));
-                        }
-                        let (address, prefix) = s.split_once('/').unwrap_or((s, ""));
-                        let addr = address.parse::<IpAddr>().map_err(|_| {
-                            format!("trusted_proxies entry {s:?} is not an IP address or CIDR")
-                        })?;
-                        let bits = match addr {
-                            IpAddr::V4(_) => 32,
-                            IpAddr::V6(_) => 128,
-                        };
-                        let prefix_val = if prefix.is_empty() {
-                            if s.contains('/') {
-                                return Err("trusted_proxies CIDR requires a prefix".into());
-                            }
-                            bits
-                        } else {
-                            let p = prefix.parse::<u8>().map_err(|_| {
-                                format!("trusted_proxies entry {s:?} has an invalid prefix")
-                            })?;
-                            if matches!(addr, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some())
-                                && p < 96
-                            {
-                                return Err(
-                                    "mapped IPv4 proxy CIDR requires a prefix between 96 and 128"
-                                        .into(),
-                                );
-                            }
-                            if p > bits {
-                                return Err(format!(
-                                    "trusted_proxies entry {s:?} has prefix /{p}, but this address has {bits} bits"
-                                ));
-                            }
-                            p
-                        };
-                        ipnet::IpNet::new(addr, prefix_val)
-                            .map_err(|_| format!("trusted_proxies entry {s:?} is not a valid network"))
-                    })
-                    .collect();
-                match parsed_proxies {
+                match proxies
+                    .iter()
+                    .map(|s| librepaper_base::config::parse_trusted_proxy(s))
+                    .collect::<Result<Vec<_>, _>>()
+                {
                     Ok(networks) => config.cost.trusted_proxies = networks,
                     Err(error) => die(format!("invalid trusted_proxies: {error}")),
                 }

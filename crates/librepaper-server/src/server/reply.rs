@@ -159,7 +159,7 @@ mod proxy_tests {
             client_address("[::ffff:127.0.0.1]:8".parse().unwrap(), &headers, &trusted),
             "198.51.100.23"
         );
-        let mapped_net: ipnet::IpNet = " ::ffff:127.0.0.1/128 ".trim().parse().unwrap();
+        let mapped_net = librepaper_base::config::parse_trusted_proxy(" ::ffff:127.0.0.1/128 ").unwrap();
         assert!(mapped_net.contains("127.0.0.1".parse::<IpAddr>().unwrap()));
         let subnet: ipnet::IpNet = "2001:db8::/32".parse().unwrap();
         assert!(subnet.contains("2001:db8:1::1".parse::<IpAddr>().unwrap()));

@@ -296,9 +296,10 @@ impl CostPolicy {
     }
 }
 
-/// Parse a network string that may be a bare IP address or a CIDR block.
-/// A bare address is converted to /32 or /128 automatically.
-fn parse_network(value: &str) -> Result<ipnet::IpNet, String> {
+/// Parse a trusted proxy network string that may be a bare IP address or a CIDR block.
+/// A bare address is converted to /32 or /128 automatically. IPv4-mapped IPv6 addresses
+/// with prefix 96-128 are converted to IPv4 networks to match through normalized_ip().
+pub fn parse_trusted_proxy(value: &str) -> Result<ipnet::IpNet, String> {
     let value = value.trim();
     if value.is_empty() || value.len() > 64 {
         return Err(format!(
@@ -318,7 +319,16 @@ fn parse_network(value: &str) -> Result<ipnet::IpNet, String> {
             Err("trusted_proxies CIDR requires a prefix".into())
         } else {
             // Bare address becomes /32 or /128
-            Ok(ipnet::IpNet::new(address, bits as u8).unwrap())
+            let net = if let IpAddr::V6(ip) = address {
+                if let Some(mapped_v4) = ip.to_ipv4_mapped() {
+                    ipnet::IpNet::V4(ipnet::Ipv4Net::new(mapped_v4, 32).unwrap())
+                } else {
+                    ipnet::IpNet::new(address, bits as u8).unwrap()
+                }
+            } else {
+                ipnet::IpNet::new(address, bits as u8).unwrap()
+            };
+            Ok(net)
         };
     }
     let prefix = prefix
@@ -332,6 +342,14 @@ fn parse_network(value: &str) -> Result<ipnet::IpNet, String> {
             "trusted_proxies entry {value:?} has prefix /{prefix}, but this address has {bits} bits"
         ));
     }
+    // For IPv4-mapped IPv6 addresses, convert to IPv4 network so it matches through normalized_ip
+    if let IpAddr::V6(ip) = address {
+        if let Some(mapped_v4) = ip.to_ipv4_mapped() {
+            return ipnet::Ipv4Net::new(mapped_v4, prefix - 96)
+                .map(ipnet::IpNet::V4)
+                .map_err(|_| format!("trusted_proxies entry {value:?} is not a valid network"));
+        }
+    }
     ipnet::IpNet::new(address, prefix)
         .map_err(|_| format!("trusted_proxies entry {value:?} is not a valid network"))
 }
@@ -343,7 +361,7 @@ where
     let strings: Vec<String> = Vec::deserialize(deserializer)?;
     strings
         .into_iter()
-        .map(|s| parse_network(&s).map_err(serde::de::Error::custom))
+        .map(|s| parse_trusted_proxy(&s).map_err(serde::de::Error::custom))
         .collect()
 }
 
