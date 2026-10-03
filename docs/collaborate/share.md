@@ -50,10 +50,6 @@ Named grants -- an editor or a commenter added by GitHub login, from before
 links existed -- are legacy, but remain revocable by that login. `list` marks
 documents shared with you with the role you hold.
 
-Sharing, transfer, deletion, comments, suggestions, decisions, editing,
-history, comparisons, restores, and labels are browser workflows. The **Share**,
-**Files**, **Comments**, and **History** controls in the reader provide these
-operations with the document visible beside them.
 
 ## Deleting a document
 

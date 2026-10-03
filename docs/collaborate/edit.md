@@ -6,53 +6,28 @@ Edit Markdown, Quarto, Typst, HTML and LaTeX documents with source, rendering, a
 
 ## Files
 
-The **Files** sidebar shows a folder tree.
+The **Files** sidebar shows a folder tree. Create files and folders, upload from your computer. Owners and editors may download the whole project as a ZIP; others see Download PDF or HTML (the rendered result).
 
-- Create files and folders using the toolbar; upload from your computer with drag or drop.
-- **File** menu at the top offers downloads, Share, and History shortcuts.
-- **Download PDF** or **Download HTML** exports the displayed result.
-- **Download project** (owners and editors only) saves all source and input files as a ZIP.
-- Drag files to move them; drop on empty space to move to the top level.
-- Upload name collisions offer Keep both or Skip.
-- Empty folders survive browser reloads and appear in ZIP downloads.
-- Right-click or use **⋯** to rename, move, download, delete, or duplicate items.
-- Use Ctrl/Cmd-click or Shift-click to select multiple items.
-- Press F2 to rename; Delete asks for confirmation before deleting.
-- Moves preserve collaborative text editing; references in source files are not rewritten.
+- File moves preserve collaborative text editing; references in source files are not rewritten.
 - A folder containing the main file cannot be deleted until another file becomes main.
 
 ## Outline
 
-The **Outline** sidebar lists headings in the open file, indented by level.
-
-- Click a heading to jump to that section in the editor.
-- The outline updates as you and your collaborators edit.
-- Supports Markdown, Quarto, Typst, HTML, and LaTeX.
+The **Outline** sidebar lists headings, indented by level, and updates as you and collaborators edit. Supports Markdown, Quarto, Typst, HTML, and LaTeX.
 
 ## Saving and co-editing
 
-Edits save automatically. Several people can edit at once; the source uses CRDT so concurrent typing converges without either person waiting.
+Edits save automatically; CRDT ensures concurrent typing converges without waiting. The server holds the document source and relays updates, so closing the last tab loses nothing. Readers see the same live rendering as editors but receive no editable source or project files.
 
-- The status row shows how many editors are in the session.
-- The server holds the document source and relays every update, so closing the last tab loses nothing.
-- Whoever opens the document next joins what is there.
-- Readers see the same live rendering that editors do; they receive no editable source or project files.
-- Comments retain their source checkpoint and passage; moved text updates the display but not the target.
+Comments retain their source checkpoint and passage; moved text updates the display but not the target.
 
 ## History
 
-Checkpoints are recorded when someone names one, when a restore lands, when the command line commits, or when a proposal is accepted.
-
-- The history panel lets you read earlier versions, compare changes, and restore a whole version or bring back individual passages in the editor.
-- There is no automatic timer; a plain comment does not add a checkpoint.
+Checkpoints are recorded when someone names one, when a restore lands, when the command line commits, or when a proposal is accepted. There is no automatic timer; a plain comment does not add a checkpoint.
 
 ## Rendering
 
-Rendering happens on editors' and readers' own devices; the server never compiles a document.
-
-- Readers see rendered output only; private inputs such as data files and bibliographies never reach reader browsers.
-- Editors sync source through the socket and render previews locally.
-- Readers render the same source locally, refetching only files whose digest changed since they last had it.
+Rendering happens on editors' and readers' own devices; the server never compiles a document. Readers see rendered output only; private inputs such as data files and bibliographies never reach reader browsers. Readers render the same source locally, refetching only files whose digest changed.
 
 ## Formats
 
@@ -68,15 +43,6 @@ All formats are compiled to WebAssembly; no installation is needed. The same com
 
 ## Preview modes
 
-HTML previews are the default and fastest.
+HTML previews are the default and fastest. Typst documents support both HTML preview (experimental) and PDF preview for checking printed layout. HTML supports text, tables, citations, embedded images, and MathML equations, but does not reproduce all PDF formatting; some templates require HTML-specific show rules. A compile error keeps source access available while showing diagnostics.
 
-- **View → Typst HTML preview (experimental)** is what a document starts on.
-- Use **Typst PDF preview** to check the printed layout.
-- The choice is remembered for this document in this browser.
-- HTML supports text, tables, citations, embedded images, and MathML equations, but does not reproduce all PDF formatting; some templates require HTML-specific show rules.
-- PDF and HTML exports are generated again on demand.
-- A compile error keeps source access available while showing diagnostics; editors can retry in the browser or use their local companion.
-
-For HTML format, the renderer is the identity: the page shows exactly what was written. This covers everything Quarto, Jupyter, and marimo produce, so editing, co-editing, and comments reach the documents most papers arrive in.
-
-The `.qmd` is the durable Quarto source. Readers see the browser's Markdown-draft rendering of it, the same subset an editor sees without running Quarto; code is never executed for a reader. A local Quarto render with real computed output appears only on the machine that produced it, through the companion.
+For HTML format, the renderer is the identity: the page shows exactly what was written. The `.qmd` is the durable Quarto source; readers see the browser's Markdown-draft rendering without executing code. Computed output appears only on the machine that produced it, through the companion.

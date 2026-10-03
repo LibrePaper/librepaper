@@ -10,12 +10,7 @@ from the terminal; see [Export](../cli.html#export).
 
 ## Response to reviewers
 
-The one export that is not a list of what was said. The response format writes
-the document an author has to produce anyway: grouped by reviewer, numbered
-within each, with the remark, the passage as that reviewer saw it, what became
-of it since, and the thread underneath as the answer. It can be limited to the
-comments made since a given checkpoint, so a second round covers only what is
-new.
+The response format groups by reviewer, numbered within each, with the remark, the passage as that reviewer saw it, what became of it, and the thread underneath as the answer. It can be limited to the comments made since a given checkpoint, covering only what is new.
 
 
 ```markdown
@@ -32,13 +27,4 @@ new.
 **Vincent:** Fixed as suggested; see also the new footnote on coverage.
 ```
 
-Replying to a comment in the reader is writing this document. `--since` takes
-a checkpoint selected in the browser's History panel and keeps the comments
-made at or after it, which is a round of review.
-
-**Then** is a quotation rather than a recollection, because every comment
-records the checkpoint it was made on. **Now** says whether the passage is
-still in the document and quotes its replacement when the word diff can
-identify it. The line is left out entirely for a
-document this machine cannot render -- a LaTeX paper, whose compiler is in a
-browser.
+Use `--since` to keep only comments made at or after a checkpoint. **Then** is a quotation rather than a recollection, because every comment records the checkpoint it was made on. **Now** says whether the passage is still in the document and quotes its replacement when the word diff can identify it. The line is omitted for documents this machine cannot render, such as LaTeX papers.
