@@ -25,6 +25,12 @@
     <p class="signin-description">
       Sign in to read, comment, edit, and create documents and projects.
     </p>
+    <!-- The service is young and may change; a local copy via the companion app is
+         the safest way to preserve your work. -->
+    <div class="signin-warning" role="note">
+      <p><strong>LibrePaper is experimental.</strong> The website and service may change at any time.</p>
+      <p>We recommend you use the <a href="/docs/install.html">companion app</a> to make automatic local backups of your projects as you edit them.</p>
+    </div>
     <div class="signin-providers">
       {#each providers.filter((provider) => (me.providers ?? []).includes(provider)) as provider (provider)}
         <a class="signin-provider" href={href(provider)}>
@@ -130,6 +136,32 @@
   .signin-provider-icon :global(svg) {
     width: 20px;
     height: 20px;
+  }
+
+  .signin-warning {
+    margin-top: 1.5rem;
+    padding: 0.875rem 1rem;
+    border: 1px solid var(--color-warning-border);
+    border-left: 4px solid var(--color-warning-solid);
+    border-radius: 9px;
+    background: var(--color-warning-bg);
+    color: var(--color-warning-text);
+    font-size: 0.9375rem;
+    line-height: 1.5;
+  }
+
+  .signin-warning p {
+    margin: 0;
+  }
+
+  .signin-warning p + p {
+    margin-top: 0.5rem;
+  }
+
+  .signin-warning a {
+    color: inherit;
+    text-decoration: underline;
+    font-weight: 600;
   }
 
   @media (max-width: 36rem) {
