@@ -29,11 +29,11 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use librepaper_base::config::Configuration;
 use crate::log::sequencer::{Command, CommandError, Joined, Role, SequencerError};
 use crate::log::{FlushReason, Ingested, Registry, Sequencer};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{Authority, PostgresCatalog};
+use librepaper_base::config::Configuration;
 
 pub(crate) mod agent;
 pub(crate) mod agent_query;
@@ -66,12 +66,12 @@ mod recovery_tests;
 pub(crate) mod resolve;
 pub(crate) mod text;
 
-pub use librepaper_base::util::{decode_update, encode_update};
 pub use annotation::OriginalAnchor;
 pub use command::Command as RoomCommand;
 pub use comments::*;
 pub use error::WriteError;
 pub use label::Attribution;
+pub use librepaper_base::util::{decode_update, encode_update};
 pub use message::Message;
 pub use outgoing::{Outgoing, Sender};
 

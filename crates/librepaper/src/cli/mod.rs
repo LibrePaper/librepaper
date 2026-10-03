@@ -9,10 +9,10 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
-use librepaper_base::config::Configuration;
-use librepaper_base::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use crate::local::cli::{LaunchArgs, LocalAgentCommand, LocalArgs, LocalCommand};
 use crate::storage::StorageFlags;
+use librepaper_base::config::Configuration;
+use librepaper_base::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use librepaper_base::util::die;
 
 mod agent;

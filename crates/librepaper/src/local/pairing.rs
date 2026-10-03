@@ -141,7 +141,10 @@ impl PairingStore {
         let now = now_unix();
         self.load().get(&origin).is_some_and(|pairing| {
             pairing.expires > now
-                && librepaper_base::util::constant_time_eq(pairing.token_sha256.as_bytes(), hash.as_bytes())
+                && librepaper_base::util::constant_time_eq(
+                    pairing.token_sha256.as_bytes(),
+                    hash.as_bytes(),
+                )
         })
     }
 
@@ -303,7 +306,8 @@ pub(crate) fn return_fragment(return_to: &str, port: u16, request: &str) -> Stri
 
 pub(crate) fn write_private_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let body = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
-    librepaper_base::private_files::publish(path, &body, "local private JSON").map_err(std::io::Error::other)
+    librepaper_base::private_files::publish(path, &body, "local private JSON")
+        .map_err(std::io::Error::other)
 }
 
 pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {

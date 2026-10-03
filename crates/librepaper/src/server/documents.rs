@@ -710,7 +710,8 @@ impl Server {
             // arrived. Typst and LaTeX reach here from `publish <directory>`
             // rather than from the upload form, which takes what a browser can
             // drop; a paper is the ordinary case either way.
-            if let Some(format) = librepaper_document::document::render::document_format(&filename) {
+            if let Some(format) = librepaper_document::document::render::document_format(&filename)
+            {
                 if title.trim().is_empty() {
                     title = match format {
                         "typst" => librepaper_document::document::render::title_from_typst(&html),
@@ -786,8 +787,10 @@ impl Server {
                 &json!({"error": "this deployment cannot store a document in that format"}),
             ));
         }
-        let expected_engine = librepaper_document::results::document_metadata(&source_format).execution_engine;
-        let expected_draft = librepaper_document::results::document_metadata(&source_format).draft_format;
+        let expected_engine =
+            librepaper_document::results::document_metadata(&source_format).execution_engine;
+        let expected_draft =
+            librepaper_document::results::document_metadata(&source_format).draft_format;
         if let Some(raw_engine) = requested_engine {
             let supplied = librepaper_document::results::ExecutionEngine::parse(&raw_engine)
                 .map_err(|error| write_json(400, &json!({"error": error})))?;
@@ -830,7 +833,10 @@ impl Server {
         let mut kept = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         if !main.is_empty() {
-            match librepaper_document::document::paths::check(&self.config.paths(), &main) {
+            match librepaper_document::document::paths::check(
+                &librepaper_document::document::paths::rules(&self.config),
+                &main,
+            ) {
                 Ok(librepaper_document::document::paths::Kind::Text) => {}
                 Ok(librepaper_document::document::paths::Kind::Asset) => {
                     return Err(write_json(
@@ -843,7 +849,10 @@ impl Server {
             seen.insert(librepaper_document::document::paths::collision_key(&main));
         }
         for (path, bytes) in sent {
-            let kind = match librepaper_document::document::paths::check(&self.config.paths(), &path) {
+            let kind = match librepaper_document::document::paths::check(
+                &librepaper_document::document::paths::rules(&self.config),
+                &path,
+            ) {
                 Ok(kind) => kind,
                 Err(why) => return Err(write_json(400, &json!({"error": why}))),
             };
@@ -853,7 +862,11 @@ impl Server {
                     &json!({"error": format!("{path}: two files cannot share one name")}),
                 ));
             }
-            kept.push((librepaper_document::document::paths::normalise(&path), kind, bytes));
+            kept.push((
+                librepaper_document::document::paths::normalise(&path),
+                kind,
+                bytes,
+            ));
         }
         if seen.len() > self.config.max_files {
             return Err(write_json(
@@ -885,7 +898,10 @@ impl Server {
     #[allow(clippy::result_large_err)] // as read_upload: the error is a response
     pub(super) fn preflight_directory(&self, parsed: &Upload) -> Result<(), Reply> {
         for (path, bytes) in &parsed.files {
-            match librepaper_document::document::paths::check(&self.config.paths(), path) {
+            match librepaper_document::document::paths::check(
+                &librepaper_document::document::paths::rules(&self.config),
+                path,
+            ) {
                 Ok(librepaper_document::document::paths::Kind::Text) => {
                     if std::str::from_utf8(bytes).is_err() {
                         return Err(write_json(

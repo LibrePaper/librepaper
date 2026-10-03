@@ -43,12 +43,12 @@ use loro::{
 };
 use uuid::Uuid;
 
-use librepaper_document::document::hunks::{hunks_of_batch, keep_declined_batch, Hunk};
-use librepaper_document::document::session;
 use crate::log::{Command, CommandError, Evidence, Head, PreparedSource};
 use crate::storage::postgres::{
     self, NewLabel, NewProposal, PostgresCatalog, StoredDecision, StoredProposal,
 };
+use librepaper_document::document::hunks::{hunks_of_batch, keep_declined_batch, Hunk};
+use librepaper_document::document::session;
 use loro::cursor::{PosType, Side};
 
 /// Where a branch forked and where it has reached.
@@ -647,9 +647,13 @@ fn validate_accepted_hunks_on_branch(
             .collect::<String>()
             .encode_utf16()
             .count() as u32;
-        let start =
-            librepaper_document::document::session::cursor_at_file_id(&at_base, id, start_utf16, Side::Right)
-                .ok_or(ProposalError::Stale)?;
+        let start = librepaper_document::document::session::cursor_at_file_id(
+            &at_base,
+            id,
+            start_utf16,
+            Side::Right,
+        )
+        .ok_or(ProposalError::Stale)?;
         let end = if hunk.deleted == 0 {
             start.clone()
         } else {
@@ -658,8 +662,10 @@ fn validate_accepted_hunks_on_branch(
                 .and_then(|text| text.get_cursor(end_cp - 1, Side::Right))
                 .ok_or(ProposalError::Stale)?
         };
-        let range = librepaper_document::document::session::offsets_of_cursors_in_file(doc, id, &start, &end)
-            .map_err(|_| ProposalError::Stale)?;
+        let range = librepaper_document::document::session::offsets_of_cursors_in_file(
+            doc, id, &start, &end,
+        )
+        .map_err(|_| ProposalError::Stale)?;
         let end_utf16 = if hunk.deleted == 0 {
             range.end_utf16
         } else {

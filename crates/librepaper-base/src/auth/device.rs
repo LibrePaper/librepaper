@@ -124,6 +124,10 @@ impl TokenCache {
         self.entries.lock().expect("token cache poisoned").len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Resolves a bearer token to an identity, caching only confirmed valid or
     /// invalid answers. Misses for the same token share one provider request;
     /// provider failures are returned to all waiters and are never cached as

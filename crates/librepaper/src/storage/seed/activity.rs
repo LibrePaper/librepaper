@@ -39,9 +39,9 @@ use loro::ExportMode;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use librepaper_document::document::session;
 use crate::log::frame::{self, Batch};
 use crate::storage::postgres::{Authority, FlushRow, NewLabel, PostgresCatalog};
+use librepaper_document::document::session;
 
 /// How far back a simulation may reach. Four whole weeks, which is also what
 /// the calendar reads best over.

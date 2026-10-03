@@ -112,7 +112,10 @@ mod tests {
         std::fs::write(&path, "lp_device-login-token").unwrap();
         assert!(read_grant(&path).is_err());
 
-        let scoped = format!("{}v1.payload.signature", librepaper_base::auth::AGENT_GRANT_PREFIX);
+        let scoped = format!(
+            "{}v1.payload.signature",
+            librepaper_base::auth::AGENT_GRANT_PREFIX
+        );
         std::fs::write(&path, &scoped).unwrap();
         assert_eq!(read_grant(&path).unwrap(), scoped);
     }

@@ -32,13 +32,13 @@ use std::time::Duration;
 use sqlx::Connection;
 use uuid::Uuid;
 
-use librepaper_base::config::Configuration;
 use crate::log::Registry;
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::postgres::{
     NewAccount, NewDocument, PendingWorkCursor, PostgresCatalog, PostgresOptions,
 };
 use crate::storage::worker::{Handle, Task, Worker};
+use librepaper_base::config::Configuration;
 
 const TRUNCATE: &str = "TRUNCATE documents,accounts CASCADE";
 

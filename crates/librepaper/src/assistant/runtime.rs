@@ -177,7 +177,11 @@ impl BridgeGrant {
         if self.written.as_deref() == Some(current.as_str()) {
             return Ok(());
         }
-        librepaper_base::private_files::publish(&self.path, current.as_bytes(), "assistant document grant")?;
+        librepaper_base::private_files::publish(
+            &self.path,
+            current.as_bytes(),
+            "assistant document grant",
+        )?;
         self.written = Some(current);
         Ok(())
     }

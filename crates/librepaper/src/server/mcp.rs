@@ -595,7 +595,10 @@ impl Server {
                 Ok(existing) => existing,
                 Err(error) if error.code == "view_expired" => {
                     let expiry = now_unix() + 3600;
-                    let payload = format!("{expiry}.{}", hex::encode(librepaper_base::util::random_bytes(8)));
+                    let payload = format!(
+                        "{expiry}.{}",
+                        hex::encode(librepaper_base::util::random_bytes(8))
+                    );
                     let operation_epoch = format!("{payload}.{}", sign(&self.key, actor, &payload));
                     let candidate = View {
                         snapshot: snapshot.clone(),

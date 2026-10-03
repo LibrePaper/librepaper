@@ -18,11 +18,6 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
 
-use librepaper_base::auth::{
-    sign_device, sign_session, sign_visitor, GithubApp, Identity, Policy, PROVIDER_GITHUB,
-    VISITOR_COOKIE,
-};
-use librepaper_base::config::Configuration;
 use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
@@ -31,6 +26,11 @@ use crate::storage::postgres::{
     AccessRole, NewAccount, PostgresCatalog, PostgresOptions, StoragePolicy,
 };
 use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_base::auth::{
+    sign_device, sign_session, sign_visitor, GithubApp, Identity, Policy, PROVIDER_GITHUB,
+    VISITOR_COOKIE,
+};
+use librepaper_base::config::Configuration;
 
 use super::Server;
 

@@ -882,8 +882,11 @@ pub async fn run_job_with_bindings(
                                 bundle.assets.push(QuartoAsset {
                                     path: path.into(),
                                     sha256: sha256(&bytes),
-                                    mime: librepaper_document::results::canonical_mime(path, mime_for(path))
-                                        .into(),
+                                    mime: librepaper_document::results::canonical_mime(
+                                        path,
+                                        mime_for(path),
+                                    )
+                                    .into(),
                                     size: bytes.len() as u64,
                                 });
                                 let bundle_bytes: usize = bundle
@@ -943,12 +946,14 @@ pub async fn run_job_with_bindings(
                 log.push_str("\nQuarto collector error: ");
                 log.push_str(&error);
                 log.push('\n');
-                bundle.diagnostics.push(librepaper_document::results::Diagnostic {
-                    severity: librepaper_document::results::DiagnosticSeverity::Error,
-                    message: "Quarto collector could not map executed cell outputs".into(),
-                    source_path: Some(main_name.into()),
-                    start_line: None,
-                });
+                bundle
+                    .diagnostics
+                    .push(librepaper_document::results::Diagnostic {
+                        severity: librepaper_document::results::DiagnosticSeverity::Error,
+                        message: "Quarto collector could not map executed cell outputs".into(),
+                        source_path: Some(main_name.into()),
+                        start_line: None,
+                    });
                 for cell in &mut bundle.cells {
                     cell.coverage = "unavailable".into();
                     cell.outputs.clear();
@@ -964,16 +969,18 @@ pub async fn run_job_with_bindings(
         } else {
             log.push_str("\nQuarto collector did not produce a capture manifest\n");
         }
-        bundle.diagnostics.push(librepaper_document::results::Diagnostic {
-            severity: librepaper_document::results::DiagnosticSeverity::Error,
-            message: if options.render_scope == protocol::QuartoRenderScope::Project {
-                "Project-scope Quarto output has no verified per-page cell capture".into()
-            } else {
-                "Quarto collector did not produce a cell capture manifest".into()
-            },
-            source_path: Some(main_name.into()),
-            start_line: None,
-        });
+        bundle
+            .diagnostics
+            .push(librepaper_document::results::Diagnostic {
+                severity: librepaper_document::results::DiagnosticSeverity::Error,
+                message: if options.render_scope == protocol::QuartoRenderScope::Project {
+                    "Project-scope Quarto output has no verified per-page cell capture".into()
+                } else {
+                    "Quarto collector did not produce a cell capture manifest".into()
+                },
+                source_path: Some(main_name.into()),
+                start_line: None,
+            });
         for cell in &mut bundle.cells {
             cell.coverage = "unavailable".into();
             cell.outputs.clear();
@@ -986,7 +993,8 @@ pub async fn run_job_with_bindings(
         .as_deref()
         == Some(source_before.as_str());
     if !source_matches {
-        let parameters_sha256 = librepaper_document::results::parameters_sha256(&options.parameters);
+        let parameters_sha256 =
+            librepaper_document::results::parameters_sha256(&options.parameters);
         let profiles: Vec<String> = options.profile.iter().cloned().collect();
         bundle.context.computation_sha256 = computation_fingerprint(
             &source_before,

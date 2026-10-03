@@ -44,9 +44,9 @@ pub use sequencer::{
     Retry, Role, Sequencer, SequencerError,
 };
 
-use librepaper_base::config::Configuration;
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::PostgresCatalog;
+use librepaper_base::config::Configuration;
 
 /// The name server-authored source is written under. Stable for the life of
 /// the deployment and kept in `server_runtime_state` (§7.3), so a label

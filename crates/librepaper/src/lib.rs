@@ -25,7 +25,6 @@ mod cli;
 // The configuration lives in librepaper-base; the path stays as consumers
 // spell it.
 pub use librepaper_base::config;
-pub mod config;
 mod local;
 pub mod log;
 mod room;
@@ -145,12 +144,12 @@ pub mod outgoing {
 pub use librepaper_base::auth::{
     sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB, SESSION_COOKIE,
 };
+pub use librepaper_base::util::now_unix;
 pub use librepaper_shell::ShellFile;
 pub use room::{Room, Rooms};
 pub use server::Server;
 pub use storage::blob::{BlobStore, FsStore};
 pub use storage::store::Store;
-pub use librepaper_base::util::now_unix;
 
 #[cfg(test)]
 mod tests;

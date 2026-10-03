@@ -956,7 +956,10 @@ mod tests {
                 "begin_wait_max_us": 2_500_000,
             }
         });
-        metrics.update_gauges(&snapshot, &librepaper_base::config::Configuration::default());
+        metrics.update_gauges(
+            &snapshot,
+            &librepaper_base::config::Configuration::default(),
+        );
         let rendered = metrics.render();
 
         assert!(rendered.contains("librepaper_database_begin_wait_mean_seconds 1.25\n"));

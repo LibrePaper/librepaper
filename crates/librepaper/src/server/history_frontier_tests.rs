@@ -18,10 +18,10 @@ use axum::http::{HeaderMap, HeaderValue};
 use serde_json::json;
 use uuid::Uuid;
 
-use librepaper_base::auth::{sign_agent_grant, AgentGrant, Identity, PROVIDER_GITHUB};
 use crate::room::Message as RoomMessage;
 use crate::server::origins::Origins;
 use crate::storage::store::{DocumentInput, Role};
+use librepaper_base::auth::{sign_agent_grant, AgentGrant, Identity, PROVIDER_GITHUB};
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer};
 use super::{Server, Viewer};

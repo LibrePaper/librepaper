@@ -16,12 +16,12 @@
 //! the rest of the catalogue coverage.
 
 use super::*;
-use librepaper_document::document::session;
 use crate::log::Registry;
 use crate::storage::annotation::{AnchorStatus, CommentTarget};
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::Authority;
 use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_document::document::session;
 use serde_json::json;
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";

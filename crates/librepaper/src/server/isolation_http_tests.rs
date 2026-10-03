@@ -12,14 +12,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
 
-use librepaper_base::auth::{sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB};
-use librepaper_base::config::Configuration;
 use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::{AccessRole, NewAccount, PostgresCatalog};
 use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_base::auth::{
+    sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB,
+};
+use librepaper_base::config::Configuration;
 
 use super::Server;
 

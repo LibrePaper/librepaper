@@ -18,14 +18,14 @@ use std::sync::Arc;
 use serde_json::json;
 use uuid::Uuid;
 
-use librepaper_base::auth::{GithubApp, Identity, Policy, PROVIDER_GITHUB};
-use librepaper_base::config::Configuration;
 use crate::log::Registry;
 use crate::room::{Message as RoomMessage, Rooms};
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::PostgresCatalog;
 use crate::storage::postgres::{AccessRole, NewAccount};
 use crate::storage::store::{DocumentInput, MutationActor, Role, Store};
+use librepaper_base::auth::{GithubApp, Identity, Policy, PROVIDER_GITHUB};
+use librepaper_base::config::Configuration;
 
 use super::{Server, Viewer};
 
@@ -318,7 +318,12 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
     // inserts a paragraph above the quoted sentence.
     let (vector, edited) = room
         .log()
-        .with_head(|doc| (librepaper_document::document::session::encode_vector(doc), doc.fork()))
+        .with_head(|doc| {
+            (
+                librepaper_document::document::session::encode_vector(doc),
+                doc.fork(),
+            )
+        })
         .await
         .unwrap();
     librepaper_document::document::session::put_text(
@@ -630,7 +635,11 @@ async fn get_comment_page(deployment: &Deployment, query: &str) -> super::Reply 
     )
     .id;
     identity.provider = "github".into();
-    let cookie = librepaper_base::auth::sign_session(&[0u8; 32], &identity, librepaper_base::util::now_unix() + 3600);
+    let cookie = librepaper_base::auth::sign_session(
+        &[0u8; 32],
+        &identity,
+        librepaper_base::util::now_unix() + 3600,
+    );
     let request = axum::http::Request::builder()
         .uri(format!(
             "/api/documents/{}/comments{query}",

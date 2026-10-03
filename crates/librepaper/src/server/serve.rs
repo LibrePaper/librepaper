@@ -6,14 +6,16 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 
-use librepaper_base::auth::{session_key_file, GithubApp, GoogleApp, Policy};
-use librepaper_base::config::Configuration;
-use librepaper_document::document::retention::{describe_seconds, parse_expire_from, parse_retention};
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
 use crate::storage::store::Store;
 use crate::storage::{open_storage, StorageOptions};
+use librepaper_base::auth::{session_key_file, GithubApp, GoogleApp, Policy};
+use librepaper_base::config::Configuration;
 use librepaper_base::util::die;
+use librepaper_document::document::retention::{
+    describe_seconds, parse_expire_from, parse_retention,
+};
 use librepaper_shell::load_shell;
 
 /// With no --port, serve takes the first free port in this range, so a second

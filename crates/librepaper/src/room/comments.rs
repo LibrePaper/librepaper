@@ -41,8 +41,6 @@ use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use librepaper_base::config::Configuration;
-use librepaper_document::document::session;
 use crate::log::sequencer::{
     Command as SequencerCommand, CommandError, Evidence, Head, PreparedSource, Rung,
 };
@@ -50,7 +48,9 @@ use crate::storage::postgres::{
     self, AnnotationRecord, AnnotationState, MutationAuthorization, NewAnnotation, NewLabel,
     NewProposal, NewReply, PostgresCatalog, ReplyRecord,
 };
+use librepaper_base::config::Configuration;
 use librepaper_base::util::clean;
+use librepaper_document::document::session;
 
 use super::locate::{self, Quote};
 use super::{Room, WriteError};
@@ -2636,11 +2636,11 @@ pub fn comment_revision(state: &AnnotationState) -> String {
 #[cfg(test)]
 mod utf16_suggestion_tests {
     use super::{proposed_from_branch, replace_utf16_span, Comment};
-    use librepaper_document::document::session;
     use crate::storage::annotation::{
         AnchorSide, CommentTarget, FileId, OriginalAnchor, SourceTextTarget,
     };
     use crate::storage::postgres::StoredProposal;
+    use librepaper_document::document::session;
     use loro::LoroDoc;
     use uuid::Uuid;
 

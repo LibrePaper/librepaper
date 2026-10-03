@@ -21,17 +21,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use librepaper_base::auth::pseudonym::pseudonym_for;
-use librepaper_base::auth::{
-    cookie_name, normalized, now_unix, pkce_verifier, random_token, read_agent_grant, read_device,
-    read_session, read_visitor, sign_device, sign_session, sign_visitor, Accounts, DeviceOutcome,
-    GithubAccounts, GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache,
-    AGENT_GRANT_PREFIX, DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX,
-    PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE,
-    VISITOR_COOKIE,
-};
-use librepaper_base::config::Configuration;
-use librepaper_document::document::render::{title_from_html, title_from_markdown};
 use crate::room::{
     decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
     Sender,
@@ -43,7 +32,18 @@ use crate::storage::store::{
     random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
     Role, Store,
 };
+use librepaper_base::auth::pseudonym::pseudonym_for;
+use librepaper_base::auth::{
+    cookie_name, normalized, now_unix, pkce_verifier, random_token, read_agent_grant, read_device,
+    read_session, read_visitor, sign_device, sign_session, sign_visitor, Accounts, DeviceOutcome,
+    GithubAccounts, GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache,
+    AGENT_GRANT_PREFIX, DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX,
+    PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE,
+    VISITOR_COOKIE,
+};
+use librepaper_base::config::Configuration;
 use librepaper_base::util::clean;
+use librepaper_document::document::render::{title_from_html, title_from_markdown};
 use librepaper_shell::{renderers, ShellFile};
 
 mod agent_auth;
@@ -167,7 +167,11 @@ fn needs_sign_in(entry: &IndexEntry, who: &Viewer) -> bool {
             .is_some()
 }
 
-fn grant_matches_scope(grant: &librepaper_base::auth::AgentGrant, slug: &str, link_hash: &str) -> bool {
+fn grant_matches_scope(
+    grant: &librepaper_base::auth::AgentGrant,
+    slug: &str,
+    link_hash: &str,
+) -> bool {
     grant.slug == slug && grant.link_hash == link_hash
 }
 

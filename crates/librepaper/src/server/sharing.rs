@@ -93,7 +93,9 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
     if seconds <= 0 {
         return Err("an expiry is a duration such as 180d or 24h, or 'never'".to_string());
     }
-    Ok(librepaper_base::util::format_unix(librepaper_base::util::now_unix() + seconds))
+    Ok(librepaper_base::util::format_unix(
+        librepaper_base::util::now_unix() + seconds,
+    ))
 }
 
 /// The provider namespace of a catalog account identity.
@@ -201,7 +203,9 @@ impl Server {
             role: Role::Reader.as_str().to_string(),
             sealed: seal_link_key(&self.key, &key),
             since: librepaper_base::util::timestamp(),
-            until: librepaper_base::util::format_unix(librepaper_base::util::now_unix() + LINK_DEFAULT_SECONDS),
+            until: librepaper_base::util::format_unix(
+                librepaper_base::util::now_unix() + LINK_DEFAULT_SECONDS,
+            ),
             ..Default::default()
         };
         let actor = crate::storage::store::MutationActor {

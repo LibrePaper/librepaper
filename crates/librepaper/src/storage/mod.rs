@@ -23,8 +23,8 @@ use std::sync::Arc;
 
 use clap::Args;
 
-use librepaper_base::config::DeploymentPaths;
 use crate::storage::blob::{BlobStore, ObjectBlobStore};
+use librepaper_base::config::DeploymentPaths;
 
 #[derive(Clone, Debug)]
 pub struct StorageOptions {

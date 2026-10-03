@@ -4,10 +4,10 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{DocumentInput, MutationActor, PutError, ReplaceProject, Store};
-use librepaper_base::config::Configuration;
 use crate::log::{CommandError, Registry};
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::postgres::{Authority, NewAccount, NewDocument};
+use librepaper_base::config::Configuration;
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]

@@ -18,14 +18,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use librepaper_base::config::Configuration;
-use librepaper_document::document::paths::{check, Kind};
 use crate::log::{Command, CommandError, Evidence, Head, PreparedSource, Registry};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{
     Authority, Error as CatalogError, NewAsset, NewLabel, PostgresCatalog as Catalog,
 };
+use librepaper_base::config::Configuration;
 use librepaper_base::util::parse_timestamp;
+use librepaper_document::document::paths::{check, Kind};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct IndexEntry {
@@ -973,7 +973,7 @@ impl Store {
             .get(document.id, slug)
             .await
             .map_err(|error| error.to_string())?;
-        let rules = self.config.paths();
+        let rules = librepaper_document::document::paths::rules(&self.config);
         let projected = sequencer
             .with_head(|doc| librepaper_document::document::projection::project(doc, &rules))
             .await
@@ -1290,7 +1290,7 @@ impl Store {
         document_id: uuid::Uuid,
         files: Vec<(String, Vec<u8>)>,
     ) -> Result<(Vec<(String, String)>, Vec<(String, String)>, Vec<NewAsset>), PutError> {
-        let rules = self.config.paths();
+        let rules = librepaper_document::document::paths::rules(&self.config);
         let mut texts = Vec::new();
         let mut asset_files = Vec::new();
         for (path, bytes) in files {
@@ -1600,8 +1600,12 @@ async fn entries_from_documents(
                 // exactly when the document does, so it is what a listing
                 // page uses as a change token.
                 sha: document.update_sequence.to_string(),
-                created_at: librepaper_base::util::format_unix(document.created_at.unix_timestamp()),
-                updated_at: librepaper_base::util::format_unix(document.updated_at.unix_timestamp()),
+                created_at: librepaper_base::util::format_unix(
+                    document.created_at.unix_timestamp(),
+                ),
+                updated_at: librepaper_base::util::format_unix(
+                    document.updated_at.unix_timestamp(),
+                ),
                 unowned: document.ownership_mode == "open",
                 publisher: owner.map(|a| a.handle.clone()).unwrap_or_default(),
                 publisher_id: document.owner_id.to_string(),

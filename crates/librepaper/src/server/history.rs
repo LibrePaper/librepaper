@@ -222,7 +222,9 @@ impl crate::log::Command for Restore {
                     librepaper_document::document::session::put_text(draft, path, body);
                     original.clone()
                 } else if !original.is_empty()
-                    && librepaper_document::document::session::put_text_with_id(draft, original, path, body)
+                    && librepaper_document::document::session::put_text_with_id(
+                        draft, original, path, body,
+                    )
                 {
                     // Deleted since the state being restored. It comes back
                     // as itself: the comments anchored to it name this id.

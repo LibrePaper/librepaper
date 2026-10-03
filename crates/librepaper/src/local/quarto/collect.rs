@@ -96,7 +96,8 @@ pub(crate) fn collect_bundle_with_dependencies(
             assets.push(QuartoAsset {
                 path: relative.clone(),
                 sha256: digest,
-                mime: librepaper_document::results::canonical_mime(&relative, mime_for(&relative)).into(),
+                mime: librepaper_document::results::canonical_mime(&relative, mime_for(&relative))
+                    .into(),
                 size: bytes.len() as u64,
             });
         }
@@ -137,7 +138,8 @@ pub(crate) fn collect_bundle_with_dependencies(
             assets.push(QuartoAsset {
                 path: relative.clone(),
                 sha256: sha256(&bytes),
-                mime: librepaper_document::results::canonical_mime(&relative, mime_for(&relative)).into(),
+                mime: librepaper_document::results::canonical_mime(&relative, mime_for(&relative))
+                    .into(),
                 size: bytes.len() as u64,
             });
         }
@@ -300,7 +302,8 @@ pub(crate) fn import_artifact(
         if total_bytes > MAX_QUARTO_OUTPUT_BYTES {
             return Err("imported artifact exceeds its aggregate size limit".into());
         }
-        let mime = librepaper_document::results::canonical_mime(&relative, mime_for(&relative)).to_string();
+        let mime = librepaper_document::results::canonical_mime(&relative, mime_for(&relative))
+            .to_string();
         assets.push(QuartoAsset {
             path: relative,
             sha256: sha256(&bytes),

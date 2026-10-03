@@ -79,7 +79,8 @@ pub fn set_main(doc: &LoroDoc, id: &str) {
 
 /// Raw text by path for fixtures. Production reads use stable file identities
 /// or the directory projection, which preserves colliding raw paths.
-#[cfg(test)]
+// Test support for every crate that drives a session, so it is not gated on
+// this crate's own `cfg(test)`.
 pub fn texts_of(doc: &LoroDoc) -> BTreeMap<String, String> {
     let files = doc.get_map(FILES);
     let path_map = doc.get_map(PATHS);

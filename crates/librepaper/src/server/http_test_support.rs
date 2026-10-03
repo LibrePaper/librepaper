@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
-use librepaper_base::auth::{GithubApp, Policy};
-use librepaper_base::config::Configuration;
 use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::Server;
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::{NewAccount, PostgresCatalog, WriterLease};
 use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_base::auth::{GithubApp, Policy};
+use librepaper_base::config::Configuration;
 
 pub(super) struct Deployment {
     pub(super) server: Server,
@@ -116,8 +116,8 @@ pub(super) async fn deployment(
 }
 
 pub(super) fn owner_bearer(deployment: &Deployment) -> axum::http::HeaderMap {
-    use librepaper_base::auth::{sign_device, Identity, PROVIDER_GITHUB};
     use axum::http::{HeaderMap, HeaderValue};
+    use librepaper_base::auth::{sign_device, Identity, PROVIDER_GITHUB};
 
     let identity = Identity {
         provider: PROVIDER_GITHUB.into(),
@@ -127,7 +127,11 @@ pub(super) fn owner_bearer(deployment: &Deployment) -> axum::http::HeaderMap {
         picture: String::new(),
         session_generation: deployment.owner_session_generation.clone(),
     };
-    let token = sign_device(&[0u8; 32], &identity, librepaper_base::util::now_unix() + 3600);
+    let token = sign_device(
+        &[0u8; 32],
+        &identity,
+        librepaper_base::util::now_unix() + 3600,
+    );
     let mut headers = HeaderMap::new();
     headers.insert(
         "authorization",

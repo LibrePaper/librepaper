@@ -39,13 +39,13 @@ use uuid::Uuid;
 
 use super::budget::{estimate, Budget, Busy, Reservation};
 use super::frame;
+use crate::storage::blob::BlobStore;
+use crate::storage::outgoing::{Outgoing, Sender};
+use crate::storage::postgres::{self, Authority, FlushRow, PostgresCatalog};
 pub use librepaper_base::config::budget::{
     max_pending_charge, max_row_bytes, max_update_bytes, BUFFER_CEILING_BYTES, FLUSH_TRIGGER_BYTES,
 };
 use librepaper_base::config::Configuration;
-use crate::storage::blob::BlobStore;
-use crate::storage::outgoing::{Outgoing, Sender};
-use crate::storage::postgres::{self, Authority, FlushRow, PostgresCatalog};
 
 /// A buffer non-empty for this long flushes even while somebody is still
 /// typing, so the log is never further behind the screen than this.
@@ -292,7 +292,10 @@ impl Head<'_> {
         if header.change_num == 0 {
             return Ok(None);
         }
-        let projected = librepaper_document::document::projection::project(&draft, &self.rules_owner.paths());
+        let projected = librepaper_document::document::projection::project(
+            &draft,
+            &librepaper_document::document::paths::rules(&self.rules_owner),
+        );
         Ok(Some(PreparedSource {
             batch,
             end: header.partial_end_vv,
@@ -1947,7 +1950,7 @@ impl Sequencer {
                 let cache = inner.cache.as_ref().expect("a cache was just built");
                 Arc::new(librepaper_document::document::projection::project(
                     &cache.doc,
-                    &self.config.paths(),
+                    &librepaper_document::document::paths::rules(&self.config),
                 ))
             };
             inner.projection = Some(projected);
@@ -2167,7 +2170,9 @@ impl Sequencer {
     /// know whether the document moved (comment re-anchoring, for one) needs
     /// the same restraint: a document nobody has looked at recently should
     /// not have a cache built for it just to answer "did it change".
-    pub async fn projection_if_warm(&self) -> Option<Arc<librepaper_document::document::projection::Projected>> {
+    pub async fn projection_if_warm(
+        &self,
+    ) -> Option<Arc<librepaper_document::document::projection::Projected>> {
         let mut inner = self.inner.lock().await;
         if inner.fenced.is_some() || inner.unreadable.is_some() || inner.cache.is_none() {
             return None;
@@ -2179,7 +2184,7 @@ impl Sequencer {
             let cache = inner.cache.as_ref().expect("checked above");
             Arc::new(librepaper_document::document::projection::project(
                 &cache.doc,
-                &self.config.paths(),
+                &librepaper_document::document::paths::rules(&self.config),
             ))
         };
         inner.projection = Some(projected.clone());
@@ -2187,7 +2192,9 @@ impl Sequencer {
     }
 
     /// The projection at head, building a cache entry if there is not one.
-    pub async fn projection(&self) -> Result<Arc<librepaper_document::document::projection::Projected>> {
+    pub async fn projection(
+        &self,
+    ) -> Result<Arc<librepaper_document::document::projection::Projected>> {
         let mut inner = self.inner.lock().await;
         inner.readable()?;
         if let Some(projection) = &inner.projection {
@@ -2201,7 +2208,7 @@ impl Sequencer {
             let cache = inner.cache.as_ref().expect("a cache was just built");
             Arc::new(librepaper_document::document::projection::project(
                 &cache.doc,
-                &self.config.paths(),
+                &librepaper_document::document::paths::rules(&self.config),
             ))
         };
         inner.projection = Some(projected.clone());
@@ -2215,7 +2222,10 @@ impl Sequencer {
         frontier: &Frontiers,
     ) -> Result<librepaper_document::document::projection::Projected> {
         self.with_fork_at(frontier, |fork| {
-            librepaper_document::document::projection::project(fork, &self.config.paths())
+            librepaper_document::document::projection::project(
+                fork,
+                &librepaper_document::document::paths::rules(&self.config),
+            )
         })
         .await
     }
@@ -2269,10 +2279,12 @@ impl Sequencer {
         }
         if inner.projection.is_none() {
             let cache = inner.cache.as_ref().expect("a cache was just built");
-            inner.projection = Some(Arc::new(librepaper_document::document::projection::project(
-                &cache.doc,
-                &self.config.paths(),
-            )));
+            inner.projection = Some(Arc::new(
+                librepaper_document::document::projection::project(
+                    &cache.doc,
+                    &librepaper_document::document::paths::rules(&self.config),
+                ),
+            ));
         }
         let projected = inner.projection.clone().expect("just built");
         let cache = inner.cache.as_ref().expect("a cache was just built");
@@ -2704,9 +2716,12 @@ impl Sequencer {
     /// than add a real one.
     fn emit_source_changed(&self, inner: &mut Inner) {
         let digest: Option<String> = inner.cache.as_ref().map(|cache| {
-            librepaper_document::document::projection::project(&cache.doc, &self.config.paths())
-                .projection
-                .digest()
+            librepaper_document::document::projection::project(
+                &cache.doc,
+                &librepaper_document::document::paths::rules(&self.config),
+            )
+            .projection
+            .digest()
         });
         // Set unconditionally: keeping this on the success path alone meant a
         // cold document never engaged the one-per-second throttle, so every
@@ -2976,7 +2991,10 @@ mod prepare_budget_tests {
             rules_owner: config,
             vector: doc.oplog_vv(),
             frontier: doc.oplog_frontiers(),
-            projection: Arc::new(librepaper_document::document::projection::project(doc, &config.paths())),
+            projection: Arc::new(librepaper_document::document::projection::project(
+                doc,
+                &librepaper_document::document::paths::rules(&config),
+            )),
             budget: budget.clone(),
             estimate,
         }

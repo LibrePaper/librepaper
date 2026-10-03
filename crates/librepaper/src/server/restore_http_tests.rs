@@ -79,7 +79,12 @@ async fn a_restore_keeps_what_it_replaced() {
     // keep it.
     let (vector, edited) = room
         .log()
-        .with_head(|doc| (librepaper_document::document::session::encode_vector(doc), doc.fork()))
+        .with_head(|doc| {
+            (
+                librepaper_document::document::session::encode_vector(doc),
+                doc.fork(),
+            )
+        })
         .await
         .unwrap();
     librepaper_document::document::session::put_text(&edited, "paper.md", EDITED);

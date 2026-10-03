@@ -74,7 +74,8 @@ pub(super) async fn issue(
         Role::Commenter => 2,
         Role::Editor | Role::Owner => 3,
     };
-    let expires_at = librepaper_base::util::now_unix() + librepaper_base::auth::AGENT_GRANT_MAX_AGE.as_secs() as i64;
+    let expires_at = librepaper_base::util::now_unix()
+        + librepaper_base::auth::AGENT_GRANT_MAX_AGE.as_secs() as i64;
     let grant = librepaper_base::auth::AgentGrant {
         identity,
         slug,

@@ -20,10 +20,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use librepaper_document::document::session;
 use crate::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
 use crate::room::Room;
 use crate::storage::postgres::{LabelRecord, NewLabel, PostgresCatalog};
+use librepaper_document::document::session;
 
 const MAX_OPERATION_EPOCH: usize = 128;
 const MAX_OPERATION_ID: usize = 128;

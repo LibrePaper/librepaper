@@ -35,12 +35,12 @@ use serde_json::json;
 
 use super::text::slice16;
 use super::{Comment, Room};
-use librepaper_document::document::session::{self, CursorResolutionError};
 use crate::log::sequencer::SequencerError;
 use crate::storage::annotation::{
     AnchorSide, AnchorStatus, CommentTarget, DerivedAttachment, LiveSourceRange, OriginalAnchor,
     ResolutionDiagnostic, SourceTextTarget,
 };
+use librepaper_document::document::session::{self, CursorResolutionError};
 
 /// The encoding of the cursor bytes stored beside a comment. Written with
 /// every pair, so a future change of Loro's cursor format is a recognisable
@@ -142,7 +142,10 @@ impl Sources {
     #[cfg(test)]
     pub(crate) fn of_doc(doc: &loro::LoroDoc) -> Sources {
         let config = librepaper_base::config::Configuration::default();
-        Sources::of(&librepaper_document::document::projection::project(doc, &config.paths()))
+        Sources::of(&librepaper_document::document::projection::project(
+            doc,
+            &librepaper_document::document::paths::rules(&config),
+        ))
     }
 
     fn units_of(&self, file_id: &str) -> Option<&[u16]> {
@@ -619,8 +622,8 @@ pub(crate) const ATTACHMENT_FRAME_MAX: usize = 200;
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use librepaper_document::document::session;
     use crate::storage::annotation::FileId;
+    use librepaper_document::document::session;
 
     /// A document with one text file, the way a publish builds one.
     pub(super) fn document(path: &str, body: &str) -> (loro::LoroDoc, String) {
@@ -680,7 +683,10 @@ pub(super) mod tests {
         );
 
         let config = librepaper_base::config::Configuration::default();
-        let projected = librepaper_document::document::projection::project(&doc, &config.paths());
+        let projected = librepaper_document::document::projection::project(
+            &doc,
+            &librepaper_document::document::paths::rules(&config),
+        );
         assert_eq!(
             projected.projection.files.len(),
             2,

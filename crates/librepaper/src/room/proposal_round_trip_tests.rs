@@ -14,13 +14,13 @@
 //! TRUNCATE the database they are pointed at.
 
 use super::*;
-use librepaper_document::document::session;
 use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::{Authority, PostgresCatalog, StoredProposal};
 use crate::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_document::document::session;
 use loro::Frontiers;
 use uuid::Uuid;
 
