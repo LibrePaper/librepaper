@@ -1,8 +1,8 @@
-// The shell is compiled in from a directory, so a file added to it has to
+// The skills are compiled in from a directory, so a file added to it has to
 // trigger a rebuild even though no Rust source changed.
 //
-// The wasm renderers are not in it: their pinned digests are compiled in from
-// assets.lock, so a change to that file is a change to the binary.
+// The built browser app and the pinned wasm digests are compiled into
+// librepaper-shell, which watches them itself.
 
 use std::path::Path;
 
@@ -18,26 +18,12 @@ fn main() {
     println!(
         "cargo:rerun-if-changed={}",
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets.lock")
-            .display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.sqlx")
             .display()
     );
     let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
     println!("cargo:rerun-if-changed={}", skills.display());
     watch(&skills);
-
-    let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/dist");
-    // Every file, not just the directory: cargo compares the timestamp of what
-    // it is told to watch, and editing a file inside a directory does not
-    // change the directory. Naming the directory alone means a changed page or
-    // bundle is compiled in only when something else happens to force a
-    // rebuild -- which is a stale binary that looks like a working one.
-    watch(&shell);
 }
 
 /// Tells cargo to rebuild when any file under this directory changes.

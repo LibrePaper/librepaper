@@ -1,3 +1,5 @@
+//! Internal to librepaper: no stable API, versioned in lockstep with it.
+//! See docs/dev/specs/SPEC-split-crates.md, "Workspace layout".
 //! The reader shell: the pages and the bundles they load, compiled into the
 //! binary. The renderers are not: the pages are told where to fetch them.
 //!
@@ -10,8 +12,8 @@ use std::collections::HashMap;
 
 use include_dir::{include_dir, Dir, File};
 
-static SHELL: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../web/dist");
-const WASM_LOCK: &str = include_str!("../../../../assets.lock");
+static SHELL: Dir<'static> = include_dir!("$LIBREPAPER_SHELL_DIST");
+const WASM_LOCK: &str = include_str!(concat!(env!("OUT_DIR"), "/assets.lock"));
 
 /// The renderers, which are not in the binary. Each is a release of its own
 /// engine repository, published to the asset mirror under a directory named
@@ -220,8 +222,10 @@ fn walk(dir: &'static Dir<'static>) -> Vec<&'static File<'static>> {
 mod shell_tests {
     use super::*;
 
+    const MIRROR: &str = "https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/";
+
     fn shell() -> HashMap<String, ShellFile> {
-        load_shell(crate::config::DEFAULT_ASSET_MIRROR)
+        load_shell(MIRROR)
             .expect("the shell is embedded in the binary")
     }
 

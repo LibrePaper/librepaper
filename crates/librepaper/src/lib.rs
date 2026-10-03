@@ -149,7 +149,7 @@ pub mod worker {
 pub use auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
 pub use document::store::Store;
 pub use room::{Room, Rooms};
-pub use server::shell::ShellFile;
+pub use librepaper_shell::ShellFile;
 pub use server::Server;
 pub use storage::blob::{BlobStore, FsStore};
 
