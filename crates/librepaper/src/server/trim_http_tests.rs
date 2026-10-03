@@ -16,8 +16,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::server::origins::Origins;
 use crate::document::store::{DocumentInput, MutationActor};
+use crate::server::origins::Origins;
 use crate::storage::postgres::{Authority, NewProposal};
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer};

@@ -84,11 +84,7 @@ pub(super) async fn deployment(
     };
     let slug = input.slug.clone();
     store
-        .put_directory_as_actor(
-            input,
-            figures,
-            actor,
-        )
+        .put_directory_as_actor(input, figures, actor)
         .await
         .unwrap();
     // `provider_configured` needs a client id to allow the GitHub identity's
@@ -120,8 +116,8 @@ pub(super) async fn deployment(
 }
 
 pub(super) fn owner_bearer(deployment: &Deployment) -> axum::http::HeaderMap {
-    use axum::http::{HeaderMap, HeaderValue};
     use crate::auth::{sign_device, Identity, PROVIDER_GITHUB};
+    use axum::http::{HeaderMap, HeaderValue};
 
     let identity = Identity {
         provider: PROVIDER_GITHUB.into(),

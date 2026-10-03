@@ -18,7 +18,7 @@ use axum::http::{HeaderMap, HeaderValue};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::auth::{sign_agent_grant, sign_device, AgentGrant, Identity, PROVIDER_GITHUB};
+use crate::auth::{sign_agent_grant, AgentGrant, Identity, PROVIDER_GITHUB};
 use crate::document::store::{DocumentInput, Role};
 use crate::room::Message as RoomMessage;
 use crate::server::origins::Origins;
@@ -63,7 +63,6 @@ fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) 
         auth_failed: false,
     }
 }
-
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]

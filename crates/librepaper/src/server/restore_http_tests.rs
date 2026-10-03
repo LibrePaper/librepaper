@@ -14,12 +14,12 @@
 //! rest of the catalogue coverage (`grep -rl LIBREPAPER_TEST_POSTGRES_URL
 //! crates/librepaper/src`).
 
-use axum::body::Body;
-use axum::http::Request;
-use serde_json::json;
 use crate::document::store::DocumentInput;
 use crate::server::origins::Origins;
 use crate::storage::postgres::Authority;
+use axum::body::Body;
+use axum::http::Request;
+use serde_json::json;
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer};
 

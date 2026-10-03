@@ -703,14 +703,7 @@ impl BackupManager {
         config.error = None;
         config.revision = config.revision.wrapping_add(1);
         if let Err(error) = self.persist(&state).await {
-            restore_after_persist_failure(
-                &mut state,
-                &key,
-                previous,
-                origin,
-                account_id,
-                &error,
-            );
+            restore_after_persist_failure(&mut state, &key, previous, origin, account_id, &error);
             return Err(write_json(500, &json!({"error": error})));
         }
         self.changed.notify_one();
@@ -816,14 +809,7 @@ impl BackupManager {
             config.last_attempt = None;
         }
         if let Err(error) = self.persist(&state).await {
-            restore_after_persist_failure(
-                &mut state,
-                &key,
-                previous,
-                origin,
-                account_id,
-                &error,
-            );
+            restore_after_persist_failure(&mut state, &key, previous, origin, account_id, &error);
             return Err(error);
         }
         self.changed.notify_one();

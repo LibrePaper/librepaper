@@ -8,26 +8,23 @@ use axum::http::{Request, StatusCode};
 use futures_util::stream;
 use serde_json::json;
 use std::convert::Infallible;
-use tokio::sync::oneshot;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 const SOURCE: &str = "# Authorization\n\nA document.\n";
 
 fn paused_body(body: String) -> (Body, oneshot::Receiver<()>, oneshot::Sender<()>) {
     let (started_tx, started_rx) = oneshot::channel();
     let (resume_tx, resume_rx) = oneshot::channel();
-    let stream = stream::unfold(
-        Some((started_tx, resume_rx)),
-        move |state| {
-            let body = body.clone();
-            async move {
-                let (started, resume) = state?;
-                let _ = started.send(());
-                let _ = resume.await;
-                Some((Ok::<_, Infallible>(Bytes::from(body)), None))
-            }
-        },
-    );
+    let stream = stream::unfold(Some((started_tx, resume_rx)), move |state| {
+        let body = body.clone();
+        async move {
+            let (started, resume) = state?;
+            let _ = started.send(());
+            let _ = resume.await;
+            Some((Ok::<_, Infallible>(Bytes::from(body)), None))
+        }
+    });
     (Body::from_stream(stream), started_rx, resume_tx)
 }
 
@@ -118,11 +115,8 @@ async fn trim_rechecks_editor_access_after_the_body_is_read() {
         .unwrap();
     let server = deployment.server;
     let slug = deployment.slug.clone();
-    let task = tokio::spawn(async move {
-        server
-            .handle_history_trim(request, &arrival, &slug)
-            .await
-    });
+    let task =
+        tokio::spawn(async move { server.handle_history_trim(request, &arrival, &slug).await });
 
     tokio::time::timeout(Duration::from_secs(5), started)
         .await
