@@ -188,7 +188,7 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
         .write(true)
         .open(local_dir.join("companion.lock"))
         .unwrap_or_else(|error| die(error));
-    if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
+    if lock.try_lock().is_err() {
         die("The companion is already running. Use `librepaper start` to reuse it.");
     }
     crate::local::lifecycle::clear_stop_request(&state_home);

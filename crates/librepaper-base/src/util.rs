@@ -142,3 +142,52 @@ pub fn decode_update(text: &str) -> Option<Vec<u8>> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.decode(text).ok()
 }
+
+/// Total and available bytes of the filesystem holding `path`. Available is
+/// what an unprivileged writer can use, not what root could.
+pub fn disk_space(path: &std::path::Path) -> std::io::Result<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let cpath = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "path holds a NUL byte"))?;
+        let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: cpath is a valid NUL-terminated string and stat is a
+        // writable out-pointer for the whole call.
+        let rc = unsafe { libc::statvfs(cpath.as_ptr(), stat.as_mut_ptr()) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: statvfs returned 0, so it filled the struct.
+        let stat = unsafe { stat.assume_init() };
+        let frag = stat.f_frsize as u64;
+        Ok((stat.f_blocks as u64 * frag, stat.f_bavail as u64 * frag))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let mut available = 0u64;
+        let mut total = 0u64;
+        let mut free = 0u64;
+        // SAFETY: wide is NUL-terminated and the three out-pointers live
+        // for the whole call.
+        let ok = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &mut available,
+                &mut total,
+                &mut free,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((total, available))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no filesystem statistics on this platform"))
+    }
+}

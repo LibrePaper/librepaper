@@ -89,7 +89,7 @@ pub fn lock_tokens(base: &Path) -> Result<std::fs::File, String> {
     let file = options
         .open(&path)
         .map_err(|err| format!("could not open {}: {err}", path.display()))?;
-    fs2::FileExt::lock_exclusive(&file)
+    file.lock()
         .map_err(|err| format!("could not lock {}: {err}", path.display()))?;
     Ok(file)
 }
