@@ -15,7 +15,7 @@
 
 use super::*;
 use crate::document::session;
-use crate::document::store::{DocumentInput, MutationActor, Store};
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };

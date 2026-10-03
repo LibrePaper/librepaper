@@ -9,7 +9,7 @@ use tokio::net::TcpListener;
 use crate::auth::{session_key_file, GithubApp, GoogleApp, Policy};
 use crate::config::Configuration;
 use crate::document::retention::{describe_seconds, parse_expire_from, parse_retention};
-use crate::document::store::Store;
+use crate::storage::store::Store;
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
 use crate::storage::{open_storage, StorageOptions};

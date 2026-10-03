@@ -23,7 +23,7 @@ use crate::auth::{
     VISITOR_COOKIE,
 };
 use crate::config::Configuration;
-use crate::document::store::{DocumentInput, MutationActor, Store};
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
@@ -158,7 +158,7 @@ async fn deployment_mode_with_policy(
         unowned_publisher: open,
     };
     let asset_bytes = b"moderation figure bytes".to_vec();
-    let asset_sha = crate::document::store::digest_of_bytes(&asset_bytes);
+    let asset_sha = crate::storage::store::digest_of_bytes(&asset_bytes);
     store
         .put_directory_as_actor(
             DocumentInput {

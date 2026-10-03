@@ -463,7 +463,7 @@ impl Server {
         } else {
             format!("{base}-{}", random_suffix(&self.config))
         };
-        let actor = crate::document::store::MutationActor {
+        let actor = crate::storage::store::MutationActor {
             account_id: who.id.clone(),
             owner_key: who.key.clone(),
             session_generation: who.session_generation.clone(),
@@ -1183,7 +1183,7 @@ impl Server {
             main,
             project: snapshot,
             files,
-            source_sha: crate::document::store::digest_of(&source),
+            source_sha: crate::storage::store::digest_of(&source),
             source,
             comments,
             comment_state,
@@ -1283,7 +1283,7 @@ impl Server {
             Ok(Some(_)) | Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let actor = crate::document::store::MutationActor {
+        let actor = crate::storage::store::MutationActor {
             account_id: who.id.clone(),
             owner_key: who.key.clone(),
             session_generation: who.session_generation.clone(),
@@ -1529,7 +1529,7 @@ impl Server {
             };
             format!(
                 "{stem}-{}",
-                crate::document::store::random_suffix(&self.config)
+                crate::storage::store::random_suffix(&self.config)
             )
         };
         if let Some(operation) = &template_operation {
@@ -1614,7 +1614,7 @@ impl Server {
                 );
             }
         }
-        let actor = crate::document::store::MutationActor {
+        let actor = crate::storage::store::MutationActor {
             account_id: who.id.clone(),
             owner_key: who.key.clone(),
             session_generation: who.session_generation.clone(),

@@ -32,7 +32,7 @@ use crate::auth::{
 };
 use crate::config::Configuration;
 use crate::document::render::{title_from_html, title_from_markdown};
-use crate::document::store::{
+use crate::storage::store::{
     random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
     Role, Store,
 };
@@ -354,7 +354,7 @@ fn resolved_role(
     entry: &IndexEntry,
     caller_id: &str,
     presented_link: &str,
-    ceiling: crate::document::store::Ceiling,
+    ceiling: crate::storage::store::Ceiling,
     now: i64,
 ) -> Role {
     if automation {
@@ -369,7 +369,7 @@ fn resolved_role(
 fn automation_role(
     entry: &IndexEntry,
     presented_link: &str,
-    ceiling: crate::document::store::Ceiling,
+    ceiling: crate::storage::store::Ceiling,
     now: i64,
 ) -> Role {
     match entry.link_role(presented_link, now) {
@@ -447,7 +447,7 @@ impl Viewer {
 
     pub fn document_authority(
         &self,
-        ceiling: crate::document::store::Ceiling,
+        ceiling: crate::storage::store::Ceiling,
     ) -> crate::storage::postgres::Authority {
         crate::storage::postgres::Authority {
             principal_key: self.principal_key(),
@@ -466,7 +466,7 @@ impl Viewer {
     /// know the deployment's policy on its own, so callers pass it in.
     pub fn mutation_authorization(
         &self,
-        ceiling: crate::document::store::Ceiling,
+        ceiling: crate::storage::store::Ceiling,
     ) -> crate::storage::postgres::MutationAuthorization {
         crate::storage::postgres::MutationAuthorization {
             principal_key: self.principal_key(),

@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::auth::{GithubApp, Identity, Policy, PROVIDER_GITHUB};
 use crate::config::Configuration;
-use crate::document::store::{DocumentInput, MutationActor, Role, Store};
+use crate::storage::store::{DocumentInput, MutationActor, Role, Store};
 use crate::log::Registry;
 use crate::room::{Message as RoomMessage, Rooms};
 use crate::storage::blob::FsStore;

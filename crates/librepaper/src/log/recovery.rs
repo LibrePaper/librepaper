@@ -70,7 +70,7 @@ use super::tests::Outbox;
 use super::*;
 use crate::config::Configuration;
 use crate::document::session;
-use crate::document::store::{DocumentInput, MutationActor, Store};
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 use crate::room::{AddComment, Rooms};
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::postgres::{

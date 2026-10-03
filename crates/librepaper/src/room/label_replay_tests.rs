@@ -13,7 +13,7 @@
 //! `librepaper_sqlx`.
 
 use super::*;
-use crate::document::store::{DocumentInput, MutationActor, Store};
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::Authority;

@@ -654,7 +654,7 @@ impl Server {
                             let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id()}).to_string())).await;
                             continue 'reader;
                         }
-                        let digest = crate::document::store::digest_of(text);
+                        let digest = crate::storage::store::digest_of(text);
                         if let Some((_, previous)) = chat_requests.iter().find(|(id,_)| id == incoming.temp_id()) {
                             let reply = if previous == &digest {
                                 json!({"type":"chat-ack","temp_id":incoming.temp_id()})

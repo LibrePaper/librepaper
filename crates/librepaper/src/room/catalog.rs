@@ -6,7 +6,7 @@ use super::WriteError;
 use crate::storage::postgres::MutationAuthorization;
 
 pub(super) fn mutation_authorization(
-    actor: &crate::document::store::MutationActor,
+    actor: &crate::storage::store::MutationActor,
 ) -> Result<MutationAuthorization, WriteError> {
     let account_id = if actor.account_id.is_empty() {
         None

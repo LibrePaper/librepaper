@@ -1,6 +1,6 @@
 //! Authorization must still hold after a potentially slow request body arrives.
 
-use crate::document::store::DocumentInput;
+use crate::storage::store::DocumentInput;
 use crate::server::http_test_support::{deployment, owner_bearer};
 use crate::server::origins::Origins;
 use axum::body::{Body, Bytes};

@@ -2,7 +2,7 @@
 //! The catalogue records each completed copy independently of its lifetime.
 
 use super::*;
-use crate::document::store::DocumentInput;
+use crate::storage::store::DocumentInput;
 
 struct Starter {
     main: &'static str,
@@ -138,7 +138,7 @@ impl Server {
         // `Store::put` deliberately refuses catalogue-backed writes because it
         // has no request actor, so carry the identity that sign-in already
         // authenticated through every catalogue admission and checkpoint.
-        let actor = crate::document::store::MutationActor {
+        let actor = crate::storage::store::MutationActor {
             account_id: account.id.to_string(),
             owner_key: account.handle.clone(),
             session_generation: who.session_generation.clone(),
@@ -215,7 +215,7 @@ impl Server {
         catalog: &std::sync::Arc<crate::storage::postgres::PostgresCatalog>,
         slug: &str,
         starter: &Starter,
-        actor: &crate::document::store::MutationActor,
+        actor: &crate::storage::store::MutationActor,
         account_id: uuid::Uuid,
         days: u32,
     ) -> Result<(), String> {

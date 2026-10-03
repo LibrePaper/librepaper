@@ -29,7 +29,7 @@
 use std::collections::HashSet;
 
 use super::*;
-use crate::document::store::{DocumentInput, MutationActor, Store};
+use crate::storage::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
 use crate::room::annotation::CommentTarget;
 use crate::storage::blob::FsStore;

@@ -10,6 +10,7 @@ pub mod schedule;
 mod schedule_tests;
 pub mod source;
 pub mod source_archive;
+pub mod store;
 pub mod worker;
 #[cfg(test)]
 mod worker_recovery_tests;

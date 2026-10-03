@@ -14,7 +14,7 @@
 //! rest of the catalogue coverage (`grep -rl LIBREPAPER_TEST_POSTGRES_URL
 //! crates/librepaper/src`).
 
-use crate::document::store::DocumentInput;
+use crate::storage::store::DocumentInput;
 use crate::server::origins::Origins;
 use crate::storage::postgres::Authority;
 use axum::body::Body;

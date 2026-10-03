@@ -19,7 +19,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::auth::{sign_agent_grant, AgentGrant, Identity, PROVIDER_GITHUB};
-use crate::document::store::{DocumentInput, Role};
+use crate::storage::store::{DocumentInput, Role};
 use crate::room::Message as RoomMessage;
 use crate::server::origins::Origins;
 

@@ -204,7 +204,7 @@ impl Server {
             until: crate::util::format_unix(crate::util::now_unix() + LINK_DEFAULT_SECONDS),
             ..Default::default()
         };
-        let actor = crate::document::store::MutationActor {
+        let actor = crate::storage::store::MutationActor {
             account_id: caller.id.clone(),
             owner_key: caller.key.clone(),
             session_generation: caller.session_generation.clone(),
@@ -379,7 +379,7 @@ impl Server {
 
         let revoke = asked.revoke.clone().unwrap_or_default();
         let now = crate::util::now_unix();
-        let mutation_actor = crate::document::store::MutationActor {
+        let mutation_actor = crate::storage::store::MutationActor {
             account_id: current_who.id.id.clone(),
             owner_key: current_who.key.clone(),
             session_generation: current_who.id.session_generation.clone(),

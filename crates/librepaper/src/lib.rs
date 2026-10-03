@@ -147,7 +147,7 @@ pub mod worker {
 // the sharing route actually does: a running `Server` behind a real socket,
 // authenticated the same way a signed-in owner and a share-link guest are.
 pub use auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
-pub use document::store::Store;
+pub use storage::store::Store;
 pub use librepaper_shell::ShellFile;
 pub use room::{Room, Rooms};
 pub use server::Server;
