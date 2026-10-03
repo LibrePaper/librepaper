@@ -263,7 +263,10 @@ pub struct CostPolicy {
     pub work_concurrency: usize,
     /// TCP peers whose X-Forwarded-For header may be used for client identity.
     /// An empty list means the TCP peer address is authoritative.
-    #[serde(deserialize_with = "deserialize_trusted_proxies", serialize_with = "serialize_trusted_proxies")]
+    #[serde(
+        deserialize_with = "deserialize_trusted_proxies",
+        serialize_with = "serialize_trusted_proxies"
+    )]
     pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
