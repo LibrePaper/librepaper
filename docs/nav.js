@@ -37,6 +37,16 @@ export const nav = [
   { path: "cli", label: "CLI" },
   { path: "backups", label: "Local backups" },
   { path: "host", label: "Running a server" },
-  { path: "architecture", label: "Architecture" },
+  {
+    path: "architecture/index",
+    label: "Architecture",
+    pages: [
+      { path: "architecture/document", label: "Document and storage" },
+      { path: "architecture/review", label: "Comments and track changes" },
+      { path: "architecture/rendering", label: "Rendering and live sync" },
+      { path: "architecture/companion", label: "Companion and agents" },
+      { path: "architecture/building", label: "Building from source" },
+    ],
+  },
   { path: "privacy", label: "Privacy" },
 ];
