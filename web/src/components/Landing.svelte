@@ -331,7 +331,10 @@
       doc.shared_hidden = hidden;
       say(hidden
         ? `${doc.title} was removed from your Shared list. You can show it again from All projects.`
-        : `${doc.title} will appear in your Shared list again.`, { id: `landing:shared:${doc.slug}` });
+        : `${doc.title} will appear in your Shared list again.`, {
+          id: `landing:shared:${doc.slug}`,
+          ...(!hidden ? {} : { action: { label: "Undo", onClick: () => void setSharedVisibility(doc, false) } }),
+        });
     } catch (error) {
       say(error?.message || (hidden ? "That project could not be removed from Shared." : "That project could not be shown in Shared."), {
         kind: "problem",

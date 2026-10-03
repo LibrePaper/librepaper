@@ -37,13 +37,14 @@ const TYPES = { problem: "error", done: "success", note: "info" };
 /// column of near-identical red cards. Falling back to the text only dedups
 /// messages that are constants, which the interesting ones are not.
 /** @param {string} text
- *  @param {{ kind?: "problem" | "done" | "note", id?: string }} [options] */
-export function say(text, { kind = "note", id } = {}) {
+ *  @param {{ kind?: "problem" | "done" | "note", id?: string, action?: { label: string, onClick: () => void } }} [options] */
+export function say(text, { kind = "note", id, action } = {}) {
   if (typeof text !== "string" || !text.trim()) return null;
   return toaster.create({
     type: TYPES[kind] || "info",
     description: text,
     id: id || `say:${text}`,
+    ...(action ? { action } : {}),
     ...(kind === "problem" ? { duration: Number.POSITIVE_INFINITY } : {}),
   });
 }
