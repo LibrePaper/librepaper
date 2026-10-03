@@ -14,8 +14,6 @@ librepaper --at-login                # also start every time you log in
 librepaper status                    # check it is running and found Quarto
 ```
 
-When the server runs on the same machine you browse from, it runs the local app itself and there is nothing to start. Use `--no-local` to turn that off. For a computer with no display, run `librepaper local approve`.
-
 ## Preview and output
 
 Markdown preview renders the source as Markdown in the browser with front matter dropped and code chunks shown verbatim. No code runs. Quarto fenced divs such as callouts, columns, and tabsets are shown as code blocks; unsupported shortcodes are treated the same way. This is the fallback when no local app is paired.

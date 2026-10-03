@@ -14,8 +14,6 @@ librepaper --at-login                # also start every time you log in
 librepaper status                    # check it is running and found Calepin
 ```
 
-When the server runs on the same machine you browse from, it runs the local app itself and there is nothing to start. Use `--no-local` to turn that off. For a computer with no display, run `librepaper local approve`.
-
 ## Preview and output
 
 Typst preview (in the browser, no code runs) is the default and always available. Choosing Calepin preview runs `calepin watch` on your computer, which re-renders on every change. Output is PDF or HTML:

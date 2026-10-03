@@ -24,8 +24,8 @@ Follow the [install page](https://librepaper.org/install.html): installer script
 
 ## Documentation
 
-The manual lives at **[librepaper.org](https://librepaper.org)** -- authoring
-in each format, sharing and review, the CLI, and running a server of your own.
+The manual lives at **[librepaper.org](https://librepaper.org)**: notebooks,
+sharing and review, agents, the CLI, and self-hosting.
 Its source is in [`docs/`](docs/), and `make site` builds it.
 
 The ordinary CLI covers `login`, `logout`, `list`, and one-shot `export`.
