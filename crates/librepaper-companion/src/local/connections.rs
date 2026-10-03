@@ -18,7 +18,6 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use super::pairing::write_private_json;
@@ -144,7 +143,7 @@ impl ConnectionStore {
             .write(true)
             .open(self.lock_path())
             .map_err(|error| error.to_string())?;
-        lock.lock_exclusive().map_err(|error| error.to_string())?;
+        lock.lock().map_err(|error| error.to_string())?;
         let mut all = self.load_checked()?;
         let result = change(&mut all)?;
         self.save(&all).map_err(|error| error.to_string())?;

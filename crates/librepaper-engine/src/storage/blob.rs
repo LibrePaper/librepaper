@@ -283,7 +283,7 @@ impl BlobStore for ObjectBlobStore {
     }
     async fn capacity_snapshot(&self) -> Option<serde_json::Value> {
         let root = self.local_root.clone()?;
-        tokio::task::spawn_blocking(move || { let total = fs2::total_space(&root).ok()?; let available = fs2::available_space(&root).ok()?;
+        tokio::task::spawn_blocking(move || { let (total, available) = librepaper_base::util::disk_space(&root).ok()?;
             Some(serde_json::json!({"kind":"filesystem", "total_bytes":total, "available_bytes":available,
                 "allocated_bytes":total.saturating_sub(available), "reserved_bytes":0, "is_primary":true})) }).await.ok().flatten()
     }

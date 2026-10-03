@@ -7,7 +7,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -921,12 +920,9 @@ fn acquire_backup_lock(path: &Path) -> Result<File, String> {
         file.set_permissions(fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("could not secure backup lock: {error}"))?;
     }
-    FileExt::try_lock_exclusive(&file).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::WouldBlock {
-            "backup already running for this server and account".into()
-        } else {
-            format!("could not acquire backup lock: {error}")
-        }
+    file.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => "backup already running for this server and account".into(),
+        std::fs::TryLockError::Error(error) => format!("could not acquire backup lock: {error}"),
     })?;
     Ok(file)
 }
