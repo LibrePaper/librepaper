@@ -142,19 +142,15 @@ fn permission_details(
                 .find_map(|content| {
                     if let agent_client_protocol::schema::v1::ToolCallContent::Diff(diff) = content
                     {
-                        Some(format!(
-                            "--- {}\n+++ {}\n{}+{}",
-                            diff.path.display(),
-                            diff.path.display(),
-                            diff.old_text
-                                .as_deref()
-                                .map(|text| format!(
-                                    "-{}\n",
-                                    text.lines().collect::<Vec<_>>().join("\n-")
-                                ))
-                                .unwrap_or_default(),
-                            diff.new_text.lines().collect::<Vec<_>>().join("\n+")
-                        ))
+                        let path_str = diff.path.display().to_string();
+                        let old = diff.old_text.as_deref().unwrap_or("");
+                        let new = diff.new_text.as_str();
+                        let unified = similar::TextDiff::from_lines(old, new)
+                            .unified_diff()
+                            .context_radius(3)
+                            .header(&path_str, &path_str)
+                            .to_string();
+                        Some(unified)
                     } else {
                         None
                     }
@@ -750,7 +746,36 @@ mod tests {
         assert_eq!(details["files"], serde_json::json!(["src/main.rs"]));
         assert!(details["diff"]
             .as_str()
-            .is_some_and(|diff| diff.contains("-old") && diff.contains("+new")));
+            .is_some_and(|diff| diff.contains("--- src/main.rs") && diff.contains("+++ src/main.rs")));
         assert!(serde_json::to_vec(&details).unwrap().len() <= 8 * 1024);
+    }
+
+    #[test]
+    fn permission_details_unified_diff_small_change_in_large_file() {
+        use agent_client_protocol::schema::v1::{
+            Diff, ToolCallContent, ToolCallUpdate, ToolCallUpdateFields,
+        };
+        let old_lines = vec!["line 1", "line 2", "line 3", "line 4", "line 5",
+                              "line 6", "line 7", "line 8", "line 9", "line 10"];
+        let old_text = old_lines.join("\n");
+        let new_text = old_lines[..4].iter()
+            .chain(&["line 5 modified"])
+            .chain(old_lines[5..].iter())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let update = ToolCallUpdate::new(
+            "call-2",
+            ToolCallUpdateFields::default()
+                .content(vec![ToolCallContent::Diff(
+                    Diff::new("test.rs", &new_text).old_text(old_text),
+                )]),
+        );
+        let details = permission_details(&update);
+        let diff_str = details["diff"].as_str().unwrap();
+        assert!(diff_str.contains("--- test.rs"));
+        assert!(diff_str.contains("+++ test.rs"));
+        assert!(diff_str.contains("-line 5"));
+        assert!(diff_str.contains("+line 5 modified"));
+        assert!(diff_str.len() < 1024);
     }
 }

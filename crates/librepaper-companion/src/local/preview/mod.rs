@@ -392,31 +392,31 @@ async fn process_log_line(watch: &SessionWatch, raw_line: &str) {
     }
 }
 
-async fn pump<R>(mut reader: R, watch: Arc<SessionWatch>)
+async fn pump<R>(reader: R, watch: Arc<SessionWatch>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut buf = [0u8; 4096];
-    let mut pending = String::new();
+    let mut buf_reader = tokio::io::BufReader::new(reader);
+    let mut line_buf = Vec::with_capacity(1024);
+    const MAX_LINE_SIZE: usize = 64 * 1024;
+
     loop {
-        match reader.read(&mut buf).await {
+        line_buf.clear();
+        match buf_reader.read_until(b'\n', &mut line_buf).await {
             Ok(0) | Err(_) => break,
-            Ok(n) => {
-                let chunk = String::from_utf8_lossy(&buf[..n]);
+            Ok(_) => {
+                if line_buf.len() > MAX_LINE_SIZE {
+                    line_buf.truncate(MAX_LINE_SIZE);
+                }
+                let line_str = String::from_utf8_lossy(&line_buf);
                 {
                     let mut guard = watch.log.lock().await;
-                    append_bounded(&mut guard, &chunk, PREVIEW_LOG_CAP_BYTES);
+                    append_bounded(&mut guard, &line_str, PREVIEW_LOG_CAP_BYTES);
                 }
-                pending.push_str(&chunk);
-                while let Some(pos) = pending.find('\n') {
-                    let line: String = pending.drain(..=pos).collect();
-                    process_log_line(&watch, line.trim_end_matches(['\r', '\n'])).await;
-                }
+                let trimmed = line_str.trim_end_matches(['\r', '\n']);
+                process_log_line(&watch, trimmed).await;
             }
         }
-    }
-    if !pending.is_empty() {
-        process_log_line(&watch, pending.trim_end_matches(['\r', '\n'])).await;
     }
 }
 
