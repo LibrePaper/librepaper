@@ -58,17 +58,16 @@ assert.equal(closed, true);
   try {
     const textId = directory.addText("before.md", "body");
     directory.renameFile(textId, "after.md");
-    assert.equal(directory.paths.get(textId), "after.md");
+    assert.equal(directory.list().find((file) => file.id === textId)?.path, "after.md");
 
     const sha = "a".repeat(64);
     directory.putAsset("figure.png", sha);
     directory.renameFile("figure.png", "renamed.png", "asset");
-    assert.equal(directory.assets.get("figure.png"), undefined);
-    assert.equal(directory.assets.get("renamed.png"), sha);
+    assert.equal(directory.list().some((file) => file.path === "figure.png"), false);
+    assert.equal(directory.list().find((file) => file.path === "renamed.png")?.sha, sha);
 
     directory.renameFile("missing-id", "ghost.md");
     directory.renameFile("missing-asset", "ghost.png", "asset");
-    assert.equal(directory.paths.get("missing-id"), undefined);
     assert.equal(directory.list().some((file) => file.path.startsWith("ghost")), false);
     assert.throws(() => reader.renameFile("anything", "ghost.md", "text"), /read-only/);
   } finally {
