@@ -17,6 +17,11 @@ import * as figures from "../figures.js";
 import * as renderers from "../renderers.js";
 import { authHeaders, uploadAsset } from "../api.js";
 
+/** @typedef {{ id: string, path: string, kind: "text" | "asset", sha?: string, main?: boolean }} WorkspaceFile */
+/** @typedef {ReturnType<typeof import("../collab.js").join>} WorkspaceSession */
+/** @typedef {{ text_extensions?: string[], asset_extensions?: string[], derived_extensions?: string[], max_path?: number, [key: string]: unknown }} WorkspaceRules */
+
+/** @param {{ slug: string, key?: string, arrivedFile?: string, say?: (message: string) => void, paint?: () => void, retarget?: () => void, onarrived?: (file: WorkspaceFile) => void, upload?: typeof uploadAsset, gather?: typeof figures.gather }} options */
 export function createWorkspace({
   slug,
   key = "",
@@ -36,6 +41,7 @@ export function createWorkspace({
   upload = uploadAsset,
   gather = figures.gather,
 }) {
+  /** @type {{ files: WorkspaceFile[], folders: string[], openFile: string, peersByFile: Map<string, string[]>, participants: Array<{ key: string, name: string, colour: string }>, rules: WorkspaceRules, figure: WorkspaceFile | null, figureUrl: string, canEdit: boolean }} */
   const state = $state({
     files: [],
     folders: [],
@@ -66,11 +72,13 @@ export function createWorkspace({
   /// read the directory: the first read is the caller's to schedule, because
   /// it is the one that re-points the preview and there is exactly one right
   /// moment for that in the joining sequence.
+  /** @param {WorkspaceSession | null} active */
   function attach(active) {
     session = active;
     if (session && rulesLoaded) session.setRules(state.rules);
   }
 
+  /** @param {WorkspaceRules} rules */
   function setRules(rules) {
     rulesLoaded = true;
     state.rules = rules || {};
@@ -123,6 +131,7 @@ export function createWorkspace({
   /// Show a file. A figure has no editor: choosing one shows it instead. The
   /// id of an asset is its path, since its bytes are not in the shared
   /// document and there is nothing else to key it by.
+  /** @param {WorkspaceFile} file */
   function show(file) {
     state.openFile = file.id;
     state.figure = file.kind === "asset" ? file : null;
@@ -132,6 +141,7 @@ export function createWorkspace({
     if (!state.canEdit) throw new Error("This project is read-only.");
   }
 
+  /** @param {string} path */
   function addText(path) {
     editable();
     const placed = checkPlacement(state.rules, { kind: "text", path }, session.list(), session.folders());
@@ -141,6 +151,7 @@ export function createWorkspace({
 
   /// A text dropped or chosen is read and added as a file. Its bytes are
   /// words, so they belong in the shared document rather than in the store.
+  /** @param {File} file @param {string} [path] */
   async function addDroppedText(file, path = file.name) {
     editable();
     const active = session;
@@ -158,6 +169,7 @@ export function createWorkspace({
   /// The two are separate requests, which is why the server keeps a figure
   /// nothing refers to for an hour: between them there is a moment when the
   /// bytes are stored and nothing names them.
+  /** @param {File} file @param {string} [path] */
   async function addFigure(file, path = file.name) {
     editable();
     const active = session;
@@ -171,10 +183,12 @@ export function createWorkspace({
     return placed;
   }
 
+  /** @param {string} path */
   function addFolder(path) {
     session.addFolder(path, state.rules);
   }
 
+  /** @param {Array<WorkspaceFile | { kind: "folder", id: string, path: string }>} entries @param {string} destination @param {boolean} [rename] */
   function relocate(entries, destination, rename) {
     const plan = session.relocate(entries, destination, state.rules, rename);
     if (plan.files.some((file) => file.path !== file.previousPath)) {
@@ -182,15 +196,18 @@ export function createWorkspace({
     }
   }
 
+  /** @param {Array<WorkspaceFile | { kind: "folder", id: string, path: string }>} entries */
   function remove(entries) {
     session.removeEntries(entries);
     paint();
   }
 
+  /** @param {WorkspaceFile} entry @param {string} path */
   function duplicate(entry, path) {
     session.duplicateEntry(entry, path, state.rules);
   }
 
+  /** @param {WorkspaceFile} file */
   function setMain(file) {
     if (file.kind !== "text") return;
     session.setMain(file.id);
@@ -204,6 +221,7 @@ export function createWorkspace({
   }
 
   /// The URL a figure's bytes were fetched to, for a preview of an insertion.
+  /** @param {string} path */
   async function assetUrl(path) {
     const sha = session?.tree?.().digests?.[path];
     if (!sha) return "";

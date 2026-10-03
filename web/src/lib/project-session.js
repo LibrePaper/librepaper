@@ -27,6 +27,16 @@ import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries
 import { projectDirectory } from "./projection.js";
 import { createGeneration } from "./reader/generation.js";
 
+/** @typedef {{ name?: string, color?: string, tab?: string, file?: string }} PresenceState */
+/** @typedef {{ type: string, [key: string]: unknown }} SessionMessage */
+/** @typedef {{ local: boolean, pending: number, localPending: number, localError: string, joined: boolean }} SessionState */
+/** @typedef {{ hydrated: () => void, writing: (count?: number) => void, persisted: () => void, failed: (error: Error) => void }} PersistenceEvents */
+/** @typedef {{ id: string, path: string, kind: "text" | "asset", sha?: string, main: boolean }} ProjectFile */
+/** @typedef {ProjectFile | { kind: "folder", id: string, path: string }} ProjectEntry */
+/** @typedef {{ main: string, texts: Record<string, string>, digests: Record<string, string>, files: Record<string, {kind: "text", id: string} | {kind: "asset", sha: string}> }} ProjectTree */
+/** @typedef {{ text_extensions?: string[], asset_extensions?: string[], derived_extensions?: string[], max_path?: number, [key: string]: unknown }} ProjectRules */
+/** @typedef {{ target: string, path?: string[] }} ProjectEvent */
+
 // Keep each JSON WebSocket frame comfortably below the server's one-megabyte
 // receive limit. Base64 expands the binary update by a third, and the JSON
 // envelope adds a little more, so the chunk is deliberately smaller than the
@@ -101,6 +111,9 @@ export function randomPresenceId() {
   return crypto.randomUUID?.() || `${mintId()}${mintId()}`;
 }
 
+/** @param {Iterable<[string | number, { user?: { tab?: string } } | null | undefined]> | null | undefined} states
+ * @param {{ localClient?: string | number | null, localTab?: string }} [options]
+ */
 export function uniquePresences(states, { localClient = null, localTab = "" } = {}) {
   const unique = new Map();
   for (const [client, state] of states || []) {
@@ -118,6 +131,20 @@ export function uniquePresences(states, { localClient = null, localTab = "" } = 
 ///
 /// `mayEdit` is false for a reader, who joins to receive the text and never to
 /// change it.
+/** @param {{
+ * send: (message: SessionMessage) => unknown,
+ * onPeers?: (count: number) => void,
+ * onState?: (state: SessionState) => void,
+ * name?: string,
+ * mayEdit?: boolean,
+ * persistence?: { open?: (doc: LoroDoc, events: PersistenceEvents) => { hydration?: unknown, flush?: () => Promise<unknown>, close?: () => void } | null },
+ * fetchReference?: (reference: string) => Promise<Uint8Array>,
+ * presenceId?: () => string,
+ * presenceColour?: (name: string, taken: string[]) => string,
+ * setTimer?: typeof setTimeout,
+ * clearTimer?: typeof clearTimeout,
+ * }} options
+ */
 export function createProjectSession({
   send,
   onPeers,
@@ -150,6 +177,7 @@ export function createProjectSession({
   // change to the file list; a change under one of them is not, because a
   // file's text sits inside `files`.
   const directory = new Set([files.id, paths.id, assets.id, meta.id]);
+  /** @type {EphemeralStore<{ [key: string]: PresenceState }>} */
   const store = new EphemeralStore(30000);
   // One presence key per person, not one key everybody writes to. The store is
   // last-write-wins per key, so while every peer announced itself under
@@ -178,8 +206,7 @@ export function createProjectSession({
     // different main file.
     const id = projectDirectory(doc, projectionRules).mainId;
     const text = id ? files.get(id) : null;
-    // Check if the value is a LoroText by checking its kind
-    return text?.kind?.() === "Text" ? text : null;
+    return text instanceof LoroText ? text : null;
   }
 
   function rebind() {
@@ -748,6 +775,7 @@ export function createProjectSession({
       return plan;
     },
 
+    /** @param {ProjectEntry[]} entries */
     removeEntries(entries) {
       if (!mayEdit) throw new Error("This project is read-only.");
       const roots = topEntries(entries);
@@ -771,7 +799,7 @@ export function createProjectSession({
       }
       if (removedMain) {
         const remaining = [...paths.entries()]
-          .filter(([id]) => files.get(id)?.kind?.() === "Text")
+          .filter(([id]) => files.get(id) instanceof LoroText)
           .sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[0]).localeCompare(String(b[0])));
         if (remaining.length) meta.set("main", remaining[0][0]);
         else meta.delete("main");
@@ -779,6 +807,8 @@ export function createProjectSession({
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
+    /** @param {ProjectFile} entry @param {string} path @param {ProjectRules} rules */
+    /** @param {ProjectFile} entry @param {string} path @param {ProjectRules} rules */
     duplicateEntry(entry, path, rules) {
       if (!mayEdit) throw new Error("This project is read-only.");
       const file = this.list().find((file) => file.kind === entry.kind && file.id === entry.id && file.path === entry.path);
@@ -794,6 +824,7 @@ export function createProjectSession({
     /// main one. Sorted with the main file first and the rest by path, which
     /// is the order the file list shows and the order a person reads a paper
     /// in.
+    /** @returns {ProjectFile[]} */
     list() {
       const projection = projectDirectory(doc, projectionRules);
       return [...projection.files.entries()].map(([path, file]) => ({
@@ -811,6 +842,7 @@ export function createProjectSession({
     /// The whole directory as a renderer takes it. Assets are the digests
     /// only: their bytes are not in the shared document, and whoever renders
     /// fetches them.
+    /** @returns {ProjectTree} */
     tree() {
       const projection = projectDirectory(doc, projectionRules);
       const texts = Object.create(null);
@@ -830,17 +862,20 @@ export function createProjectSession({
 
     /// The text at a path, for the caller that has a path and not an id --
     /// which is what a diagnostic carries.
+    /** @param {string} path */
     idOf(path) {
       return projectDirectory(doc, projectionRules).files.get(path)?.id || "";
     },
 
+    /** @param {string} id */
     textOf(id) {
       const text = files.get(id);
-      return text?.kind?.() === "Text" ? text : null;
+      return text instanceof LoroText ? text : null;
     },
 
     /// Makes a file. One transaction, so no peer ever sees a text without the
     /// name it is known by.
+    /** @param {string} path @param {string} [body] */
     addText(path, body = "") {
       if (!mayEdit) throw new Error("This project is read-only.");
       const id = mintId();
@@ -858,16 +893,20 @@ export function createProjectSession({
     /// Renames a file, which moves a string and leaves the words where they
     /// are. This is why the texts are keyed by an id: somebody typing into
     /// this file at this moment keeps what they typed.
+    /** @param {string} id @param {string} path @param {"text" | "asset"} [kind] */
     renameFile(id, path, kind) {
-      if (kind === "asset" || (kind === undefined && assets.has(id))) {
-        if (!assets.has(id)) return;
-        const sha = assets.get(id);
+      if (!mayEdit) throw new Error("This project is read-only.");
+      const asset = assets.get(id);
+      if (kind === "asset" || (kind === undefined && asset !== undefined)) {
+        if (asset === undefined) return;
         assets.delete(id);
-        assets.set(path, sha);
+        assets.set(path, asset);
         doc.commit({ origin: DIRECTORY_ORIGIN });
         return;
       }
-      if (kind === "text" || (kind === undefined && paths.has(id))) {
+      const currentPath = paths.get(id);
+      if ((kind === "text" || (kind === undefined && currentPath !== undefined))
+          && currentPath !== undefined && files.get(id) instanceof LoroText) {
         paths.set(id, path);
         doc.commit({ origin: DIRECTORY_ORIGIN });
       }
@@ -876,6 +915,7 @@ export function createProjectSession({
     /// Removes a file, its name with it. Empty projects are valid; when the
     /// selected main is removed, choose a remaining text deterministically or
     /// leave main unset rather than fabricating content.
+    /** @param {string} id */
     removeFile(id) {
       if (!mayEdit) throw new Error("This project is read-only.");
       const wasMain = meta.get("main") === id;
@@ -883,7 +923,7 @@ export function createProjectSession({
       paths.delete(id);
       if (wasMain) {
         const remaining = [...paths.entries()]
-          .filter(([file]) => files.get(file)?.kind?.() === "Text")
+          .filter(([file]) => files.get(file) instanceof LoroText)
           .sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[0]).localeCompare(String(b[0])));
         if (remaining.length) meta.set("main", remaining[0][0]);
         else meta.delete("main");
@@ -891,11 +931,13 @@ export function createProjectSession({
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
+    /** @param {string} path */
     removeAsset(path) {
       assets.delete(path);
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
+    /** @param {string} path @param {string} sha */
     putAsset(path, sha) {
       assets.set(path, sha);
       doc.commit({ origin: DIRECTORY_ORIGIN });
@@ -903,6 +945,7 @@ export function createProjectSession({
 
     /// Names the main file: the one a renderer is run on, and the one the
     /// document's format is read from.
+    /** @param {string} id */
     setMain(id) {
       meta.set("main", id);
       doc.commit({ origin: DIRECTORY_ORIGIN });
@@ -910,6 +953,7 @@ export function createProjectSession({
 
     /// Called whenever the directory changes -- a file added, renamed,
     /// removed, or made the main one -- so the list can be redrawn.
+    /** @param {(events: ProjectEvent[]) => void} watcher */
     onFiles(watcher) {
       // The watcher hears once per batch, not once per event. A rename moves a
       // path and a delete clears a digest in the same commit, and a file list
@@ -942,6 +986,7 @@ export function createProjectSession({
     /// to know, and a caller that guessed at one of them -- the reader watched
     /// `files` alone -- silently stopped redrawing for every rename and move,
     /// which are changes to `paths`.
+    /** @param {ProjectEvent[]} events */
     directoryChanged(events) {
       return !Array.isArray(events) || events.some((event) => directory.has(event.target));
     },
@@ -950,6 +995,7 @@ export function createProjectSession({
     /// who is where. The caret's own position is published by editor binding
     /// against the text it was made in, so it already paints in the right
     /// file; this is for the list.
+    /** @param {string} id */
     inFile(id) {
       const user = store.get(localKey) || {};
       store.set(localKey, { ...user, file: id });
@@ -996,6 +1042,7 @@ export function createProjectSession({
 
     /// Called when the text being followed is a different text, so whoever is
     /// bound to it can bind again.
+    /** @param {() => void} swap */
     onSwap(swap) {
       swaps.add(swap);
     },
@@ -1215,6 +1262,7 @@ export function createProjectSession({
     },
 
     /// Says who this is, for the label on their caret.
+    /** @param {string} who */
     rename(who) {
       const user = store.get(localKey) || {};
       // The colour follows the name: a reader who signs in part way through
@@ -1241,7 +1289,6 @@ export function createProjectSession({
       // the old one abandoned.
       abandonQueuedJoins();
       persister?.close?.();
-      doc.destroy?.();
     },
   };
 }

@@ -49,6 +49,34 @@ try {
 }
 assert.equal(closed, true);
 
+// renameFile accepts the old asset id or text id and must not infer
+// existence from a LoroMap API that does not exist. Missing entries stay
+// absent, and a reader cannot use the legacy mutator to change the directory.
+{
+  const directory = createProjectSession({ send: () => {}, onState: () => {} });
+  const reader = createProjectSession({ send: () => {}, onState: () => {}, mayEdit: false });
+  try {
+    const textId = directory.addText("before.md", "body");
+    directory.renameFile(textId, "after.md");
+    assert.equal(directory.paths.get(textId), "after.md");
+
+    const sha = "a".repeat(64);
+    directory.putAsset("figure.png", sha);
+    directory.renameFile("figure.png", "renamed.png", "asset");
+    assert.equal(directory.assets.get("figure.png"), undefined);
+    assert.equal(directory.assets.get("renamed.png"), sha);
+
+    directory.renameFile("missing-id", "ghost.md");
+    directory.renameFile("missing-asset", "ghost.png", "asset");
+    assert.equal(directory.paths.get("missing-id"), undefined);
+    assert.equal(directory.list().some((file) => file.path.startsWith("ghost")), false);
+    assert.throws(() => reader.renameFile("anything", "ghost.md", "text"), /read-only/);
+  } finally {
+    directory.leave();
+    reader.leave();
+  }
+}
+
 // A swap is the main file becoming a different file. Editing the main file is
 // not one: everything hanging off `onSwap` rebuilds itself, so a swap per
 // keystroke used to throw the editor -- and the caret with it -- back to the

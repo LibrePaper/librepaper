@@ -21,6 +21,30 @@
 // context that declared some of those names and not others. They are
 // arguments now, and the guards are gone with them.
 
+/** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { assets?: Record<string, Uint8Array>, urls?: Record<string, string> }} PreviewTree */
+/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, projectDigest?: string, livePreviewOwnsPane: boolean }} PreviewFacts */
+/** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
+/** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */
+/** @typedef {ReturnType<typeof import("./render-coordinator.js").createRenderCoordinator>} PreviewCoordinator */
+/** @typedef {Pick<ReturnType<typeof import("./frame-preview.js").createFramePreview>, "publish" | "clear">} PreviewFrame */
+/** @typedef {typeof import("../renderers.js")} PreviewRendererRegistry */
+/** @typedef {ReturnType<typeof import("../diagnostics.js").painter>} PreviewDiagnostics */
+
+/** @param {{
+ * slug: string, coordinator: PreviewCoordinator, status: PreviewStatus, framePreview: PreviewFrame,
+ * diagnostics: PreviewDiagnostics, renderers: PreviewRendererRegistry,
+ * snapshotDigest: (tree: PreviewTree) => Promise<string>,
+ * diagnosticContext: (item: NonNullable<PreviewResult["diagnostics"]>[number] | {severity: string, message: string}, tree: PreviewTree, identity: string) => NonNullable<PreviewResult["diagnostics"]>[number],
+ * parseSynctex?: (data: Uint8Array | string, files: string[]) => Promise<unknown>,
+ * rememberPreview?: (page: { kind: "html", html: string } | { kind: "pdf", sha: string, bytes: Uint8Array }, identity: string) => void,
+ * onRendered?: (identity: string, projectDigest: string) => void, onEmpty?: () => void,
+ * facts: () => PreviewFacts, tree: () => PreviewTree,
+ * gather: (digests: Record<string, string>) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string> }, missing: string[] }>,
+ * heading: (tree: PreviewTree) => Promise<string>, takeManual?: () => boolean,
+ * onsynctex?: (map: unknown | null) => void, send?: (message: { type: string, html?: string }) => void,
+ * clearDebounce?: () => void, refreshFrame?: () => void, debug?: (message: string, ...details: unknown[]) => void,
+ * }} options
+ */
 export function createPreviewRenderer({
   slug,
   coordinator,
@@ -64,6 +88,7 @@ export function createPreviewRenderer({
 }) {
   /// Render once. `ticket` is the coordinator's; every guard below is against
   /// it and against the navigation and source captured at the start.
+  /** @param {number} ticket */
   return async function render(ticket) {
     const start = facts();
     debug("preview: paint requested", start.format, start.hasSession);
@@ -104,7 +129,7 @@ export function createPreviewRenderer({
       onRendered("", capturedProjectDigest);
       onEmpty();
       send({ type: "preview", html: "<!doctype html><meta charset=utf-8><title>Empty document</title><main style='font:16px system-ui;padding:2rem'>This document is empty.</main>" });
-      diagnostics.rendered({ page: "", diagnostics: [] });
+      diagnostics.rendered({ page: false, diagnostics: [] });
       return;
     }
     // The paged formats produce a flow page unless this browser has asked for
@@ -162,6 +187,7 @@ export function createPreviewRenderer({
       try {
         const title = await heading(source);
         if (facts().disposed) return;
+        /** @type {{ manual?: boolean, format?: string }} */
         const options = { ...(manual ? { manual: true } : {}) };
         if (htmlPreview) options.format = "html";
         const current = facts();
@@ -232,7 +258,7 @@ export function createPreviewRenderer({
         rememberPreview(page, identity);
         onRendered(identity, capturedProjectDigest);
         if (capturedSource === facts().source) {
-          diagnostics.rendered({ page: "", diagnostics: contextual });
+          diagnostics.rendered({ page: false, diagnostics: contextual });
         }
         // SyncTeX is navigation metadata, not part of the rendered page.
         // Large maps can take long enough to decompress and index that
@@ -261,13 +287,13 @@ export function createPreviewRenderer({
         rememberPreview({ kind: "html", html }, identity);
         onRendered(identity, capturedProjectDigest);
         if (capturedSource === facts().source) {
-          diagnostics.rendered({ page: html, diagnostics: contextual });
+          diagnostics.rendered({ page: Boolean(html), diagnostics: contextual });
         }
         return;
       }
       if (artifactKind === "docx" && artifact && rendered.ok !== false) {
         status.succeeded();
-        diagnostics.rendered({ page: null, diagnostics: contextual });
+        diagnostics.rendered({ page: false, diagnostics: contextual });
         return;
       }
       // No new page: an already painted page stays up transiently while the
@@ -285,7 +311,7 @@ export function createPreviewRenderer({
         ? contextual
         : [...contextual, diagnosticContext({ severity: "error", message: reason }, source, identity)];
       status.failed(reason);
-      diagnostics.rendered({ page: null, diagnostics: failed });
+      diagnostics.rendered({ page: false, diagnostics: failed });
       if (reason) console.error(`${format}: could not render:`, reason);
       // Unless nothing was ever painted, the frame gets a transient failure
       // page for flow formats; paged formats use the source and diagnostics
@@ -310,7 +336,7 @@ export function createPreviewRenderer({
         status.failed(reason);
         console.error(`${format}: could not render:`, error);
         diagnostics.rendered({
-          page: null,
+          page: false,
           diagnostics: [diagnosticContext({ severity: "error", message: reason }, source, identity)],
         });
       }

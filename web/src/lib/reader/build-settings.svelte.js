@@ -16,6 +16,10 @@
 import { read as readPreferences } from "../build-preferences.js";
 import * as defaultLatex from "../latex.js";
 
+/** @typedef {{ selection?: string, backend?: string, tool?: string, output?: string, engine?: string, format?: string, [key: string]: unknown }} BuildPreference */
+/** @typedef {ReturnType<typeof import("../collab.js").join>} BuildSession */
+
+/** @param {{ slug: string, origin: string, read?: typeof readPreferences, latex?: typeof defaultLatex, interrupt?: (next: BuildPreference | null) => void, paint?: () => void }} options */
 export function createBuildSettings({
   slug,
   origin,
@@ -44,6 +48,7 @@ export function createBuildSettings({
 
   // HTML unless a reader has asked for pages: the default is flow for every
   // format, so only the explicit "pdf" reads as one.
+  /** @param {BuildPreference} preference */
   const outputOf = (preference) => (preference.output === "pdf" ? "pdf" : "html");
 
   /// What a preference says about the outputs and preview modes.
@@ -52,6 +57,7 @@ export function createBuildSettings({
   /// is read when a format is loaded for any document. The preview mode of an
   /// executing tool follows the per-document permission, not a remembered
   /// preference, and is set only when that permission is chosen by hand.
+  /** @param {BuildPreference} preference @param {string} format @param {"loaded" | "chosen"} how */
   function apply(preference, format, how) {
     if (format === "latex") state.latexOutput = outputOf(preference);
     if (format === "typst") state.typstOutput = outputOf(preference);
@@ -83,6 +89,7 @@ export function createBuildSettings({
   /// preferences, and whatever the last one had running is interrupted;
   /// loading an identical preference for the same reader is not, because
   /// source hydration and later source changes own the rendering.
+  /** @param {{ format: string, user: string }} identity */
   function follow({ format, user }) {
     if (!format) return;
     if (previousUser && previousUser !== user) interrupt(null);
@@ -93,6 +100,7 @@ export function createBuildSettings({
   }
 
   /// A preference chosen by hand, from the settings dialog or a menu.
+  /** @param {BuildPreference} next @param {string} format */
   function choose(next, format) {
     state.preferences = next;
     interrupt(next);
@@ -107,6 +115,7 @@ export function createBuildSettings({
 
   /// The scope a preference update is written against. Exposed because the
   /// menus build their updates from it before handing them back to `choose`.
+  /** @param {string} user */
   function scopeFor(user) {
     return scope(user);
   }
@@ -121,6 +130,7 @@ export function createBuildSettings({
   /// session is passed rather than read: the caller has the one it means, and
   /// a configuration installed against a session that has since been replaced
   /// is the bug this guards against.
+  /** @param {string} format @param {BuildSession | null} session @param {string} user */
   function configureLatex(format, session, user) {
     if (format !== "latex" || !session) {
       stopLatex();
