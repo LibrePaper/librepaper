@@ -21,4 +21,3 @@ jobs:
       - run: tools/suite fuzz
         env:
           FUZZ_SECONDS: "20"
-          FUZZ_TARGETS: paths document
