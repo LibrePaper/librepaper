@@ -47,6 +47,11 @@ enum Damage {
 
 #[derive(Arbitrary, Debug)]
 struct Input {
+    /// Keep a guaranteed-valid path in the corpus so encoding, decoding and
+    /// deterministic re-encoding are exercised even when arbitrary fields
+    /// would otherwise make encode refuse the archive immediately.
+    valid_archive: bool,
+    valid_format: u8,
     /// Every format, so that the four the rules refuse are reached too.
     format: String,
     main_path: String,
@@ -60,40 +65,80 @@ struct Input {
 }
 
 fuzz_target!(|input: Input| {
-    let limits = ArchiveLimits {
-        inline_file_bytes: usize::from(input.inline_file_bytes),
-        source_bytes: usize::from(input.source_bytes),
-        archive_bytes: usize::from(input.archive_bytes).max(1024),
-        files: usize::from(input.max_files),
-    };
-
-    let archive = SourceArchive {
-        source_format: input.format.clone(),
-        main_path: input.main_path.clone(),
-        files: input
-            .files
-            .iter()
-            .take(16)
-            .map(|file| match file {
-                File::Inline { path, body } => SourceFile::Inline {
-                    path: path.clone(),
-                    bytes: body.clone().into_bytes(),
-                },
-                File::Asset {
-                    path,
-                    asset,
-                    digest,
-                    bytes,
-                    media_type,
-                } => SourceFile::Asset {
-                    path: path.clone(),
-                    asset_id: uuid::Uuid::from_u128(*asset),
-                    digest: *digest,
-                    bytes: *bytes,
-                    media_type: media_type.clone(),
-                },
-            })
-            .collect(),
+    let (limits, archive) = if input.valid_archive {
+        let (source_format, main_path, body) = match input.valid_format % 5 {
+            0 => ("markdown", "main.md", "# Fuzz seed\n"),
+            1 => ("html", "index.html", "<!doctype html><title>Fuzz seed</title>"),
+            2 => ("typst", "main.typ", "= Fuzz seed\n"),
+            3 => (
+                "latex",
+                "main.tex",
+                "\\documentclass{article}\n\\begin{document}Fuzz seed\\end{document}\n",
+            ),
+            _ => (
+                "quarto",
+                "main.qmd",
+                "---\ntitle: Fuzz seed\n---\n\nFuzz seed.\n",
+            ),
+        };
+        (
+            ArchiveLimits {
+                inline_file_bytes: 4096,
+                source_bytes: 8192,
+                archive_bytes: 64 * 1024,
+                files: 8,
+            },
+            SourceArchive {
+                source_format: source_format.to_owned(),
+                main_path: main_path.to_owned(),
+                files: vec![
+                    SourceFile::Inline {
+                        path: main_path.to_owned(),
+                        bytes: body.as_bytes().to_vec(),
+                    },
+                    SourceFile::Inline {
+                        path: "notes.txt".to_owned(),
+                        bytes: b"A second valid inline file.\n".to_vec(),
+                    },
+                ],
+            },
+        )
+    } else {
+        let limits = ArchiveLimits {
+            inline_file_bytes: usize::from(input.inline_file_bytes),
+            source_bytes: usize::from(input.source_bytes),
+            archive_bytes: usize::from(input.archive_bytes).max(1024),
+            files: usize::from(input.max_files),
+        };
+        let archive = SourceArchive {
+            source_format: input.format.clone(),
+            main_path: input.main_path.clone(),
+            files: input
+                .files
+                .iter()
+                .take(16)
+                .map(|file| match file {
+                    File::Inline { path, body } => SourceFile::Inline {
+                        path: path.clone(),
+                        bytes: body.clone().into_bytes(),
+                    },
+                    File::Asset {
+                        path,
+                        asset,
+                        digest,
+                        bytes,
+                        media_type,
+                    } => SourceFile::Asset {
+                        path: path.clone(),
+                        asset_id: uuid::Uuid::from_u128(*asset),
+                        digest: *digest,
+                        bytes: *bytes,
+                        media_type: media_type.clone(),
+                    },
+                })
+                .collect(),
+        };
+        (limits, archive)
     };
 
     let Ok(encoded) = encode(archive, limits) else {
