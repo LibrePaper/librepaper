@@ -83,6 +83,10 @@
   // The project a copy is being made of. A fork reads and rewrites a whole
   // directory, so it is slow enough to need saying that it is happening.
   let forking = $state("");
+  // Hiding a shared project is a personal listing preference. Keep each
+  // request pending until the server confirms it so a failed write cannot
+  // make the row disappear locally.
+  let sharedVisibilityPending = $state(new Set());
 
   // Which columns each place has. The table itself is DataTable's; what
   // differs between the places is this list, which is data rather than three
@@ -235,7 +239,7 @@
   const belongs = {
     projects: () => true,
     recent: (doc) => Boolean(doc.opened_at),
-    shared: (doc) => !mine(doc),
+    shared: (doc) => !mine(doc) && !doc.shared_hidden,
     favorites: (doc) => doc.favorite,
     trash: () => true,
   };
@@ -309,6 +313,34 @@
     } catch {
       doc.favorite = !wanted;
       say("That star could not be saved.", { kind: "problem", id: "landing:favorite" });
+    }
+  }
+
+  async function setSharedVisibility(doc, hidden) {
+    if (sharedVisibilityPending.has(doc.slug) || mine(doc)) return;
+    sharedVisibilityPending = new Set(sharedVisibilityPending).add(doc.slug);
+    try {
+      const response = await fetch(`/api/documents/${doc.slug}/shared`, {
+        method: hidden ? "DELETE" : "POST",
+        headers: SHELL_HEADERS,
+      });
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => ({}))).error;
+        throw new Error(detail || (hidden ? "That project could not be removed from Shared." : "That project could not be shown in Shared."));
+      }
+      doc.shared_hidden = hidden;
+      say(hidden
+        ? `${doc.title} was removed from your Shared list. You can show it again from All projects.`
+        : `${doc.title} will appear in your Shared list again.`, { id: `landing:shared:${doc.slug}` });
+    } catch (error) {
+      say(error?.message || (hidden ? "That project could not be removed from Shared." : "That project could not be shown in Shared."), {
+        kind: "problem",
+        id: `landing:shared-error:${doc.slug}`,
+      });
+    } finally {
+      const pending = new Set(sharedVisibilityPending);
+      pending.delete(doc.slug);
+      sharedVisibilityPending = pending;
     }
   }
 
@@ -609,6 +641,8 @@
       if (action === "rename") askRename(doc);
       else if (action === "fork") askFork(doc);
       else if (action === "favorite") void star(doc);
+      else if (action === "hide-shared") void setSharedVisibility(doc, true);
+      else if (action === "show-shared") void setSharedVisibility(doc, false);
       else if (action === "trash") askDelete(doc);
       else if (action === "restore") void restore(doc);
       else if (action === "purge") askPurge([doc]);
@@ -925,6 +959,15 @@
                         <Icon name="pencil" size="1rem" /><span class="menuitem-label">Rename</span>
                       </Menu.Item>
                     {/if}
+                    {#if !mine(doc) && place === "shared"}
+                      <Menu.Item value="hide-shared" class="menuitem project-action-item" data-project-action="hide-shared" disabled={sharedVisibilityPending.has(doc.slug)}>
+                        <Icon name="eye-off" size="1rem" /><span class="menuitem-label">Remove from Shared</span>
+                      </Menu.Item>
+                    {:else if !mine(doc) && place === "projects" && doc.shared_hidden}
+                      <Menu.Item value="show-shared" class="menuitem project-action-item" data-project-action="show-shared" disabled={sharedVisibilityPending.has(doc.slug)}>
+                        <Icon name="eye" size="1rem" /><span class="menuitem-label">Show in Shared</span>
+                      </Menu.Item>
+                    {/if}
                     <Menu.Item value="fork" class="menuitem project-action-item" data-project-action="fork" disabled={forking === doc.slug}>
                       <Icon name="git-fork" size="1rem" /><span class="menuitem-label">Fork</span>
                     </Menu.Item>
@@ -958,6 +1001,11 @@
               <span class="project-actions">
                 {#if mine(doc)}
                   <IconButton icon="pencil" title="Rename" label="Rename {doc.title}" onclick={() => askRename(doc)} />
+                {/if}
+                {#if !mine(doc) && place === "shared"}
+                  <IconButton icon="eye-off" title="Remove from Shared" label="Remove {doc.title} from Shared" disabled={sharedVisibilityPending.has(doc.slug)} onclick={() => setSharedVisibility(doc, true)} />
+                {:else if !mine(doc) && place === "projects" && doc.shared_hidden}
+                  <IconButton icon="eye" title="Show in Shared" label="Show {doc.title} in Shared" disabled={sharedVisibilityPending.has(doc.slug)} onclick={() => setSharedVisibility(doc, false)} />
                 {/if}
                 <IconButton icon="git-fork" title="Fork" label="Fork {doc.title}"
                             disabled={forking === doc.slug} onclick={() => askFork(doc)} />
