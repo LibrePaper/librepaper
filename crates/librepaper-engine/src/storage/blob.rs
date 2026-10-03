@@ -43,22 +43,15 @@ pub struct BlobMetadata {
     pub size: u64,
     pub version: Option<String>,
 }
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum BlobError {
+    #[error("no such object")]
     NotFound,
+    #[error("the object was written by someone else")]
     Conflict,
+    #[error("{0}")]
     Other(String),
 }
-impl std::fmt::Display for BlobError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound => f.write_str("no such object"),
-            Self::Conflict => f.write_str("the object was written by someone else"),
-            Self::Other(message) => f.write_str(message),
-        }
-    }
-}
-impl std::error::Error for BlobError {}
 pub type BlobResult<T> = Result<T, BlobError>;
 
 #[async_trait]

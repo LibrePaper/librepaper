@@ -238,33 +238,18 @@ pub fn new_id() -> uuid::Uuid {
     uuid::Uuid::now_v7()
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-    Database(sqlx::Error),
+    #[error("PostgreSQL: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("{0}")]
     Invalid(String),
+    #[error("{0}")]
     Conflict(String),
+    #[error("not found")]
     NotFound,
+    #[error("{0}")]
     Ownership(String),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Database(error) => write!(formatter, "PostgreSQL: {error}"),
-            Self::Invalid(message) | Self::Conflict(message) | Self::Ownership(message) => {
-                formatter.write_str(message)
-            }
-            Self::NotFound => formatter.write_str("not found"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<sqlx::Error> for Error {
-    fn from(value: sqlx::Error) -> Self {
-        Self::Database(value)
-    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

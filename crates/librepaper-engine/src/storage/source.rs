@@ -26,41 +26,16 @@ pub struct ProjectFile {
     pub media_type: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-    Database(super::postgres::Error),
-    Blob(BlobError),
-    Archive(source_archive::ArchiveError),
+    #[error(transparent)]
+    Database(#[from] super::postgres::Error),
+    #[error(transparent)]
+    Blob(#[from] BlobError),
+    #[error(transparent)]
+    Archive(#[from] source_archive::ArchiveError),
+    #[error("{0}")]
     Invalid(String),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Database(error) => error.fmt(formatter),
-            Self::Blob(error) => error.fmt(formatter),
-            Self::Archive(error) => error.fmt(formatter),
-            Self::Invalid(message) => formatter.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<super::postgres::Error> for Error {
-    fn from(value: super::postgres::Error) -> Self {
-        Self::Database(value)
-    }
-}
-impl From<BlobError> for Error {
-    fn from(value: BlobError) -> Self {
-        Self::Blob(value)
-    }
-}
-impl From<source_archive::ArchiveError> for Error {
-    fn from(value: source_archive::ArchiveError) -> Self {
-        Self::Archive(value)
-    }
 }
 
 pub struct SourceStorage {
