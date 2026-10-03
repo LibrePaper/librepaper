@@ -730,6 +730,7 @@ export function createProjectSession({
       return projectDirectory(doc, projectionRules).mainId;
     },
 
+    /** @param {ProjectRules} rules */
     setRules(rules) {
       projectionRules = rules || {};
       rebind();
