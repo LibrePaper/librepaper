@@ -36,7 +36,7 @@ try {
   const originalDirectory = process.cwd();
   const workingDirectory = join(directory, "working-directory");
   const relativeBin = join(workingDirectory, "bin");
-  mkdirSync(relativeBin);
+  mkdirSync(relativeBin, { recursive: true });
   const relativeChromium = join(relativeBin, "chromium");
   writeFileSync(relativeChromium, "#!/bin/sh\nexit 0\n");
   chmodSync(relativeChromium, 0o755);
