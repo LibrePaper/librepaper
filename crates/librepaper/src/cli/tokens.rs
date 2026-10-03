@@ -3,12 +3,12 @@
 
 use super::*;
 #[cfg(test)]
-use crate::local::credentials::read_tokens;
-pub(crate) use crate::local::credentials::write_private_file;
-use crate::local::credentials::{
+use librepaper_companion::local::credentials::read_tokens;
+pub(crate) use librepaper_companion::local::credentials::write_private_file;
+use librepaper_companion::local::credentials::{
     librepaper_dir, lock_tokens, store_token_at, stored_token_at, tokens_path,
 };
-pub(crate) use crate::local::paths::state_home_or_die as state_home;
+pub(crate) use librepaper_companion::local::paths::state_home_or_die as state_home;
 
 /// The token to send to `server`: an explicit `--token` (or the
 /// `$LIBREPAPER_TOKEN` clap merges into it) if one was given, or whatever
@@ -181,7 +181,7 @@ pub async fn poll_for_token(server: &str, code: &DeviceCode) -> Result<String, S
 #[cfg(test)]
 mod cache_tests {
     use super::*;
-    use crate::local::credentials::write_token;
+    use librepaper_companion::local::credentials::write_token;
 
     #[test]
     fn corrupt_cache_is_preserved_when_login_writes() {

@@ -1,0 +1,80 @@
+# The companion: the local app, the assistant and the automation peer.
+# Internal to librepaper.
+[package]
+name = "librepaper-companion"
+version.workspace = true
+edition.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[lib]
+doctest = false
+
+[dependencies]
+librepaper-base = { path = "../librepaper-base" }
+librepaper-document = { path = "../librepaper-document" }
+tokio.workspace = true
+axum.workspace = true
+http-body-util.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+# Quarto's freezer names a cached computation by the MD5 of its source, so
+# reading that cache means computing the same digest. A format requirement,
+# not a security choice: nothing here trusts MD5 for anything.
+md5.workspace = true
+base64.workspace = true
+hex.workspace = true
+rand.workspace = true
+regex.workspace = true
+time.workspace = true
+# The embedded guidance skills, compiled in.
+include_dir.workspace = true
+clap.workspace = true
+async-trait.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+# Official protocol implementations. LibrePaper owns policy around them, not
+# JSON-RPC framing, protocol negotiation, or request correlation.
+agent-client-protocol.workspace = true
+rmcp.workspace = true
+html-escape.workspace = true
+unicode-normalization.workspace = true
+# The automation peer is a WebSocket client; tls.rs in librepaper-base installs
+# the AWS-LC provider this rustls handle names.
+tokio-tungstenite.workspace = true
+rustls.workspace = true
+fs2.workspace = true
+uuid.workspace = true
+tempfile.workspace = true
+zip.workspace = true
+
+# Native dialogs for the companion's approval and folder prompts, with no
+# external programs. macOS and Windows use the system toolkits through rfd.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+rfd.workspace = true
+
+# Linux draws its own approval dialog (local::dialog) and asks the desktop
+# portal for folders. The release binary is static musl, so nothing here may
+# link or dlopen a C library: wayland-backend without `client_system` speaks
+# the protocol in Rust, sctk without `xkbcommon` (dialog.rs reads raw
+# keycodes), x11rb without `allow-unsafe-code`, ashpd over zbus.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd.workspace = true
+wayland-backend.workspace = true
+wayland-client.workspace = true
+smithay-client-toolkit.workspace = true
+x11rb.workspace = true
+ab_glyph.workspace = true
+epaint_default_fonts.workspace = true
+tiny-skia.workspace = true
+
+[dev-dependencies]
+# `start_paused` and `advance`, so the deadline tests move a clock instead of
+# waiting on one. Test builds only.
+tokio = { workspace = true, features = ["test-util"] }

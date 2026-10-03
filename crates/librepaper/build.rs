@@ -1,6 +1,3 @@
-// The skills are compiled in from a directory, so a file added to it has to
-// trigger a rebuild even though no Rust source changed.
-//
 // The built browser app and the pinned wasm digests are compiled into
 // librepaper-shell, which watches them itself.
 
@@ -18,7 +15,8 @@ fn main() {
         .canonicalize()
         .expect("docs/ is at the repository root");
     println!("cargo:rustc-env=LIBREPAPER_DOCS={}", docs.display());
-    // Same for the skills bundle, which routes.rs also includes by path.
+    // The skills bundle, which routes.rs includes by path. The companion
+    // compiles the whole directory in and watches it itself.
     let skills_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../skills")
         .canonicalize()
@@ -36,21 +34,4 @@ fn main() {
             .join("../../.sqlx")
             .display()
     );
-    let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
-    println!("cargo:rerun-if-changed={}", skills.display());
-    watch(&skills);
-}
-
-/// Tells cargo to rebuild when any file under this directory changes.
-fn watch(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        println!("cargo:rerun-if-changed={}", path.display());
-        if path.is_dir() {
-            watch(&path);
-        }
-    }
 }

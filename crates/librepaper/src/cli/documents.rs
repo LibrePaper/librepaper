@@ -284,7 +284,7 @@ async fn resolve_identifier_with(
 /// in its fragment is an empty key, which is what a plain document URL
 /// carries.
 pub fn link_key(flag: &str) -> String {
-    crate::automation::peer::link_key(flag)
+    librepaper_companion::automation::peer::link_key(flag)
 }
 
 #[cfg(test)]

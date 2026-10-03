@@ -9,11 +9,11 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
-use crate::local::cli::{LaunchArgs, LocalAgentCommand, LocalArgs, LocalCommand};
 use crate::storage::StorageFlags;
 use librepaper_base::config::Configuration;
 use librepaper_base::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use librepaper_base::util::die;
+use librepaper_companion::local::cli::{LaunchArgs, LocalAgentCommand, LocalArgs, LocalCommand};
 
 mod agent;
 
@@ -485,25 +485,25 @@ pub async fn main() {
     let command = cli.command.unwrap_or(Command::Start(cli.launch));
     match command {
         Command::Start(args) => {
-            crate::local::cli::run(LocalArgs {
+            librepaper_companion::local::cli::run(LocalArgs {
                 command: LocalCommand::Start(args),
             })
             .await
         }
         Command::Stop => {
-            crate::local::cli::run(LocalArgs {
+            librepaper_companion::local::cli::run(LocalArgs {
                 command: LocalCommand::Stop,
             })
             .await
         }
         Command::Status { tool_path } => {
-            crate::local::cli::run(LocalArgs {
+            librepaper_companion::local::cli::run(LocalArgs {
                 command: LocalCommand::Status { tool_path },
             })
             .await
         }
         Command::Agent { command } => {
-            crate::local::cli::run(LocalArgs {
+            librepaper_companion::local::cli::run(LocalArgs {
                 command: LocalCommand::Agent { command },
             })
             .await
@@ -534,7 +534,9 @@ pub async fn main() {
                 die(err);
             }
         }
-        Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
+        Command::Local { command } => {
+            librepaper_companion::local::cli::run(LocalArgs { command }).await
+        }
     }
 }
 
@@ -566,7 +568,9 @@ async fn run_admin(command: AdminCommand) {
                 start_local: (!service.no_local).then(|| -> crate::server::serve::StartLocal {
                     Box::new(|base| {
                         Box::pin(async move {
-                            let app = crate::local::embedded::start(&base, Vec::new()).await?;
+                            let app =
+                                librepaper_companion::local::embedded::start(&base, Vec::new())
+                                    .await?;
                             let stopper = app.clone();
                             Ok(crate::server::serve::LocalApp {
                                 address: app.address.clone(),

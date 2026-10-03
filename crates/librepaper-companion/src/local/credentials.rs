@@ -43,7 +43,7 @@ pub(crate) fn agent_token(
 }
 
 /// Where every librepaper file lives under the state directory.
-pub(crate) fn librepaper_dir(base: &Path) -> PathBuf {
+pub fn librepaper_dir(base: &Path) -> PathBuf {
     base.join("librepaper")
 }
 
@@ -51,7 +51,7 @@ pub(crate) fn librepaper_dir(base: &Path) -> PathBuf {
 /// `login` received from it. Scoped by origin, not by the literal `--server`
 /// string, so `https://x.example` and `https://x.example/` share a cache
 /// entry and a request never carries one deployment's token to another.
-pub(crate) fn tokens_path(base: &Path) -> PathBuf {
+pub fn tokens_path(base: &Path) -> PathBuf {
     librepaper_dir(base).join("tokens.json")
 }
 
@@ -61,7 +61,7 @@ pub(crate) fn load_tokens(base: &Path) -> std::collections::HashMap<String, Stri
     read_tokens(base).unwrap_or_default()
 }
 
-pub(crate) fn read_tokens(
+pub fn read_tokens(
     base: &Path,
 ) -> Result<std::collections::HashMap<String, String>, String> {
     let path = tokens_path(base);
@@ -76,7 +76,7 @@ pub(crate) fn read_tokens(
 
 // Never unlink this lock: replacing its inode would let two processes lock
 // different files. The operating system releases the lock even after a crash.
-pub(crate) fn lock_tokens(base: &Path) -> Result<std::fs::File, String> {
+pub fn lock_tokens(base: &Path) -> Result<std::fs::File, String> {
     let directory = librepaper_dir(base);
     std::fs::create_dir_all(&directory)
         .map_err(|err| format!("could not create {}: {err}", directory.display()))?;
@@ -110,7 +110,7 @@ pub(crate) fn save_tokens(
 }
 
 /// The token cached for one server's origin, or "" if there is none.
-pub(crate) fn stored_token_at(base: &Path, server: &str) -> String {
+pub fn stored_token_at(base: &Path, server: &str) -> String {
     let origin = origin(server);
     load_tokens(base)
         .get(&origin)
@@ -120,7 +120,7 @@ pub(crate) fn stored_token_at(base: &Path, server: &str) -> String {
 }
 
 /// Caches `token` under `server`'s origin.
-pub(crate) fn store_token_at(base: &Path, server: &str, token: &str) -> Result<(), String> {
+pub fn store_token_at(base: &Path, server: &str, token: &str) -> Result<(), String> {
     let _lock = lock_tokens(base)?;
     let origin = origin(server);
     let mut tokens = read_tokens(base)?;
@@ -136,7 +136,7 @@ pub(crate) fn store_token_at(base: &Path, server: &str, token: &str) -> Result<(
 /// shared with the assistant journal so the two cannot drift. Caller
 /// locking stays here: `save_tokens` holds the tokens lock across a
 /// read-modify-write, which no single replacement can provide.
-pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     librepaper_base::private_files::publish(path, bytes, &path.display().to_string())
 }
 

@@ -22,7 +22,6 @@ include = [
     "src/**",
     "tests/**",
     "migrations/postgres/**",
-    "assets/**",
 ]
 autotests = false
 
@@ -103,30 +102,25 @@ regex.workspace = true
 # Timestamps in the index and the room, RFC 3339 like the Worker wrote them.
 time.workspace = true
 chrono-tz.workspace = true
-# The embedded guidance skills, compiled in.
-include_dir.workspace = true
 # The built browser app, compiled in.
 librepaper-shell = { path = "../librepaper-shell" }
 # Configuration, identity and shared helpers.
 librepaper-base = { path = "../librepaper-base" }
 # What a document is, whoever serves it.
 librepaper-document = { path = "../librepaper-document" }
+# The local app, the assistant and the automation peer.
+librepaper-companion = { path = "../librepaper-companion" }
 # The command line.
 clap.workspace = true
 # The blob store is a trait with async methods behind a pointer.
 async-trait.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
-# Official protocol implementations. LibrePaper owns policy around them, not
-# JSON-RPC framing, protocol negotiation, or request correlation.
-agent-client-protocol.workspace = true
-rmcp.workspace = true
 # What a browser shows of a document, for anchoring seeded annotations.
 html-escape.workspace = true
 # The collaboration substrate (SPEC-loro.md). This version and `loro-crdt` in
 # web/package.json are one pin: see tools/check-loro-pin.sh.
 loro.workspace = true
-unicode-normalization.workspace = true
 # Source versions are deterministic tar streams stored as zstd blobs.
 zstd.workspace = true
 tar.workspace = true
@@ -148,26 +142,6 @@ log.workspace = true
 tempfile.workspace = true
 zip.workspace = true
 object_store.workspace = true
-
-# Native dialogs for the companion's approval and folder prompts, with no
-# external programs. macOS and Windows use the system toolkits through rfd.
-[target.'cfg(any(target_os = "macos", windows))'.dependencies]
-rfd.workspace = true
-
-# Linux draws its own approval dialog (local::dialog) and asks the desktop
-# portal for folders. The release binary is static musl, so nothing here may
-# link or dlopen a C library: wayland-backend without `client_system` speaks
-# the protocol in Rust, sctk without `xkbcommon` (dialog.rs reads raw
-# keycodes), x11rb without `allow-unsafe-code`, ashpd over zbus.
-[target.'cfg(target_os = "linux")'.dependencies]
-ashpd.workspace = true
-wayland-backend.workspace = true
-wayland-client.workspace = true
-smithay-client-toolkit.workspace = true
-x11rb.workspace = true
-ab_glyph.workspace = true
-epaint_default_fonts.workspace = true
-tiny-skia.workspace = true
 
 [dev-dependencies]
 # `start_paused` and `advance`, so the deadline tests move a clock instead of
