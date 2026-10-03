@@ -3,6 +3,7 @@
 //! The base: configuration, identity and the small helpers every other part
 //! of librepaper builds on. It depends on nothing else in the workspace.
 
+pub mod assistant_protocol;
 pub mod auth;
 pub mod config;
 pub mod http;

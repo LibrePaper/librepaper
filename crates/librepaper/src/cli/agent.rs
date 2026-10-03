@@ -4,7 +4,7 @@
 //! nothing but MCP frames over stdio, and it is not listed, because only that
 //! agent runs it -- never a human, and never LibrePaper's own companion,
 //! which drives ACP directly in-process instead of spawning a runner (see
-//! `crate::assistant::registry`).
+//! `librepaper_companion::assistant::registry`).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use clap::Args;
 
-use crate::automation::peer::AutomationPeer;
 use crate::cli::Deployment;
-use crate::local::connections::GRANT_FILE_VARIABLE;
+use librepaper_companion::automation::peer::AutomationPeer;
+use librepaper_companion::local::connections::GRANT_FILE_VARIABLE;
 
 /// Serve the document MCP tools over stdio for the sidebar assistant's own
 /// agent.
@@ -34,14 +34,15 @@ pub(crate) struct McpArgs {
 
 pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
     let Deployment { server, token } = args.deployment;
-    let resolved =
-        crate::local::connections::ConnectionStore::new(&crate::local::paths::state_home()?)
-            .resolve(&args.connection)?;
+    let resolved = librepaper_companion::local::connections::ConnectionStore::new(
+        &librepaper_companion::local::paths::state_home()?,
+    )
+    .resolve(&args.connection)?;
     if let (Some(conversation), Some(chat_token)) = (&resolved.conversation, &resolved.chat_token) {
         std::env::set_var("LIBREPAPER_CONVERSATION", conversation);
         std::env::set_var("LIBREPAPER_CHAT_TOKEN", chat_token);
     }
-    let link = crate::automation::peer::DocumentLink::parse(
+    let link = librepaper_companion::automation::peer::DocumentLink::parse(
         &resolved.link,
         server.as_deref().unwrap_or(""),
     )?;
@@ -58,7 +59,7 @@ pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
         }
         None => AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?,
     };
-    crate::automation::mcp::stdio(&peer).await
+    librepaper_companion::automation::mcp::stdio(&peer).await
 }
 
 /// Read the runner's scoped grant. The runner publishes the file by rename,

@@ -1,7 +1,10 @@
 //! `librepaper admin serve`: the whole service in this process.
 
+use std::future::Future;
 use std::io::IsTerminal;
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -23,6 +26,18 @@ use librepaper_shell::load_shell;
 /// taken, needs no thought.
 const PORT_FIRST: u16 = 8080;
 const PORT_LAST: u16 = 8099;
+
+/// A running local app, as the server sees it: where browsers find it, and
+/// how to stop it at shutdown.
+pub struct LocalApp {
+    pub address: String,
+    pub stop: Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>,
+}
+
+/// Starts the local app under the given private directory of the deployment.
+pub type StartLocal = Box<
+    dyn FnOnce(PathBuf) -> Pin<Box<dyn Future<Output = Result<LocalApp, String>> + Send>> + Send,
+>;
 
 pub struct ServeOptions {
     pub bind: std::net::IpAddr,
@@ -59,10 +74,11 @@ pub struct ServeOptions {
     /// A directory of font files served to typst documents, or nothing. See
     /// `crate::server::fonts`.
     pub typst_fonts: Option<String>,
-    /// Do not run the local app for this machine. Without it, `serve` also
-    /// starts the loopback service that renders Quarto documents for an
-    /// editor whose browser is on this host; see `crate::local::embedded`.
-    pub no_local: bool,
+    /// Starts the local app for this machine, or nothing for `--no-local`.
+    /// When present, `serve` also runs the loopback service that renders
+    /// Quarto documents for an editor whose browser is on this host. The
+    /// caller supplies it so the server does not depend on the service.
+    pub start_local: Option<StartLocal>,
     pub config: Configuration,
 }
 
@@ -452,18 +468,15 @@ pub async fn serve(options: ServeOptions) {
     // it, and it lives under the deployment's private state so it shares
     // nothing with a standalone `librepaper start`. Failing to start it
     // is a warning, not a death: the deployment serves documents regardless.
-    let local = if options.no_local {
-        None
-    } else {
-        match crate::local::embedded::start(&deployment_paths.state.join("local-app"), Vec::new())
-            .await
-        {
+    let local = match options.start_local {
+        None => None,
+        Some(start) => match start(deployment_paths.state.join("local-app")).await {
             Ok(local) => Some(local),
             Err(error) => {
                 eprintln!("warning: local app not started: {error}");
                 None
             }
-        }
+        },
     };
     instance.local_app = local.as_ref().map(|app| app.address.clone());
     let instance = Arc::new(instance);
@@ -577,8 +590,8 @@ pub async fn serve(options: ServeOptions) {
     )
     .with_graceful_shutdown(shutdown)
     .await;
-    if let Some(local) = &local {
-        local.stop().await;
+    if let Some(local) = local {
+        (local.stop)().await;
     }
     closing_catalog.close().await;
     if let Err(err) = serve_result {

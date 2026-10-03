@@ -1008,22 +1008,7 @@ impl Workspace {
     }
 }
 
-/// Whether a project-relative path may be staged at all: relative, no `..`,
-/// no `.`, no backslash, no control characters, no empty component, and no
-/// leading slash. Shared by the service (upload) and the runner (outputs).
-pub fn safe_relative_path(path: &str) -> bool {
-    if path.is_empty() || path.starts_with('/') || path.contains('\\') || path.contains('\0') {
-        return false;
-    }
-    if path.len() >= 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.as_bytes()[1] == b':' {
-        return false;
-    }
-    if path.chars().any(|c| c.is_control()) {
-        return false;
-    }
-    path.split('/')
-        .all(|part| !part.is_empty() && part != "." && part != "..")
-}
+pub use librepaper_document::document::paths::safe_relative_path;
 
 fn validate_binding_id(value: &str, engine: &str) -> Result<(), String> {
     if value.is_empty() || value.len() > 256 {
@@ -1135,27 +1120,6 @@ mod tests {
             assert!(!diagnostic.contains("link-secret"));
             assert!(!diagnostic.contains("chat-secret"));
             assert!(!diagnostic.contains("agent-secret"));
-        }
-    }
-
-    #[test]
-    fn a_relative_path_is_safe_and_an_escaping_one_is_not() {
-        assert!(safe_relative_path("main.tex"));
-        assert!(safe_relative_path("chapters/01.tex"));
-        assert!(safe_relative_path("asset:figures/plot.png"));
-        for bad in [
-            "",
-            "/etc/passwd",
-            "../x",
-            "a/../b",
-            "a/./b",
-            "a\\b",
-            "a\u{0}b",
-            "a//b",
-            "x\n",
-            "C:/Windows/system32",
-        ] {
-            assert!(!safe_relative_path(bad), "{bad:?} was allowed");
         }
     }
 

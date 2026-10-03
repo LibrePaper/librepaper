@@ -19,13 +19,10 @@
 // Some narrow test support APIs are intentionally compiled only into the library
 // test target; integration binaries do not consume them in that target.
 
-mod assistant;
-mod automation;
 mod cli;
 // The configuration lives in librepaper-base; the path stays as consumers
 // spell it.
 pub use librepaper_base::config;
-mod local;
 // The log lives in librepaper-engine; the path stays as consumers spell it.
 pub use librepaper_engine::log;
 mod room;
@@ -33,7 +30,7 @@ mod server;
 
 pub use cli::main;
 // The headless automation peer, for the integration tests in `tests/`.
-pub use automation::peer;
+pub use librepaper_companion::automation::peer;
 
 // -- what is public, and why ------------------------------------------------
 //
@@ -95,7 +92,7 @@ pub mod annotation {
 /// The loopback service takes requests from any page in the browser, and a
 /// request there becomes files on the author's own machine.
 pub mod protocol {
-    pub use crate::local::protocol::{
+    pub use librepaper_companion::local::protocol::{
         decode_preview, safe_relative_path, PreviewInputs, WorkspaceRequest,
     };
 }

@@ -242,7 +242,7 @@ impl AutomationPeer {
     /// Open the sidebar peer with the short-lived capability the signed-in
     /// browser delegated to the companion. This path never consults cached
     /// device credentials, which could otherwise widen its authority.
-    pub(crate) async fn open_scoped(link: DocumentLink, token: String) -> Result<Self, String> {
+    pub async fn open_scoped(link: DocumentLink, token: String) -> Result<Self, String> {
         if !token.starts_with(librepaper_base::auth::AGENT_GRANT_PREFIX) {
             return Err("the browser did not provide a scoped assistant authorization".into());
         }
@@ -292,7 +292,7 @@ impl AutomationPeer {
         })
     }
 
-    pub(crate) fn token_source(&self) -> Arc<RwLock<String>> {
+    pub fn token_source(&self) -> Arc<RwLock<String>> {
         Arc::clone(&self.token)
     }
 

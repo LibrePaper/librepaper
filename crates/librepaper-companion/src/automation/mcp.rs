@@ -300,7 +300,7 @@ fn publish_bridge_readiness() -> Result<(), McpError> {
     .map_err(internal_error)
 }
 
-pub(crate) async fn stdio(peer: &AutomationPeer) -> Result<(), String> {
+pub async fn stdio(peer: &AutomationPeer) -> Result<(), String> {
     let service = Bridge::new(peer.clone())
         .await?
         .serve(rmcp::transport::stdio())

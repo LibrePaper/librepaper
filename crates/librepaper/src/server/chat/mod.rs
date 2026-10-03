@@ -15,8 +15,8 @@ use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
 const CHANNEL_SECONDS: i64 = 60 * 60;
-use crate::assistant::protocol::{
-    MAX_CONTEXT_BYTES as MAX_CONTEXT, MAX_EVENT_TEXT_BYTES as MAX_EVENT_TEXT,
+use librepaper_base::assistant_protocol::{
+    TaskKind, TaskScope, MAX_CONTEXT_BYTES as MAX_CONTEXT, MAX_EVENT_TEXT_BYTES as MAX_EVENT_TEXT,
     MAX_ID_BYTES as MAX_ID,
 };
 pub type Error = (u16, &'static str);
@@ -351,18 +351,17 @@ fn valid_runner_binding(value: &str) -> bool {
 }
 fn valid_task(task: Option<&Task>) -> bool {
     task.is_none_or(|task| {
-        serde_json::from_value::<crate::assistant::protocol::TaskKind>(json!(task.kind)).is_ok()
-            && serde_json::from_value::<crate::assistant::protocol::TaskScope>(json!(task.scope))
-                .is_ok()
+        serde_json::from_value::<TaskKind>(json!(task.kind)).is_ok()
+            && serde_json::from_value::<TaskScope>(json!(task.scope)).is_ok()
             && task.kind.len() <= 32
             && task.scope.len() <= 32
     })
 }
 fn valid_context(context: &Value) -> bool {
-    crate::assistant::protocol::valid_context(context)
+    librepaper_base::assistant_protocol::valid_context(context)
 }
 fn valid_status(status: &str) -> bool {
-    crate::assistant::protocol::TaskStatus::parse(status).is_some()
+    librepaper_base::assistant_protocol::TaskStatus::parse(status).is_some()
 }
 fn bounded_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
     let value = value[key]

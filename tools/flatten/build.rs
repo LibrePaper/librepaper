@@ -19,6 +19,9 @@ fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     println!("cargo:rerun-if-env-changed=LIBREPAPER_VERSION");
     println!("cargo:rerun-if-env-changed=SQLX_OFFLINE");
+    // The companion crate's build.rs derives the same value.
+    let version = std::env::var("CARGO_PKG_VERSION").expect("cargo sets the package version");
+    println!("cargo:rustc-env=LIBREPAPER_BUILD_VERSION=v{version}");
     // A packaged crate is built outside this repository's `.cargo/config.toml`.
     // Keep SQLx query macros offline there, while allowing an explicit caller
     // setting such as `SQLX_OFFLINE=false` to take precedence.

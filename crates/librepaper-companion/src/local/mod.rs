@@ -13,7 +13,7 @@ pub mod bindings;
 pub mod builders;
 pub mod cli;
 pub mod connections;
-pub(crate) mod credentials;
+pub mod credentials;
 #[cfg(target_os = "linux")]
 pub(crate) mod dialog;
 pub mod discovery;
@@ -24,7 +24,7 @@ pub mod integrations;
 pub mod lifecycle;
 pub mod native;
 pub mod pairing;
-pub(crate) mod paths;
+pub mod paths;
 pub mod protocol;
 pub mod quarto;
 pub mod quarto_capture;

@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub(crate) fn state_home() -> Result<PathBuf, String> {
+pub fn state_home() -> Result<PathBuf, String> {
     if let Some(base) = std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(base));
     }
@@ -15,7 +15,7 @@ pub(crate) fn state_home() -> Result<PathBuf, String> {
 /// The state directory to read and write under, following XDG: where the
 /// token cache and the local service's pairings live. A machine with no home
 /// directory cannot go on, so this exits with the reason.
-pub(crate) fn state_home_or_die() -> PathBuf {
+pub fn state_home_or_die() -> PathBuf {
     state_home().unwrap_or_else(|error| librepaper_base::util::die(&error))
 }
 
