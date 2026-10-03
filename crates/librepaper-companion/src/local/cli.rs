@@ -151,16 +151,8 @@ pub async fn run(args: LocalArgs) {
 /// testable with an explicit directory -- the same reasoning
 /// `crate::local::paths::state_home_or_die` gives for the token cache.
 fn cache_home() -> PathBuf {
-    match std::env::var("XDG_CACHE_HOME") {
-        Ok(base) if !base.is_empty() => PathBuf::from(base),
-        _ => {
-            let home = std::env::var("HOME")
-                .ok()
-                .filter(|h| !h.is_empty())
-                .unwrap_or_else(|| die("no home directory to store the job cache in"));
-            PathBuf::from(home).join(".cache")
-        }
-    }
+    crate::local::paths::cache_home()
+        .unwrap_or_else(|| die("no home directory to store the job cache in"))
 }
 
 async fn start_background(port: u16, tool_path: &[PathBuf]) {

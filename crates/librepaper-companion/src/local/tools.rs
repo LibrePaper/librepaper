@@ -67,22 +67,9 @@ pub(crate) fn find(override_var: &str, tool: &str) -> Option<PathBuf> {
     if let Some(path) = configured.filter(|path| path.is_file()) {
         return Some(path);
     }
-    let name = exe_name(tool);
-    std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())?
-        .into_iter()
-        .map(|dir| dir.join(&name))
-        .find(|path| path.is_file())
+    which::which(tool).ok()
 }
 
-/// The name an executable actually has on this platform.
-pub(crate) fn exe_name(tool: &str) -> String {
-    if cfg!(windows) {
-        format!("{tool}.exe")
-    } else {
-        tool.to_string()
-    }
-}
 
 /// The first line of what `path --version` prints, or nothing.
 ///

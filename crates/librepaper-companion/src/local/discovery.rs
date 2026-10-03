@@ -112,7 +112,7 @@ fn conventional_dirs() -> Vec<PathBuf> {
     dirs.push(PathBuf::from("/usr/local/bin"));
 
     // User-local binary directories.
-    if let Some(home) = home_dir() {
+    if let Some(home) = super::paths::home() {
         dirs.push(home.join(".local").join("bin"));
         dirs.push(home.join(".cargo").join("bin"));
     }
@@ -120,22 +120,14 @@ fn conventional_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-}
-
 /// The first directory among `dirs` that holds `tool`, resolved to its
 /// canonical absolute path. Spaces and non-ASCII bytes in a directory name
 /// are preserved as-is: this never shells out to find the file, only
 /// `std::fs` metadata, so nothing here re-tokenises the path.
 fn find_tool(tool: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    let name = super::tools::exe_name(tool);
+    let cwd = std::env::current_dir().unwrap_or_default();
     for dir in dirs {
-        let candidate = dir.join(&name);
-        if candidate.is_file() {
+        if let Ok(candidate) = which::which_in(tool, Some(dir.as_os_str()), &cwd) {
             return std::fs::canonicalize(&candidate).ok().or(Some(candidate));
         }
     }
@@ -272,15 +264,8 @@ fn load_cache() -> Option<Cache> {
 }
 
 fn save_cache(cache: &Cache) {
-    let path = cache_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     if let Ok(text) = serde_json::to_string_pretty(cache) {
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
+        let _ = librepaper_base::private_files::publish(&cache_path(), text.as_bytes(), "tool cache");
     }
 }
 

@@ -761,14 +761,14 @@ fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry>
             if let Some(entry) = recovered.get(&id) {
                 // Rewrite an interrupted admission record as a terminal
                 // result so a second restart remains idempotent.
-                let _ = persist_quarto_job(&id, entry);
+                let _ = persist_quarto_job(entry);
             }
         }
     }
     recovered
 }
 
-fn persist_quarto_job(id: &str, entry: &JobEntry) -> Result<(), String> {
+fn persist_quarto_job(entry: &JobEntry) -> Result<(), String> {
     if entry.request.kind != "quarto" {
         return Ok(());
     }
@@ -834,9 +834,14 @@ fn persist_quarto_job(id: &str, entry: &JobEntry) -> Result<(), String> {
         finished_at: librepaper_base::util::now_unix(),
     };
     let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
-    let temporary = root.join(format!("{QUARTO_RECORD_FILE}.tmp-{id}"));
-    std::fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
-    std::fs::rename(temporary, root.join(QUARTO_RECORD_FILE)).map_err(|error| error.to_string())
+    use std::io::Write;
+    let mut temporary = tempfile::NamedTempFile::new_in(&root).map_err(|error| error.to_string())?;
+    temporary.write_all(&bytes).map_err(|error| error.to_string())?;
+    temporary.as_file().sync_all().map_err(|error| error.to_string())?;
+    temporary
+        .persist(root.join(QUARTO_RECORD_FILE))
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 async fn run_worker(inner: Arc<Inner>) {
@@ -894,7 +899,7 @@ async fn run_worker(inner: Arc<Inner>) {
             entry.status = status;
             entry.files = outcome.files;
             entry.finished_at = Some(Instant::now());
-            if let Err(error) = persist_quarto_job(&id, entry) {
+            if let Err(error) = persist_quarto_job(entry) {
                 eprintln!("could not persist completed local Quarto job {id}: {error}");
             }
         }
