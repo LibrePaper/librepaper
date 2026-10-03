@@ -486,9 +486,24 @@ pub(crate) enum ModerationCommand {
     },
 }
 
+/// Installs the one process-wide subscriber: diagnostics go to stderr, `RUST_LOG`
+/// overrides the default `info` filter, and colour is used only on a terminal.
+fn install_subscriber() {
+    use std::io::IsTerminal;
+    use tracing_subscriber::EnvFilter;
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .init();
+}
+
 #[tokio::main]
 pub async fn main() {
     let cli = Cli::parse();
+    install_subscriber();
     let command = cli.command.unwrap_or(Command::Start(cli.launch));
     match command {
         Command::Start(args) => {
