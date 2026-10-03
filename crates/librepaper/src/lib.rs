@@ -19,7 +19,6 @@
 // Some narrow test support APIs are intentionally compiled only into the library
 // test target; integration binaries do not consume them in that target.
 
-mod agent_query;
 mod assistant;
 mod auth;
 mod automation;

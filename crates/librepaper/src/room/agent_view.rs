@@ -19,7 +19,7 @@ impl Room {
     /// and it is the projection's own content digest, computed once.
     pub(crate) async fn agent_query_snapshot(
         &self,
-    ) -> Result<crate::agent_query::QuerySnapshot, crate::room::agent::AgentError> {
+    ) -> Result<crate::room::agent_query::QuerySnapshot, crate::room::agent::AgentError> {
         if let Some(why) = self.unreadable().await {
             return Err(crate::room::agent::AgentError::Storage(why));
         }
@@ -27,7 +27,7 @@ impl Room {
             .projection()
             .await
             .map_err(|error| crate::room::agent::AgentError::Storage(error.to_string()))?;
-        Ok(crate::agent_query::QuerySnapshot {
+        Ok(crate::room::agent_query::QuerySnapshot {
             tree_digest: projected.projection.digest(),
             projected,
             // A capture is of the source. Comments are read live, a page at
@@ -57,7 +57,7 @@ impl Room {
         editor: bool,
         after: Option<comments::Position>,
         limit: usize,
-    ) -> Result<crate::agent_query::ThreadWindow, crate::room::agent::AgentError> {
+    ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::agent::AgentError> {
         let (views, page) = self
             .comment_page(after, limit, author, editor)
             .await
@@ -75,7 +75,7 @@ impl Room {
                 view
             })
             .collect();
-        Ok(crate::agent_query::ThreadWindow {
+        Ok(crate::room::agent_query::ThreadWindow {
             items,
             thread: None,
             complete: page.complete,
@@ -92,8 +92,8 @@ impl Room {
         editor: bool,
         after: Option<comments::Position>,
         limit: usize,
-    ) -> Result<crate::agent_query::ThreadWindow, crate::room::agent::AgentError> {
-        let missing = crate::agent_query::ThreadWindow {
+    ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::agent::AgentError> {
+        let missing = crate::room::agent_query::ThreadWindow {
             missing: true,
             complete: true,
             ..Default::default()
@@ -134,7 +134,7 @@ impl Room {
                 value
             })
             .collect();
-        Ok(crate::agent_query::ThreadWindow {
+        Ok(crate::room::agent_query::ThreadWindow {
             items,
             thread: Some(thread),
             complete: page.complete,

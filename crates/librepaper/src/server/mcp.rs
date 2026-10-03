@@ -1,6 +1,6 @@
 //! MCP document tools. MCP owns transport; rooms own effects and durability.
 use super::*;
-use crate::agent_query::{QueryBudget, QuerySnapshot};
+use crate::room::agent_query::{QueryBudget, QuerySnapshot};
 use hmac::{Hmac, Mac};
 use serde::Serialize;
 
@@ -682,14 +682,14 @@ impl Server {
         let author = self.mcp_author(headers, arrival, who, actor);
         let editor = who.at_least(Role::Editor);
         for query in wanted {
-            let fingerprint = crate::agent_query::query_fingerprint(query);
+            let fingerprint = crate::room::agent_query::query_fingerprint(query);
             // Where this query continues, if it is a continuation. The
             // cursor is validated in full against the snapshot afterwards;
             // this only decides which rows to read.
             let at = query
                 .get("cursor")
                 .and_then(Value::as_str)
-                .and_then(crate::agent_query::peek_cursor)
+                .and_then(crate::room::agent_query::peek_cursor)
                 .and_then(|peeked| peeked.at);
             let thread = match query.get("id").and_then(Value::as_str) {
                 Some(id) => Some(comments::parse_uuid(id, "id")?),
@@ -861,7 +861,7 @@ impl Server {
         };
         let snapshot = view.snapshot;
         let (snapshot, query_result) = tokio::task::spawn_blocking(move || {
-            let result = crate::agent_query::read(
+            let result = crate::room::agent_query::read(
                 &snapshot,
                 &queries,
                 QueryBudget {
