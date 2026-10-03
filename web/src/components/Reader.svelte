@@ -599,7 +599,7 @@
   //
   // What the bar offers over what is selected. Nothing is offered when
   // nothing is.
-  const renderedProjectCurrent = $derived(
+  const renderedProjectCurrent = $derived.by(() =>
     mayEdit || Boolean(renderedProjectDigest && renderedProjectDigest === currentProject?.project_digest),
   );
   const shownVerbs = $derived.by(() => pending && renderedProjectCurrent ? VERBS : []);

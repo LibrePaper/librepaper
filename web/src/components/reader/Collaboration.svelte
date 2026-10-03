@@ -5,11 +5,11 @@
   import PanelTabs from "../PanelTabs.svelte";
 
   let {
-    messages = [], connected = false, canPost = false, onsend,
+    messages = [], connected = false, canPost = false, onsend = undefined,
     comments = [], identity = "", commentingAs = "Anonymous",
     canModerate = false, canComment = true,
-    went = {}, replacements = {}, onreveal, onresolve, ondelete,
-    ondeletemany, onreply, onaccept, onreject, onrejectconfirmed, pending,
+    went = {}, replacements = {}, onreveal = undefined, onresolve = undefined, ondelete = undefined,
+    ondeletemany = undefined, onreply = undefined, onaccept = undefined, onreject = undefined, onrejectconfirmed = undefined, pending = undefined,
     unreadChat = false, selected = "", tab = $bindable("comments"),
     // The traversal, as `lib/reader/annotations.svelte.js` keeps it: the
     // catalogue's own counts, whether there is another page, and whether
@@ -18,7 +18,7 @@
     page = null, onloadmore, onloadreplies,
     // The draft being written, which belongs to the Comments tab whatever it
     // will become: a suggestion is a comment until it is sent.
-    composing = null, needsLogin = false, signInHref = "", oncommentsend, oncommentcancel,
+    composing = null, needsLogin = false, signInHref = "", oncommentsend = undefined, oncommentcancel = undefined,
   } = $props();
   const VIEWS = [
     { id: "chat", label: "Chat" },

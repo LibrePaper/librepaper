@@ -11,7 +11,7 @@
   /** @typedef {import("../lib/insert.js").InsertionResult} InsertionResult */
   /** @typedef {import("../lib/insert.js").FinalInsertion} FinalInsertion */
   /** @typedef {{key?: string; [field: string]: unknown}} InsertBibliographyEntry */
-  /** @typedef {InsertContext & {bibliography?: InsertBibliographyEntry[] | {entries: InsertBibliographyEntry[]}; targetId?: string}} InsertMenuContext */
+  /** @typedef {Omit<InsertContext, "bibliography"> & {bibliography?: InsertBibliographyEntry[] | {entries: InsertBibliographyEntry[]}; targetId?: string}} InsertMenuContext */
   /** @typedef {{
    * getContext?: () => InsertMenuContext | null;
    * oninsert?: (result: FinalInsertion, context: InsertMenuContext) => unknown;
@@ -39,6 +39,7 @@
   let preview = $state(null);
   let dialogGeneration = 0;
 
+  /** @type {Array<[string, string[]]>} */
   const groups = [
     ["Structure", ["heading", "abstract", "appendix", "toc"]],
     ["Figures and tables", ["figure", "table"]],
@@ -69,7 +70,13 @@
   const actionById = (id) => INSERT_ACTIONS.find((action) => action.id === id);
   /** @returns {InsertMenuContext} */
   function contextNow() { return menuContext || getContext?.() || { format: "markdown", path: "", text: "", selection: { from: 0, to: 0, text: "" } }; }
-  function availability(id, context) { return insertionAvailability?.(id, context) || { enabled: true }; }
+  /** @param {InsertMenuContext} context @returns {InsertContext} */
+  function insertionContext(context) {
+    const { bibliography, ...base } = context;
+    const entries = Array.isArray(bibliography) ? bibliography : bibliography?.entries;
+    return entries ? { ...base, bibliography: entries } : base;
+  }
+  function availability(id, context) { return insertionAvailability?.(id, insertionContext(context)) || { enabled: true }; }
   function actionLabel(id) { return actionById(id)?.label || id; }
   function closeDialog() {
     const target = captured;
@@ -87,7 +94,7 @@
   }
   /** @param {string} id @param {InsertionDraft} options @param {InsertMenuContext} context @returns {InsertionResult} */
   function safeBuild(id, options, context) {
-    try { error = ""; return buildInsertion(id, options, context); }
+    try { error = ""; return buildInsertion(id, options, insertionContext(context)); }
     catch (cause) { const message = errorMessage(cause, "This insertion is not valid yet."); error = message; return { text: "", notes: [message], additionalEdits: [] }; }
   }
   /** @param {string} id */
@@ -133,7 +140,7 @@
   /** @param {string} id @param {InsertionDraft} options @param {InsertMenuContext} context */
   function insert(id, options, context) {
     let result;
-    try { result = buildInsertion(id, options, context); }
+    try { result = buildInsertion(id, options, insertionContext(context)); }
     catch (cause) { error = errorMessage(cause, "This insertion is not valid yet."); return; }
     try { oninsert?.(result, context); }
     catch (cause) { error = errorMessage(cause, "The insertion target changed."); dialog = id; dialogOpen = true; return; }
@@ -167,9 +174,10 @@
   const filteredEntries = $derived(rankEntries(entries(), query).slice(0, 30));
   const files = $derived((captured?.files || []).map((file) => typeof file === "string" ? file : file.path).filter((path) => (captured?.format === "latex" ? /\.bib$/i : captured?.format === "typst" ? /\.(bib|ya?ml)$/i : /\.(bib|json|ya?ml)$/i).test(path || "")));
   const selectedImage = $derived((captured?.files || []).find((file) => (typeof file === "string" ? file : file.path) === draft.path));
-  const references = $derived(gatherInsertTargets(captured || {}).map((ref) => ref));
-  const environmentFields = $derived(insertEnvironmentFields(draft.environment || "", captured || {}));
-  const environments = $derived(gatherInsertEnvironments(captured || {}).map((env) => typeof env === "string" ? env : env.name));
+  const selectedImagePreview = $derived(selectedImage && typeof selectedImage !== "string" ? selectedImage.url : undefined);
+  const references = $derived(gatherInsertTargets(insertionContext(captured || {})));
+  const environmentFields = $derived(insertEnvironmentFields(draft.environment || "", insertionContext(captured || {})));
+  const environments = $derived(gatherInsertEnvironments(insertionContext(captured || {})));
   /** @param {string | null} id */
   const needsText = (id) => ["heading", "link"].includes(id || "");
   $effect(() => {
@@ -220,7 +228,7 @@
     {#if draft.path}<p class="panel-muted">{draft.path}</p>{/if}
     {#if draft.path && onpreview}
       {#await onpreview(draft.path) then url}{#if url}<img class="insert-image-preview" src={url} alt="Selected project asset" />{/if}{/await}
-    {:else if selectedImage?.url}<img class="insert-image-preview" src={selectedImage.url} alt="Selected project asset" />{/if}
+    {:else if selectedImagePreview}<img class="insert-image-preview" src={selectedImagePreview} alt="Selected project asset" />{/if}
     <label class="label">Caption <input class="input" bind:value={draft.caption} /></label>
     <label class="label">Label <input class="input" placeholder="fig:example" bind:value={draft.label} /></label>
     <label class="label">Width <input class="input" placeholder="e.g. 80% or 0.8\linewidth" bind:value={draft.width} /></label>

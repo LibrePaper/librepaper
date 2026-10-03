@@ -22,8 +22,8 @@
     composing = null,
     needsLogin = false,
     signInHref = "",
-    onsend,
-    oncancel,
+    onsend = undefined,
+    oncancel = undefined,
     // Where each orphaned passage went, by comment id. Passed through rather
     // than looked up here: the card is what says it, and the page is what
     // knows it.
@@ -31,16 +31,16 @@
     // Inserted side of a historical word diff, keyed by comment id. The page
     // owns fetching and anchoring this data; cards only present it.
     replacements = {},
-    onreveal,
-    onresolve,
-    ondelete,
+    onreveal = undefined,
+    onresolve = undefined,
+    ondelete = undefined,
     // Several at once, behind one confirmation: the page owns that dialog.
-    ondeletemany,
-    onreply,
-    onaccept,
-    onreject,
-    onrejectconfirmed,
-    pending,
+    ondeletemany = undefined,
+    onreply = undefined,
+    onaccept = undefined,
+    onreject = undefined,
+    onrejectconfirmed = undefined,
+    pending = undefined,
     // Optional view filter used by the collaboration tabs. Highlight notes
     // remain in both views when they carry a discussion; suggestion review
     // uses the same card and action plumbing with a narrower list.
@@ -58,8 +58,8 @@
     // comments rather than all of them (docs/protocol/comments-v1.md).
     // `null` for a caller that mounts this over a fixed list.
     page = null,
-    onloadmore,
-    onloadreplies,
+    onloadmore = undefined,
+    onloadreplies = undefined,
   } = $props();
 
   function place(comment) {
