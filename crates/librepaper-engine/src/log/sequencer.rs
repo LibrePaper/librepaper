@@ -791,6 +791,7 @@ type PrincipalRate = governor::RateLimiter<
     String,
     governor::state::keyed::DashMapStateStore<String>,
     RateClock,
+    governor::middleware::NoOpMiddleware<<RateClock as governor::clock::Clock>::Instant>,
 >;
 
 /// How often `ingest` drops the principals whose allowance has refilled.

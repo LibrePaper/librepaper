@@ -24,7 +24,9 @@ impl CostMeter {
             requests: std::num::NonZeroU32::new(
                 u32::try_from(config.cost.requests_per_principal_minute).unwrap_or(u32::MAX),
             )
-            .map(|per_minute| governor::RateLimiter::keyed(governor::Quota::per_minute(per_minute))),
+            .map(|per_minute| {
+                governor::RateLimiter::keyed(governor::Quota::per_minute(per_minute))
+            }),
         }
     }
 
