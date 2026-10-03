@@ -16,9 +16,10 @@
 // must be same-origin with the document that creates it.
 
 import { createServer } from "node:http";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, normalize } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fetchMirror, mirrorTarget, resolveLocalFile } from "./serve-paths.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
@@ -63,15 +64,11 @@ const ROOTS = [
   ["/", join(REPO, "tools", "latex", "harness")],
 ];
 
-function resolve(url) {
+function resolvePath(url) {
   for (const [prefix, root] of ROOTS) {
     if (!url.startsWith(prefix)) continue;
-    const relative = decodeURIComponent(url.slice(prefix.length));
-    const path = prefix === "/" && relative === ""
-      ? join(root, "index.html")
-      : normalize(join(root, relative));
-    if (!path.startsWith(root)) return null;
-    if (existsSync(path) && statSync(path).isFile()) return path;
+    const relative = prefix === "/" && url === "/" ? "index.html" : url.slice(prefix.length);
+    return resolveLocalFile(root, relative);
   }
   return null;
 }
@@ -82,8 +79,8 @@ function cacheControl(url) {
 }
 
 const server = createServer(async (request, response) => {
-  const url = request.url.split("?")[0];
   try {
+    const url = new URL(request.url, "http://localhost").pathname;
     if (url === "/__bytes") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(tally));
@@ -96,10 +93,21 @@ const server = createServer(async (request, response) => {
       response.end("{}");
       return;
     }
-    if (REMOTE && url.startsWith('/mirror/')) {
-      const upstream = await fetch(new URL(url.slice('/mirror/'.length), REMOTE), {
+    if (REMOTE && url.startsWith("/mirror/")) {
+      const target = mirrorTarget(REMOTE, url.slice("/mirror/".length));
+      if (!target) {
+        response.writeHead(400, { "content-type": "text/plain" });
+        response.end("invalid mirror path");
+        return;
+      }
+      const upstream = await fetchMirror(target, {
         signal: AbortSignal.timeout(120000),
       });
+      if (!upstream) {
+        response.writeHead(502, { "content-type": "text/plain" });
+        response.end("mirror redirects are not followed");
+        return;
+      }
       const bytes = Buffer.from(await upstream.arrayBuffer());
       count(url, bytes.length);
       response.writeHead(upstream.status, {
@@ -110,7 +118,7 @@ const server = createServer(async (request, response) => {
       response.end(bytes);
       return;
     }
-    const path = resolve(url);
+    const path = resolvePath(url);
     if (!path) {
       response.writeHead(404, { "content-type": "text/plain", "access-control-allow-origin": "*" });
       response.end("not found");
@@ -131,8 +139,8 @@ const server = createServer(async (request, response) => {
 });
 
 const PORT = Number(flag("--port", "8300"));
-server.listen(PORT, () => {
-  console.log(`latex: mirror on http://localhost:${PORT}/mirror/ from ${MIRROR}`);
+server.listen(PORT, "127.0.0.1", () => {
+  console.log(`latex: mirror on http://127.0.0.1:${server.address().port}/mirror/ from ${MIRROR}`);
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
