@@ -98,9 +98,10 @@ try {
   await pick("quarto");
   await create();
   const made = await sent();
-  assert.deepEqual(made.map((entry) => entry.name), ["file", "title"]);
+  assert.deepEqual(made.map((entry) => entry.name), ["file", "title", "main"]);
   assert.equal(made[0].filename, "main.qmd");
   assert.equal(made[1].bytes, "A Paper You Can Change");
+  assert.equal(made[2].bytes, "main.qmd");
   assert.match(made[0].bytes, /title: "A Paper You Can Change"/);
   assert.deepEqual(await wentWrong(), []);
 
