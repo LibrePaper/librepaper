@@ -312,7 +312,7 @@ impl Metrics {
         out.push_str("# HELP librepaper_build_info Build version information.\n# TYPE librepaper_build_info gauge\n");
         out.push_str(&format!(
             "librepaper_build_info{{version=\"{}\"}} 1\n",
-            env!("CARGO_PKG_VERSION")
+            env!("LIBREPAPER_PKG_VERSION")
         ));
         out.push_str("# HELP librepaper_process_uptime_seconds Time since this process started.\n# TYPE librepaper_process_uptime_seconds gauge\n");
         out.push_str(&format!(
