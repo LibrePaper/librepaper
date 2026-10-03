@@ -22,10 +22,11 @@ node tools/latex/tools/check-mirror.mjs https://assets.example/latex/<id>/     #
 
 It checks that `release.json` parses, `format === 2`, and the pdfTeX worker is
 named in the engine file list and has a non-empty integrity record. For a URL,
-it fetches the worker and verifies its size and SHA-256. Given a directory it
-also verifies that the directory name is the SHA-256 of `MANIFEST.json` and
-checks every engine file and bundle tar on disk against `release.json` and
-`bundles.json`'s digests, rejecting symlinks that escape the release root.
+it fetches the pdfTeX worker and verifies its size and SHA-256; the URL check
+does not download bundle payloads. Given a directory it also verifies that
+the directory name is the SHA-256 of `MANIFEST.json` and checks every declared
+engine file and bundle tar on disk against `release.json` and `bundles.json`'s
+digests, rejecting symlinks that escape the release root.
 `tools/deploy-assets check <url or dir>` runs it;
 `MIRROR=<dir> tools/deploy-assets smoke` (default `../wasm-latex/mirror`, where
 wasm-latex builds it) runs it and then compiles and displays the seeded LaTeX

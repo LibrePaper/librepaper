@@ -14,7 +14,7 @@
 //     node check-mirror.mjs <release URL>           <asset-mirror>latex/<id>/
 import { readFile, readdir, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { basename, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { validateReleaseShape } from "./release-shape.mjs";
 
 const base = process.argv[2];
@@ -35,9 +35,17 @@ const safeAssetPath = (url, what) => {
 async function checkDirectory(directory) {
   const root = await realpath(resolve(directory));
   const inside = async (path, what) => {
-    const actual = await realpath(path);
+    let actual;
+    try {
+      actual = await realpath(path);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      actual = resolve(path);
+    }
     const rel = relative(root, actual);
-    if (!rel || rel === ".." || rel.startsWith(`..${sep}`)) throw new Error(`${what} escapes the release directory`);
+    if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      throw new Error(`${what} escapes the release directory`);
+    }
     return actual;
   };
   const release = validateReleaseShape(JSON.parse(await readFile(resolve(root, "release.json"), "utf8")));
@@ -119,7 +127,7 @@ try {
     if (worker.length !== workerRecord.size || sha256(worker) !== workerRecord.sha256) {
       throw new Error("pdfTeX worker payload does not match release.json");
     }
-    console.log(`LaTeX release ready: ${base} (${release.id}, format ${release.format})`);
+    console.log(`LaTeX manifest and pdfTeX worker verified: ${base} (${release.id}, format ${release.format})`);
   } else {
     const root = resolve(base);
     const single = await readFile(resolve(root, "release.json")).then(() => true, () => false);

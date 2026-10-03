@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,6 +72,25 @@ function check(expected, message, target = mirror) {
   assert.equal(result.status, expected, result.stderr || result.stdout);
   if (message) assert.match(result.stderr, message);
 }
+function checkAsync(expected, message, target) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [checker, target], { encoding: "utf8" });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (status) => {
+      try {
+        assert.equal(status, expected, stderr || stdout);
+        if (message) assert.match(stderr, message);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
 try {
   build();
   check(0);
@@ -89,9 +108,9 @@ try {
     remoteServer.once("error", reject);
   });
   const remote = `http://127.0.0.1:${remoteServer.address().port}/${id}/`;
-  check(0, undefined, remote);
+  await checkAsync(0, undefined, remote);
   corruptWorker = true;
-  check(1, /worker payload does not match/, remote);
+  await checkAsync(1, /worker payload does not match/, remote);
   await new Promise((resolve, reject) => remoteServer.close((error) => error ? reject(error) : resolve()));
   remoteServer = null;
   build((entry) => { entry.format = 1; });
@@ -100,6 +119,8 @@ try {
   check(1, /no complete pdfTeX/);
   build((entry) => { entry.engines.pdftex.files = []; });
   check(1, /no complete pdfTeX/);
+  build((entry) => { entry.engines.xetex = { worker: "xetex.worker.js", files: [] }; });
+  check(1, /engine xetex has no valid worker inventory/);
   build((entry) => { entry.files["worker.js"].size = 0; });
   check(1, /non-empty file record/);
   build((entry) => { entry.files["worker.js"].url = "..%2foutside.js"; });
