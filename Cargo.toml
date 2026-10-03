@@ -71,6 +71,10 @@ serde_yaml = "0.9"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "multipart", "form", "query"] }
 # Digests, SigV4, and the signature on every cookie.
 sha2 = "0.10"
+# Quarto's freezer names a cached computation by the MD5 of its source, so
+# reading that cache means computing the same digest. A format requirement,
+# not a security choice: nothing here trusts MD5 for anything.
+md5 = "0.7"
 hmac = "0.12"
 base64 = "0.22"
 hex = "0.4"
@@ -92,6 +96,9 @@ percent-encoding = "2"
 # JSON-RPC framing, protocol negotiation, or request correlation.
 agent-client-protocol = "2.2.0"
 rmcp = { version = "3.4.0", default-features = false, features = ["server", "transport-io"] }
+# The plist escape is written by hand; this decodes entities in the locate
+# corpus test only.
+html-escape = "0.2"
 # The collaboration substrate (SPEC-loro.md). This version and `loro-crdt` in
 # web/package.json are one pin: see tools/check-loro-pin.sh.
 loro = "1.16.0"
@@ -119,6 +126,7 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 tempfile = "3"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
+object_store = { version = "0.14", features = ["aws", "fs"] }
 # Native dialogs for the companion's approval and folder prompts, with no
 # external programs. macOS and Windows use the system toolkits through rfd.
 rfd = "0.15"

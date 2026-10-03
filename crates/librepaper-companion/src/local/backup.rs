@@ -921,7 +921,9 @@ fn acquire_backup_lock(path: &Path) -> Result<File, String> {
             .map_err(|error| format!("could not secure backup lock: {error}"))?;
     }
     file.try_lock().map_err(|error| match error {
-        std::fs::TryLockError::WouldBlock => "backup already running for this server and account".into(),
+        std::fs::TryLockError::WouldBlock => {
+            "backup already running for this server and account".into()
+        }
         std::fs::TryLockError::Error(error) => format!("could not acquire backup lock: {error}"),
     })?;
     Ok(file)

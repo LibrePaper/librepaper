@@ -305,7 +305,8 @@ fn update<T>(path: &Path, f: impl FnOnce(&mut Disk) -> Result<T, String>) -> Res
         .truncate(false)
         .open(lock_path(path))
         .map_err(|error| format!("could not open runner journal lock: {error}"))?;
-    lock_file.lock()
+    lock_file
+        .lock()
         .map_err(|error| format!("could not lock runner journal: {error}"))?;
     let mut disk = read(path)?;
     let value = f(&mut disk)?;
