@@ -1383,13 +1383,7 @@ impl Server {
             .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
         let entries = match self
             .store
-            .visible_page_with_options(
-                Some(&account_id),
-                None,
-                listing_cursor,
-                listing_limit,
-                true,
-            )
+            .visible_page_with_options(Some(&account_id), None, listing_cursor, listing_limit, true)
             .await
         {
             Ok(entries) => entries,

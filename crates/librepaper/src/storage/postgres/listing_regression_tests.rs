@@ -175,7 +175,10 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
         .map(|row| row.id)
         .collect();
     assert_eq!(actual, expected);
-    let anonymous = catalog.visible_documents(None, None, 200, false).await.unwrap();
+    let anonymous = catalog
+        .visible_documents(None, None, 200, false)
+        .await
+        .unwrap();
     assert!(anonymous
         .into_iter()
         .filter(|row| fixture.contains(&row.id))
@@ -279,12 +282,20 @@ async fn a_template_leaves_the_project_listing_and_follows_its_document() {
     // Marking again is not an error.
     catalog.mark_template(template).await.unwrap();
 
-    let ids = |rows: Vec<super::super::DocumentRecord>| rows.into_iter().map(|row| row.id).collect::<Vec<_>>();
-    let listed = ids(catalog.visible_documents(Some(owner), None, 200, false).await.unwrap());
+    let ids = |rows: Vec<super::super::DocumentRecord>| {
+        rows.into_iter().map(|row| row.id).collect::<Vec<_>>()
+    };
+    let listed = ids(catalog
+        .visible_documents(Some(owner), None, 200, false)
+        .await
+        .unwrap());
     assert!(listed.contains(&project));
     assert!(!listed.contains(&template));
     // A backup keeps templates: they are the owner's data.
-    let backed_up = ids(catalog.visible_documents(Some(owner), None, 200, true).await.unwrap());
+    let backed_up = ids(catalog
+        .visible_documents(Some(owner), None, 200, true)
+        .await
+        .unwrap());
     assert!(backed_up.contains(&template));
 
     assert_eq!(
@@ -297,8 +308,16 @@ async fn a_template_leaves_the_project_listing_and_follows_its_document() {
 
     // In the trash it is no longer offered, and it is still flagged there.
     catalog.mark_document_deleting(template).await.unwrap();
-    assert!(catalog.templates_by_owner(owner, 200).await.unwrap().is_empty());
-    assert!(catalog.template_ids(&[template]).await.unwrap().contains(&template));
+    assert!(catalog
+        .templates_by_owner(owner, 200)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(catalog
+        .template_ids(&[template])
+        .await
+        .unwrap()
+        .contains(&template));
 
     // The mark goes with the document row.
     sqlx::query("DELETE FROM documents WHERE id=$1")
