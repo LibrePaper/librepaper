@@ -281,6 +281,13 @@ for (const doc of readdirSync(CORPUS, { withFileTypes: true })) {
     );
   }
 }
+const historicalXeTeXLog = readFileSync(join(CORPUS, "xetex", "logs", "texlive.log"), "utf8");
+check(
+  "the retained XeTeX diagnostic fixture documents missing Greek and Cyrillic glyphs",
+  /Missing character: There is no α \(U\+03B1\)/.test(historicalXeTeXLog)
+    && /Missing character: There is no П \(U\+041F\)/.test(historicalXeTeXLog),
+  "this is historical fixture evidence, not a requirement that current engines reproduce the same font warnings",
+);
 check("there are logs in the corpus to check", logsSeen > 0, `${logsSeen} logs`);
 
 function treePaths(dir, prefix = "") {
