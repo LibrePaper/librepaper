@@ -21,7 +21,7 @@ function projectPath(path) {
   return path;
 }
 
-/** @param {{makeEngine?: (options: {kind: string,url: string,base: string,texliveUrl: string,format: null,release: LatexRelease,assets: Record<string,LatexAsset>,workerName: string}) => object, request?: (input: string|URL, init?: RequestInit) => Promise<Response>, verified?: (release: LatexRelease,url: string,metadata: {sha256: string,size: number}) => Promise<Response>, deadline?: number}} [options] */
+/** @param {{makeEngine?: typeof createEngine, request?: (input: string|URL, init?: RequestInit) => Promise<Response>, verified?: (release: LatexRelease,url: string,metadata: {sha256: string,size: number}) => Promise<Response>, deadline?: number}} [options] */
 export function createHtmlCompiler({
   makeEngine = createEngine,
   request = (input, init) => fetch(input, init),
@@ -113,7 +113,6 @@ export function createHtmlCompiler({
       url: new URL(spec.worker, base).href,
       base,
       texliveUrl: new URL(".", indexUrl).href,
-      format: null,
       release,
       assets: Object.fromEntries((() => {
         const names = [...new Set(spec.files || [spec.worker])];
@@ -127,8 +126,6 @@ export function createHtmlCompiler({
         return [name, file];
       })),
       workerName: spec.worker,
-      onProgress: undefined,
-      onDownload: undefined,
     });
     engine = target;
     await target.init();

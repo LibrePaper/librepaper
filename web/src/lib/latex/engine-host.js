@@ -17,7 +17,7 @@
 
 /** @typedef {{importScripts: (...urls: string[]) => void, addEventListener: typeof self.addEventListener, __librepaperLocateFile?: (name: string) => string, Module?: Record<string, unknown> & {locateFile?: (name: string) => string}}} EngineHostScope */
 /** @type {EngineHostScope} */
-const engineScope = /** @type {unknown} */ (self);
+const engineScope = /** @type {EngineHostScope} */ (/** @type {unknown} */ (self));
 const nativeImportScripts = engineScope.importScripts.bind(engineScope);
 
 function lookup(map, value, what) {

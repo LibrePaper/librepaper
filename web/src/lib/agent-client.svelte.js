@@ -89,6 +89,7 @@ function boundedDiagnostics(value) {
 /** Browser side of the persistent runner channel. The runner owns the model
  * session; this client owns socket lifetime, bounded local history, task
  * state, and dispatching the runner's preview requests to `onpreview`. */
+/** @param {{origin?: string, project?: string, slug?: string, link?: string, fetcher?: typeof fetch, WebSocketImpl?: typeof WebSocket, storage?: Storage|null, onpreview?: ((request: object) => void)|null}} [options] */
 export function createAgentClient({ origin = globalThis.location?.origin || "", project,
   slug = project, link: initialLink = "", fetcher = globalThis.fetch,
   WebSocketImpl = globalThis.WebSocket, storage = globalThis.localStorage,

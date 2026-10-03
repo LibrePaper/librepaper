@@ -8,7 +8,7 @@ const fetched = new Map();
 /** @typedef {{id: string, url: string, operation: string, args: RendererArgs}} RendererRequest */
 /** @typedef {{location: Location, onmessage: ((event: MessageEvent<RendererRequest>) => void) | null, postMessage: (message: unknown, transfer?: Transferable[]) => void}} RendererWorkerScope */
 /** @type {RendererWorkerScope} */
-const rendererScope = /** @type {unknown} */ (self);
+const rendererScope = /** @type {RendererWorkerScope} */ (/** @type {unknown} */ (self));
 
 function fontsIndex() {
   try {

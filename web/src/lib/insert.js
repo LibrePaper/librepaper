@@ -94,6 +94,8 @@ const scholarly = new Set(['theorem','lemma','proposition','definition','proof',
 
 /** @typedef {Omit<InsertOptions, 'level'|'rows'|'columns'> & {level?: number|string, rows?: number|string, columns?: number|string, text?: string, path?: string, argumentsText?: string}} InsertionDraft */
 
+/** @typedef {Omit<InsertContext, 'files'> & {text: string, selection: Selection, files: {path: string, text?: string, url?: string, sha?: string, kind?: string}[]}} NormalizedInsertContext */
+
 /**
  * @param {string} path
  * @param {string} [base]
@@ -141,6 +143,7 @@ const url = value => { const s=plain(value).trim(); if (/^(?:javascript|data|vbs
  * @param {InsertContext} [c={}]
  * @returns {InsertContext & {text: string; selection: Selection; files: {path: string; text: string}[]}}
  */
+/** @param {InsertContext} [c] @returns {NormalizedInsertContext} */
 function context(c = {}) { const text=plain(c.text); const selection=c.selection || {from:text.length,to:text.length,text:''}; const files=(c.files || []).map(file=>typeof file==='string'?{path:file,text:''}:file); return {...c, text, selection, files}; }
 /**
  * @param {InsertContext} [input={}]
@@ -203,7 +206,7 @@ export function insertionAvailability(id, input = {}) {
  * @returns {string[]}
  */
 export function gatherInsertEnvironments(input = {}) {
-  const c=context(input), text=[c.text,c.mainText,...c.files.map(f=>typeof f==='string'?'':f.text)].filter(Boolean).join('\n'), names=new Set();
+  const c=context(input), text=[c.text,c.mainText,...c.files.map(f=>f.text)].filter(Boolean).join('\n'), names=new Set();
   const regex=c.format==='latex'?/\\(?:newenvironment|renewenvironment|newtheorem)\*?\s*\{([^}]+)\}/g:/#let\s+([A-Za-z][\w-]*)\s*\([^)]*\bbody\b[^)]*\)/g;
   for(const m of text.matchAll(regex))names.add(m[1]);
   return [...names].sort();
@@ -223,7 +226,7 @@ export function gatherInsertEnvironments(input = {}) {
  */
 export function insertEnvironmentFields(name,input={}) {
   if(!/^[A-Za-z][\w-]*$/.test(name||''))return [];
-  const c=context(input),source=[c.text,c.mainText,...c.files.map(f=>typeof f==='string'?'':f.text)].filter(Boolean).join('\n');
+  const c=context(input),source=[c.text,c.mainText,...c.files.map(f=>f.text)].filter(Boolean).join('\n');
   if(c.format==='latex'){
     const match=source.match(new RegExp('\\\\(?:newenvironment|renewenvironment)\\s*\\{'+name+'\\}\\s*\\[(\\d+)\\](?:\\s*\\[([^\\]]*)\\])?'));
     return Array.from({length:Math.min(9,Number(match?.[1])||0)},(_,i)=>({label:'Argument '+(i+1),defaultValue:i===0?match?.[2]||'':'',optional:i===0&&match?.[2]!=null}));
@@ -249,7 +252,7 @@ export function insertEnvironmentFields(name,input={}) {
  */
 export function gatherInsertTargets(input = {}) {
   const c=context(input), found=[], seen=new Set();
-  const sources=[{path:c.path,text:c.text},...c.files.filter(f=>typeof f!=='string' && f.path!==c.path && typeof f.text==='string')];
+  const sources=[{path:c.path,text:c.text},...c.files.filter(f=>f.path!==c.path && typeof f.text==='string')];
   function add(id,title,kind,path){if(!seen.has(id)){seen.add(id);found.push({id,label:title||id,kind,path});}}
   for(const source of sources){
     const text=plain(source.text).replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1\s*$/gm,'');
