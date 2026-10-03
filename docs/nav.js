@@ -21,7 +21,13 @@ export const nav = [
     pages: [
       { path: "authoring/latex", label: "LaTeX" },
       { path: "authoring/typst", label: "Typst" },
-      { path: "authoring/quarto", label: "Quarto" },
+    ],
+  },
+  {
+    label: "Computational notebooks",
+    pages: [
+      { path: "notebooks/quarto", label: "Quarto" },
+      { path: "notebooks/calepin", label: "Calepin" },
     ],
   },
   {

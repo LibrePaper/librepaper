@@ -5,18 +5,14 @@ title: "LaTeX"
 ## LaTeX
 
 Publishing a `.tex` file stores it as `latex`, and publishing a directory takes
-the whole project: the chapters, the `.bib`, the figures. Nothing is compiled
-on the way: LibrePaper carries no TeX, and no build embeds one.
+the whole project: chapters, `.bib`, figures. Nothing is compiled on the way.
 
-LaTeX is compiled in the browser, by LibrePaper's own pinned release of the
-browser engines: pdfTeX, XeTeX and BibTeX built for WebAssembly, with
-the formats generated for those exact binaries and a pinned TeX Live package
-set. An editor's browser fetches the release its server pins in `assets.lock` from the configured HTTPS
-mirror and compiles automatically; readers render the source on demand.
-Packages arrive as verified, content-addressed bundles from that mirror and
-stay in browser storage so the next document costs nothing to fetch. The TeX engines carry
-their own licences, and Biber is AGPL-3.0. They are fetched at run time;
-their notices travel with the mirror.
+LaTeX compilation happens in the browser:
+- Compiled by pinned WebAssembly releases: pdfTeX, XeTeX, BibTeX with TeX Live packages
+- Packages fetched from the configured HTTPS mirror as verified, content-addressed bundles
+- Cached in browser storage; subsequent documents cost nothing to fetch
+- Browsers fetch distribution files directly from the mirror; the server does not proxy
+- Mirror must be HTTPS; directory paths and `http:` mirrors are refused at startup
 
 HTML preview via LaTeXML conversion is available. HTML conversion runs in a
 separate WebAssembly worker and reuses the mirror's verified TeX package
