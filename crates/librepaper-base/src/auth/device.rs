@@ -124,6 +124,7 @@ impl TokenCache {
         self.entries.lock().expect("token cache poisoned").len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

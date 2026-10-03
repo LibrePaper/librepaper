@@ -3161,6 +3161,8 @@ dependencies = [
  "html-escape",
  "http-body-util",
  "include_dir",
+ "librepaper-base",
+ "librepaper-document",
  "librepaper-shell",
  "log",
  "loro",
@@ -3197,6 +3199,43 @@ dependencies = [
  "x11rb",
  "zip",
  "zstd",
+]
+
+[[package]]
+name = "librepaper-base"
+version = "0.0.20"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "hex",
+ "hmac",
+ "rand 0.9.5",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "time",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "librepaper-document"
+version = "0.0.20"
+dependencies = [
+ "hex",
+ "librepaper-base",
+ "loro",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "unicode-normalization",
 ]
 
 [[package]]
