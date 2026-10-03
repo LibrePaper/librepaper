@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { FORMATS, starterDocument } from "../../src/lib/starter.js";
+import { FORMATS, formatNamed, fillTemplate } from "../../src/lib/starter.js";
 
 const landing = readFileSync(new URL("../../src/components/Landing.svelte", import.meta.url), "utf8");
 const body = (start, end) => {
@@ -29,6 +29,9 @@ const context = (values) => vm.createContext({
   // is noise. Online is what every case here assumes unless it passes its own
   // `navigator`, which the offline case below does.
   navigator: { onLine: true },
+  // The picker is closed and the place is the project list unless a case says otherwise.
+  naming: false,
+  place: "projects",
   ...values,
 });
 
@@ -144,14 +147,25 @@ const context = (values) => vm.createContext({
   assert.match(said[0], /1 project moved to the trash/);
 }
 
-// A project is made from its name and its format alone, and the page leaves
+// A built-in template, as the picker has it chosen: one file, as the real ones
+// are read by templates.js, which needs Vite and so is not loaded here.
+const picker = {
+  me: { name: "Ada" },
+  templateId: "article",
+  chosenTemplate: { id: "article", custom: false },
+  format: "quarto",
+  formatNamed, fillTemplate,
+  templateFiles: async () => [{ path: "main.qmd", text: 'title: "{{title}}"\nauthor: "{{author}}"\n' }],
+};
+
+// A project is made from its name and its template alone, and the page leaves
 // for it rather than returning to the list.
 {
   let sent = null;
   const ctx = context({
-    naming: true, name: "  A Paper You Can Change  ", format: "quarto", nameError: "", busy: false,
+    naming: true, name: "  A Paper You Can Change  ", nameError: "", busy: false,
     nameInput: null,
-    starterDocument, FORMATS,
+    ...picker,
     say: () => { throw new Error("a creation failure belongs in the dialog"); },
     upload: async (form) => { sent = form; return { ok: true, json: async () => ({ url: "/docs/a-paper-3f9" }) }; },
     location: { href: "/" },
@@ -162,7 +176,9 @@ const context = (values) => vm.createContext({
   assert.equal(ctx.location.href, "/docs/a-paper-3f9");
   assert.equal(sent.get("title"), "A Paper You Can Change", "the name is trimmed before it becomes a title");
   assert.equal(sent.get("file").name, "main.qmd", "the format names the main file");
+  assert.equal(sent.get("main"), "main.qmd", "the main file is named for the format");
   assert.match(await sent.get("file").text(), /title: "A Paper You Can Change"/);
+  assert.match(await sent.get("file").text(), /author: "Ada"/);
 }
 
 // An unnamed project is refused here rather than at the server, and nothing
@@ -170,9 +186,9 @@ const context = (values) => vm.createContext({
 {
   let focused = false;
   const ctx = context({
-    naming: true, name: "   ", format: "markdown", nameError: "", busy: false,
+    naming: true, name: "   ", nameError: "", busy: false,
     nameInput: { focus: () => { focused = true; } },
-    starterDocument, FORMATS,
+    ...picker,
     say: () => {},
     upload: async () => { throw new Error("an unnamed project must not be sent"); },
     location: { href: "/" }, Blob, FormData,
@@ -188,8 +204,8 @@ const context = (values) => vm.createContext({
 // screen -- rather than in a corner, and the dialog stays open.
 {
   const ctx = context({
-    naming: true, name: "Paper", format: "markdown", nameError: "", busy: false, nameInput: null,
-    starterDocument, FORMATS,
+    naming: true, name: "Paper", nameError: "", busy: false, nameInput: null,
+    ...picker,
     say: () => { throw new Error("a creation failure belongs in the dialog"); },
     upload: async () => ({ ok: false, json: async () => ({ error: "you may not publish here" }) }),
     location: { href: "/" }, Blob, FormData,

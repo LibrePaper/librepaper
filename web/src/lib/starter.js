@@ -1,10 +1,10 @@
-// What a project contains the moment it is made. A project is a directory and
-// a main file, so a project with no main file is not a project; naming one is
-// the whole of what "New project" asks for, and this is what that name buys.
+// What a new project is made of. A project is a directory and a main file, so
+// a project with no main file is not a project; the files themselves are
+// templates, kept as plain files under src/templates and read by templates.js
+// (the half that needs Vite). This half is pure, so node can test it: it
+// knows the formats, and how a name and an author become text in each one.
 //
-// Each starter is the smallest file that renders and says its own title, so
-// the author opens on something the preview can already draw rather than on a
-// blank page and an error. Keep the extensions in step with `main_path_for` in
+// Keep the extensions in step with `main_path_for` in
 // crates/librepaper/src/document/render.rs.
 
 export const FORMATS = [
@@ -15,32 +15,59 @@ export const FORMATS = [
   { id: "html", name: "HTML", extension: "html" },
 ];
 
-// Titles are written into source, so the characters each format reads as
+export const formatNamed = (id) => FORMATS.find((format) => format.id === id) ?? FORMATS[0];
+
+// Names are written into source, so the characters each format reads as
 // syntax have to stop being syntax: a paper called "A & B" is a title in all
-// five and a broken file in two of them.
+// five and a broken file in two of them. A template puts each placeholder in
+// one kind of place per format (see below), and the escape is for that place.
 const texEscape = (title) => title.replace(/[\\{}$&#^_%~]/g, (char) => ({
   "\\": "\\textbackslash{}", "^": "\\textasciicircum{}", "~": "\\textasciitilde{}",
 }[char] ?? `\\${char}`));
 
-const htmlEscape = (title) => title.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]));
+const htmlEscape = (title) => title.replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]));
 
-const yamlQuote = (title) => `"${title.replace(/[\\"]/g, (char) => `\\${char}`)}"`;
+// Typst strings and YAML double-quoted scalars agree on what to escape.
+const quoteEscape = (title) => title.replace(/[\\"]/g, (char) => `\\${char}`);
 
-const typstQuote = (title) => `"${title.replace(/[\\"]/g, (char) => `\\${char}`)}"`;
+// CommonMark lets any ASCII punctuation be backslash-escaped, which is the
+// one way to say "this is text" without knowing which characters matter.
+const markdownEscape = (title) => title.replace(/[!-/:-@[-`{-~]/g, (char) => `\\${char}`);
 
-const STARTERS = {
-  markdown: (title) => `# ${title}\n`,
-  quarto: (title) => `---\ntitle: ${yamlQuote(title)}\n---\n\n`,
-  latex: (title) => `\\documentclass{article}\n\n\\title{${texEscape(title)}}\n\n\\begin{document}\n\\maketitle\n\n\\end{document}\n`,
-  typst: (title) => `#set document(title: ${typstQuote(title)})\n\n= ${title}\n`,
-  html: (title) => `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>${htmlEscape(title)}</title>\n</head>\n<body>\n<h1>${htmlEscape(title)}</h1>\n</body>\n</html>\n`,
+const ESCAPES = {
+  latex: texEscape,
+  typst: quoteEscape,
+  quarto: quoteEscape,
+  markdown: markdownEscape,
+  html: htmlEscape,
 };
 
-export const formatNamed = (id) => FORMATS.find((format) => format.id === id) ?? FORMATS[0];
+/// A template's files with `{{title}}` and `{{author}}` filled in: [{ path, text }].
+/// Each format keeps a placeholder to one kind of context (LaTeX text, a Typst
+/// or YAML string, Markdown text, HTML text or attribute), so the value is
+/// escaped once, for that context. Replacement is by function, so a `$` in a
+/// name is never read as a replacement pattern.
+export function fillTemplate(files, formatId, { title = "", author = "" } = {}) {
+  const escape = ESCAPES[formatNamed(formatId).id];
+  const values = {
+    title: escape(title.trim() || "Untitled"),
+    author: escape(author.trim() || "Your Name"),
+  };
+  return files.map(({ path, text }) => ({
+    path,
+    text: text.replace(/\{\{(title|author)\}\}/g, (_, key) => values[key]),
+  }));
+}
 
-/// The main file a new project begins with: its path, and its text.
-export function starterDocument(title, formatId) {
-  const format = formatNamed(formatId);
-  const named = title.trim() || "Untitled";
-  return { path: `main.${format.extension}`, text: STARTERS[format.id](named) };
+/// The templates worth showing for a format and a search. `formatId` of null
+/// or "" means any. Every word of the query has to match the name, the
+/// description or a keyword, in any order and any case, so "cover letter"
+/// finds a letter and "thesis book" finds the one that is both.
+export function matchTemplates(templates, query, formatId) {
+  const words = (query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  return templates.filter((template) => {
+    if (formatId && !template.formats.includes(formatId)) return false;
+    const haystack = [template.name, template.description, ...(template.keywords ?? [])].join("\n").toLowerCase();
+    return words.every((word) => haystack.includes(word));
+  });
 }
