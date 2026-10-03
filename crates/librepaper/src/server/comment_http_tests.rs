@@ -9,9 +9,9 @@
 //! (§7.1's preconditions are checked further down; this is the gate in
 //! front of them).
 //!
-//! These need `LIBREPAPER_TEST_POSTGRES_URL` and are skipped without it,
-//! like the rest of the catalogue coverage (`grep -rl
-//! LIBREPAPER_TEST_POSTGRES_URL crates/librepaper/src`).
+//! These PostgreSQL tests are ignored during ordinary runs. Explicitly
+//! selecting one requires `LIBREPAPER_TEST_POSTGRES_URL` to point to a
+//! disposable database and a serial run (`--test-threads=1`).
 
 use std::sync::Arc;
 
@@ -661,6 +661,7 @@ async fn get_comment_page(deployment: &Deployment, query: &str) -> super::Reply 
 }
 
 #[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn snapshot_comment_storage_errors_hide_database_context() {
     let Some(mut deployment) = deployment("http-snapshot-storage-error").await else {
         return;
@@ -722,6 +723,7 @@ async fn snapshot_comment_storage_errors_hide_database_context() {
 }
 
 #[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn listing_publisher_uses_cached_authentication_and_keeps_its_gates() {
     let Some(mut deployment) = deployment("http-list-publisher-context").await else {
         return;
