@@ -25,7 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::AsyncReadExt,
+    io::AsyncBufReadExt,
     process::{Child, Command},
     sync::Mutex as AsyncMutex,
 };

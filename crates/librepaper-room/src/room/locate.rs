@@ -199,8 +199,7 @@ pub fn flatten(text: &str, html: bool) -> Flat {
             }
             if let Some(semicolon) = rest[..limit].find(';') {
                 let body = &rest[1..semicolon];
-                let decoded = numeric_entity(body)
-                    .or_else(|| named_entity(&rest[..semicolon + 1]));
+                let decoded = numeric_entity(body).or_else(|| named_entity(&rest[..semicolon + 1]));
                 if let Some(decoded) = decoded {
                     // `&nbsp;` decodes to a space, and a space next to a space
                     // is one space here like anywhere else -- otherwise a

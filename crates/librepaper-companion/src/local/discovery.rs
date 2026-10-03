@@ -265,7 +265,8 @@ fn load_cache() -> Option<Cache> {
 
 fn save_cache(cache: &Cache) {
     if let Ok(text) = serde_json::to_string_pretty(cache) {
-        let _ = librepaper_base::private_files::publish(&cache_path(), text.as_bytes(), "tool cache");
+        let _ =
+            librepaper_base::private_files::publish(&cache_path(), text.as_bytes(), "tool cache");
     }
 }
 

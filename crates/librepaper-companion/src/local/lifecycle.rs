@@ -456,8 +456,8 @@ fn xml_escape(text: &str) -> String {
 pub fn set_startup(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        let config = super::paths::config_home()
-            .ok_or("Cannot locate user configuration directory.")?;
+        let config =
+            super::paths::config_home().ok_or("Cannot locate user configuration directory.")?;
         let file = config.join("autostart/librepaper-local.desktop");
         if !enabled {
             return remove_startup(&file);

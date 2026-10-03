@@ -1027,7 +1027,9 @@ pub async fn run_job_with_bindings(
         let mut temporary = tempfile::NamedTempFile::new_in(&output)?;
         temporary.write_all(&bundle_bytes)?;
         temporary.as_file().sync_all()?;
-        temporary.persist(&bundle_path).map_err(|error| error.error)?;
+        temporary
+            .persist(&bundle_path)
+            .map_err(|error| error.error)?;
         Ok(())
     })();
     if committed.is_err() {

@@ -744,9 +744,9 @@ mod tests {
         let details = permission_details(&update);
         assert_eq!(details["command"], "cargo test");
         assert_eq!(details["files"], serde_json::json!(["src/main.rs"]));
-        assert!(details["diff"]
-            .as_str()
-            .is_some_and(|diff| diff.contains("--- src/main.rs") && diff.contains("+++ src/main.rs")));
+        assert!(details["diff"].as_str().is_some_and(
+            |diff| diff.contains("--- src/main.rs") && diff.contains("+++ src/main.rs")
+        ));
         assert!(serde_json::to_vec(&details).unwrap().len() <= 8 * 1024);
     }
 
@@ -755,20 +755,23 @@ mod tests {
         use agent_client_protocol::schema::v1::{
             Diff, ToolCallContent, ToolCallUpdate, ToolCallUpdateFields,
         };
-        let old_lines = vec!["line 1", "line 2", "line 3", "line 4", "line 5",
-                              "line 6", "line 7", "line 8", "line 9", "line 10"];
+        let old_lines = vec![
+            "line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8",
+            "line 9", "line 10",
+        ];
         let old_text = old_lines.join("\n");
-        let new_text = old_lines[..4].iter()
+        let new_text = old_lines[..4]
+            .iter()
             .chain(&["line 5 modified"])
             .chain(old_lines[5..].iter())
-            .collect::<Vec<_>>()
+            .copied()
+            .collect::<Vec<&str>>()
             .join("\n");
         let update = ToolCallUpdate::new(
             "call-2",
-            ToolCallUpdateFields::default()
-                .content(vec![ToolCallContent::Diff(
-                    Diff::new("test.rs", &new_text).old_text(old_text),
-                )]),
+            ToolCallUpdateFields::default().content(vec![ToolCallContent::Diff(
+                Diff::new("test.rs", &new_text).old_text(old_text),
+            )]),
         );
         let details = permission_details(&update);
         let diff_str = details["diff"].as_str().unwrap();

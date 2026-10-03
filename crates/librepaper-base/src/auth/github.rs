@@ -297,7 +297,7 @@ struct GithubAccountExpiry;
 impl Expiry<String, Option<Identity>> for GithubAccountExpiry {
     fn expire_after_create(
         &self,
-        _key: &str,
+        _key: &String,
         value: &Option<Identity>,
         _created_at: std::time::Instant,
     ) -> Option<Duration> {
@@ -322,7 +322,8 @@ pub struct GithubAccounts {
 impl GithubAccounts {
     pub fn new(app: &GithubApp) -> GithubAccounts {
         let cache = moka::sync::CacheBuilder::new(GITHUB_ACCOUNT_CACHE_CAP as u64)
-            .build_with_expiry(GithubAccountExpiry);
+            .expire_after(GithubAccountExpiry)
+            .build();
         GithubAccounts {
             client_id: app.client_id.clone(),
             client_secret: app.client_secret.clone(),

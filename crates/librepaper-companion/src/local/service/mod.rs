@@ -835,9 +835,15 @@ fn persist_quarto_job(entry: &JobEntry) -> Result<(), String> {
     };
     let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
     use std::io::Write;
-    let mut temporary = tempfile::NamedTempFile::new_in(&root).map_err(|error| error.to_string())?;
-    temporary.write_all(&bytes).map_err(|error| error.to_string())?;
-    temporary.as_file().sync_all().map_err(|error| error.to_string())?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(&root).map_err(|error| error.to_string())?;
+    temporary
+        .write_all(&bytes)
+        .map_err(|error| error.to_string())?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
     temporary
         .persist(root.join(QUARTO_RECORD_FILE))
         .map(|_| ())

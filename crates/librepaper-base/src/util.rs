@@ -1,10 +1,10 @@
 //! Small things several modules share, and the one shape every timestamp
 //! takes: RFC 3339 in UTC to the second, "2026-09-04T12:00:00Z".
 
+use subtle::ConstantTimeEq;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::OffsetDateTime;
-use subtle::ConstantTimeEq;
 
 /// Compares two byte strings without branching on the first differing byte.
 ///

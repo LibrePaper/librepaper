@@ -70,7 +70,6 @@ pub(crate) fn find(override_var: &str, tool: &str) -> Option<PathBuf> {
     which::which(tool).ok()
 }
 
-
 /// The first line of what `path --version` prints, or nothing.
 ///
 /// Both streams are read, and stderr is taken when stdout is empty: tools
