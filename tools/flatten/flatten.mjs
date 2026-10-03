@@ -29,6 +29,14 @@ const FACADE = "librepaper";
 const TESTING = "testing";
 // What a crate directory holds that is not a staged input.
 const NOT_INPUTS = new Set(["Cargo.toml", "Cargo.lock", "build.rs", "src", "tests", "target"]);
+// Inputs that live at the repository root rather than inside a crate. The
+// shell's dist stays at web/dist by design (its build.rs exports
+// LIBREPAPER_SHELL_DIST); .sqlx and skills are here until a crate owns them.
+const ROOT_INPUTS = [
+  { from: "web/dist", to: "dist", required: true },
+  { from: ".sqlx", to: ".sqlx" },
+  { from: "skills", to: "skills" },
+];
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 function die(message) {
@@ -143,6 +151,10 @@ function rulePackageEnv(ctx) {
 // 5. Staged inputs do not collide across crates or with the facade's.
 function ruleInputCollisions(ctx) {
   const seen = new Map();
+  // While the repository root still has the input, no crate may stage the name.
+  for (const { from, to } of ROOT_INPUTS) {
+    if (existsSync(join(ctx.root, from))) seen.set(to, `the repository root (${from})`);
+  }
   for (const crate of [ctx.facade, ...ctx.subs]) {
     for (const name of inputsOf(crate)) {
       const owner = seen.get(name);
@@ -689,6 +701,16 @@ function build(ws, out) {
 
   stageSources(ws, out, shorts);
   const staged = stageInputs(ws, out);
+  for (const { from, to, required } of ROOT_INPUTS) {
+    const src = join(ws.root, from);
+    if (!existsSync(src)) {
+      if (required && !existsSync(join(out, to))) die(`${from} is missing; build the shell first (make web)`);
+      continue;
+    }
+    if (existsSync(join(out, to))) die(`${to} is provided by a crate and by the repository root (${from}); remove the root copy`);
+    cpSync(src, join(out, to), { recursive: true });
+    staged.push(to);
+  }
   for (const name of ["README.md", "LICENSE", "assets.lock"]) {
     if (!existsSync(join(ws.root, name))) die(`${name} is missing from the repository root`);
     copyFileSync(join(ws.root, name), join(out, name));
