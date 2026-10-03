@@ -28,10 +28,6 @@ use crate::room::{
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
 };
-use librepaper_engine::storage::store::{
-    random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
-    Role, Store,
-};
 use librepaper_base::auth::pseudonym::pseudonym_for;
 use librepaper_base::auth::{
     cookie_name, normalized, now_unix, pkce_verifier, random_token, read_agent_grant, read_device,
@@ -44,6 +40,10 @@ use librepaper_base::auth::{
 use librepaper_base::config::Configuration;
 use librepaper_base::util::clean;
 use librepaper_document::document::render::{title_from_html, title_from_markdown};
+use librepaper_engine::storage::store::{
+    random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
+    Role, Store,
+};
 use librepaper_shell::{renderers, ShellFile};
 
 mod agent_auth;
@@ -106,7 +106,11 @@ pub struct DocumentService {
 }
 
 impl DocumentService {
-    pub fn new(store: Store, rooms: Rooms, background: librepaper_engine::storage::worker::Handle) -> Self {
+    pub fn new(
+        store: Store,
+        rooms: Rooms,
+        background: librepaper_engine::storage::worker::Handle,
+    ) -> Self {
         Self {
             store: Arc::new(store),
             rooms,
@@ -625,7 +629,10 @@ impl RequestContext {
 pub(crate) async fn account_row(
     catalog: &Arc<librepaper_engine::storage::postgres::PostgresCatalog>,
     id: &str,
-) -> Result<Option<librepaper_engine::storage::postgres::AccountRecord>, librepaper_engine::storage::postgres::Error> {
+) -> Result<
+    Option<librepaper_engine::storage::postgres::AccountRecord>,
+    librepaper_engine::storage::postgres::Error,
+> {
     let Ok(id) = uuid::Uuid::parse_str(id) else {
         return Ok(None);
     };
@@ -640,14 +647,20 @@ pub(crate) async fn account_row(
 pub(crate) async fn upsert_account_job(
     catalog: &Arc<librepaper_engine::storage::postgres::PostgresCatalog>,
     account: librepaper_engine::storage::postgres::NewAccount,
-) -> Result<librepaper_engine::storage::postgres::AccountRecord, librepaper_engine::storage::postgres::Error> {
+) -> Result<
+    librepaper_engine::storage::postgres::AccountRecord,
+    librepaper_engine::storage::postgres::Error,
+> {
     catalog.upsert_registered_account(account).await
 }
 
-fn authentication_failure_of(error: librepaper_engine::storage::postgres::Error) -> AuthenticationFailure {
+fn authentication_failure_of(
+    error: librepaper_engine::storage::postgres::Error,
+) -> AuthenticationFailure {
     if matches!(
         error,
-        librepaper_engine::storage::postgres::Error::Conflict(_) | librepaper_engine::storage::postgres::Error::Invalid(_)
+        librepaper_engine::storage::postgres::Error::Conflict(_)
+            | librepaper_engine::storage::postgres::Error::Invalid(_)
     ) {
         AuthenticationFailure::Invalid
     } else {

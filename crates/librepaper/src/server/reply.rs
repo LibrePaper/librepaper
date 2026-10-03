@@ -599,7 +599,10 @@ pub(super) fn command_refused(what: &str, error: librepaper_engine::log::Command
 /// status its HTTP sibling would have answered with so a REST caller reading
 /// this value does not have to guess one. Storage context goes to the log
 /// here too: the frame reaches a browser.
-pub(super) fn command_refusal_value(what: &str, error: librepaper_engine::log::CommandError) -> Value {
+pub(super) fn command_refusal_value(
+    what: &str,
+    error: librepaper_engine::log::CommandError,
+) -> Value {
     let (error, digest) = classify_command(error);
     let mut payload = refusal_value(what, &error);
     if let Some(digest) = digest {

@@ -189,6 +189,14 @@ pub struct DerivedAttachment {
     pub diagnostic: Option<ResolutionDiagnostic>,
 }
 
+impl DerivedAttachment {
+    /// The same attachment, re-rooted at the tree digest the resolver found it in.
+    pub fn with_digest(mut self, tree_digest: &str) -> DerivedAttachment {
+        self.tree_digest = tree_digest.to_string();
+        self
+    }
+}
+
 impl AnchorStatus {
     /// Whether the passage is still somewhere in the document. A comment whose
     /// passage is not is still shown -- it is part of the record -- but it is

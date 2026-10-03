@@ -77,8 +77,8 @@ pub async fn catalog() -> Option<Arc<PostgresCatalog>> {
 /// outbox: each call exports exactly the ops since the last call, which is
 /// what one `doc-update` looks like on the wire.
 pub struct Outbox {
-    doc: LoroDoc,
-    at: VersionVector,
+    pub doc: LoroDoc,
+    pub at: VersionVector,
 }
 
 impl Outbox {
@@ -145,4 +145,3 @@ impl Outbox {
             .expect("exporting from a covered vector never fails")
     }
 }
-

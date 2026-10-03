@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
-use librepaper_engine::log::Registry;
 use crate::room::Rooms;
 use crate::server::Server;
+use librepaper_base::auth::{GithubApp, Policy};
+use librepaper_base::config::Configuration;
+use librepaper_engine::log::Registry;
 use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::{NewAccount, PostgresCatalog, WriterLease};
 use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
-use librepaper_base::auth::{GithubApp, Policy};
-use librepaper_base::config::Configuration;
 
 pub(super) struct Deployment {
     pub(super) server: Server,

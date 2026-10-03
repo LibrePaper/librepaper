@@ -146,10 +146,7 @@ impl ObjectKeyLock {
 
     /// The orphan sweep does not wait behind an active adopter. `None` means
     /// leave this key for the next bounded pass.
-    pub async fn try_acquire(
-        catalog: &PostgresCatalog,
-        key: &str,
-    ) -> Result<Option<Self>, String> {
+    pub async fn try_acquire(catalog: &PostgresCatalog, key: &str) -> Result<Option<Self>, String> {
         let options = catalog.pool().connect_options();
         let connection = PgConnection::connect_with(&options)
             .await

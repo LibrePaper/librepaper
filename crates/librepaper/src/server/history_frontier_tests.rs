@@ -20,8 +20,8 @@ use uuid::Uuid;
 
 use crate::room::Message as RoomMessage;
 use crate::server::origins::Origins;
-use librepaper_engine::storage::store::{DocumentInput, Role};
 use librepaper_base::auth::{sign_agent_grant, AgentGrant, Identity, PROVIDER_GITHUB};
+use librepaper_engine::storage::store::{DocumentInput, Role};
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer};
 use super::{Server, Viewer};

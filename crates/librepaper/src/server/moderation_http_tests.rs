@@ -18,19 +18,19 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
 
-use librepaper_engine::log::Registry;
 use crate::room::Rooms;
 use crate::server::origins::Origins;
-use librepaper_engine::storage::blob::FsStore;
-use librepaper_engine::storage::postgres::{
-    AccessRole, NewAccount, PostgresCatalog, PostgresOptions, StoragePolicy,
-};
-use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
 use librepaper_base::auth::{
     sign_device, sign_session, sign_visitor, GithubApp, Identity, Policy, PROVIDER_GITHUB,
     VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
+use librepaper_engine::log::Registry;
+use librepaper_engine::storage::blob::FsStore;
+use librepaper_engine::storage::postgres::{
+    AccessRole, NewAccount, PostgresCatalog, PostgresOptions, StoragePolicy,
+};
+use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
 
 use super::Server;
 

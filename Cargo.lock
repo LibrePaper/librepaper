@@ -3163,6 +3163,7 @@ dependencies = [
  "include_dir",
  "librepaper-base",
  "librepaper-document",
+ "librepaper-engine",
  "librepaper-shell",
  "log",
  "loro",
@@ -3236,6 +3237,36 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "unicode-normalization",
+]
+
+[[package]]
+name = "librepaper-engine"
+version = "0.0.20"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "fs2",
+ "futures-util",
+ "hex",
+ "librepaper-base",
+ "librepaper-document",
+ "log",
+ "loro",
+ "object_store",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tar",
+ "tempfile",
+ "time",
+ "tokio",
+ "url",
+ "uuid",
+ "zstd",
 ]
 
 [[package]]

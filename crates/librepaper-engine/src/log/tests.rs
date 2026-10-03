@@ -37,7 +37,6 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::log::budget::DEFAULT_EXPANSION;
-use crate::testing::Outbox;
 use crate::log::sequencer::{
     ack_targets, max_update_bytes, FlushReason, Ingested, LogCatalog, Role, Sequencer,
     SequencerError, FLUSH_MAX_AGE, FLUSH_QUIET, FLUSH_TRIGGER_BYTES,
@@ -46,6 +45,7 @@ use crate::log::{frame, Budget};
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::outgoing::{Outgoing, Receiver, Sender};
 use crate::storage::postgres::{self, Authority, FlushRow};
+use crate::testing::Outbox;
 use librepaper_base::config::Configuration;
 
 // -- fixtures ------------------------------------------------------------

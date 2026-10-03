@@ -2,12 +2,12 @@
 //! sends and receives, and the reauthorisation that runs while it is open.
 
 use super::*;
-use librepaper_engine::log::sequencer::Ingested;
-use librepaper_engine::log::CommandError;
 use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };
 use crate::room::Room;
+use librepaper_engine::log::sequencer::Ingested;
+use librepaper_engine::log::CommandError;
 use librepaper_engine::storage::outgoing::OutgoingSink;
 use librepaper_engine::storage::postgres::{StoredProposal, StoredProposalOutcome};
 
@@ -1652,7 +1652,10 @@ impl Server {
             .rooms
             .registry()
             .budget()
-            .reserve(update.len() as u64, librepaper_engine::log::sequencer::RESERVE_PATIENCE)
+            .reserve(
+                update.len() as u64,
+                librepaper_engine::log::sequencer::RESERVE_PATIENCE,
+            )
             .await
             .ok()?;
         let now = librepaper_base::util::now_unix();

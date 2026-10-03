@@ -17,10 +17,10 @@ use super::*;
 use crate::room::proposals::{
     DecideProposalHunk, DiscardProposal, OpenProposal, ProposalDecided, UpdateProposal,
 };
+use librepaper_document::document::session;
 use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::{Authority, PostgresCatalog, StoredProposal};
 use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
-use librepaper_document::document::session;
 use loro::Frontiers;
 use uuid::Uuid;
 
@@ -331,7 +331,10 @@ async fn a_base_the_room_has_never_seen_is_refused() {
     };
     let refused = room.command(&deployment.authority, &mut command).await;
     assert!(
-        matches!(refused, Err(librepaper_engine::log::CommandError::Conflict(_))),
+        matches!(
+            refused,
+            Err(librepaper_engine::log::CommandError::Conflict(_))
+        ),
         "got {refused:?}"
     );
     assert!(
@@ -450,7 +453,9 @@ async fn proposal_updates_require_the_owner_and_acknowledged_version_but_allow_e
         .expect_err("an older acknowledged version cannot replace a newer branch");
     assert!(matches!(
         refused_stale,
-        librepaper_engine::log::CommandError::Storage(librepaper_engine::storage::postgres::Error::Conflict(_))
+        librepaper_engine::log::CommandError::Storage(
+            librepaper_engine::storage::postgres::Error::Conflict(_)
+        )
     ));
     let still_original = deployment
         .catalog
@@ -695,7 +700,10 @@ async fn a_proposal_goes_open_update_decide_resolve() {
     // A decision against a tip the proposal has moved past is refused (§7.1).
     let stale = decide(&room, &deployment.authority, stored.id, 0, true, &base).await;
     assert!(
-        matches!(stale, Err(librepaper_engine::log::CommandError::Conflict(_))),
+        matches!(
+            stale,
+            Err(librepaper_engine::log::CommandError::Conflict(_))
+        ),
         "a decision against the wrong tip is refused, got {stale:?}"
     );
 
@@ -784,7 +792,10 @@ async fn a_proposal_goes_open_update_decide_resolve() {
         .command(&deployment.authority, &mut delayed_initial_retry)
         .await;
     assert!(
-        matches!(delayed_retry, Err(librepaper_engine::log::CommandError::Storage(_))),
+        matches!(
+            delayed_retry,
+            Err(librepaper_engine::log::CommandError::Storage(_))
+        ),
         "a delayed initial-open retry cannot recreate an id with a receipt: {delayed_retry:?}"
     );
     assert!(deployment

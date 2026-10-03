@@ -276,7 +276,10 @@ async fn middleware_inner(
             .rooms
             .registry()
             .budget()
-            .reserve(reservation, librepaper_engine::log::sequencer::RESERVE_PATIENCE)
+            .reserve(
+                reservation,
+                librepaper_engine::log::sequencer::RESERVE_PATIENCE,
+            )
             .await
         {
             Ok(r) => Some(r),
@@ -414,7 +417,9 @@ pub(super) async fn blob_response(
 ) -> Reply {
     let length = match blobs.length(&key).await {
         Ok(length) => length,
-        Err(librepaper_engine::storage::blob::BlobError::NotFound) => return plain(404, "not found"),
+        Err(librepaper_engine::storage::blob::BlobError::NotFound) => {
+            return plain(404, "not found")
+        }
         Err(_) => return plain(503, "storage temporarily unavailable"),
     };
     let etag = format!("\"{digest}\"");

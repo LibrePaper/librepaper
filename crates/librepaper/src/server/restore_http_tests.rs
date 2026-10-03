@@ -15,10 +15,10 @@
 //! crates/librepaper/src`).
 
 use crate::server::origins::Origins;
-use librepaper_engine::storage::postgres::Authority;
-use librepaper_engine::storage::store::DocumentInput;
 use axum::body::Body;
 use axum::http::Request;
+use librepaper_engine::storage::postgres::Authority;
+use librepaper_engine::storage::store::DocumentInput;
 use serde_json::json;
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer};

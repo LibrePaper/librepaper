@@ -205,7 +205,9 @@ impl Library {
             }
             _ => return super::plain(404, "font changed; restart to refresh the library"),
         };
-        let blobs = Arc::new(librepaper_engine::storage::blob::FsStore::new(&self.root, false));
+        let blobs = Arc::new(librepaper_engine::storage::blob::FsStore::new(
+            &self.root, false,
+        ));
         let mut response =
             super::cost::blob_response(blobs, file.name.clone(), &file.sha, headers, head).await;
         if !response.status().is_success() {

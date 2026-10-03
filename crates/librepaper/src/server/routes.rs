@@ -1050,8 +1050,9 @@ mod served_policy_tests {
         );
         catalog.migrate().await.unwrap();
         let objects = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-        let blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore> =
-            Arc::new(librepaper_engine::storage::blob::FsStore::new(objects.path(), false));
+        let blobs: Arc<dyn librepaper_engine::storage::blob::BlobStore> = Arc::new(
+            librepaper_engine::storage::blob::FsStore::new(objects.path(), false),
+        );
         let config = Arc::new(Configuration::default());
         let registry = librepaper_engine::log::Registry::new(
             catalog.clone(),

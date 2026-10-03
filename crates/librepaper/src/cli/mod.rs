@@ -10,10 +10,10 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
 use crate::local::cli::{LaunchArgs, LocalAgentCommand, LocalArgs, LocalCommand};
-use librepaper_engine::storage::StorageFlags;
 use librepaper_base::config::Configuration;
 use librepaper_base::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use librepaper_base::util::die;
+use librepaper_engine::storage::StorageFlags;
 
 mod agent;
 
@@ -573,21 +573,30 @@ async fn run_admin(command: AdminCommand) {
             directory,
             id,
         } => {
-            librepaper_engine::storage::backup::backup_cli(storage.options(), directory, id.unwrap_or_default())
-                .await
+            librepaper_engine::storage::backup::backup_cli(
+                storage.options(),
+                directory,
+                id.unwrap_or_default(),
+            )
+            .await
         }
         AdminCommand::Restore {
             storage,
             backup,
             directory,
-        } => librepaper_engine::storage::backup::restore_cli(storage.options(), backup, directory).await,
+        } => {
+            librepaper_engine::storage::backup::restore_cli(storage.options(), backup, directory)
+                .await
+        }
         AdminCommand::Moderate { command } => moderate(command).await,
         AdminCommand::Sweep { storage, batch } => sweep(storage, batch as usize).await,
     }
 }
 
 async fn moderate(command: ModerationCommand) {
-    use librepaper_engine::storage::postgres::{ModerationAction, PostgresCatalog, PostgresOptions};
+    use librepaper_engine::storage::postgres::{
+        ModerationAction, PostgresCatalog, PostgresOptions,
+    };
     let (database, action, target, actor, reason) = match command {
         ModerationCommand::BlockAccount {
             account,

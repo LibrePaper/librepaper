@@ -123,7 +123,9 @@ pub mod worker {
 }
 /// The collaboration storage the whole-stack benchmarks measure.
 pub mod collaboration {
-    pub use librepaper_engine::storage::collaboration::{superseded_base_deadline, CollaborationStorage};
+    pub use librepaper_engine::storage::collaboration::{
+        superseded_base_deadline, CollaborationStorage,
+    };
 }
 
 /// The channel types a socket and a room talk through.
@@ -145,11 +147,11 @@ pub use librepaper_base::auth::{
     sign_device, sign_session, GithubApp, Identity, Policy, PROVIDER_GITHUB, SESSION_COOKIE,
 };
 pub use librepaper_base::util::now_unix;
+pub use librepaper_engine::storage::blob::{BlobStore, FsStore};
+pub use librepaper_engine::storage::store::Store;
 pub use librepaper_shell::ShellFile;
 pub use room::{Room, Rooms};
 pub use server::Server;
-pub use librepaper_engine::storage::blob::{BlobStore, FsStore};
-pub use librepaper_engine::storage::store::Store;
 
 /// The release version, stamped in at build time for release artifacts and
 /// derived from the package version for crates.io installs.

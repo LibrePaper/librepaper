@@ -16,12 +16,12 @@
 //! the rest of the catalogue coverage.
 
 use super::*;
+use librepaper_document::document::session;
 use librepaper_engine::log::Registry;
 use librepaper_engine::storage::annotation::{AnchorStatus, CommentTarget};
 use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::Authority;
 use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
-use librepaper_document::document::session;
 use serde_json::json;
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";
@@ -126,7 +126,9 @@ impl Deployment {
         )
     }
 
-    fn mutation_authorization(&self) -> librepaper_engine::storage::postgres::MutationAuthorization {
+    fn mutation_authorization(
+        &self,
+    ) -> librepaper_engine::storage::postgres::MutationAuthorization {
         librepaper_engine::storage::postgres::MutationAuthorization {
             principal_key: self.account_id.to_string(),
             account_id: Some(self.account_id),

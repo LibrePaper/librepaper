@@ -35,12 +35,12 @@ use serde_json::json;
 
 use super::text::slice16;
 use super::{Comment, Room};
+use librepaper_document::document::session::{self, CursorResolutionError};
 use librepaper_engine::log::sequencer::SequencerError;
 use librepaper_engine::storage::annotation::{
     AnchorSide, AnchorStatus, CommentTarget, DerivedAttachment, LiveSourceRange, OriginalAnchor,
     ResolutionDiagnostic, SourceTextTarget,
 };
-use librepaper_document::document::session::{self, CursorResolutionError};
 
 /// The encoding of the cursor bytes stored beside a comment. Written with
 /// every pair, so a future change of Loro's cursor format is a recognisable
@@ -377,13 +377,6 @@ fn attached(
     }
 }
 
-impl DerivedAttachment {
-    fn with_digest(mut self, tree_digest: &str) -> DerivedAttachment {
-        self.tree_digest = tree_digest.to_string();
-        self
-    }
-}
-
 fn common_prefix(a: &[u16], b: &[u16]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
@@ -622,8 +615,8 @@ pub(crate) const ATTACHMENT_FRAME_MAX: usize = 200;
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use librepaper_engine::storage::annotation::FileId;
     use librepaper_document::document::session;
+    use librepaper_engine::storage::annotation::FileId;
 
     /// A document with one text file, the way a publish builds one.
     pub(super) fn document(path: &str, body: &str) -> (loro::LoroDoc, String) {

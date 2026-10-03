@@ -8,14 +8,14 @@ use tokio::net::TcpListener;
 
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
-use librepaper_engine::storage::store::Store;
-use librepaper_engine::storage::{open_storage, StorageOptions};
 use librepaper_base::auth::{session_key_file, GithubApp, GoogleApp, Policy};
 use librepaper_base::config::Configuration;
 use librepaper_base::util::die;
 use librepaper_document::document::retention::{
     describe_seconds, parse_expire_from, parse_retention,
 };
+use librepaper_engine::storage::store::Store;
+use librepaper_engine::storage::{open_storage, StorageOptions};
 use librepaper_shell::load_shell;
 
 /// With no --port, serve takes the first free port in this range, so a second
@@ -371,7 +371,8 @@ pub async fn serve(options: ServeOptions) {
     let secrets = &deployment_paths.secrets;
     let key_path = secrets.join("session.key");
     let key = session_key_file(&key_path, key_path.exists()).unwrap_or_else(|err| die(err));
-    let mut database = librepaper_engine::storage::postgres::PostgresOptions::new(&storage.database_url);
+    let mut database =
+        librepaper_engine::storage::postgres::PostgresOptions::new(&storage.database_url);
     database.max_connections = storage.database_connections;
     database.policy = storage_policy(&config);
     let catalog = Arc::new(
@@ -403,8 +404,12 @@ pub async fn serve(options: ServeOptions) {
     let peer_key = deployment_peer_key(&catalog)
         .await
         .unwrap_or_else(|err| die(err));
-    let registry =
-        librepaper_engine::log::Registry::new(catalog.clone(), blobs.clone(), config.clone(), peer_key);
+    let registry = librepaper_engine::log::Registry::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        peer_key,
+    );
     let rooms = crate::room::Rooms::new(
         catalog.clone(),
         blobs.clone(),

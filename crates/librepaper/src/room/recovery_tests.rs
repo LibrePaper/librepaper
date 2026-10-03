@@ -66,17 +66,17 @@ use uuid::Uuid;
 
 use futures_util::future::BoxFuture;
 
-use librepaper_engine::testing::Outbox;
-use librepaper_engine::log::*;
 use crate::room::{AddComment, Rooms};
+use librepaper_base::config::Configuration;
+use librepaper_document::document::session;
+use librepaper_engine::log::*;
 use librepaper_engine::storage::blob::{BlobStore, FsStore};
 use librepaper_engine::storage::postgres::{
     Authority, MutationAuthorization, NewAccount, NewDocument, PostgresCatalog, PostgresOptions,
 };
 use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
 use librepaper_engine::storage::worker::{Task, Worker};
-use librepaper_base::config::Configuration;
-use librepaper_document::document::session;
+use librepaper_engine::testing::Outbox;
 
 async fn connect(url: String) -> Arc<PostgresCatalog> {
     let catalog = Arc::new(
@@ -407,7 +407,9 @@ fn editor_subscription() -> (
     librepaper_engine::storage::outgoing::Sender::channel(64, 1 << 20, None, None)
 }
 
-fn queued_frames(rx: &mut librepaper_engine::storage::outgoing::Receiver) -> Vec<serde_json::Value> {
+fn queued_frames(
+    rx: &mut librepaper_engine::storage::outgoing::Receiver,
+) -> Vec<serde_json::Value> {
     let mut frames = Vec::new();
     while let Ok(queued) = rx.try_recv() {
         let text = match queued.into_parts().0 {
@@ -1759,7 +1761,8 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
     // deadlines are `std::time::Instant`s, so this waits rather than
     // advancing a clock: the pass under test is the one a real quiet period
     // triggers.
-    tokio::time::sleep(librepaper_engine::log::sequencer::FLUSH_QUIET + Duration::from_millis(500)).await;
+    tokio::time::sleep(librepaper_engine::log::sequencer::FLUSH_QUIET + Duration::from_millis(500))
+        .await;
     let mut blocker = catalog.pool().begin().await.unwrap();
     sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton FOR UPDATE")
         .execute(&mut *blocker)

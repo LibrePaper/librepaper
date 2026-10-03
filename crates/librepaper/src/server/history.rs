@@ -155,7 +155,10 @@ impl librepaper_engine::log::Command for Restore {
     fn evaluate(
         &mut self,
         head: &librepaper_engine::log::Head<'_>,
-    ) -> std::result::Result<Option<librepaper_engine::log::PreparedSource>, librepaper_engine::log::CommandError> {
+    ) -> std::result::Result<
+        Option<librepaper_engine::log::PreparedSource>,
+        librepaper_engine::log::CommandError,
+    > {
         if head.frontier.encode() != self.expected_frontier {
             return Err(librepaper_engine::log::CommandError::Conflict(
                 "the document changed since that moment; refresh before restoring".into(),
@@ -380,7 +383,10 @@ impl librepaper_engine::log::Command for TrimRetained {
     fn evaluate(
         &mut self,
         head: &librepaper_engine::log::Head<'_>,
-    ) -> std::result::Result<Option<librepaper_engine::log::PreparedSource>, librepaper_engine::log::CommandError> {
+    ) -> std::result::Result<
+        Option<librepaper_engine::log::PreparedSource>,
+        librepaper_engine::log::CommandError,
+    > {
         self.referenced = head
             .projection
             .projection

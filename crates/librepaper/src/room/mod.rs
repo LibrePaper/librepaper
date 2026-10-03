@@ -29,11 +29,11 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use librepaper_base::config::Configuration;
 use librepaper_engine::log::sequencer::{Command, CommandError, Joined, Role, SequencerError};
 use librepaper_engine::log::{FlushReason, Ingested, Registry, Sequencer};
 use librepaper_engine::storage::blob::BlobStore;
 use librepaper_engine::storage::postgres::{Authority, PostgresCatalog};
-use librepaper_base::config::Configuration;
 
 pub(crate) mod agent;
 pub(crate) mod agent_query;
