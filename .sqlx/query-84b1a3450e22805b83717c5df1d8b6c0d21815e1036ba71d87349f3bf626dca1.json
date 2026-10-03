@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,\n                    d.source_format,d.main_path,d.update_sequence,\n                    d.created_at,\n                    d.updated_at,d.deleted_at\n             FROM documents d\n             JOIN document_templates t ON t.document_id=d.id\n             WHERE d.owner_id=$1 AND d.status='active'\n               AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)\n             ORDER BY d.updated_at DESC,d.id DESC LIMIT $2",
+  "query": "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,\n                    d.source_format,d.main_path,d.update_sequence,\n                    d.created_at,\n                    d.updated_at,d.deleted_at\n             FROM documents d\n             JOIN document_templates t ON t.document_id=d.id\n             WHERE d.owner_id=$1 AND d.status='active'\n               AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)\n               AND NOT EXISTS (SELECT 1 FROM document_template_operations o\n                               WHERE o.target_document_id=d.id AND o.completed_at IS NULL)\n               AND (d.updated_at,d.id) <\n                   (COALESCE($2::timestamptz,'infinity'),\n                    COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))\n             ORDER BY d.updated_at DESC,d.id DESC LIMIT $4",
   "describe": {
     "columns": [
       {
@@ -67,6 +67,8 @@
     "parameters": {
       "Left": [
         "Uuid",
+        "Timestamptz",
+        "Uuid",
         "Int8"
       ]
     },
@@ -85,5 +87,5 @@
       true
     ]
   },
-  "hash": "99a406ee40c3df27abd533397ae9b655f159f39da560b64310216d013cef3b67"
+  "hash": "84b1a3450e22805b83717c5df1d8b6c0d21815e1036ba71d87349f3bf626dca1"
 }
