@@ -9,6 +9,21 @@ use std::path::Path;
 fn main() {
     println!("cargo:rerun-if-env-changed=LIBREPAPER_VERSION");
     println!("cargo:rerun-if-env-changed=SQLX_OFFLINE");
+    // The protocol docs and tutorials are compiled in with include_str!. They
+    // live outside this crate, so the path comes from here; the flat crate's
+    // build.rs sets the same variable to its own docs/. rustc tracks the
+    // included files itself.
+    let docs = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs")
+        .canonicalize()
+        .expect("docs/ is at the repository root");
+    println!("cargo:rustc-env=LIBREPAPER_DOCS={}", docs.display());
+    // Same for the skills bundle, which routes.rs also includes by path.
+    let skills_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../skills")
+        .canonicalize()
+        .expect("skills/ is at the repository root");
+    println!("cargo:rustc-env=LIBREPAPER_SKILLS={}", skills_dir.display());
     // A packaged crate is built outside this repository's `.cargo/config.toml`.
     // Keep SQLx query macros offline there, while allowing an explicit caller
     // setting such as `SQLX_OFFLINE=false` to take precedence.

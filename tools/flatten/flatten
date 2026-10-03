@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# The lint and the generator for the published single crate. See flatten.mjs.
+set -euo pipefail
+exec node "$(dirname "${BASH_SOURCE[0]}")/flatten.mjs" "$@"

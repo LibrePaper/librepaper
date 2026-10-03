@@ -25,21 +25,33 @@ in clone URLs or output.
 
 ## Publishing to crates.io
 
-The package name is `librepaper`. Before publishing, prepare the same browser
-assets used by the release build: fetch the pinned CodeMirror and renderer
-modules with `node web/tools/fetch-loro-codemirror.mjs` and
-`node web/tools/fetch-modules.mjs`, then run `bun install --frozen-lockfile`
-and `bun run build` from `web/`. The release workflow performs these steps
-before cargo-dist builds the binary, because the executable embeds the
-generated browser app. With those assets present, review Cargo's package
-contents using:
+The repository is a workspace of internal sub-crates. crates.io gets one
+package, `librepaper`, generated from the workspace by `tools/flatten/flatten`.
+
+- Version: `[workspace.package]` in the root `Cargo.toml`; the tag check reads it.
+- Output: `target/flat/`, never committed.
+- The publish workflow builds the browser app, flattens, and publishes from `target/flat/` with `CARGO_REGISTRY_TOKEN`.
+- Prepare the browser assets first (the executable embeds them):
 
 ```sh
-cargo publish --dry-run --locked --allow-dirty -p librepaper
+tools/pins fetch                  # pinned renderers and loro-codemirror
+(cd web && bun install --frozen-lockfile && bun run build)
 ```
 
-Publish the single crate with the repository's `CARGO_REGISTRY_TOKEN` secret
-after the dry run succeeds.
+Dry run:
+
+```sh
+tools/flatten/flatten lint        # rules the sub-crates follow
+tools/flatten/flatten build       # generate target/flat/
+(cd target/flat && cargo publish --dry-run --locked --allow-dirty)
+```
+
+After a release, smoke test the published crate:
+
+```sh
+cargo install librepaper --locked   # on a clean machine
+librepaper --version
+```
 
 ## Stable releases
 
