@@ -2,7 +2,7 @@
 //! codes it hands out, and the cache that keeps a verified bearer from being
 //! checked again on every request.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,10 +23,17 @@ pub struct TokenCache {
     pub(super) negative_ttl: Duration,
     in_flight: Mutex<HashMap<String, Arc<TokenFlight>>>,
     provider_slots: Arc<Semaphore>,
-    provider_budget: Mutex<VecDeque<Instant>>,
-    provider_limit: usize,
-    provider_window: Duration,
+    provider_budget: governor::DefaultDirectRateLimiter,
     provider_cooldown: Mutex<Option<Instant>>,
+}
+
+/// `limit` checks per `window`, spent as a burst and refilled evenly.
+fn provider_quota(limit: usize, window: Duration) -> governor::Quota {
+    let burst = u32::try_from(limit.max(1)).unwrap_or(u32::MAX);
+    let period = (window / burst).max(Duration::from_nanos(1));
+    governor::Quota::with_period(period)
+        .expect("period is non-zero")
+        .allow_burst(std::num::NonZeroU32::new(burst).expect("burst is non-zero"))
 }
 
 pub(super) struct CachedToken {
@@ -96,9 +103,10 @@ impl TokenCache {
             negative_ttl,
             in_flight: Mutex::new(HashMap::new()),
             provider_slots: Arc::new(Semaphore::new(TOKEN_CHECK_CONCURRENCY)),
-            provider_budget: Mutex::new(VecDeque::new()),
-            provider_limit,
-            provider_window,
+            provider_budget: governor::RateLimiter::direct(provider_quota(
+                provider_limit,
+                provider_window,
+            )),
             provider_cooldown: Mutex::new(None),
         }
     }
@@ -295,19 +303,7 @@ impl TokenCache {
     }
 
     fn try_reserve_provider_check(&self) -> bool {
-        let mut budget = self.provider_budget.lock().expect("token budget poisoned");
-        let now = Instant::now();
-        while budget
-            .front()
-            .is_some_and(|oldest| now.duration_since(*oldest) >= self.provider_window)
-        {
-            budget.pop_front();
-        }
-        if budget.len() >= self.provider_limit {
-            return false;
-        }
-        budget.push_back(now);
-        true
+        self.provider_budget.check().is_ok()
     }
 
     fn cache_answer(&self, key: &str, identity: Option<Identity>) {

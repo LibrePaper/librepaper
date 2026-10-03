@@ -15,6 +15,7 @@ tracing.workspace = true
 thiserror.workspace = true
 ipnet.workspace = true
 moka.workspace = true
+governor.workspace = true
 subtle.workspace = true
 async-trait.workspace = true
 axum.workspace = true
