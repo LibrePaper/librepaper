@@ -12,8 +12,8 @@ usage() {
 	cat <<'USAGE'
 usage: tools/suite <suite>
 
-  browser     component tests in headless chromium (needs chromium)
-  smoke       drive the reader in headless chromium (needs chromium)
+  browser     component tests in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
+  smoke       drive the reader in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   external    Quarto/R/Python and real local-service integration tests
   fuzz        every fuzz target for FUZZ_SECONDS (default 60) each
               (FUZZ_TARGETS overrides the target list; needs nightly and cargo-fuzz)
@@ -21,23 +21,25 @@ usage: tools/suite <suite>
 USAGE
 }
 
-have_chromium() {
-	command -v chromium >/dev/null || command -v google-chrome >/dev/null
+require_chromium() {
+	local executable
+	if ! executable="$(node web/tools/browser-executable.mjs --print)"; then
+		echo "the requested browser suite needs Chromium; install it or set LIBREPAPER_CHROMIUM to an executable path" >&2
+		return 1
+	fi
+	export LIBREPAPER_CHROMIUM="$executable"
 }
 
 # The component tests. Each builds its own bundle from web/src and drives a
 # headless chromium. The per-test bound is generous: the LaTeX one drives a
 # real TeX Live and takes minutes by itself.
 suite_browser() {
+	require_chromium
 	tools/pins fetch
-	if ! have_chromium; then
-		echo "no chromium to drive; skipping the browser tests"
-		return 0
-	fi
 	local failed="" test log
-	log=/tmp/browser-test.log
 	for test in web/tests/browser/*.mjs; do
 		printf '%s: ' "$(basename "$test")"
+		log="$(mktemp "${TMPDIR:-/tmp}/librepaper-browser-test.XXXXXX")"
 		if (cd web && timeout 900 node "../$test" >"$log" 2>&1); then
 			echo ok
 		else
@@ -45,6 +47,7 @@ suite_browser() {
 			failed="$failed $(basename "$test")"
 			sed 's/^/    /' "$log" | tail -40
 		fi
+		rm -f "$log"
 	done
 	[ -z "$failed" ] || { echo "failed:$failed"; return 1; }
 }
@@ -53,11 +56,8 @@ suite_browser() {
 # server of its own on a temporary directory and a throwaway database, so it
 # also needs LIBREPAPER_TEST_POSTGRES_URL.
 suite_smoke() {
+	require_chromium
 	make --no-print-directory "$BIN"
-	if ! have_chromium; then
-		echo "no chromium to drive; skipping the browser smoke test"
-		return 0
-	fi
 	bun web/tools/browser-smoke.mjs "$BIN"
 }
 

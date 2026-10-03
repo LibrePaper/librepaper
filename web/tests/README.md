@@ -11,9 +11,19 @@ The checks are grouped by how they execute, not by product feature:
 - `fixtures/` contains checked-in inputs shared by tests. The Typst corpus is
   used by both the PDF and viewer checks.
 
-The Bun scripts in `web/package.json` are the authoritative entry points; the
-directory names make the runtime requirements visible without changing what
-each check asserts.
+The Bun scripts in `web/package.json` and the repository-level `tools/suite`
+command are the authoritative entry points. The unit and integration lists
+below give representative examples, not a complete file inventory. The browser list is complete for
+`web/tests/browser/`; files may also be run directly with Node when a script
+documents its own prerequisites.
+
+Browser launchers share `web/tools/browser-executable.mjs`. Set
+`LIBREPAPER_CHROMIUM` to an executable path to select a specific browser; when
+unset, the resolver looks for `chromium`, `chromium-browser`, `google-chrome`,
+then `google-chrome-stable` on `PATH`. Running `tools/suite browser` or
+`tools/suite smoke` without a usable browser fails the requested suite rather
+than reporting a successful skip. Individual checks that explicitly skip when
+their built shell or fixture artifact is absent keep that optional behavior.
 
 ## Classification
 
@@ -23,7 +33,7 @@ each check asserts.
 `assistant`, `assistant-preview`, `assistant-review`, `build-catalog`,
 `build-preferences`, `citations`, `collab-awareness`, `commands`,
 `companion-status`, `deployment-helper`, `diagnostics`, `downloads`, `file-manager`,
-`frame-overlays`, `generation`, `history-calendar`, `insert`, `landing`,
+`browser-executable`, `frame-overlays`, `generation`, `history-calendar`, `insert`, `landing`,
 `latex-biber`, `latex-bibliography`, `latex-driver`, `latex-engine`,
 `latex-log`, `latex-reader`, `loro-codemirror`, `math`, `offline-projects`,
 `orphan`, `outline`, `panels`, `passage-trace`, `passages`, `pdf-fit`,
@@ -63,12 +73,16 @@ restored from IndexedDB before reconnection, and a fresh browser after a server
 restart. The fixture exercises document-frame dispatch without rendering the
 full Reader UI.
 
-### Browser
+### Browser (complete file inventory)
 
-`agent-browser`, `assistant-review-browser`, `citations-browser`,
-`comments-bulk-browser`, `editor-browser`, `files-browser`,
-`history-panel-browser`, `history-reader-browser`,
-`insert-browser`, `latex-browser`, `latex-html-browser`,
-`local-consent-browser`, `math-browser`,
-`outline-browser`, `responsive-browser`, `shortcuts-browser`, `typst-viewer`,
-and `viewer`.
+`accessibility-browser`, `agent-browser`, `assistant-review-browser`,
+`backups-settings-browser`, `changes-browser`, `citations-browser`,
+`comments-bulk-browser`, `comments-paging-browser`, `connections-browser`,
+`doc-rows-browser`, `editor-browser`, `files-browser`,
+`frame-isolation-browser`, `history-panel-browser`, `history-reader-browser`,
+`insert-browser`, `landing-browser`, `latex-browser`, `latex-html-browser`,
+`local-consent-browser`, `local-settings-browser`, `math-browser`,
+`menubar-browser`, `offline-reload-browser`, `outline-browser`,
+`responsive-browser`, `settings-pages-browser`, `settings-save-browser`,
+`share-panel-browser`, `shortcuts-browser`, `status-popover-browser`,
+`typst-viewer`, `upload-browser`, and `viewer`.

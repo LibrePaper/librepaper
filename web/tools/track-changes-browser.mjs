@@ -25,12 +25,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { requireChromiumExecutable } from "./browser-executable.mjs";
 
 const binary = process.argv[2] || "dist/librepaper";
 if (!existsSync(binary)) {
   console.error(`browser: no librepaper binary at ${binary}; run \`make build\` first`);
   process.exit(1);
 }
+const chromium = requireChromiumExecutable();
 
 const data = mkdtempSync(join(tmpdir(), "librepaper-smoke-"));
 const PORT = 8200 + Math.floor(Math.random() * 300);
@@ -74,8 +76,6 @@ server.stderr.on("data", (chunk) => serverLog.push(String(chunk)));
 /* ------------------------------------------------------------- the browser */
 
 let chrome = null;
-const CHROME = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
-
 async function connect(port) {
   for (let tries = 0; tries < 100; tries++) {
     try {
@@ -305,27 +305,19 @@ const slug0 = (d) => d.slug;
 async function run() {
   await until("the server", async () => (await fetch(`${BASE}/api/config`)).ok);
 
-  for (const candidate of CHROME) {
-    try {
-      chrome = spawn(
-        candidate,
-        [
-          "--headless=new",
-          "--remote-debugging-port=9333",
-          "--no-sandbox",
-          "--disable-gpu",
-          "--disable-dev-shm-usage",
-          `--user-data-dir=${join(data, "chrome")}`,
-          "about:blank",
-        ],
-        { stdio: "ignore" },
-      );
-      break;
-    } catch {
-      chrome = null;
-    }
-  }
-  if (!chrome) throw new Error("no chromium to drive");
+  chrome = spawn(
+    chromium,
+    [
+      "--headless=new",
+      "--remote-debugging-port=9333",
+      "--no-sandbox",
+      "--disable-gpu",
+      "--disable-dev-shm-usage",
+      `--user-data-dir=${join(data, "chrome")}`,
+      "about:blank",
+    ],
+    { stdio: "ignore" },
+  );
   const endpoint = await connect(9333);
   socket = new WebSocket(endpoint);
   await new Promise((resolve, reject) => {

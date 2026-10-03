@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
+import { requireChromiumExecutable } from "../../tools/browser-executable.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
@@ -779,7 +780,7 @@ try {
   const httpPort = typeof address === "object" && address ? address.port : 0;
   if (!httpPort) throw new Error("local editor server did not start");
 
-  browser = spawn("chromium", [
+  browser = spawn(requireChromiumExecutable(), [
     "--headless=new",
     "--no-sandbox",
     "--disable-gpu",

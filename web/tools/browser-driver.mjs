@@ -1,6 +1,7 @@
 // Headless Firefox (BiDi) and Chromium (CDP) for local browser checks.
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { requireChromiumExecutable } from "./browser-executable.mjs";
 
 export const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 export async function until(label, test, timeout = 60000) {
@@ -45,11 +46,12 @@ function bidiValue(remote) {
 }
 
 export async function browser(name, directory, port) {
+  const executable = name === "firefox" ? name : requireChromiumExecutable();
   mkdirSync(directory, { recursive: true });
   const browserArgs = name === "firefox"
     ? ["--headless", "--no-remote", "--profile", directory, "--remote-debugging-port", String(port)]
     : ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-features=BackForwardCache", ...(process.env.LIBREPAPER_BROWSER_IGNORE_CERT_ERRORS === "1" ? ["--ignore-certificate-errors"] : []), `--user-data-dir=${directory}`, `--remote-debugging-port=${port}`, "about:blank"];
-  const child = spawn(name, browserArgs,
+  const child = spawn(executable, browserArgs,
   { stdio: "ignore" });
   let spawnError;
   child.on("error", (error) => { spawnError = error; });
