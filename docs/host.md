@@ -14,6 +14,13 @@ when present, and relative file paths resolve from the TOML file's directory.
 The PostgreSQL driver can also use standard `PG*` variables for URL components
 omitted from the database URL; use a complete URL for predictable setup.
 
+References replace one complete value. Strings need no surrounding quotes;
+numbers, booleans, and arrays use TOML syntax, such as `8080`, `true`, or
+`["alice", "bob"]`. Trailing line endings are stripped from referenced values.
+Missing or empty references, unknown keys, and invalid types stop startup
+with a configuration error. Server-setting flags and automatic
+`LIBREPAPER_*` overrides are no longer supported.
+
 ```toml
 [server]
 bind = "0.0.0.0"
