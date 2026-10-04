@@ -436,7 +436,7 @@ where
         }
         buf_reader.consume(take);
         if newline.is_some() {
-            if line_cut {
+            if line_cut && line_buf.last() != Some(&b'\n') {
                 // The cut dropped the terminator with the rest of the line; the
                 // next line must still start on its own line in the log.
                 line_buf.push(b'\n');
@@ -706,5 +706,27 @@ mod tests {
             final_log.contains("\nok"),
             "the line after a cut line starts on its own line"
         );
+    }
+
+    #[tokio::test]
+    async fn a_line_exactly_at_the_limit_keeps_one_newline() {
+        let log = Arc::new(AsyncMutex::new(String::new()));
+        let watch = Arc::new(SessionWatch {
+            root: PathBuf::from("/tmp"),
+            entrypoint: "test.html".to_string(),
+            adapter: Box::new(MockWatch),
+            log: log.clone(),
+            latest: Arc::new(AsyncMutex::new(None)),
+            rendering: Arc::new(AtomicBool::new(false)),
+        });
+        let exact = "a".repeat(64 * 1024 - 1);
+        let input = format!("{exact}\nok\n");
+        pump(Cursor::new(input.into_bytes()), watch).await;
+        let final_log = log.lock().await.clone();
+        assert!(
+            final_log.contains("a\nok"),
+            "no blank line after a line at the limit"
+        );
+        assert!(!final_log.contains("\n\n"));
     }
 }
