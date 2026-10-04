@@ -298,8 +298,25 @@ fn server_flags_are_rejected_and_server_environment_overrides_are_ignored() {
     for args in [
         &["admin", "serve", "--port", "9123"][..],
         &["admin", "serve", "--origin", "https://paper.example"][..],
-        &["admin", "backup", "--database-url", "postgresql:///other", "backup-dir"][..],
-        &["admin", "moderate", "hide-project", "paper", "--database-url", "postgresql:///other", "--actor", "operator", "--reason", "review"][..],
+        &[
+            "admin",
+            "backup",
+            "--database-url",
+            "postgresql:///other",
+            "backup-dir",
+        ][..],
+        &[
+            "admin",
+            "moderate",
+            "hide-project",
+            "paper",
+            "--database-url",
+            "postgresql:///other",
+            "--actor",
+            "operator",
+            "--reason",
+            "review",
+        ][..],
     ] {
         assert!(!cli(args).status.success(), "{args:?} should be rejected");
     }
@@ -312,7 +329,13 @@ fn server_flags_are_rejected_and_server_environment_overrides_are_ignored() {
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
-        .args(["admin", "config", "show", "--config", config.to_str().unwrap()])
+        .args([
+            "admin",
+            "config",
+            "show",
+            "--config",
+            config.to_str().unwrap(),
+        ])
         .env("LIBREPAPER_PORT", "9999")
         .env("LIBREPAPER_DATABASE_URL", "postgresql:///ambient")
         .env("LIBREPAPER_CONFIG", "/tmp/ignored-config.toml")
@@ -335,13 +358,34 @@ fn config_commands_accept_explicit_paths() {
         &["admin", "config", "check", "--config", config][..],
         &["admin", "config", "show", "--config", config][..],
         &["admin", "backup", "backup-dir", "--config", config][..],
-        &["admin", "restore", "backup-dir", "target-dir", "--config", config][..],
-        &["admin", "moderate", "hide-project", "paper", "--actor", "operator", "--reason", "review", "--config", config][..],
+        &[
+            "admin",
+            "restore",
+            "backup-dir",
+            "target-dir",
+            "--config",
+            config,
+        ][..],
+        &[
+            "admin",
+            "moderate",
+            "hide-project",
+            "paper",
+            "--actor",
+            "operator",
+            "--reason",
+            "review",
+            "--config",
+            config,
+        ][..],
     ] {
         let output = cli(args);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{args:?}: {output:?}");
-        assert!(stderr.contains("could not read server configuration"), "{args:?}: {output:?}");
+        assert!(
+            stderr.contains("could not read server configuration"),
+            "{args:?}: {output:?}"
+        );
         assert!(stderr.contains(config), "{args:?}: {output:?}");
     }
 }
@@ -389,9 +433,16 @@ fn config_check_never_echoes_database_url_secrets() {
     )
     .unwrap();
     let accepted = cli(&["admin", "config", "check", "--config", config_arg]);
-    let accepted_output = format!("{}{}", String::from_utf8_lossy(&accepted.stdout), String::from_utf8_lossy(&accepted.stderr));
+    let accepted_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&accepted.stdout),
+        String::from_utf8_lossy(&accepted.stderr)
+    );
     assert!(accepted.status.success(), "{accepted_output}");
-    assert!(!accepted_output.contains("QUERY_SECRET"), "{accepted_output}");
+    assert!(
+        !accepted_output.contains("QUERY_SECRET"),
+        "{accepted_output}"
+    );
 
     std::fs::write(
         &config,
@@ -399,9 +450,16 @@ fn config_check_never_echoes_database_url_secrets() {
     )
     .unwrap();
     let rejected = cli(&["admin", "config", "check", "--config", config_arg]);
-    let rejected_output = format!("{}{}", String::from_utf8_lossy(&rejected.stdout), String::from_utf8_lossy(&rejected.stderr));
+    let rejected_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&rejected.stdout),
+        String::from_utf8_lossy(&rejected.stderr)
+    );
     assert!(!rejected.status.success(), "{rejected_output}");
-    assert!(!rejected_output.contains("PASSWORD_SECRET"), "{rejected_output}");
+    assert!(
+        !rejected_output.contains("PASSWORD_SECRET"),
+        "{rejected_output}"
+    );
 }
 
 #[test]

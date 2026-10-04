@@ -96,9 +96,7 @@ pub struct ServeOptions {
 pub(crate) fn validate_asset_mirror(value: &str) -> Result<String, String> {
     let value = value.trim();
     let mut parsed = url::Url::parse(value).map_err(|_| {
-        format!(
-            "assets.mirror must be an https: URL for a static mirror (got {value:?})"
-        )
+        format!("assets.mirror must be an https: URL for a static mirror (got {value:?})")
     })?;
     if parsed.scheme() != "https"
         || parsed.host_str().is_none()
@@ -121,7 +119,9 @@ pub(crate) fn validate_asset_mirror(value: &str) -> Result<String, String> {
 pub(crate) fn validate_site_origin(value: &str) -> Result<String, String> {
     let value = value.trim();
     let parsed = url::Url::parse(value).map_err(|_| {
-        format!("server.site_origin must be a URL, for example https://paper.example (got {value:?})")
+        format!(
+            "server.site_origin must be a URL, for example https://paper.example (got {value:?})"
+        )
     })?;
     let loopback = matches!(parsed.host(), Some(url::Host::Domain("localhost")))
         || matches!(parsed.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())

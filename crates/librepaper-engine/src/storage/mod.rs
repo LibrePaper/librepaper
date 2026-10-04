@@ -48,13 +48,25 @@ impl std::fmt::Debug for StorageOptions {
             .field("database_url", &"[REDACTED]")
             .field("database_connections", &self.database_connections)
             .field("object_store", &self.object_store)
-            .field("s3_endpoint", &self.s3_endpoint.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "s3_endpoint",
+                &self.s3_endpoint.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("s3_region", &self.s3_region)
             .field("s3_bucket", &self.s3_bucket)
             .field("s3_allow_http", &self.s3_allow_http)
-            .field("s3_access_key_id", &self.s3_access_key_id.as_ref().map(|_| "[REDACTED]"))
-            .field("s3_secret_access_key", &self.s3_secret_access_key.as_ref().map(|_| "[REDACTED]"))
-            .field("s3_session_token", &self.s3_session_token.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "s3_access_key_id",
+                &self.s3_access_key_id.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "s3_secret_access_key",
+                &self.s3_secret_access_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "s3_session_token",
+                &self.s3_session_token.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -81,14 +93,19 @@ pub fn validate_storage_options(options: &StorageOptions) -> Result<(), String> 
     if !(1..=200).contains(&options.database_connections) {
         return Err("storage.database_connections must be between 1 and 200".into());
     }
-    let scheme = options.database_url.split_once("://").map(|(scheme, _)| scheme);
+    let scheme = options
+        .database_url
+        .split_once("://")
+        .map(|(scheme, _)| scheme);
     if !matches!(scheme, Some("postgres") | Some("postgresql")) {
         return Err("storage.database_url must use the postgres or postgresql URL scheme".into());
     }
-    let parsed = tracing::subscriber::with_default(
-        tracing::subscriber::NoSubscriber::default(),
-        || options.database_url.parse::<sqlx::postgres::PgConnectOptions>(),
-    );
+    let parsed =
+        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
+            options
+                .database_url
+                .parse::<sqlx::postgres::PgConnectOptions>()
+        });
     let _: sqlx::postgres::PgConnectOptions = parsed
         .map_err(|_| "storage.database_url is not a valid PostgreSQL connection URL".to_string())?;
     match options.object_store.as_str() {
@@ -99,16 +116,27 @@ pub fn validate_storage_options(options: &StorageOptions) -> Result<(), String> 
             {
                 return Err("storage.s3.region and storage.s3.bucket are required".into());
             }
-            if options.s3_access_key_id.as_deref().unwrap_or("").trim().is_empty()
-                || options.s3_secret_access_key.as_deref().unwrap_or("").trim().is_empty()
+            if options
+                .s3_access_key_id
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+                || options
+                    .s3_secret_access_key
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
             {
                 return Err(
                     "storage.s3.access_key_id and storage.s3.secret_access_key are required".into(),
                 );
             }
             if let Some(endpoint) = options.s3_endpoint.as_deref() {
-                let parsed = url::Url::parse(endpoint)
-                    .map_err(|_| "storage.s3.endpoint must be an absolute http(s) URL".to_string())?;
+                let parsed = url::Url::parse(endpoint).map_err(|_| {
+                    "storage.s3.endpoint must be an absolute http(s) URL".to_string()
+                })?;
                 if parsed.host_str().is_none()
                     || parsed.username() != ""
                     || parsed.password().is_some()

@@ -368,7 +368,9 @@ async fn run_admin(command: AdminCommand) {
                 let resolved = server_config::load(&config).unwrap_or_else(|error| die(error));
                 install_subscriber(Some(&resolved.log_filter));
                 let options = serve_options(resolved);
-                if let Err(error) = librepaper_server::server::serve::validate_serve_options(&options) {
+                if let Err(error) =
+                    librepaper_server::server::serve::validate_serve_options(&options)
+                {
                     die(error);
                 }
                 println!("configuration is valid");
@@ -510,8 +512,8 @@ async fn moderate(command: ModerationCommand) {
             reason,
         ),
     };
-    let (storage, filter) = server_config::load_storage_with_log_filter(&config)
-        .unwrap_or_else(|error| die(error));
+    let (storage, filter) =
+        server_config::load_storage_with_log_filter(&config).unwrap_or_else(|error| die(error));
     install_subscriber(Some(&filter));
     let mut postgres = PostgresOptions::new(storage.database_url);
     postgres.max_connections = storage.database_connections;
