@@ -488,7 +488,9 @@ fn referenced_resources(bytes: &[u8], current: &str) -> BTreeMap<String, Referen
 fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
     use lol_html::{element, rewrite_str, text, RewriteStrSettings};
 
-    let mut inline_css = String::new();
+    // One entry per style element: a comment left open in one element must not
+    // swallow the next, as it would in one concatenated sheet.
+    let mut inline_css: Vec<String> = vec![String::new()];
     let mut elements: Vec<(String, ReferenceKind)> = Vec::new();
     let settings = RewriteStrSettings::new()
         .append_element_content_handler(element!(
@@ -542,9 +544,11 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
             }
         ))
         .append_element_content_handler(text!("style", |chunk| {
-            inline_css.push_str(chunk.as_str());
+            if let Some(current) = inline_css.last_mut() {
+                current.push_str(chunk.as_str());
+            }
             if chunk.last_in_text_node() {
-                inline_css.push('\n');
+                inline_css.push(String::new());
             }
             Ok(())
         }));
@@ -553,8 +557,10 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
         tracing::warn!("could not scan rendered HTML for resources: {error}");
     }
     found.extend(elements);
-    for reference in css_references(&inline_css) {
-        found.push((reference, ReferenceKind::Resource));
+    for sheet in &inline_css {
+        for reference in css_references(sheet) {
+            found.push((reference, ReferenceKind::Resource));
+        }
     }
 }
 

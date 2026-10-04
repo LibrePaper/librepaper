@@ -947,6 +947,12 @@ fn scanner_reads_url_inside_inline_style() {
     assert!(references.contains("bg.png"));
     let error = closure_of("<style>.a{background:url(\"bg.png\")}</style>", &[]).unwrap_err();
     assert!(error.contains("bg.png"));
+    let references = closure_of(
+        "<style>/*</style><style>body{background:url(bg.png)}</style>",
+        &["bg.png"],
+    )
+    .expect("an open comment in one style element does not swallow the next");
+    assert!(references.contains("bg.png"));
 }
 
 #[test]
