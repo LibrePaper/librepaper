@@ -108,6 +108,20 @@ pub fn validate_storage_options(options: &StorageOptions) -> Result<(), String> 
         });
     let _: sqlx::postgres::PgConnectOptions = parsed
         .map_err(|_| "storage.database_url is not a valid PostgreSQL connection URL".to_string())?;
+    if let Some(endpoint) = options.s3_endpoint.as_deref() {
+        let parsed = url::Url::parse(endpoint)
+            .map_err(|_| "storage.s3.endpoint must be an absolute http(s) URL".to_string())?;
+        if parsed.host_str().is_none()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || !(parsed.scheme() == "https"
+                || (options.s3_allow_http && parsed.scheme() == "http"))
+        {
+            return Err("storage.s3.endpoint must be an HTTPS URL, or HTTP when storage.s3.allow_http is true, without credentials, a query, or a fragment".into());
+        }
+    }
     match options.object_store.as_str() {
         "filesystem" => {}
         "s3" => {
@@ -133,21 +147,6 @@ pub fn validate_storage_options(options: &StorageOptions) -> Result<(), String> 
                     "storage.s3.access_key_id and storage.s3.secret_access_key are required".into(),
                 );
             }
-            if let Some(endpoint) = options.s3_endpoint.as_deref() {
-                let parsed = url::Url::parse(endpoint).map_err(|_| {
-                    "storage.s3.endpoint must be an absolute http(s) URL".to_string()
-                })?;
-                if parsed.host_str().is_none()
-                    || parsed.username() != ""
-                    || parsed.password().is_some()
-                    || parsed.query().is_some()
-                    || parsed.fragment().is_some()
-                    || !(parsed.scheme() == "https"
-                        || (options.s3_allow_http && parsed.scheme() == "http"))
-                {
-                    return Err("storage.s3.endpoint must be an HTTPS URL, or HTTP when storage.s3.allow_http is true, without credentials, a query, or a fragment".into());
-                }
-            }
             let _ = ObjectBlobStore::s3(
                 options.s3_endpoint.as_deref(),
                 &options.s3_region,
@@ -161,6 +160,53 @@ pub fn validate_storage_options(options: &StorageOptions) -> Result<(), String> 
         _ => return Err("storage.object_store must be filesystem or s3".into()),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod storage_option_validation_tests {
+    use super::*;
+
+    fn filesystem_options(dir: PathBuf, endpoint: Option<&str>) -> StorageOptions {
+        StorageOptions {
+            dir,
+            fsync: true,
+            database_url: "postgresql:///librepaper".into(),
+            database_connections: 20,
+            object_store: "filesystem".into(),
+            s3_endpoint: endpoint.map(str::to_owned),
+            s3_region: "us-east-1".into(),
+            s3_bucket: None,
+            s3_allow_http: false,
+            s3_access_key_id: None,
+            s3_secret_access_key: None,
+            s3_session_token: None,
+        }
+    }
+
+    #[test]
+    fn filesystem_backend_rejects_unsafe_inactive_s3_endpoints_without_echoing_them() {
+        let dir = tempfile::tempdir().unwrap();
+        for endpoint in [
+            "https://username:credential-secret@s3.example",
+            "https://s3.example/?token=query-secret",
+        ] {
+            let options = filesystem_options(dir.path().to_path_buf(), Some(endpoint));
+            let error = validate_storage_options(&options).unwrap_err();
+            assert!(error.contains("storage.s3.endpoint"));
+            assert!(!error.contains("credential-secret"));
+            assert!(!error.contains("query-secret"));
+        }
+    }
+
+    #[test]
+    fn filesystem_backend_accepts_a_valid_inactive_s3_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = filesystem_options(
+            dir.path().to_path_buf(),
+            Some("https://s3.example/bucket-prefix"),
+        );
+        assert!(validate_storage_options(&options).is_ok());
+    }
 }
 
 /// The blob store a deployment was configured for, having checked that its

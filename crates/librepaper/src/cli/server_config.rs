@@ -711,6 +711,12 @@ pub(crate) fn load_with_postgres_env(
     {
         return Err("auth.google.client_id and client_secret must not be blank".into());
     }
+    validate_public_urls(
+        origin.as_deref(),
+        docs_origin.as_deref(),
+        site_origin.as_deref(),
+        &asset_mirror,
+    )?;
     Ok(ResolvedConfig {
         bind,
         port,
@@ -735,6 +741,56 @@ pub(crate) fn load_with_postgres_env(
         config,
         sources: r.sources,
     })
+}
+
+fn validate_public_urls(
+    origin: Option<&str>,
+    docs_origin: Option<&str>,
+    site_origin: Option<&str>,
+    asset_mirror: &str,
+) -> Result<(), String> {
+    validate_public_url("server.origin", origin, false, true, true)?;
+    validate_public_url("server.docs_origin", docs_origin, false, true, true)?;
+    validate_public_url("server.site_origin", site_origin, false, true, true)?;
+    validate_public_url("assets.mirror", Some(asset_mirror), true, false, false)
+}
+
+fn validate_public_url(
+    field: &str,
+    value: Option<&str>,
+    https_only: bool,
+    origin_only: bool,
+    allow_blank: bool,
+) -> Result<(), String> {
+    let Some(value) = value.map(str::trim) else {
+        return Ok(());
+    };
+    if value.is_empty() {
+        return if allow_blank {
+            Ok(())
+        } else {
+            Err(format!("{field} must be an absolute HTTPS URL"))
+        };
+    }
+    let parsed = url::Url::parse(value)
+        .map_err(|_| format!("{field} must be an absolute HTTP(S) URL"))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || (https_only && parsed.scheme() != "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(format!(
+            "{field} must be an absolute {} URL without credentials, a query, or a fragment",
+            if https_only { "HTTPS" } else { "HTTP(S)" }
+        ));
+    }
+    if origin_only && !parsed.path().trim_matches('/').is_empty() {
+        return Err(format!("{field} must be an origin without a path"));
+    }
+    Ok(())
 }
 pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     let mut out =
@@ -1178,6 +1234,46 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn public_url_credentials_and_queries_are_rejected_without_echoing_secrets() {
+        let fields = [
+            ("server", "origin", "server.origin"),
+            ("server", "docs_origin", "server.docs_origin"),
+            ("server", "site_origin", "server.site_origin"),
+            ("assets", "mirror", "assets.mirror"),
+        ];
+        let bad_urls = [
+            "https://user:url-userinfo-secret@example.org",
+            "https://example.org/?token=url-query-secret",
+        ];
+
+        for (section, key, field) in fields {
+            for url in bad_urls {
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join("config.toml");
+                let contents = format!("[{section}]\n{key} = {url:?}\n");
+                std::fs::write(&path, contents).unwrap();
+
+                let error = load(&path).unwrap_err();
+                assert!(error.contains(field), "{error}");
+                assert!(!error.contains("url-userinfo-secret"));
+                assert!(!error.contains("url-query-secret"));
+            }
+        }
+    }
+
+    #[test]
+    fn accepts_well_formed_public_urls() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[server]\norigin = \"https://app.example.org\"\ndocs_origin = \"https://docs.example.org\"\nsite_origin = \"https://example.org\"\n[assets]\nmirror = \"https://assets.example.org/prefix\"",
+        )
+        .unwrap();
+        assert!(load(&path).is_ok());
+    }
+
     #[test]
     fn safe_parse_errors() {
         let d = tempfile::tempdir().unwrap();
