@@ -104,6 +104,7 @@ pub(super) async fn handle_assistant_start(
         .assistant_sessions
         .start(
             &parsed_link,
+            origin,
             &body.conversation,
             &body.chat_token,
             &body.agent_token,

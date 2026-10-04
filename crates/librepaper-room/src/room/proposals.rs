@@ -43,6 +43,7 @@ use loro::{
 };
 use uuid::Uuid;
 
+use super::text::utf16_slice;
 use librepaper_document::document::hunks::{hunks_of_batch, keep_declined_batch, Hunk};
 use librepaper_document::document::session;
 use librepaper_engine::log::{Command, CommandError, Evidence, Head, PreparedSource};
@@ -64,31 +65,22 @@ pub struct Proposal {
 }
 
 /// What went wrong deciding one.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ProposalError {
     /// The decision was computed against a tip the proposal has moved past.
     /// The author edited while the reviewer was reading, so the hunks the
     /// reviewer decided about are not the hunks that are there now.
+    #[error("this proposal has changed since it was reviewed")]
     Stale,
     /// The base a client forked at is not a frontier this room can reach, so
     /// the branch cannot be rebuilt against it. The author is ahead of what
     /// they have sent: their own operations have to arrive before a proposal
     /// can be opened on top of them.
+    #[error("this proposal forked from work the server has not received yet")]
     UnknownBase,
     /// The branch could not be read, or the room refused the result.
+    #[error("{0}")]
     Failed(String),
-}
-
-impl std::fmt::Display for ProposalError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stale => f.write_str("this proposal has changed since it was reviewed"),
-            Self::UnknownBase => {
-                f.write_str("this proposal forked from work the server has not received yet")
-            }
-            Self::Failed(text) => f.write_str(text),
-        }
-    }
 }
 
 /// Turns a suggestion into a branch: one hunk putting the proposed text where
@@ -162,15 +154,13 @@ pub fn from_suggestion_at_file_id(
         ));
     };
     let body = text.to_string();
-    let exact_len = exact.encode_utf16().count();
+    let exact_len = str_indices::utf16::count(exact);
     let end = at.saturating_add(exact_len);
     // The anchor was found against some reading of this file. If the file no
     // longer says there what it said then, the passage has moved or changed and
     // the suggestion is about text that is not there -- which is a refusal,
     // not something to place approximately.
-    let body_utf16: Vec<u16> = body.encode_utf16().collect();
-    let exact_utf16: Vec<u16> = exact.encode_utf16().collect();
-    if body_utf16.get(at..end) != Some(exact_utf16.as_slice()) {
+    if utf16_slice(&body, at, end) != Some(exact) {
         return Err(ProposalError::Stale);
     }
 
@@ -633,20 +623,18 @@ fn validate_accepted_hunks_on_branch(
             continue;
         };
         let old = base_text.to_string();
-        let chars: Vec<char> = old.chars().collect();
-        let start_cp = hunk.start.min(chars.len());
-        let end_cp = start_cp.saturating_add(hunk.deleted).min(chars.len());
+        let char_count = str_indices::chars::count(&old);
+        let start_cp = hunk.start.min(char_count);
+        let end_cp = start_cp.saturating_add(hunk.deleted).min(char_count);
+        let start_byte = str_indices::chars::to_byte_idx(&old, start_cp);
+        let end_byte = str_indices::chars::to_byte_idx(&old, end_cp);
         if concurrent_text
             .get(&cid)
             .is_some_and(|deltas| overlaps_source_change(deltas, start_cp, end_cp))
         {
             return Err(ProposalError::Stale);
         }
-        let start_utf16 = chars[..start_cp]
-            .iter()
-            .collect::<String>()
-            .encode_utf16()
-            .count() as u32;
+        let start_utf16 = str_indices::utf16::from_byte_idx(&old, start_byte) as u32;
         let start = librepaper_document::document::session::cursor_at_file_id(
             &at_base,
             id,
@@ -666,6 +654,9 @@ fn validate_accepted_hunks_on_branch(
             doc, id, &start, &end,
         )
         .map_err(|_| ProposalError::Stale)?;
+        // Offsets in this file are converted with `str_indices` on the string in
+        // hand. This one is the exception: the position comes from a cursor in
+        // the live text, and `convert_pos` is what reports it as out of range.
         let end_utf16 = if hunk.deleted == 0 {
             range.end_utf16
         } else {
@@ -686,15 +677,8 @@ fn validate_accepted_hunks_on_branch(
             Some(ValueOrContainer::Container(Container::Text(text))) => text.to_string(),
             _ => return Err(ProposalError::Stale),
         };
-        let current_units: Vec<u16> = current.encode_utf16().collect();
-        let old_span: Vec<u16> = chars[start_cp..end_cp]
-            .iter()
-            .collect::<String>()
-            .encode_utf16()
-            .collect();
-        if current_units.get(range.start_utf16 as usize..end_utf16 as usize)
-            != Some(old_span.as_slice())
-        {
+        let old_span = &old[start_byte..end_byte];
+        if utf16_slice(&current, range.start_utf16 as usize, end_utf16 as usize) != Some(old_span) {
             return Err(ProposalError::Stale);
         }
         if hunk.deleted == 0 && range.start_utf16 != range.end_utf16 {

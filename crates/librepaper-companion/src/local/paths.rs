@@ -1,35 +1,36 @@
 //! Process and state paths shared by non-CLI entry points.
+//!
+//! Every platform uses the XDG layout (`~/.local/state`, `~/.config`,
+//! `~/.cache`), not the native folders, so existing tokens, pairings,
+//! bindings and backup schedules stay where earlier versions put them.
+//! etcetera still resolves the home directory natively, which is what
+//! makes this work on Windows.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-pub fn state_home() -> Result<PathBuf, String> {
-    let local_app_data = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA")
-    } else {
-        None
-    };
-    state_home_from(
-        std::env::var_os("XDG_STATE_HOME"),
-        std::env::var_os("HOME"),
-        local_app_data,
-    )
+use etcetera::base_strategy::{BaseStrategy, Xdg};
+
+/// The user home directory, or nothing when the platform reports none.
+pub fn home() -> Option<PathBuf> {
+    Xdg::new()
+        .ok()
+        .map(|strategy| strategy.home_dir().to_path_buf())
 }
 
-fn state_home_from(
-    xdg_state: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
-    local_app_data: Option<std::ffi::OsString>,
-) -> Result<PathBuf, String> {
-    if let Some(base) = xdg_state.filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(base));
-    }
-    if let Some(home) = home.filter(|value| !value.is_empty()) {
-        return Ok(Path::new(&home).join(".local").join("state"));
-    }
-    if let Some(base) = local_app_data.filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(base).join("LibrePaper").join("State"));
-    }
-    Err("no home directory to store LibrePaper state".into())
+/// The user configuration base directory (`$XDG_CONFIG_HOME` on Linux).
+pub fn config_home() -> Option<PathBuf> {
+    Xdg::new().ok().map(|strategy| strategy.config_dir())
+}
+
+/// The user cache base directory (`$XDG_CACHE_HOME` on Linux).
+pub fn cache_home() -> Option<PathBuf> {
+    Xdg::new().ok().map(|strategy| strategy.cache_dir())
+}
+
+pub fn state_home() -> Result<PathBuf, String> {
+    let strategy =
+        Xdg::new().map_err(|_| "no home directory to store LibrePaper state".to_string())?;
+    Ok(strategy.state_dir().unwrap_or_else(|| strategy.data_dir()))
 }
 
 /// The state directory to read and write under, following XDG: where the
@@ -82,22 +83,5 @@ mod tests {
         assert!(error.contains("librepaper start"), "{error}");
         assert!(error.contains(&missing.display().to_string()));
         assert!(resolve_executable(directory.path().to_path_buf()).is_err());
-    }
-
-    #[test]
-    fn windows_state_path_falls_back_to_local_app_data() {
-        let local = std::ffi::OsString::from(r"C:\Users\Ada\AppData\Local");
-        let result = state_home_from(None, None, Some(local)).unwrap();
-        assert_eq!(
-            result,
-            PathBuf::from(r"C:\Users\Ada\AppData\Local")
-                .join("LibrePaper")
-                .join("State")
-        );
-        assert_eq!(
-            state_home_from(None, Some("/home/ada".into()), Some("C:\\local".into())).unwrap(),
-            PathBuf::from("/home/ada/.local/state"),
-            "the existing HOME convention remains preferred"
-        );
     }
 }

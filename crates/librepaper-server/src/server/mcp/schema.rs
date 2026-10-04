@@ -1,6 +1,7 @@
 //! The advertised JSON schemas also validate incoming tool arguments.
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 /// The checked-in file's own shape: one `operation`-object schema shared by
@@ -104,87 +105,67 @@ fn inline_refs(schema: &mut Value) {
     }
 }
 
-pub(super) fn validate(schema: &Value, value: &Value) -> Result<(), String> {
-    if let Some(name) = schema
-        .get("$ref")
-        .and_then(Value::as_str)
-        .and_then(|reference| reference.strip_prefix("#/$defs/"))
-    {
-        let resolved = tools_file()
-            .defs
-            .get(name)
-            .ok_or_else(|| format!("unknown schema definition {name}"))?;
-        return validate(resolved, value);
+fn compile(schema: &Value) -> Result<jsonschema::Validator, String> {
+    jsonschema::validator_for(schema).map_err(|error| error.to_string())
+}
+
+fn check(validator: &jsonschema::Validator, args: &Value) -> Result<(), String> {
+    match validator.iter_errors(args).next() {
+        Some(error) => Err(error.to_string()),
+        None => Ok(()),
     }
-    if let Some(choices) = schema["anyOf"].as_array() {
-        if choices.iter().any(|s| validate(s, value).is_ok()) {
-            return Ok(());
-        }
-        return Err("value does not match an allowed shape".into());
+}
+
+/// One compiled validator per tool, built once from the tool's argument
+/// schema with its `$ref`s expanded, so the compiled form needs no resolver.
+fn validators() -> &'static HashMap<String, jsonschema::Validator> {
+    static VALIDATORS: OnceLock<HashMap<String, jsonschema::Validator>> = OnceLock::new();
+    VALIDATORS.get_or_init(|| {
+        tools()
+            .iter()
+            .map(|tool| {
+                let name = tool["name"].as_str().expect("tool name").to_string();
+                let mut schema = tool["inputSchema"].clone();
+                inline_refs(&mut schema);
+                let validator = compile(&schema).expect("checked-in MCP tool schema compiles");
+                (name, validator)
+            })
+            .collect()
+    })
+}
+
+/// Validates a tool call's arguments against that tool's advertised schema.
+pub(super) fn validate_tool(name: &str, args: &Value) -> Result<(), String> {
+    match validators().get(name) {
+        Some(validator) => check(validator, args),
+        None => Err(format!("unknown tool {name}")),
     }
-    let correct_type = match schema["type"].as_str() {
-        Some("object") => value.is_object(),
-        Some("array") => value.is_array(),
-        Some("string") => value.is_string(),
-        Some("integer") => value.is_u64() || value.is_i64(),
-        Some("boolean") => value.is_boolean(),
-        Some("null") => value.is_null(),
-        None => true,
-        _ => false,
-    };
-    if !correct_type {
-        return Err("incorrect argument type".into());
-    }
-    if let Some(allowed) = schema["enum"].as_array() {
-        if !allowed.contains(value) {
-            return Err("unknown argument value".into());
-        }
-    }
-    if let Some(object) = value.as_object() {
-        if let Some(required) = schema["required"].as_array() {
-            for name in required.iter().filter_map(Value::as_str) {
-                if !object.contains_key(name) {
-                    return Err(format!("missing {name}"));
+}
+
+/// JSON Schema calls `10.0` an integer, and the handlers read integers with
+/// `as_u64` and `as_i64`, which refuse a float. Every integral float in the
+/// validated arguments becomes the integer it names, so both spellings reach
+/// a handler the same way.
+pub(super) fn normalize_integers(value: &mut Value) {
+    match value {
+        Value::Number(number) => {
+            if let Some(float) = number
+                .as_f64()
+                .filter(|f| f.fract() == 0.0 && f.is_finite())
+            {
+                if number.is_f64() {
+                    if float >= 0.0 && float <= u64::MAX as f64 {
+                        *number = serde_json::Number::from(float as u64);
+                    } else if float >= i64::MIN as f64 {
+                        *number = serde_json::Number::from(float as i64);
+                    }
                 }
             }
         }
-        for (key, item) in object {
-            if let Some(child) = schema["properties"].get(key) {
-                validate(child, item).map_err(|e| format!("{key}: {e}"))?;
-            } else if schema["additionalProperties"] == false {
-                return Err(format!("unknown argument {key}"));
-            }
-        }
+        Value::Array(items) => items.iter_mut().for_each(normalize_integers),
+        Value::Object(map) => map.values_mut().for_each(normalize_integers),
+        _ => {}
     }
-    if let Some(items) = value.as_array() {
-        if schema["minItems"]
-            .as_u64()
-            .is_some_and(|n| items.len() < n as usize)
-            || schema["maxItems"]
-                .as_u64()
-                .is_some_and(|n| items.len() > n as usize)
-        {
-            return Err("array exceeds its item bounds".into());
-        }
-        for item in items {
-            validate(&schema["items"], item)?;
-        }
-    }
-    if value.as_str().is_some_and(|s| {
-        schema["maxLength"]
-            .as_u64()
-            .is_some_and(|n| s.chars().count() > n as usize)
-    }) {
-        return Err("string exceeds its length limit".into());
-    }
-    if let Some(n) = value.as_f64() {
-        if schema["minimum"].as_f64().is_some_and(|min| n < min)
-            || schema["maximum"].as_f64().is_some_and(|max| n > max)
-        {
-            return Err("number exceeds its bounds".into());
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -193,29 +174,49 @@ mod tests {
     use serde_json::json;
     #[test]
     fn read_accepts_rendered_quotes_without_source_coordinates() {
-        let read = &tools()
-            .iter()
-            .find(|tool| tool["name"] == "document_read")
-            .unwrap()["inputSchema"];
         let mut args = json!({"queries":[{"kind":"source","selection":{"exact":"Selected words","position":null},"revision":"current"}]});
-        assert!(validate(read, &args).is_ok());
+        assert!(validate_tool("document_read", &args).is_ok());
         args["queries"][0]["selection"]["position"] = json!("invalid");
-        assert!(validate(read, &args).is_err());
+        assert!(validate_tool("document_read", &args).is_err());
     }
     #[test]
     fn tool_schemas_reject_typos_and_wrong_preconditions() {
-        let propose = &tools()
-            .iter()
-            .find(|t| t["name"] == "document_propose")
-            .expect("propose")["inputSchema"];
-        let valid = json!({"view_id":"v","operation":{"epoch":"e","id":"i"},"patches":[{"range_id":"r","replacement":"😀\n"}]});
-        assert!(validate(propose, &valid).is_ok());
+        let valid = json!({"view_id":"v","operation":{"epoch":"e","id":"v2.1700000000000.0123456789abcdef0123456789abcdef"},"patches":[{"range_id":"r","replacement":"😀\n"}]});
+        assert!(validate_tool("document_propose", &valid).is_ok());
         let mut typo = valid.clone();
         typo["revision"] = json!("unexpected");
-        assert!(validate(propose, &typo).is_err());
+        assert!(validate_tool("document_propose", &typo).is_err());
         let mut missing = valid;
         missing.as_object_mut().expect("object").remove("operation");
-        assert!(validate(propose, &missing).is_err());
+        assert!(validate_tool("document_propose", &missing).is_err());
+    }
+
+    #[test]
+    fn pattern_is_enforced() {
+        let mut args = json!({"view_id":"v","operation":{"epoch":"e","id":"v2.1700000000000.0123456789abcdef0123456789abcdef"},"patches":[{"range_id":"r","replacement":"x"}]});
+        assert!(validate_tool("document_propose", &args).is_ok());
+        args["operation"]["id"] = json!("not-a-valid-key");
+        assert!(validate_tool("document_propose", &args).is_err());
+    }
+
+    #[test]
+    fn integral_floats_become_integers_after_validation() {
+        let mut args = json!({"view_id":"v","line":10.0,"end_line":12.0,"nested":[1.0,{"n":2.5}],"text":"10.0"});
+        normalize_integers(&mut args);
+        assert_eq!(args["line"].as_u64(), Some(10));
+        assert_eq!(args["end_line"].as_u64(), Some(12));
+        assert_eq!(args["nested"][0].as_u64(), Some(1));
+        assert_eq!(args["nested"][1]["n"].as_f64(), Some(2.5));
+        assert_eq!(args["text"].as_str(), Some("10.0"));
+    }
+
+    #[test]
+    fn number_type_accepts_numbers_and_bounds() {
+        let validator = compile(&json!({"type":"number","minimum":0,"maximum":10})).unwrap();
+        assert!(check(&validator, &json!(2.5)).is_ok());
+        assert!(check(&validator, &json!(3)).is_ok());
+        assert!(check(&validator, &json!(11.5)).is_err());
+        assert!(check(&validator, &json!("3")).is_err());
     }
 
     /// The served schema omits `operation`/`target_operation` from every

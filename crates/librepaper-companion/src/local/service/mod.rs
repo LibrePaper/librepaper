@@ -20,7 +20,6 @@
 //! installed on the machine that runs `cargo test`.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::fs::OpenOptions;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -54,6 +53,10 @@ use crate::local::quarto::{sync_hosted_workspace, BindingStore, HOSTED_BINDING};
 mod backups;
 mod consent;
 mod control;
+
+pub(crate) fn control_token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
+    control::token_for_instance(state_home, instance)
+}
 mod jobs;
 
 pub(super) type Reply = Response<Body>;
@@ -840,14 +843,14 @@ fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry>
             if let Some(entry) = recovered.get(&id) {
                 // Rewrite an interrupted admission record as a terminal
                 // result so a second restart remains idempotent.
-                let _ = persist_quarto_job(&id, entry);
+                let _ = persist_quarto_job(entry);
             }
         }
     }
     recovered
 }
 
-fn persist_quarto_job(id: &str, entry: &JobEntry) -> Result<(), String> {
+fn persist_quarto_job(entry: &JobEntry) -> Result<(), String> {
     if entry.request.kind != "quarto" {
         return Ok(());
     }
@@ -892,13 +895,7 @@ fn persist_quarto_job(id: &str, entry: &JobEntry) -> Result<(), String> {
             librepaper_document::results::sha256(name.as_bytes())
         );
         let path = files_root.join(&storage);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| error.to_string())?;
-        use std::io::Write;
-        file.write_all(bytes).map_err(|error| error.to_string())?;
+        librepaper_base::private_files::publish(&path, bytes, "quarto job payload")?;
         names.push(DurableQuartoFile {
             name: name.clone(),
             storage,
@@ -913,9 +910,11 @@ fn persist_quarto_job(id: &str, entry: &JobEntry) -> Result<(), String> {
         finished_at: librepaper_base::util::now_unix(),
     };
     let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
-    let temporary = root.join(format!("{QUARTO_RECORD_FILE}.tmp-{id}"));
-    std::fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
-    std::fs::rename(temporary, root.join(QUARTO_RECORD_FILE)).map_err(|error| error.to_string())
+    librepaper_base::private_files::publish(
+        &root.join(QUARTO_RECORD_FILE),
+        &bytes,
+        "Quarto job record",
+    )
 }
 
 async fn run_worker(inner: Arc<Inner>) {
@@ -973,8 +972,8 @@ async fn run_worker(inner: Arc<Inner>) {
             entry.status = status;
             entry.files = outcome.files;
             entry.finished_at = Some(Instant::now());
-            if let Err(error) = persist_quarto_job(&id, entry) {
-                eprintln!("could not persist completed local Quarto job {id}: {error}");
+            if let Err(error) = persist_quarto_job(entry) {
+                tracing::warn!("could not persist completed local Quarto job {id}: {error}");
             }
         }
     }
@@ -1153,7 +1152,9 @@ async fn dispatch(
         ["integrations", name] if *method == Method::PUT => {
             handle_integration_set(inner, headers, origin, name, request).await
         }
-        ["approve"] if *method == Method::POST => handle_approve(inner, peer, request).await,
+        ["approve"] if *method == Method::POST => {
+            handle_approve(inner, peer, headers, request).await
+        }
         ["zotero", "search"] if *method == Method::GET => {
             handle_zotero_search(inner, headers, origin, request).await
         }
@@ -1448,15 +1449,19 @@ async fn handle_startup(
             "Disable"
         }
         .to_string(),
-        scope: None,
+        scope: origin.map(str::to_string),
     };
 
-    match decision_to_result(
+    let decision = decision_to_result(
         inner
             .approvals
             .ask(&approval, Duration::from_secs(300))
             .await,
-    ) {
+    );
+    match decision {
+        Ok(()) if authenticate(inner, headers, origin).is_err() => {
+            write_json(401, &json!({"error": "This site is no longer connected."}))
+        }
         Ok(()) => match super::lifecycle::set_startup(body.enabled) {
             Ok(()) => write_json(200, &json!({})),
             Err(error) => write_json(500, &json!({"error": error})),
@@ -1481,15 +1486,19 @@ async fn handle_quit(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -
         title: "Quit companion".to_string(),
         message: "Stop the companion app?".to_string(),
         allow_label: "Quit".to_string(),
-        scope: None,
+        scope: origin.map(str::to_string),
     };
 
-    match decision_to_result(
+    let decision = decision_to_result(
         inner
             .approvals
             .ask(&approval, Duration::from_secs(300))
             .await,
-    ) {
+    );
+    match decision {
+        Ok(()) if authenticate(inner, headers, origin).is_err() => {
+            write_json(401, &json!({"error": "This site is no longer connected."}))
+        }
         Ok(()) => match super::lifecycle::request_stop(&inner.state_home) {
             Ok(()) => write_json(200, &json!({})),
             Err(error) => write_json(500, &json!({"error": error})),
@@ -1570,12 +1579,16 @@ async fn handle_integration_set(
         scope: origin.map(str::to_string),
     };
 
-    match decision_to_result(
+    let decision = decision_to_result(
         inner
             .approvals
             .ask(&approval, Duration::from_secs(300))
             .await,
-    ) {
+    );
+    match decision {
+        Ok(()) if authenticate(inner, headers, origin).is_err() => {
+            write_json(401, &json!({"error": "This site is no longer connected."}))
+        }
         Ok(()) => match super::integrations::set(which, custom.clone()) {
             Ok(()) => write_json(200, &json!(custom)),
             Err(error) => write_json(500, &json!({"error": error})),
@@ -1584,15 +1597,30 @@ async fn handle_integration_set(
     }
 }
 
-async fn handle_approve(inner: &Inner, peer: SocketAddr, request: Request<Body>) -> Reply {
+async fn handle_approve(
+    inner: &Inner,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    request: Request<Body>,
+) -> Reply {
     if !peer.ip().is_loopback() {
         return write_json(403, &json!({"error": "loopback only"}));
     }
 
-    let has_origin = request.headers().get("origin").is_some();
+    let has_origin = headers.get("origin").is_some();
     if has_origin {
         return write_json(403, &json!({"error": "loopback only"}));
     }
+
+    let token = bearer_token(headers).unwrap_or_default();
+    let control = inner.control.lock().await;
+    if !control
+        .as_ref()
+        .is_some_and(|auth| auth.accepts(&token, &inner.instance))
+    {
+        return write_json(401, &json!({"error":"invalid control credential"}));
+    }
+    drop(control);
 
     #[derive(serde::Deserialize)]
     struct ApprovalRequest {
@@ -2481,10 +2509,75 @@ mod settings_tests {
             .expect("request");
 
         let peer = "127.0.0.1:12345".parse().expect("addr");
-        let response = handle_approve(&inner, peer, request).await;
+        let headers = request.headers().clone();
+        let response = handle_approve(&inner, peer, &headers, request).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
         super::super::approval::unscript();
+    }
+
+    #[tokio::test]
+    async fn cli_approval_requires_instance_control_credential() {
+        super::super::approval::unscript();
+        let (inner, state_home, _cache_home) = test_inner().await;
+        let auth = control::ControlAuth::create(state_home.path(), &inner.instance).unwrap();
+        let token = control::token_for_instance(state_home.path(), &inner.instance).unwrap();
+        *inner.control.lock().await = Some(auth);
+        let (site_token, _) = inner
+            .pairing
+            .issue("https://paper.example", "test")
+            .unwrap();
+        let peer = "127.0.0.1:12345".parse().unwrap();
+
+        let mut wrong = HeaderMap::new();
+        wrong.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer invalid-control-credential"),
+        );
+        let mut site = HeaderMap::new();
+        site.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {site_token}")).unwrap(),
+        );
+        for headers in [HeaderMap::new(), wrong, site] {
+            let request = Request::post("/approve")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"code":"123456"}"#))
+                .unwrap();
+            let response = handle_approve(&inner, peer, &headers, request).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let approval = super::super::approval::Approval {
+            title: "test".into(),
+            message: "test".into(),
+            allow_label: "Allow".into(),
+            scope: None,
+        };
+        let broker = inner.approvals.clone();
+        let waiting =
+            tokio::spawn(async move { broker.ask(&approval, Duration::from_secs(5)).await });
+        tokio::task::yield_now().await;
+        let code = inner
+            .approvals
+            .codes_for_test()
+            .pop()
+            .expect("pending code");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        let request = Request::post("/approve")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"code":code}).to_string()))
+            .unwrap();
+        let response = handle_approve(&inner, peer, &headers, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            waiting.await.unwrap(),
+            super::super::approval::Decision::Allowed
+        );
     }
 
     #[tokio::test]

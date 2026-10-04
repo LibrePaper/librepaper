@@ -344,24 +344,15 @@ fn reject_overlaps(ranges: &mut [(&str, usize, usize)]) -> Result<(), AgentError
 
 /// Errors are intentionally structured so the MCP adapter can map conflicts
 /// to a fresh bounded read without parsing prose.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AgentError {
+    #[error("invalid agent operation: {0}")]
     Invalid(String),
+    #[error("agent operation conflict: {0}")]
     Conflict(String),
+    #[error("agent operation storage failure: {0}")]
     Storage(String),
 }
-
-impl std::fmt::Display for AgentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Invalid(message) => write!(f, "invalid agent operation: {message}"),
-            Self::Conflict(message) => write!(f, "agent operation conflict: {message}"),
-            Self::Storage(message) => write!(f, "agent operation storage failure: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for AgentError {}
 
 impl From<CommandError> for AgentError {
     fn from(error: CommandError) -> Self {
@@ -386,7 +377,7 @@ impl From<super::error::WriteError> for AgentError {
 /// wants (§3.2 of SPEC-loro.md: every offset that crosses the document layer
 /// counts UTF-16 code units).
 fn byte_to_utf16(text: &str, byte: usize) -> usize {
-    text[..byte].encode_utf16().count()
+    str_indices::utf16::from_byte_idx(text, byte)
 }
 
 /// The head's text files, as the patch validator needs them. Rebuilt on
@@ -703,7 +694,7 @@ impl Room {
             );
             let mut bytes = [0_u8; 16];
             bytes.copy_from_slice(&digest[..16]);
-            Uuid::from_bytes(bytes)
+            Uuid::new_v8(bytes)
         };
 
         let mut command = AgentPatchCommand {

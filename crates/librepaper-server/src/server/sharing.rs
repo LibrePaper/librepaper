@@ -468,7 +468,7 @@ impl Server {
                 return write_json(status, &json!({"error": message}));
             }
             Err(ModifyError::Storage(err)) => {
-                eprintln!("could not record the sharing of {slug}: {err}");
+                tracing::warn!("could not record the sharing of {slug}: {err}");
                 return write_json(500, &json!({"error": "could not record the change"}));
             }
         };
@@ -674,7 +674,7 @@ impl Server {
             {
                 Ok(target) => target,
                 Err(error) => {
-                    eprintln!("could not record transfer target: {error}");
+                    tracing::warn!("could not record transfer target: {error}");
                     return write_json(503, &json!({"error":"catalogue temporarily unavailable"}));
                 }
             };
@@ -716,7 +716,7 @@ impl Server {
                     return write_json(404, &json!({"error":"not found"}))
                 }
                 Err(error) => {
-                    eprintln!("could not transfer {slug}: {error}");
+                    tracing::warn!("could not transfer {slug}: {error}");
                     return write_json(500, &json!({"error":"could not record the change"}));
                 }
             }
@@ -747,7 +747,7 @@ impl Server {
             Err(ModifyError::NotFound) => write_json(404, &json!({"error": "not found"})),
             Err(ModifyError::Refused(message)) => write_json(400, &json!({"error": message})),
             Err(ModifyError::Storage(err)) => {
-                eprintln!("could not transfer {slug}: {err}");
+                tracing::warn!("could not transfer {slug}: {err}");
                 write_json(500, &json!({"error": "could not record the change"}))
             }
         }

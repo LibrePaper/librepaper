@@ -91,8 +91,8 @@ impl Library {
                 };
                 let families = families_in(&bytes);
                 if families.is_empty() {
-                    eprintln!(
-                        "warning: --typst-fonts: no font could be read from {}",
+                    tracing::warn!(
+                        "--typst-fonts: no font could be read from {}",
                         path.display()
                     );
                     continue;
@@ -116,7 +116,7 @@ impl Library {
             }
         }
         if files.is_empty() {
-            eprintln!("warning: --typst-fonts {flag} holds no font files yet");
+            tracing::warn!("--typst-fonts {flag} holds no font files yet");
         }
         Ok(Library { root, files })
     }

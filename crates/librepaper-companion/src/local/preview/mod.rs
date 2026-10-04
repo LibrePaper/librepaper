@@ -25,7 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::AsyncReadExt,
+    io::AsyncBufReadExt,
     process::{Child, Command},
     sync::Mutex as AsyncMutex,
 };
@@ -392,32 +392,73 @@ async fn process_log_line(watch: &SessionWatch, raw_line: &str) {
     }
 }
 
-async fn pump<R>(mut reader: R, watch: Arc<SessionWatch>)
+/// The longest prefix of `bytes` that does not end inside a multibyte
+/// character, so a line cut at the size limit still decodes cleanly.
+fn back_off_to_char_boundary(bytes: &[u8]) -> &[u8] {
+    match std::str::from_utf8(bytes) {
+        Err(error) if error.error_len().is_none() => &bytes[..error.valid_up_to()],
+        _ => bytes,
+    }
+}
+
+async fn pump<R>(reader: R, watch: Arc<SessionWatch>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut buf = [0u8; 4096];
-    let mut pending = String::new();
+    const MAX_LINE_SIZE: usize = 64 * 1024;
+    let mut buf_reader = tokio::io::BufReader::new(reader);
+    let mut line_buf: Vec<u8> = Vec::with_capacity(1024);
+    // Set once a line has been cut at the size limit: the rest of that line
+    // is drained and dropped, so a backed-off head never gets later bytes
+    // spliced onto it. The head is kept rather than the tail because the
+    // start of a line carries the diagnostic; the tail is usually payload.
+    let mut line_cut = false;
+
     loop {
-        match reader.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                let chunk = String::from_utf8_lossy(&buf[..n]);
-                {
-                    let mut guard = watch.log.lock().await;
-                    append_bounded(&mut guard, &chunk, PREVIEW_LOG_CAP_BYTES);
-                }
-                pending.push_str(&chunk);
-                while let Some(pos) = pending.find('\n') {
-                    let line: String = pending.drain(..=pos).collect();
-                    process_log_line(&watch, line.trim_end_matches(['\r', '\n'])).await;
-                }
+        let buf = match buf_reader.fill_buf().await {
+            Ok([]) | Err(_) => break,
+            Ok(buf) => buf,
+        };
+        let newline = buf.iter().position(|&b| b == b'\n');
+        let take = newline.map_or(buf.len(), |at| at + 1);
+        if !line_cut {
+            let room = MAX_LINE_SIZE - line_buf.len();
+            if take <= room {
+                line_buf.extend_from_slice(&buf[..take]);
+            } else {
+                line_buf.extend_from_slice(&buf[..room]);
+            }
+            if take > room || line_buf.len() == MAX_LINE_SIZE {
+                let keep = back_off_to_char_boundary(&line_buf).len();
+                line_buf.truncate(keep);
+                line_cut = true;
             }
         }
+        buf_reader.consume(take);
+        if newline.is_some() {
+            if line_cut && line_buf.last() != Some(&b'\n') {
+                // The cut dropped the terminator with the rest of the line; the
+                // next line must still start on its own line in the log.
+                line_buf.push(b'\n');
+            }
+            deliver_line(&watch, &line_buf).await;
+            line_buf.clear();
+            line_cut = false;
+        }
     }
-    if !pending.is_empty() {
-        process_log_line(&watch, pending.trim_end_matches(['\r', '\n'])).await;
+    if !line_buf.is_empty() {
+        deliver_line(&watch, &line_buf).await;
     }
+}
+
+/// Records one complete line in the session log and hands it to the adapter.
+async fn deliver_line(watch: &SessionWatch, line: &[u8]) {
+    let line_str = String::from_utf8_lossy(line);
+    {
+        let mut guard = watch.log.lock().await;
+        append_bounded(&mut guard, &line_str, PREVIEW_LOG_CAP_BYTES);
+    }
+    process_log_line(watch, line_str.trim_end_matches(['\r', '\n'])).await;
 }
 
 impl Session {
@@ -578,5 +619,114 @@ impl Previews {
         for id in expired {
             self.stop(&id).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    struct MockWatch;
+
+    impl Watch for MockWatch {
+        fn rendering_started(&self, _line: &str) -> bool {
+            false
+        }
+        fn render_finished(&self, _line: &str) -> bool {
+            false
+        }
+        fn output_path(&self, _root: &Path) -> Option<PathBuf> {
+            None
+        }
+        fn kind(&self) -> ArtifactKind {
+            ArtifactKind::Html
+        }
+    }
+
+    #[tokio::test]
+    async fn pump_bounds_memory_with_long_unterminated_line() {
+        let log = Arc::new(AsyncMutex::new(String::new()));
+        let watch = Arc::new(SessionWatch {
+            root: PathBuf::from("/tmp"),
+            entrypoint: "test.html".to_string(),
+            adapter: Box::new(MockWatch),
+            log: log.clone(),
+            latest: Arc::new(AsyncMutex::new(None)),
+            rendering: Arc::new(AtomicBool::new(false)),
+        });
+
+        let long_line = "x".repeat(200 * 1024);
+        let input = format!("{long_line}\nok\n");
+        let cursor = Cursor::new(input.as_bytes().to_vec());
+
+        pump(cursor, watch).await;
+
+        let final_log = log.lock().await.clone();
+        assert!(final_log.contains("ok"), "Expected 'ok' to be in the log");
+        assert!(
+            final_log.len() <= 200 * 1024 + 1024,
+            "Log size should be bounded; got {}",
+            final_log.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn pump_backs_off_to_utf8_boundary_when_truncating() {
+        let log = Arc::new(AsyncMutex::new(String::new()));
+        let watch = Arc::new(SessionWatch {
+            root: PathBuf::from("/tmp"),
+            entrypoint: "test.html".to_string(),
+            adapter: Box::new(MockWatch),
+            log: log.clone(),
+            latest: Arc::new(AsyncMutex::new(None)),
+            rendering: Arc::new(AtomicBool::new(false)),
+        });
+
+        let max_line_size = 64 * 1024;
+        let ascii_part = "a".repeat(max_line_size - 1);
+        let emoji = "🎉";
+        let trailing = "xyz";
+        let first_line = format!("{}{}{}", ascii_part, emoji, trailing);
+        let input = format!("{}\nok\n", first_line);
+        let cursor = Cursor::new(input.as_bytes().to_vec());
+
+        pump(cursor, watch).await;
+
+        let final_log = log.lock().await.clone();
+        assert!(
+            final_log.contains("ok"),
+            "Expected second line 'ok' to be in the log"
+        );
+        assert!(
+            !final_log.contains('\u{FFFD}'),
+            "Truncated line should not contain replacement character U+FFFD"
+        );
+        assert!(
+            final_log.contains("\nok"),
+            "the line after a cut line starts on its own line"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_line_exactly_at_the_limit_keeps_one_newline() {
+        let log = Arc::new(AsyncMutex::new(String::new()));
+        let watch = Arc::new(SessionWatch {
+            root: PathBuf::from("/tmp"),
+            entrypoint: "test.html".to_string(),
+            adapter: Box::new(MockWatch),
+            log: log.clone(),
+            latest: Arc::new(AsyncMutex::new(None)),
+            rendering: Arc::new(AtomicBool::new(false)),
+        });
+        let exact = "a".repeat(64 * 1024 - 1);
+        let input = format!("{exact}\nok\n");
+        pump(Cursor::new(input.into_bytes()), watch).await;
+        let final_log = log.lock().await.clone();
+        assert!(
+            final_log.contains("a\nok"),
+            "no blank line after a line at the limit"
+        );
+        assert!(!final_log.contains("\n\n"));
     }
 }

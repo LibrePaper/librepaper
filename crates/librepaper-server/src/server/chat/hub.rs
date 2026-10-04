@@ -37,7 +37,7 @@ pub(super) struct Channel {
     /// state directory from silently claiming work admitted by another one.
     agent_binding: Option<String>,
     pub(super) requests: VecDeque<(String, String)>,
-    events: VecDeque<i64>,
+    events: governor::DefaultDirectRateLimiter,
     render_waiters: HashMap<String, oneshot::Sender<Value>>,
     render_results: HashMap<String, Value>,
     /// Render request identities issued by the server, with their expected
@@ -94,7 +94,9 @@ impl Hub {
                 agent_epoch: None,
                 agent_binding: None,
                 requests: VecDeque::new(),
-                events: VecDeque::new(),
+                events: governor::RateLimiter::direct(governor::Quota::per_minute(
+                    std::num::NonZeroU32::new(600).expect("600 is non-zero"),
+                )),
                 render_waiters: HashMap::new(),
                 render_results: HashMap::new(),
                 render_expected: HashMap::new(),
@@ -596,13 +598,6 @@ impl Hub {
             }
             return Err((409, "event id already used for different content"));
         }
-        let current = now();
-        while channel.events.front().is_some_and(|at| current - at >= 60) {
-            channel.events.pop_front();
-        }
-        if channel.events.len() >= 600 {
-            return Err((429, "too many assistant events; try later"));
-        }
         let sender = match role {
             "user" => channel.browser.as_ref(),
             "agent" => channel.agent.as_ref(),
@@ -616,6 +611,9 @@ impl Hub {
             _ => None,
         }
         .ok_or((409, "recipient is not connected"))?;
+        if channel.events.check().is_err() {
+            return Err((429, "too many assistant events; try later"));
+        }
         let recipient_tx = recipient.tx.clone();
         let sender_tx = sender.tx.clone();
         let text = Outgoing::shared_text(frame.to_string());
@@ -627,7 +625,6 @@ impl Hub {
         // retry of a frame the recipient already received.
         let _ = sender_tx.try_send(text);
         channel.requests.push_back((key, digest));
-        channel.events.push_back(current);
         if channel.requests.len() > 256 {
             channel.requests.pop_front();
         }

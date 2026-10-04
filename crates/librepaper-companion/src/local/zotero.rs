@@ -19,26 +19,17 @@ const LOCAL_API: &str = "http://127.0.0.1:23119/api/";
 const API_VERSION: &str = "3";
 const PAGE_SIZE: usize = 100;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Zotero is not running; start Zotero and try again")]
     Unreachable,
+    #[error("Zotero local access is disabled; enable Settings -> Advanced -> Allow other applications on this computer to communicate with Zotero")]
     Disabled,
+    #[error("Zotero answered but does not support the local API v3")]
     Incompatible,
+    #[error("{0}")]
     Request(String),
 }
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unreachable => write!(f, "Zotero is not running; start Zotero and try again"),
-            Self::Disabled => write!(f, "Zotero local access is disabled; enable Settings -> Advanced -> Allow other applications on this computer to communicate with Zotero"),
-            Self::Incompatible => write!(f, "Zotero answered but does not support the local API v3"),
-            Self::Request(message) => f.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 #[derive(Clone)]
 pub struct Client {

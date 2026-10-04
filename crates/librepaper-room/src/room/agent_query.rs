@@ -180,7 +180,7 @@ struct SnapshotIndexes {
     identities: BTreeMap<String, (String, String)>,
     cited: BTreeSet<String>,
     offsets: BTreeMap<String, TextOffsets>,
-    searches: Mutex<BTreeMap<String, Vec<SearchIndex>>>,
+    searches: moka::sync::Cache<String, Vec<SearchIndex>>,
 }
 
 type IndexCache = Mutex<VecDeque<(String, Arc<SnapshotIndexes>)>>;
@@ -246,7 +246,7 @@ fn snapshot_indexes(snapshot: &QuerySnapshot) -> Arc<SnapshotIndexes> {
         identities,
         cited: cited_keys(snapshot),
         offsets,
-        searches: Mutex::new(BTreeMap::new()),
+        searches: moka::sync::Cache::new(16),
     });
     let mut entries = cache
         .lock()
@@ -861,32 +861,12 @@ fn search_query(
     let indexes = snapshot_indexes(snapshot);
     let search_key = serde_json::to_string(&(&paths, &terms)).unwrap_or_default();
     let (hits, base_offset, scan_complete, page_scan) = {
-        let cached = indexes
-            .searches
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&search_key)
-            .cloned();
-        if let Some(hits) = cached {
+        if let Some(hits) = indexes.searches.get(&search_key) {
             (hits, 0, true, false)
         } else {
             let (scanned, complete) = scan_search_all(snapshot, &indexes, &paths, &terms);
             if complete {
-                indexes
-                    .searches
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(search_key, scanned.clone());
-                let mut searches = indexes
-                    .searches
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                while searches.len() > 16 {
-                    let Some(oldest) = searches.keys().next().cloned() else {
-                        break;
-                    };
-                    searches.remove(&oldest);
-                }
+                indexes.searches.insert(search_key, scanned.clone());
                 (scanned, 0, true, false)
             } else {
                 let (page, complete) =
@@ -1650,7 +1630,7 @@ fn fingerprint(query: &Map<String, Value>) -> String {
     let mut copy = query.clone();
     copy.remove("cursor");
     copy.remove("limit");
-    digest(serde_json::to_string(&copy).unwrap_or_default().as_bytes())
+    librepaper_base::canonical_json::sha256_hex(&Value::Object(copy))
 }
 
 fn digest(bytes: &[u8]) -> String {

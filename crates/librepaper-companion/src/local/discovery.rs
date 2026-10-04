@@ -112,7 +112,7 @@ fn conventional_dirs() -> Vec<PathBuf> {
     dirs.push(PathBuf::from("/usr/local/bin"));
 
     // User-local binary directories.
-    if let Some(home) = home_dir() {
+    if let Some(home) = super::paths::home() {
         dirs.push(home.join(".local").join("bin"));
         dirs.push(home.join(".cargo").join("bin"));
     }
@@ -120,22 +120,15 @@ fn conventional_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-}
-
 /// The first directory among `dirs` that holds `tool`, resolved to its
 /// canonical absolute path. Spaces and non-ASCII bytes in a directory name
 /// are preserved as-is: this never shells out to find the file, only
 /// `std::fs` metadata, so nothing here re-tokenises the path.
 fn find_tool(tool: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    let name = super::tools::exe_name(tool);
     for dir in dirs {
-        let candidate = dir.join(&name);
-        if candidate.is_file() {
+        // A path with a separator is resolved directly, so a directory name
+        // holding the PATH separator is not split in two.
+        if let Ok(candidate) = which::which(dir.join(tool)) {
             return std::fs::canonicalize(&candidate).ok().or(Some(candidate));
         }
     }
@@ -272,15 +265,9 @@ fn load_cache() -> Option<Cache> {
 }
 
 fn save_cache(cache: &Cache) {
-    let path = cache_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     if let Ok(text) = serde_json::to_string_pretty(cache) {
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
+        let _ =
+            librepaper_base::private_files::publish(&cache_path(), text.as_bytes(), "tool cache");
     }
 }
 
@@ -445,6 +432,20 @@ async fn discover_cache(refresh: bool, tool_path: &[PathBuf]) -> Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn find_tool_keeps_a_directory_name_with_the_path_separator_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("tools:custom");
+        std::fs::create_dir(&dir).unwrap();
+        let exe = dir.join("quarto");
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let found = find_tool("quarto", std::slice::from_ref(&dir)).unwrap();
+        assert_eq!(found, std::fs::canonicalize(&exe).unwrap());
+    }
 
     #[test]
     fn tool_from_banner_keeps_the_version_line() {

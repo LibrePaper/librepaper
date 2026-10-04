@@ -91,23 +91,7 @@ pub(super) fn failure(error: agent::AgentError) -> Failure {
 /// epoch and expire with it, so the mixed spelling does not outlive one
 /// epoch's lifetime. Nothing is migrated.
 pub(super) fn operation_digest(name: &str, args: &Value) -> String {
-    fn canonical(value: &Value) -> Value {
-        match value {
-            Value::Object(object) => Value::Object(
-                object
-                    .iter()
-                    .collect::<std::collections::BTreeMap<_, _>>()
-                    .into_iter()
-                    .map(|(key, value)| (key.clone(), canonical(value)))
-                    .collect(),
-            ),
-            Value::Array(values) => Value::Array(values.iter().map(canonical).collect()),
-            other => other.clone(),
-        }
-    }
-    hex::encode(Sha256::digest(
-        json!({"tool": name, "arguments": canonical(args)}).to_string(),
-    ))
+    librepaper_base::canonical_json::sha256_hex(&json!({"tool": name, "arguments": args}))
 }
 
 fn independent_child_digests(

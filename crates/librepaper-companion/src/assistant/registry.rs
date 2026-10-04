@@ -121,9 +121,11 @@ impl SessionRegistry {
     /// Bounded the same 75 seconds the old background-process poll was, so a
     /// wedged agent handshake still surfaces as a timeout rather than hanging
     /// the browser's request forever.
+    #[allow(clippy::too_many_arguments)] // Keep the authenticated owner explicit alongside the session credentials.
     pub(crate) async fn start(
         &self,
         link: &DocumentLink,
+        origin: &str,
         conversation: &str,
         chat_token: &str,
         agent_token: &str,
@@ -159,7 +161,7 @@ impl SessionRegistry {
             self.spawn_running(
                 &key,
                 &wanted,
-                Some(link.server().to_string()),
+                Some(crate::local::pairing::normalize_origin(origin)),
                 grant,
                 move |status, stop| async move { runtime::run(&peer, config, status, stop).await },
             );
@@ -382,9 +384,6 @@ impl SessionRegistry {
         let key = lifecycle::session_key(link, conversation)
             .map_err(lifecycle::Error::InvalidConfiguration)?;
         self.stop_by_key(&key).await?;
-        if let Ok(location) = lifecycle::location(&self.state_home, link, conversation) {
-            let _ = runtime::recover_state(&location.state);
-        }
         Ok(())
     }
 
@@ -400,6 +399,13 @@ impl SessionRegistry {
         stop.request();
         handle.abort();
         let _ = handle.await;
+        let state_path = self
+            .state_home
+            .join("librepaper")
+            .join("assistant")
+            .join(key)
+            .join("runner.json");
+        let _ = runtime::recover_state(&state_path);
         Ok(())
     }
 
@@ -465,6 +471,45 @@ mod tests {
         let two = registry.status_by_key("two").await.unwrap();
         assert_eq!(two.state, Some(RunnerState::Ready));
         registry.stop_by_key("two").await.unwrap();
+    }
+
+    /// Revoking a paired site's origin stops only sessions started by that
+    /// authenticated requester, even when its document link belongs to a
+    /// different server origin.
+    #[tokio::test]
+    async fn revoking_origin_stops_only_sessions_owned_by_that_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = SessionRegistry::new(dir.path().to_path_buf());
+        registry.spawn_running(
+            "session-a",
+            "hash-a",
+            Some(crate::local::pairing::normalize_origin(
+                "HTTPS://Papers.Example/",
+            )),
+            None,
+            |_status, _stop| async move {
+                std::future::pending::<()>().await;
+                Ok(())
+            },
+        );
+        registry.spawn_running(
+            "session-b",
+            "hash-b",
+            Some("https://another.example".into()),
+            None,
+            |_status, _stop| async move {
+                std::future::pending::<()>().await;
+                Ok(())
+            },
+        );
+
+        registry
+            .stop_dashboard_origin("https://papers.example")
+            .await;
+
+        assert!(registry.status_by_key("session-a").await.is_none());
+        assert!(registry.status_by_key("session-b").await.is_some());
+        registry.stop_by_key("session-b").await.unwrap();
     }
 
     /// A session task that panics must surface as a failed status, not take
@@ -558,6 +603,51 @@ mod tests {
         SessionRegistry::recover_at_startup(dir.path());
 
         let recovered = State::load(&session_dir.join("runner.json")).unwrap();
+        assert_eq!(recovered.tasks[0].status, TaskStatus::Interrupted);
+        assert_eq!(recovered.tasks[0].results["suggestions"], json!(["kept"]));
+    }
+
+    /// Every stop path, including dashboard key-based stops, must reconcile
+    /// committed journal effects before returning. Otherwise the aborted
+    /// task's last durable result can be hidden until the next companion start.
+    #[tokio::test]
+    async fn stopping_by_key_recovers_interrupted_work_and_journal_receipts() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_dir = dir.path().join("librepaper").join("assistant").join("s1");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let state_path = session_dir.join("runner.json");
+        let mut state = State::default();
+        let mut task =
+            Task::from_message(&json!({"id":"one","role":"user","text":"Edit"})).unwrap();
+        task.status = TaskStatus::Working;
+        state.admit(task).unwrap();
+        state.save(&state_path).unwrap();
+        let journal_path = session_dir.join("runner.journal.json");
+        let request = json!({"operation":{"epoch":"e","id":"suggest"}});
+        crate::assistant::journal::record_tool_call(
+            &journal_path,
+            "one",
+            "document_propose",
+            &request,
+        )
+        .unwrap();
+        crate::assistant::journal::record_tool_result(
+            &journal_path,
+            "one",
+            "document_propose",
+            &request,
+            &json!({"result":{"status":"committed","effects":[{"kind":"suggestion","id":"kept"}]}}),
+        )
+        .unwrap();
+
+        let registry = SessionRegistry::new(dir.path().to_path_buf());
+        registry.spawn_running("s1", "hash", None, None, |_status, _stop| async move {
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+        registry.stop_by_key("s1").await.unwrap();
+
+        let recovered = State::load(&state_path).unwrap();
         assert_eq!(recovered.tasks[0].status, TaskStatus::Interrupted);
         assert_eq!(recovered.tasks[0].results["suggestions"], json!(["kept"]));
     }
