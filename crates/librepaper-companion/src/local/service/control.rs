@@ -832,12 +832,11 @@ mod tests {
         let mut grant = tokio::spawn(async move {
             grant_selected_folder(&grant_inner, origin, "paper", "paper.qmd", &root_path).await
         });
-        assert!(tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            &mut grant
-        )
-        .await
-        .is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut grant)
+                .await
+                .is_err()
+        );
 
         inner.pairing.revoke_checked(origin).unwrap();
         drop(admission);
