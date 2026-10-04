@@ -126,7 +126,7 @@ impl Server {
             }
         }
         if let Err(error) = self.initialize_account_examples(&signed_who).await {
-            eprintln!("could not prepare account examples: {error}");
+            tracing::warn!("could not prepare account examples: {error}");
             return plain(
                 503,
                 "Could not prepare your example documents. Please try signing in again.",

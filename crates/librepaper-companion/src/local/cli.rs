@@ -163,34 +163,8 @@ pub async fn run(args: LocalArgs) {
 /// testable with an explicit directory -- the same reasoning
 /// `crate::local::paths::state_home_or_die` gives for the token cache.
 fn cache_home() -> PathBuf {
-    let local_app_data = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA")
-    } else {
-        None
-    };
-    cache_home_from(
-        std::env::var_os("XDG_CACHE_HOME"),
-        std::env::var_os("HOME"),
-        local_app_data,
-    )
-    .unwrap_or_else(|error| die(error))
-}
-
-fn cache_home_from(
-    xdg_cache: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
-    local_app_data: Option<std::ffi::OsString>,
-) -> Result<PathBuf, String> {
-    if let Some(base) = xdg_cache.filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(base));
-    }
-    if let Some(home) = home.filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(home).join(".cache"));
-    }
-    if let Some(base) = local_app_data.filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(base).join("LibrePaper").join("Cache"));
-    }
-    Err("no home directory to store the job cache in".into())
+    crate::local::paths::cache_home()
+        .unwrap_or_else(|| die("no home directory to store the job cache in"))
 }
 
 async fn start_background(port: u16, tool_path: &[PathBuf]) {
@@ -336,7 +310,7 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
         .with_graceful_shutdown(shutdown)
         .await
     {
-        eprintln!("error: {err}");
+        tracing::error!("{err}");
     }
 
     if let Some(task) = v6_task {
@@ -587,27 +561,5 @@ fn local_agent(command: LocalAgentCommand) {
                 die(format!("no agent named '{id}'"));
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod cache_path_tests {
-    use super::*;
-
-    #[test]
-    fn cache_home_uses_local_app_data_when_windows_has_no_home() {
-        let result =
-            cache_home_from(None, None, Some(r"C:\Users\Ada\AppData\Local".into())).unwrap();
-        assert_eq!(
-            result,
-            PathBuf::from(r"C:\Users\Ada\AppData\Local")
-                .join("LibrePaper")
-                .join("Cache")
-        );
-        assert_eq!(
-            cache_home_from(None, Some("/home/ada".into()), Some("C:\\local".into())).unwrap(),
-            PathBuf::from("/home/ada/.cache"),
-            "HOME retains precedence over the Windows fallback"
-        );
     }
 }

@@ -525,20 +525,15 @@ fn desktop_quote(path: &Path) -> String {
 pub fn startup_enabled() -> bool {
     #[cfg(target_os = "linux")]
     {
-        let config = match std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        {
-            Some(c) => c,
-            None => return false,
+        let Some(config) = super::paths::config_home() else {
+            return false;
         };
         config.join("autostart/librepaper-local.desktop").exists()
     }
     #[cfg(target_os = "macos")]
     {
-        match std::env::var_os("HOME") {
-            Some(h) => PathBuf::from(h)
+        match super::paths::home() {
+            Some(home) => home
                 .join("Library/LaunchAgents/com.librepaper.local.plist")
                 .exists(),
             None => false,
@@ -627,11 +622,8 @@ fn xml_escape(text: &str) -> String {
 pub fn set_startup(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-            .ok_or("Cannot locate user configuration directory.")?;
+        let config =
+            super::paths::config_home().ok_or("Cannot locate user configuration directory.")?;
         let file = config.join("autostart/librepaper-local.desktop");
         if !enabled {
             return remove_startup(&file);
@@ -644,8 +636,8 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let home = std::env::var_os("HOME").ok_or("Cannot locate home directory.")?;
-        let file = PathBuf::from(home).join("Library/LaunchAgents/com.librepaper.local.plist");
+        let home = super::paths::home().ok_or("Cannot locate home directory.")?;
+        let file = home.join("Library/LaunchAgents/com.librepaper.local.plist");
         // RunAtLoad runs once per login; intentionally no KeepAlive, so Quit
         // remains an effective user action instead of immediately restarting.
         if !enabled {

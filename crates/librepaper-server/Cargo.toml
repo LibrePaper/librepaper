@@ -12,6 +12,12 @@ build = "build.rs"
 doctest = false
 
 [dependencies]
+prometheus-client.workspace = true
+jsonschema.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+governor.workspace = true
+ipnet.workspace = true
 librepaper-base = { path = "../librepaper-base" }
 librepaper-document = { path = "../librepaper-document" }
 librepaper-engine = { path = "../librepaper-engine" }
@@ -34,7 +40,6 @@ percent-encoding.workspace = true
 loro.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
-log.workspace = true
 chacha20poly1305.workspace = true
 
 [dev-dependencies]

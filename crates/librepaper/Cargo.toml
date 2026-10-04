@@ -71,6 +71,8 @@ name = "writer_socket_bench"
 path = "tests/writer_socket_bench.rs"
 
 [dependencies]
+tracing-subscriber.workspace = true
+tracing.workspace = true
 tokio.workspace = true
 axum.workspace = true
 serde.workspace = true
@@ -113,5 +115,4 @@ loro.workspace = true
 zstd.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
-log.workspace = true
 tokio-tungstenite.workspace = true

@@ -452,87 +452,223 @@ enum ReferenceKind {
     Resource,
 }
 
+/// Every local path `bytes` refers to, relative to the output root. CSS files
+/// are tokenised as CSS; everything else is parsed as HTML.
 fn referenced_resources(bytes: &[u8], current: &str) -> BTreeMap<String, ReferenceKind> {
     let text = String::from_utf8_lossy(bytes);
-    let mut paths = BTreeMap::new();
-    for marker in ["src=", "href=", "url("] {
-        let mut rest = text.as_ref();
-        while let Some(index) = rest.find(marker) {
-            let marker_offset = text.len() - rest.len() + index;
-            rest = &rest[index + marker.len()..];
-            let rest_trimmed = rest.trim_start();
-            let quote = rest_trimmed
-                .as_bytes()
-                .first()
-                .copied()
-                .filter(|byte| *byte == b'\'' || *byte == b'\"');
-            let value = if let Some(quote) = quote {
-                let body = &rest_trimmed[1..];
-                let end = body.find(char::from(quote)).unwrap_or(body.len());
-                &body[..end]
-            } else {
-                let end = rest_trimmed
-                    .find(['\"', '\'', ')', ' ', '\t', '\r', '\n'])
-                    .unwrap_or(rest_trimmed.len());
-                &rest_trimmed[..end]
-            };
-            let ignored = value.starts_with('#')
-                || value.contains("://")
-                || value.starts_with("data:")
-                || value.starts_with("mailto:");
-            if !ignored {
-                let clean = value
-                    .split('?')
-                    .next()
-                    .unwrap_or(value)
-                    .split('#')
-                    .next()
-                    .unwrap_or(value)
-                    .trim();
-                if let Some(path) = resolve_resource_path(current, clean) {
-                    let kind = if marker == "href="
-                        && html_tag_name(&text, marker_offset).is_some_and(|tag| {
-                            tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area")
-                        }) {
-                        ReferenceKind::Navigation
-                    } else {
-                        ReferenceKind::Resource
-                    };
-                    paths
-                        .entry(path)
-                        .and_modify(|existing| {
-                            if kind == ReferenceKind::Resource {
-                                *existing = kind;
-                            }
-                        })
-                        .or_insert(kind);
-                }
-            }
-            rest = rest_trimmed.get(value.len()..).unwrap_or_default();
+    let is_css = Path::new(current)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("css"));
+    let mut found: Vec<(String, ReferenceKind)> = Vec::new();
+    if is_css {
+        for reference in css_references(&text) {
+            found.push((reference, ReferenceKind::Resource));
         }
+    } else {
+        html_references(&text, &mut found);
+    }
+    let mut paths = BTreeMap::new();
+    for (reference, kind) in found {
+        let Some(path) = resolve_reference(current, &reference) else {
+            continue;
+        };
+        paths
+            .entry(path)
+            .and_modify(|existing| {
+                if kind == ReferenceKind::Resource {
+                    *existing = kind;
+                }
+            })
+            .or_insert(kind);
     }
     paths
 }
 
-fn html_tag_name(text: &str, marker_offset: usize) -> Option<&str> {
-    let open = text[..marker_offset].rfind('<')?;
-    if text[..marker_offset]
-        .rfind('>')
-        .is_some_and(|close| close > open)
+fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
+    use lol_html::{element, rewrite_str, text, RewriteStrSettings};
+
+    // One entry per style element: a comment left open in one element must not
+    // swallow the next, as it would in one concatenated sheet.
+    let mut inline_css: Vec<String> = vec![String::new()];
+    let mut elements: Vec<(String, ReferenceKind)> = Vec::new();
+    let settings = RewriteStrSettings::new()
+        .append_element_content_handler(element!("*", |element| {
+            // lol_html hands attribute values back as written; entities are
+            // decoded here, once, for every attribute the scanner reads.
+            let attributes: Vec<(String, String)> = element
+                .attributes()
+                .iter()
+                .map(|attribute| {
+                    (
+                        attribute.name(),
+                        html_escape::decode_html_entities(&attribute.value()).into_owned(),
+                    )
+                })
+                .collect();
+            let tag = element.tag_name();
+            let navigation = matches!(tag.as_str(), "a" | "area");
+            let link_kind = if navigation {
+                ReferenceKind::Navigation
+            } else {
+                ReferenceKind::Resource
+            };
+            for (name, value) in attributes {
+                match name.as_str() {
+                    // A link on an anchor is navigation, whether HTML or SVG.
+                    "href" | "xlink:href" => elements.push((value, link_kind)),
+                    "src" | "poster" => elements.push((value, ReferenceKind::Resource)),
+                    "data" if tag == "object" => {
+                        elements.push((value, ReferenceKind::Resource));
+                    }
+                    "srcset" => {
+                        for url in srcset_urls(&value) {
+                            elements.push((url, ReferenceKind::Resource));
+                        }
+                    }
+                    // `style` is always CSS. SVG presentation attributes such as
+                    // `filter="url(filters.svg#blur)"` are CSS when they carry a
+                    // url() function, in any letter case.
+                    "style" => {
+                        for reference in css_references(&value) {
+                            elements.push((reference, ReferenceKind::Resource));
+                        }
+                    }
+                    _ if value.to_ascii_lowercase().contains("url(") => {
+                        for reference in css_references(&value) {
+                            elements.push((reference, ReferenceKind::Resource));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }))
+        .append_element_content_handler(text!("style", |chunk| {
+            if let Some(current) = inline_css.last_mut() {
+                current.push_str(chunk.as_str());
+            }
+            if chunk.last_in_text_node() {
+                inline_css.push(String::new());
+            }
+            Ok(())
+        }));
+    // A rewrite error (unparseable markup) keeps whatever was found so far.
+    if let Err(error) = rewrite_str(html, settings) {
+        tracing::warn!("could not scan rendered HTML for resources: {error}");
+    }
+    found.extend(elements);
+    for sheet in &inline_css {
+        for reference in css_references(sheet) {
+            found.push((reference, ReferenceKind::Resource));
+        }
+    }
+}
+
+/// The URLs of an HTML `srcset` value. A URL holds no whitespace, and a
+/// candidate ends at a comma that follows whitespace, so commas inside a URL
+/// (data URLs, odd file names) are kept.
+fn srcset_urls(value: &str) -> Vec<String> {
+    // HTML's srcset: candidates are a URL (no whitespace) and optional
+    // descriptors, separated by commas. A comma inside a URL is part of it; a
+    // comma after a descriptor ends the candidate whether or not whitespace
+    // follows, so "a.png 1x,b.png 2x" names two files.
+    let mut urls = Vec::new();
+    let mut expect_url = true;
+    for token in value.split_ascii_whitespace() {
+        let mut rest = token;
+        loop {
+            if expect_url {
+                // Runs of separators collapse, as browsers do with "a.png,, b.png".
+                let more = rest.ends_with(',');
+                let url = rest.trim_matches(',');
+                if !url.is_empty() {
+                    urls.push(url.to_owned());
+                }
+                expect_url = more;
+                break;
+            }
+            match rest.split_once(',') {
+                // A descriptor, then the next candidate begins in this token.
+                Some((_, after)) if !after.is_empty() => {
+                    expect_url = true;
+                    rest = after;
+                }
+                Some(_) => {
+                    expect_url = true;
+                    break;
+                }
+                None => break,
+            }
+        }
+    }
+    urls
+}
+
+/// The `url(...)` and `@import` targets of a stylesheet or declaration list.
+fn css_references(css: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut parser = cssparser::Parser::new(css);
+    scan_css(&mut parser, &mut out);
+    out
+}
+
+fn scan_css(parser: &mut cssparser::Parser<'_>, out: &mut Vec<String>) {
+    use cssparser::Token;
+
+    let mut after_import = false;
+    while let Ok(token) = parser.next().cloned() {
+        let was_import = std::mem::take(&mut after_import);
+        match token {
+            Token::UnquotedUrl(value) => out.push(value.to_string()),
+            Token::QuotedString(value) if was_import => out.push(value.to_string()),
+            Token::AtKeyword(name) => after_import = name.eq_ignore_ascii_case("import"),
+            Token::Function(name) if name.eq_ignore_ascii_case("url") => {
+                let _ = parser.parse_nested_block(|inner| {
+                    if let Ok(Token::QuotedString(value)) = inner.next() {
+                        out.push(value.to_string());
+                    }
+                    Ok::<(), cssparser::ParseError<()>>(())
+                });
+            }
+            Token::Function(_)
+            | Token::ParenthesisBlock
+            | Token::SquareBracketBlock
+            | Token::CurlyBracketBlock => {
+                let _ = parser.parse_nested_block(|inner| {
+                    scan_css(inner, out);
+                    Ok::<(), cssparser::ParseError<()>>(())
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Resolves one raw reference (as written in a document) against the file
+/// that contains it. Anything that is not a local relative path, or that
+/// leaves the output root, is `None`.
+fn resolve_reference(current: &str, raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty()
+        || raw.starts_with(['#', '?', '/'])
+        || raw.contains("://")
+        || url::Url::parse(raw).is_ok()
     {
         return None;
     }
-    let start = open + 1;
-    let tag = text[start..marker_offset].trim_start();
-    let end = tag
-        .find(|character: char| character.is_whitespace() || character == '>')
-        .unwrap_or(tag.len());
-    let name = &tag[..end];
-    (!name.is_empty()
-        && name
-            .chars()
-            .all(|character| character.is_ascii_alphabetic()))
-    .then_some(name)
+    let escaped: Vec<String> = current
+        .split('/')
+        .map(|component| {
+            percent_encoding::utf8_percent_encode(component, percent_encoding::NON_ALPHANUMERIC)
+                .to_string()
+        })
+        .collect();
+    let base = url::Url::parse(&format!("file:///root/{}", escaped.join("/"))).ok()?;
+    let joined = base.join(raw).ok()?;
+    let relative = joined.path().strip_prefix("/root/")?;
+    let decoded = percent_encoding::percent_decode_str(relative).decode_utf8_lossy();
+    protocol::safe_relative_path(&decoded).then(|| decoded.into_owned())
 }
 
 pub(crate) fn resolve_resource_path(current: &str, reference: &str) -> Option<String> {

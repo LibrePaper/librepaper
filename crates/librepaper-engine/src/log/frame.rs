@@ -38,28 +38,17 @@ pub struct Batch {
     pub bytes: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum FrameError {
+    #[error("an update row holds no bytes")]
     Empty,
+    #[error("an update row is framed as version {0}")]
     UnknownVersion(u8),
+    #[error("an update row ends inside a batch")]
     Truncated,
+    #[error("an update row claims an impossible length")]
     Oversized,
 }
-
-impl std::fmt::Display for FrameError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("an update row holds no bytes"),
-            Self::UnknownVersion(found) => {
-                write!(formatter, "an update row is framed as version {found}")
-            }
-            Self::Truncated => formatter.write_str("an update row ends inside a batch"),
-            Self::Oversized => formatter.write_str("an update row claims an impossible length"),
-        }
-    }
-}
-
-impl std::error::Error for FrameError {}
 
 /// Frames a flush. The order is the order the batches were accepted in, which
 /// is the order replay must import them in.

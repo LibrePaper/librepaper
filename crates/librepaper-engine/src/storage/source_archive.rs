@@ -75,35 +75,14 @@ pub struct EncodedArchive {
     pub logical_bytes: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ArchiveError {
+    #[error("{0}")]
     Invalid(String),
-    Io(std::io::Error),
-    Json(serde_json::Error),
-}
-
-impl std::fmt::Display for ArchiveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Invalid(message) => f.write_str(message),
-            Self::Io(error) => write!(f, "source archive I/O: {error}"),
-            Self::Json(error) => write!(f, "source archive manifest: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for ArchiveError {}
-
-impl From<std::io::Error> for ArchiveError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<serde_json::Error> for ArchiveError {
-    fn from(value: serde_json::Error) -> Self {
-        Self::Json(value)
-    }
+    #[error("source archive I/O: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("source archive manifest: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -235,7 +214,7 @@ pub fn encode(
     let mut tar_bytes = Vec::new();
     {
         let mut builder = tar::Builder::new(&mut tar_bytes);
-        builder.mode(tar::HeaderMode::Deterministic);
+        // Determinism is enforced per entry in `append_tar`.
         append_tar(&mut builder, MANIFEST_PATH, &manifest_bytes)?;
         for (path, bytes) in inline {
             append_tar(&mut builder, &format!("{FILE_PREFIX}{path}"), &bytes)?;

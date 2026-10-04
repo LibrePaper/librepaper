@@ -1,9 +1,11 @@
 //! Small things several modules share, and the one shape every timestamp
 //! takes: RFC 3339 in UTC to the second, "2026-09-04T12:00:00Z".
 
+use subtle::ConstantTimeEq;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::OffsetDateTime;
+
 /// Compares two byte strings without branching on the first differing byte.
 ///
 /// For a secret the caller is about to accept or refuse: a pairing token's
@@ -20,10 +22,7 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter()
-        .zip(b.iter())
-        .fold(0u8, |difference, (x, y)| difference | (x ^ y))
-        == 0
+    a.ct_eq(b).into()
 }
 
 /// Strips control characters and trims to a length in characters, matching

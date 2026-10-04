@@ -3,7 +3,6 @@
 use super::protocol::{TaskKind, TaskScope, TaskStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 
@@ -325,25 +324,8 @@ impl State {
     }
 }
 
-fn canonical(value: &Value) -> Value {
-    match value {
-        Value::Object(object) => {
-            let ordered = object.iter().collect::<BTreeMap<_, _>>();
-            let mut result = Map::new();
-            for (key, value) in ordered {
-                result.insert(key.clone(), canonical(value));
-            }
-            Value::Object(result)
-        }
-        Value::Array(values) => Value::Array(values.iter().map(canonical).collect()),
-        other => other.clone(),
-    }
-}
-
 fn request_fingerprint(text: &str, task: &Value, context: &Value) -> String {
-    let request = json!({"text":text,"task":canonical(task),"context":canonical(context)});
-    let bytes = serde_json::to_vec(&request).expect("JSON values serialize");
-    hex::encode(Sha256::digest(bytes))
+    librepaper_base::canonical_json::sha256_hex(&json!({"text":text,"task":task,"context":context}))
 }
 
 #[cfg(test)]

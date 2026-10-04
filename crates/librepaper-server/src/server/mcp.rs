@@ -310,7 +310,7 @@ impl Server {
             Ok(raw) => raw,
             Err(_) => return plain(413, "request exceeds 64 KiB"),
         };
-        let args: Value = if raw.is_empty() {
+        let mut args: Value = if raw.is_empty() {
             json!({})
         } else {
             match serde_json::from_slice(&raw) {
@@ -334,12 +334,13 @@ impl Server {
         if !who.at_least(Role::Commenter) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
-        let Some(tool) = schema::tools().iter().find(|tool| tool["name"] == name) else {
+        if !schema::tools().iter().any(|tool| tool["name"] == name) {
             return tool_result(Err(Failure::new("invalid_params", "unknown document tool")));
-        };
-        if let Err(error) = schema::validate(&tool["inputSchema"], &args) {
+        }
+        if let Err(error) = schema::validate_tool(name, &args) {
             return tool_result(Err(Failure::new("invalid_params", error)));
         }
+        schema::normalize_integers(&mut args);
         let _permit = match self.mcp_capacity.acquire(&who) {
             Ok(permit) => permit,
             Err(error) => return tool_result(Err(error)),

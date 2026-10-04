@@ -20,7 +20,6 @@
 //! installed on the machine that runs `cargo test`.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::fs::OpenOptions;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -840,14 +839,14 @@ fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry>
             if let Some(entry) = recovered.get(&id) {
                 // Rewrite an interrupted admission record as a terminal
                 // result so a second restart remains idempotent.
-                let _ = persist_quarto_job(&id, entry);
+                let _ = persist_quarto_job(entry);
             }
         }
     }
     recovered
 }
 
-fn persist_quarto_job(id: &str, entry: &JobEntry) -> Result<(), String> {
+fn persist_quarto_job(entry: &JobEntry) -> Result<(), String> {
     if entry.request.kind != "quarto" {
         return Ok(());
     }
@@ -892,13 +891,7 @@ fn persist_quarto_job(id: &str, entry: &JobEntry) -> Result<(), String> {
             librepaper_document::results::sha256(name.as_bytes())
         );
         let path = files_root.join(&storage);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| error.to_string())?;
-        use std::io::Write;
-        file.write_all(bytes).map_err(|error| error.to_string())?;
+        librepaper_base::private_files::publish(&path, bytes, "quarto job payload")?;
         names.push(DurableQuartoFile {
             name: name.clone(),
             storage,
@@ -913,9 +906,11 @@ fn persist_quarto_job(id: &str, entry: &JobEntry) -> Result<(), String> {
         finished_at: librepaper_base::util::now_unix(),
     };
     let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
-    let temporary = root.join(format!("{QUARTO_RECORD_FILE}.tmp-{id}"));
-    std::fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
-    std::fs::rename(temporary, root.join(QUARTO_RECORD_FILE)).map_err(|error| error.to_string())
+    librepaper_base::private_files::publish(
+        &root.join(QUARTO_RECORD_FILE),
+        &bytes,
+        "Quarto job record",
+    )
 }
 
 async fn run_worker(inner: Arc<Inner>) {
@@ -973,8 +968,8 @@ async fn run_worker(inner: Arc<Inner>) {
             entry.status = status;
             entry.files = outcome.files;
             entry.finished_at = Some(Instant::now());
-            if let Err(error) = persist_quarto_job(&id, entry) {
-                eprintln!("could not persist completed local Quarto job {id}: {error}");
+            if let Err(error) = persist_quarto_job(entry) {
+                tracing::warn!("could not persist completed local Quarto job {id}: {error}");
             }
         }
     }
