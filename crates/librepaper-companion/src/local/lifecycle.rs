@@ -736,7 +736,6 @@ fn powershell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
 
     #[test]
     fn detached_child_starts_foreground_companion_without_folder_overrides() {
