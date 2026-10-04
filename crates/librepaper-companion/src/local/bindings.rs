@@ -18,6 +18,17 @@ use sha2::{Digest, Sha256};
 use super::protocol;
 use librepaper_base::util::now_unix;
 
+// Binding updates are infrequent, and store instances for the same path can
+// be created by different service components. A process-wide lock makes each
+// load/modify/publish transaction atomic across all of them.
+static BINDING_STORE_TRANSACTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn transaction_lock() -> std::sync::MutexGuard<'static, ()> {
+    BINDING_STORE_TRANSACTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn opaque_id() -> String {
     format!("q-{}", hex::encode(librepaper_base::util::random_bytes(16)))
 }
@@ -194,7 +205,8 @@ impl BindingStore {
             created_at: now_unix(),
             execution_granted: true,
         };
-        let mut file = self.load();
+        let _transaction = transaction_lock();
+        let mut file = self.load_checked()?;
         file.bindings
             .retain(|old| !(old.origin == binding.origin && old.project == binding.project));
         file.bindings.push(binding.clone());
@@ -205,6 +217,7 @@ impl BindingStore {
     /// Revokes the binding `id` if `origin` owns it, whatever its project.
     pub fn revoke_origin_binding(&self, id: &str, origin: &str) -> Result<bool, String> {
         let origin = super::pairing::normalize_origin(origin);
+        let _transaction = transaction_lock();
         let mut file = self.load_checked()?;
         let old = file.bindings.len();
         file.bindings
@@ -267,6 +280,7 @@ impl BindingStore {
     }
 
     pub(crate) fn revoke_any(&self, id: &str) -> Result<bool, String> {
+        let _transaction = transaction_lock();
         let mut file = self.load_checked()?;
         let old = file.bindings.len();
         file.bindings.retain(|binding| binding.id != id);
@@ -279,6 +293,7 @@ impl BindingStore {
 
     pub(crate) fn revoke_origin(&self, origin: &str) -> Result<usize, String> {
         let origin = super::pairing::normalize_origin(origin);
+        let _transaction = transaction_lock();
         let mut file = self.load_checked()?;
         let old = file.bindings.len();
         file.bindings.retain(|binding| binding.origin != origin);
@@ -373,6 +388,65 @@ mod validation_tests {
         std::fs::create_dir_all(store.path.parent().unwrap()).unwrap();
         std::fs::write(&store.path, b"not valid json").unwrap();
         assert!(store.revoke_any("binding-id").is_err());
+    }
+
+    #[test]
+    fn concurrent_grant_from_another_store_does_not_restore_revoked_origin() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("paper.qmd"), "# Paper").unwrap();
+        let initial = BindingStore::new(state.path());
+        initial
+            .grant("https://revoked.test", "paper", root.path(), "paper.qmd")
+            .unwrap();
+
+        let revoker = BindingStore::new(state.path());
+        let granter = BindingStore::new(state.path());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let transaction = transaction_lock();
+        let revoke_started = started_tx.clone();
+        let revoke_finished = finished_tx.clone();
+        let revoke_thread = std::thread::spawn(move || {
+            revoke_started.send(()).unwrap();
+            let result = revoker.revoke_origin("https://revoked.test");
+            revoke_finished.send(result).unwrap();
+        });
+        let grant_started = started_tx;
+        let grant_finished = finished_tx;
+        let root_path = root.path().to_path_buf();
+        let grant_thread = std::thread::spawn(move || {
+            grant_started.send(()).unwrap();
+            let result = granter.grant(
+                "https://other.test",
+                "paper",
+                &root_path,
+                "paper.qmd",
+            );
+            grant_finished.send(result).unwrap();
+        });
+
+        started_rx.recv().unwrap();
+        started_rx.recv().unwrap();
+        let timeout = std::time::Duration::from_millis(50);
+        assert!(finished_rx.recv_timeout(timeout).is_err());
+        assert!(finished_rx.recv_timeout(timeout).is_err());
+        drop(transaction);
+
+        let revoke_result = finished_rx.recv().unwrap();
+        assert!(revoke_result.is_ok());
+        let grant_result = finished_rx.recv().unwrap();
+        assert!(grant_result.is_ok());
+        revoke_thread.join().unwrap();
+        grant_thread.join().unwrap();
+
+        let bindings = BindingStore::new(state.path()).list_all();
+        assert!(!bindings
+            .iter()
+            .any(|binding| binding.origin == "https://revoked.test"));
+        assert!(bindings
+            .iter()
+            .any(|binding| binding.origin == "https://other.test"));
     }
 
     #[test]
