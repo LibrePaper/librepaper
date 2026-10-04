@@ -15,8 +15,8 @@
 //! two directories were written to the cache and never read.
 //!
 //! Results are cached under `<state home>/librepaper/local/tools.json` and
-//! reused until an explicit rescan, a changed PATH, or a
-//! cached tool's executable going missing or changing on disk.
+//! reused until an explicit rescan, a changed PATH, or a cached tool's
+//! executable going missing or changing on disk.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
