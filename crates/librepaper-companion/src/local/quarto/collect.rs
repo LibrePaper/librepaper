@@ -452,87 +452,159 @@ enum ReferenceKind {
     Resource,
 }
 
+/// Every local path `bytes` refers to, relative to the output root. CSS files
+/// are tokenised as CSS; everything else is parsed as HTML.
 fn referenced_resources(bytes: &[u8], current: &str) -> BTreeMap<String, ReferenceKind> {
     let text = String::from_utf8_lossy(bytes);
-    let mut paths = BTreeMap::new();
-    for marker in ["src=", "href=", "url("] {
-        let mut rest = text.as_ref();
-        while let Some(index) = rest.find(marker) {
-            let marker_offset = text.len() - rest.len() + index;
-            rest = &rest[index + marker.len()..];
-            let rest_trimmed = rest.trim_start();
-            let quote = rest_trimmed
-                .as_bytes()
-                .first()
-                .copied()
-                .filter(|byte| *byte == b'\'' || *byte == b'\"');
-            let value = if let Some(quote) = quote {
-                let body = &rest_trimmed[1..];
-                let end = body.find(char::from(quote)).unwrap_or(body.len());
-                &body[..end]
-            } else {
-                let end = rest_trimmed
-                    .find(['\"', '\'', ')', ' ', '\t', '\r', '\n'])
-                    .unwrap_or(rest_trimmed.len());
-                &rest_trimmed[..end]
-            };
-            let ignored = value.starts_with('#')
-                || value.contains("://")
-                || value.starts_with("data:")
-                || value.starts_with("mailto:");
-            if !ignored {
-                let clean = value
-                    .split('?')
-                    .next()
-                    .unwrap_or(value)
-                    .split('#')
-                    .next()
-                    .unwrap_or(value)
-                    .trim();
-                if let Some(path) = resolve_resource_path(current, clean) {
-                    let kind = if marker == "href="
-                        && html_tag_name(&text, marker_offset).is_some_and(|tag| {
-                            tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area")
-                        }) {
-                        ReferenceKind::Navigation
-                    } else {
-                        ReferenceKind::Resource
-                    };
-                    paths
-                        .entry(path)
-                        .and_modify(|existing| {
-                            if kind == ReferenceKind::Resource {
-                                *existing = kind;
-                            }
-                        })
-                        .or_insert(kind);
-                }
-            }
-            rest = rest_trimmed.get(value.len()..).unwrap_or_default();
+    let is_css = Path::new(current)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("css"));
+    let mut found: Vec<(String, ReferenceKind)> = Vec::new();
+    if is_css {
+        for reference in css_references(&text) {
+            found.push((reference, ReferenceKind::Resource));
         }
+    } else {
+        html_references(&text, &mut found);
+    }
+    let mut paths = BTreeMap::new();
+    for (reference, kind) in found {
+        let Some(path) = resolve_reference(current, &reference) else {
+            continue;
+        };
+        paths
+            .entry(path)
+            .and_modify(|existing| {
+                if kind == ReferenceKind::Resource {
+                    *existing = kind;
+                }
+            })
+            .or_insert(kind);
     }
     paths
 }
 
-fn html_tag_name(text: &str, marker_offset: usize) -> Option<&str> {
-    let open = text[..marker_offset].rfind('<')?;
-    if text[..marker_offset]
-        .rfind('>')
-        .is_some_and(|close| close > open)
+fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
+    use lol_html::{RewriteStrSettings, element, rewrite_str, text};
+
+    let mut inline_css = String::new();
+    let mut elements: Vec<(String, ReferenceKind)> = Vec::new();
+    let settings = RewriteStrSettings::new()
+        .append_element_content_handler(element!(
+            "[src], [href], [srcset], [poster], [style], object[data]",
+            |element| {
+                let navigation = matches!(element.tag_name().as_str(), "a" | "area");
+                if let Some(value) = element.get_attribute("href") {
+                    let kind = if navigation {
+                        ReferenceKind::Navigation
+                    } else {
+                        ReferenceKind::Resource
+                    };
+                    elements.push((value, kind));
+                }
+                for name in ["src", "poster"] {
+                    if let Some(value) = element.get_attribute(name) {
+                        elements.push((value, ReferenceKind::Resource));
+                    }
+                }
+                if element.tag_name() == "object" {
+                    if let Some(value) = element.get_attribute("data") {
+                        elements.push((value, ReferenceKind::Resource));
+                    }
+                }
+                if let Some(value) = element.get_attribute("srcset") {
+                    for candidate in value.split(',') {
+                        if let Some(url) = candidate.split_whitespace().next() {
+                            elements.push((url.to_owned(), ReferenceKind::Resource));
+                        }
+                    }
+                }
+                if let Some(value) = element.get_attribute("style") {
+                    for reference in css_references(&value) {
+                        elements.push((reference, ReferenceKind::Resource));
+                    }
+                }
+                Ok(())
+            }
+        ))
+        .append_element_content_handler(text!("style", |chunk| {
+            inline_css.push_str(chunk.as_str());
+            if chunk.last_in_text_node() {
+                inline_css.push('\n');
+            }
+            Ok(())
+        }));
+    // A rewrite error (unparseable markup) keeps whatever was found so far.
+    let _ = rewrite_str(html, settings);
+    found.extend(elements);
+    for reference in css_references(&inline_css) {
+        found.push((reference, ReferenceKind::Resource));
+    }
+}
+
+/// The `url(...)` and `@import` targets of a stylesheet or declaration list.
+fn css_references(css: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut parser = cssparser::Parser::new(css);
+    scan_css(&mut parser, &mut out);
+    out
+}
+
+fn scan_css(parser: &mut cssparser::Parser<'_>, out: &mut Vec<String>) {
+    use cssparser::Token;
+
+    let mut after_import = false;
+    loop {
+        let token = match parser.next() {
+            Ok(token) => token.clone(),
+            Err(_) => break,
+        };
+        let was_import = std::mem::take(&mut after_import);
+        match token {
+            Token::UnquotedUrl(value) => out.push(value.to_string()),
+            Token::QuotedString(value) if was_import => out.push(value.to_string()),
+            Token::AtKeyword(name) => after_import = name.eq_ignore_ascii_case("import"),
+            Token::Function(name) if name.eq_ignore_ascii_case("url") => {
+                let _ = parser.parse_nested_block(|inner| {
+                    if let Ok(Token::QuotedString(value)) = inner.next() {
+                        out.push(value.to_string());
+                    }
+                    Ok::<(), cssparser::ParseError<'_, ()>>(())
+                });
+            }
+            Token::Function(_)
+            | Token::ParenthesisBlock
+            | Token::SquareBracketBlock
+            | Token::CurlyBracketBlock => {
+                let _ = parser.parse_nested_block(|inner| {
+                    scan_css(inner, out);
+                    Ok::<(), cssparser::ParseError<'_, ()>>(())
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Resolves one raw reference (as written in a document) against the file
+/// that contains it. Anything that is not a local relative path, or that
+/// leaves the output root, is `None`.
+fn resolve_reference(current: &str, raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty()
+        || raw.starts_with(['#', '?', '/'])
+        || raw.contains("://")
+        || url::Url::parse(raw).is_ok()
     {
         return None;
     }
-    let start = open + 1;
-    let tag = text[start..marker_offset].trim_start();
-    let end = tag
-        .find(|character: char| character.is_whitespace() || character == '>')
-        .unwrap_or(tag.len());
-    let name = &tag[..end];
-    (!name.is_empty()
-        && name
-            .chars()
-            .all(|character| character.is_ascii_alphabetic()))
-    .then_some(name)
+    let mut base = url::Url::parse("file:///root/").ok()?;
+    base.path_segments_mut().ok()?.extend(current.split('/'));
+    let joined = base.join(raw).ok()?;
+    let relative = joined.path().strip_prefix("/root/")?;
+    let decoded = percent_encoding::percent_decode_str(relative).decode_utf8_lossy();
+    protocol::safe_relative_path(&decoded).then(|| decoded.into_owned())
 }
 
 pub(crate) fn resolve_resource_path(current: &str, reference: &str) -> Option<String> {
