@@ -421,7 +421,7 @@ fn serve_options(
     resolved: server_config::ResolvedConfig,
 ) -> librepaper_server::server::serve::ServeOptions {
     let start_local = resolved.local_companion.then(|| {
-        Box::new(|base| {
+        Box::new(|base: PathBuf| {
             Box::pin(async move {
                 let app = librepaper_companion::local::embedded::start(&base, Vec::new()).await?;
                 let stopper = app.clone();
