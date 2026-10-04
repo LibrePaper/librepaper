@@ -3840,7 +3840,6 @@ dependencies = [
  "hex",
  "html-escape",
  "http-body-util",
- "include_dir",
  "librepaper-base",
  "librepaper-document",
  "lol_html",

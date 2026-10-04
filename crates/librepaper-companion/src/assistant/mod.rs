@@ -10,7 +10,6 @@
 pub(crate) mod acp;
 mod commands;
 pub(crate) mod context;
-pub(crate) mod guidance;
 pub(crate) mod journal;
 pub(crate) mod lifecycle;
 pub mod protocol;

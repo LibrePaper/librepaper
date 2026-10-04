@@ -43,8 +43,6 @@ hex.workspace = true
 rand.workspace = true
 regex.workspace = true
 time.workspace = true
-# The embedded guidance skills, compiled in.
-include_dir.workspace = true
 clap.workspace = true
 async-trait.workspace = true
 url.workspace = true

@@ -417,7 +417,7 @@ try {
     "Clear conversation is only in the Chat pane");
 
   const panel = await page.evaluate("document.body.textContent");
-  for (const gone of ["librepaper agent connect", "Copy connection instructions", "LIBREPAPER_CHAT_TOKEN", "--background", "npx skills add"]) {
+  for (const gone of ["librepaper agent connect", "Copy connection instructions", "LIBREPAPER_CHAT_TOKEN", "--background"]) {
     assert.doesNotMatch(panel, new RegExp(gone.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       `the sidebar no longer hands out "${gone}"`);
   }

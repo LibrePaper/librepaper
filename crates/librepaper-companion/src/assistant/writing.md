@@ -1,9 +1,4 @@
----
-name: librepaper-write
-description: Proofread, tighten, rewrite, explain, outline, and respond to comments in a LibrePaper document through its configured MCP tools.
----
-
-# LibrePaper writing assistant
+# Writing rules
 
 Use the configured LibrePaper MCP tools for document work. Credentials belong to the host; never request, print, or save document links or tokens. The selected link bounds your authority even when the host has a more privileged account. Do not use shell commands, CLI discovery, full snapshots, or a local checkout to read or edit the shared document.
 

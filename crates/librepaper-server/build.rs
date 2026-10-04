@@ -11,13 +11,6 @@ fn main() {
         .canonicalize()
         .expect("docs/ is at the repository root");
     println!("cargo:rustc-env=LIBREPAPER_DOCS={}", docs.display());
-    // The skills bundle, which routes.rs includes by path. The companion
-    // compiles the whole directory in and watches it itself.
-    let skills_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../skills")
-        .canonicalize()
-        .expect("skills/ is at the repository root");
-    println!("cargo:rustc-env=LIBREPAPER_SKILLS={}", skills_dir.display());
     // The bare package version for the metrics build_info label. A sub-crate
     // may not read CARGO_PKG_VERSION itself (flatten lint rule 4); its build
     // script may, and the flat build.rs emits the same variable.

@@ -587,18 +587,6 @@ pub(super) fn segments(path: &str) -> Vec<&str> {
 
 pub(super) fn bundled_documentation(path: &str) -> Option<&'static str> {
     match path {
-        "/skills/librepaper-document/SKILL.md" => Some(include_str!(concat!(
-            env!("LIBREPAPER_SKILLS"),
-            "/librepaper-document/SKILL.md"
-        ))),
-        "/skills/librepaper-document/references/install.md" => Some(include_str!(concat!(
-            env!("LIBREPAPER_SKILLS"),
-            "/librepaper-document/references/install.md"
-        ))),
-        "/skills/librepaper-document/references/editing.md" => Some(include_str!(concat!(
-            env!("LIBREPAPER_SKILLS"),
-            "/librepaper-document/references/editing.md"
-        ))),
         "/docs/protocol/room-v2.md" => Some(include_str!(concat!(
             env!("LIBREPAPER_DOCS"),
             "/dev/protocol/room-v2.md"
@@ -770,9 +758,9 @@ pub(super) async fn dispatch(
             .await;
     }
 
-    // Public, fixed documentation assets linked by the README and the
-    // distributable agent skill. Keep this allowlist compile-time embedded;
-    // no request may turn it into an arbitrary filesystem read.
+    // Public, fixed documentation assets linked by the README. Keep this
+    // allowlist compile-time embedded; no request may turn it into an arbitrary
+    // filesystem read.
     if matches!(method, Method::GET | Method::HEAD) {
         if let Some(body) = bundled_documentation(&path) {
             let mut response = Response::new(if method == Method::HEAD {

@@ -10,7 +10,6 @@
 // - dist/       the compiled-in shell (staged from the shell crate)
 // - assets.lock pinned wasm digests, copied into OUT_DIR for include_str!
 // - .sqlx/      the offline query cache
-// - skills/     the compiled-in skills bundle
 // - docs/       protocol docs and tutorials, compiled in through LIBREPAPER_DOCS
 
 use std::path::Path;
@@ -38,7 +37,6 @@ fn main() {
     // The facade's build.rs sets the same variable to the repository's docs/.
     let docs = root.join("docs");
     println!("cargo:rustc-env=LIBREPAPER_DOCS={}", docs.display());
-    println!("cargo:rustc-env=LIBREPAPER_SKILLS={}", root.join("skills").display());
 
     // The shell crate's build.rs does the same copy: the pinned digests are
     // compiled in, so a change to the file is a change to the binary.
@@ -51,12 +49,10 @@ fn main() {
     // A directory is watched file by file: cargo compares the timestamp of
     // what it is told to watch, and editing a file inside a directory does not
     // change the directory.
-    for name in [".sqlx", "skills"] {
-        let dir = root.join(name);
-        if dir.exists() {
-            println!("cargo:rerun-if-changed={}", dir.display());
-            watch(&dir);
-        }
+    let sqlx_dir = root.join(".sqlx");
+    if sqlx_dir.exists() {
+        println!("cargo:rerun-if-changed={}", sqlx_dir.display());
+        watch(&sqlx_dir);
     }
     watch(&dist);
 }

@@ -43,7 +43,7 @@ PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(LCM)
 # site target at the bottom of this file.
 WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mjs web/tests/unit/vocabulary.js
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
-SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
+SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
 .PHONY: help build install test test-rust check fmt serve demo demo-run wipe kill clean snapshot web pins site site-serve
 

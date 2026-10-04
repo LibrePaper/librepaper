@@ -31,11 +31,10 @@ const TESTING = "testing";
 const NOT_INPUTS = new Set(["Cargo.toml", "Cargo.lock", "build.rs", "src", "tests", "target"]);
 // Inputs that live at the repository root rather than inside a crate. The
 // shell's dist stays at web/dist by design (its build.rs exports
-// LIBREPAPER_SHELL_DIST); .sqlx and skills are here until a crate owns them.
+// LIBREPAPER_SHELL_DIST); .sqlx is here until a crate owns it.
 const ROOT_INPUTS = [
   { from: "web/dist", to: "dist", required: true },
   { from: ".sqlx", to: ".sqlx" },
-  { from: "skills", to: "skills" },
   // include_str! and include_bytes! of the protocol docs and tutorials, through
   // LIBREPAPER_DOCS.
   { from: "docs/dev/protocol", to: "docs/dev/protocol", required: true },
