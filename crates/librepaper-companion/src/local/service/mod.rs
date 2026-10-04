@@ -2707,6 +2707,65 @@ mod settings_tests {
     }
 
     #[tokio::test]
+    async fn concurrent_build_admission_does_not_hold_preview_lock_while_waiting() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let (token, _) = inner.pairing.issue(origin, "test").unwrap();
+        let request_body = format!(
+            "--control-test\r\nContent-Disposition: form-data; name=\"job\"\r\nContent-Type: application/json\r\n\r\n{}\r\n--control-test--\r\n",
+            json!({
+                "protocol":2,"kind":"build","project":"paper","origin":origin,
+                "snapshot":"snapshot","generation":1,"builder":"typst",
+                "workspace":{"mode":"snapshot"},"entrypoint":"main.typ",
+                "output":"pdf","inputs":{"engine":"native"},"manifest":[]
+            })
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", HeaderValue::from_static("https://paper.example"));
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        let request = Request::post("/jobs")
+            .header("content-type", "multipart/form-data; boundary=control-test")
+            .body(Body::from(request_body))
+            .unwrap();
+
+        // Hold the gate so the real job handler reaches its final admission
+        // wait. Its staged directory proves the earlier preview conflict
+        // check has completed. It must have released previews before waiting
+        // here, matching preview startup's admission -> previews lock order.
+        let admission = inner.pairing.admission_gate().lock().await;
+        let service = inner.clone();
+        let job_headers = headers.clone();
+        let build = tokio::spawn(async move {
+            jobs::handle_jobs_post(&service, &job_headers, Some(origin), request).await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let staged = std::fs::read_dir(&inner.jobs_root)
+                    .ok()
+                    .and_then(|mut entries| entries.next().map(|entry| entry.is_ok()))
+                    .unwrap_or(false);
+                if staged {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("build should finish staging and wait for admission");
+        let previews = tokio::time::timeout(Duration::from_millis(250), inner.previews.lock())
+            .await
+            .expect("build admission must not retain the preview lock");
+        drop(previews);
+        drop(admission);
+
+        let response = build.await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
     // The store is process-wide; holding its test lock across awaits is the point.
     #[allow(clippy::await_holding_lock)]
     async fn put_integration_denied_leaves_unchanged() {

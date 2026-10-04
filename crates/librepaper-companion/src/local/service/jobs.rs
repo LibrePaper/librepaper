@@ -374,22 +374,17 @@ pub(super) async fn handle_jobs_post(
     if let Err(response) = validate_manifest_shape(&job.manifest) {
         return response;
     }
-    let previews = inner.previews.lock().await;
+    let preview_conflict = {
+        let previews = inner.previews.lock().await;
+        render_conflicts_with_preview(inner, &job, &previews, &origin, &project)
+    };
+    if preview_conflict {
+        return write_json(
+            409,
+            &json!({"error":"Stop managed preview before rendering or publishing."}),
+        );
+    }
     if job.kind == "quarto" {
-        if previews.0.values().any(|p| {
-            job.inputs.quarto().is_some_and(|q| {
-                p.binding == q.binding_id
-                    || inner
-                        .quarto_bindings
-                        .get_scoped(&q.binding_id, &origin, &project)
-                        .is_some_and(|binding| binding.root == p.root)
-            })
-        }) {
-            return write_json(
-                409,
-                &json!({"error":"Stop managed preview before rendering or publishing."}),
-            );
-        }
         let Some(options) = job.inputs.quarto() else {
             return write_json(
                 400,
@@ -459,6 +454,19 @@ pub(super) async fn handle_jobs_post(
         let _ = std::fs::remove_dir_all(&root);
         return response;
     }
+    // Preview admission uses admission -> previews -> jobs. Recheck with the
+    // same order here: the early check above intentionally released previews
+    // before staging uploads, so a preview may have started in the meantime.
+    let previews = inner.previews.lock().await;
+    if render_conflicts_with_preview(inner, &job, &previews, &origin, &project) {
+        drop(previews);
+        let _ = std::fs::remove_dir_all(&root);
+        return write_json(
+            409,
+            &json!({"error":"Stop managed preview before rendering or publishing."}),
+        );
+    }
+    drop(previews);
     let mut jobs = inner.jobs.lock().await;
     // The early lookup above avoids most duplicate staging, but it cannot
     // reserve a key across concurrent requests. Recheck while holding the
@@ -522,6 +530,27 @@ pub(super) async fn handle_jobs_post(
     inner.work.notify_one();
 
     write_json(202, &json!({"id": id, "status": "queued"}))
+}
+
+fn render_conflicts_with_preview(
+    inner: &Inner,
+    job: &JobRequest,
+    previews: &super::preview::Previews,
+    origin: &str,
+    project: &str,
+) -> bool {
+    if job.kind != "quarto" {
+        return false;
+    }
+    previews.0.values().any(|preview| {
+        job.inputs.quarto().is_some_and(|options| {
+            preview.binding == options.binding_id
+                || inner
+                    .quarto_bindings
+                    .get_scoped(&options.binding_id, origin, project)
+                    .is_some_and(|binding| binding.root == preview.root)
+        })
+    })
 }
 
 /// Every manifest entry has a bounded count, safe path, and total size.
