@@ -2,24 +2,23 @@
   // The settings, as a preferences window rather than a form: a navigation
   // list of categories at the left, one category at a time at the right. It
   // opens from the workspace navbar or sidebar, and any entry point can open
-  // it on a given category -- connection controls can land on Companion.
-  import { tick } from "svelte";
+  // it on a given category -- connection controls can land on Tools.
+  import { onMount, tick } from "svelte";
   import * as companionControl from "../../lib/companion/control.js";
+  import { createMachineView } from "../../lib/companion/machine.svelte.js";
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
   import EditorSettings from "./EditorSettings.svelte";
   import LatexFilesSettings from "./LatexFilesSettings.svelte";
   import QuotaSettings from "./QuotaSettings.svelte";
   import BuildSettings from "./BuildSettings.svelte";
-  import CompanionBlock from "./CompanionBlock.svelte";
-  import IntegrationSettings from "./IntegrationSettings.svelte";
   import RenderingSettings from "./RenderingSettings.svelte";
-  import LocalAppSettings from "./LocalAppSettings.svelte";
+  import ToolsSettings from "./ToolsSettings.svelte";
   import AccountSettings from "./AccountSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
   import BackupsSettings from "./BackupsSettings.svelte";
-  import CompanionTools from "./CompanionTools.svelte";
   import AgentSettings from "./AgentSettings.svelte";
+  import DiagnosticsSettings from "./DiagnosticsSettings.svelte";
 
   let {
     open = $bindable(false),
@@ -43,6 +42,9 @@
     remoteNote = "",
   } = $props();
 
+  const view = createMachineView();
+  onMount(() => view.start());
+
   const context = $derived({ format: sourceFormat, mayEdit, signedIn: Boolean(account.provider) });
   const available = $derived(offered(context));
   // The category shown: the one asked for, or the first offered when that is
@@ -57,9 +59,11 @@
   const nav = $derived(found ? found.map((match) => match.category) : available);
   const entriesOf = (id) => found?.find((match) => match.category.id === id)?.entries || [];
 
+  const approvals = $derived(view.list(view.state?.approvals).length);
+
   let body = $state(null);
   $effect(() => companionControl.onSettingsRequested(() => {
-    category = "local";
+    category = "tools";
     open = true;
   }));
   async function go(id, entry = "") {
@@ -70,13 +74,36 @@
   }
 </script>
 
+<style>
+  .settings-nav-item.separated {
+    border-top: 1px solid var(--color-divider);
+    margin-top: calc(var(--spacing) * 3);
+    padding-top: calc(var(--spacing) * 3);
+  }
+  .settings-nav-badge {
+    display: inline-flex;
+    min-width: 1.25rem;
+    padding: 0 0.35rem;
+    border-radius: 999px;
+    background: var(--color-warning-solid);
+    color: white;
+    font-size: var(--text-xs);
+    margin-inline-start: 0.5rem;
+  }
+</style>
+
 <Modal bind:open title="Settings" full>
   <div class="settings">
     <nav class="settings-nav" aria-label="Settings categories">
       <input class="input input-sm settings-search" type="search" placeholder="Search settings" aria-label="Search settings" bind:value={query} />
       {#each nav as item (item.id)}
-        <button type="button" class="settings-nav-item" class:current={shown?.id === item.id}
-                aria-current={shown?.id === item.id ? "page" : undefined} onclick={() => go(item.id)}>{item.says}</button>
+        <button type="button" class="settings-nav-item" class:current={shown?.id === item.id} class:separated={item.separated}
+                aria-current={shown?.id === item.id ? "page" : undefined} onclick={() => go(item.id)}>
+          {item.says}
+          {#if item.id === "tools" && approvals > 0}
+            <span class="settings-nav-badge" aria-label={`${approvals} waiting for your answer`}>{approvals}</span>
+          {/if}
+        </button>
         {#each entriesOf(item.id) as entry (entry.id)}
           <button type="button" class="settings-nav-entry" onclick={() => go(item.id, entry.id)}>{entry.says}</button>
         {/each}
@@ -92,48 +119,30 @@
         </header>
         {#if shown.id === "editor"}
           <EditorSettings {keys} {onkeys} {commands} />
-        {:else if shown.id === "render"}
-          <CompanionBlock id="render-local" needs="Calepin, Pandoc and Quarto" />
-
+        {:else if shown.id === "rendering"}
           <section class="settings-subsection">
-            <div class="settings-section-title"><h4 class="settings-subhead">Detected tools</h4><span class="settings-scope">This computer</span></div>
-            <CompanionTools />
-          </section>
-
-          <section class="settings-subsection">
-            <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4><span class="settings-scope">This browser</span></div>
+            <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4></div>
             <BuildSettings format="latex" {userId} onpreferences={onbuildpreferences} />
             <LatexFilesSettings />
           </section>
 
           <section class="settings-subsection">
-            <div class="settings-section-title"><h4 class="settings-subhead">Typst and Calepin</h4></div>
-            <IntegrationSettings name="calepin" />
-          </section>
-
-          <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Markdown and Quarto</h4></div>
-            <BuildSettings format="markdown" {userId} onpreferences={onbuildpreferences} />
-            <IntegrationSettings name="quarto" />
+            <BuildSettings format="markdown" {userId} onpreferences={onbuildpreferences} ontools={() => go("tools")} />
             <RenderingSettings {userId} {onquartooptions} />
           </section>
-        {:else if shown.id === "integrations"}
-          <CompanionBlock id="integrations-companion" needs="Zotero" />
-
-          <section class="settings-subsection">
-            <h4 class="settings-subhead">Zotero</h4>
-            <IntegrationSettings name="zotero" />
-          </section>
-        {:else if shown.id === "local"}
-          <LocalAppSettings />
+        {:else if shown.id === "tools"}
+          <ToolsSettings {view} />
         {:else if shown.id === "agents"}
-          <AgentSettings />
+          <AgentSettings {view} />
         {:else if shown.id === "backups"}
           <BackupsSettings {account} />
         {:else if shown.id === "account"}
           <RemoteSettings {remoteConnected} {remoteNote} />
           {#if row("storage-account")}<QuotaSettings />{/if}
           {#if row("account-erase")}<AccountSettings {account} />{/if}
+        {:else if shown.id === "diagnostics"}
+          <DiagnosticsSettings {view} />
         {/if}
       {/if}
     </div>

@@ -8,16 +8,16 @@ const build = await read("BuildSettings.svelte");
 const dialog = await read("SettingsDialog.svelte");
 const latexFiles = await read("LatexFilesSettings.svelte");
 const integration = await read("IntegrationSettings.svelte");
-const rendering = await read("RenderingSettings.svelte");
+const renderingComponent = await read("RenderingSettings.svelte");
 const remote = await read("RemoteSettings.svelte");
 const statusPill = await read("StatusPill.svelte");
 
-// Render, Integrations, Companion, Backups and Account remain navigable for
-// every document format and editing state.
+// Rendering, Tools, Agents, Diagnostics, Backups and Account remain navigable
+// for every document format and editing state.
 for (const format of ["latex", "typst", "markdown", "quarto", "html", ""]) {
   for (const mayEdit of [true, false]) {
     const ids = offered({ format, mayEdit, signedIn: false }).map((item) => item.id);
-    for (const id of ["render", "integrations", "local", "backups", "account"]) {
+    for (const id of ["rendering", "tools", "agents", "diagnostics", "backups", "account"]) {
       assert.ok(ids.includes(id), `${format} (mayEdit=${mayEdit}) offers ${id}`);
     }
   }
@@ -26,30 +26,24 @@ for (const query of ["windows setup", "zotero", "server address", "remote connec
   assert.ok(search(query, { format: "html", mayEdit: false, signedIn: false })?.length, `settings search finds ${query}`);
 }
 
-const render = CATEGORIES.find((category) => category.id === "render");
-const renderRows = (context) => render.entries.filter((entry) => !entry.offered || entry.offered(context)).map((entry) => entry.id);
+const rendering = CATEGORIES.find((category) => category.id === "rendering");
+const renderingRows = (context) => rendering.entries.filter((entry) => !entry.offered || entry.offered(context)).map((entry) => entry.id);
 for (const format of ["latex", "typst", "markdown", "quarto", "html"]) {
-  const rows = renderRows({ format, mayEdit: false });
-  assert.ok(rows.includes("render-local"), `${format} keeps local tools status visible`);
+  const rows = renderingRows({ format, mayEdit: false });
   assert.ok(rows.includes("render-latex-engine"), `${format} keeps LaTeX engine selection visible`);
   assert.ok(rows.includes("render-latex-files"), `${format} keeps browser-wide LaTeX cache controls visible`);
-  assert.ok(!rows.includes("render-typst-tool") && !rows.includes("render-quarto-tool"), `${format} has no global choice of a tool that runs the document`);
-  assert.ok(rows.includes("quarto-executable") && rows.includes("calepin-executable"), `${format} keeps both local integration sections visible`);
+  assert.ok(rows.includes("render-markdown-tool"), `${format} keeps Markdown renderer selection visible`);
+  assert.ok(rows.includes("rendering-profile") && rows.includes("rendering-parameters"), `${format} keeps Quarto profile and parameters visible`);
 }
-assert.ok(!renderRows({ format: "latex", mayEdit: false }).includes("render-folder"));
-assert.ok(!renderRows({ format: "latex", mayEdit: false }).includes("render-output"));
 
-// The dialog shows a fixed layout with sections for LaTeX, Typst and Calepin,
-// and Markdown and Quarto. All sections stay visible regardless of the current
-// document format.
-for (const name of ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]) {
-  assert.ok(dialog.includes(`<h4 class="settings-subhead">${name}</h4>`), `Render always includes ${name}`);
+// The rendering page shows sections for LaTeX and Markdown/Quarto.
+for (const name of ["LaTeX", "Markdown and Quarto"]) {
+  assert.ok(dialog.includes(`<h4 class="settings-subhead">${name}</h4>`), `Rendering always includes ${name}`);
 }
 assert.match(dialog, /<RenderingSettings \{userId\} \{onquartooptions\} \/>/);
 assert.doesNotMatch(dialog, /h4 class="settings-group-title">/);
-assert.match(dialog, /<span class="settings-scope">This browser<\/span>/);
 assert.doesNotMatch(dialog, /quartoOptionsRelevant/);
-assert.match(rendering, /disabled=\{controlsDisabled\}/);
+assert.match(renderingComponent, /disabled=\{controlsDisabled\}/);
 assert.doesNotMatch(dialog, /quartoExecutionRelevant/);
 assert.match(latexFiles, /id="render-latex-files"/);
 assert.doesNotMatch(dialog, /render-folder/);
@@ -88,4 +82,4 @@ assert.match(statusPill, /tone = "neutral"/);
 assert.match(statusPill, /role="status" aria-label=\{accessibleLabel \|\| label\}/);
 assert.match(statusPill, /aria-hidden="true"/);
 
-console.log("settings-quarto: Render sections and format-specific controls stay available across document types; offline local controls are unavailable while browser preferences remain usable");
+console.log("settings-quarto: Rendering page shows LaTeX and Markdown/Quarto sections; format-specific controls stay available");

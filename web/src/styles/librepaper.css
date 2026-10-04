@@ -1057,7 +1057,6 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .setting-status-pill.good .setting-status-pill-dot { background: var(--color-success-solid); }
 .setting-status-pill.warn .setting-status-pill-dot { background: var(--color-warning-solid); }
 .setting-status-pill.error .setting-status-pill-dot { background: var(--color-error-solid); }
-.setting-scope { display: inline-flex; align-items: center; min-height: --spacing(5); padding: 0 --spacing(1.5); border: 1px solid var(--color-divider); border-radius: 999px; color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 400; }
 .settings :is(.setting-input, .setting-select, .lp-control-brand, .lp-control-outline, .lp-control-danger) { min-height: --spacing(9); }
 .setting-textarea { width: 100%; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); font-size: var(--panel-meta-size); background-color: var(--color-row-hover); --tw-ring-color: var(--color-divider); }
 .setting-error { margin: 0; color: var(--color-error-text); font-size: var(--panel-meta-size); }

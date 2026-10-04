@@ -92,14 +92,14 @@
   const controlsDisabled = $derived(applying);
 </script>
 
-<SettingRow id="rendering-profile" title="Profile" scope="This browser"
+<SettingRow id="rendering-profile" title="Profile"
             description="Optional Quarto profile, such as draft for _quarto-draft.yml.">
   <input class="input setting-input" type="text" value={draftProfile} placeholder="None"
          aria-label="Quarto profile" autocomplete="off" spellcheck="false"
          oninput={(event) => { draftProfile = event.currentTarget.value; changed(); }} disabled={controlsDisabled} />
 </SettingRow>
 
-<SettingRow id="rendering-parameters" title="Parameters" stacked scope="This browser"
+<SettingRow id="rendering-parameters" title="Parameters" stacked
             description="Optional JSON values for params declared in the document’s front matter.">
   <textarea class="textarea setting-textarea" rows="4" value={parametersText}
             placeholder={'{"year": 2026, "region": "north", "draft": true}'}

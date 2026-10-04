@@ -2662,7 +2662,7 @@
 
   // Settings open as a dialog from the navbar menu or the sidebar. Every entry
   // point opens the same dialog on the category it is about.
-  let settingsOpen = $state(untrack(() => initialSettings === "local"));
+  let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "editor"));
   let projectFolderOpen = $state(false);
   let savingTemplate = $state(false);
@@ -3898,7 +3898,7 @@
       <button class="btn btn-sm lp-control-outline" disabled={localConnecting} onclick={() => { close(); void startLocalExecution(); }}>
         {quartoNeedsLocalApp ? "Enable local rendering" : "Retry Quarto preview"}
       </button>
-      {#if quartoNeedsLocalApp}<button class="btn btn-sm lp-control-outline" onclick={() => { close(); openSettings("local"); }}>Install or configure companion</button>{/if}
+      {#if quartoNeedsLocalApp}<button class="btn btn-sm lp-control-outline" onclick={() => { close(); openSettings("tools"); }}>Install or configure companion</button>{/if}
     {/if}
     {#if quartoReaderNeedsLocalTool}
       <p>Showing the browser's Markdown draft. Full Quarto preview requires the local LibrePaper app with Quarto and its execution tools.</p>
@@ -3947,7 +3947,7 @@
          says about the document. -->
     {@render previewStatusControl()}
     <div class="connection-settings" role="group" aria-label="Connection settings">
-      <button class="connection-pill local-pill" type="button" onclick={() => openSettings("local")}
+      <button class="connection-pill local-pill" type="button" onclick={() => openSettings("tools")}
               aria-label={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}; open local settings`}
               title={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}. Open local settings`}>
         <span class="connection-dot" class:offline={localAppStatus.state !== "connected"} aria-hidden="true"></span>
@@ -4040,7 +4040,7 @@
       revision={pending?.revision || ""} request={assistantRequest}
       {comments} {diagnostics} oncommenttask={askCommentAssistant}
       ondiagnostictask={askDiagnostic} onreview={reviewAssistantResults} onpreview={previewAssistant}
-      onsettings={() => openSettings("local")} userName={identity || doc.commenting_as || "You"} />
+      onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || "You"} />
   {/snippet}
 
   {#snippet collaborationPanel()}
@@ -4261,7 +4261,7 @@
             {:else}
               <button class="btn btn-sm lp-control-brand" onclick={() => void ensureLocalApp()}>Connect the local app</button>
             {/if}
-            <button class="btn btn-sm lp-control-outline" onclick={() => openSettings("local")}>Install or configure companion</button>
+            <button class="btn btn-sm lp-control-outline" onclick={() => openSettings("tools")}>Install or configure companion</button>
             <button class="btn btn-sm lp-control-outline" onclick={previewAsHtml}>Preview as HTML instead</button>
           </div>
         {:else}
