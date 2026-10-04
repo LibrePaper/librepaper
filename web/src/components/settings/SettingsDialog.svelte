@@ -26,15 +26,15 @@
     mayEdit = false,
     // The editor.
     keys = "default",
-    onkeys,
+    onkeys = undefined,
     // What the workspace can currently be asked to do, for the shortcut table
     // the editor category shows. The reader assembles it; lib/commands.js
     // decides from it what is available.
     commands = {},
     // The renderers, chosen per format for every document in this browser.
     userId = "anonymous",
-    onbuildpreferences,
-    onquartooptions,
+    onbuildpreferences = undefined,
+    onquartooptions = undefined,
     // The account and the server.
     account = {},
     remoteConnected = false,
