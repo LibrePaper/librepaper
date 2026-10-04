@@ -40,7 +40,16 @@ export function createControlClient(deps = {}) {
   const replaceUrl = deps.replaceUrl || ((url) => globalThis.history.replaceState(null, "", url));
   const launchLink = deps.launchLink || ((url) => { globalThis.location.href = url; });
   const listeners = new Set();
+  const rejectedCredentials = new Set();
   let active = null;
+
+  function identity(credential) {
+    return `${credential?.key || ""}\n${credential?.token || ""}`;
+  }
+
+  function wasRejected(credential) {
+    return rejectedCredentials.has(identity(credential));
+  }
 
   function notify() {
     const value = { available: available(), scope: scope() };
@@ -59,7 +68,7 @@ export function createControlClient(deps = {}) {
 
   function inMemory(appOrigin) {
     return active?.origin === appOrigin && loopbackAddress(active.address) === active.address &&
-      validInstance(active.instance) && TOKEN.test(active.token) ? active : null;
+      validInstance(active.instance) && TOKEN.test(active.token) && !wasRejected(active) ? active : null;
   }
 
   function readActive() {
@@ -78,7 +87,12 @@ export function createControlClient(deps = {}) {
       const key = credentialKey(appOrigin, address, value.instance);
       const token = store.getItem(key) || "";
       if (!TOKEN.test(token)) return inMemory(appOrigin);
-      return { address, instance: value.instance, token, key, activeKey: activeKey(appOrigin), origin: appOrigin };
+      const credential = { address, instance: value.instance, token, key, activeKey: activeKey(appOrigin), origin: appOrigin };
+      if (wasRejected(credential)) {
+        const memory = inMemory(appOrigin);
+        return memory && identity(memory) !== identity(credential) ? memory : null;
+      }
+      return credential;
     } catch {
       return inMemory(appOrigin);
     }
@@ -181,14 +195,17 @@ export function createControlClient(deps = {}) {
     }
     if (response.status === 401 || response.status === 403) {
       const store = storage();
+      const current = readActive();
+      const stillCurrent = current?.key === credential.key && current?.token === credential.token;
+      rejectedCredentials.add(identity(credential));
+      if (active?.key === credential.key && active?.token === credential.token) active = null;
       try {
-        if (readActive()?.token === credential.token && readActive()?.key === credential.key) {
+        if (stillCurrent) {
           store?.removeItem(credential.key);
           store?.removeItem(credential.activeKey);
-          active = null;
-          notify();
         }
       } catch { /* nothing else to clear */ }
+      if (stillCurrent) notify();
       throw Object.assign(new Error("The companion control session expired. Open the companion again from its tray menu."), { name: "Unauthorized" });
     }
     if (!response.ok) {

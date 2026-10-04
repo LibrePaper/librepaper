@@ -137,3 +137,64 @@ function harness(hash = "") {
   assert.equal(client.scope(), `${address}|${instance}`);
   await client.request("/state");
 }
+
+// A 401 revokes the in-memory credential even when sessionStorage access
+// refuses removal, so a later view cannot revive and reuse the rejected bearer.
+{
+  const store = new Map();
+  let denyRemovals = false;
+  const location = {
+    origin: "https://app.example.test",
+    href: `https://app.example.test/#settings=local&companion_address=${encodeURIComponent(address)}&companion_control=${token}&companion_instance=${instance}`,
+    get hash() { return new URL(this.href).hash; },
+  };
+  let fetches = 0;
+  const client = createControlClient({
+    location: () => location,
+    storage: () => ({
+      getItem: (key) => store.get(key) ?? null,
+      setItem: (key, value) => store.set(key, String(value)),
+      removeItem: (key) => {
+        if (denyRemovals) throw new Error("storage removal denied");
+        store.delete(key);
+      },
+    }),
+    replaceUrl: (url) => { location.href = new URL(url, location.origin).href; },
+    fetch: async () => {
+      fetches++;
+      return { ok: false, status: 401, json: async () => ({ error: "invalid control token" }) };
+    },
+  });
+  client.intake();
+  denyRemovals = true;
+  assert.equal(client.available(), true);
+  await assert.rejects(client.request("/state"), { name: "Unauthorized" });
+  assert.equal(client.available(), false);
+  await assert.rejects(client.request("/state"), { name: "Unavailable" });
+  assert.equal(fetches, 1);
+}
+
+// A quota failure while persisting the bearer falls back to the current page's
+// memory handoff and still keeps the URL clean.
+{
+  const store = new Map();
+  const location = {
+    origin: "https://app.example.test",
+    href: `https://app.example.test/#settings=local&companion_address=${encodeURIComponent(address)}&companion_control=${token}&companion_instance=${instance}`,
+    get hash() { return new URL(this.href).hash; },
+  };
+  const client = createControlClient({
+    location: () => location,
+    storage: () => ({
+      getItem: (key) => store.get(key) ?? null,
+      setItem: () => { throw new Error("quota exceeded"); },
+      removeItem: (key) => store.delete(key),
+    }),
+    replaceUrl: (url) => { location.href = new URL(url, location.origin).href; },
+    fetch: async () => ({ ok: true, status: 204 }),
+  });
+  assert.equal(client.intake(), true);
+  assert.equal(new URL(location.href).hash, "");
+  assert.equal(client.available(), true);
+  await client.request("/state");
+}
