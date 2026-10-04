@@ -135,13 +135,18 @@
     if (capabilities && capabilities.calepin) items.push(["Calepin", capabilities.calepin]);
     if (capabilities && capabilities.zotero) items.push(["Zotero", capabilities.zotero]);
     if (capabilities && capabilities.quarto && capabilities.quarto.tool) items.push(["Quarto", capabilities.quarto.tool]);
-    const seen = new Set();
-    return items.filter(([name]) => {
+    for (const builder of list(capabilities && capabilities.builders)) {
+      if (builder && builder.id) items.push([builder.id, builder]);
+    }
+    const byName = new Map();
+    for (const [name, tool] of items) {
       const key = name.toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+      const existing = byName.get(key);
+      if (!existing || (!existing[1].available && tool.available) || (!existing[1].version && tool.version)) {
+        byName.set(key, [name, tool]);
+      }
+    }
+    return [...byName.values()];
   }
 
   function renderTools(capabilities) {
@@ -294,6 +299,7 @@
       for (const input of $("integration-settings").querySelectorAll("input, textarea")) input.addEventListener("input", markSettingsDirty, { once: true });
     }
     const agents = list(settings.custom_agents || (lastState && lastState.custom_agents));
+    const customIds = new Set(agents.map((agent) => String(agent.id)));
     const agentCards = agents.map((agent) => {
       const card = node("article", "list-card");
       const body = node("div", "list-card-body");
@@ -307,6 +313,7 @@
       return card;
     });
     for (const agent of list(lastState && lastState.agents)) {
+      if (customIds.has(String(agent.id))) continue;
       const card = node("article", "list-card");
       const body = node("div", "list-card-body");
       body.append(node("h3", "", agent.label || agent.id || "Installed agent"));

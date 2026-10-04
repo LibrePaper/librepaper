@@ -222,7 +222,6 @@ pub fn executable(which: Integration) -> Option<PathBuf> {
         }
         return path.is_file().then_some(path);
     }
-    let tool = crate::local::tools::exe_name(which.as_str());
     if let Some(path) = STATE
         .read()
         .unwrap_or_else(|poison| poison.into_inner())
@@ -231,8 +230,7 @@ pub fn executable(which: Integration) -> Option<PathBuf> {
             state
                 .tool_paths
                 .iter()
-                .map(|directory| directory.join(&tool))
-                .find(|path| path.is_file())
+                .find_map(|directory| which::which(directory.join(which.program())).ok())
         })
     {
         return Some(path);
@@ -437,6 +435,11 @@ mod tests {
             "quarto"
         });
         std::fs::write(&quarto, b"fixture executable").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&quarto, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let state_home = tempfile::tempdir().unwrap();
         init_with_tool_paths(state_home.path(), vec![directory.path().to_path_buf()]);
         assert_eq!(executable(Integration::Quarto), Some(quarto));
