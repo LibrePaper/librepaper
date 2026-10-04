@@ -723,7 +723,7 @@ export async function retry() {
 
 // The one connection entrypoint: paired already, this fires a launch link and
 // waits for the probe to see it; unpaired, it sends a pair/request and waits
-// for the companion to show a native dialog; once allowed, claims the token
+// for the companion dashboard to show a local approval request; once allowed, claims the token
 // through the connect/claim endpoint. Single-flight: a second call while one is
 // in flight joins it.
 let connectionAttempt = null;

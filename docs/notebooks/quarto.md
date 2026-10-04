@@ -25,7 +25,7 @@ Quarto executes locally and its generated output is not uploaded automatically. 
 ## Trust
 
 - Quarto runs with your user account: your files, installed packages and the network. LibrePaper does not sandbox it.
-- Pairing asks once per site in a native dialog. Pairing alone runs nothing.
+- Pairing asks once per site in the companion dashboard. Check the site and requested action before allowing it. Pairing alone runs nothing.
 - Every document starts on the browser preview. Quarto runs only after you choose View > Execute code locally and accept the warning, one document at a time.
 - Anyone with editor access can change that code at any time, so allow it only on documents whose owner and editors you trust.
 - The permission is remembered for that document in this browser until you turn it off or sign out.
