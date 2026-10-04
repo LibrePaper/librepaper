@@ -41,6 +41,29 @@
 //! which is why none of the above ever converts to UTF-8 byte offsets
 //! internally.
 
+/// The part of `text` between UTF-16 offsets `start` and `end`, or `None` when
+/// the range is inverted, runs past the end, or has an edge inside a surrogate
+/// pair (an astral character has no UTF-16 position in its middle). Checked,
+/// like `session::apply_text_edits`: callers compare the result against text
+/// they expect to find there, and a range that does not exist is a mismatch,
+/// not something to clamp. Offsets are converted on the `&str` itself, so no
+/// caller needs a `Vec<u16>` copy of the file.
+pub(crate) fn utf16_slice(text: &str, start: usize, end: usize) -> Option<&str> {
+    if start > end {
+        return None;
+    }
+    let from = str_indices::utf16::to_byte_idx(text, start);
+    let to = str_indices::utf16::to_byte_idx(text, end);
+    // `to_byte_idx` floors an offset inside a pair and clamps one past the
+    // end; converting back is how both show up.
+    if str_indices::utf16::from_byte_idx(text, from) != start
+        || str_indices::utf16::from_byte_idx(text, to) != end
+    {
+        return None;
+    }
+    Some(&text[from..to])
+}
+
 /// The UTF-16 units `[start, end)` of `units`, as a `String`. Both bounds are
 /// clamped rather than checked, because every caller already derived them
 /// from a diff or a search over these same units and only wants the
