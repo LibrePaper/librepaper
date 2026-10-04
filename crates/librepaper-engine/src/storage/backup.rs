@@ -6,7 +6,10 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Reference {
@@ -264,6 +267,14 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
 /// pg_restore additionally needs --dbname to restore instead of printing SQL.
 /// Keep the password in the child's environment, outside the process arguments.
 fn postgres_tool(program: &str, database_url: &str) -> Result<tokio::process::Command, String> {
+    postgres_tool_with_env(program, database_url, std::env::vars_os())
+}
+
+fn postgres_tool_with_env(
+    program: &str,
+    database_url: &str,
+    inherited_env: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Result<tokio::process::Command, String> {
     let mut url = url::Url::parse(database_url).map_err(|_| "invalid PostgreSQL URL")?;
     if !matches!(url.scheme(), "postgres" | "postgresql") {
         return Err("expected a PostgreSQL URL".into());
@@ -299,11 +310,39 @@ fn postgres_tool(program: &str, database_url: &str) -> Result<tokio::process::Co
             .map_err(|_| "invalid PostgreSQL URL authority")?;
     }
     let mut command = tokio::process::Command::new(program);
+    command.env_clear();
+    command.envs(
+        inherited_env
+            .into_iter()
+            .filter(|(key, _)| !is_postgres_env_key(key)),
+    );
     command.args(["--no-password", "--dbname", url.as_str()]);
-    if let Some(password) = password {
-        command.env("PGPASSWORD", password);
-    }
+    command.env("PGPASSFILE", postgres_password_file());
+    command.env("PGPASSWORD", password.unwrap_or_default());
     Ok(command)
+}
+
+fn is_postgres_env_key(key: &OsStr) -> bool {
+    let key = key.to_string_lossy();
+    #[cfg(windows)]
+    {
+        key.get(..2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("PG"))
+    }
+    #[cfg(not(windows))]
+    {
+        key.starts_with("PG")
+    }
+}
+
+#[cfg(windows)]
+fn postgres_password_file() -> &'static str {
+    "NUL"
+}
+
+#[cfg(not(windows))]
+fn postgres_password_file() -> &'static str {
+    "/dev/null"
 }
 
 fn create_private_file(path: &Path) -> Result<std::fs::File, String> {
@@ -362,7 +401,8 @@ fn safe_target(root: &Path, key: &str) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod connection_tests {
-    use super::postgres_tool;
+    use super::{postgres_tool, postgres_tool_with_env};
+    use std::{collections::BTreeMap, ffi::OsString};
 
     #[test]
     fn postgres_tools_select_the_database_without_exposing_passwords_in_arguments() {
@@ -408,5 +448,60 @@ mod connection_tests {
                 .unwrap(),
             "new#value"
         );
+    }
+
+    #[test]
+    fn postgres_tools_ignore_inherited_libpq_environment() {
+        let inherited = [
+            ("PATH", "/usr/bin"),
+            ("PGHOST", "attacker.example"),
+            ("PGPORT", "6543"),
+            ("PGUSER", "attacker"),
+            ("PGDATABASE", "wrong_database"),
+            ("PGPASSWORD", "wrong_password"),
+            ("PGOPTIONS", "-c search_path=wrong"),
+            ("PGSSLMODE", "verify-full"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)));
+        let command = postgres_tool_with_env(
+            "pg_dump",
+            "postgresql://paper:explicit%20secret@db.example:5432/paper?sslmode=disable",
+            inherited,
+        )
+        .unwrap();
+        let vars = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            vars.get("PATH").map(Option::as_deref),
+            Some(Some("/usr/bin"))
+        );
+        for key in [
+            "PGHOST",
+            "PGPORT",
+            "PGUSER",
+            "PGDATABASE",
+            "PGOPTIONS",
+            "PGSSLMODE",
+        ] {
+            assert!(!vars.contains_key(key), "unexpected inherited {key}");
+        }
+        assert_eq!(
+            vars.get("PGPASSWORD").and_then(Option::as_deref),
+            Some("explicit secret")
+        );
+        assert!(vars.contains_key("PGPASSFILE"));
+        assert!(command
+            .as_std()
+            .get_args()
+            .all(|arg| !arg.to_string_lossy().contains("explicit secret")));
     }
 }

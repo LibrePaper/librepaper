@@ -11,9 +11,48 @@ use serde::{de::DeserializeOwned, Deserialize};
 use std::fmt;
 use std::{
     collections::BTreeMap,
+    ffi::{OsStr, OsString},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
+
+/// Original process PG* values captured before the admin runtime starts.
+/// Environment references to PG* keys use this snapshot, never the scrubbed
+/// process environment used by SQLx.
+#[derive(Clone, Default)]
+pub(crate) struct PostgresEnvSnapshot(BTreeMap<OsString, OsString>);
+
+impl PostgresEnvSnapshot {
+    pub(crate) fn capture() -> Self {
+        Self(
+            std::env::vars_os()
+                .filter(|(key, _)| is_postgres_env_key(key.as_os_str()))
+                .collect(),
+        )
+    }
+
+    pub(crate) fn scrub_process_environment(&self) {
+        for key in self.0.keys() {
+            std::env::remove_var(key);
+        }
+        // An empty password disables SQLx's .pgpass fallback while retaining
+        // the default authentication behavior when the URL has no password.
+        std::env::set_var("PGPASSWORD", "");
+    }
+}
+
+pub(crate) fn is_postgres_env_key(key: &OsStr) -> bool {
+    let key = key.to_string_lossy();
+    #[cfg(windows)]
+    {
+        key.get(..2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("PG"))
+    }
+    #[cfg(not(windows))]
+    {
+        key.starts_with("PG")
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct ResolvedConfig {
@@ -209,6 +248,7 @@ struct RawBackup {
 struct Resolver<'a> {
     base: &'a Path,
     sources: BTreeMap<String, String>,
+    postgres_env: Option<&'a PostgresEnvSnapshot>,
 }
 impl Resolver<'_> {
     fn resolve<T: DeserializeOwned>(&mut self, key: &str, input: Input<T>) -> Result<T, String> {
@@ -229,7 +269,7 @@ impl Resolver<'_> {
                 };
                 self.sources.insert(key.into(), format!("{kind}:{target}"));
                 let raw = if kind == "env" {
-                    std::env::var(target).map_err(|_| {
+                    read_env(target, self.postgres_env).map_err(|_| {
                         format!("{key}: referenced environment variable {target:?} is unavailable")
                     })?
                 } else {
@@ -281,6 +321,30 @@ impl Resolver<'_> {
             self.base.join(p)
         }
     }
+}
+
+fn read_env(target: &str, postgres_env: Option<&PostgresEnvSnapshot>) -> Result<String, ()> {
+    if is_postgres_env_key(OsStr::new(target)) {
+        if let Some(snapshot) = postgres_env {
+            let value = snapshot
+                .0
+                .iter()
+                .find(|(key, _)| {
+                    #[cfg(windows)]
+                    {
+                        key.to_string_lossy().eq_ignore_ascii_case(target)
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        key.as_os_str() == OsStr::new(target)
+                    }
+                })
+                .map(|(_, value)| value.clone())
+                .ok_or(())?;
+            return value.into_string().map_err(|_| ());
+        }
+    }
+    std::env::var(target).map_err(|_| ())
 }
 fn parse_reference<T: DeserializeOwned>(raw: &str) -> Result<T, ()> {
     if let Ok(v) = T::deserialize(toml::Value::String(raw.to_owned())) {
@@ -471,13 +535,22 @@ fn resolve_storage(s: Storage, r: &mut Resolver<'_>) -> Result<StorageOptions, S
 fn validate_storage(s: &StorageOptions) -> Result<(), String> {
     librepaper_engine::storage::validate_storage_options(s)
 }
+#[cfg(test)]
 pub(crate) fn load_storage_with_log_filter(
     path: &Path,
+) -> Result<(StorageOptions, String), String> {
+    load_storage_with_log_filter_and_env(path, None)
+}
+
+pub(crate) fn load_storage_with_log_filter_and_env(
+    path: &Path,
+    postgres_env: Option<&PostgresEnvSnapshot>,
 ) -> Result<(StorageOptions, String), String> {
     let (raw, base) = read_raw(path)?;
     let mut resolver = Resolver {
         base: &base,
         sources: BTreeMap::new(),
+        postgres_env,
     };
     let storage = resolve_storage(raw.storage, &mut resolver)?;
     let filter = resolver.value("logging.filter", raw.logging.filter, "info".to_owned())?;
@@ -485,11 +558,20 @@ pub(crate) fn load_storage_with_log_filter(
         .map_err(|_| "logging.filter is not a valid filter directive".to_owned())?;
     Ok((storage, filter))
 }
+#[cfg(test)]
 pub(crate) fn load(path: &Path) -> Result<ResolvedConfig, String> {
+    load_with_postgres_env(path, None)
+}
+
+pub(crate) fn load_with_postgres_env(
+    path: &Path,
+    postgres_env: Option<&PostgresEnvSnapshot>,
+) -> Result<ResolvedConfig, String> {
     let (raw, base) = read_raw(path)?;
     let mut r = Resolver {
         base: &base,
         sources: BTreeMap::new(),
+        postgres_env,
     };
     let bind = r
         .value("server.bind", raw.server.bind, "0.0.0.0".into())?

@@ -278,10 +278,27 @@ fn install_subscriber(server_filter: Option<&str>) {
         .init();
 }
 
-#[tokio::main]
-pub async fn main() {
+/// Parse and isolate deployment administration before creating the Tokio
+/// runtime. SQLx reads libpq-style PG* variables while constructing
+/// PostgreSQL options, so this must remain a synchronous process-startup path.
+pub fn main() {
     let cli = Cli::parse();
     let command = cli.command.unwrap_or(Command::Start(cli.launch));
+    let postgres_env = if matches!(&command, Command::Admin { .. }) {
+        let snapshot = server_config::PostgresEnvSnapshot::capture();
+        snapshot.scrub_process_environment();
+        Some(snapshot)
+    } else {
+        None
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|error| die(format!("could not start async runtime: {error}")));
+    runtime.block_on(run(command, postgres_env.as_ref()));
+}
+
+async fn run(command: Command, postgres_env: Option<&server_config::PostgresEnvSnapshot>) {
     if !matches!(&command, Command::Admin { .. }) {
         install_subscriber(None);
     }
@@ -318,7 +335,7 @@ pub async fn main() {
         }
         Command::Login { deployment } => login(deployment.server).await,
         Command::Logout => logout(),
-        Command::Admin { command } => run_admin(command).await,
+        Command::Admin { command } => run_admin(command, postgres_env).await,
         Command::List { deployment } => list_documents(deployment.server, deployment.token).await,
         Command::Export {
             id,
@@ -348,16 +365,21 @@ pub async fn main() {
     }
 }
 
-async fn run_admin(command: AdminCommand) {
+async fn run_admin(
+    command: AdminCommand,
+    postgres_env: Option<&server_config::PostgresEnvSnapshot>,
+) {
     match command {
         AdminCommand::Serve { config } => {
-            let resolved = server_config::load(&config).unwrap_or_else(|error| die(error));
+            let resolved = server_config::load_with_postgres_env(&config, postgres_env)
+                .unwrap_or_else(|error| die(error));
             install_subscriber(Some(&resolved.log_filter));
             librepaper_server::server::serve::serve(serve_options(resolved)).await
         }
         AdminCommand::Config { command } => match command {
             ConfigCommand::Check { config } => {
-                let resolved = server_config::load(&config).unwrap_or_else(|error| die(error));
+                let resolved = server_config::load_with_postgres_env(&config, postgres_env)
+                    .unwrap_or_else(|error| die(error));
                 install_subscriber(Some(&resolved.log_filter));
                 let options = serve_options(resolved);
                 if let Err(error) =
@@ -368,7 +390,8 @@ async fn run_admin(command: AdminCommand) {
                 println!("configuration is valid");
             }
             ConfigCommand::Show { config } => {
-                let resolved = server_config::load(&config).unwrap_or_else(|error| die(error));
+                let resolved = server_config::load_with_postgres_env(&config, postgres_env)
+                    .unwrap_or_else(|error| die(error));
                 install_subscriber(Some(&resolved.log_filter));
                 let rendered = server_config::show_resolved(&resolved);
                 print!("{rendered}");
@@ -379,8 +402,11 @@ async fn run_admin(command: AdminCommand) {
             directory,
             id,
         } => {
-            let (storage, filter) = server_config::load_storage_with_log_filter(&config)
-                .unwrap_or_else(|error| die(error));
+            let (storage, filter) = server_config::load_storage_with_log_filter_and_env(
+                &config,
+                postgres_env,
+            )
+            .unwrap_or_else(|error| die(error));
             install_subscriber(Some(&filter));
             librepaper_engine::storage::backup::backup_cli(
                 storage,
@@ -394,15 +420,21 @@ async fn run_admin(command: AdminCommand) {
             backup,
             directory,
         } => {
-            let (storage, filter) = server_config::load_storage_with_log_filter(&config)
-                .unwrap_or_else(|error| die(error));
+            let (storage, filter) = server_config::load_storage_with_log_filter_and_env(
+                &config,
+                postgres_env,
+            )
+            .unwrap_or_else(|error| die(error));
             install_subscriber(Some(&filter));
             librepaper_engine::storage::backup::restore_cli(storage, backup, directory).await
         }
-        AdminCommand::Moderate { command } => moderate(command).await,
+        AdminCommand::Moderate { command } => moderate(command, postgres_env).await,
         AdminCommand::Sweep { config, batch } => {
-            let (storage, filter) = server_config::load_storage_with_log_filter(&config)
-                .unwrap_or_else(|error| die(error));
+            let (storage, filter) = server_config::load_storage_with_log_filter_and_env(
+                &config,
+                postgres_env,
+            )
+            .unwrap_or_else(|error| die(error));
             install_subscriber(Some(&filter));
             sweep(storage, batch as usize).await
         }
@@ -451,7 +483,10 @@ fn serve_options(
     }
 }
 
-async fn moderate(command: ModerationCommand) {
+async fn moderate(
+    command: ModerationCommand,
+    postgres_env: Option<&server_config::PostgresEnvSnapshot>,
+) {
     use librepaper_engine::storage::postgres::{
         ModerationAction, PostgresCatalog, PostgresOptions,
     };
@@ -506,7 +541,8 @@ async fn moderate(command: ModerationCommand) {
         ),
     };
     let (storage, filter) =
-        server_config::load_storage_with_log_filter(&config).unwrap_or_else(|error| die(error));
+        server_config::load_storage_with_log_filter_and_env(&config, postgres_env)
+            .unwrap_or_else(|error| die(error));
     install_subscriber(Some(&filter));
     let mut postgres = PostgresOptions::new(storage.database_url);
     postgres.max_connections = storage.database_connections;
