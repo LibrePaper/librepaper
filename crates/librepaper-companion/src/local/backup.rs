@@ -53,6 +53,8 @@ struct ProjectRecord {
     title: String,
     snapshot: String,
     archive: String,
+    #[serde(default)]
+    sha: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +65,11 @@ struct Snapshot {
     projection: librepaper_document::document::projection::Projection,
     #[serde(default)]
     texts: BTreeMap<String, String>,
+}
+
+enum Fetched {
+    NotModified,
+    Snapshot(Snapshot),
 }
 
 /// Back up every project visible to this account, including named shared
@@ -111,53 +118,118 @@ pub(crate) async fn run_backup(
             .filter(|title| !title.trim().is_empty())
             .unwrap_or(slug)
             .to_string();
+        let listing_sha = document
+            .get("sha")
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
         let result: Result<bool, String> = async {
-            let snapshot = fetch_snapshot(&client, &normalized_server, token, slug).await?;
             let existing = manifest.projects.get(slug).cloned();
-            let snapshot = if let Some(record) = &existing {
-                if record.snapshot == snapshot.digest
+
+            // Fast skip: if sha unchanged, archive present, and title
+            // matches, skip snapshot fetch. Server's sha is its log sequence and
+            // changes exactly when the source does.
+            if let Some(record) = &existing {
+                if listing_sha.is_some()
+                    && record.sha == listing_sha
                     && record.title == title
                     && record.archive == archive_name(&title, slug)
                 {
+                    let owned =
+                        archive_is_owned(&root, &record.archive, slug, &namespace_lock).await?;
+                    if owned {
+                        cleanup_archives(&root, slug, &record.archive, &namespace_lock).await?;
+                        return Ok(false);
+                    }
+                }
+            }
+
+            let fetched = fetch_snapshot(
+                &client,
+                &normalized_server,
+                token,
+                slug,
+                existing
+                    .as_ref()
+                    .filter(|record| {
+                        record.title == title && record.archive == archive_name(&title, slug)
+                    })
+                    .map(|r| r.snapshot.as_str()),
+            )
+            .await?;
+
+            let snapshot = match fetched {
+                Fetched::NotModified => {
+                    // 304 Not Modified: archive exists and digest matches.
+                    let Some(record) = existing.clone() else {
+                        return Err("server answered 304 without a recorded snapshot".into());
+                    };
+                    let owned =
+                        archive_is_owned(&root, &record.archive, slug, &namespace_lock).await?;
+                    if owned {
+                        keep_archive(
+                            &record,
+                            slug,
+                            &mut manifest,
+                            &manifest_path,
+                            &root,
+                            listing_sha.clone(),
+                            &namespace_lock,
+                        )
+                        .await?;
+                        return Ok(false);
+                    }
+                    // Archive is missing/damaged, fetch again without if-none-match.
+                    match fetch_snapshot(&client, &normalized_server, token, slug, None).await? {
+                        Fetched::Snapshot(s) => s,
+                        Fetched::NotModified => {
+                            return Err("unexpected 304 response without if-none-match".into())
+                        }
+                    }
+                }
+                Fetched::Snapshot(s) => s,
+            };
+
+            // A 200 with the recorded digest (a proxy that drops If-None-Match)
+            // is unchanged too, if the archive still holds its entries.
+            let kept = existing.as_ref().filter(|record| {
+                record.snapshot == snapshot.digest
+                    && record.title == title
+                    && record.archive == archive_name(&title, slug)
+            });
+            let snapshot = match kept {
+                Some(record) => {
                     let check_root = root.clone();
                     let check_archive = record.archive.clone();
                     let check_slug = slug.to_string();
                     let check_lock = Arc::clone(&namespace_lock);
-                    let (snapshot, archive_matches) = tokio::task::spawn_blocking(move || {
+                    let (snapshot, holds) = tokio::task::spawn_blocking(move || {
                         let _keep_lock = check_lock;
-                        let matches = archive_matches_snapshot(
+                        let holds = archive_holds_snapshot(
                             &check_root,
                             &check_archive,
                             &check_slug,
                             &snapshot,
                         );
-                        (snapshot, matches)
+                        (snapshot, holds)
                     })
                     .await
                     .map_err(|error| format!("backup archive verifier failed: {error}"))?;
-                    if archive_matches {
-                        let cleanup_root = root.clone();
-                        let cleanup_slug = slug.to_string();
-                        let current_archive = record.archive.clone();
-                        let cleanup_lock = Arc::clone(&namespace_lock);
-                        tokio::task::spawn_blocking(move || {
-                            let _keep_lock = cleanup_lock;
-                            cleanup_superseded_archives(
-                                &cleanup_root,
-                                &cleanup_slug,
-                                &current_archive,
-                            )
-                        })
-                        .await
-                        .map_err(|error| format!("backup cleanup failed: {error}"))??;
+                    if holds {
+                        keep_archive(
+                            record,
+                            slug,
+                            &mut manifest,
+                            &manifest_path,
+                            &root,
+                            listing_sha.clone(),
+                            &namespace_lock,
+                        )
+                        .await?;
                         return Ok(false);
                     }
                     snapshot
-                } else {
-                    snapshot
                 }
-            } else {
-                snapshot
+                None => snapshot,
             };
 
             let filename = archive_name(&title, slug);
@@ -234,6 +306,7 @@ pub(crate) async fn run_backup(
                     title: title.clone(),
                     snapshot: snapshot_digest,
                     archive: filename,
+                    sha: listing_sha,
                 },
             );
             write_manifest(&manifest_path, &manifest)?;
@@ -266,6 +339,105 @@ pub(crate) async fn run_backup(
 struct MaterializedSnapshot {
     snapshot: String,
     files: Vec<(String, Vec<u8>)>,
+}
+
+async fn archive_is_owned(
+    root: &Path,
+    archive: &str,
+    slug: &str,
+    lock: &Arc<File>,
+) -> Result<bool, String> {
+    let check_root = root.to_path_buf();
+    let check_archive = archive.to_string();
+    let check_slug = slug.to_string();
+    let check_lock = Arc::clone(lock);
+    tokio::task::spawn_blocking(move || {
+        let _keep_lock = check_lock;
+        owned_archive(&check_root, &check_archive, &check_slug).is_ok()
+    })
+    .await
+    .map_err(|error| format!("backup archive check failed: {error}"))
+}
+
+async fn cleanup_archives(
+    root: &Path,
+    slug: &str,
+    current: &str,
+    lock: &Arc<File>,
+) -> Result<(), String> {
+    let cleanup_root = root.to_path_buf();
+    let cleanup_slug = slug.to_string();
+    let current_archive = current.to_string();
+    let cleanup_lock = Arc::clone(lock);
+    tokio::task::spawn_blocking(move || {
+        let _keep_lock = cleanup_lock;
+        cleanup_superseded_archives(&cleanup_root, &cleanup_slug, &current_archive)
+    })
+    .await
+    .map_err(|error| format!("backup cleanup failed: {error}"))?
+}
+
+async fn keep_archive(
+    record: &ProjectRecord,
+    slug: &str,
+    manifest: &mut Manifest,
+    manifest_path: &Path,
+    root: &Path,
+    listing_sha: Option<String>,
+    lock: &Arc<File>,
+) -> Result<(), String> {
+    let mut updated_record = record.clone();
+    updated_record.sha = listing_sha;
+    manifest
+        .projects
+        .insert(slug.to_string(), updated_record.clone());
+    write_manifest(manifest_path, manifest)?;
+    cleanup_archives(root, slug, &updated_record.archive, lock).await
+}
+
+fn archive_holds_snapshot(root: &Path, filename: &str, slug: &str, snapshot: &Snapshot) -> bool {
+    // The digest match already proves content; this proves the ZIP still
+    // holds those entries, without reading them.
+    if owned_archive(root, filename, slug).is_err() {
+        return false;
+    }
+    let path = match checked_child(root, filename) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut archive = match zip::ZipArchive::new(file) {
+        Ok(archive) => archive,
+        Err(_) => return false,
+    };
+    if archive.len() != snapshot.projection.files.len() {
+        return false;
+    }
+    for (path, expected) in &snapshot.projection.files {
+        let relative = match safe_relative_path(path) {
+            Ok(path) => path,
+            Err(_) => return false,
+        };
+        let entry = match archive.by_name(relative.to_string_lossy().as_ref()) {
+            Ok(entry) if !entry.is_dir() => entry,
+            _ => return false,
+        };
+        if expected.kind == "text" {
+            if entry.size() != expected.bytes {
+                return false;
+            }
+        } else if expected.kind == "asset" {
+            if entry.size() > MAX_FILE_BYTES as u64 {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 async fn list_documents(
@@ -345,16 +517,22 @@ async fn fetch_snapshot(
     server: &str,
     token: &str,
     slug: &str,
-) -> Result<Snapshot, String> {
+    if_none_match: Option<&str>,
+) -> Result<Fetched, String> {
     let target = document_url(server, slug, "project")?;
-    let response = client
-        .get(target)
-        .bearer_auth(token)
+    let mut request = client.get(target).bearer_auth(token);
+    if let Some(digest) = if_none_match {
+        request = request.header("if-none-match", format!("\"{digest}\""));
+    }
+    let response = request
         .timeout(Duration::from_secs(60))
         .send()
         .await
         .map_err(|error| format!("could not capture project {slug:?}: {error}"))?;
     let status = response.status();
+    if status == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(Fetched::NotModified);
+    }
     let payload = response_json(response, MAX_RESPONSE_BYTES, "project snapshot").await?;
     if status != reqwest::StatusCode::OK {
         return Err(format!(
@@ -374,7 +552,7 @@ async fn fetch_snapshot(
             "project {slug:?} exceeds {MAX_FILES_PER_PROJECT} files"
         ));
     }
-    Ok(snapshot)
+    Ok(Fetched::Snapshot(snapshot))
 }
 
 async fn materialize_snapshot(
@@ -389,18 +567,24 @@ async fn materialize_snapshot(
     let mut total = 0usize;
     for (path, entry) in &snapshot.projection.files {
         let path = safe_relative_path(path)?;
-        let bytes = match entry.kind.as_str() {
-            "text" => snapshot
-                .texts
-                .get(path.to_str().unwrap_or_default())
-                .ok_or_else(|| format!("snapshot omitted text file {}", path.display()))?
-                .as_bytes()
-                .to_vec(),
+        let (bytes, bytes_verified) = match entry.kind.as_str() {
+            "text" => {
+                let text_bytes = snapshot
+                    .texts
+                    .get(path.to_str().unwrap_or_default())
+                    .ok_or_else(|| format!("snapshot omitted text file {}", path.display()))?
+                    .as_bytes()
+                    .to_vec();
+                (text_bytes, false)
+            }
             "asset" => match previous_files.get(path.to_str().unwrap_or_default()) {
                 Some(previous) if hex::encode(Sha256::digest(previous)) == entry.digest => {
-                    previous.clone()
+                    (previous.clone(), true)
                 }
-                _ => fetch_asset(client, server, token, slug, &entry.digest).await?,
+                _ => (
+                    fetch_asset(client, server, token, slug, &entry.digest).await?,
+                    false,
+                ),
             },
             kind => return Err(format!("snapshot has unknown file kind {kind:?}")),
         };
@@ -413,7 +597,7 @@ async fn materialize_snapshot(
         if entry.kind == "text" && bytes.len() as u64 != entry.bytes {
             return Err(format!("file {} has the wrong size", path.display()));
         }
-        if hex::encode(Sha256::digest(&bytes)) != entry.digest {
+        if !bytes_verified && hex::encode(Sha256::digest(&bytes)) != entry.digest {
             return Err(format!(
                 "file {} failed digest verification",
                 path.display()
@@ -668,57 +852,6 @@ fn cleanup_superseded_archives(root: &Path, slug: &str, current: &str) -> Result
         sync_directory(root, "superseded backup archives")?;
     }
     Ok(())
-}
-
-fn archive_matches_snapshot(root: &Path, filename: &str, slug: &str, snapshot: &Snapshot) -> bool {
-    if owned_archive(root, filename, slug).is_err() {
-        return false;
-    }
-    let path = match checked_child(root, filename) {
-        Ok(path) => path,
-        Err(_) => return false,
-    };
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(_) => return false,
-    };
-    let mut archive = match zip::ZipArchive::new(file) {
-        Ok(archive) => archive,
-        Err(_) => return false,
-    };
-    if archive.len() != snapshot.projection.files.len() {
-        return false;
-    }
-    for (path, expected) in &snapshot.projection.files {
-        let relative = match safe_relative_path(path) {
-            Ok(path) => path,
-            Err(_) => return false,
-        };
-        let entry = match archive.by_name(relative.to_string_lossy().as_ref()) {
-            Ok(entry) if !entry.is_dir() && entry.size() <= MAX_FILE_BYTES as u64 => entry,
-            _ => return false,
-        };
-        let mut bytes = Vec::with_capacity(entry.size() as usize);
-        if entry
-            .take(MAX_FILE_BYTES.saturating_add(1) as u64)
-            .read_to_end(&mut bytes)
-            .is_err()
-            || bytes.len() > MAX_FILE_BYTES
-            || hex::encode(Sha256::digest(&bytes)) != expected.digest
-        {
-            return false;
-        }
-        if expected.kind == "text" {
-            if bytes.len() as u64 != expected.bytes
-                || snapshot.texts.get(path).map(String::as_bytes) != Some(bytes.as_slice())
-            {
-                return false;
-            }
-        } else if expected.kind != "asset" {
-            return false;
-        }
-    }
-    true
 }
 
 fn read_previous_files(path: PathBuf) -> Result<BTreeMap<String, Vec<u8>>, String> {
@@ -1048,19 +1181,27 @@ mod tests {
     struct Fixture {
         title: Mutex<String>,
         revision: AtomicUsize,
+        listing_epoch: AtomicUsize,
         fail_assets: AtomicBool,
         asset_hits: AtomicUsize,
+        snapshot_hits: AtomicUsize,
+        not_modified_hits: AtomicUsize,
+        ignore_if_none_match: AtomicBool,
     }
 
     async fn list_page(
         State(state): State<Arc<Fixture>>,
         Query(query): Query<BTreeMap<String, String>>,
     ) -> Json<Value> {
+        let revision = state.revision.load(Ordering::SeqCst);
+        let epoch = state.listing_epoch.load(Ordering::SeqCst);
         if query.contains_key("after_slug") {
-            Json(json!({"documents":[{"slug":"shared-z9","title":"Shared Project"}]}))
+            Json(
+                json!({"documents":[{"slug":"shared-z9","title":"Shared Project","sha":format!("{}.{}", revision, epoch)}]}),
+            )
         } else {
             Json(json!({
-                "documents":[{"slug":"paper-a1","title":state.title.lock().unwrap().clone()}],
+                "documents":[{"slug":"paper-a1","title":state.title.lock().unwrap().clone(),"sha":format!("{}.{}", revision, epoch)}],
                 "next_cursor":{"after_updated":"2026-09-01T00:00:00Z","after_slug":"paper-a1"}
             }))
         }
@@ -1069,7 +1210,10 @@ mod tests {
     async fn snapshot(
         State(state): State<Arc<Fixture>>,
         AxumPath(slug): AxumPath<String>,
-    ) -> Json<Value> {
+        headers: axum::http::HeaderMap,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        state.snapshot_hits.fetch_add(1, Ordering::SeqCst);
         let revision = state.revision.load(Ordering::SeqCst);
         if slug == "paper-a1" {
             let body = if revision == 0 {
@@ -1108,31 +1252,51 @@ mod tests {
                     bytes: dated_note.len() as u64,
                 },
             );
+            let digest = projection.digest();
+            if !state.ignore_if_none_match.load(Ordering::SeqCst) {
+                if let Some(if_none_match) = headers.get("if-none-match") {
+                    if if_none_match.as_bytes() == format!("\"{digest}\"").as_bytes() {
+                        state.not_modified_hits.fetch_add(1, Ordering::SeqCst);
+                        return (axum::http::StatusCode::NOT_MODIFIED, "").into_response();
+                    }
+                }
+            }
             Json(json!({
-                "project_digest": projection.digest(),
+                "project_digest": digest,
                 "tree": projection,
                 "texts":{"paper.md":body,"notes:2026.md":dated_note}
             }))
+            .into_response()
         } else {
             let bytes = if revision == 0 {
                 b"\x00\x01\xff".as_slice()
             } else {
                 b"\x00\x02\xff".as_slice()
             };
-            let digest = hex::encode(Sha256::digest(bytes));
+            let digest_str = hex::encode(Sha256::digest(bytes));
             let entry = librepaper_document::document::projection::Entry {
                 kind: "asset".into(),
                 id: String::new(),
-                digest,
+                digest: digest_str.clone(),
                 bytes: 0,
             };
             let mut projection = librepaper_document::document::projection::Projection::default();
             projection.files.insert("images/plot.bin".into(), entry);
+            let digest = projection.digest();
+            if !state.ignore_if_none_match.load(Ordering::SeqCst) {
+                if let Some(if_none_match) = headers.get("if-none-match") {
+                    if if_none_match.as_bytes() == format!("\"{digest}\"").as_bytes() {
+                        state.not_modified_hits.fetch_add(1, Ordering::SeqCst);
+                        return (axum::http::StatusCode::NOT_MODIFIED, "").into_response();
+                    }
+                }
+            }
             Json(json!({
-                "project_digest": projection.digest(),
+                "project_digest": digest,
                 "tree": projection,
                 "texts":{}
             }))
+            .into_response()
         }
     }
 
@@ -1247,6 +1411,7 @@ mod tests {
             .await
             .unwrap();
         let first_asset_hits = state.asset_hits.load(Ordering::SeqCst);
+        let first_snapshot_hits = state.snapshot_hits.load(Ordering::SeqCst);
         let second = run_backup(&server, "token", "account-one", output.path())
             .await
             .unwrap();
@@ -1254,6 +1419,11 @@ mod tests {
         assert_eq!(second.updated, 0);
         assert_eq!(first_asset_hits, 2);
         assert_eq!(state.asset_hits.load(Ordering::SeqCst), first_asset_hits);
+        assert_eq!(
+            state.snapshot_hits.load(Ordering::SeqCst),
+            first_snapshot_hits,
+            "second run should skip snapshots via fast path"
+        );
         task.abort();
     }
 
@@ -1419,6 +1589,168 @@ mod tests {
         assert!(safe_relative_path("notes:2026.md").is_ok());
         assert!(safe_relative_path("C:\\escape.txt").is_err());
         assert!(safe_relative_path("dir\\escape.txt").is_err());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn sha_bump_only_saves_via_not_modified() {
+        let (server, state, task) = start_fixture().await;
+        let output = tempfile::tempdir().unwrap();
+        let first = run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
+        let first_snapshot_hits = state.snapshot_hits.load(Ordering::SeqCst);
+        let first_not_modified = state.not_modified_hits.load(Ordering::SeqCst);
+        let first_asset_hits = state.asset_hits.load(Ordering::SeqCst);
+
+        // Bump only epoch without changing content (sha unchanged)
+        state.listing_epoch.store(1, Ordering::SeqCst);
+        let second = run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
+
+        assert_eq!(first.updated, 2);
+        assert_eq!(second.updated, 0);
+        assert_eq!(
+            state.snapshot_hits.load(Ordering::SeqCst),
+            first_snapshot_hits + 2,
+            "second run should fetch snapshots for sha check"
+        );
+        assert_eq!(
+            state.not_modified_hits.load(Ordering::SeqCst),
+            first_not_modified + 2,
+            "both projects should return 304 not modified"
+        );
+        assert_eq!(
+            state.asset_hits.load(Ordering::SeqCst),
+            first_asset_hits,
+            "no new assets should be downloaded"
+        );
+
+        // Verify the third run (no bump) skips snapshots
+        let third = run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
+        assert_eq!(third.updated, 0);
+        assert_eq!(
+            state.snapshot_hits.load(Ordering::SeqCst),
+            first_snapshot_hits + 2,
+            "third run should skip snapshots via fast path"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn revision_bump_rebuilds_changed_archive() {
+        let (server, state, task) = start_fixture().await;
+        let output = tempfile::tempdir().unwrap();
+        let first = run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
+        assert_eq!(first.updated, 2);
+
+        // Bump revision (content changes, sha changes)
+        state.revision.store(1, Ordering::SeqCst);
+        let second = run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
+        assert_eq!(second.updated, 2);
+
+        let root = namespace(output.path());
+        let paper = root.join(archive_name("Paper", "paper-a1"));
+        let updated_paper = archive_files(&paper);
+        assert_eq!(updated_paper["paper.md"], b"# revised paper");
+        assert_eq!(updated_paper["images/plot.bin"], b"\x00\x01\xff");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn unchanged_snapshot_returned_with_200_is_not_rebuilt() {
+        let (server, state, task) = start_fixture().await;
+        let output = tempfile::tempdir().unwrap();
+        let first = run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
+        assert_eq!(first.updated, 2);
+        let first_asset_hits = state.asset_hits.load(Ordering::SeqCst);
+        let root = namespace(output.path());
+        let paper = root.join(archive_name("Paper", "paper-a1"));
+        let paper_mtime_before = fs::metadata(&paper).unwrap().modified().unwrap();
+
+        // Server ignores If-None-Match but content unchanged: returns 200, same digest
+        state.ignore_if_none_match.store(true, Ordering::SeqCst);
+        state.listing_epoch.store(1, Ordering::SeqCst);
+        let second = run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
+        assert_eq!(second.updated, 0, "digest unchanged, archive not rebuilt");
+        assert_eq!(
+            state.asset_hits.load(Ordering::SeqCst),
+            first_asset_hits,
+            "no new assets downloaded"
+        );
+        let paper_mtime_after = fs::metadata(&paper).unwrap().modified().unwrap();
+        assert_eq!(
+            paper_mtime_before, paper_mtime_after,
+            "archive file not modified"
+        );
+        let second_snapshot_hits = state.snapshot_hits.load(Ordering::SeqCst);
+
+        // Third run: no listing_epoch bump, fast skip applies
+        let third = run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
+        assert_eq!(third.updated, 0);
+        assert_eq!(
+            state.snapshot_hits.load(Ordering::SeqCst),
+            second_snapshot_hits,
+            "third run skips all snapshots via fast path"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn owned_archive_missing_an_entry_is_rebuilt_on_matching_200() {
+        let (server, state, task) = start_fixture().await;
+        let output = tempfile::tempdir().unwrap();
+        let first = run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
+        assert_eq!(first.updated, 2);
+
+        let root = namespace(output.path());
+        let paper = root.join(archive_name("Paper", "paper-a1"));
+
+        // Corrupt the archive by removing entries, but keep it a valid owned ZIP
+        let mut new_archive = tempfile::NamedTempFile::new_in(&root).unwrap();
+        {
+            let mut zw = zip::ZipWriter::new(new_archive.as_file_mut());
+            zw.set_comment(format!("{}\npaper-a1", OWNER_TAG));
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            zw.start_file("paper.md", opts).unwrap();
+            zw.write_all(b"# paper").unwrap();
+            zw.finish().unwrap();
+        }
+        new_archive.as_file_mut().sync_all().unwrap();
+        new_archive.persist(&paper).unwrap();
+
+        // Server returns 200 with same digest (ignore_if_none_match), but archive is incomplete
+        state.ignore_if_none_match.store(true, Ordering::SeqCst);
+        state.listing_epoch.store(1, Ordering::SeqCst);
+        let second = run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            second.updated, 1,
+            "incomplete archive detected despite 200 and matching digest"
+        );
+
+        // Archive should be rebuilt with all entries
+        let rebuilt = archive_files(&paper);
+        assert!(rebuilt.contains_key("paper.md"));
+        assert!(rebuilt.contains_key("images/plot.bin"));
+        assert!(rebuilt.contains_key("notes:2026.md"));
         task.abort();
     }
 

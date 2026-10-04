@@ -1381,6 +1381,8 @@ impl Server {
     /// `GET /api/backup/projects`: every project this signed-in account can
     /// read, independent of whether its account may publish new projects.
     /// The native companion uses this listing for account-scoped backups.
+    /// `sha` is the log sequence: it changes exactly when the source does,
+    /// and the companion skips unchanged projects on it.
     pub(super) async fn handle_backup_projects(
         &self,
         headers: &HeaderMap,
@@ -1432,6 +1434,7 @@ impl Server {
                     "slug": entry.slug,
                     "title": entry.title,
                     "updated_at": entry.updated_at,
+                    "sha": entry.sha,
                 })
             })
             .collect();
