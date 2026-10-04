@@ -962,6 +962,13 @@ fn scanner_reads_svg_presentation_attributes_and_anchor_links() {
     let references = closure_of("<svg><a xlink:href=\"other.html\"></a></svg>", &[])
         .expect("an SVG anchor is navigation, so an absent target is allowed");
     assert!(references.is_empty());
+
+    let references = closure_of(
+        "<div style=\"background:URL(bg.png)\"></div><svg><rect fill=\"Url(paint.svg#g)\"/></svg>",
+        &["bg.png", "paint.svg"],
+    )
+    .expect("the url function is case-insensitive");
+    assert!(references.contains("bg.png") && references.contains("paint.svg"));
 }
 
 #[test]

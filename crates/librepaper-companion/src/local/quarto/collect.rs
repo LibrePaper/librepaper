@@ -526,10 +526,15 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
                             elements.push((url, ReferenceKind::Resource));
                         }
                     }
-                    // `style`, and SVG presentation attributes such as
-                    // `filter="url(filters.svg#blur)"`: anything spelled as
-                    // CSS is scanned as CSS.
-                    _ if value.contains("url(") => {
+                    // `style` is always CSS. SVG presentation attributes such as
+                    // `filter="url(filters.svg#blur)"` are CSS when they carry a
+                    // url() function, in any letter case.
+                    "style" => {
+                        for reference in css_references(&value) {
+                            elements.push((reference, ReferenceKind::Resource));
+                        }
+                    }
+                    _ if value.to_ascii_lowercase().contains("url(") => {
                         for reference in css_references(&value) {
                             elements.push((reference, ReferenceKind::Resource));
                         }
