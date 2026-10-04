@@ -60,12 +60,51 @@ assert.ok(!link.includes(claimBody.verifier));
 assert.ok(!link.includes("scoped-token"));
 assert.equal(attempts, 4);
 assert.equal(local.status().state, "connected");
+const workingPairStorage = new Map(storage);
+
+// The trusted app uses an in-app control session and requests explicit
+// approval in Settings; it does not issue a public pair request or URL link.
+setup((n) => n === 1 ? response(202, {}) : response(200, { token: "inline-token", expires: 1000000, instance: "restart" }));
+let openedSettings = 0;
+let privilegedPair = null;
+local._testing.inject({ control: {
+  connect: async (address) => { assert.equal(address, local.address()); },
+  request: async (path, options) => { privilegedPair = { path, options }; return { accepted: true }; },
+  showSettings: () => { openedSettings++; },
+} });
+companionUp = true;
+await local.connectApp({ timeoutMs: 10000 });
+assert.equal(openedSettings, 1);
+assert.equal(privilegedPair.path, "/pair/request");
+assert.equal(privilegedPair.options.body.origin, "https://papers.example");
+assert.equal(attempts, 2);
+assert.equal(link, "");
+
+// A document/origin change while trusted session setup is in flight aborts
+// the old attempt without falling back to an approval request or URL link.
+setup(() => response(202, {}));
+companionUp = true;
+let finishControl;
+local._testing.inject({ control: {
+  connect: () => new Promise((resolve) => { finishControl = resolve; }),
+  request: async () => { throw new Error("must not request for a stale document"); },
+  showSettings() {},
+} });
+const staleAttempt = local.connectApp({ timeoutMs: 10000 });
+for (let wait = 0; !finishControl && wait < 50; wait++) await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(typeof finishControl, "function");
+local.configure({ origin: "https://other.example", project: "other" });
+finishControl();
+await assert.rejects(staleAttempt, (error) => error.name === "Canceled");
+assert.equal(pairBody, null);
+assert.equal(link, "");
 
 // A restart before reconnecting: a working stored pairing is revalidated and
 // reused without prompting or launching the companion.
 now = 0; link = ""; attempts = 0;
 local._testing.reset();
 inject(() => response(200, {}));
+storage = new Map(workingPairStorage);
 local.configure({ origin: "https://papers.example", project: "paper" });
 await local.connectApp({ timeoutMs: 10000 });
 assert.equal(link, "", "a working stored pairing needs no launch link");

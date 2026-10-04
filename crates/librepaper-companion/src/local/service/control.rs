@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const TOKEN_FILE: &str = "control-token.json";
-const MAX_TOOL_PATHS: usize = 64;
 
 #[derive(Serialize, Deserialize)]
 struct TokenFile {
@@ -189,7 +188,9 @@ pub(super) async fn handle(
     };
     let control = inner.control.lock().await;
     let Some(auth) = control.as_ref() else {
-        return write_json(503, &json!({"error":"local settings are not initialized"}));
+        let mut response = write_json(503, &json!({"error":"local settings are not initialized"}));
+        apply_api_cors(&mut response, origin, false);
+        return response;
     };
     if !auth.accepts_origin(origin) {
         return write_json(403, &json!({"error":"untrusted or missing Origin header"}));
@@ -198,6 +199,31 @@ pub(super) async fn handle(
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::NO_CONTENT;
         apply_api_cors(&mut response, origin, true);
+        return response;
+    }
+    if path == "/companion/api/session" {
+        let mut response = if *method != Method::POST {
+            write_json(405, &json!({"error":"method not allowed"}))
+        } else if !header_str(headers, "content-type").is_some_and(|value| {
+            value.split(';').next().is_some_and(|media_type| {
+                media_type.trim().eq_ignore_ascii_case("application/json")
+            })
+        }) {
+            write_json(
+                415,
+                &json!({"error":"application/json content type required"}),
+            )
+        } else {
+            write_json(
+                200,
+                &json!({
+                    "token":auth.token,
+                    "instance":auth.instance,
+                    "address":service_address(headers, inner.port),
+                }),
+            )
+        };
+        apply_api_cors(&mut response, origin, false);
         return response;
     }
     let credential = header_str(headers, "authorization").and_then(|value| {
@@ -240,6 +266,9 @@ pub(super) async fn handle(
         }
         (Some("approvals"), Some(id), None, None) if *method == Method::POST => {
             decide_approval(inner, id, request).await
+        }
+        (Some("pair"), Some("request"), None, None) if *method == Method::POST => {
+            super::consent::handle_pair_request_inline(inner, peer, request).await
         }
         (Some("pairings"), Some(id), None, None) if *method == Method::DELETE => {
             revoke_pairing(inner, id).await
@@ -305,6 +334,19 @@ fn apply_api_cors(response: &mut Reply, origin: &str, preflight: bool) {
         set(response, "access-control-allow-private-network", "true");
         set(response, "access-control-max-age", "600");
     }
+}
+
+fn service_address(headers: &HeaderMap, port: u16) -> String {
+    let host = header_str(headers, "host")
+        .map(str::trim)
+        .filter(|_| host_allowed(headers, port))
+        .unwrap_or("127.0.0.1");
+    let authority = if host.ends_with(&format!(":{port}")) {
+        host.to_string()
+    } else {
+        format!("{host}:{port}")
+    };
+    format!("http://{authority}/")
 }
 
 pub(super) fn apply_headers(mut response: Reply, path: &str) -> Reply {
@@ -408,8 +450,7 @@ async fn state(inner: &Inner) -> Reply {
             "agents":crate::local::acp_agents::detect(&inner.state_home),
             "custom_agents":crate::local::acp_agents::CustomStore::new(&inner.state_home).list().into_iter().map(|(id, agent)| json!({"id":id,"label":agent.label,"command":agent.command})).collect::<Vec<_>>(),
             "sessions":sessions,
-            "settings":{
-                "tool_paths":inner.runner.tool_paths(),
+        "settings":{
                 "startup_enabled":startup_enabled,
                 "integrations":crate::local::integrations::all(),
             }
@@ -581,45 +622,64 @@ async fn add_agent(inner: &Inner, request: Request<Body>) -> Reply {
             &json!({"error":"agent command is too large or invalid"}),
         );
     }
-    let id = body.id.unwrap_or_else(|| agent_id(&body.label));
-    match crate::local::acp_agents::CustomStore::new(&inner.state_home).add(
-        &id,
-        &body.label,
-        &body.command,
-    ) {
+    let store = crate::local::acp_agents::CustomStore::new(&inner.state_home);
+    let id = body.id.unwrap_or_else(|| {
+        let existing = store
+            .list()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<HashSet<_>>();
+        agent_id(&body.label, &existing)
+    });
+    match store.add(&id, &body.label, &body.command) {
         Ok(()) => write_json(200, &json!({"id":id})),
         Err(error) => write_json(400, &json!({"error":error})),
     }
 }
 
-fn agent_id(label: &str) -> String {
-    let mut id = String::new();
+fn agent_id(label: &str, existing: &HashSet<String>) -> String {
+    let mut stem = String::from("custom-");
     let mut dash = false;
     for character in label.trim().to_ascii_lowercase().chars() {
         if character.is_ascii_alphanumeric() {
-            id.push(character);
+            stem.push(character);
             dash = false;
-        } else if !id.is_empty() && !dash {
-            id.push('-');
+        } else if stem.len() > "custom-".len() && !dash {
+            stem.push('-');
             dash = true;
         }
-        if id.len() >= 40 {
+        if stem.len() >= 47 {
             break;
         }
     }
-    while id.ends_with('-') {
-        id.pop();
+    while stem.ends_with('-') && stem.len() > "custom-".len() {
+        stem.pop();
     }
-    if id.is_empty() {
-        "agent".into()
-    } else {
-        id
+    if stem == "custom-" {
+        stem.push_str("agent");
     }
+    if !existing.contains(&stem) {
+        return stem;
+    }
+    (2usize..)
+        .map(|suffix| format!("{stem}-{suffix}"))
+        .find(|candidate| !existing.contains(candidate))
+        .unwrap_or_else(|| format!("{stem}-agent"))
+}
+
+#[cfg(test)]
+#[test]
+fn generated_agent_ids_are_reserved_safe_and_unique() {
+    assert_eq!(agent_id("Claude", &HashSet::new()), "custom-claude");
+    assert_eq!(
+        agent_id("Claude", &HashSet::from(["custom-claude".to_string()])),
+        "custom-claude-2"
+    );
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SettingsRequest {
-    tool_paths: Option<Vec<PathBuf>>,
     startup_enabled: Option<bool>,
     integrations: Option<std::collections::BTreeMap<String, crate::local::integrations::Custom>>,
 }
@@ -629,20 +689,11 @@ async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
         Ok(body) => body,
         Err(response) => return response,
     };
-    let mut settings = match crate::local::settings::load(&inner.state_home) {
-        Ok(settings) => settings,
-        Err(error) => return write_json(500, &json!({"error":error})),
-    };
     if body.startup_enabled.is_some() && !super::standalone(inner) {
         return write_json(
             409,
             &json!({"error":"startup is available only in standalone mode"}),
         );
-    }
-    if body.tool_paths.is_none() {
-        // Keep CLI-provided effective paths if the user saves only another
-        // setting; otherwise an unrelated save would erase them on restart.
-        settings.tool_paths = inner.runner.tool_paths();
     }
     let integration_updates: Vec<_> = if let Some(integrations) = &body.integrations {
         let mut updates = Vec::with_capacity(integrations.len());
@@ -660,32 +711,8 @@ async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
     } else {
         Vec::new()
     };
-    if let Some(paths) = body.tool_paths.as_ref() {
-        if paths.len() > MAX_TOOL_PATHS || paths.iter().any(|path| !path.is_absolute()) {
-            return write_json(
-                400,
-                &json!({"error":"tool_paths must contain at most 64 absolute paths"}),
-            );
-        }
-        settings.tool_paths = paths.clone();
-    }
     if let Err(error) = crate::local::integrations::set_many(integration_updates) {
         return write_json(400, &json!({"error":error}));
-    }
-    let old_paths = inner.runner.tool_paths();
-    if let Some(paths) = &body.tool_paths {
-        if let Err(error) = inner.runner.set_tool_paths(paths.clone()) {
-            return write_json(400, &json!({"error":error}));
-        }
-    }
-    if let Err(error) = crate::local::settings::save(&inner.state_home, &settings) {
-        if body.tool_paths.is_some() {
-            let _ = inner.runner.set_tool_paths(old_paths);
-        }
-        return write_json(500, &json!({"error":error}));
-    }
-    if let Some(paths) = &body.tool_paths {
-        crate::local::integrations::set_tool_paths(paths.clone());
     }
 
     if let Some(enabled) = body.startup_enabled {
@@ -717,7 +744,7 @@ async fn quit(inner: &Inner) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::header::{AUTHORIZATION, HOST, ORIGIN};
+    use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, HOST, ORIGIN};
     use std::net::{Ipv4Addr, SocketAddrV4};
 
     fn request(
@@ -726,9 +753,20 @@ mod tests {
         origin: Option<&str>,
         host: &str,
     ) -> Request<Body> {
+        api_request(method, token, origin, host, "/companion/api/state", None)
+    }
+
+    fn api_request(
+        method: Method,
+        token: Option<&str>,
+        origin: Option<&str>,
+        host: &str,
+        path: &str,
+        content_type: Option<&str>,
+    ) -> Request<Body> {
         let mut request = Request::builder()
             .method(method)
-            .uri("/companion/api/state")
+            .uri(path)
             .body(Body::empty())
             .unwrap();
         request
@@ -744,6 +782,11 @@ mod tests {
             request
                 .headers_mut()
                 .insert(ORIGIN, HeaderValue::from_str(origin).unwrap());
+        }
+        if let Some(content_type) = content_type {
+            request
+                .headers_mut()
+                .insert(CONTENT_TYPE, HeaderValue::from_str(content_type).unwrap());
         }
         request
     }
@@ -771,6 +814,213 @@ mod tests {
             approvals: ApprovalBroker::default(),
             control: Mutex::new(None),
         })
+    }
+
+    async fn send_api(inner: &Arc<Inner>, request: Request<Body>, peer: SocketAddr) -> Reply {
+        let method = request.method().clone();
+        let path = request.uri().path().to_string();
+        let headers = request.headers().clone();
+        let response = handle(inner, &method, &path, &headers, peer, request).await;
+        apply_headers(response, &path)
+    }
+
+    #[tokio::test]
+    async fn inline_session_requires_post_json_trusted_origin_and_loopback_host() {
+        let state_home = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path()).await;
+        let auth = ControlAuth::create(state_home.path(), &inner.instance).unwrap();
+        let token = auth.token.clone();
+        let origin = auth.origin.clone();
+        *inner.control.lock().await = Some(auth);
+        let peer = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40000));
+
+        let response = send_api(
+            &inner,
+            api_request(
+                Method::POST,
+                None,
+                Some(&origin),
+                "localhost:8765",
+                "/companion/api/session",
+                Some("application/json; charset=utf-8"),
+            ),
+            peer,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["access-control-allow-origin"], origin);
+        assert_eq!(
+            response.headers()["cache-control"],
+            "no-store, no-cache, must-revalidate"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let session: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(session["token"], token);
+        assert_eq!(session["instance"], inner.instance);
+        assert_eq!(session["address"], "http://localhost:8765/");
+
+        let get = send_api(
+            &inner,
+            api_request(
+                Method::GET,
+                None,
+                Some(&origin),
+                "127.0.0.1:8765",
+                "/companion/api/session",
+                Some("application/json"),
+            ),
+            peer,
+        )
+        .await;
+        assert_eq!(get.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        let missing_content_type = send_api(
+            &inner,
+            api_request(
+                Method::POST,
+                None,
+                Some(&origin),
+                "127.0.0.1:8765",
+                "/companion/api/session",
+                None,
+            ),
+            peer,
+        )
+        .await;
+        assert_eq!(
+            missing_content_type.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        let wrong_content_type = send_api(
+            &inner,
+            api_request(
+                Method::POST,
+                None,
+                Some(&origin),
+                "127.0.0.1:8765",
+                "/companion/api/session",
+                Some("text/plain"),
+            ),
+            peer,
+        )
+        .await;
+        assert_eq!(
+            wrong_content_type.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        let missing_origin = send_api(
+            &inner,
+            api_request(
+                Method::POST,
+                Some(&token),
+                None,
+                "127.0.0.1:8765",
+                "/companion/api/session",
+                Some("application/json"),
+            ),
+            peer,
+        )
+        .await;
+        assert_eq!(missing_origin.status(), StatusCode::FORBIDDEN);
+
+        let (paired_token, _) = inner
+            .pairing
+            .issue("https://paired.example", "test")
+            .unwrap();
+        let foreign = send_api(
+            &inner,
+            api_request(
+                Method::POST,
+                Some(&paired_token),
+                Some("https://paired.example"),
+                "127.0.0.1:8765",
+                "/companion/api/session",
+                Some("application/json"),
+            ),
+            peer,
+        )
+        .await;
+        assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+        assert!(!foreign
+            .headers()
+            .contains_key("access-control-allow-origin"));
+
+        let bad_host = send_api(
+            &inner,
+            api_request(
+                Method::POST,
+                None,
+                Some(&origin),
+                "attacker.example",
+                "/companion/api/session",
+                Some("application/json"),
+            ),
+            peer,
+        )
+        .await;
+        assert_eq!(bad_host.status(), StatusCode::FORBIDDEN);
+
+        let remote_peer = SocketAddr::from(([192, 0, 2, 1], 40000));
+        let remote = send_api(
+            &inner,
+            api_request(
+                Method::POST,
+                None,
+                Some(&origin),
+                "127.0.0.1:8765",
+                "/companion/api/session",
+                Some("application/json"),
+            ),
+            remote_peer,
+        )
+        .await;
+        assert_eq!(remote.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn inline_pair_request_uses_existing_consent_queue_without_opening_browser() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let state_home = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path()).await;
+        let auth = ControlAuth::create(state_home.path(), &inner.instance).unwrap();
+        let token = auth.token.clone();
+        let origin = auth.origin.clone();
+        *inner.control.lock().await = Some(auth);
+        let opens = Arc::new(AtomicUsize::new(0));
+        let opened = opens.clone();
+        inner.approvals.set_opener(Some(Arc::new(move || {
+            opened.fetch_add(1, Ordering::SeqCst);
+        })));
+        let peer = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40000));
+        let body = json!({
+            "origin":origin.clone(),
+            "request":"0123456789abcdefghijklmnopqrstuv",
+            "challenge":"0000000000000000000000000000000000000000000000000000000000000000",
+            "return":format!("{origin}/"),
+        });
+        let request = Request::post("/companion/api/pair/request")
+            .header("host", "127.0.0.1:8765")
+            .header("origin", origin.as_str())
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = send_api(&inner, request, peer).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        for _ in 0..20 {
+            if !inner.approvals.list().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(inner.approvals.list().len(), 1);
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+        inner.approvals.deny_all();
     }
 
     #[tokio::test]

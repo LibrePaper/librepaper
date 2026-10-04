@@ -965,6 +965,9 @@ async fn backup_listing_includes_shared_reader_without_granting_publishing_acces
     assert_eq!(payload["documents"].as_array().unwrap().len(), 1);
     assert_eq!(payload["documents"][0]["slug"], deployment.slug);
     assert_eq!(payload["documents"][0]["title"], "A Paper");
+    assert!(payload["documents"][0]["sha"]
+        .as_str()
+        .is_some_and(|sha| !sha.is_empty()));
     assert!(payload.get("next_cursor").is_none());
 
     let anonymous_context = crate::server::RequestContext {

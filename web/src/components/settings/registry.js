@@ -61,10 +61,9 @@ export const CATEGORIES = [
       { id: "companion-lifecycle-heading", says: "General", terms: "running start login startup quit companion version" },
       { id: "companion-approvals-heading", says: "Approvals", terms: "allow deny approval pending requests access" },
       { id: "companion-sites-heading", says: "Connected sites", terms: "pairing revoke origin website site access" },
-      { id: "companion-folders-heading", says: "Authorized folders", terms: "bindings folder grant revoke directory project access" },
+      { id: "companion-folders-heading", says: "Project folders", terms: "bindings folder grant revoke directory project access" },
       { id: "companion-activity-heading", says: "Activity", terms: "jobs previews sessions cancel stop output logs" },
       { id: "companion-agents-heading", says: "Agents on this computer", terms: "custom agent add remove configured detected command" },
-      { id: "companion-tool-paths-heading", says: "Tool search folders", terms: "tool paths folders search PATH settings" },
     ],
   },
   {

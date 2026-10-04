@@ -2,17 +2,17 @@
   import { onMount } from "svelte";
   import SettingRow from "./SettingRow.svelte";
   import * as control from "../../lib/companion/control.js";
+  import * as localBridge from "../../lib/companion/client.js";
 
   let available = $state(false);
   let viewState = $state(null);
   let error = $state("");
+  let loadError = $state("");
   let notice = $state("");
   let pending = $state("");
-  let toolPaths = $state("");
-  let toolPathsDirty = $state(false);
-  let project = $state("");
-  let entrypoint = $state("index.qmd");
-  let selectedOrigin = $state("");
+  let connectError = $state("");
+  let agentError = $state("");
+  let agentNotice = $state("");
   let epoch = 0;
   let requestId = 0;
   let scope = "";
@@ -30,10 +30,9 @@
       const result = await control.request("/state");
       if (current !== requestId || expectedEpoch !== epoch || expectedScope !== control.scope() || !control.available()) return;
       viewState = result;
-      error = "";
-      if (!toolPathsDirty) toolPaths = list(result?.settings?.tool_paths).join("\n");
+      loadError = "";
     } catch (cause) {
-      if (current === requestId && expectedEpoch === epoch && expectedScope === control.scope()) error = cause?.message || "Could not load this computer's settings.";
+      if (current === requestId && expectedEpoch === epoch && expectedScope === control.scope()) loadError = cause?.message || "Could not load this computer's settings.";
     }
   }
 
@@ -58,23 +57,43 @@
     }
   }
 
-  async function saveToolPaths() {
-    const paths = toolPaths.split("\n").map((value) => value.trim()).filter(Boolean);
-    if (await act("tool-paths", "Tool search folders saved.", "/settings", { method: "PUT", body: { tool_paths: paths } })) toolPathsDirty = false;
+  async function manageThisComputer() {
+    if (pending) return;
+    pending = "connect";
+    connectError = "";
+    try {
+      await control.connect(localBridge.address());
+      control.showSettings();
+    } catch (cause) {
+      connectError = cause?.message || "Could not connect to this computer's companion.";
+    } finally {
+      pending = "";
+    }
   }
 
-  async function addBinding() {
-    const pairing = list(viewState?.pairings).find((item) => item.origin === selectedOrigin);
-    if (!pairing) {
-      error = "Connect a site before authorizing one of its project folders.";
+  async function addAgent(event) {
+    event.preventDefault();
+    if (pending) return;
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const label = String(data.get("label") || "").trim();
+    const executable = String(data.get("command") || "").trim();
+    const args = String(data.get("args") || "").split("\n").map((part) => part.trim()).filter(Boolean);
+    agentError = "";
+    agentNotice = "";
+    if (!label || !executable) {
+      agentError = "Enter a name and executable.";
       return;
     }
-    const currentProject = project.trim();
-    const currentEntrypoint = entrypoint.trim();
-    await act("folder", "Folder authorization added.", "/bindings/folder", {
-      method: "POST",
-      body: { origin: pairing.origin, project: currentProject, entrypoint: currentEntrypoint },
+    const saved = await act("agent-add", "Agent added.", "/agents", {
+      method: "POST", body: { label, command: [executable, ...args] },
     });
+    if (saved) {
+      form.reset();
+      agentNotice = "Agent added.";
+    } else {
+      agentError = error || "Could not add this agent.";
+    }
   }
 
   onMount(() => {
@@ -89,9 +108,12 @@
         requestId++;
         viewState = null;
         error = "";
+        loadError = "";
         notice = "";
+        connectError = "";
+        agentError = "";
+        agentNotice = "";
         pending = "";
-        toolPathsDirty = false;
       }
       if (available) void load(scope, epoch);
     };
@@ -111,8 +133,9 @@
 
 {#if available}
   {#if error}<p class="setting-description management-error" role="alert">{error}</p>{/if}
+  {#if loadError}<p class="setting-description management-error" role="alert">{loadError}</p>{/if}
   {#if notice}<p class="setting-description management-notice" role="status">{notice}</p>{/if}
-  {#if !viewState && !error}<p class="setting-description">Loading settings for this computer…</p>{/if}
+  {#if !viewState && !error && !loadError}<p class="setting-description">Loading settings for this computer…</p>{/if}
 
   <section id="local-status" class="settings-subsection" aria-labelledby="companion-lifecycle-heading">
     <div class="settings-section-title"><h4 class="settings-subhead" id="companion-lifecycle-heading">General</h4>{#if viewState?.version}<span class="setting-description">Version {viewState.version}</span>{/if}</div>
@@ -145,22 +168,17 @@
     {:else}<p class="setting-description">No connected sites.</p>{/each}
   </section>
 
+  {#if list(viewState?.bindings).length}
   <section class="settings-subsection" aria-labelledby="companion-folders-heading">
-    <div class="settings-section-title"><h4 class="settings-subhead" id="companion-folders-heading">Authorized folders</h4></div>
+    <div class="settings-section-title"><h4 class="settings-subhead" id="companion-folders-heading">Project folders</h4></div>
+    <p class="setting-description">Folders a connected site may use on this computer.</p>
     {#each list(viewState?.bindings) as binding (binding.id)}
       <SettingRow title={binding.project || "Authorized folder"} description={`${binding.origin || "Connected site"} · ${binding.entrypoint || "project folder"}${binding.root ? ` · ${binding.root}` : ""}${binding.execution_granted === false ? " · Code execution is not authorized" : ""}`}>
         <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(pending)} onclick={() => { if (confirm(`Remove folder authorization for ${binding.project || "this project"}?`)) void act(`binding-${binding.id}`, "Folder authorization removed.", `/bindings/${id(binding.id)}`, { method: "DELETE" }); }}>Revoke</button>
       </SettingRow>
-    {:else}<p class="setting-description">No folders are authorized.</p>{/each}
-    <SettingRow title="Authorize a project folder" description={list(viewState?.pairings).length ? "Choose the site and project, then select a folder in the companion." : "Connect a site before granting folder access."} stacked>
-      <div class="management-folder-form">
-        <label class="management-field">Connected site<select class="input input-sm setting-input" bind:value={selectedOrigin} disabled={!list(viewState?.pairings).length || Boolean(pending)}><option value="">Choose a site</option>{#each list(viewState?.pairings) as pairing (pairing.id)}<option value={pairing.origin}>{pairing.origin}</option>{/each}</select></label>
-        <label class="management-field">Project name<input class="input input-sm setting-input" bind:value={project} placeholder="Project" disabled={!list(viewState?.pairings).length || Boolean(pending)} /></label>
-        <label class="management-field">Entry file<input class="input input-sm setting-input" bind:value={entrypoint} placeholder="index.qmd" disabled={!list(viewState?.pairings).length || Boolean(pending)} /></label>
-        <button class="btn btn-sm lp-control-outline" type="button" disabled={!selectedOrigin || !project.trim() || !entrypoint.trim() || Boolean(pending)} onclick={() => void addBinding()}>{pending === "folder" ? "Choosing…" : "Choose folder"}</button>
-      </div>
-    </SettingRow>
+    {/each}
   </section>
+  {/if}
 
   <section class="settings-subsection" aria-labelledby="companion-activity-heading">
     <div class="settings-section-title"><h4 class="settings-subhead" id="companion-activity-heading">Activity</h4></div>
@@ -197,35 +215,24 @@
     {/each}
     {#if !detectedAgents.length && !list(viewState?.custom_agents).length}<p class="setting-description">No agents are detected or configured.</p>{/if}
     <SettingRow title="Add an agent" description="Add a command that LibrePaper can run on this computer." stacked>
-      <form class="management-agent-form" onsubmit={(event) => {
-        event.preventDefault();
-        const form = event.currentTarget;
-        const data = new FormData(form);
-        const label = String(data.get("label") || "").trim();
-        const command = [String(data.get("command") || "").trim(), ...String(data.get("args") || "").split("\n").map((part) => part.trim()).filter(Boolean)].filter(Boolean);
-        if (!label || !command.length) return;
-        void act("agent-add", "Agent added.", "/agents", { method: "POST", body: { label, command } }).then((saved) => { if (saved) form.reset(); });
-      }}>
-        <label class="management-field">Name<input class="input input-sm setting-input" name="label" required /></label>
-        <label class="management-field">Command<input class="input input-sm setting-input" name="command" required /></label>
-        <label class="management-field">Arguments<textarea class="input input-sm setting-input" name="args" rows="2"></textarea></label>
+      {#if agentError}<p class="setting-description management-error" role="alert">{agentError}</p>{/if}
+      {#if agentNotice}<p class="setting-description management-notice" role="status">{agentNotice}</p>{/if}
+      <p class="setting-description">Enter the executable separately from its arguments. Put one argument on each line.</p>
+      <form class="management-agent-form" onsubmit={addAgent}>
+        <label class="management-field">Name<input class="input input-sm setting-input" name="label" required disabled={Boolean(pending)} /></label>
+        <label class="management-field">Executable<input class="input input-sm setting-input" name="command" placeholder="npx" required disabled={Boolean(pending)} /></label>
+        <label class="management-field">Arguments<textarea class="input input-sm setting-input" name="args" rows="2" placeholder="One argument per line" disabled={Boolean(pending)}></textarea></label>
         <button class="btn btn-sm lp-control-outline" type="submit" disabled={Boolean(pending)}>{pending === "agent-add" ? "Adding…" : "Add agent"}</button>
       </form>
     </SettingRow>
   </section>
 
-  <section class="settings-subsection" aria-labelledby="companion-tool-paths-heading">
-    <div class="settings-section-title"><h4 class="settings-subhead" id="companion-tool-paths-heading">Tool search folders</h4></div>
-    <SettingRow title="Extra folders" description="Search these folders before the usual PATH. One absolute folder path per line." stacked>
-      <textarea class="input setting-input management-paths" aria-label="Extra tool search folders" rows="3" bind:value={toolPaths} oninput={() => toolPathsDirty = true} disabled={!viewState || Boolean(pending)}></textarea>
-      <button class="btn btn-sm lp-control-brand" type="button" disabled={!viewState || !toolPathsDirty || Boolean(pending)} onclick={() => void saveToolPaths()}>{pending === "tool-paths" ? "Saving…" : "Save folders"}</button>
-    </SettingRow>
-  </section>
 {:else}
   <section class="settings-subsection management-unavailable">
     <div class="settings-section-title"><h4 class="settings-subhead">Manage this computer</h4></div>
-    <SettingRow title="Computer controls" description="Choose Settings from the LibrePaper tray menu to manage approvals, connected sites, authorized folders, activity, agents, and local tool settings. The button can open Settings when this app has a registered link handler.">
-      <button class="btn btn-sm lp-control-outline" type="button" onclick={() => control.openSettings()}>Manage this computer</button>
+    <SettingRow title="Computer controls" description="Connect to the companion running on this computer to manage approvals, connected sites, project folders, activity, and agents.">
+      {#if connectError}<span class="setting-description management-error" role="alert">{connectError}</span>{/if}
+      <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(pending)} onclick={() => void manageThisComputer()}>{pending === "connect" ? "Connecting…" : "Manage this computer"}</button>
     </SettingRow>
   </section>
 {/if}
@@ -233,8 +240,7 @@
 <style>
   .management-error { color: var(--color-error-text); }
   .management-notice { color: var(--color-success-text); }
-  .management-folder-form, .management-agent-form { display: grid; gap: calc(var(--spacing) * 2); width: min(100%, 46rem); }
+  .management-agent-form { display: grid; gap: calc(var(--spacing) * 2); width: min(100%, 46rem); }
   .management-field { display: grid; gap: calc(var(--spacing) * .75); font-size: var(--text-sm); }
-  .management-paths { width: min(100%, 46rem); }
   .management-unavailable { margin-top: calc(var(--spacing) * 3); }
 </style>

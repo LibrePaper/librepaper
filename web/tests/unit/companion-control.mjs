@@ -114,8 +114,71 @@ function harness(hash = "") {
 
 {
   const h = harness();
-  h.client.openSettings();
-  assert.deepEqual(h.requests, [{ launch: "librepaper://settings" }]);
+  let opened = 0;
+  h.client.onSettingsRequested(() => opened++);
+  h.client.showSettings();
+  assert.equal(opened, 1);
+  assert.deepEqual(h.requests, []);
+}
+
+// A user-initiated trusted session is stored for the active app and emits no
+// navigation. The response address must remain the exact loopback target.
+{
+  const h = harness();
+  h.setFetch(async (url, init) => {
+    h.requests.push({ url, init });
+    return { ok: true, status: 200, json: async () => ({ address, token, instance }) };
+  });
+  const connected = await h.client.connect(address);
+  assert.deepEqual(connected, { address, instance });
+  assert.equal(h.client.available(), true);
+  assert.equal(h.client.scope(), `${address}|${instance}`);
+  assert.equal(h.requests[0].url, `${address}companion/api/session`);
+  assert.equal(h.requests[0].init.method, "POST");
+  assert.equal(h.requests[0].init.cache, "no-store");
+  assert.equal(h.requests.some((item) => item.launch), false);
+}
+
+// Session bootstrap rejects credentials for any other host or malformed
+// identity, even when the response came from a loopback fetch.
+for (const session of [
+  { address: "http://localhost:8763/", token, instance },
+  { address, token: "bad", instance },
+  { address, token, instance: "bad" },
+]) {
+  const h = harness();
+  h.setFetch(async () => ({ ok: true, status: 200, json: async () => session }));
+  await assert.rejects(h.client.connect(address), { name: "InvalidSession" });
+  assert.equal(h.client.available(), false);
+}
+
+// A newer explicit address choice wins, and an intake during a pending
+// request cancels that reply before it can replace the active session.
+{
+  const h = harness();
+  const deferred = [];
+  h.setFetch(() => new Promise((resolve) => deferred.push(resolve)));
+  const first = h.client.connect(address);
+  const secondAddress = "http://127.0.0.1:8764/";
+  const second = h.client.connect(secondAddress);
+  deferred[1]({ ok: true, status: 200, json: async () => ({ address: secondAddress, token, instance }) });
+  await second;
+  deferred[0]({ ok: true, status: 200, json: async () => ({ address, token, instance }) });
+  await assert.rejects(first, { name: "Canceled" });
+  assert.equal(h.client.scope(), `${secondAddress}|${instance}`);
+}
+
+{
+  const h = harness();
+  let finish;
+  h.setFetch(() => new Promise((resolve) => { finish = resolve; }));
+  const pending = h.client.connect(address);
+  h.location.href = "https://app.example.test/#settings=local&keep=yes";
+  h.location.hash = new URL(h.location.href).hash;
+  h.client.intake();
+  finish({ ok: true, status: 200, json: async () => ({ address, token, instance }) });
+  await assert.rejects(pending, { name: "Canceled" });
+  assert.equal(h.client.available(), false);
 }
 
 // If the browser denies sessionStorage, the control token remains available
