@@ -424,6 +424,28 @@ struct ChooseBindingRequest {
     entrypoint: String,
 }
 
+enum FolderGrantError {
+    PairingRevoked,
+    Grant(String),
+}
+
+async fn grant_selected_folder(
+    inner: &Inner,
+    origin: &str,
+    project: &str,
+    entrypoint: &str,
+    root: &Path,
+) -> Result<crate::local::quarto::ProjectBinding, FolderGrantError> {
+    let _admission = inner.pairing.admission_gate().lock().await;
+    if !inner.pairing.has_live_pairing(origin) {
+        return Err(FolderGrantError::PairingRevoked);
+    }
+    inner
+        .quarto_bindings
+        .grant(origin, project, root, entrypoint)
+        .map_err(FolderGrantError::Grant)
+}
+
 async fn choose_binding_folder(inner: &Inner, request: Request<Body>) -> Reply {
     let body = match read_json_body::<ChooseBindingRequest>(request).await {
         Ok(body) => body,
@@ -454,18 +476,13 @@ async fn choose_binding_folder(inner: &Inner, request: Request<Body>) -> Reply {
         Ok(root) => root,
         Err(error) => return write_json(400, &json!({"error":error})),
     };
-    if !inner.pairing.has_live_pairing(&origin) {
-        return write_json(
+    match grant_selected_folder(inner, &origin, &project, &body.entrypoint, &root).await {
+        Ok(binding) => write_json(200, &json!({"binding":binding})),
+        Err(FolderGrantError::PairingRevoked) => write_json(
             401,
             &json!({"error":"site pairing was revoked while choosing a folder"}),
-        );
-    }
-    match inner
-        .quarto_bindings
-        .grant(&origin, &project, &root, &body.entrypoint)
-    {
-        Ok(binding) => write_json(200, &json!({"binding":binding})),
-        Err(error) => write_json(400, &json!({"error":error})),
+        ),
+        Err(FolderGrantError::Grant(error)) => write_json(400, &json!({"error":error})),
     }
 }
 
@@ -795,6 +812,40 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn selected_folder_cannot_be_granted_after_pairing_revocation() {
+        let state_home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("paper.qmd"), "# Paper").unwrap();
+        let inner = test_inner(state_home.path()).await;
+        let origin = "https://site.example";
+        inner.pairing.issue(origin, "test").unwrap();
+
+        // Hold the same gate used by pairing revocation, then start the
+        // post-picker commit. It must wait here, rather than granting based
+        // on the pairing state observed before the native chooser opened.
+        let admission = inner.pairing.admission_gate().lock().await;
+        let grant_inner = inner.clone();
+        let root_path = root.path().to_path_buf();
+        let mut grant = tokio::spawn(async move {
+            grant_selected_folder(&grant_inner, origin, "paper", "paper.qmd", &root_path).await
+        });
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            &mut grant
+        )
+        .await
+        .is_err());
+
+        inner.pairing.revoke_checked(origin).unwrap();
+        drop(admission);
+        assert!(matches!(
+            grant.await.unwrap(),
+            Err(FolderGrantError::PairingRevoked)
+        ));
+        assert!(inner.quarto_bindings.list_all().is_empty());
     }
 
     #[test]
