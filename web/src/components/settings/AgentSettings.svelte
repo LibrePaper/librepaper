@@ -4,15 +4,14 @@
   import { splitArgs } from "../../lib/companion/args.js";
 
   let { view } = $props();
-  const { list, id } = view;
 
   let adding = $state(false);
   let invalid = $state("");
   let label = $state("");
   let command = $state("");
 
-  const customAgentIds = $derived(new Set(list(view.state?.custom_agents).map((agent) => String(agent.id))));
-  const detectedAgents = $derived(list(view.state?.agents).filter((agent) => !customAgentIds.has(String(agent.id))));
+  const customAgentIds = $derived(new Set(view.list(view.state?.custom_agents).map((agent) => String(agent.id))));
+  const detectedAgents = $derived(view.list(view.state?.agents).filter((agent) => !customAgentIds.has(String(agent.id))));
 
   const agentStatus = (agent) => agent.assistant_blocked ? { label: "Needs setup", tone: "warn" } : agent.assistant ? { label: "Ready", tone: "good" } : { label: "Not supported", tone: "neutral" };
 
@@ -44,14 +43,14 @@
     {#each detectedAgents as agent (agent.id)}
       <ToolRow title={agent.label || agent.id} description={agent.assistant_blocked || agent.assistant_note || (agent.assistant_fetches ? "Downloads its adapter the first time you use it." : "")} status={agentStatus(agent)} />
     {/each}
-    {#each list(view.state?.custom_agents) as agent (agent.id)}
-      <ToolRow title={agent.label || agent.id || "Configured agent"} description={list(agent.command).join(" ")} status={{ label: "Added", tone: "neutral" }}>
+    {#each view.list(view.state?.custom_agents) as agent (agent.id)}
+      <ToolRow title={agent.label || agent.id || "Configured agent"} description={view.list(agent.command).join(" ")} status={{ label: "Added", tone: "neutral" }}>
         {#snippet actions()}
-          <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Remove ${agent.label || "this agent"}?`)) void view.act(`agent-${agent.id}`, "Agent removed.", `/agents/${id(agent.id)}`, { method: "DELETE" }); }}>Remove</button>
+          <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Remove ${agent.label || "this agent"}?`)) void view.act(`agent-${agent.id}`, "Agent removed.", `/agents/${view.id(agent.id)}`, { method: "DELETE" }); }}>Remove</button>
         {/snippet}
       </ToolRow>
     {/each}
-    {#if view.state && !detectedAgents.length && !list(view.state?.custom_agents).length}<p class="setting-description">No agents found.</p>{/if}
+    {#if view.state && !detectedAgents.length && !view.list(view.state?.custom_agents).length}<p class="setting-description">No agents found.</p>{/if}
 
     <div id="agents-add" class="agent-add">
       {#if adding}

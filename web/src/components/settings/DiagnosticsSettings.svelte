@@ -5,7 +5,6 @@
   import { companion } from "../../lib/companion/status.svelte.js";
 
   let { view } = $props();
-  const { list, id } = view;
   const active = (status) => !["done", "complete", "completed", "succeeded", "failed", "error", "cancelled", "canceled", "stopped", "interrupted", "expired", "denied"].includes(String(status || "").toLowerCase());
 
   const local = $derived(companion.status);
@@ -197,23 +196,23 @@
 
   <section id="diagnostics-activity" class="settings-subsection" aria-labelledby="diagnostics-activity-heading">
     <div class="settings-section-title"><h4 class="settings-subhead" id="diagnostics-activity-heading">Activity</h4></div>
-    {#each list(view.state?.jobs) as job (job.id)}
+    {#each view.list(view.state?.jobs) as job (job.id)}
       <SettingRow title={[job.kind, job.stage].filter(Boolean).join(" · ") || "Local job"} description={`${job.status || "running"}${job.error ? ` · ${job.error}` : ""}${job.log_tail ? `\n${Array.isArray(job.log_tail) ? job.log_tail.join("\n") : job.log_tail}` : ""}`} stacked>
-        {#if active(job.status)}<button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`job-${job.id}`, "Cancellation requested.", `/jobs/${id(job.id)}/cancel`, { method: "POST" })}>Cancel</button>{/if}
+        {#if active(job.status)}<button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`job-${job.id}`, "Cancellation requested.", `/jobs/${view.id(job.id)}/cancel`, { method: "POST" })}>Cancel</button>{/if}
       </SettingRow>
     {/each}
-    {#each list(view.state?.previews) as preview (preview.id)}
+    {#each view.list(view.state?.previews) as preview (preview.id)}
       <SettingRow title={preview.label || preview.project || "Preview"} description={`${preview.status || "active"}${preview.log_tail ? `\n${preview.log_tail}` : ""}`} stacked>
-        <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`preview-${preview.id}`, "Preview stopped.", `/previews/${id(preview.id)}`, { method: "DELETE" })}>Stop preview</button>
+        <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`preview-${preview.id}`, "Preview stopped.", `/previews/${view.id(preview.id)}`, { method: "DELETE" })}>Stop preview</button>
       </SettingRow>
     {/each}
-    {#each list(view.state?.sessions) as session (session.id)}
+    {#each view.list(view.state?.sessions) as session (session.id)}
       {@const sessionStatus = session.status || session.state || "active"}
       <SettingRow title={session.name || session.agent || session.id || "Agent session"} description={`${sessionStatus}${session.task || session.task_id || session.detail ? ` · ${session.task || session.task_id || session.detail}` : ""}`}>
-        {#if active(sessionStatus)}<button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`session-${session.id}`, "Agent stop requested.", `/agents/sessions/${id(session.id)}/cancel`, { method: "POST" })}>Stop</button>{/if}
+        {#if active(sessionStatus)}<button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`session-${session.id}`, "Agent stop requested.", `/agents/sessions/${view.id(session.id)}/cancel`, { method: "POST" })}>Stop</button>{/if}
       </SettingRow>
     {/each}
-    {#if !list(view.state?.jobs).length && !list(view.state?.previews).length && !list(view.state?.sessions).length}
+    {#if !view.list(view.state?.jobs).length && !view.list(view.state?.previews).length && !view.list(view.state?.sessions).length}
     <p class="setting-description">Nothing running.</p>
     {/if}
   </section>

@@ -7,7 +7,6 @@
 
   // The page does not own the machine view; the dialog creates and starts it.
   let { view } = $props();
-  const { list, id } = view;
 
   // Watching never probes, so opening this page cannot prompt for local network access.
   $effect(() => companion.watch());
@@ -75,14 +74,14 @@
 
 <ConnectionRow id="tools-connection" />
 
-{#if view.available && list(view.state?.approvals).length}
+{#if view.available && view.list(view.state?.approvals).length}
 <section id="tools-approvals" class="settings-subsection" aria-labelledby="tools-approvals-heading">
   <div class="settings-section-title"><h4 class="settings-subhead" id="tools-approvals-heading">Waiting for your answer</h4></div>
   <p class="setting-description">Sites ask before they connect to this computer or change its settings.</p>
-  {#each list(view.state?.approvals) as approval (approval.id)}
+  {#each view.list(view.state?.approvals) as approval (approval.id)}
     <SettingRow title={approval.title || "Approval request"} description={approval.message || "This request has no additional details."}>
-      <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`approval-${approval.id}`, "Request denied.", `/approvals/${id(approval.id)}`, { method: "POST", body: { decision: "deny" } })}>Deny</button>
-      <button class="btn btn-sm lp-control-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`approval-${approval.id}`, "Request allowed.", `/approvals/${id(approval.id)}`, { method: "POST", body: { decision: "allow" } })}>{approval.allow_label || "Allow"}</button>
+      <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`approval-${approval.id}`, "Request denied.", `/approvals/${view.id(approval.id)}`, { method: "POST", body: { decision: "deny" } })}>Deny</button>
+      <button class="btn btn-sm lp-control-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`approval-${approval.id}`, "Request allowed.", `/approvals/${view.id(approval.id)}`, { method: "POST", body: { decision: "allow" } })}>{approval.allow_label || "Allow"}</button>
     </SettingRow>
   {/each}
 </section>
@@ -105,21 +104,21 @@
 {#if view.available}
   <section id="tools-sites" class="settings-subsection" aria-labelledby="tools-sites-heading">
     <div class="settings-section-title"><h4 class="settings-subhead" id="tools-sites-heading">Connected sites</h4></div>
-    {#each list(view.state?.pairings) as pairing (pairing.id)}
+    {#each view.list(view.state?.pairings) as pairing (pairing.id)}
       <SettingRow title={pairing.origin || "Connected site"} description={pairing.created_at ? `Connected ${new Date(Number(pairing.created_at) * 1000).toLocaleString()}` : "This site can use the companion."}>
-        <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Revoke access for ${pairing.origin}?`)) void view.act(`pairing-${pairing.id}`, "Site access revoked.", `/pairings/${id(pairing.id)}`, { method: "DELETE" }); }}>Revoke</button>
+        <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Revoke access for ${pairing.origin}?`)) void view.act(`pairing-${pairing.id}`, "Site access revoked.", `/pairings/${view.id(pairing.id)}`, { method: "DELETE" }); }}>Revoke</button>
       </SettingRow>
     {:else}
     <p class="setting-description">None.</p>
     {/each}
   </section>
 
-  {#if list(view.state?.bindings).length}
+  {#if view.list(view.state?.bindings).length}
   <section id="tools-folders" class="settings-subsection" aria-labelledby="tools-folders-heading">
     <div class="settings-section-title"><h4 class="settings-subhead" id="tools-folders-heading">Project folders</h4></div>
-    {#each list(view.state?.bindings) as binding (binding.id)}
+    {#each view.list(view.state?.bindings) as binding (binding.id)}
       <SettingRow title={binding.project || "Authorized folder"} description={`${binding.origin || "Connected site"} · ${binding.entrypoint || "project folder"}${binding.root ? ` · ${binding.root}` : ""}${binding.execution_granted === false ? " · Code execution is not authorized" : ""}`}>
-        <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Remove folder authorization for ${binding.project || "this project"}?`)) void view.act(`binding-${binding.id}`, "Folder authorization removed.", `/bindings/${id(binding.id)}`, { method: "DELETE" }); }}>Revoke</button>
+        <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Remove folder authorization for ${binding.project || "this project"}?`)) void view.act(`binding-${binding.id}`, "Folder authorization removed.", `/bindings/${view.id(binding.id)}`, { method: "DELETE" }); }}>Revoke</button>
       </SettingRow>
     {/each}
   </section>
