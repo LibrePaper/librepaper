@@ -23,7 +23,15 @@ if (!existsSync(binary)) {
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-dashboard-check-"));
 const stateHome = join(temporary, "state");
 const cacheHome = join(temporary, "cache");
-const appEnv = { ...process.env, XDG_STATE_HOME: stateHome, XDG_CACHE_HOME: cacheHome, HOME: temporary };
+const appEnv = {
+  ...process.env,
+  HOME: temporary,
+  XDG_STATE_HOME: stateHome,
+  XDG_CACHE_HOME: cacheHome,
+  XDG_CONFIG_HOME: join(temporary, "config"),
+  XDG_DATA_HOME: join(temporary, "data"),
+  DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(temporary, "no-dbus", "bus")}`,
+};
 delete appEnv.DISPLAY;
 delete appEnv.WAYLAND_DISPLAY;
 
