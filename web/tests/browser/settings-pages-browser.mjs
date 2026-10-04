@@ -1,7 +1,7 @@
 // Where a setting lives, in the dialog itself. A tool that builds the
-// document is configured on the Render page, whole; Integrations holds what
-// feeds a document without building it; the Companion page manages this
-// computer; and the Account page carries the server for everybody.
+// document is configured on the Rendering page; the Tools page holds the
+// programs on this computer and the connection to them; Diagnostics is for
+// troubleshooting the companion; and the Account page carries the server.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -36,7 +36,7 @@ writeFileSync(harness, `
 <script>
   import SettingsDialog from ${JSON.stringify(join(root, "web/src/components/settings/SettingsDialog.svelte"))};
   let open = $state(false);
-  let category = $state("render");
+  let category = $state("rendering");
   let sourceFormat = $state("quarto");
   window.show = (page, format) => { category = page; sourceFormat = format; open = true; };
   window.applied = [];
@@ -156,28 +156,31 @@ try {
     }
     await b.resize(1280, 900);
   };
-  const everything = ["render-local", "render-latex-engine", "render-latex-files", "calepin-status", "calepin-executable", "calepin-arguments",
-    "render-markdown-tool", "quarto-status", "quarto-executable", "quarto-arguments",
-    "rendering-profile", "rendering-parameters", "integrations-companion", "zotero-status",
-    "local-status", "local-address", "local-doctor", "remote-status", "remote-address", "storage-account", "account-erase"];
+  const everything = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters",
+    "tools-connection", "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites", "quarto-executable", "quarto-arguments",
+    "diagnostics-connection", "diagnostics-address", "diagnostics-startup", "diagnostics-report", "diagnostics-activity",
+    "remote-status", "remote-address", "storage-account", "account-erase"];
+  const renderingRows = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters"];
+  const renderingSections = ["LaTeX", "Markdown and Quarto"];
 
   // The navigation, in order, for a visitor on a Quarto document.
   await until("harness mounted", () => b.evaluate("typeof window.show === \"function\""), 10000);
-  await show("render", "quarto", "Render");
+  await show("rendering", "quarto", "Rendering");
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
-    ["Editor", "Render", "Integrations", "Companion", "Agents", "Backups", "Account"]);
+    ["Editor", "Rendering", "Tools", "AI agents", "Backups", "Account", "Diagnostics"]);
 
-  // Render always shows four sections with global build options visible for all formats.
-  await until("the Quarto rows", () => present(["quarto-executable"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "calepin-status", "calepin-executable", "calepin-arguments",
-    "render-markdown-tool", "quarto-status", "quarto-executable", "quarto-arguments",
-    "rendering-profile", "rendering-parameters"]);
-  assert.deepEqual(await subheads(), ["Detected tools", "LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  // Rendering shows two sections with global build options visible for all formats.
+  await until("the Quarto profile rows", () => present(["rendering-profile"]).then((found) => found.length === 1), 5000);
+  assert.deepEqual(await present(everything), renderingRows);
+  assert.deepEqual(await subheads(), renderingSections);
   assert.equal(await b.evaluate(`document.querySelector(".settings-group-title") === null`), true);
-  await capture("render-connected");
+  // The companion and the programs it finds live on the Tools page, not here.
+  assert.equal(await b.evaluate(`[...document.querySelectorAll(".settings-body .setting-status-pill")].some((pill) => /Companion|Running|Not running|Needs approval|Blocked|Update needed/.test(pill.textContent))`), false, "Rendering has no companion or program status pill");
+  assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, "Rendering has no executable fields");
+  await capture("rendering-connected");
   if (screenshotDir) {
     await b.evaluate("document.querySelector('.settings-body').scrollTop = document.querySelector('.settings-body').scrollHeight");
-    await capture("render-tools");
+    await capture("rendering-bottom");
     await b.evaluate("document.querySelector('.settings-body').scrollTop = 0");
   }
   // Quarto profile and parameters are stored globally, not per document.
@@ -185,35 +188,43 @@ try {
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').value`), "");
 
   // The same sections remain visible for all formats.
-  await show("render", "typst", "Render");
-  await until("the Calepin rows", () => present(["calepin-executable"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "calepin-status", "calepin-executable", "calepin-arguments",
-    "render-markdown-tool", "quarto-status", "quarto-executable", "quarto-arguments", "rendering-profile", "rendering-parameters"]);
-  assert.deepEqual(await subheads(), ["Detected tools", "LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  await show("rendering", "typst", "Rendering");
+  assert.deepEqual(await present(everything), renderingRows);
+  assert.deepEqual(await subheads(), renderingSections);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
-  await show("render", "latex", "Render");
+  await show("rendering", "latex", "Rendering");
   await until("the LaTeX rows", () => present(["render-latex-files"]).then((found) => found.length === 1), 5000);
-  assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "calepin-status", "calepin-executable", "calepin-arguments",
-    "render-markdown-tool", "quarto-status", "quarto-executable", "quarto-arguments", "rendering-profile", "rendering-parameters"]);
-  assert.deepEqual(await subheads(), ["Detected tools", "LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  assert.deepEqual(await present(everything), renderingRows);
+  assert.deepEqual(await subheads(), renderingSections);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
-  await show("render", "html", "Render");
-  assert.deepEqual(await subheads(), ["Detected tools", "LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  await show("rendering", "html", "Rendering");
+  assert.deepEqual(await subheads(), renderingSections);
   assert.ok((await present(everything)).includes("render-latex-files"));
-  // None of that looked for the companion: the Render page must not make the
+  // None of that looked for the companion: the Rendering page must not make the
   // browser ask for local network access just by opening.
-  assert.equal(await b.evaluate("window.probeCalls"), 0, "the Render page does not probe for the companion");
+  assert.equal(await b.evaluate("window.probeCalls"), 0, "the Rendering page does not probe for the companion");
 
-  // Zotero feeds a document without building it.
-  await show("integrations", "quarto", "Integrations");
-  await capture("zotero");
-  assert.deepEqual(await present(everything), ["integrations-companion", "zotero-status"]);
-  assert.deepEqual(await subheads(), ["Zotero"]);
+  // The Tools page is the connection and the programs on this computer. Zotero
+  // feeds a document without building it, and has no command of its own.
+  await show("tools", "quarto", "Tools");
+  await until("the program rows", () => present(["tools-zotero"]).then((found) => found.length === 1), 5000);
+  await capture("tools");
+  assert.deepEqual(await present(everything), ["tools-connection", "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites"]);
+  assert.deepEqual(await subheads(), ["Programs", "Connected sites"]);
+  assert.match(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent`), /Available · 7\.0/);
+  assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero has no command to edit");
+  assert.match(await b.evaluate(`document.querySelector("#tools-connection .setting-status-pill")?.textContent`), /Running/);
+  // Quarto lists its executable and arguments behind Details.
+  assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, "the executable row starts hidden");
+  await b.evaluate(`document.querySelector("#tools-quarto .tool-row-toggle").click()`);
+  await until("the Quarto command rows", () => present(["quarto-executable", "quarto-arguments"]).then((found) => found.length === 2), 5000);
+  assert.deepEqual(await present(everything), ["tools-connection", "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites", "quarto-executable", "quarto-arguments"]);
 
-  // The Companion page is the connection and the machine, not the tools.
-  await show("local", "quarto", "Companion");
-  await capture("companion");
-  assert.deepEqual(await present(everything), ["local-status", "local-address", "local-doctor"]);
+  // The Diagnostics page is the address, the machine and the setup check.
+  await show("diagnostics", "quarto", "Diagnostics");
+  await until("the startup row", () => present(["diagnostics-startup"]).then((found) => found.length === 1), 5000);
+  await capture("diagnostics");
+  assert.deepEqual(await present(everything), ["diagnostics-connection", "diagnostics-address", "diagnostics-startup", "diagnostics-report", "diagnostics-activity"]);
 
   // A visitor's Account page is the server; storage and erasure need an account.
   await show("account", "quarto", "Account");
@@ -223,31 +234,33 @@ try {
   assert.match(await b.evaluate(`document.querySelector("#remote-status").textContent`), /Remote connection/);
 
   // Offline settings stay visible. Build tool selections are available globally,
-  // while integration settings for local tools are disabled.
+  // while the command fields for local tools are disabled.
   await b.evaluate(`window.setCompanionState("unreachable")`);
-  await show("render", "quarto", "Render");
-  await capture("render-offline");
-  assert.deepEqual(await subheads(), ["Detected tools", "LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
-  await until("offline render settings", () => present(["render-latex-engine"]).then((found) => found.length === 1), 5000);
+  await show("rendering", "quarto", "Rendering");
+  await capture("rendering-offline");
+  assert.deepEqual(await subheads(), renderingSections);
+  await until("offline rendering settings", () => present(["render-latex-engine"]).then((found) => found.length === 1), 5000);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="LaTeX engine"]').disabled`), false);
-  assert.equal(await b.evaluate(`document.querySelector("#calepin-status .setting-status-pill")?.textContent.trim()`), "Not checked");
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
+  await show("tools", "quarto", "Tools");
+  assert.equal(await b.evaluate(`document.querySelector("#tools-calepin .setting-status-pill")?.textContent.trim()`), "Not checked");
+  assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent.trim()`), "Not checked");
+  assert.match(await b.evaluate(`document.querySelector("#tools-connection .setting-status-pill")?.textContent`), /Not running/);
+  assert.match(await b.evaluate(`document.querySelector("#tools-connection").textContent`), /Install|Connect/);
+  assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero does not load an editable companion config");
+  await b.evaluate(`document.querySelector("#tools-quarto .tool-row-toggle").click()`);
+  await until("offline Quarto command rows", () => present(["quarto-executable"]).then((found) => found.length === 1), 5000);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Executable path"]')?.disabled`), true);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Arguments"]')?.disabled`), true);
-  await show("integrations", "zotero", "Integrations");
-  assert.match(await b.evaluate(`document.querySelector('.integration-note').textContent`), /local API/i);
-  assert.match(await b.evaluate(`document.querySelector('.integration-note').textContent`), /Settings/i);
-  assert.match(await b.evaluate(`document.querySelector('.settings-body').textContent`), /Companion|Not running/i);
-  assert.equal(await b.evaluate(`document.querySelector('.integration-error') !== null`), false, "Zotero does not load an editable companion config");
 
-  await capture("zotero-offline");
-  await show("local", "quarto", "Companion");
-  await capture("companion-offline");
+  await capture("tools-offline");
+  await show("diagnostics", "quarto", "Diagnostics");
+  await capture("diagnostics-offline");
   await show("backups", "quarto", "Backups");
   await capture("backups-offline");
 
-  console.log("settings-pages-browser: Render shows four sections with global format options visible for all documents, Quarto settings remain editable offline, local integration controls disable without the companion, and Remote and Zotero explain their status");
+  console.log("settings-pages-browser: Rendering shows two sections with global format options for all documents and no companion rows, Tools lists the programs with Quarto commands behind Details, Diagnostics holds the address and setup check, Quarto settings remain editable offline, and local command fields disable without the companion");
 } finally {
   if (b) await b.close();
   server.close();
