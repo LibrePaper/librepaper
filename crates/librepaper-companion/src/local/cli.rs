@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,18 +35,6 @@ pub struct LaunchArgs {
         help_heading = "Companion"
     )]
     pub port: Option<u16>,
-    /// Extra directories searched before PATH for typst, pandoc and calepin
-    #[arg(
-        long,
-        value_name = "DIRS",
-        env = "LIBREPAPER_TOOL_PATH",
-        value_delimiter = ':',
-        help_heading = "Companion"
-    )]
-    pub tool_path: Vec<PathBuf>,
-    /// Lossless path transport used only by the detached companion launcher.
-    #[arg(long, value_name = "DIR", hide = true)]
-    pub internal_tool_path: Vec<PathBuf>,
 }
 
 /// `librepaper local <command>` compatibility commands. Keep these aliases
@@ -66,16 +55,7 @@ pub enum LocalCommand {
     Open { url: String },
     /// Whether the service is running, its address, code and pairings, and which native tools were found
     #[command(hide = true)]
-    Status {
-        /// Extra directories searched before PATH for typst, pandoc and calepin, colon-separated
-        #[arg(
-            long,
-            value_name = "DIRS",
-            env = "LIBREPAPER_TOOL_PATH",
-            value_delimiter = ':'
-        )]
-        tool_path: Vec<PathBuf>,
-    },
+    Status,
     /// Approve a dialog request from the companion
     Approve {
         /// Approval code from the dialog
@@ -135,19 +115,15 @@ pub async fn run(args: LocalArgs) {
                     die(error);
                 }
             }
-            let mut override_paths = args.tool_path;
-            override_paths.extend(args.internal_tool_path);
-            let tool_path = crate::local::settings::tool_paths(&state_home(), override_paths)
-                .unwrap_or_else(|error| die(error));
             if args.foreground {
-                start_foreground(port, tool_path).await
+                start_foreground(port).await
             } else {
-                start_background(port, &tool_path).await
+                start_background(port).await
             }
         }
         LocalCommand::Stop => stop().await,
         LocalCommand::Open { url } => open(&url).await,
-        LocalCommand::Status { tool_path } => status(tool_path).await,
+        LocalCommand::Status => status().await,
         LocalCommand::Approve { code } => approve(&code).await,
         LocalCommand::Disconnect { origin } => disconnect(origin),
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -169,8 +145,8 @@ fn cache_home() -> PathBuf {
         .unwrap_or_else(|| die("no home directory to store the job cache in"))
 }
 
-async fn start_background(port: u16, tool_path: &[PathBuf]) {
-    match crate::local::lifecycle::spawn_background(port, tool_path).await {
+async fn start_background(port: u16) {
+    match crate::local::lifecycle::spawn_background(port).await {
         Ok(state) => println!(
             "Companion ready on port {}. Open Settings → Companion to manage it; use tray Settings when available.",
             state.port
@@ -179,7 +155,7 @@ async fn start_background(port: u16, tool_path: &[PathBuf]) {
     }
 }
 
-async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
+async fn start_foreground(port: u16) {
     let state_home = state_home();
     let pairing = PairingStore::new(&state_home, None);
     let port = if port == 0 { DEFAULT_PORT } else { port };
@@ -235,7 +211,6 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
         .join("local")
         .join("workspaces");
     let runner: Arc<dyn Runner> = Arc::new(NativeRunner::with_hosted_workspaces(
-        tool_path,
         &state_home,
         workspaces.clone(),
     ));
@@ -322,7 +297,7 @@ async fn open(url: &str) {
     if let Err(error) = crate::local::lifecycle::connection_target(url, DEFAULT_PORT) {
         die(error);
     }
-    let state = crate::local::lifecycle::spawn_background(0, &[])
+    let state = crate::local::lifecycle::spawn_background(0)
         .await
         .unwrap_or_else(|error| die(error));
     let target = crate::local::lifecycle::connection_target(url, state.port)
@@ -350,7 +325,7 @@ async fn open(url: &str) {
 /// `make demo` uses it to decide whether to start a companion or leave the
 /// one already running alone. Reports the service address, code and pairings,
 /// then the native tools found and missing.
-async fn status(tool_path: Vec<PathBuf>) {
+async fn status() {
     let home = state_home();
     let pairing = PairingStore::new(&home, None);
     let mut answering = true;
@@ -398,7 +373,7 @@ async fn status(tool_path: Vec<PathBuf>) {
     }
 
     println!();
-    let capabilities = crate::local::discovery::discover(true, &tool_path).await;
+    let capabilities = crate::local::discovery::discover(true).await;
     println!("platform: {}", capabilities.platform);
     println!("tools:");
     print_tool("calepin", &capabilities.calepin);

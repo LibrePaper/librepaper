@@ -287,15 +287,7 @@ pub(crate) enum Command {
     /// Ask the companion to stop cleanly
     Stop,
     /// Show companion status and available tools
-    Status {
-        #[arg(
-            long,
-            value_name = "DIRS",
-            env = "LIBREPAPER_TOOL_PATH",
-            value_delimiter = ':'
-        )]
-        tool_path: Vec<PathBuf>,
-    },
+    Status,
     /// Install a native launcher for starting the companion.
     InstallDesktop,
     /// Manage agents this computer offers to the document sidebar
@@ -521,9 +513,9 @@ pub async fn main() {
             })
             .await
         }
-        Command::Status { tool_path } => {
+        Command::Status => {
             librepaper_companion::local::cli::run(LocalArgs {
-                command: LocalCommand::Status { tool_path },
+                command: LocalCommand::Status,
             })
             .await
         }
@@ -601,11 +593,7 @@ async fn run_admin(command: AdminCommand) {
                         || -> librepaper_server::server::serve::StartLocal {
                             Box::new(|base| {
                                 Box::pin(async move {
-                                    let app = librepaper_companion::local::embedded::start(
-                                        &base,
-                                        Vec::new(),
-                                    )
-                                    .await?;
+                                    let app = librepaper_companion::local::embedded::start(&base).await?;
                                     let stopper = app.clone();
                                     Ok(librepaper_server::server::serve::LocalApp {
                                         address: app.address.clone(),
@@ -809,14 +797,14 @@ mod socket_policy_tests {
             "--at-login",
             "--port",
             "9123",
-            "--tool-path",
-            "/opt/tools",
         ])
         .unwrap();
         assert!(configured.launch.foreground);
         assert!(configured.launch.at_login);
         assert_eq!(configured.launch.port, Some(9123));
-        assert_eq!(configured.launch.tool_path, [PathBuf::from("/opt/tools")]);
+        assert!(Cli::try_parse_from(["librepaper", "--tool-path", "/opt/tools"]).is_err());
+        assert!(Cli::try_parse_from(["librepaper", "start", "--tool-path", "/opt/tools"]).is_err());
+        assert!(Cli::try_parse_from(["librepaper", "status", "--tool-path", "/opt/tools"]).is_err());
 
         assert!(
             Cli::try_parse_from(["librepaper", "start", "--foreground", "--port", "9123"]).is_ok()

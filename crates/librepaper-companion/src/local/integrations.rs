@@ -123,7 +123,6 @@ impl Custom {
 struct State {
     path: PathBuf,
     entries: BTreeMap<&'static str, Custom>,
-    tool_paths: Vec<PathBuf>,
 }
 
 static STATE: RwLock<Option<State>> = RwLock::new(None);
@@ -132,10 +131,6 @@ static STATE: RwLock<Option<State>> = RwLock::new(None);
 /// unreadable file, or an entry that no longer validates, reads as the
 /// default. Called when the service starts; a later call replaces the state.
 pub fn init(state_home: &Path) {
-    init_with_tool_paths(state_home, Vec::new());
-}
-
-pub(crate) fn init_with_tool_paths(state_home: &Path, tool_paths: Vec<PathBuf>) {
     let path = state_home
         .join("librepaper")
         .join("local")
@@ -144,18 +139,7 @@ pub(crate) fn init_with_tool_paths(state_home: &Path, tool_paths: Vec<PathBuf>) 
     *STATE.write().unwrap_or_else(|poison| poison.into_inner()) = Some(State {
         path,
         entries,
-        tool_paths,
     });
-}
-
-pub(crate) fn set_tool_paths(tool_paths: Vec<PathBuf>) {
-    if let Some(state) = STATE
-        .write()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .as_mut()
-    {
-        state.tool_paths = tool_paths;
-    }
 }
 
 /// The configuration for one integration; the default before [`init`].
@@ -207,9 +191,9 @@ pub(crate) fn set_many(updates: Vec<(Integration, Custom)>) -> Result<(), String
 }
 
 /// The executable to run. The override environment variable wins (tests
-/// and packaging use it); then the custom path, a directory being joined
-/// with the program name; then a PATH search. A custom path that names no
-/// file is `None` rather than a silent fall back to some other program.
+/// and packaging use it), then an explicit integration executable setting,
+/// then the process PATH. A custom path that names no file is `None` rather
+/// than a silent fall back to some other program.
 pub fn executable(which: Integration) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(which.override_var()).map(PathBuf::from) {
         if path.is_file() {
@@ -221,19 +205,6 @@ pub fn executable(which: Integration) -> Option<PathBuf> {
             return which::which(path.join(which.program())).ok();
         }
         return path.is_file().then_some(path);
-    }
-    if let Some(path) = STATE
-        .read()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .as_ref()
-        .and_then(|state| {
-            state
-                .tool_paths
-                .iter()
-                .find_map(|directory| which::which(directory.join(which.program())).ok())
-        })
-    {
-        return Some(path);
     }
     crate::local::tools::find(which.override_var(), which.as_str())
 }
@@ -424,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_tool_paths_select_the_quarto_used_by_preview() {
+    fn explicit_integration_executable_selects_the_quarto_used_by_preview() {
         let _turn = TEST_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
@@ -441,8 +412,8 @@ mod tests {
             std::fs::set_permissions(&quarto, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let state_home = tempfile::tempdir().unwrap();
-        init_with_tool_paths(state_home.path(), vec![directory.path().to_path_buf()]);
+        init(state_home.path());
+        set(Integration::Quarto, Custom { path: Some(quarto.clone()), args: Vec::new() }).unwrap();
         assert_eq!(executable(Integration::Quarto), Some(quarto));
-        set_tool_paths(Vec::new());
     }
 }

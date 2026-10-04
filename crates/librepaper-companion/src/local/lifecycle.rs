@@ -66,27 +66,20 @@ pub(crate) fn running_state(state_home: &Path) -> bool {
     service_state(state_home).is_some() && !stop_requested(state_home)
 }
 
-fn background_command(executable: PathBuf, port: u16, tool_path: &[PathBuf]) -> Command {
+fn background_command(executable: PathBuf, port: u16) -> Command {
     let mut command = Command::new(executable);
-    // The resolved list is transported losslessly through repeatable internal
-    // arguments. Do not let Clap read the original colon-delimited environment
-    // value again in the child, where it could outrank those arguments.
-    command.env_remove("LIBREPAPER_TOOL_PATH");
     command.args([
         "start",
         "--foreground",
         "--port",
         &if port == 0 { DEFAULT_PORT } else { port }.to_string(),
     ]);
-    for path in tool_path {
-        command.arg("--internal-tool-path").arg(path);
-    }
     command
 }
 
 /// Idempotent launch, with bounded readiness checks. The CLI reports success
 /// only after identifying the running instance rather than merely spawning.
-pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<ServiceState, String> {
+pub async fn spawn_background(port: u16) -> Result<ServiceState, String> {
     let state_home = crate::local::paths::state_home_or_die();
     if let Some(state) = running(&state_home).await {
         if port != 0 && port != state.port {
@@ -101,8 +94,7 @@ pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<Servic
         return Ok(state);
     }
     let executable = super::paths::current_executable()?;
-    let tool_path = super::settings::tool_paths(&state_home, tool_path.to_vec())?;
-    let mut command = background_command(executable, port, &tool_path);
+    let mut command = background_command(executable, port);
     let log_dir = state_home.join("librepaper/local");
     std::fs::create_dir_all(&log_dir).map_err(|error| error.to_string())?;
     let log_path = log_dir.join("companion.log");
@@ -746,55 +738,16 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    #[derive(clap::Parser)]
-    struct LaunchPathProbe {
-        #[command(flatten)]
-        launch: crate::local::cli::LaunchArgs,
-    }
-
     #[test]
-    fn internal_child_tool_paths_preserve_colons_without_delimiter_splitting() {
-        let paths = [
-            PathBuf::from(r"Q:\Tools:Preview"),
-            PathBuf::from("/tmp/native:tools"),
-        ];
-        let mut arguments = vec![std::ffi::OsString::from("librepaper")];
-        for path in &paths {
-            arguments.push("--internal-tool-path".into());
-            arguments.push(path.as_os_str().to_owned());
-        }
-
-        let parsed = LaunchPathProbe::try_parse_from(arguments).unwrap();
-        assert_eq!(parsed.launch.internal_tool_path, paths.to_vec());
-    }
-
-    #[test]
-    fn detached_child_uses_resolved_paths_without_inheriting_the_override_environment() {
-        let paths = [
-            PathBuf::from("/resolved/new-tools"),
-            PathBuf::from(r"Q:\Tools:Preview"),
-        ];
-        let command = background_command(PathBuf::from("librepaper"), 8763, &paths);
-
-        assert!(command.get_envs().any(|(key, value)| {
-            key == std::ffi::OsStr::new("LIBREPAPER_TOOL_PATH") && value.is_none()
-        }));
+    fn detached_child_starts_foreground_companion_without_folder_overrides() {
+        let command = background_command(PathBuf::from("librepaper"), 8763);
         let arguments: Vec<_> = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect();
         assert_eq!(
             arguments,
-            vec![
-                "start",
-                "--foreground",
-                "--port",
-                "8763",
-                "--internal-tool-path",
-                "/resolved/new-tools",
-                "--internal-tool-path",
-                r"Q:\Tools:Preview",
-            ]
+            vec!["start", "--foreground", "--port", "8763"]
         );
     }
 

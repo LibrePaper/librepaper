@@ -108,23 +108,10 @@ pub trait Runner: Send + Sync {
 
     /// `GET capabilities` / `POST capabilities/rescan`.
     async fn capabilities(&self, refresh: bool) -> Capabilities;
-
-    /// Current explicit executable search paths, where the runner supports
-    /// changing them while the service is live.
-    fn tool_paths(&self) -> Vec<PathBuf> {
-        Vec::new()
-    }
-
-    fn set_tool_paths(&self, _paths: Vec<PathBuf>) -> Result<(), String> {
-        Err("tool paths cannot be changed for this runner".into())
-    }
 }
 
-/// The real runner: native TeX tools on this machine, through package R1b's
-/// `discovery` and `native` modules. `tool_path` is the resolved `--tool-path`
-/// directory list, fixed for the lifetime of one `librepaper start`.
+/// The real runner: native tools found on this machine's process PATH.
 pub struct NativeRunner {
-    tool_path: Arc<std::sync::RwLock<Vec<PathBuf>>>,
     binding_store: BindingStore,
 }
 
@@ -132,12 +119,10 @@ impl NativeRunner {
     /// A runner that executes granted projects and, under `base`, the hosted
     /// workspace every document has without a grant.
     pub fn with_hosted_workspaces(
-        tool_path: Vec<PathBuf>,
         state_home: &std::path::Path,
         base: PathBuf,
     ) -> Self {
         Self {
-            tool_path: Arc::new(std::sync::RwLock::new(tool_path)),
             binding_store: BindingStore::new(state_home).with_hosted_workspaces(base),
         }
     }
@@ -153,7 +138,6 @@ impl Runner for NativeRunner {
         progress: mpsc::UnboundedSender<JobStatus>,
     ) -> JobOutcome {
         crate::local::engine_adapter::run(
-            &self.tool_paths(),
             request,
             workspace,
             cancel,
@@ -164,25 +148,7 @@ impl Runner for NativeRunner {
     }
 
     async fn capabilities(&self, refresh: bool) -> Capabilities {
-        crate::local::engine_adapter::capabilities(refresh, &self.tool_paths()).await
-    }
-
-    fn tool_paths(&self) -> Vec<PathBuf> {
-        self.tool_path
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn set_tool_paths(&self, paths: Vec<PathBuf>) -> Result<(), String> {
-        if paths.len() > 64 || paths.iter().any(|path| !path.is_absolute()) {
-            return Err("tool_paths must contain at most 64 absolute paths".into());
-        }
-        *self
-            .tool_path
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = paths;
-        Ok(())
+        crate::local::engine_adapter::capabilities(refresh).await
     }
 }
 
@@ -562,7 +528,7 @@ impl LocalService {
         // assistant route, mirroring `recover_state`'s own semantics rather
         // than replaying it. See `SessionRegistry::recover_at_startup`.
         crate::assistant::registry::SessionRegistry::recover_at_startup(state_home);
-        super::integrations::init_with_tool_paths(state_home, runner.tool_paths());
+        super::integrations::init(state_home);
         let mut quarto_bindings = BindingStore::new(state_home);
         if let Some(base) = hosted {
             quarto_bindings = quarto_bindings.with_hosted_workspaces(base);

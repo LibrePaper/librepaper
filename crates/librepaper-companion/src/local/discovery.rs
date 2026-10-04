@@ -15,7 +15,7 @@
 //! two directories were written to the cache and never read.
 //!
 //! Results are cached under `<state home>/librepaper/local/tools.json` and
-//! reused until an explicit rescan, a changed configured search path, or a
+//! reused until an explicit rescan, a changed PATH, or a
 //! cached tool's executable going missing or changing on disk.
 
 use std::collections::BTreeMap;
@@ -67,7 +67,7 @@ struct CachedTool {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Cache {
     #[serde(default)]
-    configured_paths: Vec<PathBuf>,
+    path_fingerprint: String,
     #[serde(default)]
     tools: BTreeMap<String, CachedTool>,
     #[serde(default)]
@@ -83,41 +83,21 @@ fn cache_path() -> PathBuf {
         .join("tools.json")
 }
 
-/// The directories to search before `PATH` and the conventional locations:
-/// whatever `--tool-path` resolved to, flag or its matching environment
-/// variable. Clap does the splitting and the environment fallback; this
-/// module only ever sees the resulting list, never the environment itself.
-fn configured_paths(tool_path: &[PathBuf]) -> Vec<PathBuf> {
-    tool_path.to_vec()
+/// Searches exactly the process PATH. The cache stores this fingerprint so
+/// pre-PATH-only caches are discarded after upgrading.
+fn search_dirs(raw: &std::ffi::OsStr) -> Vec<PathBuf> {
+    std::env::split_paths(raw).collect()
 }
 
-/// PATH's directories, then generic fallback locations searched after the
-/// configured ones when launched with a minimal PATH.
-fn fallback_search_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(path) = std::env::var_os("PATH") {
-        dirs.extend(std::env::split_paths(&path));
-    }
-    dirs.extend(conventional_dirs());
-    dirs
+fn path_fingerprint(raw: &std::ffi::OsStr) -> String {
+    format!("path-v2:{:?}", raw)
 }
 
-fn conventional_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-
-    // Homebrew on macOS.
-    dirs.push(PathBuf::from("/opt/homebrew/bin"));
-
-    // Standard Unix/Linux prefix.
-    dirs.push(PathBuf::from("/usr/local/bin"));
-
-    // User-local binary directories.
-    if let Some(home) = super::paths::home() {
-        dirs.push(home.join(".local").join("bin"));
-        dirs.push(home.join(".cargo").join("bin"));
-    }
-
-    dirs
+fn path_snapshot() -> (Vec<PathBuf>, String) {
+    let raw = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = search_dirs(&raw);
+    let fingerprint = path_fingerprint(&raw);
+    (dirs, fingerprint)
 }
 
 /// The first directory among `dirs` that holds `tool`, resolved to its
@@ -194,10 +174,7 @@ fn platform_name() -> String {
 
 /// Rebuilds the cache from scratch: searches, probes every tool, detects
 /// execution policy, and writes the result.
-async fn rediscover(configured: Vec<PathBuf>) -> Cache {
-    let mut dirs = configured.clone();
-    dirs.extend(fallback_search_dirs());
-
+async fn rediscover(dirs: Vec<PathBuf>, path_fingerprint: String) -> Cache {
     let mut tools = BTreeMap::new();
 
     for name in TOOL_NAMES {
@@ -218,7 +195,7 @@ async fn rediscover(configured: Vec<PathBuf>) -> Cache {
     }
 
     Cache {
-        configured_paths: configured,
+        path_fingerprint,
         tools,
         confinement: Confinement {
             available: false,
@@ -229,11 +206,10 @@ async fn rediscover(configured: Vec<PathBuf>) -> Cache {
     }
 }
 
-/// Whether the cache is still trustworthy: the configured search paths have
-/// not changed, and every tool the cache found is still on disk with the
-/// same modification time.
-fn cache_is_stale(cache: &Cache, configured: &[PathBuf]) -> bool {
-    if cache.configured_paths != configured
+/// Whether the cache is still trustworthy: PATH has not changed, and every
+/// tool the cache found is still on disk with the same modification time.
+fn cache_is_stale(cache: &Cache, path_fingerprint: &str) -> bool {
+    if cache.path_fingerprint != path_fingerprint
         || TOOL_NAMES
             .iter()
             .any(|name| !cache.tools.contains_key(*name))
@@ -353,10 +329,9 @@ fn tool_paths_from(cache: &Cache) -> ToolPaths {
 
 /// Finds every tool and returns the browser-facing `Capabilities`, using
 /// the cache unless `refresh` is set or the cache is stale (a changed
-/// configured path, or a cached tool's executable missing or changed).
-/// `tool_path` is the resolved `--tool-path` directory list.
-pub async fn discover(refresh: bool, tool_path: &[PathBuf]) -> Capabilities {
-    let mut capabilities = capabilities_from(&discover_cache(refresh, tool_path).await);
+/// PATH changed, or a cached tool's executable missing or changed).
+pub async fn discover(refresh: bool) -> Capabilities {
+    let mut capabilities = capabilities_from(&discover_cache(refresh).await);
     capabilities.quarto = crate::local::quarto::discover().await;
     capabilities.tools.quarto = capabilities.quarto.tool.clone();
     capabilities.calepin = crate::local::preview::calepin::discover().await;
@@ -408,23 +383,23 @@ pub async fn discover(refresh: bool, tool_path: &[PathBuf]) -> Capabilities {
 }
 
 /// The resolved tool paths for `native.rs`, from the same cache `discover`
-/// maintains. Never rescans on its own -- call `discover(true, tool_path)`
+/// maintains. Never rescans on its own -- call `discover(true)`
 /// first if a fresh scan is wanted -- so a job never pays a rescan's cost
 /// mid-run.
-pub async fn tool_paths(tool_path: &[PathBuf]) -> ToolPaths {
-    tool_paths_from(&discover_cache(false, tool_path).await)
+pub async fn tool_paths() -> ToolPaths {
+    tool_paths_from(&discover_cache(false).await)
 }
 
-async fn discover_cache(refresh: bool, tool_path: &[PathBuf]) -> Cache {
-    let configured = configured_paths(tool_path);
+async fn discover_cache(refresh: bool) -> Cache {
+    let (dirs, fingerprint) = path_snapshot();
     if !refresh {
         if let Some(cache) = load_cache() {
-            if !cache_is_stale(&cache, &configured) {
+            if !cache_is_stale(&cache, &fingerprint) {
                 return cache;
             }
         }
     }
-    let cache = rediscover(configured).await;
+    let cache = rediscover(dirs, fingerprint).await;
     save_cache(&cache);
     cache
 }
@@ -464,9 +439,32 @@ mod tests {
     }
 
     #[test]
-    fn configured_paths_passes_the_given_directories_through() {
-        let dirs = configured_paths(&[PathBuf::from("/opt/a"), PathBuf::from("/opt/b")]);
-        assert!(dirs.contains(&PathBuf::from("/opt/a")));
-        assert!(dirs.contains(&PathBuf::from("/opt/b")));
+    fn cache_from_the_old_configured_path_schema_is_stale() {
+        let old: Cache = serde_json::from_str(
+            r#"{"configured_paths":["/legacy/tools"],"tools":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(old.path_fingerprint, "");
+        assert!(cache_is_stale(&old, "path-v2:\"/current/path\""));
+    }
+
+    #[test]
+    fn search_directories_are_exactly_the_supplied_path() {
+        let path = std::env::join_paths([
+            PathBuf::from("/first/bin"),
+            PathBuf::from("/second/bin"),
+        ])
+        .unwrap();
+        assert_eq!(
+            search_dirs(&path),
+            vec![PathBuf::from("/first/bin"), PathBuf::from("/second/bin")]
+        );
+    }
+
+    #[test]
+    fn cache_fingerprint_changes_when_path_changes() {
+        let first = std::ffi::OsStr::new("/first/bin");
+        let second = std::ffi::OsStr::new("/second/bin");
+        assert_ne!(path_fingerprint(first), path_fingerprint(second));
     }
 }

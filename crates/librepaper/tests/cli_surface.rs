@@ -218,11 +218,11 @@ fn root_and_legacy_start_flags_are_correct() {
         "--at-login missing from root start help:\n{help}"
     );
     assert!(help.contains("--port"));
-    assert!(help.contains("--tool-path"));
     assert!(legacy_help.contains("--foreground"));
     assert!(legacy_help.contains("--at-login"));
     assert!(legacy_help.contains("--port"));
-    assert!(legacy_help.contains("--tool-path"));
+    assert!(!help.contains("--tool-path"));
+    assert!(!legacy_help.contains("--tool-path"));
 }
 
 #[test]
@@ -233,7 +233,6 @@ fn inherited_companion_env_does_not_reject_other_subcommands() {
         .env_remove("LIBREPAPER_SERVER")
         .env_remove("LIBREPAPER_TOKEN")
         .env("LIBREPAPER_LOCAL_PORT", "9123")
-        .env("LIBREPAPER_TOOL_PATH", "/tmp")
         .env("XDG_STATE_HOME", state_home.path())
         .output()
         .expect("CLI starts");
