@@ -310,20 +310,14 @@ async fn run_sql_regression(script: &str) {
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn annotation_constraints_reject_incomplete_evidence() {
-    run_sql_regression(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tools/tests/schema_constraints.sql"
-    )))
+    run_sql_regression(include_str!("regression/schema_constraints.sql"))
     .await;
 }
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn archive_accounting_counts_objects_across_bulk_changes_and_cascades() {
-    run_sql_regression(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tools/tests/archive_accounting.sql"
-    )))
+    run_sql_regression(include_str!("regression/archive_accounting.sql"))
     .await;
 }
 
