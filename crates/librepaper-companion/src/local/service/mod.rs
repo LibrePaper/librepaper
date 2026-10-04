@@ -491,7 +491,7 @@ pub(super) struct Inner {
     /// `crate::assistant::registry`.
     pub(super) assistant_sessions: crate::assistant::registry::SessionRegistry,
     pub(super) approvals: ApprovalBroker,
-    pub(super) control: tokio::sync::Mutex<Option<control::ControlAuth>>,
+    control: tokio::sync::Mutex<Option<control::ControlAuth>>,
 }
 
 /// The running local service: owns the job table and the background worker
@@ -2473,6 +2473,7 @@ mod settings_tests {
 
     #[tokio::test]
     async fn post_approve_with_origin_header_is_forbidden() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
         let request = Request::post("/approve")
             .header("origin", "https://example.test")
             .header("content-type", "application/json")
