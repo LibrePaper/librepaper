@@ -57,6 +57,14 @@ mod control;
 pub(crate) fn control_token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
     control::token_for_instance(state_home, instance)
 }
+
+pub(crate) fn control_settings_url_for_instance(
+    state_home: &Path,
+    port: u16,
+    instance: &str,
+) -> Result<String, String> {
+    control::settings_url_for_instance(state_home, port, instance)
+}
 mod jobs;
 
 pub(super) type Reply = Response<Body>;
@@ -601,13 +609,12 @@ impl LocalService {
             .with_state(self.inner.clone())
     }
 
-    /// Create a fresh per-instance browser credential and return a URL whose
-    /// fragment is readable only by the dashboard page. The token is stored
-    /// in a mode-0600 private file for the companion's local launcher and is
-    /// never returned by any HTTP response.
+    /// Create the per-instance machine settings credential and return the
+    /// trusted app Settings URL. The credential stays in the URL fragment and
+    /// in its mode-0600 local file; no HTTP response exposes it.
     pub async fn enable_control_panel(&self) -> Result<String, String> {
         let auth = control::ControlAuth::create(&self.inner.state_home, &self.inner.instance)?;
-        let url = auth.url(self.inner.port);
+        let url = auth.settings_url(self.inner.port)?;
         *self.inner.control.lock().await = Some(auth);
         #[cfg(not(test))]
         {
@@ -616,9 +623,9 @@ impl LocalService {
             let instance = self.inner.instance.clone();
             self.inner.approvals.set_opener(Some(Arc::new(move || {
                 if let Err(error) =
-                    super::lifecycle::open_control_panel(&state_home, port, &instance)
+                    super::lifecycle::open_settings(&state_home, port, &instance)
                 {
-                    eprintln!("could not open companion control panel: {error}");
+                    eprintln!("could not open LibrePaper Settings: {error}");
                 }
             })));
         }
@@ -627,12 +634,12 @@ impl LocalService {
         Ok(url)
     }
 
-    /// Explicit local launch entry used by desktop integration and tests.
+    /// Explicit local Settings launch entry used by desktop integration.
     pub async fn open_control_panel(&self) -> Result<(), String> {
         if self.inner.control.lock().await.is_none() {
             self.enable_control_panel().await?;
         }
-        super::lifecycle::open_control_panel(
+        super::lifecycle::open_settings(
             &self.inner.state_home,
             self.inner.port,
             &self.inner.instance,

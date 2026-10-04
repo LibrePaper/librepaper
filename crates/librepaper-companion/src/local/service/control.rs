@@ -1,9 +1,9 @@
-//! Authenticated machine-local companion panel and its control API.
+//! Authenticated machine-local control API for the main LibrePaper settings.
 //!
 //! This surface has a separate, per-instance credential. It deliberately
 //! does not reuse a website pairing token: a paired document can build only
 //! within its existing origin/project grants and cannot inspect or mutate
-//! the machine-wide control panel.
+//! machine-wide settings.
 
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -16,28 +16,38 @@ const MAX_TOOL_PATHS: usize = 64;
 struct TokenFile {
     instance: String,
     token: String,
+    #[serde(default)]
+    server: Option<String>,
 }
 
 pub(super) struct ControlAuth {
     instance: String,
     token: String,
     token_hash: String,
+    server: String,
+    origin: String,
 }
 
 impl ControlAuth {
     pub(super) fn create(state_home: &Path, instance: &str) -> Result<Self, String> {
         let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
-        if let Some(token) = read_private_token(&path, instance) {
-            return Ok(Self {
-                instance: instance.to_string(),
-                token_hash: hex::encode(Sha256::digest(token.as_bytes())),
-                token,
-            });
-        }
-        let token = crate::local::pairing::random_token();
+        let old = read_private_file(&path).filter(|file| file.instance == instance);
+        let token = old
+            .as_ref()
+            .map(|file| file.token.clone())
+            .unwrap_or_else(crate::local::pairing::random_token);
+        // A saved target remains authoritative if LIBREPAPER_SERVER changes.
+        // Legacy token files migrate only during local service initialization.
+        let server = match old.as_ref().and_then(|file| file.server.as_deref()) {
+            Some(server) => validate_server(server)?,
+            None => configured_server()?,
+        };
+        let origin = server.origin().ascii_serialization();
+        let server = server.to_string();
         let file = TokenFile {
             instance: instance.to_string(),
             token: token.clone(),
+            server: Some(server.clone()),
         };
         crate::local::pairing::write_private_json(&path, &file)
             .map_err(|error| format!("could not save local control credential: {error}"))?;
@@ -45,11 +55,27 @@ impl ControlAuth {
             instance: instance.to_string(),
             token_hash: hex::encode(Sha256::digest(token.as_bytes())),
             token,
+            server,
+            origin,
         })
     }
 
-    pub(super) fn url(&self, port: u16) -> String {
-        format!("http://127.0.0.1:{port}/companion/#token={}", self.token)
+    pub(super) fn settings_url(&self, port: u16) -> Result<String, String> {
+        let mut target = url::Url::parse(&self.server)
+            .map_err(|error| format!("invalid saved LibrePaper server URL: {error}"))?;
+        let address = format!("http://127.0.0.1:{port}/");
+        let fragment = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("settings", "local")
+            .append_pair("companion_address", &address)
+            .append_pair("companion_control", &self.token)
+            .append_pair("companion_instance", &self.instance)
+            .finish();
+        target.set_fragment(Some(&fragment));
+        Ok(target.to_string())
+    }
+
+    fn accepts_origin(&self, origin: &str) -> bool {
+        origin == self.origin
     }
 
     pub(super) fn accepts(&self, token: &str, instance: &str) -> bool {
@@ -61,12 +87,73 @@ impl ControlAuth {
     }
 }
 
-pub(super) fn token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
-    let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
-    read_private_token(&path, instance)
+fn configured_server() -> Result<url::Url, String> {
+    match std::env::var_os("LIBREPAPER_SERVER") {
+        Some(value) => validate_server(
+            value
+                .to_str()
+                .ok_or("LIBREPAPER_SERVER is not valid Unicode")?,
+        ),
+        None => validate_server("https://app.librepaper.org/"),
+    }
 }
 
-fn read_private_token(path: &Path, instance: &str) -> Option<String> {
+fn validate_server(raw: &str) -> Result<url::Url, String> {
+    let server = url::Url::parse(raw)
+        .map_err(|error| format!("invalid LIBREPAPER_SERVER: {error}"))?;
+    let loopback_http = server.scheme() == "http"
+        && server.host().is_some_and(|host| match host {
+            url::Host::Domain(domain) => domain == "localhost",
+            url::Host::Ipv4(address) => address.is_loopback(),
+            url::Host::Ipv6(address) => address.is_loopback(),
+        });
+    if !matches!(server.scheme(), "https" | "http")
+        || (!loopback_http && server.scheme() != "https")
+        || !server.username().is_empty()
+        || server.password().is_some()
+        || server.fragment().is_some()
+        || server.query().is_some()
+        || server.path() != "/"
+        || server.host_str().is_none()
+    {
+        return Err("LIBREPAPER_SERVER must be HTTPS without credentials or a fragment (HTTP is allowed for loopback development).".into());
+    }
+    Ok(server)
+}
+
+pub(super) fn settings_url_for_instance(
+    state_home: &Path,
+    port: u16,
+    instance: &str,
+) -> Result<String, String> {
+    let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
+    let file = read_private_file(&path)
+        .filter(|file| file.instance == instance)
+        .ok_or("local settings credential is unavailable for this service instance")?;
+    let server = validate_server(
+        file.server
+            .as_deref()
+            .ok_or("trusted LibrePaper server is missing from local settings credential")?,
+    )?;
+    let origin = server.origin().ascii_serialization();
+    ControlAuth {
+        instance: instance.to_string(),
+        token_hash: hex::encode(Sha256::digest(file.token.as_bytes())),
+        token: file.token,
+        server: server.to_string(),
+        origin,
+    }
+    .settings_url(port)
+}
+
+pub(super) fn token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
+    let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
+    read_private_file(&path)
+        .filter(|file| file.instance == instance)
+        .map(|file| file.token)
+}
+
+fn read_private_file(path: &Path) -> Option<TokenFile> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
     if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 4096 {
         return None;
@@ -80,7 +167,7 @@ fn read_private_token(path: &Path, instance: &str) -> Option<String> {
     }
     let bytes = crate::local::service::read_bounded_public(path, 4096).ok()?;
     let file = serde_json::from_slice::<TokenFile>(&bytes).ok()?;
-    (file.instance == instance && (32..=128).contains(&file.token.len())).then_some(file.token)
+    ((32..=128).contains(&file.token.len())).then_some(file)
 }
 
 pub(super) async fn handle(
@@ -94,62 +181,42 @@ pub(super) async fn handle(
     if !host_allowed(headers, inner.port) || !peer.ip().is_loopback() {
         return write_json(403, &json!({"error":"loopback only"}));
     }
-    if let Some(origin) = header_str(headers, "origin") {
-        let expected = [
-            format!("http://127.0.0.1:{}", inner.port),
-            format!("http://localhost:{}", inner.port),
-            format!("http://[::1]:{}", inner.port),
-        ];
-        if !expected
-            .iter()
-            .any(|allowed| origin.eq_ignore_ascii_case(allowed))
-        {
-            return write_json(403, &json!({"error":"foreign origin denied"}));
-        }
-    }
-
-    if path == "/companion" || path == "/companion/" || path == "/companion/index.html" {
-        if method != Method::GET {
-            return plain(405, "method not allowed");
-        }
-        return html(include_str!("../control-assets/index.html"));
-    }
-    if path == "/companion/app.js" {
-        if method != Method::GET {
-            return plain(405, "method not allowed");
-        }
-        return asset(
-            "text/javascript; charset=utf-8",
-            include_str!("../control-assets/app.js"),
-        );
-    }
-    if path == "/companion/style.css" {
-        if method != Method::GET {
-            return plain(405, "method not allowed");
-        }
-        return asset(
-            "text/css; charset=utf-8",
-            include_str!("../control-assets/style.css"),
-        );
-    }
     let Some(rest) = path.strip_prefix("/companion/api/") else {
         return plain(404, "not found");
     };
-    let Some(token) = header_str(headers, "authorization").and_then(|value| {
+    let Some(origin) = header_str(headers, "origin") else {
+        return write_json(403, &json!({"error":"missing Origin header"}));
+    };
+    let control = inner.control.lock().await;
+    let Some(auth) = control.as_ref() else {
+        return write_json(503, &json!({"error":"local settings are not initialized"}));
+    };
+    if !auth.accepts_origin(origin) {
+        return write_json(403, &json!({"error":"untrusted or missing Origin header"}));
+    }
+    if *method == Method::OPTIONS {
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::NO_CONTENT;
+        apply_api_cors(&mut response, origin, true);
+        return response;
+    }
+    let credential = header_str(headers, "authorization").and_then(|value| {
         value
             .strip_prefix("Bearer ")
             .filter(|value| !value.is_empty())
-    }) else {
-        return write_json(401, &json!({"error":"authorization required"}));
+    });
+    let credential_error = match credential {
+        None => Some(write_json(401, &json!({"error":"authorization required"}))),
+        Some(token) if !auth.accepts(token, &inner.instance) => {
+            Some(write_json(401, &json!({"error":"invalid control credential"})))
+        }
+        _ => None,
     };
-    let control = inner.control.lock().await;
-    if !control
-        .as_ref()
-        .is_some_and(|auth| auth.accepts(token, &inner.instance))
-    {
-        return write_json(401, &json!({"error":"invalid control credential"}));
-    }
     drop(control);
+    if let Some(mut response) = credential_error {
+        apply_api_cors(&mut response, origin, false);
+        return response;
+    }
 
     let path = rest.trim_end_matches('/');
     let mut segments = path.split('/');
@@ -160,9 +227,11 @@ pub(super) async fn handle(
         segments.next(),
     );
     if segments.next().is_some() {
-        return write_json(404, &json!({"error":"not found"}));
+        let mut response = write_json(404, &json!({"error":"not found"}));
+        apply_api_cors(&mut response, origin, false);
+        return response;
     }
-    match route {
+    let mut response = match route {
         (Some("state"), None, None, None) if *method == Method::GET => state(inner).await,
         (Some("tools"), Some("rescan"), None, None) if *method == Method::POST => {
             let capabilities = inner.runner.capabilities(true).await;
@@ -213,6 +282,19 @@ pub(super) async fn handle(
         }
         (Some("quit"), None, None, None) if *method == Method::POST => quit(inner).await,
         _ => write_json(404, &json!({"error":"not found"})),
+    };
+    apply_api_cors(&mut response, origin, false);
+    response
+}
+
+fn apply_api_cors(response: &mut Reply, origin: &str, preflight: bool) {
+    set(response, "vary", "Origin");
+    set(response, "access-control-allow-origin", origin);
+    set(response, "access-control-allow-headers", "authorization, content-type");
+    if preflight {
+        set(response, "access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
+        set(response, "access-control-allow-private-network", "true");
+        set(response, "access-control-max-age", "600");
     }
 }
 
@@ -239,18 +321,6 @@ pub(super) fn apply_headers(mut response: Reply, path: &str) -> Reply {
             "application/json; charset=utf-8",
         );
     }
-    response
-}
-
-fn html(contents: &str) -> Reply {
-    let mut response = Response::new(Body::from(contents.to_string()));
-    set(&mut response, "content-type", "text/html; charset=utf-8");
-    response
-}
-
-fn asset(content_type: &str, contents: &str) -> Reply {
-    let mut response = Response::new(Body::from(contents.to_string()));
-    set(&mut response, "content-type", content_type);
     response
 }
 
@@ -701,10 +771,11 @@ mod tests {
         let inner = test_inner(state_home.path()).await;
         let auth = ControlAuth::create(state_home.path(), "control-test").unwrap();
         let token = auth.token.clone();
+        let origin = auth.origin.clone();
         *inner.control.lock().await = Some(auth);
         let peer = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40000));
 
-        let no_token_request = request(Method::GET, None, None, "127.0.0.1:8765");
+        let no_token_request = request(Method::GET, None, Some(&origin), "127.0.0.1:8765");
         let no_token_headers = no_token_request.headers().clone();
         let no_token = handle(
             &inner,
@@ -716,9 +787,15 @@ mod tests {
         )
         .await;
         assert_eq!(no_token.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(no_token.headers()["access-control-allow-origin"], origin);
 
         let (site_token, _) = inner.pairing.issue("https://site.example", "test").unwrap();
-        let paired_request = request(Method::GET, Some(&site_token), None, "127.0.0.1:8765");
+        let paired_request = request(
+            Method::GET,
+            Some(&site_token),
+            Some(&origin),
+            "127.0.0.1:8765",
+        );
         let paired_headers = paired_request.headers().clone();
         let paired_response = handle(
             &inner,
@@ -734,7 +811,7 @@ mod tests {
         let get_quit = request(
             Method::GET,
             Some(&token),
-            Some("http://127.0.0.1:8765"),
+            Some(&origin),
             "127.0.0.1:8765",
         );
         let get_quit_headers = get_quit.headers().clone();
@@ -766,6 +843,76 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let trusted = request(
+            Method::GET,
+            Some(&token),
+            Some(&origin),
+            "127.0.0.1:8765",
+        );
+        let trusted_headers = trusted.headers().clone();
+        let response = handle(
+            &inner,
+            &Method::GET,
+            "/companion/api/state",
+            &trusted_headers,
+            peer,
+            trusted,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["access-control-allow-origin"], origin);
+
+        let no_origin = request(Method::GET, Some(&token), None, "127.0.0.1:8765");
+        let no_origin_headers = no_origin.headers().clone();
+        let response = handle(
+            &inner,
+            &Method::GET,
+            "/companion/api/state",
+            &no_origin_headers,
+            peer,
+            no_origin,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!response.headers().contains_key("access-control-allow-origin"));
+
+        let options = request(Method::OPTIONS, None, Some(&origin), "127.0.0.1:8765");
+        let options_headers = options.headers().clone();
+        let response = handle(
+            &inner,
+            &Method::OPTIONS,
+            "/companion/api/state",
+            &options_headers,
+            peer,
+            options,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers()["access-control-allow-origin"], origin);
+        assert_eq!(
+            response.headers()["access-control-allow-private-network"],
+            "true"
+        );
+
+        let options = request(
+            Method::OPTIONS,
+            None,
+            Some("https://attacker.example"),
+            "127.0.0.1:8765",
+        );
+        let options_headers = options.headers().clone();
+        let response = handle(
+            &inner,
+            &Method::OPTIONS,
+            "/companion/api/state",
+            &options_headers,
+            peer,
+            options,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!response.headers().contains_key("access-control-allow-origin"));
     }
 
     #[tokio::test]
@@ -790,6 +937,38 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn former_control_page_and_assets_are_not_served() {
+        let state_home = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path()).await;
+        let peer = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40000));
+        for path in [
+            "/companion",
+            "/companion/",
+            "/companion/index.html",
+            "/companion/app.js",
+            "/companion/style.css",
+        ] {
+            let request = Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .header(HOST, "127.0.0.1:8765")
+                .body(Body::empty())
+                .unwrap();
+            let headers = request.headers().clone();
+            let response = handle(
+                &inner,
+                &Method::GET,
+                path,
+                &headers,
+                peer,
+                request,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
     }
 
     #[tokio::test]
@@ -848,6 +1027,22 @@ mod tests {
             .mode()
                 & 0o777;
             assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn server_url_must_be_root_https_or_loopback_http() {
+        assert!(validate_server("https://app.example/").is_ok());
+        assert!(validate_server("http://localhost:3000/").is_ok());
+        assert!(validate_server("http://[::1]:3000/").is_ok());
+        for url in [
+            "http://app.example/",
+            "https://user@app.example/",
+            "https://app.example/#frag",
+            "https://app.example/?x=1",
+            "https://app.example/settings",
+        ] {
+            assert!(validate_server(url).is_err(), "accepted {url}");
         }
     }
 }

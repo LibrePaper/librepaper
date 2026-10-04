@@ -25,7 +25,7 @@ struct MenuItems {
 
 fn menu(state_home: &Path) -> Result<(Menu, MenuItems), String> {
     let menu = Menu::new();
-    let open = MenuItem::new("Open companion", true, None);
+    let open = MenuItem::new("Settings", true, None);
     let at_login = CheckMenuItem::new(
         "Start at login",
         true,
@@ -101,9 +101,9 @@ fn handle_menu(state_home: &Path, ids: &MenuItems) -> bool {
         if event.id == ids.open.id() {
             if let Some(state) = super::lifecycle::service_state(state_home) {
                 if let Err(error) =
-                    super::lifecycle::open_control_panel(state_home, state.port, &state.instance)
+                    super::lifecycle::open_settings(state_home, state.port, &state.instance)
                 {
-                    eprintln!("could not open the local control panel: {error}");
+                    eprintln!("could not open LibrePaper Settings: {error}");
                 }
             }
         } else if event.id == ids.at_login.id() {

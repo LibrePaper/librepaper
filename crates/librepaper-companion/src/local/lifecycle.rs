@@ -2,7 +2,6 @@
 //! to execute code. Deep links open the loopback consent page, carrying only
 //! a public challenge; the browser retains its secret verifier.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -206,60 +205,14 @@ pub fn ensure_tray(state_home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Read the private control-panel token for this service instance and open
-/// the browser with it in the URL fragment, which the local server never sees.
-pub fn open_control_panel(state_home: &Path, port: u16, instance: &str) -> Result<(), String> {
-    let url = control_panel_url(state_home, port, instance)?;
+/// Open the trusted LibrePaper app at Settings with this companion attached.
+pub fn open_settings(state_home: &Path, port: u16, instance: &str) -> Result<(), String> {
+    let url = settings_url(state_home, port, instance)?;
     open_browser(&url)
 }
 
-pub fn control_panel_url(state_home: &Path, port: u16, instance: &str) -> Result<String, String> {
-    #[derive(serde::Deserialize)]
-    struct ControlToken {
-        instance: String,
-        token: String,
-    }
-    let path = state_home.join("librepaper/local/control-token.json");
-    let metadata = std::fs::metadata(&path).map_err(|error| {
-        format!(
-            "could not read the private control-panel token {}: {error}",
-            path.display()
-        )
-    })?;
-    if metadata.len() > 4096 {
-        return Err("the private control-panel token file is too large".into());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err("the control-panel token file is not private".into());
-        }
-    }
-    let mut file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    std::io::Read::by_ref(&mut file)
-        .take(4097)
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if bytes.len() > 4096 {
-        return Err("the private control-panel token file is too large".into());
-    }
-    let token: ControlToken = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("invalid control-panel token file: {error}"))?;
-    if token.instance != instance
-        || !(32..=256).contains(&token.token.len())
-        || !token
-            .token
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'='))
-    {
-        return Err("the control-panel token is invalid for this companion instance".into());
-    }
-    Ok(format!(
-        "http://127.0.0.1:{port}/companion/#token={}",
-        token.token
-    ))
+pub fn settings_url(state_home: &Path, port: u16, instance: &str) -> Result<String, String> {
+    super::service::control_settings_url_for_instance(state_home, port, instance)
 }
 
 pub async fn stop(state_home: &Path) -> Result<(), String> {
@@ -293,6 +246,7 @@ pub async fn stop(state_home: &Path) -> Result<(), String> {
 pub enum Target {
     Nothing,
     Open(String),
+    Settings,
     Pair(PairLink),
 }
 
@@ -320,6 +274,7 @@ pub fn connection_target(raw: &str, port: u16) -> Result<Target, String> {
     match link.host_str() {
         Some("launch") => launch_target(&link, port),
         Some("connect") => connect_target(&link),
+        Some("settings") if link.query().is_none() => Ok(Target::Settings),
         _ => Err("Unknown companion action.".into()),
     }
 }
@@ -844,22 +799,33 @@ mod tests {
     }
 
     #[test]
-    fn control_panel_url_reads_only_a_bounded_token_for_the_live_instance() {
+    fn settings_url_uses_the_persisted_trusted_server_and_fragment_credentials() {
         let state = tempfile::tempdir().unwrap();
         let path = state.path().join("librepaper/local/control-token.json");
         librepaper_base::private_files::publish(
             &path,
-            &serde_json::json!({"instance": "live", "token": "a".repeat(64)})
+            &serde_json::json!({
+                "instance": "live",
+                "token": "a".repeat(64),
+                "server": "https://app.example/"
+            })
                 .to_string()
                 .into_bytes(),
             "test control token",
         )
         .unwrap();
-        assert_eq!(
-            control_panel_url(state.path(), 8763, "live").unwrap(),
-            format!("http://127.0.0.1:8763/companion/#token={}", "a".repeat(64))
-        );
-        assert!(control_panel_url(state.path(), 8763, "other").is_err());
+        let target = url::Url::parse(&settings_url(state.path(), 8763, "live").unwrap()).unwrap();
+        assert_eq!(target.origin().ascii_serialization(), "https://app.example");
+        let fields: std::collections::HashMap<_, _> = url::form_urlencoded::parse(
+            target.fragment().unwrap().as_bytes(),
+        )
+        .into_owned()
+        .collect();
+        assert_eq!(fields["settings"], "local");
+        assert_eq!(fields["companion_address"], "http://127.0.0.1:8763/");
+        assert_eq!(fields["companion_control"], "a".repeat(64));
+        assert_eq!(fields["companion_instance"], "live");
+        assert!(settings_url(state.path(), 8763, "other").is_err());
     }
 
     #[cfg(target_os = "linux")]
@@ -962,6 +928,22 @@ mod tests {
                 connection_target(&invalid, 18763).is_err(),
                 "accepted {invalid}"
             );
+        }
+    }
+
+    #[test]
+    fn settings_links_are_parameterless_and_open_the_settings_action() {
+        assert_eq!(
+            connection_target("librepaper://settings", 8763).unwrap(),
+            Target::Settings
+        );
+        for invalid in [
+            "librepaper://settings?origin=https://site.example",
+            "librepaper://settings/extra",
+            "librepaper://settings#anything",
+            "librepaper://settings?",
+        ] {
+            assert!(connection_target(invalid, 8763).is_err(), "accepted {invalid}");
         }
     }
     #[test]

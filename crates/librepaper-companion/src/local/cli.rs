@@ -172,7 +172,7 @@ fn cache_home() -> PathBuf {
 async fn start_background(port: u16, tool_path: &[PathBuf]) {
     match crate::local::lifecycle::spawn_background(port, tool_path).await {
         Ok(state) => println!(
-            "Companion ready on port {}. Next: Settings → Local app. When available, use the tray menu to open it.",
+            "Companion ready on port {}. Open Settings → Companion to manage it; use tray Settings when available.",
             state.port
         ),
         Err(error) => die(error),
@@ -251,7 +251,7 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     // Production starts keep the control token private and expose it only to
     // explicit browser launches or the local approval broker. The returned
     // URL is deliberately discarded here and never reaches stdout or logs.
-    let _control_panel_url = service
+    let _settings_url = service
         .enable_control_panel()
         .await
         .unwrap_or_else(|error| die(error));
@@ -261,8 +261,8 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
         "Companion ready on http://127.0.0.1:{port}{}",
         protocol::BASE_PATH
     );
-    println!("Next: Settings → Local app.");
-    println!("When available, use the tray menu to open the control panel.");
+    println!("Next: Settings → Companion.");
+    println!("When available, use tray Settings to manage the companion.");
     print_pairings(&pairing);
     println!("Ctrl-C to stop.");
 
@@ -332,6 +332,11 @@ async fn open(url: &str) {
         crate::local::lifecycle::Target::Open(target) => {
             crate::local::lifecycle::open_browser(&target)
         }
+        crate::local::lifecycle::Target::Settings => crate::local::lifecycle::open_settings(
+            &crate::local::paths::state_home_or_die(),
+            state.port,
+            &state.instance,
+        ),
         crate::local::lifecycle::Target::Pair(link) => {
             crate::local::lifecycle::pair(&link, state.port).await
         }
