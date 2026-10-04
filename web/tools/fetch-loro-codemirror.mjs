@@ -22,7 +22,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const lock = join(root, "loro-codemirror.lock");
+const lock = join(root, "web/loro-codemirror.lock");
 const out = join(root, "web/vendor/loro-codemirror");
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");

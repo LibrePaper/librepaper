@@ -6,7 +6,7 @@ package's `src/` with four changes and a presence fix, plus a test suite of
 its own at `web/tests/unit/loro-codemirror.mjs`.
 
 **The source is not in this repository.** `tools/pins fetch` fetches it
-from the fork at the commit `loro-codemirror.lock` pins, verifies every file
+from the fork at the commit `web/loro-codemirror.lock` pins, verifies every file
 against the digest recorded there, and writes it to `web/vendor/loro-codemirror`
 -- which is build output and gitignored. It was vendored here until 2026-09-16,
 which meant the same source existed twice and the two drifted: the fork sat

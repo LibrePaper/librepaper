@@ -45,7 +45,7 @@ tools/latex/corpus/*/chapters/*.aux
 tools/latex/corpus/article/article.bib
 
 # The CodeMirror binding is fetched from its fork by `tools/pins fetch`
-# and verified against loro-codemirror.lock. The source lives in the fork, so
+# and verified against web/loro-codemirror.lock. The source lives in the fork, so
 # there is one copy of it rather than two to keep in step.
 web/vendor/loro-codemirror/
 .kata.local.toml

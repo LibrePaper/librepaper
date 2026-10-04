@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pinned external inputs: the browser wasm modules (assets.lock) and the
-# loro-codemirror binding (loro-codemirror.lock).
+# loro-codemirror binding (web/loro-codemirror.lock).
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

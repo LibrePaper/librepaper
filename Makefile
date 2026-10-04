@@ -25,7 +25,7 @@ TYPST   := web/wasm/typst.wasm
 # nothing: what the pages are built from lives in web/src and web/public.
 SHELL_OUT := web/dist/index.html
 # The CodeMirror binding, fetched from the fork rather than vendored: see
-# loro-codemirror.lock and docs/dev/loro-codemirror.md. Every fetched file is
+# web/loro-codemirror.lock and docs/dev/loro-codemirror.md. Every fetched file is
 # named, not just the entry point: moving the pin to a commit that changes
 # only sync.ts must still re-bundle the pages, and listing one file meant it
 # did not -- the fetch corrected the file and vite was never asked again.
@@ -258,7 +258,7 @@ $(SHELL_OUT): $(WEB) $(LCM)
 # --- the pinned inputs -----------------------------------------------------
 #
 # The browser wasm renderers (assets.lock) and the loro-codemirror binding
-# (loro-codemirror.lock) are fetched, not built or vendored, and verified
+# (web/loro-codemirror.lock) are fetched, not built or vendored, and verified
 # against their locks; tools/pins owns fetching and moving them. Files already
 # correct are left alone, so running it on every build is cheap. `pins` is the
 # internal step. The files themselves depend on it order-only: a clean checkout

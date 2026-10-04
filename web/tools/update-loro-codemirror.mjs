@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const lock = join(root, "loro-codemirror.lock");
+const lock = join(root, "web/loro-codemirror.lock");
 
 const commit = process.argv[2];
 if (!/^[a-f0-9]{40}$/.test(commit || "")) {
