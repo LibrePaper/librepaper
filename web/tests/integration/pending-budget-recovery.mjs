@@ -50,7 +50,7 @@ const DOCUMENTS = 3;
 const noise = process.env.LIBREPAPER_TEST_VERBOSE ? console.error : () => {};
 const deployment = await startDeployment({
   label: "pending_budget",
-  advanced: `pending_mb: ${PENDING_MB}\npending_scratch_mb: ${SCRATCH_MB}\n`,
+  advanced: `[limits]\npending_mb = ${PENDING_MB}\npending_scratch_mb = ${SCRATCH_MB}\n`,
 });
 if (!deployment || deployment.unavailable) {
   console.log(`pending-budget-recovery: ${deployment?.unavailable || "no librepaper binary; run cargo build"}; skipping`);

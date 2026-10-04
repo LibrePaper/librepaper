@@ -8,7 +8,7 @@ Browsers fetch renderers and LaTeX files from one OVH S3 bucket (`bhs`). The bin
   - `MANIFEST.json`
   - engine files
   - `bundles/` and its index `bundles/bundles.json`
-- Base URL: `--asset-mirror` or `LIBREPAPER_ASSET_MIRROR`, default `DEFAULT_ASSET_MIRROR` in `crates/librepaper-base/src/config/mod.rs`
+- Base URL: `[assets].mirror` in the server TOML; when omitted, the server uses `DEFAULT_ASSET_MIRROR` from `crates/librepaper-base/src/config/mod.rs`
 - `assets.lock`: pins all five, compiled into the binary; browsers use the server's pin (`latexMirror` in `/api/config`)
   - `*.wasm` rows: repository, tag, sha256 of the module
   - `latex` row: `latex wasm-latex <tag> <sha256>`, set by `tools/pins update latex`
@@ -76,7 +76,11 @@ tools/deploy-assets publish              # check, smoke, probe, upload
 
 ## Hosting your own copy
 
+```toml
+[assets]
+mirror = "https://host/"   # serve the pinned paths over HTTPS, CORS for GET and HEAD
+```
+
 ```sh
-librepaper admin serve --asset-mirror https://host/   # serve the pinned paths over HTTPS, CORS for GET and HEAD
 tools/deploy-assets check https://host/latex/<sha256>/      # validate a LaTeX release
 ```

@@ -5,8 +5,8 @@
 # there. Building from a fork means building the archive first -- `make build`
 # -- and swapping the fetch below for a COPY.
 #
-#   docker build --build-arg LIBREPAPER_VERSION=v0.0.9 -t librepaper .
-# Build with a tagged release that includes the native metrics listener.
+#   docker build --build-arg LIBREPAPER_VERSION=<compatible-tag> -t librepaper .
+# Build with a tagged release that includes metrics and TOML config support.
 FROM alpine:3.21
 
 # The version to install. There is no default on purpose: an image that
@@ -53,12 +53,9 @@ USER librepaper
 
 # Both origins arrive on this one port; the server routes them by Host.
 EXPOSE 8080
-ENV LIBREPAPER_DATA=/var/lib/librepaper
-
-# Loopback is always served whatever --origin says, so the check does not have
-# to know the deployment's public name.
+# Loopback health checks do not depend on the public origin in config.toml.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 	CMD wget -qO- http://127.0.0.1:8080/health >/dev/null || exit 1
 
 ENTRYPOINT ["librepaper"]
-CMD ["admin", "serve", "--port", "8080"]
+CMD ["admin", "serve", "--config", "/etc/librepaper/config.toml"]

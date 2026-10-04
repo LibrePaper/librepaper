@@ -32,10 +32,10 @@ Source archives are produced on request (keyed by tree digest), not at checkpoin
 Document assets are content-addressed; identical uploads are stored once. Uploads reserve quota before the blob write begins and release it if cancelled.
 
 Storage limits:
-- `--publisher-storage-limit`
-- `--deployment-storage-limit`
-- `--publisher-upload-limit`
-- `log_quota_mb` (advanced config)
+- `[limits].publisher_storage_mb`
+- `[limits].deployment_storage_mb`
+- `[limits].publisher_uploads_per_hour`
+- `[limits].log_quota_mb`
 
 Owners can set softer history budgets and retention thresholds but cannot raise deployment hard limits. Documents may expire based on creation or last edit.
 

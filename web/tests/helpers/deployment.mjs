@@ -52,11 +52,7 @@ async function until(what, predicate, timeout = 30000) {
 /// Starts the deployment and signs one account in. `binary` defaults to the
 /// debug build; the browser smoke test passes the one it was handed.
 ///
-/// `advanced` is the hidden advanced configuration file (`--config`), which
-/// is how a test lowers a guardrail it means to reach -- for example
-/// `session_peer_queue`, so a stalled subscriber overflows its outbound queue
-/// after a few frames; the queue budget is small enough to reach that point
-/// without needing the default multi-megabyte backlog.
+/// `advanced` contains TOML settings for a test-specific guardrail change.
 export async function startDeployment({ label, binary = deploymentBinary(), advanced = null, handle = "tester", name = "Tester" }) {
   if (!existsSync(binary)) return null;
   let postgres;
@@ -91,31 +87,24 @@ export async function startDeployment({ label, binary = deploymentBinary(), adva
     throw error;
   }
   const base = `http://127.0.0.1:${port}`;
-  const args = [
-    "admin", "serve",
-    "--port", String(port),
-    "--data-directory", data,
-    "--fsync", "false",
-    "--publishers", "any",
-    "--commenters", "anyone",
-    // Publishing and source writes need a configured provider, so the
-    // deployment is told it has one. No request here ever reaches GitHub:
-    // the session cookie below is this deployment's own credential.
-    "--github-client-id", "integration-test",
-    "--database-url", postgres.url,
-    "--no-local",
-  ];
-  if (advanced) {
-    const path = join(data, "advanced.yaml");
-    try {
-      writeFileSync(path, advanced);
-    } catch (error) {
-      try { postgres.drop(); } catch {}
-      await rm(data, { recursive: true, force: true });
-      throw error;
-    }
-    args.push("--config", path);
+  // Publishing needs a provider, but these tests create their own signed
+  // session and never send a request to GitHub.
+  const configPath = join(data, "config.toml");
+  const config = [
+    "[server]", `bind = "127.0.0.1"`, `port = ${port}`, "local_companion = false", "",
+    "[storage]", `directory = ${JSON.stringify(data)}`, 'database_url = { env = "LIBREPAPER_DATABASE_URL" }', "fsync = false", "object_store = \"filesystem\"", "",
+    "[auth.github]", 'client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }', 'client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }', "",
+    "[access]", 'publishers = ["any"]', 'commenters = ["anyone"]', "",
+    advanced || "",
+  ].join("\n");
+  try {
+    writeFileSync(configPath, config);
+  } catch (error) {
+    try { postgres.drop(); } catch {}
+    await rm(data, { recursive: true, force: true });
+    throw error;
   }
+  const args = ["admin", "serve", "--config", configPath];
   let log = "";
   let server = null;
   let launchError = null;
@@ -125,7 +114,7 @@ export async function startDeployment({ label, binary = deploymentBinary(), adva
     launchError = null;
     server = spawn(binary, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, LIBREPAPER_GITHUB_CLIENT_SECRET: "integration-test" },
+      env: { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, LIBREPAPER_GITHUB_CLIENT_ID: "integration-test", LIBREPAPER_GITHUB_CLIENT_SECRET: "integration-test" },
     });
     server.once("error", (error) => { launchError = error; });
     serverClosed = new Promise((done) => server.once("close", done));

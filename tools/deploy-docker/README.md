@@ -1,18 +1,17 @@
 # A deployment in containers
 
 The stack runs PostgreSQL, LibrePaper, Caddy, Prometheus, Grafana, and host and
-PostgreSQL exporters. Set `LIBREPAPER_VERSION=v0.0.9` in `.env` to deploy the
-tagged release, which includes the native metrics listener. The historical
-v0.0.8 binary does not include that listener.
+PostgreSQL exporters. Set `LIBREPAPER_VERSION` to a release that includes both
+the native metrics listener and TOML configuration support. The historical
+v0.0.8 binary does not include the metrics listener; releases from before the
+TOML configuration change cannot read `config.toml`.
 
 ```sh
 cd tools/deploy-docker
 cp .env.example .env
-# Set LIBREPAPER_VERSION=v0.0.9, DOMAIN, ACME_EMAIL, all three passwords
-# described below, and both client ID and client secret for GitHub or Google
-# OAuth. Any account signed in through either configured provider may publish
-# and comment by default; set LIBREPAPER_PUBLISHERS or LIBREPAPER_COMMENTERS
-# in .env to restrict either access. Document access requires sign-in.
+cp config.toml.example config.toml
+# Edit the public origins in config.toml, set LIBREPAPER_VERSION, DOMAIN,
+# ACME_EMAIL, all three passwords below, and an OAuth ID/secret pair.
 docker compose up -d --build
 ```
 
@@ -26,28 +25,21 @@ with no safe default. The proxy takes a certificate for each over HTTP-01,
 which it cannot do before the `A`/`AAAA` records exist. The server refuses any
 other `Host` with 421.
 
-**Choose your publisher access.** Docker Compose defaults
-`LIBREPAPER_PUBLISHERS` to `any`, so any account signed in with the configured
-GitHub or Google provider may publish. To restrict publishing, set
-`LIBREPAPER_PUBLISHERS` in `.env` to a GitHub login, a Google account's
-verified address, an `@domain`, or a comma-separated allowlist. Publishing
-requires GitHub or Google OAuth credentials: configure both the client ID and
-client secret for at least one provider. For GitHub, the callback is
+**Configure sign-in and access.** Uncomment an `[auth.github]` or
+`[auth.google]` table in `config.toml` and set both referenced values in `.env`.
+Missing or empty references fail configuration loading. At least one provider
+is needed for sign-in and publishing. Set `access.publishers` to `["any"]`
+for any signed-in account, or list allowed GitHub logins, verified Google
+addresses, and `@domain` entries. `access.commenters` uses the same format and
+defaults to any signed-in account. Document access requires sign-in. For
+GitHub, the callback is
 `https://$DOMAIN/auth/callback`; Google's is
 `https://$DOMAIN/auth/callback/google`.
 
-Commenting defaults to any signed-in GitHub or Google account too. Set
-`LIBREPAPER_COMMENTERS` to a login, verified email address, `@domain`, or
-comma-separated allowlist to restrict commenters. Document access requires
-sign-in, including for shared links.
-
-**Decide about retention.** Off by default, which is right for a server whose
-publishers you know and wrong for one strangers may publish to: that is
-durable hosting for whatever they upload. `LIBREPAPER_EXPIRE_AFTER=30d`.
-
-Compose sets admission defaults of 50 MB of retained storage and 30 uploads per
-publisher per hour, including for older downloaded releases. Override them
-with `LIBREPAPER_QUOTA` and `LIBREPAPER_UPLOADS_PER_HOUR` in `.env` when needed.
+Set retention under `[retention]` in `config.toml`. Expiration is disabled by
+default; consider a lifetime when strangers can publish. The config example
+sets 50 MiB retained storage and 30 uploads per publisher per hour; edit
+`[limits]` there to change those settings.
 
 ## What is where
 
@@ -56,7 +48,7 @@ with `LIBREPAPER_QUOTA` and `LIBREPAPER_UPLOADS_PER_HOUR` in `.env` when needed.
 | `postgres` volume | the database: documents, the update log, comments, collaboration |
 | `data` volume | immutable objects, and the secrets that keep sessions and share links valid |
 | `caddy-data` volume | the certificates |
-| `config.yaml` | `trusted_proxies`, so visitors are rate-limited by their own address rather than the proxy's |
+| `config.toml` | all application settings, including the trusted proxy network |
 
 The schema is migrated at start-up, which is why `librepaper` waits on the
 database's health check rather than merely on its container.
@@ -128,8 +120,10 @@ volume.
 ### Building a locally built binary
 
 The normal `Dockerfile` downloads a tagged release and verifies its checksum.
-Set `LIBREPAPER_VERSION` to `v0.0.9` or a later metrics-capable release. For a
-locally built static musl binary, copy it to this directory as `librepaper`
+Set `LIBREPAPER_VERSION` to a release that includes TOML configuration and
+metrics support. The production deployment script checks `admin config check`
+on the candidate image before replacing the current config or restarting.
+For a locally built static musl binary, copy it to this directory as `librepaper`
 and use the alternate Dockerfile:
 
 ```sh
@@ -152,7 +146,7 @@ command rather than copying the volume out from under a running server:
 
 ```sh
 docker compose exec librepaper librepaper admin backup \
-  --data-directory /var/lib/librepaper /var/backups/librepaper/$(date +%F)
+  --config /etc/librepaper/config.toml /var/backups/librepaper/$(date +%F)
 ```
 
 Copy the result off this machine, and test a restore into an empty database
@@ -161,24 +155,28 @@ guess.
 
 ## Upgrading
 
-Set `LIBREPAPER_VERSION` to the exact release tag (for example,
-`v0.0.9`) and run `docker compose up -d --build`. The image is built from the
+Set `LIBREPAPER_VERSION` to the exact compatible release tag and run
+`docker compose up -d --build`. The image is built from the
 tagged release archive and checked against its checksums. To run a fork, build
 a static musl binary and use `Dockerfile.local`.
 
 ## S3 instead of local objects
 
-The filesystem profile keeps objects in the `data` volume, which is the right
-answer for one machine. For a bucket, add to `.env` and they reach the server
-as they stand:
+The filesystem profile keeps objects in the `data` volume. To use a bucket,
+change the existing `[storage]` table in `config.toml`; add `[storage.s3]` and
+provide credentials through explicit references:
 
-```sh
-LIBREPAPER_OBJECT_STORE=s3
-LIBREPAPER_S3_BUCKET=librepaper-production
-LIBREPAPER_S3_REGION=us-east-1
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
+```toml
+object_store = "s3"
+
+[storage.s3]
+bucket = "librepaper-production"
+region = "us-east-1"
+access_key_id = { env = "LIBREPAPER_S3_ACCESS_KEY_ID" }
+secret_access_key = { env = "LIBREPAPER_S3_SECRET_ACCESS_KEY" }
 ```
+
+Set those names in `.env`. Ambient AWS credential discovery is not used.
 
 The data volume is still where the deployment's own secrets live, so it is
 still worth backing up.

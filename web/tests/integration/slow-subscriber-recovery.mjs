@@ -15,7 +15,7 @@ const PEER_QUEUE = 4;
 const noise = process.env.LIBREPAPER_TEST_VERBOSE ? console.error : () => {};
 const deployment = await startDeployment({
   label: "slow_subscriber",
-  advanced: `session_peer_queue: ${PEER_QUEUE}\n`,
+  advanced: `[limits]\nsession_peer_queue = ${PEER_QUEUE}\n`,
 });
 if (!deployment || deployment.unavailable) {
   console.log(`slow-subscriber-recovery: ${deployment?.unavailable || "no librepaper binary; run cargo build"}; skipping`);

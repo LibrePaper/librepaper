@@ -115,6 +115,14 @@ In Google Auth Platform, open **Clients**, create a **Web application** client, 
 
 Store the client ID and secret in SOPS as `PRODUCTION_GOOGLE_CLIENT_ID` and `PRODUCTION_GOOGLE_CLIENT_SECRET`. Both `deploy` and `deploy-local` map these to `LIBREPAPER_GOOGLE_CLIENT_ID` and `LIBREPAPER_GOOGLE_CLIENT_SECRET`; `verify` checks the authorization redirects for both Google and GitHub. See Google's [OAuth 2.0 guide for web server applications](https://developers.google.com/identity/protocols/oauth2/web-server).
 
+The official TOML file is [tools/deploy-production.toml](../../tools/deploy-production.toml).
+It records the three public origins, `/var/lib/librepaper`, PostgreSQL,
+filesystem objects, the current 50 MiB/30-per-hour admission limits, the
+internal metrics listener, and the trusted Docker edge subnet. Credentials are
+referenced by name from `.env`; the TOML file contains no secret values. The
+deployment stages this file and runs the candidate image's `admin config
+check` before replacing `config.toml` or restarting the application.
+
 ## Secrets
 
 ```sh
@@ -143,9 +151,10 @@ tools/deploy-production deploy-local target/x86_64-unknown-linux-musl/release/li
 ```
 
 - `deploy VERSION` accepts only canonical `vMAJOR.MINOR.PATCH` tags at `v0.0.9` or later. It refuses `v0.0.8` before any remote write because that binary has no metrics endpoint. The default version comes from Cargo.toml and is subject to the same guard.
+- The candidate binary must include TOML configuration support. Older releases fail the remote `admin config check` preflight; the active config is left in place and the app is not restarted. Until a TOML-capable release is published, use `deploy-local` with a built binary that includes this CLI.
 - `make site` needs bun; the site is served from `~/librepaper/site` through `compose.override.yaml`
 - `deploy-local BINARY` accepts a previously built Linux musl executable. It uploads the file to a temporary name, compares SHA-256 checksums, then atomically replaces the kit binary and builds `Dockerfile.local`. Supported targets are x86_64 and aarch64. A normal release deployment resets this local-build override.
-- Domain, redirects, publishers and commenters are constants at the top of `tools/deploy-production`. The official instance accepts any signed-in GitHub or Google account as a publisher. Its `.env` sets a 50 MiB per-account storage quota and a limit of 30 project creations, forks or figure uploads per rolling hour; these limits apply to release and local-binary deployments.
+- Domain and redirects are constants at the top of `tools/deploy-production`. The official config allows any signed-in GitHub or Google account to publish and comment. It sets a 50 MiB per-account storage quota and a limit of 30 project creations, forks or figure uploads per rolling hour; these limits apply to release and local-binary deployments.
 - The VPS keeps the kit and `.env` (mode 600) in `~/librepaper`
 
 ## Squash migrations
@@ -204,7 +213,7 @@ LIBREPAPER_SERVER=https://app.librepaper.org librepaper login
 ```sh
 # on the VPS
 cd ~/librepaper && docker compose exec -T librepaper librepaper admin backup \
-  --data-directory /var/lib/librepaper /var/backups/librepaper/$(date +%F)
+  --config /etc/librepaper/config.toml /var/backups/librepaper/$(date +%F)
 ```
 
 - Not scheduled yet, and no off-machine copy yet

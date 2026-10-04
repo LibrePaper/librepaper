@@ -9,7 +9,7 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join, relative, resolve } from "node:path";
 import { sessionCookie, until } from "../../web/tests/helpers/deployment.mjs";
@@ -102,21 +102,19 @@ async function assertRevision(slug, revision, format, cookie) {
 
 const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
+const configPath = join(dataDirectory, "config.toml");
+writeFileSync(configPath, [
+  "[server]", 'bind = "127.0.0.1"', `port = ${port}`, "local_companion = false", "",
+  "[storage]", `directory = ${JSON.stringify(resolve(dataDirectory))}`, 'database_url = { env = "LIBREPAPER_SOURCE_URL" }', "fsync = false", 'object_store = "filesystem"', "",
+  "[auth.github]", 'client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }', 'client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }', "",
+  "[access]", 'publishers = ["any"]', 'commenters = ["anyone"]', "",
+].join("\n"));
 let log = "";
 const server = spawn(binary, [
-  "admin", "serve",
-  "--port", String(port),
-  "--data-directory", dataDirectory,
-  "--database-url", databaseUrl,
-  "--fsync", "false",
-  "--publishers", "any",
-  // Publishing needs a configured provider; nothing here reaches GitHub, the
-  // session cookie below is this deployment's own credential.
-  "--github-client-id", "fixture",
-  "--no-local",
+  "admin", "serve", "--config", configPath,
 ], {
   stdio: ["ignore", "pipe", "pipe"],
-  env: { ...process.env, LIBREPAPER_GITHUB_CLIENT_SECRET: "fixture" },
+  env: { ...process.env, LIBREPAPER_SOURCE_URL: databaseUrl, LIBREPAPER_GITHUB_CLIENT_ID: "fixture", LIBREPAPER_GITHUB_CLIENT_SECRET: "fixture" },
 });
 server.stdout.on("data", (bytes) => { log += bytes; });
 server.stderr.on("data", (bytes) => { log += bytes; });

@@ -14,15 +14,15 @@ limits for the public service; self-hosted operators can choose their own values
 | Resource | Default | Set with |
 |---|---|---|
 | Document log | 32 MiB | `log_quota_mb` |
-| Owner storage | 50 MiB | `--publisher-storage-limit` |
-| Owner uploads | 30/hour | `--publisher-upload-limit` |
-| Deployment storage | 5 GiB | `--deployment-storage-limit` |
+| Owner storage | 50 MiB | `[limits].publisher_storage_mb` |
+| Owner uploads | 30/hour | `[limits].publisher_uploads_per_hour` |
+| Deployment storage | 5 GiB | `[limits].deployment_storage_mb` |
 | Memory | 512 MiB | `memory_budget_mb` |
 | Pending source | 64 MiB | `pending_mb` |
 | Write scratch | about 160 MiB | `pending_scratch_mb` |
-| PostgreSQL connections | 20 | `--database-connections` |
+| PostgreSQL connections | 20 | `[storage].database_connections` |
 
-Names beginning with `--` are serve flags; the others are advanced configuration keys.
+Settings are declared in the server's TOML configuration file.
 
 Admission rules:
 

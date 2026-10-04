@@ -48,6 +48,19 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -m 700 "$work/source-data" "$work/restored-data"
+cat >"$work/source.toml" <<'TOML'
+[storage]
+directory = "source-data"
+database_url = { env = "LIBREPAPER_SOURCE_URL" }
+fsync = false
+TOML
+cat >"$work/restore.toml" <<'TOML'
+[storage]
+directory = "restored-data"
+database_url = { env = "LIBREPAPER_RESTORE_URL" }
+fsync = false
+TOML
+export LIBREPAPER_SOURCE_URL LIBREPAPER_RESTORE_URL
 
 # Populate a fresh deployment with tutorial documents, snapshot each one, and
 # record two source revisions after that baseline. No production data or
@@ -84,8 +97,7 @@ console.log('fixture history verified: five projects, each with a snapshot and t
 JSHISTORY
 
 "$LIBREPAPER_BIN" admin backup \
-  --database-url "$LIBREPAPER_SOURCE_URL" \
-  --data-directory "$work/source-data" \
+  --config "$work/source.toml" \
   --id frugal-recovery-drill "$work/backup"
 
 # The portable recovery point is encrypted with the operator's public age
@@ -130,8 +142,7 @@ restore_tables=$(psql "$LIBREPAPER_RESTORE_URL" -XAt -v ON_ERROR_STOP=1 -c \
 [[ "$restore_tables" == 0 ]] || { echo "refusing nonempty restore database ($restore_tables public tables)" >&2; exit 2; }
 rmdir "$work/restored-data"
 "$LIBREPAPER_BIN" admin restore \
-  --database-url "$LIBREPAPER_RESTORE_URL" \
-  --data-directory "$work/restored-data" \
+  --config "$work/restore.toml" \
   "$work/backup" "$work/restored-data"
 
 psql "$LIBREPAPER_RESTORE_URL" -XAt -v ON_ERROR_STOP=1 -c "$signature_sql" >"$work/restored-signature"

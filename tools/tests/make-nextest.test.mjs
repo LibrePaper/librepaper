@@ -15,7 +15,7 @@ async function runnerFixture(withNextest = false) {
   const log = join(directory, "calls.log");
   await writeFile(
     join(directory, "cargo"),
-    '#!/bin/sh\nif [ "$1" = nextest ]; then\n  shift\n  printf "nextest %s %s\\n" "$*" "${LIBREPAPER_FSYNC:-}" >> "$MOCK_LOG"\n  exit "${MOCK_NEXTEST_EXIT:-0}"\nfi\nprintf "cargo %s %s\\n" "$*" "${LIBREPAPER_FSYNC:-}" >> "$MOCK_LOG"\nexit "${MOCK_CARGO_EXIT:-0}"\n',
+    '#!/bin/sh\nif [ "$1" = nextest ]; then\n  shift\n  printf "nextest %s\\n" "$*" >> "$MOCK_LOG"\n  exit "${MOCK_NEXTEST_EXIT:-0}"\nfi\nprintf "cargo %s\\n" "$*" >> "$MOCK_LOG"\nexit "${MOCK_CARGO_EXIT:-0}"\n',
     { mode: 0o755 },
   );
   if (withNextest) {
@@ -57,7 +57,7 @@ test("test-rust falls back only when cargo-nextest is unavailable", async () => 
   try {
     const output = runTarget(directory, log);
     assert.match(output, /cargo-nextest not installed/);
-    assert.equal(await readFile(log, "utf8"), "cargo test --workspace false\n");
+    assert.equal(await readFile(log, "utf8"), "cargo test --workspace\n");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -68,7 +68,7 @@ test("test-rust preserves an installed cargo-nextest failure", async () => {
   try {
     assert.throws(() => runTarget(directory, log, { MOCK_NEXTEST_EXIT: "19" }));
     const calls = await readFile(log, "utf8");
-    assert.equal(calls, "nextest run --workspace false\n");
+    assert.equal(calls, "nextest run --workspace\n");
     assert.doesNotMatch(calls, /cargo test/);
   } finally {
     await rm(directory, { recursive: true, force: true });

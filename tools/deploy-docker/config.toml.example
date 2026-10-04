@@ -1,0 +1,44 @@
+# Copy to config.toml and edit the public origins before starting Compose.
+# Configuration is explicit: environment variables are read only where a
+# value below contains an { env = "NAME" } reference.
+
+[server]
+bind = "0.0.0.0"
+port = 8080
+origin = "https://paper.example"
+docs_origin = "https://docs.paper.example"
+local_companion = false
+
+[storage]
+directory = "/var/lib/librepaper"
+database_url = { env = "LIBREPAPER_DATABASE_URL" }
+database_connections = 20
+fsync = true
+object_store = "filesystem"
+
+# Enable a provider only after placing both values in .env. A reference to a
+# missing or empty variable is a configuration error, so neither credential
+# is silently treated as configured.
+# [auth.github]
+# client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }
+# client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }
+#
+# [auth.google]
+# client_id = { env = "LIBREPAPER_GOOGLE_CLIENT_ID" }
+# client_secret = { env = "LIBREPAPER_GOOGLE_CLIENT_SECRET" }
+
+[access]
+publishers = []
+commenters = ["anyone"]
+
+[limits]
+publisher_storage_mb = 50
+deployment_storage_mb = 5120
+publisher_uploads_per_hour = 30
+
+[metrics]
+address = "0.0.0.0:9091"
+
+[proxy]
+# Matches the fixed edge network in compose.yaml. Do not trust a wider range.
+trusted_proxies = ["172.29.0.0/16"]

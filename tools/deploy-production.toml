@@ -1,0 +1,90 @@
+# Configuration for the official LibrePaper deployment.
+# Installed by tools/deploy-production as librepaper/config.toml and mounted
+# read-only at /etc/librepaper/config.toml in the application container.
+#
+# Values are TOML literals except the explicit { env = "NAME" } references.
+# The application reads only the names below from its environment; it does not
+# load .env files or apply implicit environment overrides.
+
+[server]
+# Both public origins terminate at the reverse proxy; the application listens
+# on the private Docker edge and internal networks.
+bind = "0.0.0.0"
+port = 8080
+origin = "https://app.librepaper.org"
+docs_origin = "https://docs.librepaper.org"
+site_origin = "https://librepaper.org"
+local_companion = false
+
+[storage]
+# The named Docker volume persists objects and session/share-link secrets.
+directory = "/var/lib/librepaper"
+# Compose builds this complete URL from the PostgreSQL service credential.
+database_url = { env = "LIBREPAPER_DATABASE_URL" }
+database_connections = 20
+fsync = true
+object_store = "filesystem"
+# To move object bytes to S3, change object_store and add [storage.s3]. Keep
+# filesystem storage for the single-host production deployment.
+# [storage.s3]
+# endpoint = "https://s3.example"
+# region = "us-east-1"
+# bucket = "librepaper-production"
+# access_key_id = { env = "LIBREPAPER_S3_ACCESS_KEY_ID" }
+# secret_access_key = { env = "LIBREPAPER_S3_SECRET_ACCESS_KEY" }
+
+[auth.github]
+# Both explicit references are required so a half-configured provider cannot
+# appear enabled with an empty secret.
+client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }
+client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }
+
+[auth.google]
+# Google and GitHub are both registered for the official service.
+client_id = { env = "LIBREPAPER_GOOGLE_CLIENT_ID" }
+client_secret = { env = "LIBREPAPER_GOOGLE_CLIENT_SECRET" }
+
+[access]
+# The public instance currently permits every signed-in account to publish and
+# comment; the array form also supports explicit account/domain allowlists.
+publishers = ["any"]
+commenters = ["anyone"]
+
+[limits]
+# Match the current production admission policy: each publisher has a 50 MiB
+# retained-object allowance and 30 project creations, forks, or figure uploads
+# per rolling hour. Other resource limits retain the binary's defaults.
+publisher_storage_mb = 50
+publisher_uploads_per_hour = 30
+
+[assets]
+# The project's official OVH S3 asset mirror.
+mirror = "https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/"
+
+[metrics]
+# Prometheus reaches this listener only over the private Compose network.
+address = "0.0.0.0:9091"
+
+[proxy]
+# The Docker edge network is the only source allowed to supply forwarded
+# client addresses. Keep this in sync with the `edge` network in compose.yaml.
+trusted_proxies = ["172.29.0.0/16"]
+
+# Optional: set retention for open publishing. Omitted in the current policy,
+# so documents remain until an authorized deletion request.
+# [retention]
+# expire_after = "30d"
+# expire_from = "created" # or "updated"
+
+# Optional: quiet down application logs if the default filter is too verbose.
+# [logging]
+# filter = "info"
+
+# Optional operator backup planning metadata, if this instance adopts a
+# backup policy in the application:
+# [backup]
+# destination_class = "local"
+# frequency = 86400       # seconds
+# retained_count = 7
+# encrypted = true
+# warning_count = 2

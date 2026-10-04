@@ -43,6 +43,7 @@ function fixture({
   googleHttpStatus = '302',
   googleLocation = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
   sopsFailureKey = '',
+  configCheckFailure = false,
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
   const bin = path.join(root, 'bin');
@@ -107,10 +108,10 @@ for arg do previous="$last"; last="$arg"; done
 source="$previous"
 destination="$last"
 case "$destination" in
-  *:librepaper/librepaper.tmp)
+  *:librepaper/librepaper.candidate.tmp)
     mkdir -p "$REMOTE_ROOT"
-    cp "$source" "$REMOTE_ROOT/librepaper.tmp"
-    ${corruptTransfer ? "printf 'corrupt\\n' >> \"$REMOTE_ROOT/librepaper.tmp\"" : ':'}
+    cp "$source" "$REMOTE_ROOT/librepaper.candidate.tmp"
+    ${corruptTransfer ? "printf 'corrupt\\n' >> \"$REMOTE_ROOT/librepaper.candidate.tmp\"" : ':'}
     ;;
   *:librepaper/site/)
     mkdir -p "$REMOTE_ROOT/site"
@@ -133,10 +134,20 @@ case "$command" in
     cat > "$REMOTE_ROOT/compose.override.yaml.tmp"
     mv "$REMOTE_ROOT/compose.override.yaml.tmp" "$REMOTE_ROOT/compose.override.yaml"
     ;;
+  *'config.toml.candidate.tmp'*)
+    cat > "$REMOTE_ROOT/config.toml.candidate.tmp"
+    chmod 644 "$REMOTE_ROOT/config.toml.candidate.tmp"
+    mv -f "$REMOTE_ROOT/config.toml.candidate.tmp" "$REMOTE_ROOT/config.toml.candidate"
+    ;;
+  *'mv -f config.toml.candidate config.toml'*)
+    mv -f "$REMOTE_ROOT/config.toml.candidate" "$REMOTE_ROOT/config.toml"
+    printf 'config-install\\n' >> "$ORDER_FILE"
+    ;;
   *'Caddyfile'*) cat >> "$REMOTE_ROOT/Caddyfile" ;;
   *'postgres sh -s'*) cat > "$REMOTE_ROOT/monitoring-user.sh" ;;
-  *'sha256sum librepaper.tmp'*) sha256sum "$REMOTE_ROOT/librepaper.tmp" | cut -d ' ' -f1 ;;
-  *'chmod 755 librepaper.tmp'*) mv "$REMOTE_ROOT/librepaper.tmp" "$REMOTE_ROOT/librepaper" ;;
+  *'sha256sum librepaper.candidate.tmp'*) sha256sum "$REMOTE_ROOT/librepaper.candidate.tmp" | cut -d ' ' -f1 ;;
+  *'chmod 755 librepaper.candidate.tmp'*) chmod 755 "$REMOTE_ROOT/librepaper.candidate.tmp"; mv "$REMOTE_ROOT/librepaper.candidate.tmp" "$REMOTE_ROOT/librepaper.candidate" ;;
+  *'mv -f librepaper.candidate librepaper'*) mv -f "$REMOTE_ROOT/librepaper.candidate" "$REMOTE_ROOT/librepaper" ;;
   *'prometheus sh -s'*)
     count=$(cat "$PROMETHEUS_COUNT_FILE" 2>/dev/null || printf '0')
     count=$((count + 1))
@@ -149,9 +160,14 @@ case "$command" in
       '{"data":{"result":[{"values":[[1,"1"],[2,"1"]]}]}}' \\
       '${pgUpHealthy ? '{"data":{"result":[{"value":[3,"1"]}]}}' : '{"data":{"result":[]}}'}'
     ;;
-  *'docker compose up -d --build'*)
+  *'docker compose up -d --wait'*)
     printf called >> "$COMPOSE_UP_FILE"
     printf 'up\\n' >> "$ORDER_FILE"
+    ;;
+  *'docker compose build librepaper'*) : ;;
+  *'docker compose run --rm --no-deps librepaper admin config check'*)
+    printf 'config-check\\n' >> "$ORDER_FILE"
+    [ "$CONFIG_CHECK_FAILURE" = 0 ]
     ;;
   *'pg_dump'*' -d librepaper_squash'*)
     printf -- '-- comment\\nSET x = y;\\n'
@@ -291,6 +307,7 @@ exit 0`);
       GOOGLE_HTTP_STATUS: String(googleHttpStatus),
       GOOGLE_LOCATION: googleLocation,
       SOPS_FAILURE_KEY: sopsFailureKey,
+      CONFIG_CHECK_FAILURE: configCheckFailure ? '1' : '0',
     },
     makeCalledFile,
     oauthCallsFile,
@@ -315,11 +332,16 @@ test('deploy writes Google OAuth credentials to .env and keeps them out of outpu
     const result = runProduction(f, 'deploy');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /8 keys decrypted/);
-    assert.match(result.stdout, /15 settings/);
+    assert.match(result.stdout, /staged config.toml/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 15);
+    assert.equal(envFile.trimEnd().split('\n').length, 11);
+    const productionConfig = readFileSync(path.join(f.remote, 'config.toml'), 'utf8');
+    assert.match(productionConfig, /origin = "https:\/\/app\.librepaper\.org"/);
+    assert.match(productionConfig, /database_url = \{ env = "LIBREPAPER_DATABASE_URL" \}/);
+    assert.ok(readFileSync(f.orderFile, 'utf8').indexOf('config-check') < readFileSync(f.orderFile, 'utf8').indexOf('config-install'));
+    assert.ok(readFileSync(f.orderFile, 'utf8').indexOf('config-install') < readFileSync(f.orderFile, 'utf8').indexOf('up'));
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
   } finally {
     f.cleanup();
@@ -332,12 +354,26 @@ test('deploy-local writes Google OAuth credentials to .env and keeps them out of
     const result = runProduction(f, 'deploy-local');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /8 keys decrypted/);
-    assert.match(result.stdout, /15 settings/);
+    assert.match(result.stdout, /staged config.toml/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 15);
+    assert.equal(envFile.trimEnd().split('\n').length, 11);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('a binary without TOML config support leaves the installed config and running app in place', () => {
+  const f = fixture({ configCheckFailure: true });
+  try {
+    writeFileSync(path.join(f.remote, 'config.toml'), 'previous production config\n');
+    const result = runProduction(f, 'deploy');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /candidate binary cannot load config\.toml/);
+    assert.equal(readFileSync(path.join(f.remote, 'config.toml'), 'utf8'), 'previous production config\n');
+    assert.equal(existsSync(f.composeUpFile), false);
   } finally {
     f.cleanup();
   }

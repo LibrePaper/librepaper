@@ -5,9 +5,8 @@
 # (from web/dist) and serves it. Browser WASM renderers are separate pinned
 # inputs fetched into web/wasm and published to the asset mirror for browsers.
 
-# Local settings, kept out of the repository: the GitHub OAuth app and who may
-# publish. Copy .env.example to .env and fill it in. Values are read as Make
-# assignments, so write them bare, with no surrounding quotes.
+# Local credentials, kept out of the repository. Copy .env.example to .env and
+# fill it in. The selected TOML config names any values the application reads.
 -include .env
 export
 
@@ -82,10 +81,6 @@ test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 # It is not required: `cargo test` still runs everything, just more slowly and
 # only up to the first crate that fails.
 #
-# LIBREPAPER_FSYNC=false is read by the storage layer. The suite's own crate
-# relaxes durability under `cfg(test)` on its own; this is for the cases that
-# spawn the real binary, which is built without it. Nothing a test writes
-# outlives the run, so there is no crash for an fsync to survive.
 	@$(MAKE) --no-print-directory test-rust
 # Said out loud because a silent green `test` reads as "everything passes", and
 # it is not: the browser components and the Postgres-gated cases are both out
@@ -102,10 +97,10 @@ test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 # is a test failure, not a reason to retry with a runner that can hide it.
 test-rust:
 	@if command -v cargo-nextest >/dev/null; then \
-		LIBREPAPER_FSYNC=false cargo nextest run --workspace; \
+		cargo nextest run --workspace; \
 	else \
 		echo "cargo-nextest not installed (cargo install cargo-nextest); using cargo test"; \
-		LIBREPAPER_FSYNC=false cargo test --workspace; \
+		cargo test --workspace; \
 	fi
 
 # One command that means what a green `test` looks like it means. The Postgres
@@ -134,30 +129,20 @@ PORT       ?= 8081
 # button on it points at.
 SITE_PORT  ?= 8082
 DATA       ?= librepaper-data
-# Browsers fetch the wasm renderers and LaTeX directly from an HTTPS static
-# asset mirror. With no override the binary uses the project mirror, which
-# serves the releases assets.lock pins. `ASSET_MIRROR=` selects an
-# operator-hosted copy for local runs.
-ASSET_MIRROR      ?=
-ASSET_MIRROR_FLAG ?= $(if $(ASSET_MIRROR),--asset-mirror $(ASSET_MIRROR))
-
-# SIMULATE_ACTIVITY=<days> writes every starter document a new account is
-# given as though it had been typed over that many days, so the history panel
-# has a calendar in it rather than the one cell a document published once has.
-# The operations are real; only the clock is invented. See seed::activity.
-# 0 -- or nothing at all -- asks for no simulation, which is what `serve`
-# does on its own; `demo` supplies a default below.
-SIMULATE_ACTIVITY_FLAG ?= $(if $(filter-out 0,$(SIMULATE_ACTIVITY)),--simulate-activity $(SIMULATE_ACTIVITY))
-
+CONFIG     ?= tools/dev.toml
 OPEN ?= 1
 
 # Without LIBREPAPER_DATABASE_URL, the server uses the Docker PostgreSQL that
 # tools/db dev keeps, started here if it is not running.
-serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, ASSET_MIRROR=, LIBREPAPER_DATABASE_URL=)
+serve: $(BIN)  ## Run the server and open it in Firefox (CONFIG=tools/dev.toml)
 	@test -n "$(LIBREPAPER_DATABASE_URL)" || tools/db dev >/dev/null
 	@test "$(OPEN)" = 1 && command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
 	@LIBREPAPER_DATABASE_URL="$${LIBREPAPER_DATABASE_URL:-$$(tools/db url)}" \
-		$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(ASSET_MIRROR_FLAG) $(SIMULATE_ACTIVITY_FLAG)
+		LIBREPAPER_PORT="$(PORT)" LIBREPAPER_DATA="$(abspath $(DATA))" \
+		LIBREPAPER_APP_ORIGIN="http://localhost:$(PORT)" \
+		LIBREPAPER_SITE_ORIGIN="$${LIBREPAPER_SITE_ORIGIN:-http://localhost:$(PORT)}" \
+		LIBREPAPER_SIMULATE_ACTIVITY="$(if $(SIMULATE_ACTIVITY),$(SIMULATE_ACTIVITY),0)" \
+		$(BIN) admin serve --config "$(CONFIG)"
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
@@ -175,6 +160,8 @@ kill:  ## Stop a server started with make serve
 # LIBREPAPER_DATABASE_URL points somewhere this target has no business
 # dropping, so it refuses rather than guessing.
 wipe:  ## Delete the local deployment -- database and data directory -- and start over
+	@if [ "$(CONFIG)" != tools/dev.toml ]; then echo "wipe only supports CONFIG=tools/dev.toml"; exit 1; fi
+	@case "$(DATA)" in ""|.|..|/|../*|*/..|*/../*|/*) echo "unsafe DATA path: $(DATA)"; exit 1;; esac
 	@if [ -n "$(LIBREPAPER_DATABASE_URL)" ]; then \
 		echo "LIBREPAPER_DATABASE_URL is set: wipe that database yourself."; exit 1; \
 	fi
@@ -220,17 +207,17 @@ demo:  ## Serve the site, the app, a local companion and simulated activity (SIM
 	@if [ -z "$$LIBREPAPER_GITHUB_CLIENT_ID" ] && command -v sops >/dev/null 2>&1 \
 		&& sops --decrypt --extract '["LIBREPAPER_GITHUB_CLIENT_ID"]' $(DEMO_KEYS) >/dev/null 2>&1; then \
 		echo "demo: GitHub sign-in from $(DEMO_KEYS)"; \
-		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run'; \
+		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run CONFIG=tools/dev-oauth.toml'; \
 	elif [ -n "$$LIBREPAPER_GITHUB_CLIENT_ID" ]; then \
 		echo "demo: GitHub sign-in from the environment"; \
-		exec $(MAKE) --no-print-directory demo-run; \
+		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev-oauth.toml; \
 	else \
 		echo "demo: no sign-in (sops cannot decrypt $(DEMO_KEYS)); publishing is off"; \
-		exec $(MAKE) --no-print-directory demo-run; \
+		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev.toml; \
 	fi
 
-# A demo's embedded companion must trust this local app origin, even when the
-# caller exported or supplied a production LIBREPAPER_SERVER on the make line.
+# The companion setting is local to the demo, independent of the caller's
+# shell. Backend settings come from the selected TOML file and its references.
 demo-run: override LIBREPAPER_SERVER = http://localhost:$(PORT)
 demo-run: SIMULATE_ACTIVITY ?= 21
 demo-run: $(BIN)
@@ -250,7 +237,8 @@ demo-run: $(BIN)
 	echo "site  http://localhost:$(SITE_PORT)"; \
 	echo "app   http://localhost:$(PORT)"; \
 	LIBREPAPER_SITE_ORIGIN=http://localhost:$(SITE_PORT) \
-		$(MAKE) serve OPEN=0 LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY) LIBREPAPER_SERVER="http://localhost:$(PORT)"
+		$(MAKE) serve OPEN=0 CONFIG="$(CONFIG)" SIMULATE_ACTIVITY="$(SIMULATE_ACTIVITY)" \
+			LIBREPAPER_SERVER="http://localhost:$(PORT)" LIBREPAPER_SITE_ORIGIN="http://localhost:$(SITE_PORT)"
 
 # --- the web app -----------------------------------------------------------
 #

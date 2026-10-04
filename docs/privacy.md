@@ -111,7 +111,7 @@ Hosting, database and object-storage providers see what they store.
 
 ## Retention
 
-- **Documents:** kept until deleted or `--document-expire-after` period passes
+- **Documents:** kept until deleted or the configured `[retention].expire_after` period passes
   (measured from last update or creation). See [Retention](./host.html#retention).
 - **Checkpoints and edit history:** retained by default while the document
   exists; an owner can explicitly trim history, which permanently removes

@@ -2,200 +2,185 @@
 title: "Self-hosting"
 ---
 
-> **Warning:** LibrePaper is experimental software that is evolving rapidly. We do not recommend self-hosting at the moment. This page nevertheless includes some notes for interested readers and system administrators.
+> **Warning:** LibrePaper is experimental software that is evolving rapidly. We do not recommend self-hosting at the moment. These notes are for interested readers and system administrators.
 
-## Deploy
+## Configuration
 
-### Quick start
+The server and admin commands read one TOML file. `admin serve` defaults to
+`/etc/librepaper/config.toml`; pass `--config PATH` to choose another file.
+Settings are not read from ambient environment variables. A value can be a
+TOML literal or an explicit `{ env = "NAME" }` / `{ file = "path" }`
+reference. Environment and file references are required when present, and
+relative file paths resolve from the TOML file's directory.
 
-This command starts the server only. Self-hosting also requires a PostgreSQL
-database and at least one configured OAuth provider; see [Production](#production)
-and [OAuth](#oauth) below before expecting sign-in or persistence to work.
+```toml
+[server]
+bind = "0.0.0.0"
+port = 8080
+origin = "https://paper.example"
+docs_origin = "https://docs.paper.example"
+local_companion = false
 
-```sh
-librepaper admin serve --port 8081 --publishers YOUR-GITHUB-LOGIN
+[storage]
+directory = "/var/lib/librepaper"
+database_url = { env = "LIBREPAPER_DATABASE_URL" }
+database_connections = 20
+fsync = true
+object_store = "filesystem"
+
+[auth.github]
+client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }
+client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }
+
+[access]
+publishers = ["YOUR-GITHUB-LOGIN"]
+commenters = ["anyone"]
 ```
 
-### Production
+At least one OAuth provider is needed to sign in. Each configured provider
+requires both a client ID and secret. Omit the whole `[auth.github]` or
+`[auth.google]` table when that provider is unused. A missing or empty
+referenced value is an error; it is never treated as an absent provider.
+Validate and inspect the resolved file with:
 
-Requires separate hostnames (reader and `docs.*`); use `--docs-origin` to override. Set `--origin`; unrecognized hosts receive 421.
+```sh
+librepaper admin config check --config /etc/librepaper/config.toml
+librepaper admin config show --config /etc/librepaper/config.toml
+```
 
-Install PostgreSQL separately:
+`show` redacts database and credential values.
+
+## Production
+
+Use separate hostnames for the reader and published documents. Set `origin`
+and `docs_origin`; the server rejects unrecognized hosts with 421. Install
+PostgreSQL separately:
 
 ```sql
 create role librepaper login password 'replace-with-a-generated-secret';
 create database librepaper owner librepaper;
 ```
 
-Connect with peer authentication or loopback:
+The database URL is supplied only because the config explicitly references
+`LIBREPAPER_DATABASE_URL`:
 
 ```sh
-export LIBREPAPER_DATABASE_URL=postgresql:///librepaper
-# or
 export LIBREPAPER_DATABASE_URL='postgresql://librepaper:SECRET@127.0.0.1/librepaper'
+librepaper admin serve --config /etc/librepaper/config.toml
 ```
 
-Keep `/var/lib/librepaper/objects` and PostgreSQL on SSD. For S3-compatible storage:
+Keep the data directory and PostgreSQL on durable storage. To use S3-compatible
+storage, add the following to the TOML file and set the two referenced
+environment variables. Do not rely on ambient AWS credential discovery:
 
-```sh
-export LIBREPAPER_OBJECT_STORE=s3
-export LIBREPAPER_S3_REGION=us-east-1
-export LIBREPAPER_S3_BUCKET=librepaper-production
-export AWS_ACCESS_KEY_ID=...
-export AWS_SECRET_ACCESS_KEY=...
-# LIBREPAPER_S3_ENDPOINT for other providers
-# LIBREPAPER_S3_ALLOW_HTTP=true only for trusted local endpoints
+```toml
+[storage]
+object_store = "s3"
+
+[storage.s3]
+endpoint = "https://s3.example"
+region = "us-east-1"
+bucket = "librepaper-production"
+access_key_id = { env = "LIBREPAPER_S3_ACCESS_KEY_ID" }
+secret_access_key = { env = "LIBREPAPER_S3_SECRET_ACCESS_KEY" }
 ```
 
-Run behind an HTTPS reverse proxy:
+Run behind an HTTPS reverse proxy that preserves `Host`. Configure only the
+proxy's network under `[proxy]` and make it append the actual client address to
+`X-Forwarded-For`:
 
-```sh
-librepaper admin serve \
-  --origin https://paper.example \
-  --publishers YOUR_GITHUB_LOGIN \
-  --data-directory /var/lib/librepaper \
-  --database-connections 20 \
-  --port 8080
+```toml
+[proxy]
+trusted_proxies = ["127.0.0.1/32", "::1/128"]
 ```
 
-Proxy must preserve `Host` header. Only one `admin serve` per database.
+Only one `admin serve` should run per database.
 
-### Moderation
+## Moderation
 
-Moderation commands connect to the database via `--database-url` or `LIBREPAPER_DATABASE_URL`. Database access is the operator authorization boundary.
+Moderation commands use the same configuration file as the server. Database
+access is the operator authorization boundary.
 
 ```sh
 librepaper admin moderate block-account github-handle \
+  --config /etc/librepaper/config.toml \
   --actor "on-call@example.org" --reason "automated abuse investigation"
-librepaper admin moderate unblock-account github-handle \
-  --actor "on-call@example.org" --reason "appeal reviewed"
-
 librepaper admin moderate hide-project abusive-project \
+  --config /etc/librepaper/config.toml \
   --actor "on-call@example.org" --reason "contains abusive material"
-librepaper admin moderate unhide-project abusive-project \
-  --actor "on-call@example.org" --reason "review completed"
 ```
 
-Every command requires `--actor` and `--reason`. `moderation_audit` table records actor, timestamp, action, target, and reason. Accounts accept handle or UUID.
+Every command requires `--actor` and `--reason`. The `moderation_audit` table
+records actor, timestamp, action, target, and reason. Blocking revokes sessions
+and denies access and writes. Hiding preserves data while denying document,
+asset, source, history, export, and socket access. Open sockets recheck
+authorization every 2 seconds; frames already in flight may still arrive.
 
-Blocking: revokes sessions, denies access and writes. Unblocking: permits fresh sign-in; previously issued credentials stay revoked.
+## Storage, limits, and backup
 
-Hiding: preserves data while denying document, asset, source, history, export, and socket access. Unhiding restores previous access rules.
+The `[storage]` table selects the catalog database, object store, and local
+server data directory. Restore requires an empty database and a destination
+directory that does not exist yet.
 
-Open sockets recheck authorization every 2 seconds, then disconnect; frames already in flight may still arrive. Preserve `moderation_audit` with normal backups.
+Optional capacity settings live under `[limits]`; sizes are MiB:
 
-## Storage
+```toml
+[limits]
+publisher_storage_mb = 500
+deployment_storage_mb = 10240
+publisher_uploads_per_hour = 30
+```
 
-`librepaper admin serve` stores catalog, objects, server state and session secrets in `--data-directory` (default `librepaper-data`). Restore needs an empty database and a path that does not exist yet.
+Expiration is disabled unless configured. `expire_from` accepts `created` or
+`updated`:
 
-Storage limits:
+```toml
+[retention]
+expire_after = "24h"
+expire_from = "created"
+```
 
-| Flag | Default |
-| --- | --- |
-| `--publisher-storage-limit` | 50 MB |
-| `--deployment-storage-limit` | 5120 MB |
-| `--publisher-upload-limit` | 30 uploads/hour |
-| `log_quota_mb` (advanced config) | 32 MB |
+Back up and restore with the same config used by the server. For restore, the
+config must identify the target database; the destination path remains a
+positional argument:
 
 ```sh
-librepaper admin serve --publisher-storage-limit 500 --deployment-storage-limit 10240
+librepaper admin backup --config /etc/librepaper/config.toml \
+  /backups/librepaper-$(date +%F)
+librepaper admin restore --config /etc/librepaper/restore.toml \
+  /backups/librepaper-2026-09-13 /librepaper-restored
 ```
 
-Backup and restore:
+See [cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md)
+for resource defaults and backup limitations.
 
-```sh
-librepaper admin backup --data-directory /var/lib/librepaper /backups/librepaper-$(date +%F)
-createdb librepaper_restore
-LIBREPAPER_DATABASE_URL=postgresql:///librepaper_restore librepaper admin restore /backups/librepaper-2026-09-13 /librepaper-restored
-```
+## Rights and OAuth
 
-See [cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md) for defaults and schema.
+`[access].publishers` controls who may upload; `commenters` controls who may
+annotate. Use arrays of GitHub logins, verified Google addresses, or `@domain`
+entries. `"any"` or `"anyone"` allows any signed-in account. Publishers default
+to none, commenters to any signed-in account. Document access and share links
+still require sign-in. Domain matching is exact: `@example.org` admits
+`alice@example.org`, not `alice@mail.example.org`.
 
-## Environment variables
-
-Every flag has an environment variable; `librepaper admin serve --help` names each one.
-
-Advanced config in optional YAML (`--config` or `LIBREPAPER_CONFIG`):
-- `trusted_proxies`: proxy networks (CIDR)
-- `backup`: `destination_class`, `frequency` (seconds), `retained_count`, `encrypted`, `warning_count`
-
-Secrets (environment only):
-- `LIBREPAPER_GITHUB_CLIENT_SECRET`
-- `LIBREPAPER_GOOGLE_CLIENT_SECRET`
-
-Service settings:
-- `LIBREPAPER_ASSET_MIRROR`: HTTPS URL (default: project mirror)
-
-## Fonts
-
-```sh
-librepaper admin serve --typst-fonts /srv/librepaper/fonts
-```
-
-## Rights
-
-`--publishers`: who may upload; `--commenters`: who may annotate.
-
-```sh
-librepaper admin serve --publishers alice,anne@example.org --commenters @example.org
-```
-
-| Entry | Meaning |
-| --- | --- |
-| `alice` | GitHub login |
-| `alice@example.org` | Google account with verified email |
-| `@example.org` | any Google account on that domain (exact match) |
-| `any` or `anyone` | any signed-in account |
-
-Defaults: `--publishers` has no default; `--commenters` defaults to `anyone`. Both are ceilings; document access and share links require sign-in. Domain match is exact: `@example.org` admits `alice@example.org` only, not `alice@mail.example.org`.
-
-Forwarded client identity is trusted only from networks in advanced config:
-
-```yaml
-trusted_proxies:
-  - 127.0.0.1/32
-  - ::1/128
-```
-
-Proxy must append actual address to `X-Forwarded-For`. Google sign-in: verified Gmail and Google Workspace only.
-
-## OAuth
-
-At least one OAuth client (GitHub or Google) is required.
-
-**GitHub:** Create at [github.com/settings/developers](https://github.com/settings/developers) with `/auth/callback`. Pass:
-- `--github-client-id` or `LIBREPAPER_GITHUB_CLIENT_ID`
-- `LIBREPAPER_GITHUB_CLIENT_SECRET` only (env var)
-
-**Google:** Create Web application at [console.cloud.google.com](https://console.cloud.google.com) with `/auth/callback/google`. Pass:
-- `--google-client-id` or `LIBREPAPER_GOOGLE_CLIENT_ID`
-- `LIBREPAPER_GOOGLE_CLIENT_SECRET` only (env var)
-- Publish consent screen
-
-## Retention
-
-```sh
-librepaper admin serve --document-expire-after 24h      # LIBREPAPER_EXPIRE_AFTER; default never
-librepaper admin serve --document-expire-from created   # LIBREPAPER_EXPIRE_FROM; default updated
-```
+GitHub OAuth applications use `/auth/callback`; Google Web applications use
+`/auth/callback/google`. Keep IDs and secrets outside the TOML file by using
+explicit environment or file references. Google sign-in accepts verified
+Gmail and Google Workspace addresses.
 
 ## Containers
 
-See [tools/deploy-docker](https://github.com/LibrePaper/librepaper/blob/main/tools/deploy-docker/README.md) for Docker Compose setup with PostgreSQL, HTTPS proxy, and monitoring.
-
-```sh
-cd tools/deploy-docker
-cp .env.example .env
-# Set DOMAIN, ACME_EMAIL, POSTGRES_PASSWORD, LIBREPAPER_ADMIN_PASSWORD
-# Set GitHub/Google OAuth client ID and secret
-# Set LIBREPAPER_PUBLISHERS and LIBREPAPER_COMMENTERS if needed
-docker compose up -d --build
-```
-
-Both `DOMAIN` and `docs.DOMAIN` must resolve before first start for HTTP-01 certificates. Other names get 421; redirect in `Caddyfile`. `DOCS_DOMAIN` defaults to `docs.$DOMAIN`.
+See [tools/deploy-docker](https://github.com/LibrePaper/librepaper/blob/main/tools/deploy-docker/README.md)
+for Compose setup with PostgreSQL, HTTPS proxy, and monitoring. Copy
+`config.toml.example` to `config.toml`, set the public origins, and edit the
+file for OAuth and access policy. `.env` supplies Compose settings and values
+that the TOML explicitly references as application settings.
 
 ## Privacy
 
-Default asset mirror sees your IP and asset requests. To self-host, use `--asset-mirror URL` with HTTPS and CORS for GET/HEAD.
+The default asset mirror sees the visitor's IP and asset requests. To self-host
+the pinned assets, set `assets.mirror` in TOML to an HTTPS mirror with CORS for
+GET and HEAD.
 
-[Privacy duties for operators](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/privacy-operators.md) covers publishing a notice and answering data requests.
+[Privacy duties for operators](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/privacy-operators.md)
+covers publishing a notice and answering data requests.

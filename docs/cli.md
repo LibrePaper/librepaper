@@ -59,19 +59,20 @@ librepaper list       # show ID, date, and title
 ## Self-host
 
 ```sh
-librepaper admin serve --help              # start server with flags
-librepaper admin backup <dest>             # backup default data directory
-librepaper admin backup --data-directory <data-dir> <dest>
-librepaper admin restore <src> <dest>      # restore from backup
+librepaper admin serve --config /etc/librepaper/config.toml
+librepaper admin config check --config /etc/librepaper/config.toml
+librepaper admin config show --config /etc/librepaper/config.toml
+librepaper admin backup --config /etc/librepaper/config.toml <dest>
+librepaper admin restore --config /etc/librepaper/restore.toml <src> <dest>
 curl http://127.0.0.1:8080/api/status      # check operational state
 ```
 
-See [hosting page](host.html) for server flags.
-
-The backup command uses the default data directory `librepaper-data`, or the
-`LIBREPAPER_DATA` environment variable, unless `--data-directory` is supplied.
-Self-hosted backups also require a PostgreSQL database and restore into an
-empty database and a new directory; see [storage requirements](host.html#storage).
+The TOML file is the source for server and admin storage settings. `admin
+serve` defaults to `/etc/librepaper/config.toml`; other admin commands accept
+the same `--config PATH`. `config show` redacts credentials and database URLs.
+Restore uses a config that points at the target database and takes the new
+directory as its final argument. See the [hosting page](host.html) for the
+configuration format and storage requirements.
 
 ## Agents
 

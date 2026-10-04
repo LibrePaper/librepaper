@@ -10,8 +10,6 @@ SITE=librepaper.org       # landing page and manual, from docs/_site (make site)
 APP=app.librepaper.org    # the application: DOMAIN in the kit
 DOCS=docs.librepaper.org  # published documents: DOCS_DOMAIN in the kit
 REDIRECTS='www.librepaper.org, librepaper.com, www.librepaper.com'
-PUBLISHERS=any
-COMMENTERS=anyone
 ASSET=librepaper-x86_64-unknown-linux-musl.tar.xz
 MONITORING=https://$APP/admin/monitoring/
 HTTP_CONNECT_TIMEOUT=5
@@ -79,16 +77,23 @@ DOCS_DOMAIN=$DOCS
 ACME_EMAIL=$acme
 POSTGRES_PASSWORD=$postgres
 POSTGRES_EXPORTER_PASSWORD=$exporter_password
-LIBREPAPER_PUBLISHERS=$PUBLISHERS
-LIBREPAPER_COMMENTERS=$COMMENTERS
-LIBREPAPER_QUOTA=50
-LIBREPAPER_UPLOADS_PER_HOUR=30
 LIBREPAPER_GITHUB_CLIENT_ID=$github_id
 LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret
 LIBREPAPER_GOOGLE_CLIENT_ID=$google_id
 LIBREPAPER_GOOGLE_CLIENT_SECRET=$google_secret
 LIBREPAPER_ADMIN_PASSWORD=$admin_password
 EOF
+}
+
+write_config() {
+	# This file contains only literals and names of explicit env references.
+	# Stage it separately so the candidate binary can validate it before the
+	# currently installed configuration is replaced.
+	ssh "$HOST" 'umask 022; cat > librepaper/config.toml.candidate.tmp && chmod 644 librepaper/config.toml.candidate.tmp && mv -f librepaper/config.toml.candidate.tmp librepaper/config.toml.candidate' < tools/deploy-production.toml
+}
+
+install_config() {
+	ssh "$HOST" 'cd librepaper && mv -f config.toml.candidate config.toml'
 }
 
 write_compose_override() {
@@ -104,7 +109,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
-      args: !reset {}
+      args: !reset {LIBREPAPER_BINARY: librepaper.candidate}
 EOF
 	else
 		ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'EOF'
@@ -182,7 +187,8 @@ prepare_deployment() {
 	step ".env on the VPS"
 	write_env "$version" "$DEPLOY_ACME" "$DEPLOY_POSTGRES" "$DEPLOY_EXPORTER_PASSWORD" "$DEPLOY_GITHUB_ID" "$DEPLOY_GITHUB_SECRET" "$DEPLOY_GOOGLE_ID" "$DEPLOY_GOOGLE_SECRET" "$DEPLOY_ADMIN_PASSWORD"
 	unset DEPLOY_ACME DEPLOY_POSTGRES DEPLOY_EXPORTER_PASSWORD DEPLOY_GITHUB_ID DEPLOY_GITHUB_SECRET DEPLOY_GOOGLE_ID DEPLOY_GOOGLE_SECRET DEPLOY_ADMIN_PASSWORD
-	ok "wrote librepaper/.env atomically (mode 600, 15 settings)"
+	write_config
+	ok "wrote librepaper/.env atomically (mode 600) and staged config.toml"
 	bootstrap_monitoring_role
 }
 
@@ -288,7 +294,7 @@ SQL
 	step "Backup: after the pin, because older backups record the old migration version"
 	local backup_name
 	backup_name="$(date +%F)-squash"
-	if ssh "$HOST" "cd librepaper && docker compose exec -T librepaper librepaper admin backup --data-directory /var/lib/librepaper /var/backups/librepaper/$backup_name"; then
+	if ssh "$HOST" "cd librepaper && docker compose exec -T librepaper librepaper admin backup --config /etc/librepaper/config.toml /var/backups/librepaper/$backup_name"; then
 		ok "backup $backup_name written"
 	else
 		note "the backup failed but the pin is done: take a backup by hand (docker compose exec -T librepaper librepaper admin backup ...)"
@@ -344,15 +350,29 @@ check_migrations() {
 	die "$problem; the release would fail at startup, so nothing was changed"
 }
 
-start_application() {
+check_application_config() {
 	local mode="$1"
 	if [ "$mode" = local ]; then
-		step "Containers: build and start local source"
+		step "Containers: build and check local binary config support"
 	else
-		step "Containers: build and start release"
+		step "Containers: build and check release config support"
 	fi
-	note "docker compose up -d --build"
-	ssh "$HOST" 'cd librepaper && docker compose up -d --build --wait --wait-timeout 180'
+	note "candidate image is checked before migration or configuration changes"
+	ssh "$HOST" 'cd librepaper && docker compose build librepaper'
+	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml.candidate docker compose run --rm --no-deps librepaper admin config check --config /etc/librepaper/config.toml'; then
+		die "the candidate binary cannot load config.toml; the running application was not restarted. Use a TOML-config-capable release or local binary"
+	fi
+}
+
+start_application() {
+	local mode="$1"
+	step "Containers: install checked config and start $mode image"
+	if [ "$mode" = local ]; then
+		ssh "$HOST" 'cd librepaper && mv -f librepaper.candidate librepaper'
+		ok "installed the config-capable local binary after preflight"
+	fi
+	install_config
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --wait --wait-timeout 180'
 	ok "running"
 }
 
@@ -576,6 +596,7 @@ deploy() {
 	ok "found $ASSET"
 
 	prepare_deployment "$version" false
+	check_application_config release
 	check_migrations
 
 	start_application release
@@ -601,13 +622,14 @@ deploy_local() {
 
 	prepare_deployment "$version" true
 
-	step "Binary: transfer and verify SHA-256 before replacement"
-	rsync -a --chmod=F755 --out-format='    %n' "$binary" "$HOST:librepaper/librepaper.tmp"
-	remote_checksum=$(ssh "$HOST" 'cd librepaper && sha256sum librepaper.tmp | cut -d " " -f1')
+	step "Binary: transfer and verify SHA-256 before candidate preflight"
+	rsync -a --chmod=F755 --out-format='    %n' "$binary" "$HOST:librepaper/librepaper.candidate.tmp"
+	remote_checksum=$(ssh "$HOST" 'cd librepaper && sha256sum librepaper.candidate.tmp | cut -d " " -f1')
 	[ "$remote_checksum" = "$checksum" ] || die "remote binary checksum mismatch; existing executable was kept"
-	ssh "$HOST" 'cd librepaper && chmod 755 librepaper.tmp && mv -f librepaper.tmp librepaper'
-	ok "verified SHA-256 $checksum and replaced the kit executable"
+	ssh "$HOST" 'cd librepaper && chmod 755 librepaper.candidate.tmp && mv -f librepaper.candidate.tmp librepaper.candidate'
+	ok "verified SHA-256 $checksum and staged the candidate executable"
 
+	check_application_config local
 	check_migrations
 	start_application local
 	reload_prometheus

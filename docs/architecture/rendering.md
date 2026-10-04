@@ -6,7 +6,7 @@ title: "Rendering and live sync"
 
 Markdown, Typst and LaTeX are compiled by WebAssembly modules in the browser (plain WebAssembly with small exports).
 
-LaTeX engines and TeX Live packages are fetched from an HTTPS mirror from `latex/<sha256>/` (pinned in `assets.lock`). The mirror is append-only; files are content-addressed and cached in browser storage. An operator can host a copy with `--asset-mirror URL`.
+LaTeX engines and TeX Live packages are fetched from an HTTPS mirror from `latex/<sha256>/` (pinned in `assets.lock`). The mirror is append-only; files are content-addressed and cached in browser storage. An operator can set `[assets].mirror` in the server TOML to host a copy.
 
 Compilation runs in one worker per module. Markdown and Quarto produce flow HTML; LaTeX and Typst produce paged PDF. The deployment never renders or stores a compiler. The editor keeps the last successfully rendered page while the engine warms.
 

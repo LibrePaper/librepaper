@@ -188,9 +188,16 @@ See equation~\eqref{eq:test}.
     postgres = postgresTestDatabase("latexml_browser");
     const port = 22000 + Math.floor(Math.random() * 1000);
     const appBase = `http://localhost:${port}`;
+    const configPath = join(appData, "config.toml");
+    writeFileSync(configPath, [
+      "[server]", 'bind = "127.0.0.1"', `port = ${port}`, "local_companion = false", "",
+      "[storage]", `directory = ${JSON.stringify(appData)}`, 'database_url = { env = "LIBREPAPER_DATABASE_URL" }', "fsync = false", 'object_store = "filesystem"', "",
+      "[auth.github]", 'client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }', 'client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }', "",
+      "[access]", 'publishers = ["any"]', 'commenters = ["anyone"]', "",
+      "[assets]", `mirror = ${JSON.stringify(new URL("../../", mirrorBase).href)}`, "",
+    ].join("\n"));
     const env = { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" };
-    app = spawn(resolve(process.env.LIBREPAPER_BIN), ["admin", "serve", "--port", String(port), "--data-directory", appData,
-      "--publishers", "any", "--commenters", "anyone", "--asset-mirror", new URL("../../", mirrorBase).href], { env, stdio: ["ignore", "ignore", "pipe"] });
+    app = spawn(resolve(process.env.LIBREPAPER_BIN), ["admin", "serve", "--config", configPath], { env, stdio: ["ignore", "ignore", "pipe"] });
     app.stderr.on("data", (bytes) => { appLog += bytes; });
     await until("app startup", async () => {
       if (app.exitCode !== null) throw new Error(appLog);
