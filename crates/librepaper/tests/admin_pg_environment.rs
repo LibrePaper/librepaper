@@ -126,9 +126,7 @@ fn explicit_reference_does_not_fall_through_to_scrubbed_empty_password() {
         .expect("CLI starts");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains(
-        "referenced environment variable \"PGPASSWORD\" is unavailable"
-    ));
+    assert!(stderr.contains("referenced environment variable \"PGPASSWORD\" is unavailable"));
     assert!(!stderr.contains("<redacted>"));
 }
 
