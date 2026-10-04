@@ -67,7 +67,10 @@ try {
   b = await browser("chromium", join(temporary, "chrome"), await freePort());
   await b.navigate(`${address}/companion/`);
   await until("open dashboard instructions", () => b.evaluate('document.querySelector("#locked") && !document.querySelector("#locked").hidden'));
-  assert.match(await b.evaluate('document.querySelector("#locked").innerText'), /librepaper desktop/);
+  const lockedInstructions = await b.evaluate('document.querySelector("#locked").innerText');
+  assert.match(lockedInstructions, /librepaper start/);
+  assert.match(lockedInstructions, /Open companion/);
+  assert.doesNotMatch(lockedInstructions, /librepaper desktop/);
 
   // Force a document navigation so the deferred dashboard script reads the
   // bootstrap fragment; changing only the hash would not reload this page.
@@ -135,9 +138,6 @@ try {
     const paths = document.querySelector("#tool-paths");
     paths.value = ${JSON.stringify(join(temporary, "extra-tools"))};
     paths.dispatchEvent(new Event("input", {bubbles:true}));
-    const tray = document.querySelector("#tray-enabled");
-    tray.checked = true;
-    tray.dispatchEvent(new Event("input", {bubbles:true}));
     const integration = document.querySelector('.integration-card[data-integration="quarto"]');
     const executable = integration.querySelector('[data-setting="path"]');
     executable.value = ${JSON.stringify("/usr/bin/quarto")};
@@ -156,11 +156,15 @@ try {
     if (!response.ok) return false;
     const state = await response.json();
     const quarto = state.settings.integrations.quarto;
-    return state.settings.tray_enabled === true
-      && state.settings.tool_paths.includes(join(temporary, "extra-tools"))
+    return state.settings.tool_paths.includes(join(temporary, "extra-tools"))
       && quarto.path === "/usr/bin/quarto"
       && quarto.args.join("\n") === "--verbose\n--profile=test";
   }, 8000);
+  const savedState = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } }).then((response) => response.json());
+  assert.equal(Object.hasOwn(savedState.settings, "tray_enabled"), false, "tray availability is not exposed as a preference");
+  assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "dashboard has no tray preference toggle");
+  assert.equal(typeof savedState.settings.startup_enabled, "boolean", "standalone startup preference remains available through the API");
+  assert.equal(await b.evaluate('document.querySelector("#startup-enabled") !== null'), true, "dashboard retains the startup preference toggle");
 
   const testAgent = `Dashboard check ${Date.now()}`;
   await b.evaluate(`(() => {
@@ -214,7 +218,7 @@ try {
   await b.evaluate(`(() => {
     const realFetch = window.fetch.bind(window);
     window.fetch = (input, init) => String(input).includes("/companion/api/state")
-      ? Promise.resolve(new Response(JSON.stringify({version:"test",standalone:true,tools:{tools:{quarto:{available:true,version:"Quarto 1.7",note:"Installed"}},platform:"test",builders:[{id:"typst",available:true,version:"Typst 0.13",note:"Ready for local PDF builds."},{id:"pandoc",available:false,version:null,note:"Install Pandoc and rescan tools."},{id:"quarto",available:true,version:"Quarto 1.7",note:"Installed"}]},pairings:[],bindings:[],approvals:[{id:"xss",title:"<img src=x onerror=window.__xss=1>",message:"<script>window.__xss=2</script>",allow_label:"Allow"}],jobs:[{id:"job-x",kind:"Quarto",status:"running",stage:"Rendering",log_tail:"recent output"}],previews:[],agents:[],sessions:[],settings:{tool_paths:[],tray_enabled:true,integrations:[],custom_agents:[]}}), {headers:{"content-type":"application/json"}}))
+      ? Promise.resolve(new Response(JSON.stringify({version:"test",standalone:true,tools:{tools:{quarto:{available:true,version:"Quarto 1.7",note:"Installed"}},platform:"test",builders:[{id:"typst",available:true,version:"Typst 0.13",note:"Ready for local PDF builds."},{id:"pandoc",available:false,version:null,note:"Install Pandoc and rescan tools."},{id:"quarto",available:true,version:"Quarto 1.7",note:"Installed"}]},pairings:[],bindings:[],approvals:[{id:"xss",title:"<img src=x onerror=window.__xss=1>",message:"<script>window.__xss=2</script>",allow_label:"Allow"}],jobs:[{id:"job-x",kind:"Quarto",status:"running",stage:"Rendering",log_tail:"recent output"}],previews:[],agents:[],sessions:[],settings:{tool_paths:[],integrations:[],custom_agents:[]}}), {headers:{"content-type":"application/json"}}))
       : realFetch(input, init);
   })()`);
   await b.evaluate('document.dispatchEvent(new Event("visibilitychange"))');

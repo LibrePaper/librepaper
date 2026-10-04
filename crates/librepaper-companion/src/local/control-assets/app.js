@@ -58,7 +58,7 @@
   }
 
   async function api(path, options = {}) {
-    if (!token) throw new Error("This dashboard link has expired. Open the dashboard from LibrePaper again.");
+    if (!token) throw new Error("This dashboard link has expired. Choose Open companion from the LibrePaper tray menu again.");
     const headers = new Headers(options.headers || {});
     headers.set("Authorization", `Bearer ${token}`);
     if (options.body !== undefined) headers.set("Content-Type", "application/json");
@@ -71,7 +71,7 @@
     if (response.status === 401 || response.status === 403) {
       try { sessionStorage.removeItem(storageKey); } catch (_) { /* storage may be disabled */ }
       token = "";
-      throw new Error("This dashboard link is no longer valid. Open the dashboard from LibrePaper again.");
+      throw new Error("This dashboard link is no longer valid. Choose Open companion from the LibrePaper tray menu again.");
     }
     let body = null;
     const contentType = response.headers.get("content-type") || "";
@@ -274,13 +274,6 @@
       $("tool-paths").value = list(settings.tool_paths).join("\n");
       $("startup-enabled").checked = Boolean(settings.startup_enabled);
       $("startup-setting").hidden = typeof settings.startup_enabled !== "boolean";
-      $("tray-enabled").checked = Boolean(settings.tray_enabled);
-      $("tray-setting").hidden = typeof settings.tray_enabled !== "boolean";
-      $("tray-help").textContent = settings.tray_available === false
-        ? "No tray service is available in this desktop session. You can still manage LibrePaper here or from the command line."
-        : settings.tray_available === true
-          ? "Available in this desktop session. The setting changes take effect immediately."
-          : "Keep quick controls available in the system tray when supported.";
       const integrations = Array.isArray(settings.integrations)
         ? settings.integrations
         : Object.entries(settings.integrations || {}).map(([name, integration]) => ({ name, ...integration }));
@@ -400,7 +393,6 @@
       integrations,
     };
     if (lastState && lastState.settings && typeof lastState.settings.startup_enabled === "boolean") body.startup_enabled = $("startup-enabled").checked;
-    if (lastState && lastState.settings && typeof lastState.settings.tray_enabled === "boolean") body.tray_enabled = $("tray-enabled").checked;
     try {
       await api("/settings", { method: "PUT", body: JSON.stringify(body) });
       settingsDirty = false;

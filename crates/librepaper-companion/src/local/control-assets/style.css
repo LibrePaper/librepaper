@@ -54,9 +54,6 @@ h3 { margin: 0; font-size: 16px; line-height: 1.35; }
 .welcome { max-width: 650px; margin: 9vh auto; padding: clamp(28px, 5vw, 52px); }
 .welcome h1 { margin-bottom: 18px; }
 .welcome p { max-width: 530px; color: var(--muted); }
-.help-box { display: grid; gap: 6px; margin-top: 25px; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
-.help-box code { width: fit-content; padding: 3px 8px; border-radius: 5px; background: var(--panel); font-size: 14px; }
-.help-box span { color: var(--muted); font-size: 13px; }
 .button { min-height: 38px; padding: 8px 14px; border: 1px solid transparent; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 620; transition: background .15s, border-color .15s, transform .15s; }
 .button:hover { transform: translateY(-1px); }
 .button:disabled { cursor: wait; opacity: .6; transform: none; }

@@ -310,10 +310,6 @@ async fn state(inner: &Inner) -> Reply {
             json!({"id":id,"state":snapshot.state,"task_id":snapshot.task_id,"detail":snapshot.detail})
         })
         .collect();
-    let settings = match crate::local::settings::load(&inner.state_home) {
-        Ok(settings) => settings,
-        Err(error) => return write_json(500, &json!({"error":error})),
-    };
     let startup_enabled = if super::standalone(inner) {
         Some(super::super::lifecycle::startup_enabled())
     } else {
@@ -336,8 +332,6 @@ async fn state(inner: &Inner) -> Reply {
             "sessions":sessions,
             "settings":{
                 "tool_paths":inner.runner.tool_paths(),
-                "tray_enabled":if standalone { Some(settings.tray_enabled) } else { None },
-                "tray_available":if standalone { Some(super::super::tray::session_available()) } else { None },
                 "startup_enabled":startup_enabled,
                 "integrations":crate::local::integrations::all(),
             }
@@ -548,7 +542,6 @@ fn agent_id(label: &str) -> String {
 #[derive(Deserialize)]
 struct SettingsRequest {
     tool_paths: Option<Vec<PathBuf>>,
-    tray_enabled: Option<bool>,
     startup_enabled: Option<bool>,
     integrations: Option<std::collections::BTreeMap<String, crate::local::integrations::Custom>>,
 }
@@ -562,13 +555,6 @@ async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
         Ok(settings) => settings,
         Err(error) => return write_json(500, &json!({"error":error})),
     };
-    let standalone = super::standalone(inner);
-    if body.tray_enabled.is_some() && !standalone {
-        return write_json(
-            409,
-            &json!({"error":"tray settings are available only in standalone mode"}),
-        );
-    }
     if body.startup_enabled.is_some() && !super::standalone(inner) {
         return write_json(
             409,
@@ -605,9 +591,6 @@ async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
         }
         settings.tool_paths = paths.clone();
     }
-    if let Some(enabled) = body.tray_enabled {
-        settings.tray_enabled = enabled;
-    }
     if let Err(error) = crate::local::integrations::set_many(integration_updates) {
         return write_json(400, &json!({"error":error}));
     }
@@ -632,11 +615,6 @@ async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
             if let Err(error) = super::super::lifecycle::set_startup(enabled) {
                 return write_json(500, &json!({"error":error}));
             }
-        }
-    }
-    if standalone && settings.tray_enabled {
-        if let Err(error) = super::super::lifecycle::ensure_tray(&inner.state_home) {
-            return write_json(500, &json!({"error":error}));
         }
     }
     write_json(200, &json!({"ok":true}))
