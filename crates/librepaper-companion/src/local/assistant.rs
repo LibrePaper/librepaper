@@ -1,9 +1,9 @@
 //! Loopback assistant route handlers.
 //!
 //! Holding the protected document link is the authority here -- it carries
-//! the document key -- so every route below takes the link directly. There is
-//! no per-origin ownership check beyond the pairing itself: any paired origin
-//! that holds a link may drive the assistant attached to it.
+//! the document key -- so every route below takes the link directly. A running
+//! session also belongs to the paired origin that started it; another paired
+//! origin holding the same link cannot replace its local credentials.
 
 use super::protocol;
 use super::service::*;
@@ -93,23 +93,10 @@ pub(super) async fn handle_assistant_start(
     };
     let environment = super::acp_agents::acp_environment(&inner.state_home, &body.agent);
     let pairing_token = super::service::bearer_token(headers).unwrap_or_default();
-    let admission = inner.pairing.admission_gate().lock().await;
-    if let Err(response) = authenticate(inner, headers, Some(origin)) {
-        return response;
-    }
-    let store = super::connections::ConnectionStore::new(&inner.state_home);
-    if let Err(error) = store.put_runner(
-        &parsed_link.credential_url(),
-        origin,
-        &body.conversation,
-        &body.chat_token,
-    ) {
-        return write_json(500, &json!({"error": error}));
-    }
-    drop(admission);
     match inner
         .assistant_sessions
         .start(
+            &inner.pairing,
             &parsed_link,
             origin,
             &pairing_token,
