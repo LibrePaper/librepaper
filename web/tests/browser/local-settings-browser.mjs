@@ -83,9 +83,9 @@ mount(Harness, { target: document.body });
 const mockModules = {
   name: "local-settings-test-mocks",
   enforce: "pre",
-  resolveId(source) {
+  resolveId(source, importer) {
     if (source.endsWith("/lib/companion/status.svelte.js")) return statusMock;
-    if (source.endsWith("/lib/companion/client.js")) return clientMock;
+    if (source.endsWith("/lib/companion/client.js") || (source === "./client.js" && importer?.endsWith("/lib/companion/machine.svelte.js"))) return clientMock;
     return null;
   },
 };
@@ -140,10 +140,8 @@ try {
   assert.equal(disconnected.details, 0, "initial view has no collapsed details");
   assert.equal(disconnected.summaries, 0, "initial view has no disclosure summary");
   assert.doesNotMatch(disconnected.text, /Build presets|Current document/);
-  assert.equal(await b.evaluate("Boolean(document.querySelector('#local-startup'))"), true, "startup setting stays visible while disconnected");
-  assert.equal(await b.evaluate("Boolean(document.querySelector('#local-startup [role=switch]:disabled'))"), true, "startup is unavailable until companion settings load");
-  assert.equal(await b.evaluate("document.querySelector('#local-startup').innerText.includes('Unknown')"), true, "unloaded startup preference is visibly unknown");
-  assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Quit companion')?.disabled)"), true, "quit stays visible but unavailable while disconnected");
+  assert.equal(await b.evaluate("Boolean(document.querySelector('#local-startup'))"), false, "startup setting is hidden while disconnected");
+  assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Quit companion'))"), false, "quit companion button is hidden while disconnected");
   assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('#local-address button')].find((button) => button.textContent.trim() === 'Disconnect')?.disabled)"), true, "disconnect stays visible but unavailable while disconnected");
   assert.equal(await b.evaluate("document.querySelector('#local-doctor')?.disabled"), true, "setup check is unavailable while disconnected");
   assert.equal(await b.evaluate("Boolean(document.querySelector('#quarto-executable input')?.disabled && document.querySelector('#quarto-arguments input')?.disabled)"), true, "Quarto fields remain unavailable until connected");
@@ -192,10 +190,9 @@ try {
   assert.equal(await b.evaluate("window.capabilityCalls"), 1, "diagnostics request a fresh local capability report");
 
   await b.evaluate(`window.setLocalStatus({ state: 'unreachable', address: 'http://127.0.0.1:9876/', capabilities: null })`);
-  await until("disconnected local controls disabled", () => b.evaluate("document.querySelector('#local-startup [role=switch]')?.disabled && [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Quit companion')?.disabled"), 5000);
-  assert.equal(await b.evaluate("Boolean(document.querySelector('#local-startup') && [...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Quit companion'))"), true, "local settings remain visible after disconnect");
+  await until("startup and quit hidden after disconnect", () => b.evaluate("!document.querySelector('#local-startup') && ![...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Quit companion')"), 5000);
 
-  console.log("local-settings-browser: install link, failed-popup fallback, inline address editor, and inline diagnostics passed");
+  console.log("local-settings-browser: install link, failed-popup fallback, inline address editor, inline diagnostics, and standalone-only startup/quit controls passed");
 } finally {
   if (b) await b.close();
   server.close();

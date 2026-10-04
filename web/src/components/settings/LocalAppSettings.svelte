@@ -158,7 +158,7 @@
   });
 </script>
 
-<p class="setting-description local-intro">Connect apps and tools on this computer, including coding agents, Zotero, and Quarto.</p>
+<p class="setting-description local-intro">Connect apps and tools on this computer, such as Zotero and Quarto.</p>
 
 {#if !managedAvailable}
 <CompanionBlock id="local-status" />
@@ -175,25 +175,26 @@
 
 {#if settingsError}<p class="setting-description local-error" role="alert">{settingsError}</p>{/if}
 
-{#if !managedAvailable}<SettingRow id="local-startup" title="Start at login" description={!connected ? "Connect to load this setting." : companionSettings?.standalone === false ? "Available in the standalone companion app." : companionSettings?.startup == null ? (companionSettings ? "Startup preference unavailable." : "Startup preference is unknown.") : "Open the companion when you log in."}>
-    {#if !companionSettings || companionSettings.startup == null}<StatusPill label={companionSettings ? "Unavailable" : "Unknown"} />{/if}
-    <button type="button" role="switch" class="switch companion-startup-switch" aria-label="Start at login" aria-checked={companionSettings?.startup === true} aria-describedby={!companionSettings || companionSettings.startup == null ? "local-startup-state" : undefined} data-state={companionSettings?.startup == null ? "unknown" : companionSettings.startup ? "checked" : "unchecked"} disabled={!connected || !companionSettings?.standalone || companionSettings.startup == null || Boolean(pendingDialogAction)} onclick={() => void toggleStartup(!companionSettings.startup)}>
-      <span class="switch-thumb" data-state={companionSettings?.startup == null ? "unknown" : companionSettings.startup ? "checked" : "unchecked"}></span>
+{#if !managedAvailable}
+{#if connected && companionSettings?.standalone === true}
+<SettingRow id="local-startup" title="Start at login" description="Open the companion when you log in.">
+    <button type="button" role="switch" class="switch companion-startup-switch" aria-label="Start at login" aria-checked={companionSettings?.startup === true} data-state={companionSettings.startup ? "checked" : "unchecked"} disabled={companionSettings.startup == null || Boolean(pendingDialogAction)} onclick={() => void toggleStartup(!companionSettings.startup)}>
+      <span class="switch-thumb" data-state={companionSettings.startup ? "checked" : "unchecked"}></span>
     </button>
-    {#if !companionSettings || companionSettings.startup == null}<span id="local-startup-state" class="sr-only">{companionSettings ? "Unavailable" : "Unknown"}</span>{/if}
     {#if pendingDialogAction === "startup"}
-      <p class="setting-description">Approve this request in Settings → Companion → Approvals.</p>
+      <p class="setting-description">Answer the request on this computer.</p>
     {/if}
   </SettingRow>
 
-<SettingRow title="Quit companion" description={!connected ? "Connect to use this control." : !companionSettings?.standalone ? "Available in the standalone companion app." : "Close the companion running on this computer."}>
-    <button type="button" class="btn btn-sm lp-control-outline" disabled={!connected || !companionSettings?.standalone || Boolean(pendingDialogAction)} onclick={() => void quitCompanion()}>
+<SettingRow title="Quit companion" description="Close the companion on this computer.">
+    <button type="button" class="btn btn-sm lp-control-outline" disabled={Boolean(pendingDialogAction)} onclick={() => void quitCompanion()}>
       {pendingDialogAction === "quit" ? "Confirm on this computer…" : "Quit companion"}
     </button>
     {#if pendingDialogAction === "quit"}
-      <p class="setting-description">Approve this request in Settings → Companion → Approvals.</p>
+      <p class="setting-description">Answer the request on this computer.</p>
     {/if}
   </SettingRow>
+{/if}
 {/if}
 
 {#if !managedAvailable}<SettingRow title="Check local setup" description={!connected ? "Connect to rescan available tools." : "Rescan available tools and view the report."}>
@@ -208,8 +209,6 @@
 <style>
   .local-intro { max-width: 42rem; margin-block: 0 calc(var(--spacing) * 3); }
   .companion-startup-switch { appearance: none; border: 0; padding: 0; cursor: pointer; }
-  .companion-startup-switch[data-state="unknown"] { background: var(--color-subtle); }
-  .companion-startup-switch[data-state="unknown"] .switch-thumb { visibility: hidden; }
   .companion-startup-switch:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
   .local-help { margin-top: calc(var(--spacing) * 3); }
   .setting-log { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }

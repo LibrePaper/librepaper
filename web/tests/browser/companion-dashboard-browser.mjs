@@ -93,9 +93,9 @@ mount(Harness, { target: document.body });
 const mockModules = {
   name: "companion-settings-browser-test-mocks",
   enforce: "pre",
-  resolveId(source) {
+  resolveId(source, importer) {
     if (source.endsWith("/lib/companion/status.svelte.js")) return statusMock;
-    if (source.endsWith("/lib/companion/client.js")) return clientMock;
+    if (source.endsWith("/lib/companion/client.js") || (source === "./client.js" && importer?.endsWith("/lib/companion/machine.svelte.js"))) return clientMock;
     return null;
   },
 };
@@ -179,8 +179,7 @@ try {
   `), 8000);
   await b.evaluate(`[...document.querySelectorAll("button")].find((button) => button.textContent.trim() === "Manage this computer").click()`);
   await until("real companion Settings sections", () => b.evaluate(`[
-    "companion-approvals-heading", "companion-sites-heading",
-    "companion-activity-heading", "companion-agents-heading"
+    "companion-lifecycle-heading", "companion-sites-heading", "companion-activity-heading"
   ].every((id) => document.querySelector("#" + id))`), 12000);
 
   assert.equal(await b.evaluate("location.hash"), "", "management bootstrap does not add a fragment");
@@ -188,10 +187,7 @@ try {
   assert.equal(await b.evaluate(`document.documentElement.innerHTML.includes(${JSON.stringify(credential.token)})`), false, "the token is not rendered into the page");
   assert.equal(await b.evaluate('document.querySelectorAll(".request-card").length'), 0, "approvals use existing SettingRow layout");
   assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
-  assert.equal(await b.evaluate(`[
-    "companion-lifecycle-heading", "companion-approvals-heading", "companion-sites-heading",
-    "companion-activity-heading", "companion-agents-heading"
-  ].every((id) => document.querySelector("#" + id))`), true, "management uses the existing Settings sections");
+  assert.equal(await b.evaluate(`document.querySelector("#companion-approvals-heading") === null && document.querySelector("#companion-agents-heading") === null`), true, "approvals appear only while one waits, and agents have their own category");
   assert.equal(await b.evaluate('document.body.innerText.includes("Tool search folders")'), false, "tool search folders are not configurable");
   assert.equal(await b.evaluate('document.querySelector("#companion-folders-heading") === null'), true, "empty project-folder grants have no heading");
 
@@ -213,7 +209,7 @@ try {
   assert.equal(missingOrigin.status, 403, "management requires an Origin header");
 
   await until("Settings control state loaded", () => b.evaluate(`
-    document.querySelector("#companion-agents-heading")?.closest("section")?.querySelector('input[name="label"]')?.disabled === false
+    document.querySelector("#companion-sites-heading") && !document.body.innerText.includes("Loading settings for this computer")
   `), 10000);
   await captureSettingsScreenshot();
 
@@ -245,8 +241,9 @@ try {
   async function waitForEnabledButton(label, scopeId) {
     await until(`${label} action enabled`, () => b.evaluate(`(() => {
       const scope = ${JSON.stringify(scopeId)}
-        ? document.querySelector(${JSON.stringify(scopeId)}).closest("section")
+        ? document.querySelector(${JSON.stringify(scopeId)})?.closest("section")
         : document;
+      if (!scope) return false;
       return [...scope.querySelectorAll("button")].some((button) =>
         button.textContent.trim() === ${JSON.stringify(label)} && !button.disabled
       );
@@ -268,8 +265,12 @@ try {
     await until(`pair ${decision} result`, async () => (await pairStatus(id)) === expected, 10000);
     if (decision === "allow") {
       await until("approved request removed from Settings", () => b.evaluate(`
-        ![...document.querySelector("#companion-approvals-heading").closest("section").querySelectorAll(".setting-title")]
-          .some((node) => /Connect|Pair/i.test(node.textContent))
+        (() => {
+          const section = document.querySelector("#companion-approvals-heading")?.closest("section");
+          if (!section) return true;
+          return ![...section.querySelectorAll(".setting-title")]
+            .some((node) => /Connect|Pair/i.test(node.textContent));
+        })()
       `), 10000);
     }
   }
@@ -287,19 +288,23 @@ try {
   await until("pair deny result", async () => (await pairStatus(deniedId)) === 403, 10000);
 
   const agentLabel = "Claude";
+  await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "Agents").click()`);
+  await until("agents heading visible", () => b.evaluate("Boolean(document.querySelector('#companion-agents-heading'))"), 10000);
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#companion-agents-heading").closest("section");
+    const addButton = [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Add agent" && item.type !== "submit");
+    addButton?.click();
+  })()`);
   await b.evaluate(`(() => {
     const section = document.querySelector("#companion-agents-heading").closest("section");
     section.querySelector('input[name="label"]').value = "Claude";
     section.querySelector('input[name="label"]').dispatchEvent(new Event("input", { bubbles: true }));
-    section.querySelector('input[name="command"]').value = "librepaper-no-such-executable-for-test";
+    section.querySelector('input[name="command"]').value = "librepaper-no-such-executable-for-test --version";
     section.querySelector('input[name="command"]').dispatchEvent(new Event("input", { bubbles: true }));
-    section.querySelector('textarea[name="args"]').value = "--version";
-    section.querySelector('textarea[name="args"]').dispatchEvent(new Event("input", { bubbles: true }));
   })()`);
-  await waitForEnabledButton("Add agent", "#companion-agents-heading");
   await b.evaluate(`(() => {
     const section = document.querySelector("#companion-agents-heading").closest("section");
-    [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Add agent").click();
+    [...section.querySelectorAll("button[type='submit']")].find((item) => item.textContent.trim() === "Add agent").click();
   })()`);
   await until("invalid executable error", () => b.evaluate(`
     [...document.querySelector("#companion-agents-heading").closest("section").querySelectorAll('[role="alert"]')]
@@ -311,7 +316,7 @@ try {
       const section = document.querySelector("#companion-agents-heading").closest("section");
       return [...section.querySelectorAll('[role="alert"]')].some((node) => node.textContent.trim().length > 0)
         && section.querySelector('input[name="label"]').value === "Claude"
-        && section.querySelector('input[name="command"]').value === "librepaper-no-such-executable-for-test";
+        && section.querySelector('input[name="command"]').value === "librepaper-no-such-executable-for-test --version";
     })()
   `), true, "agent server error and inputs survive polling");
   await b.evaluate(`(() => {
@@ -319,7 +324,7 @@ try {
     const field = section.querySelector('input[name="command"]');
     field.value = ${JSON.stringify(process.execPath)};
     field.dispatchEvent(new Event("input", { bubbles: true }));
-    [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Add agent").click();
+    [...section.querySelectorAll("button[type='submit']")].find((item) => item.textContent.trim() === "Add agent").click();
   })()`);
   let agentId = "";
   await until("custom agent added through Settings", async () => {
@@ -345,6 +350,9 @@ try {
     const response = await apiState();
     return response.ok && !(await response.json()).custom_agents.some((item) => item.id === agentId);
   }, 10000);
+
+  await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "Companion").click()`);
+  await until("sites heading visible", () => b.evaluate("Boolean(document.querySelector('#companion-sites-heading'))"), 10000);
 
   await until("allowed site visible in Settings", () => b.evaluate(`
     [...document.querySelector("#companion-sites-heading").closest("section").querySelectorAll(".setting-row")]
@@ -391,7 +399,7 @@ try {
 
   await captureSettingsScreenshot();
 
-  console.log("companion-settings-browser: in-place trusted Settings bootstrap, approval decisions, agent/site management and removed standalone page passed");
+  console.log("companion-dashboard-browser: in-place trusted Settings bootstrap, approval decisions, agent/site management, and standalone-only controls passed");
 } finally {
   if (b) await b.close();
   if (app && app.exitCode === null) {

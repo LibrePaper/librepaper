@@ -128,13 +128,11 @@
 </script>
 
 <p class="setting-description backups-intro">
-  Save this account’s projects, including shared projects, as ZIP files on this computer; the companion runs the schedule in the background.
-  <a href="https://librepaper.org/backups.html" target="_blank" rel="noreferrer">Backup guide</a>
+  ZIP copies of your projects, saved on this computer. <a href="https://librepaper.org/backups.html" target="_blank" rel="noreferrer">Backup guide</a>
 </p>
-<p class="setting-description backup-retention">Each project keeps its latest ZIP, even after backups are turned off or the project is deleted. Backups do not sync changes to LibrePaper.</p>
 
 {#if !signedIn}
-  <SettingRow id="backup-connection" title="Account connection" description="Sign in to load account backup settings." scope="Your account">
+  <SettingRow id="backup-connection" title="Account connection" description="Sign in to load account backup settings.">
     <StatusPill label="Signed out" />
   </SettingRow>
 {:else if !paired}
@@ -152,40 +150,40 @@
     <span class="setting-status-dot" aria-hidden="true"></span>
     <div class="setting-status-words">
       <div class="setting-title">Authorize backups</div>
-      <div class="setting-description">Connect the companion to this browser account to let it back up your projects.</div>
+      <div class="setting-description">Let the companion back up this account's projects.</div>
     </div>
     <div class="setting-control"><button type="button" class="btn btn-sm lp-control-brand" disabled={busy !== "" || backupStatus.loading} onclick={() => void authorize()}>{busy === "authorization" ? "Authorizing…" : "Authorize backups"}</button></div>
   </div>
 {/if}
 
-  <SettingRow id="backup-enable" title="Automatic backups" description={!hasStatus ? "Schedule status is unknown." : needsLogin ? "Authorize to enable backups." : !destinationSet ? "Choose a backup folder to enable the schedule." : "Create a ZIP of each account project on this schedule."} scope="Your account">
+  <SettingRow id="backup-enable" title="Automatic backups" description={needsLogin ? "Authorize to enable backups." : !destinationSet ? "Choose a folder first." : ""}>
     {#if !hasStatus}<StatusPill label="Unknown" />{/if}
     <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked={Boolean(data.enabled)} aria-describedby={!hasStatus ? "backup-enable-state" : undefined} data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseCompanion || (needsLogin ? !data.enabled : !destinationSet)} onclick={() => void changeSettings(!data.enabled)}>
       <span class="switch-thumb" data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"}></span>
     </button>
     {#if !hasStatus}<span id="backup-enable-state" class="sr-only">Unknown</span>{/if}
   </SettingRow>
-  <SettingRow id="backup-destination" title="Backup folder" description="ZIP files are stored here." scope="This computer">
+  <SettingRow id="backup-destination" title="Backup folder">
     <div class="backup-folder-control setting-actions">
       <input class="input input-sm setting-input backup-path" aria-label="Selected backup folder" value={destinationLabel} placeholder="No folder selected" readonly disabled={!canUseCompanion || busy !== ""} />
       <button type="button" class="btn btn-sm lp-control-outline" disabled={!canUseCompanion || busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
     </div>
   </SettingRow>
-  <SettingRow id="backup-frequency" title="Frequency" description={!hasStatus ? "Saved frequency is unknown." : "How often the companion checks for changes."} scope="Your account">
+  <SettingRow id="backup-frequency" title="Frequency">
     <select class="input input-sm setting-select backup-frequency" aria-label="Backup frequency" value={hasStatus ? Number(data.frequency_minutes) || 5 : ""} disabled={busy !== "" || !destinationSet || !canUseCompanion || needsLogin} onchange={(event) => void changeSettings(Boolean(data.enabled), Number(event.currentTarget.value))}>
       {#if !hasStatus}<option value="" disabled>Unknown</option>{/if}
-      {#each intervals as minutes}<option value={minutes}>{minutes} {minutes === 1 ? "minute" : "minutes"}</option>{/each}
+      {#each intervals as minutes}<option value={minutes}>{minutes} min</option>{/each}
     </select>
   </SettingRow>
   <div class="backup-status" role="status" aria-live="polite">
     {#if !hasStatus}
-      <span class="backup-state">{signedIn && paired && backupStatus.loading ? "Loading backup status…" : signedIn && paired && backupStatus.error ? "Backup status unavailable." : "Backup status unavailable until this account is signed in and the companion is connected."}</span>
+      <span class="backup-state">{signedIn && paired && backupStatus.loading ? "Loading…" : signedIn && paired && backupStatus.error ? "Status unavailable." : ""}</span>
     {:else if data.error}
       <span class="backup-state error">Backup error: {data.error}</span>
     {:else if data.running}
       <span class="backup-state">Backing up {Number(data.projects) || 0} projects…</span>
     {:else if data.enabled}
-      <span class="backup-state">{data.last_success ? `Last backup ${new Date(Number(data.last_success) * 1000).toLocaleString()}` : "Backups are enabled; the first run is pending."}</span>
+      <span class="backup-state">{data.last_success ? `Last backup ${new Date(Number(data.last_success) * 1000).toLocaleString()}` : "No backup yet."}</span>
     {:else}
       <span class="backup-state">Backups are off.</span>
     {/if}
@@ -198,7 +196,6 @@
 <style>
   .backups-intro { max-width: 48rem; margin-block: 0 calc(var(--spacing) * 3); }
   .backups-intro a { margin-inline-start: .35rem; }
-  .backup-retention { max-width: 48rem; margin-block: 0 calc(var(--spacing) * 3); }
   .backup-folder-control { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
   .backup-path { width: 14rem; }
   .backup-frequency { min-width: 8rem; }

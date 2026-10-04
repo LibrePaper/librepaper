@@ -166,7 +166,7 @@ try {
   await until("paired status request", () => b.evaluate("window.backupRequests.length === 1"), 5000);
   assert.equal(await b.evaluate(visibleControls), true, "controls stay mounted while the first status request is pending");
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled"), true, "controls stay disabled until a valid status arrives");
-  assert.match(await b.evaluate("document.body.innerText"), /status (unknown|unavailable)|Loading backup status/i, "pending status is described as unknown or loading");
+  assert.match(await b.evaluate("document.body.innerText"), /Loading/, "pending status is described as loading");
   await b.evaluate(resolveStatus(0, { enabled: false, frequency_minutes: 5, destination_set: true, destination: "papers", running: false, last_success: null, error: null, projects: 2, needs_login: false }));
   await until("valid backup status applied", () => b.evaluate("Boolean(document.querySelector('#backup-frequency') && !document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').value === 'papers')"), 5000);
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled"), false, "an empty folder label does not disable the automatic backup control");
