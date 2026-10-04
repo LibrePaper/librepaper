@@ -478,7 +478,7 @@ pub(super) struct Inner {
     backups: Arc<backups::BackupManager>,
     instance: String,
     port: u16,
-    pairing: PairingStore,
+    pub(super) pairing: PairingStore,
     quarto_bindings: BindingStore,
     previews: Mutex<super::preview::Previews>,
     runner: Arc<dyn Runner>,

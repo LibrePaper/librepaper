@@ -385,7 +385,9 @@ mod tests {
         let task_broker = broker.clone();
         let task_request = request.clone();
         let waiting = tokio::spawn(async move {
-            task_broker.ask(&task_request, Duration::from_secs(300)).await
+            task_broker
+                .ask(&task_request, Duration::from_secs(300))
+                .await
         });
         tokio::task::yield_now().await;
         assert_eq!(broker.list().len(), 1);

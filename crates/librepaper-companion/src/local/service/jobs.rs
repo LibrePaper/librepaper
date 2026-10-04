@@ -66,7 +66,7 @@ pub(super) async fn handle_workspace_put(
         return response;
     }
 
-    let Some(binding) = inner
+    let Some(_binding) = inner
         .quarto_bindings
         .get_scoped(HOSTED_BINDING, &origin, &project)
     else {

@@ -123,7 +123,9 @@ mod tests {
     #[cfg(unix)]
     impl Environment {
         fn isolated(root: &Path) -> Self {
-            let lock = ENVIRONMENT_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+            let lock = ENVIRONMENT_LOCK
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let home = root.join("home");
             let state = root.join("xdg-state");
             let cache = root.join("xdg-cache");

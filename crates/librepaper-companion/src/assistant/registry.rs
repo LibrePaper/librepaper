@@ -193,7 +193,7 @@ impl SessionRegistry {
             if current_hash.is_some() {
                 self.stop(link, conversation)
                     .await
-                .map_err(|error| error.to_string())?;
+                    .map_err(|error| error.to_string())?;
             }
             let peer = AutomationPeer::open_scoped(link.clone(), agent_token.to_string()).await?;
             if !crate::local::pairing::PairingStore::new(&self.state_home, None)
@@ -301,10 +301,7 @@ impl SessionRegistry {
         replace_agent_grant(owner.as_deref(), &requester, &grant, token)
     }
 
-    fn active_grant(
-        &self,
-        key: &str,
-    ) -> Result<OwnedAgentGrant, String> {
+    fn active_grant(&self, key: &str) -> Result<OwnedAgentGrant, String> {
         let sessions = self
             .sessions
             .lock()
@@ -532,11 +529,9 @@ mod tests {
 
     #[test]
     fn running_session_cannot_be_reused_by_a_different_paired_origin() {
-        assert!(ensure_origin_owner(
-            Some("HTTPS://Papers.Example/"),
-            "https://papers.example"
-        )
-        .is_ok());
+        assert!(
+            ensure_origin_owner(Some("HTTPS://Papers.Example/"), "https://papers.example").is_ok()
+        );
         assert_eq!(
             ensure_origin_owner(Some("https://papers.example"), "https://other.example")
                 .unwrap_err(),

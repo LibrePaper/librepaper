@@ -112,13 +112,11 @@ impl PairingStore {
     fn load_checked(&self) -> std::io::Result<HashMap<String, Pairing>> {
         let text = match std::fs::read_to_string(self.pairings_path()) {
             Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(HashMap::new())
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
             Err(error) => return Err(error),
         };
-        let mut pairings: HashMap<String, Pairing> = serde_json::from_str(&text)
-            .map_err(std::io::Error::other)?;
+        let mut pairings: HashMap<String, Pairing> =
+            serde_json::from_str(&text).map_err(std::io::Error::other)?;
         pairings.retain(|key, pairing| *key == pairing.origin);
         Ok(pairings)
     }
