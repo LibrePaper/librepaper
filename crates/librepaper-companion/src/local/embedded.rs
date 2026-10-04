@@ -54,7 +54,7 @@ pub async fn start(base: &Path, tool_path: Vec<PathBuf>) -> Result<Arc<Embedded>
         std::fs::create_dir_all(directory)
             .map_err(|error| format!("could not prepare {}: {error}", directory.display()))?;
     }
-    let tool_path = effective_tool_paths(&state_home, tool_path)?;
+    let tool_path = crate::local::settings::tool_paths(&state_home, tool_path)?;
     let listener = match TcpListener::bind(("127.0.0.1", DEFAULT_PORT)).await {
         Ok(listener) => listener,
         Err(_) => TcpListener::bind(("127.0.0.1", 0))
@@ -103,33 +103,154 @@ pub async fn start(base: &Path, tool_path: Vec<PathBuf>) -> Result<Arc<Embedded>
     }))
 }
 
-fn effective_tool_paths(state_home: &Path, explicit: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
-    crate::local::settings::tool_paths(state_home, explicit)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::ffi::OsString;
+    #[cfg(unix)]
+    use std::sync::{Mutex, MutexGuard};
 
-    #[test]
-    fn embedded_start_uses_persisted_tool_paths_unless_explicit_paths_are_given() {
+    #[cfg(unix)]
+    static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(unix)]
+    struct Environment {
+        _lock: MutexGuard<'static, ()>,
+        previous: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    #[cfg(unix)]
+    impl Environment {
+        fn isolated(root: &Path) -> Self {
+            let lock = ENVIRONMENT_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+            let home = root.join("home");
+            let state = root.join("xdg-state");
+            let cache = root.join("xdg-cache");
+            let config = root.join("xdg-config");
+            let data = root.join("xdg-data");
+            for path in [&home, &state, &cache, &config, &data] {
+                std::fs::create_dir_all(path).unwrap();
+            }
+            let values = [
+                ("HOME", home),
+                ("XDG_STATE_HOME", state),
+                ("XDG_CACHE_HOME", cache),
+                ("XDG_CONFIG_HOME", config),
+                ("XDG_DATA_HOME", data),
+            ];
+            let previous = values
+                .iter()
+                .map(|(key, value)| {
+                    let old = std::env::var_os(key);
+                    std::env::set_var(key, value);
+                    (*key, old)
+                })
+                .collect();
+            Self {
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Environment {
+        fn drop(&mut self) {
+            for (key, previous) in self.previous.drain(..) {
+                if let Some(value) = previous {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn fake_typst(directory: &Path, version: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::create_dir_all(directory).unwrap();
+        let executable = directory.join("typst");
+        std::fs::write(
+            &executable,
+            format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", version),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    async fn typst_version(app: &Embedded, state_home: &Path) -> String {
+        let token_path = state_home.join("librepaper/local/control-token.json");
+        let token: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(token_path).unwrap()).unwrap();
+        let client = reqwest::Client::new();
+        let url = format!("{}companion/api/state", app.address);
+        let mut state = None;
+        for _ in 0..50 {
+            if let Ok(response) = client
+                .get(&url)
+                .bearer_auth(token["token"].as_str().unwrap())
+                .send()
+                .await
+            {
+                if response.status().is_success() {
+                    state = Some(response.json::<serde_json::Value>().await.unwrap());
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let state = state.expect("embedded control state should become available");
+        state["tools"]["builders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|builder| builder["id"] == "typst")
+            .and_then(|builder| builder["version"].as_str())
+            .unwrap()
+            .to_string()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn embedded_restart_reloads_saved_paths_and_explicit_paths_override_them() {
         let temporary = tempfile::tempdir().unwrap();
-        let state_home = temporary.path().join("state");
-        let mut settings = crate::local::settings::LocalSettings::default();
-        settings.tool_paths = vec![PathBuf::from("/saved/tools"), PathBuf::from("/more/tools")];
+        let _environment = Environment::isolated(temporary.path());
+        let base = temporary.path().join("deployment");
+        let state_home = base.join("state");
+        let saved_tools = temporary.path().join("saved-tools");
+        let explicit_tools = temporary.path().join("explicit-tools");
+        fake_typst(&saved_tools, "typst persisted marker");
+        fake_typst(&explicit_tools, "typst explicit marker");
+        let settings = crate::local::settings::LocalSettings {
+            tool_paths: vec![saved_tools],
+            ..crate::local::settings::LocalSettings::default()
+        };
         crate::local::settings::save(&state_home, &settings).unwrap();
 
+        let first = start(&base, Vec::new()).await.unwrap();
         assert_eq!(
-            effective_tool_paths(&state_home, Vec::new()).unwrap(),
-            settings.tool_paths,
-            "a restarted embedded app should reuse the dashboard's saved paths"
+            typst_version(&first, &state_home).await,
+            "typst persisted marker"
         );
+        first.stop().await;
+        drop(first);
 
-        let explicit = vec![PathBuf::from("/explicit/tools")];
+        let restarted = start(&base, Vec::new()).await.unwrap();
         assert_eq!(
-            effective_tool_paths(&state_home, explicit.clone()).unwrap(),
-            explicit,
-            "explicit launch paths keep precedence over saved settings"
+            typst_version(&restarted, &state_home).await,
+            "typst persisted marker"
         );
+        restarted.stop().await;
+
+        let overridden = start(&base, vec![explicit_tools]).await.unwrap();
+        assert_eq!(
+            typst_version(&overridden, &state_home).await,
+            "typst explicit marker"
+        );
+        overridden.stop().await;
     }
 }
