@@ -722,7 +722,7 @@ async fn a_single_update_at_the_byte_trigger_flushes_alone_because_the_trigger_i
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_buffer_flushes_at_the_quiet_period_even_while_small() {
     let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
     let batch = Outbox::new().edit();
@@ -734,36 +734,32 @@ async fn a_buffer_flushes_at_the_quiet_period_even_while_small() {
         None,
         "not due the instant it arrives"
     );
-    tokio::time::sleep(FLUSH_QUIET + Duration::from_millis(300)).await;
+    tokio::time::advance(FLUSH_QUIET - Duration::from_nanos(1)).await;
+    assert_eq!(
+        sequencer.flush_due().await,
+        None,
+        "not due just before the quiet deadline"
+    );
+    tokio::time::advance(Duration::from_nanos(1)).await;
     assert_eq!(sequencer.flush_due().await, Some(FlushReason::Quiet));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_buffer_flushes_at_the_max_age_even_while_someone_keeps_typing() {
     let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
     let mut outbox = Outbox::new();
-    let mut client_seq = 0i64;
-    client_seq += 1;
     let outcome = sequencer
-        .ingest(
-            1,
-            "account:writer",
-            "account:writer",
-            client_seq,
-            outbox.edit(),
-        )
+        .ingest(1, "account:writer", "account:writer", 1, outbox.edit())
         .await;
     assert!(matches!(outcome, Ingested::Accepted));
 
-    let start = tokio::time::Instant::now();
     // Keep the buffer's last arrival recent -- well under FLUSH_QUIET --
     // while its oldest batch ages past FLUSH_MAX_AGE. Only the max-age
     // branch, and not the quiet one, can explain a trigger shaped like
     // this: it proves the two conditions are independent, not that a long
     // enough wait always looks the same.
-    loop {
-        tokio::time::sleep(Duration::from_secs(4)).await;
-        client_seq += 1;
+    for client_seq in 2..=8 {
+        tokio::time::advance(Duration::from_secs(4)).await;
         let outcome = sequencer
             .ingest(
                 1,
@@ -774,10 +770,22 @@ async fn a_buffer_flushes_at_the_max_age_even_while_someone_keeps_typing() {
             )
             .await;
         assert!(matches!(outcome, Ingested::Accepted));
-        if start.elapsed() >= FLUSH_MAX_AGE + Duration::from_millis(500) {
-            break;
-        }
+        assert_eq!(
+            sequencer.flush_due().await,
+            None,
+            "updates before max age must keep the buffer below both flush deadlines"
+        );
     }
+    // Seven arrivals spaced four seconds apart put the latest arrival at
+    // t=28s. The quiet deadline is still three seconds away when the oldest
+    // batch reaches its exact 30-second max age.
+    tokio::time::advance(FLUSH_MAX_AGE - Duration::from_secs(28) - Duration::from_nanos(1)).await;
+    assert_eq!(
+        sequencer.flush_due().await,
+        None,
+        "not due just before the oldest batch reaches max age"
+    );
+    tokio::time::advance(Duration::from_nanos(1)).await;
     assert_eq!(sequencer.flush_due().await, Some(FlushReason::MaxAge));
 }
 

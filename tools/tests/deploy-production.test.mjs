@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSyn
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -15,7 +16,17 @@ function mockCommand(dir, name, contents) {
   chmodSync(file, 0o755);
 }
 
+function sha384(text) {
+  return createHash('sha384').update(text).digest('hex');
+}
+
+const defaultMigration = 'CREATE TABLE a (id integer);';
+
 function fixture({
+  remoteMigrations = 'absent',
+  remoteSchema = 'CREATE TABLE a (id integer);',
+  squashSchema = remoteSchema,
+  migrations = { '0001_catalog.sql': defaultMigration },
   corruptTransfer = false,
   adminPassword = 'admin-secret',
   exporterPassword = 'exporter-secret',
@@ -47,6 +58,19 @@ function fixture({
   const makeCalledFile = path.join(root, 'make-called');
   const oauthCallsFile = path.join(root, 'oauth-calls');
   const curlCallsFile = path.join(root, 'curl-calls');
+  const migrationsDir = path.join(root, 'migrations');
+  const remoteMigrationsFile = path.join(root, 'remote-migrations');
+  const remoteSchemaFile = path.join(root, 'remote-schema');
+  const squashSchemaFile = path.join(root, 'squash-schema');
+  const pinSqlFile = path.join(root, 'pin-sql');
+  const composeUpFile = path.join(root, 'compose-up');
+  const backupFile = path.join(root, 'backup');
+  const orderFile = path.join(root, 'order');
+  mkdirSync(migrationsDir);
+  for (const [name, contents] of Object.entries(migrations)) writeFileSync(path.join(migrationsDir, name), contents);
+  writeFileSync(remoteMigrationsFile, `${remoteMigrations}\n`);
+  writeFileSync(remoteSchemaFile, `${remoteSchema}\n`);
+  writeFileSync(squashSchemaFile, `${squashSchema}\n`);
   writeFileSync(adminPasswordFile, adminPassword);
   writeFileSync(exporterPasswordFile, exporterPassword);
 
@@ -125,6 +149,36 @@ case "$command" in
       '{"data":{"result":[{"values":[[1,"1"],[2,"1"]]}]}}' \\
       '${pgUpHealthy ? '{"data":{"result":[{"value":[3,"1"]}]}}' : '{"data":{"result":[]}}'}'
     ;;
+  *'docker compose up -d --build'*)
+    printf called >> "$COMPOSE_UP_FILE"
+    printf 'up\\n' >> "$ORDER_FILE"
+    ;;
+  *'pg_dump'*' -d librepaper_squash'*)
+    printf -- '-- comment\\nSET x = y;\\n'
+    cat "$SQUASH_SCHEMA_FILE"
+    ;;
+  *'pg_dump'*)
+    printf -- '-- comment\\nSET x = y;\\n'
+    cat "$REMOTE_SCHEMA_FILE"
+    ;;
+  *'psql'*' -d postgres'*) cat >/dev/null; exit 0 ;;
+  *'psql'*' -d librepaper_squash'*) cat >/dev/null ;;
+  *'psql'*)
+    sql=$(cat)
+    case "$sql" in
+      *to_regclass*)
+        if [ "$(cat "$REMOTE_MIGRATIONS_FILE")" = absent ]; then printf 'absent\\n'; else tr ':' '\\t' < "$REMOTE_MIGRATIONS_FILE"; fi
+        ;;
+    esac
+    case "$sql" in
+      *'DELETE FROM _sqlx_migrations'*)
+        printf '%s\\n' "$sql" > "$PIN_SQL_FILE"
+        printf 'pin\\n' >> "$ORDER_FILE"
+        ;;
+    esac
+    ;;
+  *'migrations-squash.log'*) cat >> "$REMOTE_ROOT/migrations-squash.log" ;;
+  *'admin backup'*) printf called >> "$BACKUP_FILE" ;;
   *) : ;;
 esac`);
 mockCommand(bin, 'curl', `
@@ -207,6 +261,14 @@ exit 0`);
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
       REMOTE_ROOT: remote,
+      MIGRATIONS_DIR: migrationsDir,
+      REMOTE_MIGRATIONS_FILE: remoteMigrationsFile,
+      REMOTE_SCHEMA_FILE: remoteSchemaFile,
+      SQUASH_SCHEMA_FILE: squashSchemaFile,
+      PIN_SQL_FILE: pinSqlFile,
+      COMPOSE_UP_FILE: composeUpFile,
+      BACKUP_FILE: backupFile,
+      ORDER_FILE: orderFile,
       HOST: 'ubuntu@test-host',
       TMPDIR: temp,
       NODE_EXECUTABLE: process.execPath,
@@ -232,12 +294,18 @@ exit 0`);
     },
     makeCalledFile,
     oauthCallsFile,
+    pinSqlFile,
+    composeUpFile,
+    backupFile,
+    orderFile,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
 
 function runProduction(f, command, version = 'v0.0.9') {
-  const args = command === 'deploy-local' ? ['deploy-local', f.executable] : [command, version];
+  const args = command === 'deploy-local' ? ['deploy-local', f.executable]
+    : command === 'squash-migrations' ? [command]
+      : [command, version];
   return spawnSync(deploy, args, { cwd: repo, env: f.env, encoding: 'utf8' });
 }
 
@@ -481,6 +549,109 @@ test('persistent Grafana API failures time out and remove credential files', {
     assert.ok(elapsed >= 59 && elapsed <= 65, `expected ~60 seconds, got ${elapsed}`);
     assert.deepEqual(readdirSync(path.join(f.root, 'tmp')), []);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|exporter-secret|pg-secret|github-secret/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+const migrationsAB = { '0001_a.sql': 'CREATE TABLE a (id integer);', '0002_b.sql': 'CREATE TABLE b (id integer);' };
+const staleHistory = `1:${'cd'.repeat(48)}\n2:${'ef'.repeat(48)}\n3:${'01'.repeat(48)}`;
+
+test('deploy proceeds without touching _sqlx_migrations when every applied migration matches the tree', () => {
+  const f = fixture({
+    migrations: migrationsAB,
+    remoteMigrations: `1:${sha384(migrationsAB['0001_a.sql'])}\n2:${sha384(migrationsAB['0002_b.sql'])}`,
+  });
+  try {
+    const result = runProduction(f, 'deploy');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /2 applied migrations match the tree/);
+    assert.equal(existsSync(f.composeUpFile), true);
+    assert.equal(existsSync(f.pinSqlFile), false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy proceeds on a fresh database', () => {
+  const f = fixture();
+  try {
+    const result = runProduction(f, 'deploy');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /fresh database/);
+    assert.equal(existsSync(f.pinSqlFile), false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy stops before starting containers when an applied migration has no matching file and the tree is not squashed', () => {
+  const f = fixture({
+    migrations: migrationsAB,
+    remoteMigrations: `1:${sha384(migrationsAB['0001_a.sql'])}\n2:${sha384(migrationsAB['0002_b.sql'])}\n3:${'ab'.repeat(48)}`,
+  });
+  try {
+    const result = runProduction(f, 'deploy');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /version 3/);
+    assert.equal(existsSync(f.composeUpFile), false);
+    assert.equal(existsSync(f.pinSqlFile), false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("deploy re-pins _sqlx_migrations when the tree holds a single squashed file that reproduces production's schema", () => {
+  const f = fixture({ remoteMigrations: staleHistory });
+  try {
+    const result = runProduction(f, 'deploy');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const pin = readFileSync(f.pinSqlFile, 'utf8');
+    assert.match(pin, /DELETE FROM _sqlx_migrations/);
+    assert.match(pin, /VALUES \(1, 'catalog'/);
+    assert.ok(pin.includes(sha384(defaultMigration)));
+    assert.equal(existsSync(f.composeUpFile), true);
+    assert.equal(existsSync(f.backupFile), true);
+    assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), ['pin', 'up']);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("deploy refuses to re-pin when the squashed file does not reproduce production's schema", () => {
+  const f = fixture({ remoteMigrations: staleHistory, squashSchema: 'CREATE TABLE other (id integer);' });
+  try {
+    const result = runProduction(f, 'deploy');
+    assert.notEqual(result.status, 0);
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /^--- production$/m);
+    assert.match(output, /^\+\+\+ squashed$/m);
+    assert.equal(existsSync(f.pinSqlFile), false);
+    assert.equal(existsSync(f.composeUpFile), false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('squash-migrations subcommand refuses when production already matches the single file', () => {
+  const f = fixture({ remoteMigrations: `1:${sha384(defaultMigration)}` });
+  try {
+    const result = runProduction(f, 'squash-migrations');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /nothing to do/);
+    assert.equal(existsSync(f.pinSqlFile), false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('squash-migrations subcommand pins and logs', () => {
+  const f = fixture({ remoteMigrations: staleHistory });
+  try {
+    const result = runProduction(f, 'squash-migrations');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(existsSync(f.pinSqlFile), true);
+    assert.match(readFileSync(path.join(f.remote, 'migrations-squash.log'), 'utf8'), /-> 1/);
   } finally {
     f.cleanup();
   }

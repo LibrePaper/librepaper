@@ -17,6 +17,9 @@ MONITORING=https://$APP/admin/monitoring/
 HTTP_CONNECT_TIMEOUT=5
 HTTP_REQUEST_TIMEOUT=15
 HEALTH_DEADLINE_SECONDS=120
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-crates/librepaper-engine/migrations/postgres}"
+POSTGRES_EXEC='cd librepaper && docker compose exec -T postgres'
+SQUASH_DB=librepaper_squash
 
 if [ -t 1 ]; then bold=$'\e[1m' green=$'\e[32m' red=$'\e[31m' dim=$'\e[2m' reset=$'\e[0m'; else bold='' green='' red='' dim='' reset=''; fi
 step() { printf '\n%s==> %s%s\n' "$bold" "$*" "$reset"; }
@@ -183,6 +186,164 @@ prepare_deployment() {
 	bootstrap_monitoring_role
 }
 
+# One line per migration file: version, SHA-384 hex, description, path. This is
+# how sqlx records a migration: the checksum covers the file's raw bytes.
+local_migrations() {
+	local file base digits version description sum
+	for file in "$MIGRATIONS_DIR"/*.sql; do
+		[ -e "$file" ] || continue
+		base=$(basename "$file" .sql)
+		digits=${base%%[!0-9]*}
+		version=$((10#$digits))
+		description=${base#*_}
+		description=${description//_/ }
+		sum=$(sha384sum "$file")
+		printf '%s\t%s\t%s\t%s\n' "$version" "${sum%% *}" "$description" "$file"
+	done | sort -n -t $'\t' -k1,1
+}
+
+# "absent" when production has no _sqlx_migrations table, otherwise one
+# "version<TAB>checksum hex" line per successfully applied migration.
+remote_migrations() {
+	ssh "$HOST" "$POSTGRES_EXEC psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -At" <<'SQL'
+SELECT to_regclass('public._sqlx_migrations') IS NOT NULL AS present \gset
+\if :present
+SELECT version || E'\t' || encode(checksum, 'hex') FROM _sqlx_migrations WHERE success ORDER BY version;
+\else
+SELECT 'absent';
+\endif
+SQL
+}
+
+normalize_schema_dump() {
+	grep -Ev '^(--|SET |SELECT pg_catalog|\\restrict|\\unrestrict)|^$' || true
+}
+
+remote_schema() {
+	local database="$1"
+	ssh "$HOST" "$POSTGRES_EXEC pg_dump -U librepaper -d $database --schema-only --no-owner --no-privileges" | normalize_schema_dump
+}
+
+remote_admin_sql() {
+	local database="$1"
+	ssh "$HOST" "$POSTGRES_EXEC psql -U librepaper -d $database -v ON_ERROR_STOP=1 -q"
+}
+
+SQUASH_TMP_FILES=()
+cleanup_squash() {
+	remote_admin_sql postgres <<< "DROP DATABASE IF EXISTS $SQUASH_DB;" >/dev/null 2>&1 || true
+	if [ "${#SQUASH_TMP_FILES[@]}" -gt 0 ]; then rm -f -- "${SQUASH_TMP_FILES[@]}"; fi
+	SQUASH_TMP_FILES=()
+}
+
+# Sets SQUASH_VERSION, SQUASH_SUM, SQUASH_DESCRIPTION, SQUASH_FILE from the
+# single migration file in the tree, or dies.
+require_single_migration() {
+	local rows
+	rows=$(local_migrations)
+	if [ -z "$rows" ] || [ "$(printf '%s\n' "$rows" | wc -l)" -ne 1 ]; then
+		die "squash-migrations needs a single migration file in $MIGRATIONS_DIR"
+	fi
+	IFS=$'\t' read -r SQUASH_VERSION SQUASH_SUM SQUASH_DESCRIPTION SQUASH_FILE <<< "$rows"
+	[ "$SQUASH_VERSION" = 1 ] || die "squash-migrations needs the single migration file to be version 1, found version $SQUASH_VERSION"
+}
+
+squash_migrations() {
+	require_single_migration
+	local prod_dump squash_dump diff_output old_versions description_sql
+
+	step "Migrations: prove the squashed file reproduces production's schema"
+	prod_dump=$(mktemp)
+	squash_dump=$(mktemp)
+	SQUASH_TMP_FILES=("$prod_dump" "$squash_dump")
+	trap cleanup_squash EXIT
+	remote_schema librepaper > "$prod_dump"
+	remote_admin_sql postgres <<< "DROP DATABASE IF EXISTS $SQUASH_DB;"
+	remote_admin_sql postgres <<< "CREATE DATABASE $SQUASH_DB;"
+	ssh "$HOST" "$POSTGRES_EXEC psql -U librepaper -d $SQUASH_DB -v ON_ERROR_STOP=1 --single-transaction -q" < "$SQUASH_FILE"
+	remote_schema "$SQUASH_DB" > "$squash_dump"
+	if ! diff_output=$(diff -u --label production --label squashed "$prod_dump" "$squash_dump"); then
+		printf '%s\n' "$diff_output"
+		die "the squashed migration does not reproduce production's schema; nothing was changed"
+	fi
+	cleanup_squash
+	trap - EXIT
+	ok "the squashed file builds the same schema as production"
+
+	step "Migrations: pin _sqlx_migrations to version 1"
+	old_versions=$(remote_migrations | cut -f1 | paste -sd, -)
+	note "old versions: $old_versions"
+	description_sql=${SQUASH_DESCRIPTION//\'/\'\'}
+	# shellcheck disable=SC2087 # the checksum and description are local values
+	ssh "$HOST" "$POSTGRES_EXEC psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -At" <<SQL
+BEGIN;
+DELETE FROM _sqlx_migrations;
+INSERT INTO _sqlx_migrations(version, description, installed_on, success, checksum, execution_time)
+VALUES (1, '$description_sql', now(), true, decode('$SQUASH_SUM', 'hex'), 0);
+COMMIT;
+SQL
+	printf '%s squashed versions %s -> 1 %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$old_versions" "$SQUASH_SUM" | ssh "$HOST" 'cat >> librepaper/migrations-squash.log'
+	ok "pinned version 1 ($SQUASH_DESCRIPTION, sha384 ${SQUASH_SUM:0:12}...)"
+
+	step "Backup: after the pin, because older backups record the old migration version"
+	local backup_name
+	backup_name="$(date +%F)-squash"
+	if ssh "$HOST" "cd librepaper && docker compose exec -T librepaper librepaper admin backup --data-directory /var/lib/librepaper /var/backups/librepaper/$backup_name"; then
+		ok "backup $backup_name written"
+	else
+		note "the backup failed but the pin is done: take a backup by hand (docker compose exec -T librepaper librepaper admin backup ...)"
+	fi
+}
+
+squash_command() {
+	require_single_migration
+	local remote
+	remote=$(remote_migrations)
+	if [ "$remote" = absent ] || [ -z "$remote" ]; then
+		die "production has no applied migrations to re-pin; nothing to do"
+	fi
+	if [ "$remote" = "$(printf '1\t%s' "$SQUASH_SUM")" ]; then
+		die "production already matches $SQUASH_FILE; nothing to do"
+	fi
+	squash_migrations
+}
+
+# Runs before the containers start: a release whose tree disagrees with the
+# applied history dies at startup, so refuse here, or re-pin when the tree has
+# been squashed into one file.
+check_migrations() {
+	step "Migrations: applied history against the tree"
+	local remote local_rows line version sum local_sum count=0 problem=''
+	remote=$(remote_migrations)
+	if [ "$remote" = absent ] || [ -z "$remote" ]; then
+		ok "fresh database: the release applies every migration"
+		return
+	fi
+	local_rows=$(local_migrations)
+	while IFS=$'\t' read -r version sum; do
+		local_sum=$(awk -F'\t' -v v="$version" '$1 == v {print $2}' <<< "$local_rows")
+		if [ -z "$local_sum" ]; then
+			problem="applied migration version $version has no file in $MIGRATIONS_DIR"
+			break
+		elif [ "$local_sum" != "$sum" ]; then
+			problem="applied migration version $version has a different checksum from its file in $MIGRATIONS_DIR"
+			break
+		fi
+		count=$((count + 1))
+	done <<< "$remote"
+	if [ -z "$problem" ]; then
+		ok "$count applied migrations match the tree"
+		return
+	fi
+	line=$(printf '%s' "$local_rows" | head -n 1)
+	if [ -n "$local_rows" ] && [ "$(printf '%s\n' "$local_rows" | wc -l)" -eq 1 ] && [ "${line%%$'\t'*}" = 1 ]; then
+		note "$problem; the tree holds one squashed file, so production is re-pinned to it"
+		squash_migrations
+		return
+	fi
+	die "$problem; the release would fail at startup, so nothing was changed"
+}
+
 start_application() {
 	local mode="$1"
 	if [ "$mode" = local ]; then
@@ -202,6 +363,7 @@ usage: tools/deploy-production <command>
   deploy [VERSION]   deploy a published instrumented release (canonical vMAJOR.MINOR.PATCH, v0.0.9+)
                      (VERSION defaults to v + the version in Cargo.toml)
   deploy-local BINARY deploy a previously-built Linux musl executable instead of a release image
+  squash-migrations   re-pin production's _sqlx_migrations to the single squashed file after proving it reproduces the live schema (deploy runs this itself when needed)
   site               rebuild and upload the landing page and manual only (no release, no restart)
   verify             app, monitoring, site, documents, redirect, and logs
   logs               follow the container logs
@@ -414,6 +576,7 @@ deploy() {
 	ok "found $ASSET"
 
 	prepare_deployment "$version" false
+	check_migrations
 
 	start_application release
 	reload_prometheus
@@ -445,6 +608,7 @@ deploy_local() {
 	ssh "$HOST" 'cd librepaper && chmod 755 librepaper.tmp && mv -f librepaper.tmp librepaper'
 	ok "verified SHA-256 $checksum and replaced the kit executable"
 
+	check_migrations
 	start_application local
 	reload_prometheus
 	verify
@@ -457,6 +621,9 @@ case "${1:-help}" in
 		;;
 	deploy-local)
 		deploy_local "${2:-}"
+		;;
+	squash-migrations)
+		squash_command
 		;;
 	site)
 		site_build

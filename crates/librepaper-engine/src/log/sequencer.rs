@@ -685,8 +685,8 @@ struct Inner {
     /// would encode to minus its one version byte. The per-document ceiling
     /// and the flush's scratch reservation are both taken from this.
     charged_bytes: usize,
-    oldest_arrival: Option<Instant>,
-    last_arrival: Option<Instant>,
+    oldest_arrival: Option<tokio::time::Instant>,
+    last_arrival: Option<tokio::time::Instant>,
     subscribers: HashMap<u64, Subscriber>,
     cache: Option<Cache>,
     /// The projection of the cache at its current version, so a poll that
@@ -865,7 +865,7 @@ impl Inner {
         self.charged_bytes = self.charge_of(self.buffer.len());
         self.row_bytes = self.row_bytes.saturating_add(row_bytes as u64);
         self.uncompacted_count = self.uncompacted_count.saturating_add(1);
-        self.oldest_arrival = (!self.buffer.is_empty()).then(Instant::now);
+        self.oldest_arrival = (!self.buffer.is_empty()).then(tokio::time::Instant::now);
     }
 
     /// §8.4's opening sentence: whether this document's backlog has reached
@@ -1294,7 +1294,7 @@ impl Sequencer {
         }
 
         inner.head_vector.merge(&header.partial_end_vv);
-        let now = Instant::now();
+        let now = tokio::time::Instant::now();
         if inner.oldest_arrival.is_none() {
             inner.oldest_arrival = Some(now);
         }
