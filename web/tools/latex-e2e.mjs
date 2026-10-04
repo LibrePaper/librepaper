@@ -9,7 +9,7 @@
 // session; no OAuth service is contacted.
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,11 +83,30 @@ async function main() {
     : (mirror = await ephemeralMirror(MIRROR_ARG)).latexUrl;
   // The server takes the asset mirror; the pinned release is beneath it at latex/<id>/.
   const assetMirror = new URL("../../", mirrorUrl).href;
-  const args = [
-    "admin", "serve", "--port", String(PORT), "--data-directory", data,
-    "--publishers", "any", "--commenters", "anyone", "--asset-mirror", assetMirror,
-  ];
-  server = spawn(BINARY, args, {
+  const serverConfig = join(config, "server.toml");
+  writeFileSync(serverConfig, [
+    "[server]",
+    'bind = "0.0.0.0"',
+    `port = ${PORT}`,
+    "local_companion = true",
+    "",
+    "[storage]",
+    `directory = ${JSON.stringify(data)}`,
+    'database_url = { env = "LIBREPAPER_DATABASE_URL" }',
+    "",
+    "[auth.github]",
+    'client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }',
+    'client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }',
+    "",
+    "[access]",
+    'publishers = ["any"]',
+    'commenters = ["anyone"]',
+    "",
+    "[assets]",
+    `mirror = ${JSON.stringify(assetMirror)}`,
+    "",
+  ].join("\n"));
+  server = spawn(BINARY, ["admin", "serve", "--config", serverConfig], {
     stdio: ["ignore", "ignore", "pipe"],
     env: { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" },
   });

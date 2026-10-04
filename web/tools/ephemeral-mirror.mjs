@@ -2,7 +2,8 @@
 // latex/ prefix of an asset mirror.  The production server accepts HTTPS
 // mirrors only, and browser checks should exercise the same cross-origin
 // fetch/CORS path as a deployment.  `url` is the asset mirror to hand the
-// server (--asset-mirror); `latexUrl` is where the LaTeX files live beneath it.
+// server (`assets.mirror` in its TOML config); `latexUrl` is where the LaTeX
+// files live beneath it.
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:https";
 import { mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";

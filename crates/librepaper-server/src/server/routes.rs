@@ -853,7 +853,7 @@ impl Server {
     /// Which formats this deployment can render again in a reader, and so
     /// offer an editor for. The compiled-in ones come from the build; `latex`
     /// is the one that depends on the deployment rather than on the binary,
-    /// because the compiler is not in the binary at all -- it is under `--asset-mirror`,
+    /// because the compiler is not in the binary at all -- it is under `assets.mirror`,
     /// and a deployment without a mirror has nowhere to send a browser for it.
     pub fn renderers(&self) -> Vec<String> {
         let mut list = renderers();

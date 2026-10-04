@@ -335,7 +335,7 @@ impl Policy {
             || value.trim().eq_ignore_ascii_case("public")
         {
             return Err(
-                "--publishers must name signed-in accounts: 'any' for any authenticated account, or a list"
+                "access.publishers must name signed-in accounts: 'any' for any authenticated account, or a list"
                     .into(),
             );
         }

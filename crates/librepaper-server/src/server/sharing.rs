@@ -563,7 +563,7 @@ impl Server {
 
     /// Hands a document to another account: its history, its comments and its
     /// quota go with it, because all three are counted against the publisher.
-    /// The new owner must satisfy `--publishers`, since they are about to be
+    /// The new owner must satisfy `access.publishers`, since they are about to be
     /// the person putting this document on the server.
     pub(super) async fn handle_transfer(
         &self,

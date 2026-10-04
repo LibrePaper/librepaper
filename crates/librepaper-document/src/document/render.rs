@@ -233,7 +233,7 @@ pub fn document_format(name: &str) -> Option<&'static str> {
     } else if is_latex(name) {
         // Nothing here can render it, which is a fact about this process and
         // not about the filename. What a `.tex` file is does not change with
-        // whether a deployment was started with `--asset-mirror`.
+        // whether a deployment configures `assets.mirror`.
         Some("latex")
     } else if is_quarto(name) {
         Some("quarto")

@@ -37,6 +37,25 @@ const chromium = requireChromiumExecutable();
 const data = mkdtempSync(join(tmpdir(), "librepaper-smoke-"));
 const PORT = 8200 + Math.floor(Math.random() * 300);
 const BASE = `http://localhost:${PORT}`;
+const serverConfig = join(data, "server.toml");
+const databaseUrl = process.env.LIBREPAPER_DATABASE_URL
+  ? '{ env = "LIBREPAPER_DATABASE_URL" }'
+  : '"postgresql:///librepaper"';
+writeFileSync(serverConfig, [
+  "[server]",
+  'bind = "0.0.0.0"',
+  `port = ${PORT}`,
+  "local_companion = true",
+  "",
+  "[storage]",
+  `directory = ${JSON.stringify(join(data, "deployment"))}`,
+  `database_url = ${databaseUrl}`,
+  "",
+  "[access]",
+  'publishers = ["any"]',
+  'commenters = ["anyone"]',
+  "",
+].join("\n"));
 let failures = 0;
 const results = [];
 
@@ -66,7 +85,7 @@ async function until(what, predicate, timeout = 15000) {
 
 const server = spawn(
   binary,
-  ["admin", "serve", "--port", String(PORT), "--data-directory", data, "--publishers", "any", "--commenters", "anyone"],
+  ["admin", "serve", "--config", serverConfig],
   { stdio: ["ignore", "pipe", "pipe"] },
 );
 const serverLog = [];
