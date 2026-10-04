@@ -252,7 +252,7 @@ pub(crate) fn load(path:&Path)->Result<ResolvedConfig,String>{
     let mut config=Configuration::default();let l=raw.limits;
     let publisher_storage_mb = r.optional("limits.publisher_storage_mb", l.publisher_storage_mb)?;
     let deployment_storage_mb = r.optional("limits.deployment_storage_mb", l.deployment_storage_mb)?;
-    const MAX_STORAGE_MB: usize = (i64::MAX as u64 / (1024 * 1024)) as usize;
+    const MAX_STORAGE_MB: usize = ((i64::MAX as u64 / (1024 * 1024)).min(usize::MAX as u64)) as usize;
     for (key, value) in [
         ("limits.publisher_storage_mb", publisher_storage_mb),
         ("limits.deployment_storage_mb", deployment_storage_mb),
@@ -262,12 +262,17 @@ pub(crate) fn load(path:&Path)->Result<ResolvedConfig,String>{
         }
     }
     config.set_storage(publisher_storage_mb, deployment_storage_mb)?;
-    config.set_uploads_per_hour(r.optional("limits.publisher_uploads_per_hour",l.publisher_uploads_per_hour)?)?;
+    let uploads_per_hour = r.optional("limits.publisher_uploads_per_hour", l.publisher_uploads_per_hour)?;
+    if uploads_per_hour.is_some_and(|count| count as u128 > i64::MAX as u128) {
+        return Err("limits.publisher_uploads_per_hour must fit in a signed 64-bit count".into());
+    }
+    config.set_uploads_per_hour(uploads_per_hour)?;
     config.set_peer_queue(r.optional("limits.session_peer_queue",l.session_peer_queue)?)?;
+    let log_quota = r.value("limits.log_quota_mb", l.log_quota_mb, (DEFAULT_LOG_QUOTA_BYTES / 1024 / 1024) as u64)?;
+    config.set_log_quota(Some(log_quota))?;
     let pend=r.value("limits.pending_mb",l.pending_mb,(DEFAULT_PENDING_BYTES/1024/1024) as u64)?;
     let scratch=r.value("limits.pending_scratch_mb",l.pending_scratch_mb,(config.pending_scratch_bytes/1024/1024) as u64)?;
     config.set_pending(Some(pend),Some(scratch))?;
-    config.set_log_quota(Some(r.value("limits.log_quota_mb",l.log_quota_mb,(DEFAULT_LOG_QUOTA_BYTES/1024/1024) as u64)?))?;
     config.set_memory_budget(Some(r.value("limits.memory_budget_mb",l.memory_budget_mb,512u64)?))?;
     config.validate_pending()?;config.validate_budgets()?;
     config.cost.trusted_proxies=r.value("proxy.trusted_proxies",raw.proxy.trusted_proxies,Vec::<String>::new())?.iter()
@@ -360,7 +365,7 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     optional(&mut out, &c.sources, "backup.destination_class", "destination_class", c.config.backup.destination_class.as_deref());
     optional_num(&mut out, &c.sources, "backup.frequency", "frequency", c.config.backup.frequency);
     optional_num(&mut out, &c.sources, "backup.retained_count", "retained_count", c.config.backup.retained_count);
-    optional_bool(&mut out, &c.sources, "backup.encrypted", "encrypted", c.config.backup.encrypted);
+    optional_num(&mut out, &c.sources, "backup.encrypted", "encrypted", c.config.backup.encrypted);
     value(&mut out, &c.sources, "backup.warning_count", "warning_count", &c.config.backup.warning_count.to_string());
     section(&mut out, "demo");
     optional_num(&mut out, &c.sources, "demo.simulate_activity", "simulate_activity", c.simulate_activity);
@@ -373,7 +378,10 @@ fn quote(value: &str) -> String { toml::Value::String(value.to_owned()).to_strin
 fn array(values: &[String]) -> String { toml::Value::Array(values.iter().cloned().map(toml::Value::String).collect()).to_string() }
 fn section(out: &mut String, name: &str) { out.push_str(&format!("\n[{name}]\n")); }
 fn source(out: &mut String, sources: &BTreeMap<String, String>, key: &str) {
-    if let Some(from) = sources.get(key) { out.push_str(&format!("# source: {from}\n")); }
+    if let Some(from) = sources.get(key) {
+        let safe: String = from.chars().map(|ch| if ch == '\r' || ch == '\n' { ' ' } else { ch }).collect();
+        out.push_str(&format!("# source: {safe}\n"));
+    }
 }
 fn value(out: &mut String, sources: &BTreeMap<String, String>, path: &str, key: &str, value: &str) {
     source(out, sources, path); out.push_str(&format!("{key} = {value}\n"));
@@ -383,9 +391,6 @@ fn optional(out: &mut String, sources: &BTreeMap<String, String>, path: &str, ke
     match value { Some(v) => out.push_str(&format!("{key} = {}\n", quote(v))), None => out.push_str(&format!("# {key} is unset\n")) }
 }
 fn optional_num<T: std::fmt::Display>(out: &mut String, sources: &BTreeMap<String, String>, path: &str, key: &str, value: Option<T>) {
-    source(out, sources, path); match value { Some(v) => out.push_str(&format!("{key} = {v}\n")), None => out.push_str(&format!("# {key} is unset\n")) }
-}
-fn optional_bool(out: &mut String, sources: &BTreeMap<String, String>, path: &str, key: &str, value: Option<bool>) {
     source(out, sources, path); match value { Some(v) => out.push_str(&format!("{key} = {v}\n")), None => out.push_str(&format!("# {key} is unset\n")) }
 }
 fn redacted(out: &mut String, sources: &BTreeMap<String, String>, path: &str, key: &str, configured: bool) {
@@ -421,5 +426,11 @@ mod tests{
  #[test]fn empty_config_uses_schema_defaults(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"").unwrap();let loaded=load(&p).unwrap();assert_eq!(loaded.port,8080);assert_eq!(loaded.storage.database_url,"postgresql:///librepaper");}
  #[test]fn resolves_explicit_env_and_array_refs(){let _lock=ENV_LOCK.lock().unwrap();let port=format!("LIBREPAPER_CONFIG_TEST_PORT_{}",std::process::id());let publishers=format!("LIBREPAPER_CONFIG_TEST_PUBLISHERS_{}",std::process::id());let _restore=RestoreEnv::set(&[(&port,"9091"),(&publishers,"[\"alice\", \"bob\"]")]);let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");let text=format!("[server]\nport = {{ env = \"{port}\" }}\n[access]\npublishers = {{ env = \"{publishers}\" }}");std::fs::write(&p,text).unwrap();let loaded=load(&p).unwrap();assert_eq!(loaded.port,9091);assert_eq!(loaded.publishers,vec!["alice".to_owned(),"bob".to_owned()]);}
  #[test]fn missing_and_wrong_type_refs_are_safe(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[auth.github]\nclient_id = \"id\"\nclient_secret = { env = \"LIBREPAPER_MISSING_CONFIG_SECRET\" }").unwrap();let e=load(&p).unwrap_err();assert!(e.contains("LIBREPAPER_MISSING_CONFIG_SECRET"));assert!(!e.contains("secret-value"));std::fs::write(&p,"[server]\nport = \"not-a-port-secret\"").unwrap();let e=load(&p).unwrap_err();assert!(e.contains("server.port"));assert!(!e.contains("not-a-port-secret"));}
+ #[test]fn reference_requires_exactly_one_source(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[server]\norigin = { env = \"A\", file = \"B\" }").unwrap();let e=load(&p).unwrap_err();assert!(e.contains("exactly one"));}
+ #[test]fn missing_file_reference_names_path_without_contents(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[auth.github]\nclient_id = \"id\"\nclient_secret = { file = \"missing-secret-file\" }").unwrap();let e=load(&p).unwrap_err();assert!(e.contains("missing-secret-file"));assert!(!e.contains("secret-value"));}
+ #[test]fn storage_only_loader_skips_oauth_references(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[auth.github]\nclient_id = \"id\"\nclient_secret = { env = \"LIBREPAPER_MISSING_OAUTH_SECRET\" }").unwrap();assert!(load_storage_with_log_filter(&p).is_ok());}
+ #[test]fn rejects_mb_values_that_overflow_storage_bytes(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[limits]\ndeployment_storage_mb = 1000000000000").unwrap();let e=load(&p).unwrap_err();assert!(e.contains("limits.deployment_storage_mb"));}
+ #[test]fn relative_storage_directory_uses_config_directory(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[storage]\ndirectory = \"state/data\"").unwrap();let loaded=load_storage_with_log_filter(&p).unwrap();assert_eq!(loaded.0.dir,d.path().join("state/data"));}
+ #[test]fn explicit_scratch_is_preserved_when_log_quota_changes(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[limits]\nlog_quota_mb = 64\npending_scratch_mb = 512\nmemory_budget_mb = 1024").unwrap();let loaded=load(&p).unwrap();assert_eq!(loaded.config.log_quota_bytes,64*1024*1024);assert_eq!(loaded.config.pending_scratch_bytes,512*1024*1024);}
  #[test]fn display_redacts_database_and_auth_and_is_toml(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[storage]\ndatabase_url = \"postgres://user:DBSECRET@host/db\"\n[auth.google]\nclient_id = \"id\"\nclient_secret = \"OAUTHSECRET\"").unwrap();let loaded=load(&p).unwrap();let s=show_resolved(&loaded);assert!(!s.contains("DBSECRET"));assert!(!s.contains("OAUTHSECRET"));assert!(s.contains("<redacted>"));assert!(toml::from_str::<toml::Value>(&s).is_ok());assert!(s.contains("# source: default"));}
 }
