@@ -38,6 +38,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch, Mutex, Notify};
 
 use crate::local::pairing::{self, PairingStore};
+use crate::local::approval::ApprovalBroker;
 use crate::local::preview;
 use crate::local::protocol::{
     self, Capabilities, JobOptions, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace,
@@ -52,6 +53,7 @@ use crate::local::quarto::{sync_hosted_workspace, BindingStore, HOSTED_BINDING};
 
 mod backups;
 mod consent;
+mod control;
 mod jobs;
 
 pub(super) type Reply = Response<Body>;
@@ -95,13 +97,23 @@ pub trait Runner: Send + Sync {
 
     /// `GET capabilities` / `POST capabilities/rescan`.
     async fn capabilities(&self, refresh: bool) -> Capabilities;
+
+    /// Current explicit executable search paths, where the runner supports
+    /// changing them while the service is live.
+    fn tool_paths(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
+    fn set_tool_paths(&self, _paths: Vec<PathBuf>) -> Result<(), String> {
+        Err("tool paths cannot be changed for this runner".into())
+    }
 }
 
 /// The real runner: native TeX tools on this machine, through package R1b's
 /// `discovery` and `native` modules. `tool_path` is the resolved `--tool-path`
 /// directory list, fixed for the lifetime of one `librepaper start`.
 pub struct NativeRunner {
-    pub tool_path: Vec<PathBuf>,
+    tool_path: Arc<std::sync::RwLock<Vec<PathBuf>>>,
     binding_store: BindingStore,
 }
 
@@ -114,7 +126,7 @@ impl NativeRunner {
         base: PathBuf,
     ) -> Self {
         Self {
-            tool_path,
+            tool_path: Arc::new(std::sync::RwLock::new(tool_path)),
             binding_store: BindingStore::new(state_home).with_hosted_workspaces(base),
         }
     }
@@ -130,7 +142,7 @@ impl Runner for NativeRunner {
         progress: mpsc::UnboundedSender<JobStatus>,
     ) -> JobOutcome {
         crate::local::engine_adapter::run(
-            &self.tool_path,
+            &self.tool_paths(),
             request,
             workspace,
             cancel,
@@ -141,7 +153,25 @@ impl Runner for NativeRunner {
     }
 
     async fn capabilities(&self, refresh: bool) -> Capabilities {
-        crate::local::engine_adapter::capabilities(refresh, &self.tool_path).await
+        crate::local::engine_adapter::capabilities(refresh, &self.tool_paths()).await
+    }
+
+    fn tool_paths(&self) -> Vec<PathBuf> {
+        self.tool_path
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn set_tool_paths(&self, paths: Vec<PathBuf>) -> Result<(), String> {
+        if paths.len() > 64 || paths.iter().any(|path| !path.is_absolute()) {
+            return Err("tool_paths must contain at most 64 absolute paths".into());
+        }
+        *self
+            .tool_path
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = paths;
+        Ok(())
     }
 }
 
@@ -460,10 +490,13 @@ pub(super) struct Inner {
     /// supervised tokio task per (document, conversation) pair. See
     /// `crate::assistant::registry`.
     pub(super) assistant_sessions: crate::assistant::registry::SessionRegistry,
+    pub(super) approvals: ApprovalBroker,
+    pub(super) control: tokio::sync::Mutex<Option<control::ControlAuth>>,
 }
 
 /// The running local service: owns the job table and the background worker
 /// and reaper tasks. `router()` hands back the axum `Router` `cli.rs` serves.
+#[derive(Clone)]
 pub struct LocalService {
     inner: Arc<Inner>,
 }
@@ -518,7 +551,7 @@ impl LocalService {
         // assistant route, mirroring `recover_state`'s own semantics rather
         // than replaying it. See `SessionRegistry::recover_at_startup`.
         crate::assistant::registry::SessionRegistry::recover_at_startup(state_home);
-        super::integrations::init(state_home);
+        super::integrations::init_with_tool_paths(state_home, runner.tool_paths());
         let mut quarto_bindings = BindingStore::new(state_home);
         if let Some(base) = hosted {
             quarto_bindings = quarto_bindings.with_hosted_workspaces(base);
@@ -542,6 +575,8 @@ impl LocalService {
             assistant_sessions: crate::assistant::registry::SessionRegistry::new(
                 state_home.to_path_buf(),
             ),
+            approvals: ApprovalBroker::default(),
+            control: tokio::sync::Mutex::new(None),
         });
         tokio::spawn(run_worker(inner.clone()));
         tokio::spawn(run_reaper(inner.clone()));
@@ -561,6 +596,44 @@ impl LocalService {
         Router::new()
             .fallback(handle)
             .with_state(self.inner.clone())
+    }
+
+    /// Create a fresh per-instance browser credential and return a URL whose
+    /// fragment is readable only by the dashboard page. The token is stored
+    /// in a mode-0600 private file for the companion's local launcher and is
+    /// never returned by any HTTP response.
+    pub async fn enable_control_panel(&self) -> Result<String, String> {
+        let auth = control::ControlAuth::create(&self.inner.state_home, &self.inner.instance)?;
+        let url = auth.url(self.inner.port);
+        *self.inner.control.lock().await = Some(auth);
+        #[cfg(not(test))]
+        {
+            let state_home = self.inner.state_home.clone();
+            let port = self.inner.port;
+            let instance = self.inner.instance.clone();
+            self.inner.approvals.set_opener(Some(Arc::new(move || {
+                if let Err(error) = super::lifecycle::open_control_panel(&state_home, port, &instance) {
+                    eprintln!("could not open companion control panel: {error}");
+                }
+            })));
+        }
+        #[cfg(test)]
+        self.inner.approvals.set_opener(Some(Arc::new(|| {})));
+        Ok(url)
+    }
+
+    /// Explicit local launch entry used by desktop integration and tests.
+    pub async fn open_control_panel(&self) -> Result<(), String> {
+        if self.inner.control.lock().await.is_none() {
+            self.enable_control_panel().await?;
+        }
+        super::lifecycle::open_control_panel(&self.inner.state_home, self.inner.port, &self.inner.instance)
+    }
+
+    /// Resolve any in-flight consent handlers as denied before graceful
+    /// service shutdown, so they cannot hold the listener open until timeout.
+    pub async fn deny_pending_approvals(&self) {
+        self.inner.approvals.deny_all();
     }
 }
 
@@ -943,7 +1016,19 @@ async fn handle(
         // Answered before anything else is even parsed: a request that lies
         // about its own Host is exactly what DNS rebinding looks like, and
         // gets nothing back that would help it try again more precisely.
-        return plain(403, "bad host");
+        let response = plain(403, "bad host");
+        return if path == "/companion" || path.starts_with("/companion/") {
+            control::apply_headers(response, &path)
+        } else {
+            response
+        };
+    }
+
+    if path == "/companion"
+        || path.starts_with("/companion/")
+    {
+        let response = control::handle(&inner, &method, &path, &headers, peer, request).await;
+        return control::apply_headers(response, &path);
     }
 
     let route = path
@@ -1064,7 +1149,7 @@ async fn dispatch(
         ["integrations", name] if *method == Method::PUT => {
             handle_integration_set(inner, headers, origin, name, request).await
         }
-        ["approve"] if *method == Method::POST => handle_approve(peer, request).await,
+        ["approve"] if *method == Method::POST => handle_approve(inner, peer, request).await,
         ["zotero", "search"] if *method == Method::GET => {
             handle_zotero_search(inner, headers, origin, request).await
         }
@@ -1359,9 +1444,15 @@ async fn handle_startup(
             "Disable"
         }
         .to_string(),
+        scope: None,
     };
 
-    match decision_to_result(super::approval::ask(&approval).await) {
+    match decision_to_result(
+        inner
+            .approvals
+            .ask(&approval, Duration::from_secs(300))
+            .await,
+    ) {
         Ok(()) => match super::lifecycle::set_startup(body.enabled) {
             Ok(()) => write_json(200, &json!({})),
             Err(error) => write_json(500, &json!({"error": error})),
@@ -1386,9 +1477,15 @@ async fn handle_quit(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -
         title: "Quit companion".to_string(),
         message: "Stop the companion app?".to_string(),
         allow_label: "Quit".to_string(),
+        scope: None,
     };
 
-    match decision_to_result(super::approval::ask(&approval).await) {
+    match decision_to_result(
+        inner
+            .approvals
+            .ask(&approval, Duration::from_secs(300))
+            .await,
+    ) {
         Ok(()) => match super::lifecycle::request_stop(&inner.state_home) {
             Ok(()) => write_json(200, &json!({})),
             Err(error) => write_json(500, &json!({"error": error})),
@@ -1466,9 +1563,15 @@ async fn handle_integration_set(
         title: format!("Change {tool} command"),
         message,
         allow_label: "Use it".to_string(),
+        scope: origin.map(str::to_string),
     };
 
-    match decision_to_result(super::approval::ask(&approval).await) {
+    match decision_to_result(
+        inner
+            .approvals
+            .ask(&approval, Duration::from_secs(300))
+            .await,
+    ) {
         Ok(()) => match super::integrations::set(which, custom.clone()) {
             Ok(()) => write_json(200, &json!(custom)),
             Err(error) => write_json(500, &json!({"error": error})),
@@ -1477,7 +1580,7 @@ async fn handle_integration_set(
     }
 }
 
-async fn handle_approve(peer: SocketAddr, request: Request<Body>) -> Reply {
+async fn handle_approve(inner: &Inner, peer: SocketAddr, request: Request<Body>) -> Reply {
     if !peer.ip().is_loopback() {
         return write_json(403, &json!({"error": "loopback only"}));
     }
@@ -1497,7 +1600,7 @@ async fn handle_approve(peer: SocketAddr, request: Request<Body>) -> Reply {
         Err(response) => return response,
     };
 
-    if super::approval::approve_code(&body.code) {
+    if inner.approvals.approve_code(&body.code) {
         write_json(200, &json!({}))
     } else {
         write_json(404, &json!({"error": "code not found"}))
@@ -2340,6 +2443,8 @@ mod settings_tests {
             assistant_sessions: crate::assistant::registry::SessionRegistry::new(
                 state_home.path().to_path_buf(),
             ),
+            approvals: ApprovalBroker::default(),
+            control: tokio::sync::Mutex::new(None),
         });
         (inner, state_home, cache_home)
     }
@@ -2371,7 +2476,7 @@ mod settings_tests {
             .expect("request");
 
         let peer = "127.0.0.1:12345".parse().expect("addr");
-        let response = handle_approve(peer, request).await;
+        let response = handle_approve(&inner, peer, request).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
         super::super::approval::unscript();

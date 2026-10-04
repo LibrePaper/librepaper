@@ -241,6 +241,37 @@ impl BindingStore {
             .collect()
     }
 
+    /// All ordinary grants for the local control panel. Hosted workspaces are
+    /// derived from documents and are not persistent grants.
+    pub(crate) fn list_all(&self) -> Vec<ProjectBinding> {
+        let mut bindings = self.load().bindings;
+        bindings.sort_by(|left, right| {
+            left.origin
+                .cmp(&right.origin)
+                .then_with(|| left.project.cmp(&right.project))
+        });
+        bindings
+    }
+
+    pub(crate) fn revoke_any(&self, id: &str) -> bool {
+        let mut file = self.load();
+        let old = file.bindings.len();
+        file.bindings.retain(|binding| binding.id != id);
+        old != file.bindings.len() && self.save(&file).is_ok()
+    }
+
+    pub(crate) fn revoke_origin(&self, origin: &str) -> usize {
+        let origin = super::pairing::normalize_origin(origin);
+        let mut file = self.load();
+        let old = file.bindings.len();
+        file.bindings.retain(|binding| binding.origin != origin);
+        let removed = old - file.bindings.len();
+        if removed > 0 && self.save(&file).is_err() {
+            return 0;
+        }
+        removed
+    }
+
     /// Revalidate the grant and root at each boundary that can follow a queue
     /// delay. Hosted previews may choose their entrypoint; snapshot builds
     /// retain the binding's fixed entrypoint rule. File inventory and symlink

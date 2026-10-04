@@ -14,8 +14,6 @@ pub mod builders;
 pub mod cli;
 pub mod connections;
 pub mod credentials;
-#[cfg(target_os = "linux")]
-pub(crate) mod dialog;
 pub mod discovery;
 pub mod embedded;
 pub mod engine_adapter;
