@@ -129,20 +129,32 @@ PORT       ?= 8081
 # button on it points at.
 SITE_PORT  ?= 8082
 DATA       ?= librepaper-data
+CONFIG_ORIGIN := $(origin CONFIG)
 CONFIG     ?= tools/dev.toml
+DEV_CONFIGS := $(abspath tools/dev.toml tools/dev-oauth.toml)
+CONFIG_IS_DEV := $(if $(filter $(DEV_CONFIGS),$(abspath $(CONFIG))),yes)
+CONFIG_WAS_SUPPLIED := $(if $(filter undefined,$(CONFIG_ORIGIN)),,yes)
 OPEN ?= 1
 
-# Without LIBREPAPER_DATABASE_URL, the server uses the Docker PostgreSQL that
-# tools/db dev keeps, started here if it is not running.
+# Only the shipped development configs use this Makefile's Docker database and
+# loopback settings. A custom config owns its settings and inherits the caller's
+# environment unchanged.
 serve: $(BIN)  ## Run the server and open it in Firefox (CONFIG=tools/dev.toml)
-	@test -n "$(LIBREPAPER_DATABASE_URL)" || tools/db dev >/dev/null
-	@test "$(OPEN)" = 1 && command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
-	@LIBREPAPER_DATABASE_URL="$${LIBREPAPER_DATABASE_URL:-$$(tools/db url)}" \
-		LIBREPAPER_PORT="$(PORT)" LIBREPAPER_DATA="$(abspath $(DATA))" \
-		LIBREPAPER_APP_ORIGIN="http://localhost:$(PORT)" \
-		LIBREPAPER_SITE_ORIGIN="$${LIBREPAPER_SITE_ORIGIN:-http://localhost:$(PORT)}" \
-		LIBREPAPER_SIMULATE_ACTIVITY="$(if $(SIMULATE_ACTIVITY),$(SIMULATE_ACTIVITY),0)" \
-		$(BIN) admin serve --config "$(CONFIG)"
+	@if [ "$(CONFIG_IS_DEV)" = yes ] && [ "$(OPEN)" = 1 ] && command -v firefox >/dev/null; then \
+		sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 & \
+	fi
+	@if [ "$(CONFIG_IS_DEV)" = yes ]; then \
+		if [ -n "$$LIBREPAPER_DATABASE_URL" ]; then db_url="$$LIBREPAPER_DATABASE_URL"; \
+		else tools/db dev >/dev/null || exit 1; db_url=$$(tools/db url) || exit 1; fi; \
+		LIBREPAPER_DATABASE_URL="$$db_url" \
+			LIBREPAPER_PORT="$(PORT)" LIBREPAPER_DATA="$(abspath $(DATA))" \
+			LIBREPAPER_APP_ORIGIN="http://localhost:$(PORT)" \
+			LIBREPAPER_SITE_ORIGIN="$${LIBREPAPER_SITE_ORIGIN:-http://localhost:$(PORT)}" \
+			LIBREPAPER_SIMULATE_ACTIVITY="$(if $(SIMULATE_ACTIVITY),$(SIMULATE_ACTIVITY),0)" \
+			$(BIN) admin serve --config "$(CONFIG)"; \
+	else \
+		$(BIN) admin serve --config "$(CONFIG)"; \
+	fi
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
@@ -204,7 +216,10 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # sign-in, and reading and commenting still work.
 DEMO_KEYS ?= tools/deploy-keys.yaml
 demo:  ## Serve the site, the app, a local companion and simulated activity (SIMULATE_ACTIVITY=21)
-	@if [ -z "$$LIBREPAPER_GITHUB_CLIENT_ID" ] && command -v sops >/dev/null 2>&1 \
+	@if [ "$(CONFIG_WAS_SUPPLIED)" = yes ]; then \
+		echo "demo: using CONFIG=$(CONFIG)"; \
+		exec $(MAKE) --no-print-directory demo-run CONFIG="$(CONFIG)"; \
+	elif [ -z "$$LIBREPAPER_GITHUB_CLIENT_ID" ] && command -v sops >/dev/null 2>&1 \
 		&& sops --decrypt --extract '["LIBREPAPER_GITHUB_CLIENT_ID"]' $(DEMO_KEYS) >/dev/null 2>&1; then \
 		echo "demo: GitHub sign-in from $(DEMO_KEYS)"; \
 		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run CONFIG=tools/dev-oauth.toml'; \
