@@ -152,6 +152,7 @@ pub(super) async fn handle_pair_request(
 
         match inner_clone.approvals.ask(&approval, approval_ttl).await {
             super::super::approval::Decision::Allowed => {
+                let _admission = inner_clone.pairing.admission_gate().lock().await;
                 let mut pending = inner_clone.pending_pairs.lock().await;
                 if let Some(item) = pending.get_mut(&request_id_clone) {
                     if item.expires > Instant::now() && !item.refused {
@@ -216,6 +217,7 @@ pub(super) async fn handle_pair_claim(inner: &Inner, request: Request<Body>) -> 
     }) {
         return write_json(403, &json!({"error": "origin does not match the request"}));
     }
+    let _admission = inner.pairing.admission_gate().lock().await;
     let mut pending = inner.pending_pairs.lock().await;
     let Some(item) = pending.get_mut(&body.request) else {
         return write_json(404, &json!({"error": "pair request expired or unknown"}));
@@ -239,6 +241,10 @@ pub(super) async fn handle_pair_claim(inner: &Inner, request: Request<Body>) -> 
     let Some((token, expires)) = item.token.take() else {
         return write_json(202, &json!({"pending": true}));
     };
+    if !inner.pairing.authenticate(&body.origin, &token) {
+        pending.remove(&body.request);
+        return write_json(403, &json!({"error": "pairing was revoked or expired"}));
+    }
     pending.remove(&body.request);
     write_json(
         200,
@@ -279,17 +285,32 @@ pub(super) async fn handle_disconnect(
         return response;
     }
     let origin = super::super::pairing::normalize_origin(origin.unwrap_or_default());
-    inner.pairing.revoke(&origin);
-    let connections =
-        super::super::connections::ConnectionStore::new(&inner.state_home).remove_origin(&origin);
-    inner.previews.lock().await.stop_origin(&origin).await;
-    write_json(
-        200,
-        &json!({"ok": true, "connections_removed": connections}),
-    )
+    match revoke_origin(inner, &origin, Some(headers)).await {
+        Ok(connections) => write_json(
+            200,
+            &json!({"ok": true, "connections_removed": connections}),
+        ),
+        Err(error) => write_json(
+            500,
+            &json!({"error":format!("could not revoke this site: {error}")}),
+        ),
+    }
 }
 
-pub(super) async fn revoke_origin(inner: &Inner, origin: &str) -> usize {
+pub(super) async fn revoke_origin(
+    inner: &Inner,
+    origin: &str,
+    expected_headers: Option<&HeaderMap>,
+) -> Result<usize, String> {
+    let admission = inner.pairing.admission_gate().lock().await;
+    if let Some(headers) = expected_headers {
+        authenticate(inner, headers, Some(origin))
+            .map_err(|_| "the local pairing is no longer valid".to_string())?;
+    }
+    inner
+        .pairing
+        .revoke_checked(origin)
+        .map_err(|error| format!("could not persist pairing revocation: {error}"))?;
     inner.approvals.deny_scope(origin);
     {
         let mut pending = inner.pending_pairs.lock().await;
@@ -301,14 +322,6 @@ pub(super) async fn revoke_origin(inner: &Inner, origin: &str) -> usize {
             }
         }
     }
-    inner.pairing.revoke(origin);
-    // Disconnecting the site also drops the document links it handed this
-    // computer. Otherwise revoking a pairing would leave agents configured
-    // against credentials the user believes they have taken back.
-    let connections =
-        super::super::connections::ConnectionStore::new(&inner.state_home).remove_origin(origin);
-    inner.previews.lock().await.stop_origin(origin).await;
-    inner.quarto_bindings.revoke_origin(origin);
     let mut queued = Vec::new();
     {
         let mut jobs = inner.jobs.lock().await;
@@ -330,8 +343,17 @@ pub(super) async fn revoke_origin(inner: &Inner, origin: &str) -> usize {
     if !queued.is_empty() {
         inner.queue.lock().await.retain(|id| !queued.contains(id));
     }
+    drop(admission);
+
+    // Disconnecting the site also drops the document links it handed this
+    // computer. Otherwise revoking a pairing would leave agents configured
+    // against credentials the user believes they have taken back.
+    let connections =
+        super::super::connections::ConnectionStore::new(&inner.state_home).remove_origin(origin);
+    inner.previews.lock().await.stop_origin(origin).await;
+    let bindings_result = inner.quarto_bindings.revoke_origin(origin);
     inner.assistant_sessions.stop_dashboard_origin(origin).await;
-    connections
+    bindings_result.map(|_| connections)
 }
 
 /* -------------------------------------------------------- capabilities */
