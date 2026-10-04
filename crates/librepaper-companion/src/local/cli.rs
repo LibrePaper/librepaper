@@ -156,28 +156,6 @@ pub async fn run(args: LocalArgs) {
     }
 }
 
-#[cfg(test)]
-mod cache_path_tests {
-    use super::*;
-
-    #[test]
-    fn cache_home_uses_local_app_data_when_windows_has_no_home() {
-        let result =
-            cache_home_from(None, None, Some(r"C:\Users\Ada\AppData\Local".into())).unwrap();
-        assert_eq!(
-            result,
-            PathBuf::from(r"C:\Users\Ada\AppData\Local")
-                .join("LibrePaper")
-                .join("Cache")
-        );
-        assert_eq!(
-            cache_home_from(None, Some("/home/ada".into()), Some("C:\\local".into())).unwrap(),
-            PathBuf::from("/home/ada/.cache"),
-            "HOME retains precedence over the Windows fallback"
-        );
-    }
-}
-
 /// The cache-home base directory a job workspace lives under:
 /// `<cache_home>/librepaper/local/jobs/<id>/`, never under a project directory
 /// and never under the state home the tokens live in. Read here, not in
@@ -609,5 +587,27 @@ fn local_agent(command: LocalAgentCommand) {
                 die(format!("no agent named '{id}'"));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_path_tests {
+    use super::*;
+
+    #[test]
+    fn cache_home_uses_local_app_data_when_windows_has_no_home() {
+        let result =
+            cache_home_from(None, None, Some(r"C:\Users\Ada\AppData\Local".into())).unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from(r"C:\Users\Ada\AppData\Local")
+                .join("LibrePaper")
+                .join("Cache")
+        );
+        assert_eq!(
+            cache_home_from(None, Some("/home/ada".into()), Some("C:\\local".into())).unwrap(),
+            PathBuf::from("/home/ada/.cache"),
+            "HOME retains precedence over the Windows fallback"
+        );
     }
 }
