@@ -216,6 +216,17 @@ impl ApprovalBroker {
         id.is_some_and(|id| self.decide(&id, Decision::Allowed) == DecisionResult::Applied)
     }
 
+    #[cfg(test)]
+    pub(crate) fn codes_for_test(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pending
+            .values()
+            .map(|pending| pending.code.clone())
+            .collect()
+    }
+
     pub(crate) fn deny_all(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         for (_, pending) in state.pending.drain() {

@@ -505,6 +505,12 @@ async fn approve(code: &str) {
 
     match pairing.read_service() {
         Some(state) => {
+            let Some(control_token) = crate::local::service::control_token_for_instance(
+                &home,
+                &state.instance,
+            ) else {
+                die("Local control credential is unavailable");
+            };
             let url = format!(
                 "http://127.0.0.1:{}{}/approve",
                 state.port,
@@ -519,6 +525,7 @@ async fn approve(code: &str) {
                     client
                         .post(&url)
                         .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {control_token}"))
                         .body(json!({"code": code}).to_string())
                         .send()
                         .await
