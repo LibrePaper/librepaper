@@ -961,11 +961,8 @@ fn scanner_ignores_src_text_inside_script() {
 
 #[test]
 fn srcset_candidates_follow_html_syntax() {
-    let references = closure_of(
-        "<img srcset=\"a.png 1x, b.png 2x\">",
-        &["a.png", "b.png"],
-    )
-    .expect("both candidates");
+    let references = closure_of("<img srcset=\"a.png 1x, b.png 2x\">", &["a.png", "b.png"])
+        .expect("both candidates");
     assert!(references.contains("a.png") && references.contains("b.png"));
 
     let references = closure_of(
@@ -988,7 +985,7 @@ fn css_resolves_beside_a_directory_with_url_special_characters() {
         let output = dir.path().join("output");
         std::fs::create_dir_all(output.join(directory)).expect("directory");
         std::fs::write(output.join(directory).join("bg.png"), b"b").expect("image");
-        let sheet = format!("body{{background:url(bg.png)}}");
+        let sheet = "body{background:url(bg.png)}".to_string();
         std::fs::write(output.join(directory).join("style.css"), sheet).expect("css");
         let href = format!(
             "<link rel=\"stylesheet\" href=\"{}/style.css\">",
@@ -997,6 +994,9 @@ fn css_resolves_beside_a_directory_with_url_special_characters() {
         let references =
             referenced_resource_closure(&output, None, None, "paper.html", href.as_bytes())
                 .expect("sheet and image resolve");
-        assert!(references.contains(&format!("{directory}/bg.png")), "{directory}");
+        assert!(
+            references.contains(&format!("{directory}/bg.png")),
+            "{directory}"
+        );
     }
 }
