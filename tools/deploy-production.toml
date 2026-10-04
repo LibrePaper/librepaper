@@ -1,131 +1,92 @@
-# Configuration for the official LibrePaper deployment.
-# Installed by tools/deploy-production as librepaper/config.toml and mounted
-# read-only at /etc/librepaper/config.toml in the application container.
+# Configuration for the official LibrePaper deployment. tools/deploy-production
+# installs it as librepaper/config.toml, mounted read-only at
+# /etc/librepaper/config.toml in the application container.
 #
-# Settings come from this TOML file; secrets use only explicit
-# { env = "NAME" } references. There are no ambient setting overrides.
+# Every setting comes from this file. Secrets are read only through explicit
+# { env = "NAME" } references.
 
+# The container listens on a private port behind the reverse proxy, which
+# serves the public HTTPS origins. origin is the app and its API (other Host
+# headers get 421); docs_origin isolates rendered documents; site_origin is
+# the project site used for sign-out links.
 [server]
-# Both public origins terminate at the reverse proxy; the application listens
-# on the private Docker edge and internal networks.
-# Address on which the container accepts HTTP traffic behind the proxy.
 bind = "0.0.0.0"
-# Internal HTTP port; the reverse proxy publishes the public HTTPS endpoints.
 port = 8080
-# Browser origin for the application and its authenticated API. Requests with
-# an unrecognized Host are rejected with 421.
 origin = "https://app.librepaper.org"
-# Separate untrusted document origin, isolating rendered document content.
 docs_origin = "https://docs.librepaper.org"
-# Public project site used for sign-out and site-level links.
 site_origin = "https://librepaper.org"
-# Keep the host-local companion disabled in this server container.
 local_companion = false
 
+# Objects and server secrets live on the named Docker volume. fsync covers
+# object writes only; PostgreSQL handles its own durability. To use S3, set
+# object_store = "s3" and uncomment [storage.s3].
 [storage]
-# The named Docker volume persists objects and session/share-link secrets.
-# Persistent directory for local objects and server state.
 directory = "/var/lib/librepaper"
-# Complete PostgreSQL URL, supplied explicitly by Compose from its service credential.
 database_url = { env = "LIBREPAPER_DATABASE_URL" }
-# Maximum number of simultaneous PostgreSQL connections used by this process.
 database_connections = 20
-# Sync filesystem object writes before acknowledging them; PostgreSQL
-# durability is controlled separately by PostgreSQL.
 fsync = true
-# Store document objects on the persistent filesystem volume.
 object_store = "filesystem"
-# To move object bytes to S3, change object_store and add [storage.s3]. Keep
-# filesystem storage for the single-host production deployment.
 # [storage.s3]
-# S3-compatible endpoint, if using object_store = "s3" instead of the filesystem.
 # endpoint = "https://s3.example"
-# S3 signing region.
 # region = "us-east-1"
-# Bucket that holds document objects.
 # bucket = "librepaper-production"
-# Public identifier for the S3 access key; reference it explicitly from the environment.
 # access_key_id = { env = "LIBREPAPER_S3_ACCESS_KEY_ID" }
-# Private S3 access key; reference it explicitly from the environment.
 # secret_access_key = { env = "LIBREPAPER_S3_SECRET_ACCESS_KEY" }
 
+# Sign-in needs at least one provider, each with both values; omit a table to
+# disable it. Callbacks: /auth/callback (GitHub), /auth/callback/google.
 [auth.github]
-# Configure at least one provider for sign-in. For each configured provider,
-# set both client_id and client_secret; omit the whole table when unused.
-# GitHub redirects return to https://app.librepaper.org/auth/callback.
-# OAuth public application identifier registered with GitHub.
 client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }
-# Private OAuth secret registered with GitHub; keep it in the secret store.
 client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }
 
 [auth.google]
-# Google redirects return to https://app.librepaper.org/auth/callback/google.
-# Google sign-in uses verified Gmail or Google Workspace accounts.
-# OAuth public application identifier registered with Google.
 client_id = { env = "LIBREPAPER_GOOGLE_CLIENT_ID" }
-# Private OAuth secret registered with Google; keep it in the secret store.
 client_secret = { env = "LIBREPAPER_GOOGLE_CLIENT_SECRET" }
 
+# publishers: "any" signed-in account, a GitHub login, a verified Google
+# email, or @example.org (that exact domain, not subdomains). commenters:
+# "anyone" also allows anonymous comments. Reading by link never needs
+# sign-in.
 [access]
-# This policy must name at least one publisher. Publishing requires sign-in;
-# "any" permits every configured account. Alternatives include a GitHub login,
-# a verified Google email, or @example.org for that exact domain; subdomains
-# such as team.example.org are not included.
 publishers = ["any"]
-# Accounts allowed to submit comments. "anyone" also allows anonymous comments;
-# it does not grant publishing access. Public document reads remain available
-# by link without sign-in. Creating and publishing documents requires sign-in.
 commenters = ["anyone"]
 
+# Storage is per publisher, in MiB; uploads counts project creation, forks and
+# figure uploads per rolling hour. deployment_storage_mb caps the whole server.
 [limits]
-# Maximum retained object storage per publisher, in MiB.
 publisher_storage_mb = 50
-# Per-publisher rolling-hour cap for project creation, forks, and figure uploads.
 publisher_uploads_per_hour = 30
-# Optional total retained-object quota across the deployment, in MiB. Omitted
-# uses the application default; 10240 is an example 10 GiB cap.
 # deployment_storage_mb = 10240
 
+# Browsers fetch pinned renderer and LaTeX assets from this mirror, which sees
+# their IP. It must allow CORS GET and HEAD from the application origins.
 [assets]
-# HTTPS mirror used by browsers to fetch pinned renderer and LaTeX assets.
-# Mirror requests reveal the reader's IP and requested asset; permit browser
-# CORS requests using GET and HEAD from the application origins.
 mirror = "https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/"
 
+# Prometheus, on the private Compose network only.
 [metrics]
-# Prometheus metrics listener; this address is reachable only on the private
-# Compose network and is not exposed through the public reverse proxy.
 address = "0.0.0.0:9091"
 
+# Keep in sync with the `edge` network in compose.yaml.
 [proxy]
-# Only peers in this proxy CIDR may provide forwarded client addresses. Keep
-# the range in sync with the `edge` network in compose.yaml.
 trusted_proxies = ["172.29.0.0/16"]
 
-# Optional: set retention for open publishing. Omitted in the current policy,
-# so documents remain until an authorized deletion request.
+# Optional. Without [retention], documents stay until deleted. expire_from is
+# "created" or "updated".
 # [retention]
-# Delete documents after this age; omitted means no automatic expiry.
 # expire_after = "30d"
-# Start the expiry clock at creation or last update.
-# expire_from = "created" # or "updated"
+# expire_from = "created"
 
-# Optional: quiet down application logs if the default filter is too verbose.
+# Optional tracing filter for application logs.
 # [logging]
-# tracing filter applied to application logs.
 # filter = "info"
 
-# Optional operator backup planning metadata, if this instance adopts a
-# backup policy in the application. This records intent only; it does not
-# schedule, execute, encrypt, or prune backup copies.
+# Optional backup intent, recorded as metadata only: nothing is scheduled,
+# encrypted or pruned. frequency is in seconds; warning_count is the number
+# of completed backups before the deployment warns.
 # [backup]
-# Operator-declared destination category; metadata only.
 # destination_class = "local"
-# Intended interval between backups, in seconds; metadata only.
 # frequency = 86400
-# Intended number of retained copies; metadata only.
 # retained_count = 7
-# Whether the operator intends backups to be encrypted; metadata only.
 # encrypted = true
-# Completed backups before the deployment should warn; metadata only.
 # warning_count = 2
