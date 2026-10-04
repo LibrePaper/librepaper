@@ -32,7 +32,7 @@ loro.workspace = true
 zstd.workspace = true
 tar.workspace = true
 sqlx.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 log.workspace = true
 tempfile.workspace = true
 object_store.workspace = true
