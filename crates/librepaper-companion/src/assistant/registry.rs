@@ -62,6 +62,21 @@ pub(crate) struct SessionRegistry {
 /// the walk, not to prefer any particular session.
 const MAX_RECOVERED_SESSIONS: usize = 500;
 
+fn ensure_origin_owner(owner: Option<&str>, requester: &str) -> Result<(), String> {
+    let Some(owner) = owner else {
+        return Err(
+            "the running assistant session has no paired-site owner; stop and restart it".into(),
+        );
+    };
+    if crate::local::pairing::normalize_origin(owner)
+        == crate::local::pairing::normalize_origin(requester)
+    {
+        Ok(())
+    } else {
+        Err("the assistant session is already owned by another paired site".into())
+    }
+}
+
 impl SessionRegistry {
     pub(crate) fn new(state_home: PathBuf) -> Self {
         Self {
@@ -126,6 +141,7 @@ impl SessionRegistry {
         &self,
         link: &DocumentLink,
         origin: &str,
+        pairing_token: &str,
         conversation: &str,
         chat_token: &str,
         agent_token: &str,
@@ -134,22 +150,41 @@ impl SessionRegistry {
     ) -> Result<(), String> {
         let key = lifecycle::session_key(link, conversation)?;
         let gate = self.start_gate.lock().await;
+        let requester = crate::local::pairing::normalize_origin(origin);
+        if !crate::local::pairing::PairingStore::new(&self.state_home, None)
+            .authenticate(origin, pairing_token)
+        {
+            return Err("the local pairing is no longer valid; reconnect this site".into());
+        }
         self.reap(&key).await;
         let wanted = lifecycle::configuration_hash(link, agent);
-        let current_hash = {
+        let current = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             match sessions.get(&key) {
-                Some(Entry::Running { config_hash, .. }) => Some(config_hash.clone()),
+                Some(Entry::Running {
+                    config_hash,
+                    origin,
+                    ..
+                }) => Some((config_hash.clone(), origin.clone())),
                 _ => None,
             }
         };
+        if let Some((_, owner)) = &current {
+            ensure_origin_owner(owner.as_deref(), &requester)?;
+        }
+        let current_hash = current.as_ref().map(|(config_hash, _)| config_hash);
         if current_hash.as_deref() != Some(wanted.as_str()) {
             if current_hash.is_some() {
                 self.stop(link, conversation)
                     .await
-                    .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())?;
             }
             let peer = AutomationPeer::open_scoped(link.clone(), agent_token.to_string()).await?;
+            if !crate::local::pairing::PairingStore::new(&self.state_home, None)
+                .authenticate(origin, pairing_token)
+            {
+                return Err("the local pairing is no longer valid; reconnect this site".into());
+            }
             let grant = Some(peer.token_source());
             let config = runtime::config(
                 conversation.to_string(),
@@ -161,13 +196,18 @@ impl SessionRegistry {
             self.spawn_running(
                 &key,
                 &wanted,
-                Some(crate::local::pairing::normalize_origin(origin)),
+                Some(requester),
                 grant,
                 move |status, stop| async move { runtime::run(&peer, config, status, stop).await },
             );
         } else {
             self.renew_agent_token(link, conversation, agent_token)
                 .await?;
+            if !crate::local::pairing::PairingStore::new(&self.state_home, None)
+                .authenticate(origin, pairing_token)
+            {
+                return Err("the local pairing is no longer valid; reconnect this site".into());
+            }
         }
         drop(gate);
         self.wait_until_settled(&key).await
@@ -321,6 +361,7 @@ impl SessionRegistry {
     }
 
     pub(crate) async fn stop_dashboard_origin(&self, origin: &str) {
+        let _gate = self.start_gate.lock().await;
         let keys: Vec<_> = {
             let sessions = self
                 .sessions
@@ -444,6 +485,20 @@ mod tests {
     use crate::assistant::protocol::TaskStatus;
     use crate::assistant::task::{State, Task};
     use serde_json::json;
+
+    #[test]
+    fn running_session_cannot_be_reused_by_a_different_paired_origin() {
+        assert!(ensure_origin_owner(
+            Some("HTTPS://Papers.Example/"),
+            "https://papers.example"
+        )
+        .is_ok());
+        assert_eq!(
+            ensure_origin_owner(Some("https://papers.example"), "https://other.example")
+                .unwrap_err(),
+            "the assistant session is already owned by another paired site"
+        );
+    }
 
     /// Two sessions started side by side are independent tasks: hard-stopping
     /// one must not disturb the other, which is the whole point of one
