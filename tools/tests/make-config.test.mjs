@@ -70,6 +70,7 @@ async function serveFixture({ failDev = false } = {}) {
     DOCKER_LOG: dockerLog,
     BINARY_LOG: binaryLog,
   };
+  delete environment.CONFIG;
   delete environment.LIBREPAPER_DATABASE_URL;
   delete environment.LIBREPAPER_PORT;
   delete environment.LIBREPAPER_DATA;

@@ -772,8 +772,8 @@ fn validate_public_url(
             Err(format!("{field} must be an absolute HTTPS URL"))
         };
     }
-    let parsed = url::Url::parse(value)
-        .map_err(|_| format!("{field} must be an absolute HTTP(S) URL"))?;
+    let parsed =
+        url::Url::parse(value).map_err(|_| format!("{field} must be an absolute HTTP(S) URL"))?;
     if !matches!(parsed.scheme(), "http" | "https")
         || (https_only && parsed.scheme() != "https")
         || parsed.host_str().is_none()

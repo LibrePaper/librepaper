@@ -87,7 +87,7 @@ publisher_uploads_per_hour = 30
 # deployment_storage_mb = 10240
 
 [assets]
-# HTTPS mirror used by browsers to fetch renderer and LaTeX assets directly.
+# HTTPS mirror used by browsers to fetch pinned renderer and LaTeX assets.
 # Mirror requests reveal the reader's IP and requested asset; permit browser
 # CORS requests using GET and HEAD from the application origins.
 mirror = "https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/"

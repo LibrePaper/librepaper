@@ -116,8 +116,7 @@ pub fn validate_storage_options(options: &StorageOptions) -> Result<(), String> 
             || parsed.password().is_some()
             || parsed.query().is_some()
             || parsed.fragment().is_some()
-            || !(parsed.scheme() == "https"
-                || (options.s3_allow_http && parsed.scheme() == "http"))
+            || !(parsed.scheme() == "https" || (options.s3_allow_http && parsed.scheme() == "http"))
         {
             return Err("storage.s3.endpoint must be an HTTPS URL, or HTTP when storage.s3.allow_http is true, without credentials, a query, or a fragment".into());
         }
