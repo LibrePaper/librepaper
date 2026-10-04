@@ -572,12 +572,12 @@ pub(crate) fn load(path: &Path) -> Result<ResolvedConfig, String> {
     let pend = r.value(
         "limits.pending_mb",
         l.pending_mb,
-        (DEFAULT_PENDING_BYTES / 1024 / 1024) as u64,
+        DEFAULT_PENDING_BYTES / 1024 / 1024,
     )?;
     let scratch = r.value(
         "limits.pending_scratch_mb",
         l.pending_scratch_mb,
-        (config.pending_scratch_bytes / 1024 / 1024) as u64,
+        config.pending_scratch_bytes.div_ceil(1024 * 1024),
     )?;
     config.set_pending(Some(pend), Some(scratch))?;
     config.set_memory_budget(Some(r.value(
@@ -875,7 +875,10 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         &c.sources,
         "limits.pending_scratch_mb",
         "pending_scratch_mb",
-        &(c.config.pending_scratch_bytes >> 20).to_string(),
+        &c.config
+            .pending_scratch_bytes
+            .div_ceil(1024 * 1024)
+            .to_string(),
     );
     value(
         &mut out,
@@ -1142,6 +1145,17 @@ mod tests {
         let loaded = load(&p).unwrap();
         assert_eq!(loaded.port, 8080);
         assert_eq!(loaded.storage.database_url, "postgresql:///librepaper");
+        let scratch_mb = Configuration::default()
+            .pending_scratch_bytes
+            .div_ceil(1024 * 1024);
+        assert_eq!(
+            loaded.config.pending_scratch_bytes,
+            scratch_mb * 1024 * 1024
+        );
+        assert!(
+            loaded.config.pending_scratch_bytes >= Configuration::default().pending_scratch_bytes
+        );
+        assert!(show_resolved(&loaded).contains(&format!("pending_scratch_mb = {scratch_mb}")));
     }
     #[test]
     fn resolves_explicit_env_and_array_refs() {
@@ -1219,13 +1233,15 @@ mod tests {
     }
     #[test]
     fn explicit_scratch_is_preserved_when_log_quota_changes() {
-        let old_default_mb = Configuration::default().pending_scratch_bytes >> 20;
+        let old_default_mb = Configuration::default()
+            .pending_scratch_bytes
+            .div_ceil(1024 * 1024);
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.toml");
-        let text=format!("[limits]\nlog_quota_mb = 36\npending_scratch_mb = {old_default_mb}\nmemory_budget_mb = 1024");
+        let text=format!("[limits]\nlog_quota_mb = 28\npending_scratch_mb = {old_default_mb}\nmemory_budget_mb = 512");
         std::fs::write(&p, text).unwrap();
         let loaded = load(&p).unwrap();
-        assert_eq!(loaded.config.log_quota_bytes, 36 * 1024 * 1024);
+        assert_eq!(loaded.config.log_quota_bytes, 28 * 1024 * 1024);
         assert_eq!(
             loaded.config.pending_scratch_bytes,
             old_default_mb * 1024 * 1024
