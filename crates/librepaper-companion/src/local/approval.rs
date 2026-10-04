@@ -60,6 +60,7 @@ struct Pending {
 #[derive(Default)]
 struct State {
     pending: HashMap<String, Pending>,
+    closed: bool,
 }
 
 pub(crate) type ApprovalOpener = Arc<dyn Fn() + Send + Sync>;
@@ -92,18 +93,23 @@ impl Drop for PendingGuard {
 impl ApprovalBroker {
     pub(crate) async fn ask(&self, approval: &Approval, ttl: Duration) -> Decision {
         #[cfg(test)]
-        if let Some(allowed) = SCRIPTED.with(|script| *script.borrow()) {
-            return if allowed {
-                Decision::Allowed
-            } else {
-                Decision::Denied
-            };
-        }
+        let scripted = SCRIPTED.with(|script| *script.borrow());
 
         let (answer, receiver) = oneshot::channel();
         let expires = Instant::now() + ttl.min(DEFAULT_TTL);
         let (id, code, should_open) = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            if state.closed {
+                return Decision::Denied;
+            }
+            #[cfg(test)]
+            if let Some(allowed) = scripted {
+                return if allowed {
+                    Decision::Allowed
+                } else {
+                    Decision::Denied
+                };
+            }
             reap_expired(&mut state);
             if state.pending.len() >= MAX_PENDING {
                 return Decision::Denied;
@@ -227,8 +233,12 @@ impl ApprovalBroker {
             .collect()
     }
 
+    /// Close this broker to new requests, then deny everything already
+    /// waiting. A request racing shutdown observes the same lock and cannot
+    /// sneak into the queue after the drain.
     pub(crate) fn deny_all(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.closed = true;
         for (_, pending) in state.pending.drain() {
             let _ = pending.answer.send(Decision::Denied);
         }
@@ -361,5 +371,34 @@ mod tests {
         task.abort();
         let _ = task.await;
         assert!(broker.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_denies_waiters_and_rejects_later_approval_requests() {
+        let broker = ApprovalBroker::default();
+        let request = Approval {
+            title: "Test".into(),
+            message: "Allow?".into(),
+            allow_label: "Allow".into(),
+            scope: None,
+        };
+        let task_broker = broker.clone();
+        let task_request = request.clone();
+        let waiting = tokio::spawn(async move {
+            task_broker.ask(&task_request, Duration::from_secs(300)).await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(broker.list().len(), 1);
+
+        broker.deny_all();
+        assert_eq!(waiting.await.unwrap(), Decision::Denied);
+        assert!(broker.list().is_empty());
+        let after_shutdown = tokio::time::timeout(
+            Duration::from_millis(50),
+            broker.ask(&request, Duration::from_secs(300)),
+        )
+        .await
+        .expect("an approval created after shutdown must not wait for its TTL");
+        assert_eq!(after_shutdown, Decision::Denied);
     }
 }
