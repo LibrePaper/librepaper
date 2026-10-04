@@ -417,9 +417,18 @@ fn read_raw(path: &Path) -> Result<(Raw, PathBuf), String> {
     };
     let text = std::fs::read_to_string(&path)
         .map_err(|_| format!("could not read server configuration {}", path.display()))?;
-    let v: toml::Value = toml::from_str(&text).map_err(|_| {
+    let v: toml::Value = toml::from_str(&text).map_err(|error| {
+        let location = error
+            .span()
+            .map(|span| {
+                let prefix = text.get(..span.start).unwrap_or(&text);
+                let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+                let column = prefix.rsplit('\n').next().unwrap_or(prefix).chars().count() + 1;
+                format!(" at line {line}, column {column}")
+            })
+            .unwrap_or_default();
         format!(
-            "could not parse TOML server configuration {}",
+            "could not parse TOML server configuration {}{location}",
             path.display()
         )
     })?;
@@ -1094,6 +1103,7 @@ mod tests {
         )
         .unwrap();
         let e = load(&p).unwrap_err();
+        assert!(e.contains("line 3, column"));
         assert!(!e.to_string().contains("SECRET-INPUT"));
     }
     #[test]
