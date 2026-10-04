@@ -33,7 +33,7 @@ use loro::cursor::{Cursor, Side};
 use loro::Frontiers;
 use serde_json::json;
 
-use super::text::slice16;
+use super::text::slice16_str;
 use super::{Comment, Room};
 use librepaper_document::document::session::{self, CursorResolutionError};
 use librepaper_engine::log::sequencer::SequencerError;
@@ -97,15 +97,14 @@ fn diagnostic_of(error: CursorResolutionError) -> ResolutionDiagnostic {
 /// doing so. Reading them once per pass rather than once per comment is the
 /// difference between a room with five hundred comments being usable and not.
 ///
-/// The files are held as UTF-16 units rather than as `String`s, because that
-/// is the only form anything here reads them in: offsets are counted the way
-/// a browser counts them. Converting once per file per pass rather than once
-/// per comment is the same economy as reading them once, and for the same
-/// reason -- otherwise a five-hundred-comment room converts a whole file five
-/// hundred times on every keystroke, to slice eight characters out of it.
+/// The files are held as text, and offsets are converted where they are used:
+/// they are counted the way a browser counts them (UTF-16 units), but nothing
+/// here needs a second, UTF-16 copy of every file on every pass. A comment
+/// reads a handful of characters at a known offset, which `str_indices` finds
+/// without re-encoding the file.
 pub(crate) struct Sources {
     /// Keyed by the stable Loro id, which is what a comment's anchor names.
-    units: std::collections::HashMap<String, Vec<u16>>,
+    texts: std::collections::HashMap<String, std::sync::Arc<str>>,
 }
 
 impl Sources {
@@ -123,7 +122,7 @@ impl Sources {
     /// Taking the projection the caller already has is also the cheap way
     /// round: every caller computed one beside this for the tree digest.
     pub(crate) fn of(projected: &librepaper_document::document::projection::Projected) -> Sources {
-        let mut units = std::collections::HashMap::new();
+        let mut texts = std::collections::HashMap::new();
         for (path, entry) in &projected.projection.files {
             // An asset has no id and no text: it is at a path, not in one.
             if entry.id.is_empty() {
@@ -132,9 +131,9 @@ impl Sources {
             let Some(text) = projected.texts.get(path) else {
                 continue;
             };
-            units.insert(entry.id.clone(), text.encode_utf16().collect());
+            texts.insert(entry.id.clone(), std::sync::Arc::from(text.as_str()));
         }
-        Sources { units }
+        Sources { texts }
     }
 
     /// The same, projecting the document with this deployment's rules. For
@@ -148,8 +147,8 @@ impl Sources {
         ))
     }
 
-    fn units_of(&self, file_id: &str) -> Option<&[u16]> {
-        self.units.get(file_id).map(Vec::as_slice)
+    fn text_of(&self, file_id: &str) -> Option<&str> {
+        self.texts.get(file_id).map(|text| &**text)
     }
 }
 
@@ -173,7 +172,7 @@ pub(crate) fn resolve(
         }
         CommentTarget::SourceText(target) => target,
     };
-    let Some(units) = sources.units_of(&target.file_id.0) else {
+    let Some(text) = sources.text_of(&target.file_id.0) else {
         // The file it names is gone, or is no longer a text. Either way this
         // cannot say where the passage went, which is not the same as saying
         // it was deleted.
@@ -186,20 +185,20 @@ pub(crate) fn resolve(
         );
     };
     if let Some(live) = live {
-        match through_cursors(doc, target, live, units) {
+        match through_cursors(doc, target, live, text) {
             Ok(attachment) => return attachment.with_digest(tree_digest),
             Err(diagnostic) => {
                 // The cursors are no help, but the words may still be. A
                 // diagnostic is kept either way: "the file was renamed out
                 // from under this" and "we had to go looking" are different
                 // things to show.
-                let mut found = anchored_by_words(doc, target, units, tree_digest);
+                let mut found = anchored_by_words(doc, target, text, tree_digest);
                 found.diagnostic = Some(diagnostic);
                 return found;
             }
         }
     }
-    anchored_by_words(doc, target, units, tree_digest)
+    anchored_by_words(doc, target, text, tree_digest)
 }
 
 /// The fallback, with cursors taken at whatever it found.
@@ -213,10 +212,10 @@ pub(crate) fn resolve(
 fn anchored_by_words(
     doc: &loro::LoroDoc,
     target: &SourceTextTarget,
-    units: &[u16],
+    text: &str,
     tree_digest: &str,
 ) -> DerivedAttachment {
-    let mut found = by_words(target, units, tree_digest);
+    let mut found = by_words(target, text, tree_digest);
     if let (true, Some((start, end))) = (found.status.is_placed(), found.resolved_range_utf16) {
         found.live_source_range = capture(
             doc,
@@ -236,7 +235,7 @@ fn through_cursors(
     doc: &loro::LoroDoc,
     target: &SourceTextTarget,
     live: &LiveSourceRange,
-    units: &[u16],
+    text: &str,
 ) -> Result<DerivedAttachment, ResolutionDiagnostic> {
     if live.cursor_format != CURSOR_FORMAT {
         return Err(ResolutionDiagnostic::MalformedCursor);
@@ -266,7 +265,7 @@ fn through_cursors(
             None,
         ));
     }
-    let current = slice16(units, from as usize, to as usize);
+    let current = slice16_str(text, from as usize, to as usize);
     let status = if current == target.exact {
         AnchorStatus::Exact
     } else {
@@ -310,33 +309,35 @@ fn replaced(
 /// This is evidence, not identity. It can say where a passage probably is now;
 /// it cannot say what the comment is about, and it never writes an answer back
 /// into the anchor. Two equally good candidates are reported as such.
-fn by_words(target: &SourceTextTarget, units: &[u16], tree_digest: &str) -> DerivedAttachment {
+fn by_words(target: &SourceTextTarget, text: &str, tree_digest: &str) -> DerivedAttachment {
     // Every source range has words: `locate` refuses a selection that
     // flattens to nothing, so a target with no `exact` is a record from
     // before that was true and there is nothing to look for.
     if target.exact.is_empty() {
         return attached(tree_digest, AnchorStatus::Unresolved, None, None, None);
     }
-    let wanted: Vec<u16> = target.exact.encode_utf16().collect();
+    // The context is a few dozen units; only it is encoded, never the file.
     let prefix: Vec<u16> = target.prefix.encode_utf16().collect();
     let suffix: Vec<u16> = target.suffix.encode_utf16().collect();
+    let wanted = target.exact.as_str();
+    // The best hit as a byte offset into `text`, and its score.
     let mut best: Option<(usize, usize)> = None;
     let mut ties = 0;
-    if wanted.len() <= units.len() {
-        for at in 0..=(units.len() - wanted.len()) {
-            if units[at..at + wanted.len()] != wanted[..] {
-                continue;
-            }
-            let before = &units[..at];
-            let after = &units[at + wanted.len()..];
-            let score = common_suffix(&prefix, before) + common_prefix(&suffix, after);
-            match best {
-                Some((_, previous)) if score < previous => {}
-                Some((_, previous)) if score == previous => ties += 1,
-                _ => {
-                    best = Some((at, score));
-                    ties = 1;
-                }
+    let mut from = 0;
+    while let Some(found) = text[from..].find(wanted) {
+        let at = from + found;
+        // Hits may overlap, so the next search starts one character on, not
+        // after the hit. `wanted` is not empty, so `at` is in bounds.
+        from = at + text[at..].chars().next().map_or(1, char::len_utf8);
+        let before = tail_units(&text[..at], prefix.len());
+        let after = head_units(&text[at + wanted.len()..], suffix.len());
+        let score = common_suffix(&prefix, &before) + common_prefix(&suffix, &after);
+        match best {
+            Some((_, previous)) if score < previous => {}
+            Some((_, previous)) if score == previous => ties += 1,
+            _ => {
+                best = Some((at, score));
+                ties = 1;
             }
         }
     }
@@ -345,6 +346,7 @@ fn by_words(target: &SourceTextTarget, units: &[u16], tree_digest: &str) -> Deri
         // is gone. That is a thing to show, not an error to swallow.
         return attached(tree_digest, AnchorStatus::Deleted, None, None, None);
     };
+    let at = str_indices::utf16::from_byte_idx(text, at);
     let status = if ties > 1 {
         AnchorStatus::Ambiguous
     } else if at as u32 == target.start_utf16 {
@@ -356,7 +358,7 @@ fn by_words(target: &SourceTextTarget, units: &[u16], tree_digest: &str) -> Deri
         tree_digest,
         status,
         None,
-        Some((at as u32, (at + wanted.len()) as u32)),
+        Some((at as u32, (at + str_indices::utf16::count(wanted)) as u32)),
         None,
     )
 }
@@ -375,6 +377,35 @@ fn attached(
         resolved_range_utf16,
         diagnostic,
     }
+}
+
+/// At least the last `count` UTF-16 units of `text` (one more when a pair
+/// straddles the cut), in order. Enough to score a hit against its prefix
+/// without encoding everything before it.
+fn tail_units(text: &str, count: usize) -> Vec<u16> {
+    let mut units = Vec::with_capacity(count + 1);
+    for character in text.chars().rev() {
+        if units.len() >= count {
+            break;
+        }
+        let mut buffer = [0u16; 2];
+        units.extend(character.encode_utf16(&mut buffer).iter().rev());
+    }
+    units.reverse();
+    units
+}
+
+/// At least the first `count` UTF-16 units of `text`, in order.
+fn head_units(text: &str, count: usize) -> Vec<u16> {
+    let mut units = Vec::with_capacity(count + 1);
+    for character in text.chars() {
+        if units.len() >= count {
+            break;
+        }
+        let mut buffer = [0u16; 2];
+        units.extend(character.encode_utf16(&mut buffer).iter());
+    }
+    units
 }
 
 fn common_prefix(a: &[u16], b: &[u16]) -> usize {
@@ -876,5 +907,39 @@ mod cursor_caching_tests {
         );
         assert_eq!(again.status, AnchorStatus::Exact);
         assert_eq!(again.resolved_range_utf16, Some((16, 24)));
+    }
+
+    /// An astral character is two UTF-16 units, so a unit offset can fall
+    /// between them. Such an offset names no character: the cursor path reads
+    /// the half as a replacement character (which is never the quoted words),
+    /// and the word search counts the pair as two units on both sides.
+    #[test]
+    fn an_offset_inside_a_surrogate_pair_reads_as_a_replacement_char() {
+        let (doc, id) = document("paper.md", "\u{1F600}x\u{1F600}x");
+        let sources = Sources::of_doc(&doc);
+        let text = sources.text_of(&id).expect("text");
+        assert_eq!(slice16_str(text, 1, 3), "\u{FFFD}x");
+        assert_eq!(slice16_str(text, 0, 1), "\u{FFFD}");
+        assert_eq!(slice16_str(text, 0, 2), "\u{1F600}");
+    }
+
+    #[test]
+    fn the_word_search_counts_both_units_of_every_pair() {
+        // Two equal hits are a tie, at unit offsets 0 and 3.
+        let (doc, id) = document("paper.md", "\u{1F600}x\u{1F600}x");
+        let sources = Sources::of_doc(&doc);
+        let wanted = target(&id, 0, 3, "\u{1F600}x");
+        let found = resolve(&doc, &sources, "b", &anchor(wanted), None);
+        assert_eq!(found.status, AnchorStatus::Ambiguous);
+
+        // The two pairs share a high surrogate and differ in the low one, so
+        // the prefix agrees with the second hit alone, which is at unit 5.
+        let (doc, id) = document("paper.md", "\u{1F601}x\u{1F600}x");
+        let sources = Sources::of_doc(&doc);
+        let mut second = target(&id, 5, 6, "x");
+        second.prefix = "\u{1F600}".to_string();
+        let found = resolve(&doc, &sources, "b", &anchor(second), None);
+        assert_eq!(found.status, AnchorStatus::Exact);
+        assert_eq!(found.resolved_range_utf16, Some((5, 6)));
     }
 }

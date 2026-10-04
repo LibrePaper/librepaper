@@ -377,7 +377,7 @@ impl From<super::error::WriteError> for AgentError {
 /// wants (§3.2 of SPEC-loro.md: every offset that crosses the document layer
 /// counts UTF-16 code units).
 fn byte_to_utf16(text: &str, byte: usize) -> usize {
-    text[..byte].encode_utf16().count()
+    str_indices::utf16::from_byte_idx(text, byte)
 }
 
 /// The head's text files, as the patch validator needs them. Rebuilt on

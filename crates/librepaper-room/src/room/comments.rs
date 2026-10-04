@@ -53,6 +53,7 @@ use librepaper_engine::storage::postgres::{
 };
 
 use super::locate::{self, Quote};
+use super::text::utf16_slice;
 use super::{Room, WriteError};
 use librepaper_engine::storage::annotation::{
     CommentTarget, DerivedAttachment, OriginalAnchor, PresentationContext, SourceTextTarget,
@@ -569,21 +570,16 @@ pub(crate) fn proposed_from_branch(
 /// must still match, so an unrelated or malformed branch is not displayed as
 /// the replacement.
 fn replacement_at_source_span(base: &str, tip: &str, start: usize, exact: &str) -> Option<String> {
-    let base: Vec<u16> = base.encode_utf16().collect();
-    let tip: Vec<u16> = tip.encode_utf16().collect();
-    let exact: Vec<u16> = exact.encode_utf16().collect();
-    let end = start.checked_add(exact.len())?;
-    if base.get(start..end)? != exact.as_slice() {
+    let end = start.checked_add(str_indices::utf16::count(exact))?;
+    if utf16_slice(base, start, end)? != exact {
         return None;
     }
-    let before = base.get(..start)?;
-    let after = base.get(end..)?;
+    let before = &base[..str_indices::utf16::to_byte_idx(base, start)];
+    let after = &base[str_indices::utf16::to_byte_idx(base, end)..];
     if !tip.starts_with(before) || !tip.ends_with(after) || tip.len() < before.len() + after.len() {
         return None;
     }
-    Some(String::from_utf16_lossy(
-        &tip[before.len()..tip.len() - after.len()],
-    ))
+    Some(tip[before.len()..tip.len() - after.len()].to_string())
 }
 
 fn reply_row_to_reply(row: ReplyRecord) -> Reply {
@@ -1890,15 +1886,13 @@ impl RefineSuggestion {
 /// this conversion here prevents an accented or astral character before the
 /// anchor from turning a valid refinement into a stale one.
 fn replace_utf16_span(text: &str, at: usize, exact: &str, replacement: &str) -> Option<String> {
-    let mut units: Vec<u16> = text.encode_utf16().collect();
-    let expected: Vec<u16> = exact.encode_utf16().collect();
-    let end = at.checked_add(expected.len())?;
-    if end > units.len() || units.get(at..end)? != expected.as_slice() {
+    let end = at.checked_add(str_indices::utf16::count(exact))?;
+    if utf16_slice(text, at, end)? != exact {
         return None;
     }
-    let replacement: Vec<u16> = replacement.encode_utf16().collect();
-    units.splice(at..end, replacement);
-    Some(String::from_utf16_lossy(&units))
+    let from = str_indices::utf16::to_byte_idx(text, at);
+    let to = str_indices::utf16::to_byte_idx(text, end);
+    Some(format!("{}{}{}", &text[..from], replacement, &text[to..]))
 }
 
 impl SequencerCommand for RefineSuggestion {
