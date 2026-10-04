@@ -1,11 +1,12 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
-  import StatusPill from "./StatusPill.svelte";
-  import CompanionBlock from "./CompanionBlock.svelte";
-  import CompanionManagement from "./CompanionManagement.svelte";
+  import ConnectionRow from "./ConnectionRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
-  import * as control from "../../lib/companion/control.js";
   import { companion } from "../../lib/companion/status.svelte.js";
+
+  let { view } = $props();
+  const { list, id } = view;
+  const active = (status) => !["done", "complete", "completed", "succeeded", "failed", "error", "cancelled", "canceled", "stopped", "interrupted", "expired", "denied"].includes(String(status || "").toLowerCase());
 
   const local = $derived(companion.status);
   $effect(() => companion.watch());
@@ -22,12 +23,6 @@
   let pendingDialogAction = $state("");
   let settingsRequest = 0;
   let doctorRequest = 0;
-  let managedAvailable = $state(control.available());
-
-  $effect(() => {
-    const unsubscribe = control.subscribe((access) => { managedAvailable = Boolean(access?.available); });
-    return unsubscribe;
-  });
 
   $effect(() => {
     const draft = addressDraft;
@@ -158,26 +153,73 @@
   });
 </script>
 
-<p class="setting-description local-intro">Connect apps and tools on this computer, such as Zotero and Quarto.</p>
+<p class="setting-description diagnostics-intro">Details for troubleshooting the companion on this computer.</p>
 
-{#if !managedAvailable}
-<CompanionBlock id="local-status" />
+<ConnectionRow id="diagnostics-connection" />
 
-<SettingRow id="local-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change only when using another port.` : "Change only when using another port."}>
+{#if !view.available}
+<SettingRow id="diagnostics-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change only when using another port.` : "Change only when using another port."}>
   <div class="setting-actions">
     <input aria-label="Companion address" class="input input-sm setting-input" type="url" bind:value={addressDraft} disabled={addressSaving} />
     <button type="button" class="btn btn-sm lp-control-outline" disabled={addressDraft === address || addressSaving} onclick={() => void saveAddress()}>{addressSaving ? "Saving…" : "Save"}</button>
-    {#if addressSaved && !addressSaving}<span id="local-address-feedback" class="setting-feedback" role="status">Saved</span>{/if}
+    {#if addressSaved && !addressSaving}<span id="diagnostics-address-feedback" class="setting-feedback" role="status">Saved</span>{/if}
     <button type="button" class="btn btn-sm lp-control-outline" disabled={!connected} onclick={() => void localBridge.disconnect()}>Disconnect</button>
   </div>
 </SettingRow>
 {/if}
 
-{#if settingsError}<p class="setting-description local-error" role="alert">{settingsError}</p>{/if}
+{#if settingsError}<p class="setting-description diagnostics-error" role="alert">{settingsError}</p>{/if}
 
-{#if !managedAvailable}
+{#if view.available}
+  {#if view.error}
+    <p class="setting-description management-error" role="alert">{view.error}</p>
+  {/if}
+  {#if view.loadError}
+    <p class="setting-description management-error" role="alert">{view.loadError}</p>
+  {/if}
+  {#if view.notice}
+    <p class="setting-description management-notice" role="status">{view.notice}</p>
+  {/if}
+
+  <section class="settings-subsection" aria-labelledby="diagnostics-companion-heading">
+    <div class="settings-section-title"><h4 class="settings-subhead" id="diagnostics-companion-heading">Companion</h4>{#if view.state?.version}<span class="setting-description">Version {view.state.version}</span>{/if}</div>
+    {#if view.state?.standalone === true}
+    <SettingRow id="diagnostics-startup" title="Start at login" description="Open the companion when you log in.">
+      <button type="button" role="switch" class="switch" class:checked={view.state?.settings?.startup_enabled === true} data-state={view.state?.settings?.startup_enabled == null ? "unknown" : view.state.settings.startup_enabled ? "checked" : "unchecked"} aria-label="Start at login" aria-checked={view.state?.settings?.startup_enabled === true} disabled={!view.state || typeof view.state.settings?.startup_enabled !== "boolean" || Boolean(view.pending)} onclick={() => void view.act("startup", "Startup preference saved.", "/settings", { method: "PUT", body: { startup_enabled: !view.state.settings.startup_enabled } })}>
+        <span class="switch-thumb" data-state={view.state?.settings?.startup_enabled == null ? "unknown" : view.state.settings.startup_enabled ? "checked" : "unchecked"}></span>
+      </button>
+    </SettingRow>
+    <SettingRow title="Quit" description="Close the companion on this computer.">
+      <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm("Quit LibrePaper companion? Connected sites will no longer reach local tools until it is started again.")) void view.act("quit", "Quit request sent.", "/quit", { method: "POST" }); }}>Quit companion</button>
+    </SettingRow>
+    {/if}
+  </section>
+
+  <section id="diagnostics-activity" class="settings-subsection" aria-labelledby="diagnostics-activity-heading">
+    <div class="settings-section-title"><h4 class="settings-subhead" id="diagnostics-activity-heading">Activity</h4></div>
+    {#each list(view.state?.jobs) as job (job.id)}
+      <SettingRow title={[job.kind, job.stage].filter(Boolean).join(" · ") || "Local job"} description={`${job.status || "running"}${job.error ? ` · ${job.error}` : ""}${job.log_tail ? `\n${Array.isArray(job.log_tail) ? job.log_tail.join("\n") : job.log_tail}` : ""}`} stacked>
+        {#if active(job.status)}<button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`job-${job.id}`, "Cancellation requested.", `/jobs/${id(job.id)}/cancel`, { method: "POST" })}>Cancel</button>{/if}
+      </SettingRow>
+    {/each}
+    {#each list(view.state?.previews) as preview (preview.id)}
+      <SettingRow title={preview.label || preview.project || "Preview"} description={`${preview.status || "active"}${preview.log_tail ? `\n${preview.log_tail}` : ""}`} stacked>
+        <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`preview-${preview.id}`, "Preview stopped.", `/previews/${id(preview.id)}`, { method: "DELETE" })}>Stop preview</button>
+      </SettingRow>
+    {/each}
+    {#each list(view.state?.sessions) as session (session.id)}
+      {@const sessionStatus = session.status || session.state || "active"}
+      <SettingRow title={session.name || session.agent || session.id || "Agent session"} description={`${sessionStatus}${session.task || session.task_id || session.detail ? ` · ${session.task || session.task_id || session.detail}` : ""}`}>
+        {#if active(sessionStatus)}<button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`session-${session.id}`, "Agent stop requested.", `/agents/sessions/${id(session.id)}/cancel`, { method: "POST" })}>Stop</button>{/if}
+      </SettingRow>
+    {/each}
+    {#if !list(view.state?.jobs).length && !list(view.state?.previews).length && !list(view.state?.sessions).length}
+    <p class="setting-description">Nothing running.</p>
+    {/if}
+  </section>
+{:else}
 {#if connected && companionSettings?.standalone === true}
-<SettingRow id="local-startup" title="Start at login" description="Open the companion when you log in.">
+<SettingRow id="diagnostics-startup" title="Start at login" description="Open the companion when you log in.">
     <button type="button" role="switch" class="switch companion-startup-switch" aria-label="Start at login" aria-checked={companionSettings?.startup === true} data-state={companionSettings.startup ? "checked" : "unchecked"} disabled={companionSettings.startup == null || Boolean(pendingDialogAction)} onclick={() => void toggleStartup(!companionSettings.startup)}>
       <span class="switch-thumb" data-state={companionSettings.startup ? "checked" : "unchecked"}></span>
     </button>
@@ -195,21 +237,21 @@
     {/if}
   </SettingRow>
 {/if}
+
+<SettingRow id="diagnostics-report" title="Check local setup" description={!connected ? "Connect to rescan available tools." : "Rescan available tools and view the report."}>
+  <button type="button" class="btn btn-sm lp-control-outline" disabled={!connected} onclick={() => void doctorReport()}>Check</button>
+</SettingRow>
+{#if doctor}<pre class="setting-log" role="status">{doctor}</pre>{/if}
 {/if}
 
-{#if !managedAvailable}<SettingRow title="Check local setup" description={!connected ? "Connect to rescan available tools." : "Rescan available tools and view the report."}>
-  <button type="button" class="btn btn-sm lp-control-outline" id="local-doctor" disabled={!connected} onclick={() => void doctorReport()}>Check</button>
-</SettingRow>
-{#if doctor}<pre class="setting-log" role="status">{doctor}</pre>{/if}{/if}
-
-<CompanionManagement />
-
-<p class="setting-description local-help">Still stuck? <a href="https://github.com/LibrePaper/librepaper/issues" target="_blank" rel="noreferrer">Report a problem</a> with the setup report attached.</p>
+<p class="setting-description diagnostics-help">Still stuck? <a href="https://github.com/LibrePaper/librepaper/issues" target="_blank" rel="noreferrer">Report a problem</a> with the setup report attached.</p>
 
 <style>
-  .local-intro { max-width: 42rem; margin-block: 0 calc(var(--spacing) * 3); }
+  .diagnostics-intro { max-width: 42rem; margin-block: 0 calc(var(--spacing) * 3); }
+  .diagnostics-error, .management-error { color: var(--color-error-text); }
+  .management-notice { color: var(--color-success-text); }
   .companion-startup-switch { appearance: none; border: 0; padding: 0; cursor: pointer; }
   .companion-startup-switch:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
-  .local-help { margin-top: calc(var(--spacing) * 3); }
+  .diagnostics-help { margin-top: calc(var(--spacing) * 3); }
   .setting-log { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
