@@ -392,6 +392,14 @@ async fn process_log_line(watch: &SessionWatch, raw_line: &str) {
     }
 }
 
+fn back_off_to_char_boundary(bytes: &[u8]) -> &[u8] {
+    let mut i = bytes.len();
+    while i > 0 && !std::str::is_char_boundary(bytes, i) {
+        i -= 1;
+    }
+    &bytes[..i]
+}
+
 async fn pump<R>(reader: R, watch: Arc<SessionWatch>)
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -422,7 +430,9 @@ where
                         line_buf.extend_from_slice(to_append);
                     } else if line_buf.len() < MAX_LINE_SIZE {
                         let available = MAX_LINE_SIZE - line_buf.len();
-                        line_buf.extend_from_slice(&to_append[..available]);
+                        let head = &to_append[..available];
+                        let backed_off = back_off_to_char_boundary(head);
+                        line_buf.extend_from_slice(backed_off);
                     }
                     buf_reader.consume(newline_pos + 1);
                     let line_str = String::from_utf8_lossy(&line_buf);
@@ -442,7 +452,8 @@ where
                         } else {
                             &buf[..available]
                         };
-                        line_buf.extend_from_slice(to_append);
+                        let backed_off = back_off_to_char_boundary(to_append);
+                        line_buf.extend_from_slice(backed_off);
                     }
                     buf_reader.consume(consumed);
                 }
@@ -658,6 +669,39 @@ mod tests {
             final_log.len() <= 200 * 1024 + 1024,
             "Log size should be bounded; got {}",
             final_log.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn pump_backs_off_to_utf8_boundary_when_truncating() {
+        let log = Arc::new(AsyncMutex::new(String::new()));
+        let watch = Arc::new(SessionWatch {
+            root: PathBuf::from("/tmp"),
+            entrypoint: "test.html".to_string(),
+            adapter: Box::new(MockWatch),
+            log: log.clone(),
+            latest: Arc::new(AsyncMutex::new(None)),
+            rendering: Arc::new(AtomicBool::new(false)),
+        });
+
+        let max_line_size = 64 * 1024;
+        let ascii_part = "a".repeat(max_line_size - 1);
+        let emoji = "🎉";
+        let trailing = "xyz";
+        let first_line = format!("{}{}{}", ascii_part, emoji, trailing);
+        let input = format!("{}\nok\n", first_line);
+        let cursor = Cursor::new(input.as_bytes().to_vec());
+
+        pump(cursor, watch).await;
+
+        let final_log = log.lock().await.clone();
+        assert!(
+            final_log.contains("ok"),
+            "Expected second line 'ok' to be in the log"
+        );
+        assert!(
+            !final_log.contains('\u{FFFD}'),
+            "Truncated line should not contain replacement character U+FFFD"
         );
     }
 }
