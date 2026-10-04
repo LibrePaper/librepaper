@@ -1,7 +1,7 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import StatusPill from "./StatusPill.svelte";
-  import CompanionBlock from "./CompanionBlock.svelte";
+  import ConnectionRow from "./ConnectionRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import { backups } from "../../lib/companion/backups.svelte.js";
@@ -128,7 +128,7 @@
 </script>
 
 <p class="setting-description backups-intro">
-  ZIP copies of your projects, saved on this computer. <a href="https://librepaper.org/backups.html" target="_blank" rel="noreferrer">Backup guide</a>
+  Your account's projects, copied as ZIP files to a folder on this computer by the companion. <a href="https://librepaper.org/backups.html" target="_blank" rel="noreferrer">Backup guide</a>
 </p>
 
 {#if !signedIn}
@@ -136,7 +136,7 @@
     <StatusPill label="Signed out" />
   </SettingRow>
 {:else if !paired}
-  <CompanionBlock id="backup-connection" needs="backups" />
+  <ConnectionRow id="backup-connection" needs="backups" />
 {:else if backupStatus.error}
   <div class="setting-status" data-tone="warn" role="alert">
     <span class="setting-status-dot" aria-hidden="true"></span>
