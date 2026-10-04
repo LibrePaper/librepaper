@@ -28,7 +28,8 @@ object_store = "filesystem"
 # client_secret = { env = "LIBREPAPER_GOOGLE_CLIENT_SECRET" }
 
 [access]
-publishers = []
+# Any signed-in account may publish; replace this with an allowlist if needed.
+publishers = ["any"]
 commenters = ["anyone"]
 
 [limits]

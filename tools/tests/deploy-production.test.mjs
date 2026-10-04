@@ -348,7 +348,7 @@ test('deploy writes Google OAuth credentials to .env and keeps them out of outpu
   }
 });
 
-test('deploy-local writes Google OAuth credentials to .env and keeps them out of output', () => {
+test('deploy-local stages Google OAuth credentials and the candidate binary for rebuilds', () => {
   const f = fixture();
   try {
     const result = runProduction(f, 'deploy-local');
@@ -360,6 +360,7 @@ test('deploy-local writes Google OAuth credentials to .env and keeps them out of
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
     assert.equal(envFile.trimEnd().split('\n').length, 11);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
+    assert.equal(existsSync(path.join(f.remote, 'librepaper.candidate')), true);
   } finally {
     f.cleanup();
   }
@@ -372,6 +373,22 @@ test('a binary without TOML config support leaves the installed config and runni
     const result = runProduction(f, 'deploy');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /candidate binary cannot load config\.toml/);
+    assert.equal(readFileSync(path.join(f.remote, 'config.toml'), 'utf8'), 'previous production config\n');
+    assert.equal(existsSync(f.composeUpFile), false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('an incompatible local candidate leaves the installed executable untouched', () => {
+  const f = fixture({ configCheckFailure: true });
+  try {
+    writeFileSync(path.join(f.remote, 'librepaper'), 'previous production executable\n');
+    writeFileSync(path.join(f.remote, 'config.toml'), 'previous production config\n');
+    const result = runProduction(f, 'deploy-local');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /candidate binary cannot load config\.toml/);
+    assert.equal(readFileSync(path.join(f.remote, 'librepaper'), 'utf8'), 'previous production executable\n');
     assert.equal(readFileSync(path.join(f.remote, 'config.toml'), 'utf8'), 'previous production config\n');
     assert.equal(existsSync(f.composeUpFile), false);
   } finally {
@@ -457,7 +474,7 @@ test('verify rejects Google 200, 404, and wrong-provider redirects without revea
   }
 });
 
-test('deploy-local verifies the copied binary before replacing it and keeps secrets out of output', () => {
+test('deploy-local verifies and retains the copied candidate binary and keeps secrets out of output', () => {
   const f = fixture();
   try {
     const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
@@ -469,7 +486,7 @@ test('deploy-local verifies the copied binary before replacing it and keeps secr
     assert.match(envFile, /POSTGRES_EXPORTER_PASSWORD=exporter-secret/);
     assert.equal(statSync(path.join(f.remote, '.env')).mode & 0o777, 0o600);
     assert.match(readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8'), /Dockerfile.local/);
-    assert.equal(existsSync(path.join(f.remote, 'librepaper')), true);
+    assert.equal(existsSync(path.join(f.remote, 'librepaper.candidate')), true);
   } finally {
     f.cleanup();
   }

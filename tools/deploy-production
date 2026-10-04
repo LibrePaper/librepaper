@@ -109,7 +109,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
-      args: !reset {LIBREPAPER_BINARY: librepaper.candidate}
+      args: {LIBREPAPER_BINARY: librepaper.candidate}
 EOF
 	else
 		ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'EOF'
@@ -294,10 +294,10 @@ SQL
 	step "Backup: after the pin, because older backups record the old migration version"
 	local backup_name
 	backup_name="$(date +%F)-squash"
-	if ssh "$HOST" "cd librepaper && docker compose exec -T librepaper librepaper admin backup --config /etc/librepaper/config.toml /var/backups/librepaper/$backup_name"; then
+	if ssh "$HOST" "cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml.candidate docker compose run --rm --no-deps librepaper admin backup --config /etc/librepaper/config.toml /var/backups/librepaper/$backup_name"; then
 		ok "backup $backup_name written"
 	else
-		note "the backup failed but the pin is done: take a backup by hand (docker compose exec -T librepaper librepaper admin backup ...)"
+		note "the backup failed but the pin is done: take a backup by hand with the checked candidate image before starting the application"
 	fi
 }
 
@@ -311,6 +311,8 @@ squash_command() {
 	if [ "$remote" = "$(printf '1\t%s' "$SQUASH_SUM")" ]; then
 		die "production already matches $SQUASH_FILE; nothing to do"
 	fi
+	write_config
+	check_application_config release
 	squash_migrations
 }
 
@@ -368,8 +370,7 @@ start_application() {
 	local mode="$1"
 	step "Containers: install checked config and start $mode image"
 	if [ "$mode" = local ]; then
-		ssh "$HOST" 'cd librepaper && mv -f librepaper.candidate librepaper'
-		ok "installed the config-capable local binary after preflight"
+		note "kept the checked local binary available for future Docker rebuilds"
 	fi
 	install_config
 	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --wait --wait-timeout 180'

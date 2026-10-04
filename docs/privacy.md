@@ -112,7 +112,7 @@ Hosting, database and object-storage providers see what they store.
 ## Retention
 
 - **Documents:** kept until deleted or the configured `[retention].expire_after` period passes
-  (measured from last update or creation). See [Retention](./host.html#retention).
+  (measured from last update or creation). See [storage, limits, and backup](./host.html#storage-limits-and-backup).
 - **Checkpoints and edit history:** retained by default while the document
   exists; an owner can explicitly trim history, which permanently removes
   older history and named versions. See [history and revisions](./collaborate/history.html).

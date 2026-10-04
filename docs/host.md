@@ -8,10 +8,11 @@ title: "Self-hosting"
 
 The server and admin commands read one TOML file. `admin serve` defaults to
 `/etc/librepaper/config.toml`; pass `--config PATH` to choose another file.
-Settings are not read from ambient environment variables. A value can be a
-TOML literal or an explicit `{ env = "NAME" }` / `{ file = "path" }`
-reference. Environment and file references are required when present, and
-relative file paths resolve from the TOML file's directory.
+Application settings come from TOML. A value can be a literal or an explicit
+`{ env = "NAME" }` / `{ file = "path" }` reference. References are required
+when present, and relative file paths resolve from the TOML file's directory.
+The PostgreSQL driver can also use standard `PG*` variables for URL components
+omitted from the database URL; use a complete URL for predictable setup.
 
 ```toml
 [server]
@@ -48,7 +49,9 @@ librepaper admin config check --config /etc/librepaper/config.toml
 librepaper admin config show --config /etc/librepaper/config.toml
 ```
 
-`show` redacts database and credential values.
+`check` only parses and resolves configuration; it does not start the server
+or connect to the database. `show` prints resolved settings, defaults, and
+their source, while redacting database and credential values.
 
 ## Production
 
@@ -158,10 +161,10 @@ for resource defaults and backup limitations.
 
 `[access].publishers` controls who may upload; `commenters` controls who may
 annotate. Use arrays of GitHub logins, verified Google addresses, or `@domain`
-entries. `"any"` or `"anyone"` allows any signed-in account. Publishers default
-to none, commenters to any signed-in account. Document access and share links
-still require sign-in. Domain matching is exact: `@example.org` admits
-`alice@example.org`, not `alice@mail.example.org`.
+entries. For publishers, `"any"` allows any signed-in account; for commenters,
+`"anyone"` does the same. Configure a nonempty publishers policy explicitly.
+Document access and share links still require sign-in. Domain matching is
+exact: `@example.org` admits `alice@example.org`, not `alice@mail.example.org`.
 
 GitHub OAuth applications use `/auth/callback`; Google Web applications use
 `/auth/callback/google`. Keep IDs and secrets outside the TOML file by using

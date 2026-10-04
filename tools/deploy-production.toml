@@ -3,8 +3,9 @@
 # read-only at /etc/librepaper/config.toml in the application container.
 #
 # Values are TOML literals except the explicit { env = "NAME" } references.
-# The application reads only the names below from its environment; it does not
-# load .env files or apply implicit environment overrides.
+# The application uses this file for settings. The PostgreSQL driver may also
+# use standard PG* variables for URL components omitted from the URL; keep the
+# explicit LIBREPAPER_DATABASE_URL complete for predictable production use.
 
 [server]
 # Both public origins terminate at the reverse proxy; the application listens
@@ -81,7 +82,8 @@ trusted_proxies = ["172.29.0.0/16"]
 # filter = "info"
 
 # Optional operator backup planning metadata, if this instance adopts a
-# backup policy in the application:
+# backup policy in the application. This records intent only; it does not
+# schedule, execute, encrypt, or prune backup copies.
 # [backup]
 # destination_class = "local"
 # frequency = 86400       # seconds
