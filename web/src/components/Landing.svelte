@@ -40,7 +40,7 @@
   import * as localBridge from "../lib/companion/client.js";
 
   let { initialSettings = "" } = $props();
-  let settingsOpen = $state(untrack(() => initialSettings === "local"));
+  let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "editor"));
   function openSettings(category = "editor") {
     settingsCategory = category;
