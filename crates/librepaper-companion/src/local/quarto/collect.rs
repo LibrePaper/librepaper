@@ -494,7 +494,7 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
     let mut elements: Vec<(String, ReferenceKind)> = Vec::new();
     let settings = RewriteStrSettings::new()
         .append_element_content_handler(element!(
-            "[src], [href], [srcset], [poster], [style], object[data]",
+            "[src], [href], [xlink\\:href], [srcset], [poster], [style], object[data]",
             |element| {
                 let navigation = matches!(element.tag_name().as_str(), "a" | "area");
                 if let Some(value) = element
@@ -508,7 +508,7 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
                     };
                     elements.push((value, kind));
                 }
-                for name in ["src", "poster"] {
+                for name in ["src", "poster", "xlink:href"] {
                     if let Some(value) = element
                         .get_attribute(name)
                         .map(|value| html_escape::decode_html_entities(&value).into_owned())

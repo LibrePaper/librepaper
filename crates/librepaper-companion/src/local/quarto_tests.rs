@@ -941,6 +941,16 @@ fn scanner_follows_css_import_and_url() {
 }
 
 #[test]
+fn scanner_reads_inline_svg_image_references() {
+    let references = closure_of(
+        "<svg><image xlink:href=\"figure.png\"/></svg><svg><image href=\"plot.png\"/></svg>",
+        &["figure.png", "plot.png"],
+    )
+    .expect("inline SVG images are resources");
+    assert!(references.contains("figure.png") && references.contains("plot.png"));
+}
+
+#[test]
 fn scanner_reads_url_inside_inline_style() {
     let references =
         closure_of("<style>.a{background:url(bg.png)}</style>", &["bg.png"]).expect("present");
