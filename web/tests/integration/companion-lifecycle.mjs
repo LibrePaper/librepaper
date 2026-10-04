@@ -21,7 +21,7 @@ const tools = join(root, "bin");
 await mkdir(tools);
 const opened = join(root, "opened-url");
 await writeFile(join(tools, "xdg-open"), '#!/bin/sh\nprintf "%s" "$1" > "$LIBREPAPER_TEST_OPENED"\n', { mode: 0o755 });
-const env = { ...process.env, HOME: root, XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"), XDG_CONFIG_HOME: join(root, "config"), PATH: `${tools}:${process.env.PATH}`, LIBREPAPER_TEST_OPENED: opened };
+const env = { ...process.env, HOME: root, XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"), XDG_CONFIG_HOME: join(root, "config"), PATH: `${tools}:${process.env.PATH}`, LIBREPAPER_TEST_OPENED: opened, LIBREPAPER_SERVER: "https://app.example/" };
 delete env.DISPLAY;
 delete env.WAYLAND_DISPLAY;
 delete env.LIBREPAPER_LOCAL_CODE;
@@ -43,18 +43,26 @@ try {
   assert.equal((await state()).pid, first.pid, "repeated bare invocation reuses the running companion");
   await cli("start");
   assert.equal((await state()).pid, first.pid, "explicit start reuses the running companion");
-  const desktop = await cli("desktop");
-  let controlPanel;
+  await assert.rejects(cli("desktop"), "the removed desktop subcommand is rejected");
+  const settings = await legacy("open", "librepaper://settings");
+  let settingsTarget;
   for (let attempt = 0; attempt < 100; attempt++) {
     try {
-      controlPanel = await readFile(opened, "utf8");
-      if (controlPanel) break;
+      settingsTarget = await readFile(opened, "utf8");
+      if (settingsTarget) break;
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  assert.ok(controlPanel, "desktop launches the configured browser opener");
-  assert.match(controlPanel, /^http:\/\/127\.0\.0\.1:\d+\/companion\/#token=[A-Za-z0-9_=-]+$/, "desktop opens the private local control panel");
-  assert.ok(!desktop.stdout.includes("#token="), "the control token is not printed by the CLI");
+  assert.ok(settingsTarget, "the settings deep link opens the configured browser target");
+  const settingsUrl = new URL(settingsTarget);
+  assert.equal(`${settingsUrl.origin}${settingsUrl.pathname}${settingsUrl.search}`, "https://app.example/", "settings opens the trusted main app");
+  const settingsFragment = new URLSearchParams(settingsUrl.hash.slice(1));
+  const control = JSON.parse(await readFile(join(env.XDG_STATE_HOME, "librepaper/local/control-token.json"), "utf8"));
+  assert.equal(settingsFragment.get("settings"), "local");
+  assert.equal(settingsFragment.get("companion_address"), `http://127.0.0.1:${port}/`);
+  assert.equal(settingsFragment.get("companion_control"), control.token);
+  assert.equal(settingsFragment.get("companion_instance"), control.instance);
+  assert.ok(!settings.stdout.includes(control.token), "the control token is not printed by the CLI");
   await rm(opened, { force: true });
   await cli("--at-login");
   const desktopEntry = await readFile(join(env.XDG_CONFIG_HOME, "autostart/librepaper-local.desktop"), "utf8");
