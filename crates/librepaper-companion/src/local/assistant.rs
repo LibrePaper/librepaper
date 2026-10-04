@@ -29,6 +29,7 @@ where
     // `authenticate` above already refused a missing Origin header.
     let origin = origin.expect("authenticate requires an origin");
     let body = read_json_body::<T>(request).await.map_err(Box::new)?;
+    authenticate(inner, headers, Some(origin)).map_err(Box::new)?;
     let link = match crate::automation::peer::DocumentLink::parse(body.link(), "") {
         Ok(link) => link,
         Err(error) => return Err(Box::new(write_json(400, &json!({"error": error})))),
@@ -91,6 +92,11 @@ pub(super) async fn handle_assistant_start(
         );
     };
     let environment = super::acp_agents::acp_environment(&inner.state_home, &body.agent);
+    let pairing_token = super::service::bearer_token(headers).unwrap_or_default();
+    let admission = inner.pairing.admission_gate().lock().await;
+    if let Err(response) = authenticate(inner, headers, Some(origin)) {
+        return response;
+    }
     let store = super::connections::ConnectionStore::new(&inner.state_home);
     if let Err(error) = store.put_runner(
         &parsed_link.credential_url(),
@@ -100,11 +106,13 @@ pub(super) async fn handle_assistant_start(
     ) {
         return write_json(500, &json!({"error": error}));
     }
+    drop(admission);
     match inner
         .assistant_sessions
         .start(
             &parsed_link,
             origin,
+            &pairing_token,
             &body.conversation,
             &body.chat_token,
             &body.agent_token,
@@ -141,9 +149,22 @@ pub(super) async fn handle_assistant_renew(
             &json!({"error": "sign in again to renew assistant access"}),
         );
     }
+    let origin = origin.unwrap_or_default();
+    let pairing_token = super::service::bearer_token(headers).unwrap_or_default();
+    let admission = inner.pairing.admission_gate().lock().await;
+    if let Err(response) = authenticate(inner, headers, Some(origin)) {
+        return response;
+    }
+    drop(admission);
     match inner
         .assistant_sessions
-        .renew_agent_token(&link, &body.conversation, &body.agent_token)
+        .renew_agent_token(
+            &link,
+            origin,
+            &pairing_token,
+            &body.conversation,
+            &body.agent_token,
+        )
         .await
     {
         Ok(()) => write_json(200, &json!({"renewed": true})),

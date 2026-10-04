@@ -144,6 +144,17 @@ impl BindingStore {
             .unwrap_or_default()
     }
 
+    fn load_checked(&self) -> Result<BindingFile, String> {
+        let bytes = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BindingFile::default())
+            }
+            Err(error) => return Err(format!("read binding store: {error}")),
+        };
+        serde_json::from_slice(&bytes).map_err(|error| format!("decode binding store: {error}"))
+    }
+
     fn save(&self, file: &BindingFile) -> Result<(), String> {
         let Some(parent) = self.path.parent() else {
             return Err("invalid binding store path".into());
@@ -192,13 +203,17 @@ impl BindingStore {
     }
 
     /// Revokes the binding `id` if `origin` owns it, whatever its project.
-    pub fn revoke_origin_binding(&self, id: &str, origin: &str) -> bool {
+    pub fn revoke_origin_binding(&self, id: &str, origin: &str) -> Result<bool, String> {
         let origin = super::pairing::normalize_origin(origin);
-        let mut file = self.load();
+        let mut file = self.load_checked()?;
         let old = file.bindings.len();
         file.bindings
             .retain(|binding| !(binding.id == id && binding.origin == origin));
-        old != file.bindings.len() && self.save(&file).is_ok()
+        if old == file.bindings.len() {
+            return Ok(false);
+        }
+        self.save(&file)?;
+        Ok(true)
     }
 
     pub fn get_scoped(&self, id: &str, origin: &str, project: &str) -> Option<ProjectBinding> {
@@ -251,23 +266,27 @@ impl BindingStore {
         bindings
     }
 
-    pub(crate) fn revoke_any(&self, id: &str) -> bool {
-        let mut file = self.load();
+    pub(crate) fn revoke_any(&self, id: &str) -> Result<bool, String> {
+        let mut file = self.load_checked()?;
         let old = file.bindings.len();
         file.bindings.retain(|binding| binding.id != id);
-        old != file.bindings.len() && self.save(&file).is_ok()
+        if old == file.bindings.len() {
+            return Ok(false);
+        }
+        self.save(&file)?;
+        Ok(true)
     }
 
-    pub(crate) fn revoke_origin(&self, origin: &str) -> usize {
+    pub(crate) fn revoke_origin(&self, origin: &str) -> Result<usize, String> {
         let origin = super::pairing::normalize_origin(origin);
-        let mut file = self.load();
+        let mut file = self.load_checked()?;
         let old = file.bindings.len();
         file.bindings.retain(|binding| binding.origin != origin);
         let removed = old - file.bindings.len();
-        if removed > 0 && self.save(&file).is_err() {
-            return 0;
+        if removed > 0 {
+            self.save(&file)?;
         }
-        removed
+        Ok(removed)
     }
 
     /// Revalidate the grant and root at each boundary that can follow a queue
@@ -336,13 +355,24 @@ mod validation_tests {
         assert!(validate("https://other.test", "paper", "paper.qmd").is_err());
         assert!(validate("https://example.test", "other", "paper.qmd").is_err());
         assert!(validate("https://example.test", "paper", "other.qmd").is_err());
-        assert!(store.revoke_origin_binding(&binding.id, "https://example.test"));
+        assert!(store
+            .revoke_origin_binding(&binding.id, "https://example.test")
+            .unwrap());
         assert!(validate("https://example.test", "paper", "paper.qmd").is_err());
         let replacement = store
             .grant("https://example.test", "paper", root.path(), "paper.qmd")
             .unwrap();
         assert_ne!(replacement.id, binding.id);
         assert!(validate("https://example.test", "paper", "paper.qmd").is_err());
+    }
+
+    #[test]
+    fn checked_binding_revoke_reports_corrupt_store() {
+        let state = tempfile::tempdir().unwrap();
+        let store = BindingStore::new(state.path());
+        std::fs::create_dir_all(store.path.parent().unwrap()).unwrap();
+        std::fs::write(&store.path, b"not valid json").unwrap();
+        assert!(store.revoke_any("binding-id").is_err());
     }
 
     #[test]

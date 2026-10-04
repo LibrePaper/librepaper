@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -61,6 +62,7 @@ pub struct Pairing {
 #[derive(Clone)]
 pub struct PairingStore {
     dir: PathBuf,
+    admission_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl PairingStore {
@@ -70,7 +72,12 @@ impl PairingStore {
     pub fn new(state_home: &Path, _fixed_code: Option<String>) -> Self {
         PairingStore {
             dir: state_home.join("librepaper").join("local"),
+            admission_gate: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    pub(crate) fn admission_gate(&self) -> &tokio::sync::Mutex<()> {
+        &self.admission_gate
     }
 
     fn service_path(&self) -> PathBuf {
@@ -100,6 +107,20 @@ impl PairingStore {
             read_json(&self.pairings_path()).unwrap_or_default();
         pairings.retain(|key, pairing| *key == pairing.origin);
         pairings
+    }
+
+    fn load_checked(&self) -> std::io::Result<HashMap<String, Pairing>> {
+        let text = match std::fs::read_to_string(self.pairings_path()) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(HashMap::new())
+            }
+            Err(error) => return Err(error),
+        };
+        let mut pairings: HashMap<String, Pairing> = serde_json::from_str(&text)
+            .map_err(std::io::Error::other)?;
+        pairings.retain(|key, pairing| *key == pairing.origin);
+        Ok(pairings)
     }
 
     fn save(&self, pairings: &HashMap<String, Pairing>) -> std::io::Result<()> {
@@ -200,13 +221,19 @@ impl PairingStore {
     /// Revokes the pairing for `origin` -- what `POST disconnect` does to the
     /// origin that authenticated it.
     pub fn revoke(&self, origin: &str) -> bool {
+        self.revoke_checked(origin).unwrap_or(false)
+    }
+
+    /// Remove a pairing and report persistence failures so API callers never
+    /// claim that access was revoked when the durable credential remains.
+    pub fn revoke_checked(&self, origin: &str) -> std::io::Result<bool> {
         let origin = normalize_origin(origin);
-        let mut pairings = self.load();
+        let mut pairings = self.load_checked()?;
         let removed = pairings.remove(&origin).is_some();
         if removed {
-            let _ = self.save(&pairings);
+            self.save(&pairings)?;
         }
-        removed
+        Ok(removed)
     }
 }
 
@@ -377,6 +404,14 @@ mod tests {
         assert!(!store.authenticate("https://a", &t1));
         assert!(store.authenticate("https://b", &t2));
         assert_eq!(store.active_pairings(), vec!["https://b".to_string()]);
+    }
+
+    #[test]
+    fn checked_revoke_reports_corrupt_pairing_store() {
+        let (_dir, store) = store();
+        std::fs::create_dir_all(store.dir.as_path()).unwrap();
+        std::fs::write(store.pairings_path(), b"not valid json").unwrap();
+        assert!(store.revoke_checked("https://a").is_err());
     }
 
     #[test]

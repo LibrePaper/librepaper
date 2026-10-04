@@ -1308,10 +1308,17 @@ async fn handle_binding_revoke(
     if let Err(response) = authenticate(inner, headers, origin) {
         return response;
     }
+    let _admission = inner.pairing.admission_gate().lock().await;
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
     let revoked = inner
         .quarto_bindings
         .revoke_origin_binding(id, origin.unwrap_or_default());
-    write_json(200, &json!({"revoked": revoked}))
+    match revoked {
+        Ok(revoked) => write_json(200, &json!({"revoked": revoked})),
+        Err(error) => write_json(500, &json!({"error":error})),
+    }
 }
 
 async fn handle_binding_folder(
@@ -1347,6 +1354,7 @@ async fn handle_binding_folder(
         Err(error) => return write_json(400, &json!({"error": error})),
     };
     // Permission may have been revoked while the user considered the dialog.
+    let _admission = inner.pairing.admission_gate().lock().await;
     if authenticate(inner, headers, origin).is_err() {
         return write_json(401, &json!({"error": "This site is no longer connected."}));
     }
@@ -1459,13 +1467,16 @@ async fn handle_startup(
             .await,
     );
     match decision {
-        Ok(()) if authenticate(inner, headers, origin).is_err() => {
-            write_json(401, &json!({"error": "This site is no longer connected."}))
+        Ok(()) => {
+            let _admission = inner.pairing.admission_gate().lock().await;
+            if authenticate(inner, headers, origin).is_err() {
+                return write_json(401, &json!({"error": "This site is no longer connected."}));
+            }
+            match super::lifecycle::set_startup(body.enabled) {
+                Ok(()) => write_json(200, &json!({})),
+                Err(error) => write_json(500, &json!({"error": error})),
+            }
         }
-        Ok(()) => match super::lifecycle::set_startup(body.enabled) {
-            Ok(()) => write_json(200, &json!({})),
-            Err(error) => write_json(500, &json!({"error": error})),
-        },
         Err(response) => response,
     }
 }
@@ -1496,13 +1507,16 @@ async fn handle_quit(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -
             .await,
     );
     match decision {
-        Ok(()) if authenticate(inner, headers, origin).is_err() => {
-            write_json(401, &json!({"error": "This site is no longer connected."}))
+        Ok(()) => {
+            let _admission = inner.pairing.admission_gate().lock().await;
+            if authenticate(inner, headers, origin).is_err() {
+                return write_json(401, &json!({"error": "This site is no longer connected."}));
+            }
+            match super::lifecycle::request_stop(&inner.state_home) {
+                Ok(()) => write_json(200, &json!({})),
+                Err(error) => write_json(500, &json!({"error": error})),
+            }
         }
-        Ok(()) => match super::lifecycle::request_stop(&inner.state_home) {
-            Ok(()) => write_json(200, &json!({})),
-            Err(error) => write_json(500, &json!({"error": error})),
-        },
         Err(response) => response,
     }
 }
@@ -1586,13 +1600,16 @@ async fn handle_integration_set(
             .await,
     );
     match decision {
-        Ok(()) if authenticate(inner, headers, origin).is_err() => {
-            write_json(401, &json!({"error": "This site is no longer connected."}))
+        Ok(()) => {
+            let _admission = inner.pairing.admission_gate().lock().await;
+            if authenticate(inner, headers, origin).is_err() {
+                return write_json(401, &json!({"error": "This site is no longer connected."}));
+            }
+            match super::integrations::set(which, custom.clone()) {
+                Ok(()) => write_json(200, &json!(custom)),
+                Err(error) => write_json(500, &json!({"error": error})),
+            }
         }
-        Ok(()) => match super::integrations::set(which, custom.clone()) {
-            Ok(()) => write_json(200, &json!(custom)),
-            Err(error) => write_json(500, &json!({"error": error})),
-        },
         Err(response) => response,
     }
 }
@@ -1797,7 +1814,7 @@ fn decision_to_result(decision: super::approval::Decision) -> Result<(), Reply> 
     }
 }
 
-fn bearer_token(headers: &HeaderMap) -> Option<String> {
+pub(super) fn bearer_token(headers: &HeaderMap) -> Option<String> {
     header_str(headers, "authorization")?
         .strip_prefix("Bearer ")
         .map(|token| token.trim().to_string())
@@ -1992,6 +2009,9 @@ async fn handle_preview(
         },
         Err(e) => return e,
     };
+    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
+        return response;
+    }
     if pairing::normalize_origin(&job.origin) != origin {
         return plain(403, "preview scope mismatch");
     }
@@ -2015,6 +2035,10 @@ async fn handle_preview(
         {
             return plain(400, "preview source snapshot does not match its inputs");
         }
+    }
+    let _admission = inner.pairing.admission_gate().lock().await;
+    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
+        return response;
     }
     let mut previews = inner.previews.lock().await;
     let active_pairings = inner.pairing.active_pairings();
@@ -2578,6 +2602,108 @@ mod settings_tests {
             waiting.await.unwrap(),
             super::super::approval::Decision::Allowed
         );
+    }
+
+    #[tokio::test]
+    async fn assistant_start_rechecks_pairing_after_a_delayed_body() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let (token, _) = inner.pairing.issue(origin, "test").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", HeaderValue::from_static("https://paper.example"));
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<String>();
+        let body_stream = futures_util::stream::once(async move {
+            let _ = started_tx.send(());
+            let text = release_rx.await.unwrap();
+            Ok::<_, std::io::Error>(axum::body::Bytes::from(text))
+        });
+        let request = Request::post("/assistant")
+            .header("content-type", "application/json")
+            .body(Body::from_stream(body_stream))
+            .unwrap();
+        let request_headers = headers.clone();
+        let service = inner.clone();
+        let pending = tokio::spawn(async move {
+            super::super::assistant::handle_assistant_start(
+                &service,
+                &request_headers,
+                Some(origin),
+                request,
+            )
+            .await
+        });
+        started_rx.await.unwrap();
+
+        let admission = inner.pairing.admission_gate().lock().await;
+        inner.pairing.revoke_checked(origin).unwrap();
+        drop(admission);
+        release_tx
+            .send(
+                json!({
+                    "link":"https://paper.example/document/paper#key=secret",
+                    "conversation":"conversation-1",
+                    "chat_token":"chat-token",
+                    "agent_token":"grant-token",
+                    "agent":"agent"
+                })
+                .to_string(),
+            )
+            .unwrap();
+        let response = pending.await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn job_upload_rechecks_pairing_after_a_delayed_body() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let (token, _) = inner.pairing.issue(origin, "test").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", HeaderValue::from_static("https://paper.example"));
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        let job = json!({
+            "protocol":2,"kind":"build","project":"paper","origin":origin,
+            "snapshot":"snapshot","generation":1,"builder":"typst",
+            "workspace":{"mode":"snapshot"},"entrypoint":"main.typ",
+            "output":"pdf","manifest":[]
+        });
+        let payload = format!(
+            "--control-test\r\nContent-Disposition: form-data; name=\"job\"\r\nContent-Type: application/json\r\n\r\n{}\r\n--control-test--\r\n",
+            job
+        );
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<String>();
+        let body_stream = futures_util::stream::once(async move {
+            let _ = started_tx.send(());
+            let text = release_rx.await.unwrap();
+            Ok::<_, std::io::Error>(axum::body::Bytes::from(text))
+        });
+        let request = Request::post("/jobs")
+            .header("content-type", "multipart/form-data; boundary=control-test")
+            .body(Body::from_stream(body_stream))
+            .unwrap();
+        let request_headers = headers.clone();
+        let service = inner.clone();
+        let pending = tokio::spawn(async move {
+            jobs::handle_jobs_post(&service, &request_headers, Some(origin), request).await
+        });
+        started_rx.await.unwrap();
+
+        let admission = inner.pairing.admission_gate().lock().await;
+        inner.pairing.revoke_checked(origin).unwrap();
+        drop(admission);
+        release_tx.send(payload).unwrap();
+        let response = pending.await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(inner.jobs.lock().await.is_empty());
     }
 
     #[tokio::test]

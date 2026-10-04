@@ -48,6 +48,11 @@ pub(super) async fn handle_workspace_put(
         Ok(upload) => upload,
         Err(response) => return response,
     };
+    // Upload bodies are bounded but may be slow. Do not hold the admission
+    // gate while reading them; recheck now, then under the gate before syncing.
+    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
+        return response;
+    }
     let uploads = upload.files;
     let manifest_text = upload.metadata;
     let manifest: Vec<ManifestEntry> = match serde_json::from_str(&manifest_text) {
@@ -79,6 +84,16 @@ pub(super) async fn handle_workspace_put(
         return write_json(400, &json!({"error": error}));
     }
 
+    let _admission = inner.pairing.admission_gate().lock().await;
+    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
+        return response;
+    }
+    let Some(binding) = inner
+        .quarto_bindings
+        .get_scoped(HOSTED_BINDING, &origin, &project)
+    else {
+        return write_json(403, &json!({"error": "hosted workspace was revoked"}));
+    };
     match sync_hosted_workspace(staged.path(), &binding.root, &manifest) {
         Ok(()) => write_json(200, &json!({"synced": manifest.len()})),
         Err(error) => write_json(400, &json!({"error": error})),
@@ -108,6 +123,11 @@ pub(super) async fn handle_jobs_post(
         Ok(upload) => upload,
         Err(response) => return response,
     };
+    // Never hold the admission gate across an upload. A site may have been
+    // revoked while the request body was still arriving.
+    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
+        return response;
+    }
     let mut uploads = upload.files;
     let job_text = upload.metadata;
     let raw_job: Value = match serde_json::from_str(&job_text) {
@@ -434,6 +454,11 @@ pub(super) async fn handle_jobs_post(
     };
     let generation = job.generation;
 
+    let _admission = inner.pairing.admission_gate().lock().await;
+    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
+        let _ = std::fs::remove_dir_all(&root);
+        return response;
+    }
     let mut jobs = inner.jobs.lock().await;
     // The early lookup above avoids most duplicate staging, but it cannot
     // reserve a key across concurrent requests. Recheck while holding the

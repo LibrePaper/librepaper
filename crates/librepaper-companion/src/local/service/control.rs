@@ -175,8 +175,11 @@ pub(super) async fn handle(
             revoke_pairing(inner, id).await
         }
         (Some("bindings"), Some(id), None, None) if *method == Method::DELETE => {
-            let revoked = inner.quarto_bindings.revoke_any(id);
-            write_json(200, &json!({"revoked":revoked}))
+            let _admission = inner.pairing.admission_gate().lock().await;
+            match inner.quarto_bindings.revoke_any(id) {
+                Ok(revoked) => write_json(200, &json!({"revoked":revoked})),
+                Err(error) => write_json(500, &json!({"error":error})),
+            }
         }
         (Some("bindings"), Some("folder"), None, None) if *method == Method::POST => {
             choose_binding_folder(inner, request).await
@@ -197,8 +200,10 @@ pub(super) async fn handle(
             add_agent(inner, request).await
         }
         (Some("agents"), Some(id), None, None) if *method == Method::DELETE => {
-            let removed = crate::local::acp_agents::CustomStore::new(&inner.state_home).remove(id);
-            write_json(200, &json!({"removed":removed}))
+            match crate::local::acp_agents::CustomStore::new(&inner.state_home).try_remove(id) {
+                Ok(removed) => write_json(200, &json!({"removed":removed})),
+                Err(error) => write_json(500, &json!({"error":error})),
+            }
         }
         (Some("agents"), Some("sessions"), Some(id), Some("cancel")) if *method == Method::POST => {
             cancel_session(inner, id).await
@@ -375,7 +380,10 @@ async fn revoke_pairing(inner: &Inner, id: &str) -> Reply {
     let Some(origin) = origin else {
         return write_json(404, &json!({"error":"pairing not found"}));
     };
-    let connections = super::consent::revoke_origin(inner, &origin).await;
+    let connections = match super::consent::revoke_origin(inner, &origin, None).await {
+        Ok(connections) => connections,
+        Err(error) => return write_json(500, &json!({"error":error})),
+    };
     write_json(
         200,
         &json!({"revoked":true,"connections_removed":connections}),
@@ -624,9 +632,11 @@ async fn quit(inner: &Inner) -> Reply {
             &json!({"error":"quit is available only in standalone mode"}),
         );
     }
-    inner.approvals.deny_all();
     match super::super::lifecycle::request_stop(&inner.state_home) {
-        Ok(()) => write_json(200, &json!({"ok":true})),
+        Ok(()) => {
+            inner.approvals.deny_all();
+            write_json(200, &json!({"ok":true}))
+        }
         Err(error) => write_json(500, &json!({"error":error})),
     }
 }
