@@ -5,6 +5,7 @@
 
 pub mod assistant_protocol;
 pub mod auth;
+pub mod canonical_json;
 pub mod config;
 pub mod http;
 pub mod private_files;

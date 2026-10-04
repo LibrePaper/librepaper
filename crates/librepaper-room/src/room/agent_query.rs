@@ -1630,7 +1630,7 @@ fn fingerprint(query: &Map<String, Value>) -> String {
     let mut copy = query.clone();
     copy.remove("cursor");
     copy.remove("limit");
-    digest(serde_json::to_string(&copy).unwrap_or_default().as_bytes())
+    librepaper_base::canonical_json::sha256_hex(&Value::Object(copy))
 }
 
 fn digest(bytes: &[u8]) -> String {
