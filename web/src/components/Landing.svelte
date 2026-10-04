@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   // The landing page, which for anyone signed in is not a landing page at all
   // but the other half of the workspace.
@@ -38,8 +39,8 @@
   import { preparedProjects } from "../lib/offline-projects.js";
 
   let { initialSettings = "" } = $props();
-  let settingsOpen = $state(initialSettings === "local");
-  let settingsCategory = $state(initialSettings || "editor");
+  let settingsOpen = $state(untrack(() => initialSettings === "local"));
+  let settingsCategory = $state(untrack(() => initialSettings || "editor"));
   function openSettings(category = "editor") {
     settingsCategory = category;
     settingsOpen = true;

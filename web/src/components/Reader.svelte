@@ -2662,8 +2662,8 @@
 
   // Settings open as a dialog from the navbar menu or the sidebar. Every entry
   // point opens the same dialog on the category it is about.
-  let settingsOpen = $state(initialSettings === "local");
-  let settingsCategory = $state(initialSettings || "editor");
+  let settingsOpen = $state(untrack(() => initialSettings === "local"));
+  let settingsCategory = $state(untrack(() => initialSettings || "editor"));
   let projectFolderOpen = $state(false);
   let savingTemplate = $state(false);
   let templateModalOpen = $state(false);

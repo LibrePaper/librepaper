@@ -36,7 +36,7 @@ function credentialKey(origin, address, instance) {
 export function createControlClient(deps = {}) {
   const getLocation = deps.location || (() => globalThis.location);
   const getStorage = deps.storage || (() => globalThis.sessionStorage);
-  const fetcher = deps.fetch || ((...args) => globalThis.fetch(...args));
+  const fetcher = deps.fetch || ((input, init) => globalThis.fetch(input, init));
   const replaceUrl = deps.replaceUrl || ((url) => globalThis.history.replaceState(null, "", url));
   const launchLink = deps.launchLink || ((url) => { globalThis.location.href = url; });
   const listeners = new Set();
@@ -160,6 +160,7 @@ export function createControlClient(deps = {}) {
     return requested;
   }
 
+  /** @param {string} path @param {{ method?: string, body?: unknown }} [options] */
   async function request(path, { method = "GET", body } = {}) {
     const credential = readActive();
     if (!credential) throw Object.assign(new Error("Open the companion from its tray menu to manage it."), { name: "Unavailable" });
