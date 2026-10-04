@@ -43,6 +43,10 @@ name = "cli_surface"
 path = "tests/cli_surface.rs"
 
 [[test]]
+name = "admin_pg_environment"
+path = "tests/admin_pg_environment.rs"
+
+[[test]]
 name = "deployment_gates"
 path = "tests/deployment_gates.rs"
 
