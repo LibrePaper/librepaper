@@ -237,6 +237,17 @@ impl CustomStore {
         }
         removed
     }
+
+    /// Remove an agent and report persistence failures to callers that need
+    /// to confirm the change, such as the companion settings API.
+    pub fn try_remove(&self, id: &str) -> Result<bool, String> {
+        let mut all = self.load();
+        if all.remove(id).is_none() {
+            return Ok(false);
+        }
+        write_private_json(&self.path(), &all).map_err(|error| error.to_string())?;
+        Ok(true)
+    }
 }
 
 /// Look up `name` on PATH. Returns the absolute path to the first match that
@@ -432,7 +443,8 @@ mod tests {
             acp_command(dir.path(), "mine"),
             Some(vec!["sh".to_string(), "--acp".to_string()])
         );
-        assert!(store.remove("mine"));
+        assert!(store.try_remove("mine").unwrap());
+        assert!(!store.try_remove("mine").unwrap());
         assert!(detect(dir.path()).iter().all(|entry| entry.id != "mine"));
     }
 
