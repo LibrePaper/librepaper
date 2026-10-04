@@ -203,7 +203,7 @@ pub struct Server {
     pub tokens: TokenCache,
     pub config: Arc<Configuration>,
     /// The two origins this deployment answers on. Set at startup from
-    /// `server.origin`; a deployment given none answers on loopback alone, which is
+    /// `origins.app`; a deployment given none answers on loopback alone, which is
     /// what development and the tests use.
     pub origins: origins::Origins,
     pub publishers: Policy,

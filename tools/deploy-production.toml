@@ -6,27 +6,22 @@
 # { env = "NAME" } references.
 
 # The container listens on a private port behind the reverse proxy, which
-# serves the public HTTPS origins. origin is the app and its API (other Host
-# headers get 421); docs_origin isolates rendered documents; site_origin is
-# the project site used for sign-out links.
+# serves the public HTTPS origins.
 [server]
-# Address on which the container accepts HTTP traffic behind the proxy.
-# The reverse proxy publishes the public HTTPS endpoints.
 address = "0.0.0.0:8080"
-# Keep the host-local companion disabled in this server container.
 local_companion = false
 
+# app is the application and its API (other Host headers get 421); docs
+# isolates rendered documents; site is the project site used for sign-out
+# links.
 [origins]
-# Both public origins terminate at the reverse proxy; the application listens
-# on the private Docker edge and internal networks.
-# Browser origin for the application and its authenticated API. Requests with
-# an unrecognized Host are rejected with 421.
 app = "https://app.librepaper.org"
-# Separate untrusted document origin, isolating rendered document content.
 docs = "https://docs.librepaper.org"
-# Public project site used for sign-out and site-level links.
 site = "https://librepaper.org"
 
+# Objects and server secrets live on the named Docker volume. fsync covers
+# object writes only; PostgreSQL handles its own durability. To use S3, set
+# object_store = "s3" and uncomment [storage.s3].
 [storage]
 directory = "/var/lib/librepaper"
 database_url = { env = "LIBREPAPER_DATABASE_URL" }
@@ -59,13 +54,11 @@ publishers = ["any"]
 commenters = ["anyone"]
 
 # Storage is per publisher, in MiB; uploads counts project creation, forks and
-# figure uploads per rolling hour. deployment_storage_mb caps the whole server.
+# figure uploads per rolling hour. deployment_storage_mib caps the whole server.
 [limits]
-# Maximum retained object storage per publisher, in MiB.
 publisher_storage_mib = 50
-# Per-publisher rolling-hour cap for project creation, forks, and figure uploads.
 publisher_uploads_per_hour = 30
-# deployment_storage_mb = 10240
+# deployment_storage_mib = 10240
 
 # Browsers fetch pinned renderer and LaTeX assets from this mirror, which sees
 # their IP. It must allow CORS GET and HEAD from the application origins.
@@ -78,8 +71,6 @@ address = "0.0.0.0:9091"
 
 # Keep in sync with the `edge` network in compose.yaml.
 [proxy]
-# Only peers in this proxy CIDR may provide forwarded client addresses. Keep
-# the range in sync with the `edge` network in compose.yaml.
 trusted_networks = ["172.29.0.0/16"]
 
 # Optional. Without [retention], documents stay until deleted. expire_from is
@@ -93,13 +84,11 @@ trusted_networks = ["172.29.0.0/16"]
 # filter = "info"
 
 # Optional backup intent, recorded as metadata only: nothing is scheduled,
-# encrypted or pruned. frequency is in seconds; warning_count is the number
+# encrypted or pruned. interval is a duration; warning_count is the number
 # of completed backups before the deployment warns.
 # [backup]
 # destination_class = "local"
-# Intended interval between backups, as a duration; metadata only.
 # interval = "1d"
-# Intended number of retained copies; metadata only.
 # retained_count = 7
 # encrypted = true
 # warning_count = 2

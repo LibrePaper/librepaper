@@ -12,7 +12,7 @@ use std::fmt;
 use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     path::{Path, PathBuf},
 };
 
@@ -395,23 +395,8 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "logging",
         ],
     )?;
-    section(
-        v,
-        "server",
-        &[
-            "address",
-            "local_companion",
-        ],
-    )?;
-    section(
-        v,
-        "origins",
-        &[
-            "app",
-            "docs",
-            "site",
-        ],
-    )?;
+    section(v, "server", &["address", "local_companion"])?;
+    section(v, "origins", &["app", "docs", "site"])?;
     section(
         v,
         "storage",
@@ -628,10 +613,14 @@ pub(crate) fn load_with_postgres_env(
     let log_filter = r.value("logging.filter", raw.logging.filter, "info".into())?;
     tracing_subscriber::EnvFilter::try_new(&log_filter)
         .map_err(|_| "logging.filter is not a valid filter directive".to_owned())?;
-    let simulate_activity = r.optional("demo.simulate_activity_days", raw.demo.simulate_activity_days)?;
+    let simulate_activity = r.optional(
+        "demo.simulate_activity_days",
+        raw.demo.simulate_activity_days,
+    )?;
     let mut config = Configuration::default();
     let l = raw.limits;
-    let publisher_storage_mb = r.optional("limits.publisher_storage_mib", l.publisher_storage_mib)?;
+    let publisher_storage_mb =
+        r.optional("limits.publisher_storage_mib", l.publisher_storage_mib)?;
     let deployment_storage_mb =
         r.optional("limits.deployment_storage_mib", l.deployment_storage_mib)?;
     let max_storage_mb = ((i64::MAX as u128).min(usize::MAX as u128) / 1_048_576) as usize;
@@ -652,7 +641,10 @@ pub(crate) fn load_with_postgres_env(
         return Err("limits.publisher_uploads_per_hour must fit in a signed 64-bit count".into());
     }
     config.set_uploads_per_hour(uploads_per_hour)?;
-    config.set_peer_queue(r.optional("limits.session_peer_queue_frames", l.session_peer_queue_frames)?)?;
+    config.set_peer_queue(r.optional(
+        "limits.session_peer_queue_frames",
+        l.session_peer_queue_frames,
+    )?)?;
     let log_quota = r.value(
         "limits.log_quota_mib",
         l.log_quota_mib,
@@ -688,13 +680,14 @@ pub(crate) fn load_with_postgres_env(
         .collect::<Result<_, _>>()?;
     config.cost.validate()?;
     let b = raw.backup;
-    let backup_interval_seconds = if let Some(interval_str) = r.optional("backup.interval", b.interval)? {
-        let seconds = librepaper_document::document::retention::parse_retention(&interval_str)
-            .map_err(|_| "backup.interval must be a duration such as 1d or 24h".to_string())?;
-        Some(seconds as u64)
-    } else {
-        None
-    };
+    let backup_interval_seconds =
+        if let Some(interval_str) = r.optional("backup.interval", b.interval)? {
+            let seconds = librepaper_document::document::retention::parse_retention(&interval_str)
+                .map_err(|_| "backup.interval must be a duration such as 1d or 24h".to_string())?;
+            Some(seconds as u64)
+        } else {
+            None
+        };
     config.apply_backup_overrides(BackupPolicyOverrides {
         destination_class: r.optional("backup.destination_class", b.destination_class)?,
         frequency: backup_interval_seconds,
@@ -1104,12 +1097,16 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "destination_class",
         c.config.backup.destination_class.as_deref(),
     );
-    optional_num(
+    optional(
         &mut out,
         &c.sources,
         "backup.interval",
         "interval",
-        c.config.backup.frequency,
+        c.config
+            .backup
+            .frequency
+            .map(|seconds| format!("{seconds}s"))
+            .as_deref(),
     );
     optional_num(
         &mut out,
@@ -1351,7 +1348,10 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap();
         let address = format!("LIBREPAPER_CONFIG_TEST_ADDRESS_{}", std::process::id());
         let publishers = format!("LIBREPAPER_CONFIG_TEST_PUBLISHERS_{}", std::process::id());
-        let _restore = RestoreEnv::set(&[(&address, "127.0.0.1:9091"), (&publishers, "[\"alice\", \"bob\"]")]);
+        let _restore = RestoreEnv::set(&[
+            (&address, "127.0.0.1:9091"),
+            (&publishers, "[\"alice\", \"bob\"]"),
+        ]);
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.toml");
         let text=format!("[server]\naddress = {{ env = \"{address}\" }}\n[access]\npublishers = {{ env = \"{publishers}\" }}");

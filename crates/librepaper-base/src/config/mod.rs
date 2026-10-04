@@ -290,7 +290,7 @@ impl CostPolicy {
             return Err("cost request and concurrency guardrails must be positive".into());
         }
         if self.trusted_proxies.len() > 128 {
-            return Err("trusted_proxies may contain at most 128 networks".into());
+            return Err("proxy.trusted_networks may contain at most 128 networks".into());
         }
         Ok(())
     }
@@ -303,20 +303,20 @@ pub fn parse_trusted_proxy(value: &str) -> Result<ipnet::IpNet, String> {
     let value = value.trim();
     if value.is_empty() || value.len() > 64 {
         return Err(format!(
-            "trusted_proxies entry {value:?} is empty or too long"
+            "proxy.trusted_networks entry {value:?} is empty or too long"
         ));
     }
     let (address, prefix) = value.split_once('/').unwrap_or((value, ""));
-    let address = address
-        .parse::<IpAddr>()
-        .map_err(|_| format!("trusted_proxies entry {value:?} is not an IP address or CIDR"))?;
+    let address = address.parse::<IpAddr>().map_err(|_| {
+        format!("proxy.trusted_networks entry {value:?} is not an IP address or CIDR")
+    })?;
     let bits = match address {
         IpAddr::V4(_) => 32,
         IpAddr::V6(_) => 128,
     };
     if prefix.is_empty() {
         return if value.contains('/') {
-            Err("trusted_proxies CIDR requires a prefix".into())
+            Err("proxy.trusted_networks CIDR requires a prefix".into())
         } else {
             // Bare address becomes /32 or /128
             let net = if let IpAddr::V6(ip) = address {
@@ -333,13 +333,13 @@ pub fn parse_trusted_proxy(value: &str) -> Result<ipnet::IpNet, String> {
     }
     let prefix = prefix
         .parse::<u8>()
-        .map_err(|_| format!("trusted_proxies entry {value:?} has an invalid prefix"))?;
+        .map_err(|_| format!("proxy.trusted_networks entry {value:?} has an invalid prefix"))?;
     if matches!(address, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some()) && prefix < 96 {
         return Err("mapped IPv4 proxy CIDR requires a prefix between 96 and 128".into());
     }
     if prefix > bits {
         return Err(format!(
-            "trusted_proxies entry {value:?} has prefix /{prefix}, but this address has {bits} bits"
+            "proxy.trusted_networks entry {value:?} has prefix /{prefix}, but this address has {bits} bits"
         ));
     }
     // For IPv4-mapped IPv6 addresses, convert to IPv4 network so it matches through normalized_ip
@@ -347,11 +347,13 @@ pub fn parse_trusted_proxy(value: &str) -> Result<ipnet::IpNet, String> {
         if let Some(mapped_v4) = ip.to_ipv4_mapped() {
             return ipnet::Ipv4Net::new(mapped_v4, prefix - 96)
                 .map(ipnet::IpNet::V4)
-                .map_err(|_| format!("trusted_proxies entry {value:?} is not a valid network"));
+                .map_err(|_| {
+                    format!("proxy.trusted_networks entry {value:?} is not a valid network")
+                });
         }
     }
     ipnet::IpNet::new(address, prefix)
-        .map_err(|_| format!("trusted_proxies entry {value:?} is not a valid network"))
+        .map_err(|_| format!("proxy.trusted_networks entry {value:?} is not a valid network"))
 }
 
 fn serialize_trusted_proxies<S>(networks: &[ipnet::IpNet], serializer: S) -> Result<S::Ok, S::Error>

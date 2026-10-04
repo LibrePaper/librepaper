@@ -128,7 +128,7 @@ pub struct Origins {
 
 impl Origins {
     /// A deployment that answers on loopback alone: development, the test
-    /// suite, and `librepaper admin serve` with no `server.origin`.
+    /// suite, and `librepaper admin serve` with no `origins.app`.
     pub fn loopback_only() -> Origins {
         Origins { configured: None }
     }
@@ -141,7 +141,7 @@ impl Origins {
         let reader = Origin::parse(reader).map_err(|error| format!("origins.app: {error}"))?;
         let docs = match docs {
             Some(value) => {
-                Origin::parse(value).map_err(|error| format!("server.docs_origin: {error}"))?
+                Origin::parse(value).map_err(|error| format!("origins.docs: {error}"))?
             }
             None => Origin::assemble(
                 reader.scheme,

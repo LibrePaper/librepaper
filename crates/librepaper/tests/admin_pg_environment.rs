@@ -79,7 +79,7 @@ fn admin_config_ignores_implicit_libpq_environment_but_honors_explicit_refs() {
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stdout.contains("port = 43123"), "{stdout}");
+    assert!(stdout.contains("address = \"127.0.0.1:43123\""), "{stdout}");
     assert!(stdout.contains("database_url = \"<redacted>\""), "{stdout}");
     for secret in [
         "config-secret",

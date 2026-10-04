@@ -324,7 +324,7 @@ fn server_flags_are_rejected_and_server_environment_overrides_are_ignored() {
     let config = temp.path().join("config.toml");
     std::fs::write(
         &config,
-        "[server]\nport = 8179\n[access]\npublishers = [\"any\"]\n",
+        "[server]\naddress = \"0.0.0.0:8179\"\n[access]\npublishers = [\"any\"]\n",
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
@@ -342,7 +342,7 @@ fn server_flags_are_rejected_and_server_environment_overrides_are_ignored() {
         .expect("CLI starts");
     assert!(output.status.success(), "{output:?}");
     let shown = String::from_utf8_lossy(&output.stdout);
-    assert!(shown.contains("port = 8179"), "{shown}");
+    assert!(shown.contains("address = \"0.0.0.0:8179\""), "{shown}");
     assert!(!shown.contains("9999"), "{shown}");
     assert!(!shown.contains("ambient"), "{shown}");
 }
@@ -397,9 +397,7 @@ fn config_check_is_side_effect_free_and_validates_serve_inputs() {
     let port = occupied.local_addr().unwrap().port();
     std::fs::write(
         &config,
-        format!(
-            "[server]\nbind = \"127.0.0.1\"\nport = {port}\n[access]\npublishers = [\"any\"]\n"
-        ),
+        format!("[server]\naddress = \"127.0.0.1:{port}\"\n[access]\npublishers = [\"any\"]\n"),
     )
     .unwrap();
     let config_arg = config.to_str().unwrap();

@@ -358,7 +358,7 @@ test('deploy writes Google OAuth credentials to .env and keeps them out of outpu
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
     assert.equal(envFile.trimEnd().split('\n').length, 11);
     const productionConfig = readFileSync(path.join(f.remote, 'config.toml'), 'utf8');
-    assert.match(productionConfig, /origin = "https:\/\/app\.librepaper\.org"/);
+    assert.match(productionConfig, /\[origins\]\napp = "https:\/\/app\.librepaper\.org"/);
     assert.match(productionConfig, /database_url = \{ env = "LIBREPAPER_DATABASE_URL" \}/);
     assert.ok(readFileSync(f.orderFile, 'utf8').indexOf('config-check') < readFileSync(f.orderFile, 'utf8').indexOf('config-install'));
     assert.ok(readFileSync(f.orderFile, 'utf8').indexOf('config-install') < readFileSync(f.orderFile, 'utf8').indexOf('up'));

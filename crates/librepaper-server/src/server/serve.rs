@@ -22,7 +22,7 @@ use librepaper_document::document::retention::{
 use librepaper_engine::storage::store::Store;
 use librepaper_engine::storage::{open_storage, StorageOptions};
 
-/// With `server.port = 0`, serve takes the first free port in this range, so a
+/// With port 0 in `server.address`, serve takes the first free port in this range, so a
 /// second deployment on the same machine needs no manually picked port.
 const PORT_FIRST: u16 = 8080;
 const PORT_LAST: u16 = 8099;
@@ -118,9 +118,7 @@ pub(crate) fn validate_asset_mirror(value: &str) -> Result<String, String> {
 pub(crate) fn validate_site_origin(value: &str) -> Result<String, String> {
     let value = value.trim();
     let parsed = url::Url::parse(value).map_err(|_| {
-        format!(
-            "server.site_origin must be a URL, for example https://paper.example (got {value:?})"
-        )
+        format!("origins.site must be a URL, for example https://paper.example (got {value:?})")
     })?;
     let loopback = matches!(parsed.host(), Some(url::Host::Domain("localhost")))
         || matches!(parsed.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
@@ -129,7 +127,7 @@ pub(crate) fn validate_site_origin(value: &str) -> Result<String, String> {
         || (parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback))
     {
         return Err(format!(
-            "server.site_origin must be an https: URL, or http: on loopback (got {value:?})"
+            "origins.site must be an https: URL, or http: on loopback (got {value:?})"
         ));
     }
     if !parsed.username().is_empty()
@@ -139,7 +137,7 @@ pub(crate) fn validate_site_origin(value: &str) -> Result<String, String> {
         || !parsed.path().trim_matches('/').is_empty()
     {
         return Err(
-            "server.site_origin must be an origin alone: no credentials, path, query or fragment"
+            "origins.site must be an origin alone: no credentials, path, query or fragment"
                 .to_string(),
         );
     }

@@ -122,12 +122,13 @@ snapshot: pins $(SHELL_OUT)
 clean:  ## Remove build output
 	@rm -rf dist target/release/librepaper web/dist web/node_modules
 
-# The port is fixed because the GitHub OAuth app's callback URL names it.
+# These match tools/dev.toml and tools/dev-oauth.toml, which hold the server
+# settings; edit both together. The port is fixed because the GitHub OAuth
+# app's callback URL names it. The static site is a second server on a second
+# port: a directory of files with no application behind it, and the
+# application is what the Sign in button on it points at.
 PORT       := 8081
-# The static site's port.
 SITE_PORT  := 8082
-# Local data directory. Both PORT, SITE_PORT and DATA must match
-# tools/dev.toml and tools/dev-oauth.toml.
 DATA       := librepaper-data
 CONFIG_ORIGIN := $(origin CONFIG)
 CONFIG     ?= tools/dev.toml
@@ -187,6 +188,7 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # 0 gives the honest history of a document published once, and any other
 # number overrides the three weeks. It applies to the examples an account is
 # given at first sign-in, so changing it means `wipe` and signing in again.
+#
 # The whole product, locally: the marketing site on one port and the
 # application on the other, with the site built to point its Sign in button at
 # the application this target just started rather than at the published
