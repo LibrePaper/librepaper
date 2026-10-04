@@ -650,8 +650,7 @@ mod tests {
         let pairing = crate::local::pairing::PairingStore::new(dir.path(), None);
         let (_owner_token, _) = pairing.issue("https://owner.example", "Owner").unwrap();
         let (other_token, _) = pairing.issue("https://other.example", "Other").unwrap();
-        let link = DocumentLink::parse("https://papers.example/docs/paper#k=secret", "")
-            .unwrap();
+        let link = DocumentLink::parse("https://papers.example/docs/paper#k=secret", "").unwrap();
         let conversation = "conversation-1";
         let connections = crate::local::connections::ConnectionStore::new(dir.path());
         let connection_name = connections

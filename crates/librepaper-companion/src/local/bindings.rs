@@ -410,9 +410,7 @@ mod validation_tests {
         let revoke_finished = revoke_finished_tx;
         let revoke_thread = std::thread::spawn(move || {
             revoke_started.send(()).unwrap();
-            let result = revoker
-                .revoke_origin("https://revoked.test")
-                .map(|_| ());
+            let result = revoker.revoke_origin("https://revoked.test").map(|_| ());
             revoke_finished.send(result).unwrap();
         });
         let grant_started = started_tx;
@@ -420,12 +418,9 @@ mod validation_tests {
         let root_path = root.path().to_path_buf();
         let grant_thread = std::thread::spawn(move || {
             grant_started.send(()).unwrap();
-            let result = granter.grant(
-                "https://other.test",
-                "paper",
-                &root_path,
-                "paper.qmd",
-            ).map(|_| ());
+            let result = granter
+                .grant("https://other.test", "paper", &root_path, "paper.qmd")
+                .map(|_| ());
             grant_finished.send(result).unwrap();
         });
 

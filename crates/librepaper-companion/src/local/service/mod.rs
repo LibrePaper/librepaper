@@ -2717,7 +2717,7 @@ mod settings_tests {
                 "protocol":2,"kind":"build","project":"paper","origin":origin,
                 "snapshot":"snapshot","generation":1,"builder":"typst",
                 "workspace":{"mode":"snapshot"},"entrypoint":"main.typ",
-                "output":"pdf","inputs":{"engine":"native"},"manifest":[]
+                "output":"pdf","manifest":[]
             })
         );
         let mut headers = HeaderMap::new();
