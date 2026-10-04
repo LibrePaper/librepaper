@@ -134,7 +134,7 @@ impl ApprovalBroker {
         };
 
         eprintln!(
-            "LibrePaper approval pending: {}. Approve in the companion panel or run: librepaper local approve {}",
+            "LibrePaper approval pending: {}. Approve in Settings → Companion or run: librepaper local approve {}",
             approval.title, code
         );
         if should_open && browser_available() {

@@ -188,6 +188,10 @@ mod tests {
         let token_path = state_home.join("librepaper/local/control-token.json");
         let token: serde_json::Value =
             serde_json::from_slice(&std::fs::read(token_path).unwrap()).unwrap();
+        let trusted_origin = url::Url::parse(token["server"].as_str().unwrap())
+            .unwrap()
+            .origin()
+            .ascii_serialization();
         let client = reqwest::Client::new();
         let url = format!("{}companion/api/state", app.address);
         let mut state = None;
@@ -195,6 +199,7 @@ mod tests {
             if let Ok(response) = client
                 .get(&url)
                 .bearer_auth(token["token"].as_str().unwrap())
+                .header(reqwest::header::ORIGIN, &trusted_origin)
                 .send()
                 .await
             {

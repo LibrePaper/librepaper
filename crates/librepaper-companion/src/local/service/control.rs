@@ -394,7 +394,6 @@ async fn state(inner: &Inner) -> Reply {
     } else {
         None
     };
-    let standalone = super::standalone(inner);
     write_json(
         200,
         &json!({
