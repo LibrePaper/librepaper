@@ -3,9 +3,9 @@
 //!
 //! One consent page, reached only through `POST pair/request`, and one way
 //! the token is handed back afterward: `POST connect/claim`, proven by the
-//! PKCE verifier the browser generated and never sent here. The consent
-//! dialog appears through a native OS window with no browser involved. The
-//! token is never shown in a result page.
+//! PKCE verifier the browser generated and never sent here. The local
+//! companion panel asks for explicit consent; the token is never shown in a
+//! result page.
 //!
 //! Split out of `service` because it is a closed surface: nothing here reads
 //! a job, a binding or a workspace, and nothing outside calls into it except
@@ -123,6 +123,10 @@ pub(super) async fn handle_pair_request(
     if let Some(item) = pending.get_mut(&request_id) {
         item.asked = true;
     }
+    let approval_ttl = pending
+        .get(&request_id)
+        .map(|item| item.expires.saturating_duration_since(Instant::now()))
+        .unwrap_or_default();
 
     let request_id_clone = request_id.clone();
     let inner_clone = inner.clone();
@@ -143,15 +147,16 @@ pub(super) async fn handle_pair_request(
             title: "Connect LibrePaper Companion".to_string(),
             message,
             allow_label: "Connect".to_string(),
+            scope: Some(origin_clone.clone()),
         };
 
-        match super::super::approval::ask(&approval).await {
+        match inner_clone.approvals.ask(&approval, approval_ttl).await {
             super::super::approval::Decision::Allowed => {
                 let mut pending = inner_clone.pending_pairs.lock().await;
                 if let Some(item) = pending.get_mut(&request_id_clone) {
-                    if item.expires > Instant::now() {
+                    if item.expires > Instant::now() && !item.refused {
                         let (token, expires) =
-                            match inner_clone.pairing.issue(&origin_clone, "native dialog") {
+                            match inner_clone.pairing.issue(&origin_clone, "companion panel") {
                                 Ok(issued) => issued,
                                 Err(_) => {
                                     item.refused = true;
@@ -275,16 +280,55 @@ pub(super) async fn handle_disconnect(
     }
     let origin = super::super::pairing::normalize_origin(origin.unwrap_or_default());
     inner.pairing.revoke(&origin);
+    let connections = super::super::connections::ConnectionStore::new(&inner.state_home)
+        .remove_origin(&origin);
+    inner.previews.lock().await.stop_origin(&origin).await;
+    write_json(200, &json!({"ok": true, "connections_removed": connections}))
+}
+
+pub(super) async fn revoke_origin(inner: &Inner, origin: &str) -> usize {
+    inner.approvals.deny_scope(origin);
+    {
+        let mut pending = inner.pending_pairs.lock().await;
+        for item in pending.values_mut() {
+            if super::super::pairing::normalize_origin(&item.origin)
+                == super::super::pairing::normalize_origin(origin)
+            {
+                item.refused = true;
+            }
+        }
+    }
+    inner.pairing.revoke(origin);
     // Disconnecting the site also drops the document links it handed this
     // computer. Otherwise revoking a pairing would leave agents configured
     // against credentials the user believes they have taken back.
     let connections =
-        super::super::connections::ConnectionStore::new(&inner.state_home).remove_origin(&origin);
-    inner.previews.lock().await.stop_origin(&origin).await;
-    write_json(
-        200,
-        &json!({"ok": true, "connections_removed": connections}),
-    )
+        super::super::connections::ConnectionStore::new(&inner.state_home).remove_origin(origin);
+    inner.previews.lock().await.stop_origin(origin).await;
+    inner.quarto_bindings.revoke_origin(origin);
+    let mut queued = Vec::new();
+    {
+        let mut jobs = inner.jobs.lock().await;
+        for (id, entry) in jobs.iter_mut() {
+            if super::super::pairing::normalize_origin(&entry.request.origin)
+                == super::super::pairing::normalize_origin(origin)
+            {
+                let _ = entry.cancel_tx.send(true);
+                if entry.queued {
+                    entry.queued = false;
+                    entry.status.status = "canceled".to_string();
+                    entry.status.stage = "finished".to_string();
+                    entry.finished_at = Some(Instant::now());
+                    queued.push(id.clone());
+                }
+            }
+        }
+    }
+    if !queued.is_empty() {
+        inner.queue.lock().await.retain(|id| !queued.contains(id));
+    }
+    inner.assistant_sessions.stop_dashboard_origin(origin).await;
+    connections
 }
 
 /* -------------------------------------------------------- capabilities */

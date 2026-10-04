@@ -2125,6 +2125,8 @@ mod tests {
             assistant_sessions: crate::assistant::registry::SessionRegistry::new(
                 state_home.to_path_buf(),
             ),
+            approvals: crate::local::approval::ApprovalBroker::default(),
+            control: tokio::sync::Mutex::new(None),
         })
     }
 

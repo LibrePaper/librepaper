@@ -25,6 +25,7 @@ enum Entry {
     /// reaps it until the next call touches this key.
     Running {
         config_hash: String,
+        origin: Option<String>,
         status: StatusHandle,
         stop: StopSignal,
         handle: tokio::task::JoinHandle<Result<(), String>>,
@@ -155,7 +156,7 @@ impl SessionRegistry {
                 self.state_home.clone(),
                 agent_environment.to_vec(),
             )?;
-            self.spawn_running(&key, &wanted, grant, move |status, stop| async move {
+            self.spawn_running(&key, &wanted, Some(link.server().to_string()), grant, move |status, stop| async move {
                 runtime::run(&peer, config, status, stop).await
             });
         } else {
@@ -177,6 +178,7 @@ impl SessionRegistry {
         &self,
         key: &str,
         config_hash: &str,
+        origin: Option<String>,
         grant: Option<std::sync::Arc<std::sync::RwLock<String>>>,
         body: F,
     ) where
@@ -199,6 +201,7 @@ impl SessionRegistry {
             key.to_string(),
             Entry::Running {
                 config_hash: config_hash.to_string(),
+                origin,
                 status,
                 stop,
                 handle,
@@ -277,6 +280,60 @@ impl SessionRegistry {
         self.status_by_key(&key)
             .await
             .ok_or(lifecycle::Error::NotRunning)
+    }
+
+    /// The local companion panel may inspect and stop sessions without a
+    /// document origin. Session keys are opaque SHA-256 identifiers and the
+    /// snapshot contains no document credential.
+    pub(crate) async fn dashboard_sessions(&self) -> Vec<(String, lifecycle::StatusSnapshot)> {
+        let ids: Vec<_> = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        for id in ids {
+            self.reap(&id).await;
+        }
+        let sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
+        let mut rows: Vec<_> = sessions
+            .iter()
+            .map(|(id, entry)| {
+                let status = match entry {
+                    Entry::Running { status, .. } => status.get(),
+                    Entry::Terminal(status) => status.clone(),
+                };
+                (id.clone(), status)
+            })
+            .collect();
+        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        rows
+    }
+
+    pub(crate) async fn stop_dashboard_origin(&self, origin: &str) {
+        let keys: Vec<_> = {
+            let sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
+            sessions
+                .iter()
+                .filter_map(|(id, entry)| match entry {
+                    Entry::Running { origin: Some(session_origin), .. }
+                        if crate::local::pairing::normalize_origin(session_origin)
+                            == crate::local::pairing::normalize_origin(origin) => Some(id.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        for id in keys {
+            let _ = self.stop_by_key(&id).await;
+        }
+    }
+
+    pub(crate) async fn stop_dashboard_session(&self, id: &str) -> Result<(), String> {
+        if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("unknown assistant session".into());
+        }
+        self.stop_by_key(id).await.map_err(|error| error.to_string())
     }
 
     async fn status_by_key(&self, key: &str) -> Option<lifecycle::StatusSnapshot> {
@@ -371,14 +428,14 @@ mod tests {
     #[tokio::test]
     async fn stopping_one_session_leaves_a_concurrent_one_running() {
         let registry = SessionRegistry::new(PathBuf::from("/tmp/registry-test"));
-        registry.spawn_running("one", "hash-1", None, |_status, _stop| async move {
+        registry.spawn_running("one", "hash-1", None, None, |_status, _stop| async move {
             // Wedged mid-await, exactly like an agent handshake that never
             // returns: this task never checks `stop`, so only a hard abort
             // (never a cooperative signal) can end it.
             std::future::pending::<()>().await;
             Ok(())
         });
-        registry.spawn_running("two", "hash-2", None, |status, stop| async move {
+        registry.spawn_running("two", "hash-2", None, None, |status, stop| async move {
             status.set(RunnerState::Ready, None, None);
             while !stop.requested() {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -400,7 +457,7 @@ mod tests {
     #[tokio::test]
     async fn a_panicking_session_reports_failed_and_the_registry_keeps_serving() {
         let registry = SessionRegistry::new(PathBuf::from("/tmp/registry-test"));
-        registry.spawn_running("panics", "hash-1", None, |_status, _stop| async move {
+        registry.spawn_running("panics", "hash-1", None, None, |_status, _stop| async move {
             panic!("session task panicked")
         });
         for _ in 0..100 {
@@ -416,7 +473,7 @@ mod tests {
 
         // The registry itself is unharmed: a second, healthy session still
         // starts and reports normally.
-        registry.spawn_running("healthy", "hash-1", None, |status, _stop| async move {
+        registry.spawn_running("healthy", "hash-1", None, None, |status, _stop| async move {
             status.set(RunnerState::Ready, None, None);
             std::future::pending::<()>().await;
             Ok(())
