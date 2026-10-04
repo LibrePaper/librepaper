@@ -23,12 +23,15 @@ export function codeLanguage(info) {
   let name = raw;
   if (name.startsWith("{")) {
     const close = name.indexOf("}");
-    if (close < 0) return null;
-    name = name.slice(1, close).trim();
+    // CodeMirror currently reduces a fence info string to its first token
+    // before calling this resolver. Thus `{python label=...}` arrives as
+    // `{python`; accept that useful prefix, as well as a first token ending
+    // in the comma from `{r, echo=FALSE}`.
+    name = name.slice(1, close < 0 ? undefined : close).trim();
   }
   name = name.split(/[\s,]+/, 1)[0]?.toLowerCase() || "";
   if (!name) return null;
-  return LanguageDescription.matchLanguageName(languages, name) || null;
+  return LanguageDescription.matchLanguageName(languages, name, false) || null;
 }
 
 const markdownLanguage = () => yamlFrontmatter({
