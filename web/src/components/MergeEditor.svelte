@@ -10,6 +10,8 @@
   import { undoManagerField, undo as undoCommand, redo as redoCommand } from "../lib/loro-undo.js";
   import { UndoManager } from "loro-crdt";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
+  import { sourceLanguage } from "../lib/source-language.js";
+  import { sourceHighlighting } from "../lib/source-highlight.js";
   import IconButton from "./IconButton.svelte";
 
   let {
@@ -57,6 +59,8 @@
       ...keyboardExtensions,
       EditorView.lineWrapping,
       ...collaborativeExtensions,
+      sourceHighlighting,
+      sourceLanguage(path),
       ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
     ];
   }

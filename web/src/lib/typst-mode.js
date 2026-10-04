@@ -14,7 +14,8 @@ export const typstLanguage = {
   token(stream, state) {
     if (state.blockComment) {
       if (stream.skipTo("*/")) {
-        stream.advance(2);
+        stream.next();
+        stream.next();
         state.blockComment = false;
       } else stream.skipToEnd();
       return "comment";
@@ -27,7 +28,8 @@ export const typstLanguage = {
     if (stream.match(/^\/\*/)) {
       state.blockComment = true;
       if (stream.skipTo("*/")) {
-        stream.advance(2);
+        stream.next();
+        stream.next();
         state.blockComment = false;
       } else stream.skipToEnd();
       return "comment";
