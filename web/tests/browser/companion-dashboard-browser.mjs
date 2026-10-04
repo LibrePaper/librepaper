@@ -214,13 +214,17 @@ try {
   await b.evaluate(`(() => {
     const realFetch = window.fetch.bind(window);
     window.fetch = (input, init) => String(input).includes("/companion/api/state")
-      ? Promise.resolve(new Response(JSON.stringify({version:"test",standalone:true,tools:{tools:{},platform:"test"},pairings:[],bindings:[],approvals:[{id:"xss",title:"<img src=x onerror=window.__xss=1>",message:"<script>window.__xss=2</script>",allow_label:"Allow"}],jobs:[{id:"job-x",kind:"Quarto",status:"running",stage:"Rendering",log_tail:"recent output"}],previews:[],agents:[],sessions:[],settings:{tool_paths:[],tray_enabled:true,integrations:[],custom_agents:[]}}), {headers:{"content-type":"application/json"}}))
+      ? Promise.resolve(new Response(JSON.stringify({version:"test",standalone:true,tools:{tools:{quarto:{available:true,version:"Quarto 1.7",note:"Installed"}},platform:"test",builders:[{id:"typst",available:true,version:"Typst 0.13",note:"Ready for local PDF builds."},{id:"pandoc",available:false,version:null,note:"Install Pandoc and rescan tools."},{id:"quarto",available:true,version:"Quarto 1.7",note:"Installed"}]},pairings:[],bindings:[],approvals:[{id:"xss",title:"<img src=x onerror=window.__xss=1>",message:"<script>window.__xss=2</script>",allow_label:"Allow"}],jobs:[{id:"job-x",kind:"Quarto",status:"running",stage:"Rendering",log_tail:"recent output"}],previews:[],agents:[],sessions:[],settings:{tool_paths:[],tray_enabled:true,integrations:[],custom_agents:[]}}), {headers:{"content-type":"application/json"}}))
       : realFetch(input, init);
   })()`);
   await b.evaluate('document.dispatchEvent(new Event("visibilitychange"))');
   await until("hostile text rendered", () => b.evaluate('document.querySelector("#approvals h3")?.textContent.includes("<img")'));
   assert.equal(await b.evaluate('document.querySelector("#approvals img, #approvals script") !== null'), false, "untrusted state is rendered with textContent");
   assert.equal(await b.evaluate("window.__xss || 0"), 0, "untrusted state did not execute");
+  const toolCards = await b.evaluate('JSON.stringify([...document.querySelectorAll("#tools .tool-card")].map((card) => card.innerText))');
+  assert.match(toolCards, /Typst[\s\S]*Available[\s\S]*Typst 0\.13/);
+  assert.match(toolCards, /Pandoc[\s\S]*Not found[\s\S]*Install Pandoc and rescan tools/);
+  assert.equal(await b.evaluate('[...document.querySelectorAll("#tools h3")].filter((heading) => heading.textContent === "Quarto").length'), 1, "builder and integration records are deduplicated");
   await b.evaluate('document.querySelector("#activity details summary").click()');
   await new Promise((done) => setTimeout(done, 2300));
   assert.equal(await b.evaluate('document.querySelector("#activity details").open'), true, "polling preserves expanded bounded logs");
