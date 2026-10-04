@@ -28,7 +28,7 @@ async function makeFixture({ running = false, port, commandLineServer } = {}) {
   ]);
 
   await writeFile(join(directory, "mock-make"),
-    '#!/bin/sh\ncase " $* " in *" site "*) target=site;; *" serve "*) target=serve;; *) target=unknown;; esac\nprintf "%s\\targs=%s\\tserver=%s\\tapp=%s\\n" "$target" "$*" "${LIBREPAPER_SERVER:-}" "${LIBREPAPER_APP_ORIGIN:-}" >> "$MOCK_RECURSIVE_MAKE_LOG"\n',
+    '#!/bin/sh\ncase " $* " in *" site "*) target=site;; *" serve "*) target=serve;; *) target=unknown;; esac\nprintf "%s\\targs=%s\\tserver=%s\\tapp=%s\\n" "$target" "$*" "${LIBREPAPER_SERVER:-}" "${LIBREPAPER_APP_ORIGIN:-}" >> "$MOCK_RECURSIVE_MAKE_LOG"\nif [ "$target" = serve ] && [ "${MOCK_COMPANION_RUNNING:-0}" != 1 ]; then attempts=0; while ! grep -q \'^start\' "$MOCK_COMPANION_LOG" 2>/dev/null; do attempts=$((attempts + 1)); [ "$attempts" -lt 50 ] || break; sleep 0.1; done; fi\n',
     { mode: 0o755 });
 
   await writeFile(join(mockBinDir, "bun"),
@@ -58,6 +58,7 @@ async function makeFixture({ running = false, port, commandLineServer } = {}) {
 
 function runDemoRun(fixture) {
   const args = [
+    `--old-file=${fixture.binPath}`,
     "--no-print-directory",
     "-f",
     makefile,
@@ -84,6 +85,7 @@ function runDemoRun(fixture) {
       MFLAGS: "",
       MAKELEVEL: "",
       LIBREPAPER_SERVER: inheritedProductionServer,
+      LIBREPAPER_APP_ORIGIN: "",
       MOCK_RECURSIVE_MAKE_LOG: fixture.recursiveMakeLog,
       MOCK_COMPANION_LOG: fixture.companionLog,
       MOCK_BUN_LOG: fixture.bunLog,
