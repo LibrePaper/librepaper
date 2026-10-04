@@ -976,6 +976,10 @@ fn srcset_candidates_follow_html_syntax() {
     let references = closure_of("<img srcset=\"x,y.png 1x\">", &["x,y.png"])
         .expect("a comma inside a file name is kept");
     assert!(references.contains("x,y.png"));
+
+    let references = closure_of("<img srcset=\"a.png 1x,b.png 2x\">", &["a.png", "b.png"])
+        .expect("a descriptor comma without a space still ends the candidate");
+    assert!(references.contains("a.png") && references.contains("b.png"));
 }
 
 #[test]

@@ -562,15 +562,38 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
 /// candidate ends at a comma that follows whitespace, so commas inside a URL
 /// (data URLs, odd file names) are kept.
 fn srcset_urls(value: &str) -> Vec<String> {
+    // HTML's srcset: candidates are a URL (no whitespace) and optional
+    // descriptors, separated by commas. A comma inside a URL is part of it; a
+    // comma after a descriptor ends the candidate whether or not whitespace
+    // follows, so "a.png 1x,b.png 2x" names two files.
     let mut urls = Vec::new();
     let mut expect_url = true;
     for token in value.split_ascii_whitespace() {
-        if expect_url {
-            let url = token.strip_suffix(',');
-            urls.push(url.unwrap_or(token).to_owned());
-            expect_url = url.is_some();
-        } else {
-            expect_url = token.ends_with(',');
+        let mut rest = token;
+        loop {
+            if expect_url {
+                let (url, more) = match rest.strip_suffix(',') {
+                    Some(url) => (url, true),
+                    None => (rest, false),
+                };
+                if !url.is_empty() {
+                    urls.push(url.to_owned());
+                }
+                expect_url = more;
+                break;
+            }
+            match rest.split_once(',') {
+                // A descriptor, then the next candidate begins in this token.
+                Some((_, after)) if !after.is_empty() => {
+                    expect_url = true;
+                    rest = after;
+                }
+                Some(_) => {
+                    expect_url = true;
+                    break;
+                }
+                None => break,
+            }
         }
     }
     urls
