@@ -161,53 +161,6 @@ pub fn validate_storage_options(options: &StorageOptions) -> Result<(), String> 
     Ok(())
 }
 
-#[cfg(test)]
-mod storage_option_validation_tests {
-    use super::*;
-
-    fn filesystem_options(dir: PathBuf, endpoint: Option<&str>) -> StorageOptions {
-        StorageOptions {
-            dir,
-            fsync: true,
-            database_url: "postgresql:///librepaper".into(),
-            database_connections: 20,
-            object_store: "filesystem".into(),
-            s3_endpoint: endpoint.map(str::to_owned),
-            s3_region: "us-east-1".into(),
-            s3_bucket: None,
-            s3_allow_http: false,
-            s3_access_key_id: None,
-            s3_secret_access_key: None,
-            s3_session_token: None,
-        }
-    }
-
-    #[test]
-    fn filesystem_backend_rejects_unsafe_inactive_s3_endpoints_without_echoing_them() {
-        let dir = tempfile::tempdir().unwrap();
-        for endpoint in [
-            "https://username:credential-secret@s3.example",
-            "https://s3.example/?token=query-secret",
-        ] {
-            let options = filesystem_options(dir.path().to_path_buf(), Some(endpoint));
-            let error = validate_storage_options(&options).unwrap_err();
-            assert!(error.contains("storage.s3.endpoint"));
-            assert!(!error.contains("credential-secret"));
-            assert!(!error.contains("query-secret"));
-        }
-    }
-
-    #[test]
-    fn filesystem_backend_accepts_a_valid_inactive_s3_endpoint() {
-        let dir = tempfile::tempdir().unwrap();
-        let options = filesystem_options(
-            dir.path().to_path_buf(),
-            Some("https://s3.example/bucket-prefix"),
-        );
-        assert!(validate_storage_options(&options).is_ok());
-    }
-}
-
 /// The blob store a deployment was configured for, having checked that its
 /// directory is usable. A misconfigured directory must fail here, at
 /// startup, in front of whoever is starting it, not on the first upload, in
@@ -253,4 +206,51 @@ pub fn create_private_dir(path: &std::path::Path, context: &str) -> Result<(), S
             .map_err(|err| format!("could not protect {context} {}: {err}", path.display()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod storage_option_validation_tests {
+    use super::*;
+
+    fn filesystem_options(dir: PathBuf, endpoint: Option<&str>) -> StorageOptions {
+        StorageOptions {
+            dir,
+            fsync: true,
+            database_url: "postgresql:///librepaper".into(),
+            database_connections: 20,
+            object_store: "filesystem".into(),
+            s3_endpoint: endpoint.map(str::to_owned),
+            s3_region: "us-east-1".into(),
+            s3_bucket: None,
+            s3_allow_http: false,
+            s3_access_key_id: None,
+            s3_secret_access_key: None,
+            s3_session_token: None,
+        }
+    }
+
+    #[test]
+    fn filesystem_backend_rejects_unsafe_inactive_s3_endpoints_without_echoing_them() {
+        let dir = tempfile::tempdir().unwrap();
+        for endpoint in [
+            "https://username:credential-secret@s3.example",
+            "https://s3.example/?token=query-secret",
+        ] {
+            let options = filesystem_options(dir.path().to_path_buf(), Some(endpoint));
+            let error = validate_storage_options(&options).unwrap_err();
+            assert!(error.contains("storage.s3.endpoint"));
+            assert!(!error.contains("credential-secret"));
+            assert!(!error.contains("query-secret"));
+        }
+    }
+
+    #[test]
+    fn filesystem_backend_accepts_a_valid_inactive_s3_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = filesystem_options(
+            dir.path().to_path_buf(),
+            Some("https://s3.example/bucket-prefix"),
+        );
+        assert!(validate_storage_options(&options).is_ok());
+    }
 }
