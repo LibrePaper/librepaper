@@ -148,6 +148,27 @@ tools/deploy-production deploy-local target/x86_64-unknown-linux-musl/release/li
 - Domain, redirects, publishers and commenters are constants at the top of `tools/deploy-production`. The official instance accepts any signed-in GitHub or Google account as a publisher. Its `.env` sets a 50 MiB per-account storage quota and a limit of 30 project creations, forks or figure uploads per rolling hour; these limits apply to release and local-binary deployments.
 - The VPS keeps the kit and `.env` (mode 600) in `~/librepaper`
 
+## Squash migrations
+
+One deployment exists, so the files under `crates/librepaper-engine/migrations/postgres/` can be hand-merged into a single `0001_catalog.sql` whenever the history gets noisy. The server refuses to start when an applied version in `_sqlx_migrations` has no file or a different checksum, so production's table is re-pinned in the same deploy that ships the squashed file.
+
+```sh
+# 1. deploy the release that holds every migration you are about to merge
+# 2. merge the files into 0001_catalog.sql, delete the others, commit, tag, release
+# 3. deploy: the preflight sees one local file against several applied rows,
+#    proves the file rebuilds production's schema (pg_dump of both, on the VPS),
+#    pins the table to version 1 with the file's SHA-384, logs the old versions
+#    to ~/librepaper/migrations-squash.log, takes a backup, then starts containers
+tools/deploy-production deploy "$VERSION"
+# the same step on its own; only right before a deploy, since a restart in between fails
+tools/deploy-production squash-migrations
+```
+
+- The preflight runs on every deploy: matching rows pass, a fresh database passes, any other mismatch stops before containers are touched
+- A non-empty schema diff stops the deploy with nothing changed; fix the merged file and release again
+- Backups record the migration version and restore refuses a mismatch, so backups from before the squash no longer restore; the step takes a fresh one
+- Once a second deployment exists, stop squashing and go back to additive migrations
+
 ## Monitoring
 
 Grafana is at `https://app.librepaper.org/admin/monitoring/`, with username `admin` and the secret in SOPS. To copy the password to a Wayland clipboard without putting it in terminal output, shell history, or process arguments:
