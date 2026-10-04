@@ -1,19 +1,19 @@
 <script>
-  import { onMount } from "svelte";
   import SettingRow from "./SettingRow.svelte";
-  import { createMachineView } from "../../lib/companion/machine.svelte.js";
+  import ToolRow from "./ToolRow.svelte";
   import { splitArgs } from "../../lib/companion/args.js";
 
-  const view = createMachineView();
-  const { list, id } = view;
+  let { view } = $props();
 
   let adding = $state(false);
   let invalid = $state("");
   let label = $state("");
   let command = $state("");
 
-  const customAgentIds = $derived(new Set(list(view.state?.custom_agents).map((agent) => String(agent.id))));
-  const detectedAgents = $derived(list(view.state?.agents).filter((agent) => !customAgentIds.has(String(agent.id))));
+  const customAgentIds = $derived(new Set(view.list(view.state?.custom_agents).map((agent) => String(agent.id))));
+  const detectedAgents = $derived(view.list(view.state?.agents).filter((agent) => !customAgentIds.has(String(agent.id))));
+
+  const agentStatus = (agent) => agent.assistant_blocked ? { label: "Needs setup", tone: "warn" } : agent.assistant ? { label: "Ready", tone: "good" } : { label: "Not supported", tone: "neutral" };
 
   async function addAgent(event) {
     event.preventDefault();
@@ -33,31 +33,30 @@
     label = "";
     command = "";
   }
-
-  onMount(() => view.start());
 </script>
 
 {#if view.available}
   <section class="settings-subsection" id="agents-list" aria-labelledby="companion-agents-heading">
     <div class="settings-section-title"><h4 class="settings-subhead" id="companion-agents-heading">Agents on this computer</h4></div>
+    <p class="setting-description">Coding agents installed on this computer, used from the sidebar.</p>
     {#if view.loadError}<p class="setting-description management-error" role="alert">{view.loadError}</p>{/if}
     {#each detectedAgents as agent (agent.id)}
-      <SettingRow title={agent.label || agent.id || "Detected agent"}>
-        {#if agent.assistant_blocked}<span class="setting-description management-error">{agent.assistant_blocked}</span>{/if}
-      </SettingRow>
+      <ToolRow title={agent.label || agent.id} description={agent.assistant_blocked || agent.assistant_note || (agent.assistant_fetches ? "Downloads its adapter the first time you use it." : "")} status={agentStatus(agent)} />
     {/each}
-    {#each list(view.state?.custom_agents) as agent (agent.id)}
-      <SettingRow title={agent.label || agent.id || "Configured agent"} description={list(agent.command).join(" ")}>
-        <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Remove ${agent.label || "this agent"}?`)) void view.act(`agent-${agent.id}`, "Agent removed.", `/agents/${id(agent.id)}`, { method: "DELETE" }); }}>Remove</button>
-      </SettingRow>
+    {#each view.list(view.state?.custom_agents) as agent (agent.id)}
+      <ToolRow title={agent.label || agent.id || "Configured agent"} description={view.list(agent.command).join(" ")} status={{ label: "Added", tone: "neutral" }}>
+        {#snippet actions()}
+          <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Remove ${agent.label || "this agent"}?`)) void view.act(`agent-${agent.id}`, "Agent removed.", `/agents/${view.id(agent.id)}`, { method: "DELETE" }); }}>Remove</button>
+        {/snippet}
+      </ToolRow>
     {/each}
-    {#if view.state && !detectedAgents.length && !list(view.state?.custom_agents).length}<p class="setting-description">No agents found.</p>{/if}
+    {#if view.state && !detectedAgents.length && !view.list(view.state?.custom_agents).length}<p class="setting-description">No agents found.</p>{/if}
 
     <div id="agents-add" class="agent-add">
       {#if adding}
         <form class="agent-form" onsubmit={addAgent}>
-          <input class="input input-sm setting-input agent-name" name="label" aria-label="Agent name" bind:value={label} disabled={Boolean(view.pending)} />
-          <input class="input input-sm setting-input agent-command" name="command" aria-label="Command" bind:value={command} disabled={Boolean(view.pending)} />
+          <input class="input input-sm setting-input agent-name" name="label" aria-label="Agent name" placeholder="Name" bind:value={label} disabled={Boolean(view.pending)} />
+          <input class="input input-sm setting-input agent-command" name="command" aria-label="Command" placeholder="Command, e.g. my-agent --acp" bind:value={command} disabled={Boolean(view.pending)} />
           <button class="btn btn-sm lp-control-brand" type="submit" disabled={Boolean(view.pending)}>{view.pending === "agent-add" ? "Adding…" : "Add agent"}</button>
           <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={close}>Cancel</button>
         </form>
@@ -69,7 +68,7 @@
     </div>
   </section>
 {:else}
-  <SettingRow title="This computer" description="Connect to this computer's companion to see and add agents.">
+  <SettingRow title="Agents" description="Connect to this computer to see and add agents.">
     {#if view.connectError}<span class="setting-description management-error" role="alert">{view.connectError}</span>{/if}
     <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.manageThisComputer()}>{view.pending === "connect" ? "Connecting…" : "Manage this computer"}</button>
   </SettingRow>

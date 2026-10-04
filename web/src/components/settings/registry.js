@@ -2,8 +2,8 @@
 // The dialog draws its navigation from this and searches it; what a category
 // shows is a component beside this file.
 //
-// Global build preferences and downloaded LaTeX files live in this browser.
-// Local tool settings and integrations live on this computer.
+// Browser-scoped pages: Editor, Rendering. Computer-scoped pages: Tools, Agents,
+// Diagnostics. Account-scoped pages: Backups, Account.
 
 // `offered` answers with the document's format, whether this browser may edit
 // it, and whether somebody is signed in. `terms` are the words somebody might
@@ -25,57 +25,40 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "render", says: "Render", offered: build,
+    id: "rendering", says: "Rendering", offered: always,
+    note: "This browser",
     entries: [
-      { id: "render-local", says: "Companion", terms: "companion connect install running status local tools" },
-      { id: "companion-rescan-tools", says: "Detected tools", terms: "tools tool status version available missing rescan scan local computer" },
       { id: "render-latex-engine", says: "LaTeX engine", terms: "engine pdflatex xelatex automatic compiler" },
       { id: "render-latex-files", says: "Downloaded LaTeX files", terms: "latex compiler cache clear free space packages storage" },
-      { id: "calepin-status", says: "Calepin status", terms: "calepin available version" },
-      { id: "calepin-executable", says: "Calepin executable", terms: "calepin path executable" },
-      { id: "calepin-arguments", says: "Calepin arguments", terms: "calepin arguments options command" },
       { id: "render-markdown-tool", says: "Markdown renderer", terms: "markdown browser pandoc quarto render tool" },
-      { id: "quarto-status", says: "Quarto status", terms: "quarto available version" },
-      { id: "quarto-executable", says: "Quarto executable", terms: "quarto path executable" },
-      { id: "quarto-arguments", says: "Quarto arguments", terms: "quarto arguments options" },
       { id: "rendering-profile", says: "Quarto profile", terms: "quarto profile render preview" },
       { id: "rendering-parameters", says: "Quarto parameters", terms: "quarto params parameters json render preview" },
     ],
   },
   {
-    id: "integrations", says: "Integrations", offered: always,
+    id: "tools", says: "Tools", offered: always,
     note: "This computer",
     entries: [
-      { id: "integrations-companion", says: "Companion", terms: "companion connect install running status" },
-      { id: "zotero-status", says: "Zotero", terms: "zotero available version citations bibliography library references" },
+      { id: "tools-connection", says: "Companion", terms: "companion connect install running status installer setup linux macos windows" },
+      { id: "tools-approvals", says: "Waiting for your answer", terms: "allow deny approval pending requests access" },
+      { id: "tools-list", says: "Programs", terms: "tools tool status version available missing rescan scan local quarto pandoc calepin typst zotero" },
+      { id: "tools-quarto", says: "Quarto", terms: "quarto executable path arguments version" },
+      { id: "tools-calepin", says: "Calepin", terms: "calepin typst executable path arguments version" },
+      { id: "tools-zotero", says: "Zotero", terms: "zotero citations bibliography library references local api" },
+      { id: "tools-sites", says: "Connected sites", terms: "pairing revoke origin website site access" },
+      { id: "tools-folders", says: "Project folders", terms: "bindings folder grant revoke directory project access" },
     ],
   },
   {
-    id: "local", says: "Companion", offered: always,
+    id: "agents", says: "AI agents", offered: always,
     note: "This computer",
     entries: [
-      { id: "local-status", says: "Connection", terms: "connect disconnect retry status install installer setup linux macos windows allow site claude codex pi opencode zotero quarto companion" },
-      { id: "local-address", says: "Companion address", terms: "address port url localhost host version disconnect" },
-      { id: "local-startup", says: "Start at login", terms: "startup login background standalone companion" },
-      { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
-      { id: "companion-lifecycle-heading", says: "General", terms: "running start login startup quit companion version" },
-      { id: "companion-approvals-heading", says: "Waiting for your answer", terms: "allow deny approval pending requests access" },
-      { id: "companion-sites-heading", says: "Connected sites", terms: "pairing revoke origin website site access" },
-      { id: "companion-folders-heading", says: "Project folders", terms: "bindings folder grant revoke directory project access" },
-      { id: "companion-activity-heading", says: "Activity", terms: "jobs previews sessions cancel stop output logs" },
-    ],
-  },
-  {
-    id: "agents", says: "Agents", offered: always,
-    note: "This computer",
-    entries: [
-      { id: "agents-list", says: "Agents on this computer", terms: "agent agents claude codex opencode pi detected configured custom remove" },
+      { id: "agents-list", says: "Agents on this computer", terms: "agent agents claude codex opencode pi detected configured custom remove adapter setup" },
       { id: "agents-add", says: "Add an agent", terms: "agent add custom command executable arguments" },
     ],
   },
   {
     id: "backups", says: "Backups", offered: always,
-    note: "Your account",
     entries: [
       { id: "backup-enable", says: "Automatic backups", terms: "zip archive schedule frequency interval account all projects" },
       { id: "backup-destination", says: "Backup folder", terms: "destination choose directory folder local companion" },
@@ -89,6 +72,17 @@ export const CATEGORIES = [
       { id: "remote-status", says: "Remote connection", terms: "connected disconnected offline online server address url sync status collaboration" },
       { id: "storage-account", says: "Account storage", terms: "quota usage space used limit bytes", offered: account },
       { id: "account-erase", says: "Erase this account", terms: "erase delete account remove close gdpr right erasure forget", offered: account },
+    ],
+  },
+  {
+    id: "diagnostics", says: "Diagnostics", offered: always,
+    note: "This computer",
+    separated: true,
+    entries: [
+      { id: "diagnostics-address", says: "Companion address", terms: "address port url localhost host version disconnect" },
+      { id: "diagnostics-startup", says: "Start at login", terms: "startup login background quit companion" },
+      { id: "diagnostics-report", says: "Check local setup", terms: "doctor troubleshoot diagnostics report rescan" },
+      { id: "diagnostics-activity", says: "Activity", terms: "jobs previews sessions cancel stop output logs running" },
     ],
   },
 ];

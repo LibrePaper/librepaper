@@ -5,7 +5,7 @@
   import * as localBridge from "../../lib/companion/client.js";
   import { read, update } from "../../lib/build-preferences.js";
 
-  let { format, userId = "anonymous", onpreferences } = $props();
+  let { format, userId = "anonymous", onpreferences, ontools } = $props();
 
   const browser = (tool) => ({ selection: "tool", backend: "browser", tool });
   const local = (tool) => ({ selection: "tool", backend: "local", tool });
@@ -24,7 +24,7 @@
     },
     markdown: {
       id: "render-markdown-tool", title: "Markdown files", label: "Markdown renderer",
-      description: "Pandoc and Quarto run on this computer through the companion.",
+      description: "Pandoc and Quarto must be installed on this computer.",
       choices: [
         { value: "browser", says: "Browser", patch: browser("markdown") },
         { value: "pandoc", says: "Pandoc (local)", patch: local("pandoc") },
@@ -43,8 +43,7 @@
     const choice = row.choices.find((each) => each.value === value);
     preference = update(scope(), format, choice.patch);
     onpreferences?.(format, preference);
-    // Choosing a local tool is the gesture that may reach the companion, so
-    // the Local tools row can then say whether that tool is there.
+    // Choosing a local tool is the gesture that may reach the companion.
     if (choice.patch.backend === "local") void localBridge.probe({ force: true });
   }
 </script>
@@ -54,4 +53,6 @@
           onchange={(event) => choose(event.currentTarget.value)}>
     {#each row.choices as choice (choice.value)}<option value={choice.value}>{choice.says}</option>{/each}
   </select>
+  {#if ontools && preference.backend === "local"}<button type="button" class="btn btn-sm btn-ghost" onclick={() => ontools()}>Check in Tools</button>{/if}
 </SettingRow>
+

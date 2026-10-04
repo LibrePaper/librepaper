@@ -1,12 +1,11 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
-  import StatusPill from "./StatusPill.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import * as control from "../../lib/companion/control.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import { splitArgs, joinArgs } from "../../lib/companion/args.js";
 
-  let { name = "quarto" } = $props();
+  let { name } = $props();
 
   let settingsError = $state("");
   let pendingDialogAction = $state(false);
@@ -35,11 +34,7 @@
         managedRequest++;
         settingsLoaded = false;
       }
-      if (managedAvailable && name !== "zotero") void loadManagedSettings(++managedRequest, name, nextScope);
-      else if (managedAvailable && name === "zotero") {
-        void loadManagedState(++managedRequest, nextScope);
-        settingsLoaded = true;
-      }
+      if (managedAvailable) void loadManagedSettings(++managedRequest, name, nextScope);
     });
     return unsubscribe;
   });
@@ -54,9 +49,7 @@
     pendingDialogAction = false;
     settingsError = "";
     savedFeedback = false;
-    if (requestedName === "zotero") settingsLoaded = true;
-    else if (managedAvailable && requestedName !== "zotero") void loadManagedSettings(++managedRequest, requestedName, managedScope);
-    else if (managedAvailable) settingsLoaded = true;
+    if (managedAvailable) void loadManagedSettings(++managedRequest, requestedName, managedScope);
     else if (connected) void loadSettings(requestId, requestedName, address, instance);
     else {
       savedPath = "";
@@ -141,62 +134,34 @@
     }
   }
 
-  const capability = $derived.by(() => {
-    const capabilities = managedAvailable ? managedState?.tools : local?.capabilities;
-    if (name === "quarto") return capabilities?.tools?.quarto;
-    return capabilities?.[name] ?? null;
-  });
-
   const isConnected = $derived(managedAvailable || local?.state === "connected");
   const canEdit = $derived(isConnected && settingsLoaded && !pendingDialogAction);
-  const showFields = $derived(name !== "zotero");
   const unchanged = $derived(editingPath === savedPath && joinArgs(splitArgs(editingArgs)) === joinArgs(savedArgs));
   const isDefault = $derived(!savedPath && savedArgs.length === 0);
 </script>
 
-{#if settingsError}<p class="setting-description integration-error" role="alert">{settingsError}</p>{/if}
+{#if settingsError}<p class="setting-description tool-command-error" role="alert">{settingsError}</p>{/if}
 
-{#if name !== "zotero"}<SettingRow id={`${name}-status`} title="Status" description="" scope="This computer">
-  {#if !isConnected}
-    <StatusPill label="Not checked" tone="neutral" accessibleLabel={`Connect the local companion to configure ${name}.`} />
-  {:else if name !== "zotero" && !settingsLoaded && !settingsError}
-    <StatusPill label="Loading settings…" />
-  {:else if capability?.available}
-    <StatusPill label={capability.version ? `Available · ${capability.version}` : "Available"} tone="good" />
-  {:else}
-    <StatusPill label={capability ? "Unavailable" : "Availability unknown"} tone="warn" />
-    {#if capability?.note}<span class="setting-description">{capability.note}</span>{/if}
-  {/if}
-</SettingRow>{/if}
-
-  {#if showFields}
-    <SettingRow id={`${name}-executable`} title="Executable" description="Executable path; leave blank to use PATH.">
-      <input class="input input-sm setting-input" type="text" aria-label="Executable path" placeholder="Found on PATH" bind:value={editingPath} oninput={() => savedFeedback = false} disabled={!canEdit} />
-    </SettingRow>
-
-    <SettingRow id={`${name}-arguments`} title="Arguments" description="Added to each run, e.g. --log-level warning.">
-      <input class="input input-sm setting-input" type="text" aria-label="Arguments" placeholder="--quiet" bind:value={editingArgs} oninput={() => savedFeedback = false} disabled={!canEdit} />
-    </SettingRow>
-
-    <div class="setting-actions integration-actions">
-      <button type="button" class="btn btn-sm lp-control-brand" disabled={!canEdit || unchanged} onclick={() => void apply(editingPath.trim() || null, splitArgs(editingArgs))}>{pendingDialogAction ? "Saving…" : "Save"}</button>
-      <button type="button" class="btn btn-sm lp-control-outline" disabled={!canEdit || isDefault} onclick={() => void apply(null, [])}>Reset to default</button>
-      {#if savedFeedback}<span class="setting-feedback" role="status">Saved</span>{/if}
-    </div>
-    {#if pendingDialogAction}
-      <p class="setting-description">Answer the companion's request on this computer or in Settings → Companion.</p>
-    {/if}
-  {/if}
-{#if name === "zotero"}
-  <SettingRow id="zotero-status" title="Zotero library" description="Use your local Zotero library for citations and references.">
-    <StatusPill label={!isConnected ? "Not checked" : capability?.available ? (capability.version ? `Available · ${capability.version}` : "Available") : capability ? "Unavailable" : "Availability unknown"} tone={!isConnected ? "neutral" : capability?.available ? "good" : "warn"} />
-    {#if isConnected && capability?.note}<span class="setting-description">{capability.note}</span>{/if}
+<div class="tool-command">
+  <SettingRow id={`${name}-executable`} title="Executable" description="Executable path; leave blank to use PATH.">
+    <input class="input input-sm setting-input" type="text" aria-label="Executable path" placeholder="Found on PATH" bind:value={editingPath} oninput={() => savedFeedback = false} disabled={!canEdit} />
   </SettingRow>
-  <p class="setting-description integration-note">Enable Zotero’s local API in Settings → Advanced → “Allow other applications on this computer to communicate with Zotero”.</p>
-{/if}
+
+  <SettingRow id={`${name}-arguments`} title="Arguments" description="Added to each run, e.g. --log-level warning.">
+    <input class="input input-sm setting-input" type="text" aria-label="Arguments" placeholder="--quiet" bind:value={editingArgs} oninput={() => savedFeedback = false} disabled={!canEdit} />
+  </SettingRow>
+
+  <div class="setting-actions tool-command-actions">
+    <button type="button" class="btn btn-sm lp-control-brand" disabled={!canEdit || unchanged} onclick={() => void apply(editingPath.trim() || null, splitArgs(editingArgs))}>{pendingDialogAction ? "Saving…" : "Save"}</button>
+    <button type="button" class="btn btn-sm lp-control-outline" disabled={!canEdit || isDefault} onclick={() => void apply(null, [])}>Reset to default</button>
+    {#if savedFeedback}<span class="setting-feedback" role="status">Saved</span>{/if}
+  </div>
+  {#if pendingDialogAction}
+    <p class="setting-description">Confirm the change in the dialog on this computer.</p>
+  {/if}
+</div>
 
 <style>
-  .integration-error { margin-block: calc(var(--spacing) * 2); color: var(--color-error-text); }
-  .integration-actions { display: flex; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 3); }
-  .integration-note { max-width: 42rem; margin-top: calc(var(--spacing) * 2); }
+  .tool-command-error { margin-block: calc(var(--spacing) * 2); color: var(--color-error-text); }
+  .tool-command-actions { display: flex; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 3); }
 </style>

@@ -1,6 +1,6 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
-  import CompanionBlock from "./CompanionBlock.svelte";
+  import ConnectionRow from "./ConnectionRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
@@ -39,9 +39,9 @@
 </script>
 
 {#if !connected}
-  <CompanionBlock needs="project folders" />
+  <ConnectionRow needs="project folders" />
 {/if}
-<SettingRow id="render-folder" title="Project folder" scope="This computer" description="Folder used for live previews; one-shot builds use a temporary copy.">
+<SettingRow id="render-folder" title="Project folder" description="Folder used for live previews; one-shot builds use a temporary copy.">
   <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder={quarto ? "main.qmd" : sourceFormat === "typst" ? "main.typ" : "main.md"} bind:value={entrypoint} disabled={!canChoose} />
   <button type="button" class="btn btn-sm lp-control-outline" disabled={!canChoose || !entrypoint.trim()} onclick={() => void chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose folder…"}</button>
 </SettingRow>
