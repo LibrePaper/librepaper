@@ -479,10 +479,9 @@ async fn approve(code: &str) {
 
     match pairing.read_service() {
         Some(state) => {
-            let Some(control_token) = crate::local::service::control_token_for_instance(
-                &home,
-                &state.instance,
-            ) else {
+            let Some(control_token) =
+                crate::local::service::control_token_for_instance(&home, &state.instance)
+            else {
                 die("Local control credential is unavailable");
             };
             let url = format!(

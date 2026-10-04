@@ -2555,13 +2555,14 @@ mod settings_tests {
             scope: None,
         };
         let broker = inner.approvals.clone();
-        let waiting = tokio::spawn(async move {
-            broker
-                .ask(&approval, Duration::from_secs(5))
-                .await
-        });
+        let waiting =
+            tokio::spawn(async move { broker.ask(&approval, Duration::from_secs(5)).await });
         tokio::task::yield_now().await;
-        let code = inner.approvals.codes_for_test().pop().expect("pending code");
+        let code = inner
+            .approvals
+            .codes_for_test()
+            .pop()
+            .expect("pending code");
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",
@@ -2573,7 +2574,10 @@ mod settings_tests {
             .unwrap();
         let response = handle_approve(&inner, peer, &headers, request).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(waiting.await.unwrap(), super::super::approval::Decision::Allowed);
+        assert_eq!(
+            waiting.await.unwrap(),
+            super::super::approval::Decision::Allowed
+        );
     }
 
     #[tokio::test]
