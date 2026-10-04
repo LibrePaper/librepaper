@@ -6,21 +6,22 @@
 # { env = "NAME" } references. There are no ambient setting overrides.
 
 [server]
-# Both public origins terminate at the reverse proxy; the application listens
-# on the private Docker edge and internal networks.
 # Address on which the container accepts HTTP traffic behind the proxy.
-bind = "0.0.0.0"
-# Internal HTTP port; the reverse proxy publishes the public HTTPS endpoints.
-port = 8080
-# Browser origin for the application and its authenticated API. Requests with
-# an unrecognized Host are rejected with 421.
-origin = "https://app.librepaper.org"
-# Separate untrusted document origin, isolating rendered document content.
-docs_origin = "https://docs.librepaper.org"
-# Public project site used for sign-out and site-level links.
-site_origin = "https://librepaper.org"
+# The reverse proxy publishes the public HTTPS endpoints.
+address = "0.0.0.0:8080"
 # Keep the host-local companion disabled in this server container.
 local_companion = false
+
+[origins]
+# Both public origins terminate at the reverse proxy; the application listens
+# on the private Docker edge and internal networks.
+# Browser origin for the application and its authenticated API. Requests with
+# an unrecognized Host are rejected with 421.
+app = "https://app.librepaper.org"
+# Separate untrusted document origin, isolating rendered document content.
+docs = "https://docs.librepaper.org"
+# Public project site used for sign-out and site-level links.
+site = "https://librepaper.org"
 
 [storage]
 # The named Docker volume persists objects and session/share-link secrets.
@@ -79,7 +80,7 @@ commenters = ["anyone"]
 
 [limits]
 # Maximum retained object storage per publisher, in MiB.
-publisher_storage_mb = 50
+publisher_storage_mib = 50
 # Per-publisher rolling-hour cap for project creation, forks, and figure uploads.
 publisher_uploads_per_hour = 30
 # Optional total retained-object quota across the deployment, in MiB. Omitted
@@ -100,7 +101,7 @@ address = "0.0.0.0:9091"
 [proxy]
 # Only peers in this proxy CIDR may provide forwarded client addresses. Keep
 # the range in sync with the `edge` network in compose.yaml.
-trusted_proxies = ["172.29.0.0/16"]
+trusted_networks = ["172.29.0.0/16"]
 
 # Optional: set retention for open publishing. Omitted in the current policy,
 # so documents remain until an authorized deletion request.
@@ -121,8 +122,8 @@ trusted_proxies = ["172.29.0.0/16"]
 # [backup]
 # Operator-declared destination category; metadata only.
 # destination_class = "local"
-# Intended interval between backups, in seconds; metadata only.
-# frequency = 86400
+# Intended interval between backups, as a duration; metadata only.
+# interval = "1d"
 # Intended number of retained copies; metadata only.
 # retained_count = 7
 # Whether the operator intends backups to be encrypted; metadata only.

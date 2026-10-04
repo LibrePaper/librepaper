@@ -526,7 +526,7 @@ test('deploy-local verifies and retains the copied candidate binary and keeps se
     assert.match(result.stdout, /verified SHA-256/);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|exporter-secret|pg-secret|github-secret/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
-    assert.match(envFile, /LIBREPAPER_ADMIN_PASSWORD=admin-secret/);
+    assert.match(envFile, /GRAFANA_ADMIN_PASSWORD=admin-secret/);
     assert.match(envFile, /POSTGRES_EXPORTER_PASSWORD=exporter-secret/);
     assert.equal(statSync(path.join(f.remote, '.env')).mode & 0o777, 0o600);
     assert.match(readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8'), /Dockerfile.local/);

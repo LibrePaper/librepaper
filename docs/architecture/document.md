@@ -17,7 +17,7 @@ Text is stored under an opaque id; paths are separate entries pointing at ids. R
 
 The CRDT is a single Rust library linked natively on the server and compiled to WebAssembly in the browser. Every offset counts UTF-16 code units (matching browser counts). Cursors use Unicode code points; diffs use code points (server) or UTF-16 (browser). Diff information never crosses the network; each side computes from its own state. Both are pinned by tests.
 
-Each document's log is capped by `log_quota_mb` (advanced config, default 32 MB). New edits are refused when the limit is reached. Deployments whose limits cannot accept work they cannot save are refused at startup.
+Each document's log is capped by `log_quota_mib` (advanced config, default 32 MB). New edits are refused when the limit is reached. Deployments whose limits cannot accept work they cannot save are refused at startup.
 
 ## Storage and history
 
@@ -32,10 +32,10 @@ Source archives are produced on request (keyed by tree digest), not at checkpoin
 Document assets are content-addressed; identical uploads are stored once. Uploads reserve quota before the blob write begins and release it if cancelled.
 
 Storage limits:
-- `[limits].publisher_storage_mb`
-- `[limits].deployment_storage_mb`
+- `[limits].publisher_storage_mib`
+- `[limits].deployment_storage_mib`
 - `[limits].publisher_uploads_per_hour`
-- `[limits].log_quota_mb`
+- `[limits].log_quota_mib`
 
 Owners can set softer history budgets and retention thresholds but cannot raise deployment hard limits. Documents may expire based on creation or last edit.
 
