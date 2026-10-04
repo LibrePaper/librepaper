@@ -61,8 +61,7 @@ const REFUSALS: &[&str] = &[
 pub(super) const METRIC_LISTENER_CONCURRENCY: usize = 2;
 const SCRAPE_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 
-const OPENMETRICS_CONTENT_TYPE: &str =
-    "application/openmetrics-text; version=1.0.0; charset=utf-8";
+const OPENMETRICS_CONTENT_TYPE: &str = "application/openmetrics-text; version=1.0.0; charset=utf-8";
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct RequestLabels {
@@ -114,8 +113,7 @@ impl Collector for SampledGauges {
                 counter.encode(metric)?;
             } else {
                 let gauge = ConstGauge::new(*value);
-                let metric =
-                    encoder.encode_descriptor(family, HELP, None, gauge.metric_type())?;
+                let metric = encoder.encode_descriptor(family, HELP, None, gauge.metric_type())?;
                 gauge.encode(metric)?;
             }
         }
@@ -177,13 +175,13 @@ impl Default for Metrics {
             Family::new_with_constructor(new_duration_histogram as fn() -> Histogram);
         for &route in ROUTES {
             for &method in METHODS {
-                durations.get_or_create(&DurationLabels { route, method });
+                drop(durations.get_or_create(&DurationLabels { route, method }));
                 for &status_class in STATUS_CLASSES {
-                    requests.get_or_create(&RequestLabels {
+                    drop(requests.get_or_create(&RequestLabels {
                         route,
                         method,
                         status_class,
-                    });
+                    }));
                 }
             }
         }
@@ -200,7 +198,7 @@ impl Default for Metrics {
 
         let refusals: Family<RefusalLabels, Counter> = Family::default();
         for &reason in REFUSALS {
-            refusals.get_or_create(&RefusalLabels { reason });
+            drop(refusals.get_or_create(&RefusalLabels { reason }));
         }
         registry.register(
             "librepaper_resource_refusals",
@@ -233,8 +231,7 @@ impl Metrics {
     pub fn record_request(&self, route: &str, method: &str, status: u16, elapsed: Duration) {
         let route = ROUTES[route_index(route)];
         let method = METHODS[method_index(method)];
-        let status_class =
-            STATUS_CLASSES[usize::from(status / 100).saturating_sub(1).min(4)];
+        let status_class = STATUS_CLASSES[usize::from(status / 100).saturating_sub(1).min(4)];
         self.requests
             .get_or_create(&RequestLabels {
                 route,
@@ -426,7 +423,6 @@ impl Metrics {
             ));
         }
 
-
         self.snapshot_success.set(1);
         self.snapshot_timestamp.set(
             std::time::SystemTime::now()
@@ -469,7 +465,6 @@ fn ratio(used: f64, limit: f64) -> f64 {
         0.0
     }
 }
-
 
 fn route_index(route: &str) -> usize {
     ROUTES

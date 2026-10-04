@@ -486,7 +486,7 @@ fn referenced_resources(bytes: &[u8], current: &str) -> BTreeMap<String, Referen
 }
 
 fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
-    use lol_html::{RewriteStrSettings, element, rewrite_str, text};
+    use lol_html::{element, rewrite_str, text, RewriteStrSettings};
 
     let mut inline_css = String::new();
     let mut elements: Vec<(String, ReferenceKind)> = Vec::new();
@@ -570,7 +570,7 @@ fn scan_css(parser: &mut cssparser::Parser<'_>, out: &mut Vec<String>) {
                     if let Ok(Token::QuotedString(value)) = inner.next() {
                         out.push(value.to_string());
                     }
-                    Ok::<(), cssparser::ParseError<'_, ()>>(())
+                    Ok::<(), cssparser::ParseError<()>>(())
                 });
             }
             Token::Function(_)
@@ -579,7 +579,7 @@ fn scan_css(parser: &mut cssparser::Parser<'_>, out: &mut Vec<String>) {
             | Token::CurlyBracketBlock => {
                 let _ = parser.parse_nested_block(|inner| {
                     scan_css(inner, out);
-                    Ok::<(), cssparser::ParseError<'_, ()>>(())
+                    Ok::<(), cssparser::ParseError<()>>(())
                 });
             }
             _ => {}

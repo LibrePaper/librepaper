@@ -43,6 +43,7 @@ use loro::{
 };
 use uuid::Uuid;
 
+use super::text::utf16_slice;
 use librepaper_document::document::hunks::{hunks_of_batch, keep_declined_batch, Hunk};
 use librepaper_document::document::session;
 use librepaper_engine::log::{Command, CommandError, Evidence, Head, PreparedSource};
@@ -50,7 +51,6 @@ use librepaper_engine::storage::postgres::{
     self, NewLabel, NewProposal, PostgresCatalog, StoredDecision, StoredProposal,
 };
 use loro::cursor::{PosType, Side};
-use super::text::utf16_slice;
 
 /// Where a branch forked and where it has reached.
 ///

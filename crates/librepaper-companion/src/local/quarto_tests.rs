@@ -942,11 +942,8 @@ fn scanner_follows_css_import_and_url() {
 
 #[test]
 fn scanner_reads_url_inside_inline_style() {
-    let references = closure_of(
-        "<style>.a{background:url(bg.png)}</style>",
-        &["bg.png"],
-    )
-    .expect("present");
+    let references =
+        closure_of("<style>.a{background:url(bg.png)}</style>", &["bg.png"]).expect("present");
     assert!(references.contains("bg.png"));
     let error = closure_of("<style>.a{background:url(\"bg.png\")}</style>", &[]).unwrap_err();
     assert!(error.contains("bg.png"));
