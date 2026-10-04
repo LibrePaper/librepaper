@@ -572,10 +572,9 @@ fn srcset_urls(value: &str) -> Vec<String> {
         let mut rest = token;
         loop {
             if expect_url {
-                let (url, more) = match rest.strip_suffix(',') {
-                    Some(url) => (url, true),
-                    None => (rest, false),
-                };
+                // Runs of separators collapse, as browsers do with "a.png,, b.png".
+                let more = rest.ends_with(',');
+                let url = rest.trim_matches(',');
                 if !url.is_empty() {
                     urls.push(url.to_owned());
                 }
