@@ -402,11 +402,9 @@ async fn run_admin(
             directory,
             id,
         } => {
-            let (storage, filter) = server_config::load_storage_with_log_filter_and_env(
-                &config,
-                postgres_env,
-            )
-            .unwrap_or_else(|error| die(error));
+            let (storage, filter) =
+                server_config::load_storage_with_log_filter_and_env(&config, postgres_env)
+                    .unwrap_or_else(|error| die(error));
             install_subscriber(Some(&filter));
             librepaper_engine::storage::backup::backup_cli(
                 storage,
@@ -420,21 +418,17 @@ async fn run_admin(
             backup,
             directory,
         } => {
-            let (storage, filter) = server_config::load_storage_with_log_filter_and_env(
-                &config,
-                postgres_env,
-            )
-            .unwrap_or_else(|error| die(error));
+            let (storage, filter) =
+                server_config::load_storage_with_log_filter_and_env(&config, postgres_env)
+                    .unwrap_or_else(|error| die(error));
             install_subscriber(Some(&filter));
             librepaper_engine::storage::backup::restore_cli(storage, backup, directory).await
         }
         AdminCommand::Moderate { command } => moderate(command, postgres_env).await,
         AdminCommand::Sweep { config, batch } => {
-            let (storage, filter) = server_config::load_storage_with_log_filter_and_env(
-                &config,
-                postgres_env,
-            )
-            .unwrap_or_else(|error| die(error));
+            let (storage, filter) =
+                server_config::load_storage_with_log_filter_and_env(&config, postgres_env)
+                    .unwrap_or_else(|error| die(error));
             install_subscriber(Some(&filter));
             sweep(storage, batch as usize).await
         }
