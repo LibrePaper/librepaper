@@ -44,7 +44,15 @@ try {
   await cli("start");
   assert.equal((await state()).pid, first.pid, "explicit start reuses the running companion");
   const desktop = await cli("desktop");
-  const controlPanel = await readFile(opened, "utf8");
+  let controlPanel;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      controlPanel = await readFile(opened, "utf8");
+      if (controlPanel) break;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(controlPanel, "desktop launches the configured browser opener");
   assert.match(controlPanel, /^http:\/\/127\.0\.0\.1:\d+\/companion\/#token=[A-Za-z0-9_=-]+$/, "desktop opens the private local control panel");
   assert.ok(!desktop.stdout.includes("#token="), "the control token is not printed by the CLI");
   await rm(opened, { force: true });

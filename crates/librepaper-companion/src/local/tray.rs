@@ -122,7 +122,7 @@ async fn run_inner() -> Result<(), String> {
 
 fn handle_menu(state_home: &Path, ids: &MenuItems) -> bool {
     while let Ok(event) = MenuEvent::receiver().try_recv() {
-        if &event.id == ids.open.id() {
+        if event.id == ids.open.id() {
             if let Some(state) = super::lifecycle::service_state(state_home) {
                 if let Err(error) =
                     super::lifecycle::open_control_panel(state_home, state.port, &state.instance)
@@ -130,14 +130,14 @@ fn handle_menu(state_home: &Path, ids: &MenuItems) -> bool {
                     eprintln!("could not open the local control panel: {error}");
                 }
             }
-        } else if &event.id == ids.at_login.id() {
+        } else if event.id == ids.at_login.id() {
             let enabled = !super::lifecycle::startup_enabled();
             if let Err(error) = super::lifecycle::set_startup(enabled) {
                 eprintln!("could not change login startup: {error}");
             }
             ids.at_login
                 .set_checked(super::lifecycle::startup_enabled());
-        } else if &event.id == ids.quit.id() {
+        } else if event.id == ids.quit.id() {
             let _ = super::lifecycle::request_stop(state_home);
             return true;
         }
