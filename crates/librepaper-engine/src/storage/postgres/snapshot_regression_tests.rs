@@ -28,8 +28,8 @@ async fn snapshot_constraints_cover_current_retired_and_legacy_rows() {
     let catalog = catalog().await;
     let mut connection = catalog.pool().acquire().await.unwrap();
     let result = sqlx::raw_sql(include_str!("regression/snapshot_lifecycle.sql"))
-    .execute(&mut *connection)
-    .await;
+        .execute(&mut *connection)
+        .await;
     if result.is_err() {
         sqlx::query("ROLLBACK")
             .execute(&mut *connection)
