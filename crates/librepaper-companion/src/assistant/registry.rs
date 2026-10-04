@@ -19,6 +19,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+type SharedAgentGrant = std::sync::Arc<std::sync::RwLock<String>>;
+type OwnedAgentGrant = (Option<String>, SharedAgentGrant);
+
 enum Entry {
     /// A session task is spawned and, as far as the registry knows, still
     /// running. `is_finished()` on the handle can already be true; nothing
@@ -30,7 +33,7 @@ enum Entry {
         stop: StopSignal,
         handle: tokio::task::JoinHandle<Result<(), String>>,
         /// Rotated by the paired browser while its session remains active.
-        grant: Option<std::sync::Arc<std::sync::RwLock<String>>>,
+        grant: Option<SharedAgentGrant>,
     },
     /// The task has exited (normally, with an error, or by panicking) and no
     /// task handle is left to hold. Kept only so one subsequent status poll
@@ -239,7 +242,7 @@ impl SessionRegistry {
         key: &str,
         config_hash: &str,
         origin: Option<String>,
-        grant: Option<std::sync::Arc<std::sync::RwLock<String>>>,
+        grant: Option<SharedAgentGrant>,
         body: F,
     ) where
         F: FnOnce(StatusHandle, StopSignal) -> Fut,
@@ -301,7 +304,7 @@ impl SessionRegistry {
     fn active_grant(
         &self,
         key: &str,
-    ) -> Result<(Option<String>, std::sync::Arc<std::sync::RwLock<String>>), String> {
+    ) -> Result<OwnedAgentGrant, String> {
         let sessions = self
             .sessions
             .lock()
