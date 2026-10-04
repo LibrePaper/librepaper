@@ -226,7 +226,7 @@ impl BackupPolicy {
         }
         if let Some(value) = overrides.frequency {
             if !(1..=MAX_BACKUP_POLICY_FREQUENCY_SECONDS).contains(&value) {
-                return Err("backup.frequency must be between 1 second and 10 years".into());
+                return Err("backup.interval must be between 1 second and 10 years".into());
             }
             self.frequency = Some(value);
         }
@@ -541,7 +541,7 @@ impl Configuration {
         }
         if self.storage.per_owner > self.storage.total {
             return Err(format!(
-                "limits.publisher_storage_mb ({} MB) cannot exceed limits.deployment_storage_mb ({} MB)",
+                "limits.publisher_storage_mib ({} MiB) cannot exceed limits.deployment_storage_mib ({} MiB)",
                 self.storage.per_owner >> 20,
                 self.storage.total >> 20
             ));

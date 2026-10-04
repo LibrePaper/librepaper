@@ -56,9 +56,8 @@ pub(crate) fn is_postgres_env_key(key: &OsStr) -> bool {
 
 #[derive(Clone)]
 pub(crate) struct ResolvedConfig {
-    pub(crate) bind: IpAddr,
-    pub(crate) port: u16,
-    pub(crate) origin: Option<String>,
+    pub(crate) address: SocketAddr,
+    pub(crate) app_origin: Option<String>,
     pub(crate) docs_origin: Option<String>,
     pub(crate) site_origin: Option<String>,
     pub(crate) local_companion: bool,
@@ -84,9 +83,8 @@ impl fmt::Debug for ResolvedConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ResolvedConfig")
-            .field("bind", &self.bind)
-            .field("port", &self.port)
-            .field("origin", &self.origin)
+            .field("address", &self.address)
+            .field("app_origin", &self.app_origin)
             .field("docs_origin", &self.docs_origin)
             .field("site_origin", &self.site_origin)
             .field("local_companion", &self.local_companion)
@@ -130,6 +128,7 @@ struct Reference {
 #[serde(default, deny_unknown_fields)]
 struct Raw {
     server: Server,
+    origins: Origins,
     storage: Storage,
     auth: Auth,
     access: Access,
@@ -145,12 +144,15 @@ struct Raw {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Server {
-    bind: Option<Input<String>>,
-    port: Option<Input<u16>>,
-    origin: Option<Input<String>>,
-    docs_origin: Option<Input<String>>,
-    site_origin: Option<Input<String>>,
+    address: Option<Input<SocketAddr>>,
     local_companion: Option<Input<bool>>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Origins {
+    app: Option<Input<String>>,
+    docs: Option<Input<String>>,
+    site: Option<Input<String>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -194,14 +196,14 @@ struct Access {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Limits {
-    publisher_storage_mb: Option<Input<usize>>,
-    deployment_storage_mb: Option<Input<usize>>,
+    publisher_storage_mib: Option<Input<usize>>,
+    deployment_storage_mib: Option<Input<usize>>,
     publisher_uploads_per_hour: Option<Input<usize>>,
-    session_peer_queue: Option<Input<usize>>,
-    pending_mb: Option<Input<u64>>,
-    pending_scratch_mb: Option<Input<u64>>,
-    log_quota_mb: Option<Input<u64>>,
-    memory_budget_mb: Option<Input<u64>>,
+    session_peer_queue_frames: Option<Input<usize>>,
+    pending_mib: Option<Input<u64>>,
+    pending_scratch_mib: Option<Input<u64>>,
+    log_quota_mib: Option<Input<u64>>,
+    memory_budget_mib: Option<Input<u64>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -223,12 +225,12 @@ struct Metrics {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Proxy {
-    trusted_proxies: Option<Input<Vec<String>>>,
+    trusted_networks: Option<Input<Vec<String>>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Demo {
-    simulate_activity: Option<Input<u32>>,
+    simulate_activity_days: Option<Input<u32>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -239,7 +241,7 @@ struct Logging {
 #[serde(default, deny_unknown_fields)]
 struct RawBackup {
     destination_class: Option<Input<String>>,
-    frequency: Option<Input<u64>>,
+    interval: Option<Input<String>>,
     retained_count: Option<Input<usize>>,
     encrypted: Option<Input<bool>>,
     warning_count: Option<Input<usize>>,
@@ -379,6 +381,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
         "",
         &[
             "server",
+            "origins",
             "storage",
             "auth",
             "access",
@@ -396,12 +399,17 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
         v,
         "server",
         &[
-            "bind",
-            "port",
-            "origin",
-            "docs_origin",
-            "site_origin",
+            "address",
             "local_companion",
+        ],
+    )?;
+    section(
+        v,
+        "origins",
+        &[
+            "app",
+            "docs",
+            "site",
         ],
     )?;
     section(
@@ -444,32 +452,32 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
         v,
         "limits",
         &[
-            "publisher_storage_mb",
-            "deployment_storage_mb",
+            "publisher_storage_mib",
+            "deployment_storage_mib",
             "publisher_uploads_per_hour",
-            "session_peer_queue",
-            "pending_mb",
-            "pending_scratch_mb",
-            "log_quota_mb",
-            "memory_budget_mb",
+            "session_peer_queue_frames",
+            "pending_mib",
+            "pending_scratch_mib",
+            "log_quota_mib",
+            "memory_budget_mib",
         ],
     )?;
     section(v, "retention", &["expire_after", "expire_from"])?;
     section(v, "assets", &["mirror", "typst_fonts"])?;
     section(v, "metrics", &["address"])?;
-    section(v, "proxy", &["trusted_proxies"])?;
+    section(v, "proxy", &["trusted_networks"])?;
     section(
         v,
         "backup",
         &[
             "destination_class",
-            "frequency",
+            "interval",
             "retained_count",
             "encrypted",
             "warning_count",
         ],
     )?;
-    section(v, "demo", &["simulate_activity"])?;
+    section(v, "demo", &["simulate_activity_days"])?;
     section(v, "logging", &["filter"])?;
     Ok(())
 }
@@ -573,15 +581,15 @@ pub(crate) fn load_with_postgres_env(
         sources: BTreeMap::new(),
         postgres_env,
     };
-    let bind = r
-        .value("server.bind", raw.server.bind, "0.0.0.0".into())?
-        .parse::<IpAddr>()
-        .map_err(|_| "server.bind must be an IP address")?;
-    let port = r.value("server.port", raw.server.port, 8080)?;
-    let origin = r.optional("server.origin", raw.server.origin)?;
-    let docs_origin = r.optional("server.docs_origin", raw.server.docs_origin)?;
-    let site_origin = r.optional("server.site_origin", raw.server.site_origin)?;
+    let address = r.value(
+        "server.address",
+        raw.server.address,
+        "0.0.0.0:8080".parse::<SocketAddr>().unwrap(),
+    )?;
     let local_companion = r.value("server.local_companion", raw.server.local_companion, false)?;
+    let app_origin = r.optional("origins.app", raw.origins.app)?;
+    let docs_origin = r.optional("origins.docs", raw.origins.docs)?;
+    let site_origin = r.optional("origins.site", raw.origins.site)?;
     let storage = resolve_storage(raw.storage, &mut r)?;
     let github_client_id = r.optional("auth.github.client_id", raw.auth.github.client_id)?;
     let github_client_secret =
@@ -620,16 +628,16 @@ pub(crate) fn load_with_postgres_env(
     let log_filter = r.value("logging.filter", raw.logging.filter, "info".into())?;
     tracing_subscriber::EnvFilter::try_new(&log_filter)
         .map_err(|_| "logging.filter is not a valid filter directive".to_owned())?;
-    let simulate_activity = r.optional("demo.simulate_activity", raw.demo.simulate_activity)?;
+    let simulate_activity = r.optional("demo.simulate_activity_days", raw.demo.simulate_activity_days)?;
     let mut config = Configuration::default();
     let l = raw.limits;
-    let publisher_storage_mb = r.optional("limits.publisher_storage_mb", l.publisher_storage_mb)?;
+    let publisher_storage_mb = r.optional("limits.publisher_storage_mib", l.publisher_storage_mib)?;
     let deployment_storage_mb =
-        r.optional("limits.deployment_storage_mb", l.deployment_storage_mb)?;
+        r.optional("limits.deployment_storage_mib", l.deployment_storage_mib)?;
     let max_storage_mb = ((i64::MAX as u128).min(usize::MAX as u128) / 1_048_576) as usize;
     for (key, value) in [
-        ("limits.publisher_storage_mb", publisher_storage_mb),
-        ("limits.deployment_storage_mb", deployment_storage_mb),
+        ("limits.publisher_storage_mib", publisher_storage_mb),
+        ("limits.deployment_storage_mib", deployment_storage_mb),
     ] {
         if value.is_some_and(|mb| mb > max_storage_mb) {
             return Err(format!("{key} must fit in the storage byte limit"));
@@ -644,35 +652,35 @@ pub(crate) fn load_with_postgres_env(
         return Err("limits.publisher_uploads_per_hour must fit in a signed 64-bit count".into());
     }
     config.set_uploads_per_hour(uploads_per_hour)?;
-    config.set_peer_queue(r.optional("limits.session_peer_queue", l.session_peer_queue)?)?;
+    config.set_peer_queue(r.optional("limits.session_peer_queue_frames", l.session_peer_queue_frames)?)?;
     let log_quota = r.value(
-        "limits.log_quota_mb",
-        l.log_quota_mb,
+        "limits.log_quota_mib",
+        l.log_quota_mib,
         (DEFAULT_LOG_QUOTA_BYTES / 1024 / 1024) as u64,
     )?;
     config.set_log_quota(Some(log_quota))?;
     let pend = r.value(
-        "limits.pending_mb",
-        l.pending_mb,
+        "limits.pending_mib",
+        l.pending_mib,
         DEFAULT_PENDING_BYTES / 1024 / 1024,
     )?;
     let scratch = r.value(
-        "limits.pending_scratch_mb",
-        l.pending_scratch_mb,
+        "limits.pending_scratch_mib",
+        l.pending_scratch_mib,
         config.pending_scratch_bytes.div_ceil(1024 * 1024),
     )?;
     config.set_pending(Some(pend), Some(scratch))?;
     config.set_memory_budget(Some(r.value(
-        "limits.memory_budget_mb",
-        l.memory_budget_mb,
+        "limits.memory_budget_mib",
+        l.memory_budget_mib,
         512u64,
     )?))?;
     config.validate_pending()?;
     config.validate_budgets()?;
     config.cost.trusted_proxies = r
         .value(
-            "proxy.trusted_proxies",
-            raw.proxy.trusted_proxies,
+            "proxy.trusted_networks",
+            raw.proxy.trusted_networks,
             Vec::<String>::new(),
         )?
         .iter()
@@ -680,9 +688,16 @@ pub(crate) fn load_with_postgres_env(
         .collect::<Result<_, _>>()?;
     config.cost.validate()?;
     let b = raw.backup;
+    let backup_interval_seconds = if let Some(interval_str) = r.optional("backup.interval", b.interval)? {
+        let seconds = librepaper_document::document::retention::parse_retention(&interval_str)
+            .map_err(|_| "backup.interval must be a duration such as 1d or 24h".to_string())?;
+        Some(seconds as u64)
+    } else {
+        None
+    };
     config.apply_backup_overrides(BackupPolicyOverrides {
         destination_class: r.optional("backup.destination_class", b.destination_class)?,
-        frequency: r.optional("backup.frequency", b.frequency)?,
+        frequency: backup_interval_seconds,
         retained_count: r.optional("backup.retained_count", b.retained_count)?,
         encrypted: r.optional("backup.encrypted", b.encrypted)?,
         warning_count: r.optional("backup.warning_count", b.warning_count)?,
@@ -712,15 +727,14 @@ pub(crate) fn load_with_postgres_env(
         return Err("auth.google.client_id and client_secret must not be blank".into());
     }
     validate_public_urls(
-        origin.as_deref(),
+        app_origin.as_deref(),
         docs_origin.as_deref(),
         site_origin.as_deref(),
         &asset_mirror,
     )?;
     Ok(ResolvedConfig {
-        bind,
-        port,
-        origin,
+        address,
+        app_origin,
         docs_origin,
         site_origin,
         local_companion,
@@ -744,14 +758,14 @@ pub(crate) fn load_with_postgres_env(
 }
 
 fn validate_public_urls(
-    origin: Option<&str>,
+    app_origin: Option<&str>,
     docs_origin: Option<&str>,
     site_origin: Option<&str>,
     asset_mirror: &str,
 ) -> Result<(), String> {
-    validate_public_url("server.origin", origin, false, true, true)?;
-    validate_public_url("server.docs_origin", docs_origin, false, true, true)?;
-    validate_public_url("server.site_origin", site_origin, false, true, true)?;
+    validate_public_url("origins.app", app_origin, false, true, true)?;
+    validate_public_url("origins.docs", docs_origin, false, true, true)?;
+    validate_public_url("origins.site", site_origin, false, true, true)?;
     validate_public_url("assets.mirror", Some(asset_mirror), true, false, false)
 }
 
@@ -799,37 +813,9 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     value(
         &mut out,
         &c.sources,
-        "server.bind",
-        "bind",
-        &quote(&c.bind.to_string()),
-    );
-    value(
-        &mut out,
-        &c.sources,
-        "server.port",
-        "port",
-        &c.port.to_string(),
-    );
-    optional(
-        &mut out,
-        &c.sources,
-        "server.origin",
-        "origin",
-        c.origin.as_deref(),
-    );
-    optional(
-        &mut out,
-        &c.sources,
-        "server.docs_origin",
-        "docs_origin",
-        c.docs_origin.as_deref(),
-    );
-    optional(
-        &mut out,
-        &c.sources,
-        "server.site_origin",
-        "site_origin",
-        c.site_origin.as_deref(),
+        "server.address",
+        "address",
+        &quote(&c.address.to_string()),
     );
     value(
         &mut out,
@@ -837,6 +823,29 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "server.local_companion",
         "local_companion",
         &c.local_companion.to_string(),
+    );
+
+    section(&mut out, "origins");
+    optional(
+        &mut out,
+        &c.sources,
+        "origins.app",
+        "app",
+        c.app_origin.as_deref(),
+    );
+    optional(
+        &mut out,
+        &c.sources,
+        "origins.docs",
+        "docs",
+        c.docs_origin.as_deref(),
+    );
+    optional(
+        &mut out,
+        &c.sources,
+        "origins.site",
+        "site",
+        c.site_origin.as_deref(),
     );
 
     section(&mut out, "storage");
@@ -976,15 +985,15 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     value(
         &mut out,
         &c.sources,
-        "limits.publisher_storage_mb",
-        "publisher_storage_mb",
+        "limits.publisher_storage_mib",
+        "publisher_storage_mib",
         &(c.config.storage.per_owner >> 20).to_string(),
     );
     value(
         &mut out,
         &c.sources,
-        "limits.deployment_storage_mb",
-        "deployment_storage_mb",
+        "limits.deployment_storage_mib",
+        "deployment_storage_mib",
         &(c.config.storage.total >> 20).to_string(),
     );
     value(
@@ -997,22 +1006,22 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     value(
         &mut out,
         &c.sources,
-        "limits.session_peer_queue",
-        "session_peer_queue",
+        "limits.session_peer_queue_frames",
+        "session_peer_queue_frames",
         &c.config.session.peer_queue.to_string(),
     );
     value(
         &mut out,
         &c.sources,
-        "limits.pending_mb",
-        "pending_mb",
+        "limits.pending_mib",
+        "pending_mib",
         &(c.config.pending_bytes >> 20).to_string(),
     );
     value(
         &mut out,
         &c.sources,
-        "limits.pending_scratch_mb",
-        "pending_scratch_mb",
+        "limits.pending_scratch_mib",
+        "pending_scratch_mib",
         &c.config
             .pending_scratch_bytes
             .div_ceil(1024 * 1024)
@@ -1021,15 +1030,15 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     value(
         &mut out,
         &c.sources,
-        "limits.log_quota_mb",
-        "log_quota_mb",
+        "limits.log_quota_mib",
+        "log_quota_mib",
         &(c.config.log_quota_bytes >> 20).to_string(),
     );
     value(
         &mut out,
         &c.sources,
-        "limits.memory_budget_mb",
-        "memory_budget_mb",
+        "limits.memory_budget_mib",
+        "memory_budget_mib",
         &(c.config.memory_budget_bytes >> 20).to_string(),
     );
 
@@ -1083,8 +1092,8 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     value(
         &mut out,
         &c.sources,
-        "proxy.trusted_proxies",
-        "trusted_proxies",
+        "proxy.trusted_networks",
+        "trusted_networks",
         &array(&proxies),
     );
     section(&mut out, "backup");
@@ -1098,8 +1107,8 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     optional_num(
         &mut out,
         &c.sources,
-        "backup.frequency",
-        "frequency",
+        "backup.interval",
+        "interval",
         c.config.backup.frequency,
     );
     optional_num(
@@ -1127,8 +1136,8 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     optional_num(
         &mut out,
         &c.sources,
-        "demo.simulate_activity",
-        "simulate_activity",
+        "demo.simulate_activity_days",
+        "simulate_activity_days",
         c.simulate_activity,
     );
     section(&mut out, "logging");
@@ -1237,9 +1246,9 @@ mod tests {
     #[test]
     fn public_url_credentials_and_queries_are_rejected_without_echoing_secrets() {
         let fields = [
-            ("server", "origin", "server.origin"),
-            ("server", "docs_origin", "server.docs_origin"),
-            ("server", "site_origin", "server.site_origin"),
+            ("origins", "app", "origins.app"),
+            ("origins", "docs", "origins.docs"),
+            ("origins", "site", "origins.site"),
             ("assets", "mirror", "assets.mirror"),
         ];
         let bad_urls = [
@@ -1270,7 +1279,7 @@ mod tests {
         let path = directory.path().join("config.toml");
         std::fs::write(
             &path,
-            "[server]\norigin = \"https://app.example.org\"\ndocs_origin = \"https://docs.example.org\"\nsite_origin = \"https://example.org\"\n[assets]\nmirror = \"https://assets.example.org/prefix\"",
+            "[server]\n[origins]\napp = \"https://app.example.org\"\ndocs = \"https://docs.example.org\"\nsite = \"https://example.org\"\n[assets]\nmirror = \"https://assets.example.org/prefix\"",
         )
         .unwrap();
         assert!(load(&path).is_ok());
@@ -1323,7 +1332,7 @@ mod tests {
         let p = d.path().join("c.toml");
         std::fs::write(&p, "").unwrap();
         let loaded = load(&p).unwrap();
-        assert_eq!(loaded.port, 8080);
+        assert_eq!(loaded.address.port(), 8080);
         assert_eq!(loaded.storage.database_url, "postgresql:///librepaper");
         let scratch_mb = Configuration::default()
             .pending_scratch_bytes
@@ -1335,20 +1344,20 @@ mod tests {
         assert!(
             loaded.config.pending_scratch_bytes >= Configuration::default().pending_scratch_bytes
         );
-        assert!(show_resolved(&loaded).contains(&format!("pending_scratch_mb = {scratch_mb}")));
+        assert!(show_resolved(&loaded).contains(&format!("pending_scratch_mib = {scratch_mb}")));
     }
     #[test]
     fn resolves_explicit_env_and_array_refs() {
         let _lock = ENV_LOCK.lock().unwrap();
-        let port = format!("LIBREPAPER_CONFIG_TEST_PORT_{}", std::process::id());
+        let address = format!("LIBREPAPER_CONFIG_TEST_ADDRESS_{}", std::process::id());
         let publishers = format!("LIBREPAPER_CONFIG_TEST_PUBLISHERS_{}", std::process::id());
-        let _restore = RestoreEnv::set(&[(&port, "9091"), (&publishers, "[\"alice\", \"bob\"]")]);
+        let _restore = RestoreEnv::set(&[(&address, "127.0.0.1:9091"), (&publishers, "[\"alice\", \"bob\"]")]);
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.toml");
-        let text=format!("[server]\nport = {{ env = \"{port}\" }}\n[access]\npublishers = {{ env = \"{publishers}\" }}");
+        let text=format!("[server]\naddress = {{ env = \"{address}\" }}\n[access]\npublishers = {{ env = \"{publishers}\" }}");
         std::fs::write(&p, text).unwrap();
         let loaded = load(&p).unwrap();
-        assert_eq!(loaded.port, 9091);
+        assert_eq!(loaded.address.port(), 9091);
         assert_eq!(
             loaded.publishers,
             vec!["alice".to_owned(), "bob".to_owned()]
@@ -1362,16 +1371,16 @@ mod tests {
         let e = load(&p).unwrap_err();
         assert!(e.contains("LIBREPAPER_MISSING_CONFIG_SECRET"));
         assert!(!e.contains("secret-value"));
-        std::fs::write(&p, "[server]\nport = \"not-a-port-secret\"").unwrap();
+        std::fs::write(&p, "[server]\naddress = \"not-a-socket-addr-secret\"").unwrap();
         let e = load(&p).unwrap_err();
-        assert!(e.contains("server.port"));
-        assert!(!e.contains("not-a-port-secret"));
+        assert!(e.contains("server.address"));
+        assert!(!e.contains("not-a-socket-addr-secret"));
     }
     #[test]
     fn reference_requires_exactly_one_source() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.toml");
-        std::fs::write(&p, "[server]\norigin = { env = \"A\", file = \"B\" }").unwrap();
+        std::fs::write(&p, "[origins]\napp = { env = \"A\", file = \"B\" }").unwrap();
         let e = load(&p).unwrap_err();
         assert!(e.contains("exactly one"));
     }
@@ -1399,9 +1408,9 @@ mod tests {
     fn rejects_mb_values_that_overflow_storage_bytes() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.toml");
-        std::fs::write(&p, "[limits]\ndeployment_storage_mb = 10000000000000").unwrap();
+        std::fs::write(&p, "[limits]\ndeployment_storage_mib = 10000000000000").unwrap();
         let e = load(&p).unwrap_err();
-        assert!(e.contains("limits.deployment_storage_mb"));
+        assert!(e.contains("limits.deployment_storage_mib"));
     }
     #[test]
     fn relative_storage_directory_uses_config_directory() {
@@ -1418,7 +1427,7 @@ mod tests {
             .div_ceil(1024 * 1024);
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.toml");
-        let text=format!("[limits]\nlog_quota_mb = 28\npending_scratch_mb = {old_default_mb}\nmemory_budget_mb = 512");
+        let text=format!("[limits]\nlog_quota_mib = 28\npending_scratch_mib = {old_default_mb}\nmemory_budget_mib = 512");
         std::fs::write(&p, text).unwrap();
         let loaded = load(&p).unwrap();
         assert_eq!(loaded.config.log_quota_bytes, 28 * 1024 * 1024);

@@ -40,8 +40,7 @@ pub type StartLocal = Box<
 >;
 
 pub struct ServeOptions {
-    pub bind: std::net::IpAddr,
-    pub port: u16,
+    pub address: std::net::SocketAddr,
     pub storage: StorageOptions,
     /// GitHub OAuth app credentials resolved from the TOML configuration.
     pub github_client_id: Option<String>,
@@ -59,7 +58,7 @@ pub struct ServeOptions {
     /// The reader origin browsers reach this deployment on, and the origin
     /// documents are served from. Without the first, the deployment answers on
     /// loopback alone.
-    pub origin: Option<String>,
+    pub app_origin: Option<String>,
     pub docs_origin: Option<String>,
     /// The marketing site in front of this deployment, or nothing. Signing
     /// out goes there; a deployment without one sends a signed-out reader to
@@ -154,7 +153,7 @@ async fn listen(bind: std::net::IpAddr, port: u16) -> TcpListener {
         return match TcpListener::bind((bind, port)).await {
             Ok(listener) => listener,
             Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => die(format!(
-                "port {port} is already in use. Pick another value for server.port."
+                "port {port} is already in use. Pick another value for server.address."
             )),
             Err(err) => die(format!("could not listen on port {port}: {err}")),
         };
@@ -167,7 +166,7 @@ async fn listen(bind: std::net::IpAddr, port: u16) -> TcpListener {
         }
     }
     die(format!(
-        "ports {PORT_FIRST} to {PORT_LAST} are all in use. Set server.port to a free port."
+        "ports {PORT_FIRST} to {PORT_LAST} are all in use. Set server.address to a free port."
     ))
 }
 
@@ -276,15 +275,15 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
     parse_expire_from(options.expire_from.as_deref().unwrap_or(""))
         .map_err(|error| format!("retention.expire_from: {error}"))?;
     let origins = match options
-        .origin
+        .app_origin
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         Some(reader) => Origins::configure(reader, options.docs_origin.as_deref())
-            .map_err(|error| format!("server.origin/server.docs_origin: {error}"))?,
+            .map_err(|error| format!("origins.app/origins.docs: {error}"))?,
         None if options.docs_origin.is_some() => {
-            return Err("server.docs_origin requires server.origin".into());
+            return Err("origins.docs requires origins.app".into());
         }
         None => Origins::loopback_only(),
     };
@@ -344,7 +343,7 @@ pub async fn serve(options: ServeOptions) {
     // asked for two different hosts and name the record and certificate that
     // have to exist for that to be true.
     let origins = match options
-        .origin
+        .app_origin
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -385,14 +384,14 @@ pub async fn serve(options: ServeOptions) {
     }
     // Claim the port first, so a port already in use costs nothing and the
     // advice below can name the callback URL this run would actually use.
-    let listener = listen(options.bind, options.port).await;
+    let listener = listen(options.address.ip(), options.address.port()).await;
     let metrics_listener = super::metrics::bind(options.metrics_address)
         .await
         .unwrap_or_else(|error| die(error));
     let port = listener
         .local_addr()
         .map(|a| a.port())
-        .unwrap_or(options.port);
+        .unwrap_or(options.address.port());
     let address = format!(":{port}");
 
     let app = GithubApp {
@@ -555,7 +554,7 @@ pub async fn serve(options: ServeOptions) {
         _ => {
             println!("librepaper serving http://localhost{address}");
             println!("  documents on http://{DOCS_PREFIX}localhost{address}");
-            println!("  no server.origin: this deployment answers on loopback only");
+            println!("  no origins.app: this deployment answers on loopback only");
         }
     }
     println!("  data in {}", blobs.describe());
