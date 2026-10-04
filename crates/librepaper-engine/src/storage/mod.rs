@@ -85,9 +85,11 @@ pub fn validate_storage_options(options: &StorageOptions) -> Result<(), String> 
     if !matches!(scheme, Some("postgres") | Some("postgresql")) {
         return Err("storage.database_url must use the postgres or postgresql URL scheme".into());
     }
-    let _: sqlx::postgres::PgConnectOptions = options
-        .database_url
-        .parse()
+    let parsed = tracing::subscriber::with_default(
+        tracing::subscriber::NoSubscriber::default(),
+        || options.database_url.parse::<sqlx::postgres::PgConnectOptions>(),
+    );
+    let _: sqlx::postgres::PgConnectOptions = parsed
         .map_err(|_| "storage.database_url is not a valid PostgreSQL connection URL".to_string())?;
     match options.object_store.as_str() {
         "filesystem" => {}

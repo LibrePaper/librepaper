@@ -378,6 +378,33 @@ fn config_check_is_side_effect_free_and_validates_serve_inputs() {
 }
 
 #[test]
+fn config_check_never_echoes_database_url_secrets() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("config.toml");
+    let config_arg = config.to_str().unwrap();
+
+    std::fs::write(
+        &config,
+        "[storage]\ndatabase_url = \"postgres://user:QUERY_SECRET@localhost/paper?future_option=QUERY_SECRET\"\n[access]\npublishers = [\"any\"]\n",
+    )
+    .unwrap();
+    let accepted = cli(&["admin", "config", "check", "--config", config_arg]);
+    let accepted_output = format!("{}{}", String::from_utf8_lossy(&accepted.stdout), String::from_utf8_lossy(&accepted.stderr));
+    assert!(accepted.status.success(), "{accepted_output}");
+    assert!(!accepted_output.contains("QUERY_SECRET"), "{accepted_output}");
+
+    std::fs::write(
+        &config,
+        "[storage]\ndatabase_url = \"postgres://user:PASSWORD_SECRET@localhost:invalid/paper\"\n[access]\npublishers = [\"any\"]\n",
+    )
+    .unwrap();
+    let rejected = cli(&["admin", "config", "check", "--config", config_arg]);
+    let rejected_output = format!("{}{}", String::from_utf8_lossy(&rejected.stdout), String::from_utf8_lossy(&rejected.stderr));
+    assert!(!rejected.status.success(), "{rejected_output}");
+    assert!(!rejected_output.contains("PASSWORD_SECRET"), "{rejected_output}");
+}
+
+#[test]
 fn removed_commands_fail_to_parse() {
     assert!(
         !cli(&["local", "launch"]).status.success(),
