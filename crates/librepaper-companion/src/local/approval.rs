@@ -62,13 +62,15 @@ struct State {
     pending: HashMap<String, Pending>,
 }
 
+pub(crate) type ApprovalOpener = Arc<dyn Fn() + Send + Sync>;
+
 /// A service-local queue that wakes the waiting operation after one explicit
 /// allow/deny decision. The queue is bounded and every wait removes its entry
 /// on decision, timeout, or cancellation.
 #[derive(Clone, Default)]
 pub(crate) struct ApprovalBroker {
     state: Arc<Mutex<State>>,
-    opener: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    opener: Arc<Mutex<Option<ApprovalOpener>>>,
 }
 
 struct PendingGuard {
@@ -154,7 +156,7 @@ impl ApprovalBroker {
         decision
     }
 
-    pub(crate) fn set_opener(&self, opener: Option<Arc<dyn Fn() + Send + Sync>>) {
+    pub(crate) fn set_opener(&self, opener: Option<ApprovalOpener>) {
         *self
             .opener
             .lock()
