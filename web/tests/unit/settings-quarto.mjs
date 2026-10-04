@@ -7,7 +7,8 @@ const { offered, search, CATEGORIES } = await import("../../src/components/setti
 const build = await read("BuildSettings.svelte");
 const dialog = await read("SettingsDialog.svelte");
 const latexFiles = await read("LatexFilesSettings.svelte");
-const integration = await read("IntegrationSettings.svelte");
+const command = await read("ToolCommand.svelte");
+const tools = await read("ToolsSettings.svelte");
 const renderingComponent = await read("RenderingSettings.svelte");
 const remote = await read("RemoteSettings.svelte");
 const statusPill = await read("StatusPill.svelte");
@@ -64,14 +65,15 @@ for (const format of ["latex", "markdown"]) assert.match(dialog, new RegExp(`<Bu
 // document in the View menu, never chosen once for every document here.
 for (const format of ["typst", "quarto"]) assert.doesNotMatch(dialog, new RegExp(`<BuildSettings format="${format}"`));
 
-// Integration command fields stay rendered; the companion and fresh settings
-// are required before edits apply, and responses are scoped to the connection.
-assert.match(integration, /const showFields = \$derived\(name !== "zotero"\);/);
-assert.match(integration, /const canEdit = \$derived\(isConnected && settingsLoaded && !pendingDialogAction\);/);
-assert.match(integration, /requestId !== loadId[\s\S]{0,260}local\?\.state !== "connected"/);
-assert.match(integration, /if \(requestedName === "zotero"\) settingsLoaded = true;/);
-assert.match(integration, /Zotero library/);
-assert.match(integration, /local API/);
+// A tool's command fields need the companion and fresh settings before edits
+// apply, and responses are scoped to the connection. Only Quarto and Calepin
+// have commands; Zotero is listed with the other programs.
+assert.match(command, /const canEdit = \$derived\(isConnected && settingsLoaded && !pendingDialogAction\);/);
+assert.match(command, /requestId !== loadId[\s\S]{0,260}local\?\.state !== "connected"/);
+assert.match(tools, /const CONFIGURABLE = \["quarto", "calepin"\];/);
+assert.match(tools, /"Zotero"/);
+// Rendering says nothing about the companion; the programs live under Tools.
+assert.doesNotMatch(dialog, /ConnectionRow|ToolCommand/);
 
 // The account page calls the server Remote connection and shows its state as
 // a compact, accessible pill beside the server address.
