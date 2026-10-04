@@ -196,8 +196,8 @@ function template({ title, currentPath, toc, body, scriptSrc }) {
 
 async function buildPage(wasm, entry) {
   const source = await readFile(resolve(siteDir, `${entry.path}.md`), "utf8");
-  const { title, body } = splitFrontmatter(source);
-  let markdown = body;
+  const { title, body: sourceMarkdown } = splitFrontmatter(source);
+  let markdown = sourceMarkdown;
   if (entry.path === "host") {
     const occurrences = markdown.split(productionConfigMarker).length - 1;
     if (occurrences !== 1) {
