@@ -55,6 +55,6 @@ librepaper --at-login                # start at login too
 librepaper status                    # address, pairings, tools, agents
 ```
 
-The dashboard lets you approve site requests, review local access, see tool status and change settings. Closing its browser tab does not stop the companion; choose **Quit companion** in the dashboard or run `librepaper stop`. The optional tray icon depends on desktop-environment support. Folder selection uses your operating system's native chooser. On a headless machine, pairing approval falls back to a code shown in the terminal; approve it with `librepaper local approve <code>` within five minutes.
+The dashboard lets you approve site requests, review local access, see tool status and change settings. Closing its browser tab does not stop the companion; choose **Quit companion** in the dashboard or run `librepaper stop`. The optional tray icon depends on desktop-environment support. Folder selection uses your operating system's native chooser. On a headless machine, pairing approval falls back to a code shown in the terminal; approve it with `librepaper local approve <code>` within two minutes.
 
 See [the CLI reference](cli.html#the-companion) for more commands. To build from a checkout, see [building from source](architecture/building.html).

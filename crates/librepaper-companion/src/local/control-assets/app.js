@@ -118,8 +118,11 @@
       content.append(message);
       const actions = node("div", "button-row");
       const id = safeId(approval.id);
-      actions.append(actionButton("Deny", "quiet", () => act("Request denied.", () => api(`/approvals/${id}`, { method: "POST", body: JSON.stringify({ decision: "deny" }) }))));
-      actions.append(actionButton(approval.allow_label || "Allow", "primary", () => act("Request allowed.", () => api(`/approvals/${id}`, { method: "POST", body: JSON.stringify({ decision: "allow" }) }))));
+      const deny = actionButton("Deny", "quiet", () => act("Request denied.", () => api(`/approvals/${id}`, { method: "POST", body: JSON.stringify({ decision: "deny" }) })));
+      deny.dataset.focusKey = `deny-approval-${approval.id}`;
+      const allow = actionButton(approval.allow_label || "Allow", "primary", () => act("Request allowed.", () => api(`/approvals/${id}`, { method: "POST", body: JSON.stringify({ decision: "allow" }) })));
+      allow.dataset.focusKey = `allow-approval-${approval.id}`;
+      actions.append(deny, allow);
       card.append(content, actions);
       return card;
     });
@@ -172,9 +175,11 @@
       const body = node("div", "list-card-body");
       body.append(node("h3", "", pairing.origin || "Connected site"));
       body.append(node("p", "subtle", pairing.created_at ? `Connected ${new Date(Number(pairing.created_at) * 1000).toLocaleString()}` : "This site can use the companion."));
-      card.append(body, actionButton("Revoke", "quiet", () => {
+      const revoke = actionButton("Revoke", "quiet", () => {
         if (confirm(`Revoke LibrePaper access for ${pairing.origin || "this site"}?`)) return act("Site access revoked.", () => api(`/pairings/${safeId(pairing.id)}`, { method: "DELETE" }));
-      }, `Revoke access for ${pairing.origin || "site"}`));
+      }, `Revoke access for ${pairing.origin || "site"}`);
+      revoke.dataset.focusKey = `revoke-pairing-${pairing.id}`;
+      card.append(body, revoke);
       return card;
     });
     replaceContents($("pairings"), cards, "No connected sites.");
@@ -188,9 +193,11 @@
       body.append(node("p", "subtle", `${binding.origin || "Connected site"} · ${binding.entrypoint || "project folder"}`));
       if (binding.root) body.append(node("p", "command", binding.root));
       if (binding.execution_granted === false) body.append(node("small", "subtle", "Code execution is not authorized."));
-      card.append(body, actionButton("Revoke", "quiet", () => {
+      const revoke = actionButton("Revoke", "quiet", () => {
         if (confirm(`Remove folder authorization for ${binding.project || "this project"}?`)) return act("Folder authorization removed.", () => api(`/bindings/${safeId(binding.id)}`, { method: "DELETE" }));
-      }, `Revoke folder authorization for ${binding.project || "folder"}`));
+      }, `Revoke folder authorization for ${binding.project || "folder"}`);
+      revoke.dataset.focusKey = `revoke-binding-${binding.id}`;
+      card.append(body, revoke);
       return card;
     });
     replaceContents($("bindings"), cards, "No folders are authorized.");
@@ -264,6 +271,11 @@
       $("startup-setting").hidden = typeof settings.startup_enabled !== "boolean";
       $("tray-enabled").checked = Boolean(settings.tray_enabled);
       $("tray-setting").hidden = typeof settings.tray_enabled !== "boolean";
+      $("tray-help").textContent = settings.tray_available === false
+        ? "No tray service is available in this desktop session. You can still manage LibrePaper here or from the command line."
+        : settings.tray_available === true
+          ? "Available in this desktop session. The setting changes take effect immediately."
+          : "Keep quick controls available in the system tray when supported.";
       const integrations = Array.isArray(settings.integrations)
         ? settings.integrations
         : Object.entries(settings.integrations || {}).map(([name, integration]) => ({ name, ...integration }));
@@ -287,9 +299,11 @@
       const body = node("div", "list-card-body");
       body.append(node("h3", "", agent.label || agent.id || "Configured agent"));
       body.append(node("p", "command", list(agent.command).join(" ")));
-      card.append(body, actionButton("Remove", "quiet", () => {
+      const remove = actionButton("Remove", "quiet", () => {
         if (confirm(`Remove ${agent.label || "this agent"} from the companion?`)) return act("Agent removed.", () => api(`/agents/${safeId(agent.id)}`, { method: "DELETE" }));
-      }, `Remove ${agent.label || "agent"}`));
+      }, `Remove ${agent.label || "agent"}`);
+      remove.dataset.focusKey = `remove-agent-${agent.id}`;
+      card.append(body, remove);
       return card;
     });
     for (const agent of list(lastState && lastState.agents)) {
@@ -310,6 +324,7 @@
   function markSettingsDirty() { settingsDirty = true; }
 
   function render(state) {
+    const focusKey = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.focusKey : "";
     lastState = state;
     renderWhenChanged("approvals", list(state.approvals).map(({ id, title, message, allow_label }) => ({ id, title, message, allow_label })), () => renderApprovals(list(state.approvals)));
     renderWhenChanged("tools", state.tools || {}, renderTools);
@@ -329,6 +344,10 @@
     }
     const settings = state.settings || {};
     renderSettings(settings);
+    if (focusKey && document.activeElement === document.body) {
+      const next = [...dashboard.querySelectorAll("[data-focus-key]")].find((item) => item.dataset.focusKey === focusKey);
+      if (next) next.focus();
+    }
     $("version-label").textContent = `LibrePaper ${state.version || "companion"}`;
     $("standalone-note").textContent = state.standalone ? "Standalone companion" : "Managed by another LibrePaper process";
     $("quit-button").hidden = !state.standalone;

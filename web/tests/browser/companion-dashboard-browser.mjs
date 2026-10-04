@@ -46,6 +46,7 @@ async function freePort() {
 const port = await freePort();
 const address = `http://127.0.0.1:${port}`;
 const app = spawn(binary, ["start", "--foreground", "--port", String(port)], { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
+const appDone = new Promise((done) => app.once("exit", done));
 let appLog = "";
 app.stdout.on("data", (chunk) => { appLog += chunk; });
 app.stderr.on("data", (chunk) => { appLog += chunk; });
@@ -133,15 +134,65 @@ try {
     const tray = document.querySelector("#tray-enabled");
     tray.checked = true;
     tray.dispatchEvent(new Event("input", {bubbles:true}));
+    const integration = document.querySelector('.integration-card[data-integration="quarto"]');
+    const executable = integration.querySelector('[data-setting="path"]');
+    executable.value = ${JSON.stringify("/usr/bin/quarto")};
+    executable.dispatchEvent(new Event("input", {bubbles:true}));
+    const args = integration.querySelector('[data-setting="args"]');
+    args.value = ${JSON.stringify("--verbose\n--profile=test")};
+    args.dispatchEvent(new Event("input", {bubbles:true}));
   })()`);
   await new Promise((done) => setTimeout(done, 4300));
   assert.equal(await b.evaluate('document.querySelector("#tool-paths").value'), join(temporary, "extra-tools"), "polling does not overwrite an in-progress settings edit");
+  assert.equal(await b.evaluate('document.querySelector(".integration-card[data-integration=quarto] [data-setting=path]").value'), "/usr/bin/quarto", "polling preserves the integration path field");
+  assert.equal(await b.evaluate('document.querySelector(".integration-card[data-integration=quarto] [data-setting=args]").value'), "--verbose\n--profile=test", "polling preserves integration arguments");
   await b.evaluate('document.querySelector("#settings-form").requestSubmit()');
   await until("settings saved", async () => {
     const response = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } });
     if (!response.ok) return false;
     const state = await response.json();
-    return state.settings.tray_enabled === true && state.settings.tool_paths.includes(join(temporary, "extra-tools"));
+    const quarto = state.settings.integrations.quarto;
+    return state.settings.tray_enabled === true
+      && state.settings.tool_paths.includes(join(temporary, "extra-tools"))
+      && quarto.path === "/usr/bin/quarto"
+      && quarto.args.join("\n") === "--verbose\n--profile=test";
+  }, 8000);
+
+  const testAgent = `Dashboard check ${Date.now()}`;
+  await b.evaluate(`(() => {
+    document.querySelector("#agent-name").value = ${JSON.stringify(testAgent)};
+    document.querySelector("#agent-command").value = "/bin/echo";
+    document.querySelector("#agent-args").value = "hello";
+    document.querySelector("#agent-form").requestSubmit();
+  })()`);
+  let agentId = "";
+  await until("custom agent persisted and shown", async () => {
+    const response = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } });
+    if (!response.ok) return false;
+    const state = await response.json();
+    const agent = state.custom_agents.find((entry) => entry.label === testAgent);
+    if (!agent) return false;
+    agentId = agent.id;
+    return await b.evaluate(`document.querySelector("#agents").innerText.includes(${JSON.stringify(testAgent)})`);
+  }, 8000);
+  await b.evaluate('window.confirm = () => true');
+  await b.evaluate(`(() => {
+    const card = [...document.querySelectorAll("#agents .list-card")].find((item) => item.innerText.includes(${JSON.stringify(testAgent)}));
+    card.querySelector("button").click();
+  })()`);
+  await until("custom agent removed", async () => {
+    const response = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } });
+    return response.ok && !(await response.json()).custom_agents.some((entry) => entry.id === agentId);
+  }, 8000);
+
+  await b.evaluate(`(() => {
+    const card = [...document.querySelectorAll("#pairings .list-card")].find((item) => item.innerText.includes(${JSON.stringify(address)}));
+    if (!card) throw new Error("allowed site did not appear in the dashboard");
+    card.querySelector("button").click();
+  })()`);
+  await until("site access revoked from dashboard", async () => {
+    const response = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } });
+    return response.ok && !(await response.json()).pairings.some((entry) => entry.origin === address);
   }, 8000);
 
   if (process.env.LIBREPAPER_SCREENSHOT) {
@@ -165,10 +216,15 @@ try {
   await new Promise((done) => setTimeout(done, 2300));
   assert.equal(await b.evaluate('document.querySelector("#activity details").open'), true, "polling preserves expanded bounded logs");
 
-  console.log("companion-dashboard-browser: private bootstrap, auth, allow/deny approvals, stale approval refusal, safe text rendering, settings persistence and edit stability passed");
+  console.log("companion-dashboard-browser: private bootstrap, auth, approvals, settings and agent CRUD, access revocation, safe text rendering and polling stability passed");
 } finally {
   if (b) await b.close();
-  app.kill();
-  await new Promise((done) => app.once("exit", done)).catch(() => {});
+  if (app.exitCode === null) {
+    app.kill();
+    await Promise.race([
+      appDone,
+      new Promise((done) => setTimeout(done, 2000)),
+    ]);
+  }
   rmSync(temporary, { recursive: true, force: true });
 }
