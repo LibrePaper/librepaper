@@ -54,6 +54,7 @@ pub async fn start(base: &Path, tool_path: Vec<PathBuf>) -> Result<Arc<Embedded>
         std::fs::create_dir_all(directory)
             .map_err(|error| format!("could not prepare {}: {error}", directory.display()))?;
     }
+    let tool_path = effective_tool_paths(&state_home, tool_path)?;
     let listener = match TcpListener::bind(("127.0.0.1", DEFAULT_PORT)).await {
         Ok(listener) => listener,
         Err(_) => TcpListener::bind(("127.0.0.1", 0))
@@ -100,4 +101,35 @@ pub async fn start(base: &Path, tool_path: Vec<PathBuf>) -> Result<Arc<Embedded>
         address: format!("http://127.0.0.1:{port}/"),
         service,
     }))
+}
+
+fn effective_tool_paths(state_home: &Path, explicit: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    crate::local::settings::tool_paths(state_home, explicit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_start_uses_persisted_tool_paths_unless_explicit_paths_are_given() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state_home = temporary.path().join("state");
+        let mut settings = crate::local::settings::LocalSettings::default();
+        settings.tool_paths = vec![PathBuf::from("/saved/tools"), PathBuf::from("/more/tools")];
+        crate::local::settings::save(&state_home, &settings).unwrap();
+
+        assert_eq!(
+            effective_tool_paths(&state_home, Vec::new()).unwrap(),
+            settings.tool_paths,
+            "a restarted embedded app should reuse the dashboard's saved paths"
+        );
+
+        let explicit = vec![PathBuf::from("/explicit/tools")];
+        assert_eq!(
+            effective_tool_paths(&state_home, explicit.clone()).unwrap(),
+            explicit,
+            "explicit launch paths keep precedence over saved settings"
+        );
+    }
 }
