@@ -178,7 +178,7 @@ try {
       const agent = state.custom_agents.find((entry) => entry.label === testAgent);
       if (!agent) return false;
       agentId = agent.id;
-      return await b.evaluate(`document.querySelector("#agents").innerText.includes(${JSON.stringify(testAgent)})`);
+      return await b.evaluate(`(() => [...document.querySelectorAll("#agents h3")].filter((heading) => heading.textContent === ${JSON.stringify(testAgent)}).length === 1)()`);
     }, 8000);
   } catch (error) {
     const dashboardNotice = await b.evaluate('document.querySelector("#notice").textContent').catch(() => "unavailable");
