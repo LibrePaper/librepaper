@@ -1245,6 +1245,7 @@ mod tests {
         let bad_urls = [
             "https://user:url-userinfo-secret@example.org",
             "https://example.org/?token=url-query-secret",
+            "https://user:malformed-url-secret@[",
         ];
 
         for (section, key, field) in fields {
@@ -1258,6 +1259,7 @@ mod tests {
                 assert!(error.contains(field), "{error}");
                 assert!(!error.contains("url-userinfo-secret"));
                 assert!(!error.contains("url-query-secret"));
+                assert!(!error.contains("malformed-url-secret"));
             }
         }
     }
