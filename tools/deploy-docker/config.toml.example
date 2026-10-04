@@ -3,11 +3,12 @@
 # value below contains an { env = "NAME" } reference.
 
 [server]
-bind = "0.0.0.0"
-port = 8080
-origin = "https://paper.example"
-docs_origin = "https://docs.paper.example"
+address = "0.0.0.0:8080"
 local_companion = false
+
+[origins]
+app = "https://paper.example"
+docs = "https://docs.paper.example"
 
 [storage]
 directory = "/var/lib/librepaper"
@@ -34,8 +35,8 @@ publishers = ["any"]
 commenters = ["any"]
 
 [limits]
-publisher_storage_mb = 50
-deployment_storage_mb = 5120
+publisher_storage_mib = 50
+deployment_storage_mib = 5120
 publisher_uploads_per_hour = 30
 
 [metrics]
@@ -43,4 +44,4 @@ address = "0.0.0.0:9091"
 
 [proxy]
 # Matches the fixed edge network in compose.yaml. Do not trust a wider range.
-trusted_proxies = ["172.29.0.0/16"]
+trusted_networks = ["172.29.0.0/16"]

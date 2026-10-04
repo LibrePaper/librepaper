@@ -57,7 +57,7 @@ database's health check rather than merely on its container.
 
 Monitoring starts with the rest of the stack. Visit
 `https://$DOMAIN/admin/monitoring/` and sign in as `admin` with
-`LIBREPAPER_ADMIN_PASSWORD` from `.env`. Grafana opens the provisioned
+`GRAFANA_ADMIN_PASSWORD` from `.env`. Grafana opens the provisioned
 LibrePaper operations dashboard, which includes HTTP traffic, latency,
 resource refusals, active collaboration, app budgets, host load and memory,
 database activity, storage, scrape targets, and firing Prometheus alerts.
@@ -88,7 +88,7 @@ exports aggregate built-in statistics and not SQL text.
 ### Passwords and upgrades
 
 Set all three `POSTGRES_PASSWORD`, `POSTGRES_EXPORTER_PASSWORD`, and
-`LIBREPAPER_ADMIN_PASSWORD` values in `.env` to independent random values
+`GRAFANA_ADMIN_PASSWORD` values in `.env` to independent random values
 (`openssl rand -hex 32` is suitable for each). The metrics role is
 created by the PostgreSQL initialization hook on a new volume. If PostgreSQL
 was already initialized before adding monitoring, run the included idempotent
@@ -105,7 +105,7 @@ containers with `docker compose up -d postgres postgres-exporter`, then run
 the helper again. The Grafana
 admin password environment variable seeds a fresh Grafana volume only. For a
 rotation, change the admin password in Grafana under **Administration → Users
-and access → Users → admin**, then replace `LIBREPAPER_ADMIN_PASSWORD` in
+and access → Users → admin**, then replace `GRAFANA_ADMIN_PASSWORD` in
 `.env` with that value so the next fresh volume uses it too. Updating only the
 environment value does not change the password already stored in Grafana's
 volume. Keep that volume protected as administrator credentials and alert
