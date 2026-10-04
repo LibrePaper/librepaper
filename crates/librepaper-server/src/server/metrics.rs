@@ -515,27 +515,15 @@ pub fn route_class(path: &str) -> &'static str {
     }
 }
 
-/// Bind errors are returned to startup, where they are fatal when explicitly
-/// configured. Empty or absent addresses leave metrics disabled.
-pub async fn bind_from_environment() -> Result<Option<TcpListener>, String> {
-    let Some(value) = std::env::var_os("LIBREPAPER_METRICS_ADDR") else {
+/// Bind the optional address from the deployment's TOML configuration.
+pub async fn bind(address: Option<SocketAddr>) -> Result<Option<TcpListener>, String> {
+    let Some(address) = address else {
         return Ok(None);
     };
-    let value = value
-        .into_string()
-        .map_err(|_| "LIBREPAPER_METRICS_ADDR must be valid UTF-8".to_string())?;
-    bind_address((!value.trim().is_empty()).then_some(value.trim())).await
-}
-
-async fn bind_address(value: Option<&str>) -> Result<Option<TcpListener>, String> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let addr: SocketAddr = value.parse().map_err(|_| format!("LIBREPAPER_METRICS_ADDR must be an IP socket address such as 0.0.0.0:9091 (got {value:?})"))?;
-    TcpListener::bind(addr)
+    TcpListener::bind(address)
         .await
         .map(Some)
-        .map_err(|error| format!("could not bind metrics listener at {addr}: {error}"))
+        .map_err(|error| format!("could not bind metrics listener at {address}: {error}"))
 }
 
 /// Run the listener separately from the user router and its origin/admission
@@ -1025,11 +1013,11 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_listener_can_be_disabled_and_rejects_invalid_or_occupied_addresses() {
-        assert!(bind_address(None).await.unwrap().is_none());
-        assert!(bind_address(Some("not-an-ip:9091")).await.is_err());
+        assert!(bind(None).await.unwrap().is_none());
+        assert!("not-an-ip:9091".parse::<SocketAddr>().is_err());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap().to_string();
-        assert!(bind_address(Some(&address)).await.is_err());
+        let address = listener.local_addr().unwrap();
+        assert!(bind(Some(address)).await.is_err());
     }
 
     #[test]

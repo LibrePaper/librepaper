@@ -639,7 +639,7 @@ impl Server {
             return write_json(
                 403,
                 &json!({"error": format!(
-                    "{} may not publish here; this deployment's --publishers allows {}",
+                    "{} may not publish here; access.publishers allows {}",
                     account.handle, self.publishers.public_description()
                 )}),
             );

@@ -3,23 +3,20 @@
 //! way a browser does; deployment administration and `local` are the
 //! exceptions and live in their own modules.
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use serde_json::{json, Value};
 
-use librepaper_base::config::Configuration;
 use librepaper_base::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use librepaper_base::util::die;
 use librepaper_companion::local::cli::{LaunchArgs, LocalAgentCommand, LocalArgs, LocalCommand};
-use librepaper_engine::storage::StorageFlags;
 
 mod agent;
 
 mod documents;
 pub mod export;
 mod history;
+pub(crate) mod server_config;
 mod tokens;
 
 pub use documents::*;
@@ -66,219 +63,7 @@ pub(crate) struct Deployment {
     pub(crate) token: Option<String>,
 }
 
-/// The options that describe a running service rather than where it runs:
-/// who may publish and comment, how large a document may be, and when
-/// documents expire.
-#[derive(Args, Clone, Debug, Default)]
-pub(crate) struct ServiceFlags {
-    /// GitHub OAuth app client id
-    #[arg(long, env = "LIBREPAPER_GITHUB_CLIENT_ID", value_name = "ID")]
-    github_client_id: Option<String>,
-    /// Google OAuth client id
-    #[arg(long, env = "LIBREPAPER_GOOGLE_CLIENT_ID", value_name = "ID")]
-    google_client_id: Option<String>,
-    /// Who may publish: a GitHub login, a comma-separated list, or 'any'
-    #[arg(long, env = "LIBREPAPER_PUBLISHERS", value_name = "WHO")]
-    publishers: Option<String>,
-    /// Who may comment: 'anyone' (default), 'any' signed-in account, or a list of accounts
-    #[arg(long, env = "LIBREPAPER_COMMENTERS", value_name = "WHO")]
-    commenters: Option<String>,
-    /// Most one publisher may store across their documents, in megabytes (default 50)
-    #[arg(
-        long = "publisher-storage-limit",
-        env = "LIBREPAPER_QUOTA",
-        value_name = "MB"
-    )]
-    quota: Option<usize>,
-    /// Most the whole deployment will store, in megabytes (default 5120)
-    #[arg(
-        long = "deployment-storage-limit",
-        env = "LIBREPAPER_STORAGE",
-        value_name = "MB"
-    )]
-    storage: Option<usize>,
-    /// Most uploads one publisher may make in an hour (default 30)
-    #[arg(
-        long = "publisher-upload-limit",
-        env = "LIBREPAPER_UPLOADS_PER_HOUR",
-        value_name = "N"
-    )]
-    uploads_per_hour: Option<usize>,
-    /// Write each new account's starter documents as though they had been
-    /// typed over this many days, so a demonstration deployment has a history
-    /// panel with something in it. The operations are real; only the clock is
-    /// invented. See `librepaper_engine::storage::seed::activity`.
-    #[arg(
-        long = "simulate-activity",
-        env = "LIBREPAPER_SIMULATE_ACTIVITY",
-        value_name = "DAYS",
-        hide = true
-    )]
-    simulate_activity: Option<u32>,
-    /// Delete documents after this duration, for example 24h or 30d (default never)
-    #[arg(
-        long = "document-expire-after",
-        env = "LIBREPAPER_EXPIRE_AFTER",
-        value_name = "DURATION"
-    )]
-    expire_after: Option<String>,
-    /// Start expiry at 'updated' (default; last write) or 'created'
-    #[arg(
-        long = "document-expire-from",
-        env = "LIBREPAPER_EXPIRE_FROM",
-        value_name = "FROM"
-    )]
-    expire_from: Option<String>,
-    /// The origin browsers reach this deployment on, for example
-    /// https://paper.example. Documents are served from a second origin, by
-    /// default the same host behind "docs."; both must be configured for a
-    /// deployment that is not loopback-only, and the server answers on no
-    /// other name.
-    #[arg(long, env = "LIBREPAPER_ORIGIN", value_name = "URL")]
-    origin: Option<String>,
-    /// The origin published documents are served from, when it is not the
-    /// reader's host behind "docs.". A document is hostile code, so this must
-    /// be a different host from --origin, never merely a different port.
-    #[arg(
-        long = "docs-origin",
-        env = "LIBREPAPER_DOCS_ORIGIN",
-        value_name = "URL",
-        requires = "origin"
-    )]
-    docs_origin: Option<String>,
-    /// Where this deployment's marketing site lives, for example
-    /// https://paper.example. Signing out goes there. Without it, signing out
-    /// goes to this deployment's own front page, which is what a deployment
-    /// with no separate site in front of it wants.
-    #[arg(
-        long = "site-origin",
-        env = "LIBREPAPER_SITE_ORIGIN",
-        value_name = "URL"
-    )]
-    site_origin: Option<String>,
-    /// HTTPS static mirror from which browsers fetch the wasm renderers
-    /// (`wasm/<sha256>/`) and the pinned LaTeX release (`latex/<sha256>/`).
-    #[arg(
-        long,
-        env = "LIBREPAPER_ASSET_MIRROR",
-        value_name = "URL",
-        default_value = librepaper_base::config::DEFAULT_ASSET_MIRROR
-    )]
-    asset_mirror: String,
-    /// Serve the font files in this directory to typst documents that name a
-    /// family the compiler does not embed; `publish` fetches the same fonts.
-    /// Without it, such a document is set in the compiler's default faces.
-    #[arg(long, env = "LIBREPAPER_TYPST_FONTS", value_name = "DIR")]
-    typst_fonts: Option<String>,
-    /// Do not run the local app for this machine. By default `serve` also
-    /// starts the loopback service that lets an editor whose browser is on
-    /// this host render Quarto documents with the tools installed here, with
-    /// no pairing code and no project grant.
-    #[arg(long, env = "LIBREPAPER_NO_LOCAL")]
-    no_local: bool,
-    /// Optional advanced configuration file. This is intentionally hidden from
-    /// the daily flag surface; use it only for guardrail overrides such as
-    /// `trusted_proxies`.
-    #[arg(
-        long = "config",
-        env = "LIBREPAPER_CONFIG",
-        value_name = "PATH",
-        hide = true
-    )]
-    advanced_config: Option<PathBuf>,
-}
-
-impl ServiceFlags {
-    fn configuration(&self) -> Configuration {
-        let mut config = Configuration::default();
-        if let Some(path) = &self.advanced_config {
-            let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
-                die(format!(
-                    "could not read advanced configuration {}: {error}",
-                    path.display()
-                ))
-            });
-            let file: AdvancedConfigFile = serde_yaml::from_str(&text).unwrap_or_else(|error| {
-                die(format!(
-                    "could not parse advanced configuration {}: {error}",
-                    path.display()
-                ))
-            });
-            if let Err(error) = config.apply_backup_overrides(file.backup) {
-                die(format!("invalid advanced backup policy: {error}"));
-            }
-            if let Some(proxies) = file.trusted_proxies {
-                match proxies
-                    .iter()
-                    .map(|s| librepaper_base::config::parse_trusted_proxy(s))
-                    .collect::<Result<Vec<_>, _>>()
-                {
-                    Ok(networks) => config.cost.trusted_proxies = networks,
-                    Err(error) => die(format!("invalid trusted_proxies: {error}")),
-                }
-            }
-            if let Err(error) = config.set_peer_queue(file.session_peer_queue) {
-                die(format!("invalid advanced session policy: {error}"));
-            }
-            if let Err(error) = config.set_pending(file.pending_mb, file.pending_scratch_mb) {
-                die(format!("invalid advanced pending policy: {error}"));
-            }
-            if let Err(error) = config.set_log_quota(file.log_quota_mb) {
-                die(format!("invalid advanced log quota: {error}"));
-            }
-            if let Err(error) = config.set_memory_budget(file.memory_budget_mb) {
-                die(format!("invalid advanced memory budget: {error}"));
-            }
-        }
-        if let Err(err) = config.set_storage(self.quota, self.storage) {
-            die(err);
-        }
-        if let Err(err) = config.set_uploads_per_hour(self.uploads_per_hour) {
-            die(err);
-        }
-        if let Err(err) = config.cost.validate() {
-            die(err);
-        }
-        // Checked after all configuration overrides are applied.
-        if let Err(err) = config.validate_pending() {
-            die(err);
-        }
-        if let Err(err) = config.validate_budgets() {
-            die(err);
-        }
-        config
-    }
-}
-
-#[derive(serde::Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct AdvancedConfigFile {
-    /// The explicit peer trust boundary.
-    trusted_proxies: Option<Vec<String>>,
-    /// How many frames one socket's outbound queue may hold before the
-    /// subscriber is closed. The byte budget is this limit times 64 KiB.
-    session_peer_queue: Option<usize>,
-    /// How much unsaved source the whole deployment will hold, in megabytes,
-    /// and how much temporary memory the persistence path may hold while
-    /// writing it. Advanced configuration only; an integration test lowers
-    /// them to reach pressure without buffering sixty-four megabytes first.
-    pending_mb: Option<u64>,
-    pending_scratch_mb: Option<u64>,
-    /// The per-document log ceiling, in megabytes. Advanced configuration only;
-    /// the memory budget must be able to build one document this large, see
-    /// `memory_budget_mb`.
-    log_quota_mb: Option<u64>,
-    /// The process-wide budget for decoded documents, in megabytes. Advanced
-    /// configuration only. It must be able to build one document at the log
-    /// quota, so a raised quota needs a raised budget with it; the pair is
-    /// checked at startup.
-    memory_budget_mb: Option<u64>,
-    #[serde(default)]
-    backup: librepaper_base::config::BackupPolicyOverrides,
-}
-
-// The nested `AdminCommand::Serve` flags determine this enum's size too; clap
-// parses one command once, so an extra indirection would not improve runtime.
+// Clap parses commands once, so an extra indirection would not improve runtime.
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum Command {
@@ -358,30 +143,18 @@ pub(crate) enum Command {
 pub(crate) enum AdminCommand {
     /// Run the service on this machine
     Serve {
-        #[arg(
-            long,
-            env = "LIBREPAPER_BIND",
-            value_name = "ADDRESS",
-            default_value = "0.0.0.0"
-        )]
-        bind: std::net::IpAddr,
-        #[arg(
-            long,
-            env = "LIBREPAPER_PORT",
-            value_name = "PORT",
-            default_value_t = 0,
-            hide_default_value = true
-        )]
-        port: u16,
-        #[command(flatten)]
-        service: ServiceFlags,
-        #[command(flatten)]
-        storage: StorageFlags,
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
+    },
+    /// Inspect or validate the effective deployment configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
     },
     /// Create a snapshot-consistent PostgreSQL and immutable-object recovery point.
     Backup {
-        #[command(flatten)]
-        storage: StorageFlags,
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
         /// New directory to create
         directory: String,
         /// Identifier to record for this backup; generated when omitted
@@ -390,8 +163,8 @@ pub(crate) enum AdminCommand {
     },
     /// Restore a verified backup into a new deployment directory.
     Restore {
-        #[command(flatten)]
-        storage: StorageFlags,
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
         /// Backup directory to read
         backup: String,
         /// New deployment directory to create
@@ -414,8 +187,8 @@ pub(crate) enum AdminCommand {
     /// cleanup directly.
     #[command(hide = true)]
     Sweep {
-        #[command(flatten)]
-        storage: StorageFlags,
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
         /// How many objects to examine per prefix. The sweep remembers where
         /// it stopped, so running it again continues from there.
         #[arg(
@@ -428,18 +201,21 @@ pub(crate) enum AdminCommand {
     },
 }
 
-#[derive(Args, Clone, Debug)]
-pub(crate) struct ModerationDatabase {
-    /// PostgreSQL URL for the deployment being moderated.
-    #[arg(
-        long,
-        env = "LIBREPAPER_DATABASE_URL",
-        hide_env_values = true,
-        default_value = "postgresql:///librepaper",
-        value_name = "URL"
-    )]
-    database_url: String,
+#[derive(Subcommand)]
+pub(crate) enum ConfigCommand {
+    /// Validate the configuration without opening storage or binding ports.
+    Check {
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
+    },
+    /// Print effective configuration with secrets redacted.
+    Show {
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
+    },
 }
+
+const DEFAULT_SERVER_CONFIG: &str = "/etc/librepaper/config.toml";
 
 #[derive(Subcommand, Clone, Debug)]
 pub(crate) enum ModerationCommand {
@@ -451,8 +227,8 @@ pub(crate) enum ModerationCommand {
         actor: String,
         #[arg(long, value_name = "REASON", required = true)]
         reason: String,
-        #[command(flatten)]
-        database: ModerationDatabase,
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
     },
     /// Restore an account blocked by moderation.
     UnblockAccount {
@@ -462,8 +238,8 @@ pub(crate) enum ModerationCommand {
         actor: String,
         #[arg(long, value_name = "REASON", required = true)]
         reason: String,
-        #[command(flatten)]
-        database: ModerationDatabase,
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
     },
     /// Hide a project from every document and asset route without deleting it.
     HideProject {
@@ -473,8 +249,8 @@ pub(crate) enum ModerationCommand {
         actor: String,
         #[arg(long, value_name = "REASON", required = true)]
         reason: String,
-        #[command(flatten)]
-        database: ModerationDatabase,
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
     },
     /// Restore public access to a project hidden by moderation.
     UnhideProject {
@@ -484,20 +260,24 @@ pub(crate) enum ModerationCommand {
         actor: String,
         #[arg(long, value_name = "REASON", required = true)]
         reason: String,
-        #[command(flatten)]
-        database: ModerationDatabase,
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
     },
 }
 
-/// Installs the one process-wide subscriber: diagnostics go to stderr, `RUST_LOG`
-/// overrides the default `info` filter, and colour is used only on a terminal.
-fn install_subscriber() {
+/// Installs the one process-wide subscriber. Companion commands accept `RUST_LOG`;
+/// deployment administration keeps its logging filter independent of the environment.
+fn install_subscriber(server_filter: Option<&str>) {
     use std::io::IsTerminal;
     use tracing_subscriber::EnvFilter;
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_env_filter(if let Some(filter) = server_filter {
+            EnvFilter::try_new(filter).unwrap_or_else(|error| {
+                die(format!("logging.filter is invalid: {error}"));
+            })
+        } else {
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+        })
         .with_writer(std::io::stderr)
         .with_ansi(std::io::stderr().is_terminal())
         .init();
@@ -506,8 +286,10 @@ fn install_subscriber() {
 #[tokio::main]
 pub async fn main() {
     let cli = Cli::parse();
-    install_subscriber();
     let command = cli.command.unwrap_or(Command::Start(cli.launch));
+    if !matches!(&command, Command::Admin { .. }) {
+        install_subscriber(None);
+    }
     match command {
         Command::Start(args) => {
             librepaper_companion::local::cli::run(LocalArgs {
@@ -573,79 +355,101 @@ pub async fn main() {
 
 async fn run_admin(command: AdminCommand) {
     match command {
-        AdminCommand::Serve {
-            bind,
-            port,
-            service,
-            storage,
-        } => {
-            let config = service.configuration();
-            librepaper_server::server::serve::serve(
-                librepaper_server::server::serve::ServeOptions {
-                    bind,
-                    port,
-                    storage: storage.options(),
-                    github_client_id: service.github_client_id,
-                    google_client_id: service.google_client_id,
-                    publishers: service.publishers,
-                    commenters: service.commenters,
-                    simulate_activity: service.simulate_activity,
-                    origin: service.origin,
-                    docs_origin: service.docs_origin,
-                    site_origin: service.site_origin,
-                    expire_after: service.expire_after,
-                    expire_from: service.expire_from,
-                    asset_mirror: service.asset_mirror,
-                    typst_fonts: service.typst_fonts,
-                    start_local: (!service.no_local).then(
-                        || -> librepaper_server::server::serve::StartLocal {
-                            Box::new(|base| {
-                                Box::pin(async move {
-                                    let app = librepaper_companion::local::embedded::start(
-                                        &base,
-                                        Vec::new(),
-                                    )
-                                    .await?;
-                                    let stopper = app.clone();
-                                    Ok(librepaper_server::server::serve::LocalApp {
-                                        address: app.address.clone(),
-                                        stop: Box::new(move || {
-                                            Box::pin(async move { stopper.stop().await })
-                                        }),
-                                    })
-                                })
-                            })
-                        },
-                    ),
-                    load_shell: librepaper_shell::load_shell,
-                    latex_release: librepaper_shell::latex_release(),
-                    config,
-                },
-            )
-            .await
+        AdminCommand::Serve { config } => {
+            let resolved = server_config::load(&config).unwrap_or_else(|error| die(error));
+            install_subscriber(Some(&resolved.log_filter));
+            librepaper_server::server::serve::serve(serve_options(resolved)).await
         }
+        AdminCommand::Config { command } => match command {
+            ConfigCommand::Check { config } => {
+                let resolved = server_config::load(&config).unwrap_or_else(|error| die(error));
+                install_subscriber(Some(&resolved.log_filter));
+                let options = serve_options(resolved);
+                if let Err(error) = librepaper_server::server::serve::validate_serve_options(&options) {
+                    die(error);
+                }
+                println!("configuration is valid");
+            }
+            ConfigCommand::Show { config } => {
+                let resolved = server_config::load(&config).unwrap_or_else(|error| die(error));
+                install_subscriber(Some(&resolved.log_filter));
+                let rendered = server_config::show_resolved(&resolved);
+                print!("{rendered}");
+            }
+        },
         AdminCommand::Backup {
-            storage,
+            config,
             directory,
             id,
         } => {
+            let (storage, filter) = server_config::load_storage_with_log_filter(&config)
+                .unwrap_or_else(|error| die(error));
+            install_subscriber(Some(&filter));
             librepaper_engine::storage::backup::backup_cli(
-                storage.options(),
+                storage,
                 directory,
                 id.unwrap_or_default(),
             )
             .await
         }
         AdminCommand::Restore {
-            storage,
+            config,
             backup,
             directory,
         } => {
-            librepaper_engine::storage::backup::restore_cli(storage.options(), backup, directory)
-                .await
+            let (storage, filter) = server_config::load_storage_with_log_filter(&config)
+                .unwrap_or_else(|error| die(error));
+            install_subscriber(Some(&filter));
+            librepaper_engine::storage::backup::restore_cli(storage, backup, directory).await
         }
         AdminCommand::Moderate { command } => moderate(command).await,
-        AdminCommand::Sweep { storage, batch } => sweep(storage, batch as usize).await,
+        AdminCommand::Sweep { config, batch } => {
+            let (storage, filter) = server_config::load_storage_with_log_filter(&config)
+                .unwrap_or_else(|error| die(error));
+            install_subscriber(Some(&filter));
+            sweep(storage, batch as usize).await
+        }
+    }
+}
+
+fn serve_options(
+    resolved: server_config::ResolvedConfig,
+) -> librepaper_server::server::serve::ServeOptions {
+    let start_local = resolved.local_companion.then(|| {
+        Box::new(|base| {
+            Box::pin(async move {
+                let app = librepaper_companion::local::embedded::start(&base, Vec::new()).await?;
+                let stopper = app.clone();
+                Ok(librepaper_server::server::serve::LocalApp {
+                    address: app.address.clone(),
+                    stop: Box::new(move || Box::pin(async move { stopper.stop().await })),
+                })
+            })
+        }) as librepaper_server::server::serve::StartLocal
+    });
+    librepaper_server::server::serve::ServeOptions {
+        bind: resolved.bind,
+        port: resolved.port,
+        storage: resolved.storage,
+        github_client_id: resolved.github_client_id,
+        github_client_secret: resolved.github_client_secret,
+        google_client_id: resolved.google_client_id,
+        google_client_secret: resolved.google_client_secret,
+        publishers: Some(resolved.publishers.join(",")),
+        commenters: Some(resolved.commenters.join(",")),
+        simulate_activity: resolved.simulate_activity,
+        origin: resolved.origin,
+        docs_origin: resolved.docs_origin,
+        site_origin: resolved.site_origin,
+        expire_after: resolved.expire_after,
+        expire_from: resolved.expire_from,
+        asset_mirror: resolved.asset_mirror,
+        typst_fonts: resolved.typst_fonts,
+        start_local,
+        load_shell: librepaper_shell::load_shell,
+        latex_release: librepaper_shell::latex_release(),
+        config: resolved.config,
+        metrics_address: resolved.metrics_address,
     }
 }
 
@@ -653,14 +457,14 @@ async fn moderate(command: ModerationCommand) {
     use librepaper_engine::storage::postgres::{
         ModerationAction, PostgresCatalog, PostgresOptions,
     };
-    let (database, action, target, actor, reason) = match command {
+    let (config, action, target, actor, reason) = match command {
         ModerationCommand::BlockAccount {
             account,
             actor,
             reason,
-            database,
+            config,
         } => (
-            database,
+            config,
             ModerationAction::BlockAccount,
             account,
             actor,
@@ -670,9 +474,9 @@ async fn moderate(command: ModerationCommand) {
             account,
             actor,
             reason,
-            database,
+            config,
         } => (
-            database,
+            config,
             ModerationAction::UnblockAccount,
             account,
             actor,
@@ -682,9 +486,9 @@ async fn moderate(command: ModerationCommand) {
             project,
             actor,
             reason,
-            database,
+            config,
         } => (
-            database,
+            config,
             ModerationAction::HideProject,
             project,
             actor,
@@ -694,17 +498,21 @@ async fn moderate(command: ModerationCommand) {
             project,
             actor,
             reason,
-            database,
+            config,
         } => (
-            database,
+            config,
             ModerationAction::UnhideProject,
             project,
             actor,
             reason,
         ),
     };
-    let catalog = match PostgresCatalog::connect(PostgresOptions::new(database.database_url)).await
-    {
+    let (storage, filter) = server_config::load_storage_with_log_filter(&config)
+        .unwrap_or_else(|error| die(error));
+    install_subscriber(Some(&filter));
+    let mut postgres = PostgresOptions::new(storage.database_url);
+    postgres.max_connections = storage.database_connections;
+    let catalog = match PostgresCatalog::connect(postgres).await {
         Ok(catalog) => catalog,
         Err(error) => die(error.to_string()),
     };
@@ -747,8 +555,7 @@ async fn moderate(command: ModerationCommand) {
 /// `librepaper admin sweep`. The seven-day floor is the orphan sweeper's
 /// own: a blob younger than that may belong to a write still in flight, and
 /// `delete_orphans` refuses a shorter grace rather than trusting a flag.
-async fn sweep(storage: StorageFlags, batch: usize) {
-    let options = storage.options();
+async fn sweep(options: librepaper_engine::storage::StorageOptions, batch: usize) {
     let blobs = match librepaper_engine::storage::open_storage(options.clone()).await {
         Ok(blobs) => blobs,
         Err(error) => die(error),

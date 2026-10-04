@@ -159,7 +159,7 @@ impl LinkGrant {
 }
 
 /// The most a document may open each role to one caller, which is what the
-/// deployment's own switches say. `--publishers` and `--commenters` are
+/// deployment's TOML settings say. `access.publishers` and `access.commenters` are
 /// ceilings: a document may only ever be stricter than its server, so a grant
 /// recorded while a switch was wide stops answering when the switch narrows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

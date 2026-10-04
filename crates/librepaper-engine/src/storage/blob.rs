@@ -145,14 +145,27 @@ impl ObjectBlobStore {
         region: &str,
         bucket: &str,
         allow_http: bool,
+        access_key_id: Option<&str>,
+        secret_access_key: Option<&str>,
+        session_token: Option<&str>,
     ) -> Result<Self, String> {
         if region.is_empty() || bucket.is_empty() {
-            return Err("S3 region and bucket are required".into());
+            return Err("storage.s3.region and storage.s3.bucket are required".into());
         }
-        let mut builder = AmazonS3Builder::from_env()
+        if access_key_id.is_none() || secret_access_key.is_none() {
+            return Err(
+                "storage.s3.access_key_id and storage.s3.secret_access_key are required".into(),
+            );
+        }
+        let mut builder = AmazonS3Builder::new()
             .with_region(region)
             .with_bucket_name(bucket)
-            .with_allow_http(allow_http);
+            .with_allow_http(allow_http)
+            .with_access_key_id(access_key_id.expect("checked above"))
+            .with_secret_access_key(secret_access_key.expect("checked above"));
+        if let Some(token) = session_token {
+            builder = builder.with_token(token);
+        }
         if let Some(endpoint) = endpoint.filter(|value| !value.is_empty()) {
             builder = builder.with_endpoint(endpoint);
         }

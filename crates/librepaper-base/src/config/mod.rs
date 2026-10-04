@@ -541,7 +541,7 @@ impl Configuration {
         }
         if self.storage.per_owner > self.storage.total {
             return Err(format!(
-                "--publisher-storage-limit ({} MB) cannot exceed --deployment-storage-limit ({} MB)",
+                "limits.publisher_storage_mb ({} MB) cannot exceed limits.deployment_storage_mb ({} MB)",
                 self.storage.per_owner >> 20,
                 self.storage.total >> 20
             ));

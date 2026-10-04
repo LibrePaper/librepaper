@@ -280,6 +280,9 @@ fn deployment_flags_are_scoped() {
     );
 
     let admin_serve_help = help_of(&["admin", "serve", "--help"]);
+    assert!(admin_serve_help.contains("--config"));
+    assert!(!admin_serve_help.contains("--port"));
+    assert!(!admin_serve_help.contains("--bind"));
     assert!(
         !admin_serve_help.contains("--server <"),
         "--server should not be in admin serve help:\n{admin_serve_help}"
@@ -288,6 +291,90 @@ fn deployment_flags_are_scoped() {
         !admin_serve_help.contains("--token"),
         "--token should not be in admin serve help:\n{admin_serve_help}"
     );
+}
+
+#[test]
+fn server_flags_are_rejected_and_server_environment_overrides_are_ignored() {
+    for args in [
+        &["admin", "serve", "--port", "9123"][..],
+        &["admin", "serve", "--origin", "https://paper.example"][..],
+        &["admin", "backup", "--database-url", "postgresql:///other", "backup-dir"][..],
+        &["admin", "moderate", "hide-project", "paper", "--database-url", "postgresql:///other", "--actor", "operator", "--reason", "review"][..],
+    ] {
+        assert!(!cli(args).status.success(), "{args:?} should be rejected");
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "[server]\nport = 8179\n[access]\npublishers = [\"any\"]\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
+        .args(["admin", "config", "show", "--config", config.to_str().unwrap()])
+        .env("LIBREPAPER_PORT", "9999")
+        .env("LIBREPAPER_DATABASE_URL", "postgresql:///ambient")
+        .env("LIBREPAPER_CONFIG", "/tmp/ignored-config.toml")
+        .output()
+        .expect("CLI starts");
+    assert!(output.status.success(), "{output:?}");
+    let shown = String::from_utf8_lossy(&output.stdout);
+    assert!(shown.contains("port = 8179"), "{shown}");
+    assert!(!shown.contains("9999"), "{shown}");
+    assert!(!shown.contains("ambient"), "{shown}");
+}
+
+#[test]
+fn config_commands_accept_explicit_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("missing.toml");
+    let config = config.to_str().unwrap();
+    for args in [
+        &["admin", "serve", "--config", config][..],
+        &["admin", "config", "check", "--config", config][..],
+        &["admin", "config", "show", "--config", config][..],
+        &["admin", "backup", "backup-dir", "--config", config][..],
+        &["admin", "restore", "backup-dir", "target-dir", "--config", config][..],
+        &["admin", "moderate", "hide-project", "paper", "--actor", "operator", "--reason", "review", "--config", config][..],
+    ] {
+        let output = cli(args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?}: {output:?}");
+        assert!(stderr.contains("could not read server configuration"), "{args:?}: {output:?}");
+        assert!(stderr.contains(config), "{args:?}: {output:?}");
+    }
+}
+
+#[test]
+fn config_check_is_side_effect_free_and_validates_serve_inputs() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("config.toml");
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = occupied.local_addr().unwrap().port();
+    std::fs::write(
+        &config,
+        format!(
+            "[server]\nbind = \"127.0.0.1\"\nport = {port}\n[access]\npublishers = [\"any\"]\n"
+        ),
+    )
+    .unwrap();
+    let config_arg = config.to_str().unwrap();
+
+    let valid = cli(&["admin", "config", "check", "--config", config_arg]);
+    assert!(valid.status.success(), "{valid:?}");
+    assert!(String::from_utf8_lossy(&valid.stdout).contains("configuration is valid"));
+    assert!(!temp.path().join("librepaper-data").exists());
+
+    std::fs::write(
+        &config,
+        "[server]\norigin = \"javascript:alert(1)\"\n[access]\npublishers = [\"any\"]\n",
+    )
+    .unwrap();
+    let invalid = cli(&["admin", "config", "check", "--config", config_arg]);
+    assert!(!invalid.status.success(), "{invalid:?}");
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("server.origin"));
+    assert!(!temp.path().join("librepaper-data").exists());
 }
 
 #[test]

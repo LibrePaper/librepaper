@@ -203,7 +203,7 @@ pub struct Server {
     pub tokens: TokenCache,
     pub config: Arc<Configuration>,
     /// The two origins this deployment answers on. Set at startup from
-    /// `--origin`; a deployment given none answers on loopback alone, which is
+    /// `server.origin`; a deployment given none answers on loopback alone, which is
     /// what development and the tests use.
     pub origins: origins::Origins,
     pub publishers: Policy,
@@ -1074,7 +1074,7 @@ impl Server {
     }
 
     /// The most this deployment's switches will let a document give one
-    /// caller. `--publishers` governs editing, because an editor puts content
+    /// caller. `access.publishers` governs editing, because an editor puts content
     /// on the server; `--commenters` governs commenting. A link asks the same
     /// question with an empty handle, since it names nobody, and that is
     /// exactly what makes "a link cannot edit unless the deployment lets

@@ -128,7 +128,7 @@ pub struct Origins {
 
 impl Origins {
     /// A deployment that answers on loopback alone: development, the test
-    /// suite, and `librepaper admin serve` with no `--origin`.
+    /// suite, and `librepaper admin serve` with no `server.origin`.
     pub fn loopback_only() -> Origins {
         Origins { configured: None }
     }
@@ -138,10 +138,10 @@ impl Origins {
     /// certificate the manual asks for; an operator who wants an unrelated
     /// name says so and it is honored.
     pub fn configure(reader: &str, docs: Option<&str>) -> Result<Origins, String> {
-        let reader = Origin::parse(reader).map_err(|error| format!("--origin: {error}"))?;
+        let reader = Origin::parse(reader).map_err(|error| format!("server.origin: {error}"))?;
         let docs = match docs {
             Some(value) => {
-                Origin::parse(value).map_err(|error| format!("--docs-origin: {error}"))?
+                Origin::parse(value).map_err(|error| format!("server.docs_origin: {error}"))?
             }
             None => Origin::assemble(
                 reader.scheme,

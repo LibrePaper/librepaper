@@ -21,12 +21,10 @@ mod worker_recovery_tests;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clap::Args;
-
 use crate::storage::blob::{BlobStore, ObjectBlobStore};
 use librepaper_base::config::DeploymentPaths;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct StorageOptions {
     pub dir: PathBuf,
     pub fsync: bool,
@@ -37,6 +35,28 @@ pub struct StorageOptions {
     pub s3_region: String,
     pub s3_bucket: Option<String>,
     pub s3_allow_http: bool,
+    pub s3_access_key_id: Option<String>,
+    pub s3_secret_access_key: Option<String>,
+    pub s3_session_token: Option<String>,
+}
+
+impl std::fmt::Debug for StorageOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StorageOptions")
+            .field("dir", &self.dir)
+            .field("fsync", &self.fsync)
+            .field("database_url", &"[REDACTED]")
+            .field("database_connections", &self.database_connections)
+            .field("object_store", &self.object_store)
+            .field("s3_endpoint", &self.s3_endpoint.as_ref().map(|_| "[REDACTED]"))
+            .field("s3_region", &self.s3_region)
+            .field("s3_bucket", &self.s3_bucket)
+            .field("s3_allow_http", &self.s3_allow_http)
+            .field("s3_access_key_id", &self.s3_access_key_id.as_ref().map(|_| "[REDACTED]"))
+            .field("s3_secret_access_key", &self.s3_secret_access_key.as_ref().map(|_| "[REDACTED]"))
+            .field("s3_session_token", &self.s3_session_token.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 impl StorageOptions {
@@ -53,11 +73,72 @@ impl StorageOptions {
     }
 }
 
+/// Validate the storage portion of deployment configuration without touching
+/// the filesystem, contacting PostgreSQL, or selecting cloud credentials from
+/// the process environment.
+pub fn validate_storage_options(options: &StorageOptions) -> Result<(), String> {
+    options.paths()?;
+    if !(1..=200).contains(&options.database_connections) {
+        return Err("storage.database_connections must be between 1 and 200".into());
+    }
+    let scheme = options.database_url.split_once("://").map(|(scheme, _)| scheme);
+    if !matches!(scheme, Some("postgres") | Some("postgresql")) {
+        return Err("storage.database_url must use the postgres or postgresql URL scheme".into());
+    }
+    let _: sqlx::postgres::PgConnectOptions = options
+        .database_url
+        .parse()
+        .map_err(|_| "storage.database_url is not a valid PostgreSQL connection URL".to_string())?;
+    match options.object_store.as_str() {
+        "filesystem" => {}
+        "s3" => {
+            if options.s3_region.trim().is_empty()
+                || options.s3_bucket.as_deref().unwrap_or("").trim().is_empty()
+            {
+                return Err("storage.s3.region and storage.s3.bucket are required".into());
+            }
+            if options.s3_access_key_id.as_deref().unwrap_or("").trim().is_empty()
+                || options.s3_secret_access_key.as_deref().unwrap_or("").trim().is_empty()
+            {
+                return Err(
+                    "storage.s3.access_key_id and storage.s3.secret_access_key are required".into(),
+                );
+            }
+            if let Some(endpoint) = options.s3_endpoint.as_deref() {
+                let parsed = url::Url::parse(endpoint)
+                    .map_err(|_| "storage.s3.endpoint must be an absolute http(s) URL".to_string())?;
+                if parsed.host_str().is_none()
+                    || parsed.username() != ""
+                    || parsed.password().is_some()
+                    || parsed.query().is_some()
+                    || parsed.fragment().is_some()
+                    || !(parsed.scheme() == "https"
+                        || (options.s3_allow_http && parsed.scheme() == "http"))
+                {
+                    return Err("storage.s3.endpoint must be an HTTPS URL, or HTTP when storage.s3.allow_http is true, without credentials, a query, or a fragment".into());
+                }
+            }
+            let _ = ObjectBlobStore::s3(
+                options.s3_endpoint.as_deref(),
+                &options.s3_region,
+                options.s3_bucket.as_deref().unwrap_or_default(),
+                options.s3_allow_http,
+                options.s3_access_key_id.as_deref(),
+                options.s3_secret_access_key.as_deref(),
+                options.s3_session_token.as_deref(),
+            )?;
+        }
+        _ => return Err("storage.object_store must be filesystem or s3".into()),
+    }
+    Ok(())
+}
+
 /// The blob store a deployment was configured for, having checked that its
 /// directory is usable. A misconfigured directory must fail here, at
 /// startup, in front of whoever is starting it, not on the first upload, in
 /// front of a user.
 pub async fn open_storage(options: StorageOptions) -> Result<Arc<dyn BlobStore>, String> {
+    validate_storage_options(&options)?;
     let paths = options.paths()?;
 
     create_private_dir(&paths.deployment, "deployment directory")?;
@@ -75,8 +156,11 @@ pub async fn open_storage(options: StorageOptions) -> Result<Arc<dyn BlobStore>,
             options
                 .s3_bucket
                 .as_deref()
-                .ok_or("--s3-bucket is required for S3 storage")?,
+                .ok_or("storage.s3.bucket is required for S3 storage")?,
             options.s3_allow_http,
+            options.s3_access_key_id.as_deref(),
+            options.s3_secret_access_key.as_deref(),
+            options.s3_session_token.as_deref(),
         )?)),
         other => Err(format!(
             "unsupported object store {other:?}; expected filesystem or s3"
@@ -94,74 +178,4 @@ pub fn create_private_dir(path: &std::path::Path, context: &str) -> Result<(), S
             .map_err(|err| format!("could not protect {context} {}: {err}", path.display()))?;
     }
     Ok(())
-}
-
-/// The flags that say where the bytes go. `serve` and `seed` both take them,
-/// and they are described in one place so the two cannot drift.
-#[derive(Args, Clone, Debug)]
-pub struct StorageFlags {
-    /// The deployment directory for objects, transient state, and secrets.
-    #[arg(
-        long = "data-directory",
-        env = "LIBREPAPER_DATA",
-        default_value = "librepaper-data",
-        value_name = "DIR"
-    )]
-    pub data: PathBuf,
-    /// Whether writes, to the object store and the catalogue alike, are
-    /// synced to disk before they are acknowledged. False only for throwaway
-    /// test deployments.
-    #[arg(
-        long,
-        env = "LIBREPAPER_FSYNC",
-        default_value_t = true,
-        action = clap::ArgAction::Set,
-        value_name = "BOOL"
-    )]
-    pub fsync: bool,
-    /// PostgreSQL connection URL. A local peer-authenticated server can use
-    /// the socket URL default; hosted deployments normally set the matching
-    /// environment variable to a managed database URL.
-    #[arg(
-        long,
-        env = "LIBREPAPER_DATABASE_URL",
-        default_value = "postgresql:///librepaper",
-        value_name = "URL"
-    )]
-    pub database_url: String,
-    /// Maximum PostgreSQL connections used by this server process.
-    #[arg(
-        long,
-        env = "LIBREPAPER_DATABASE_CONNECTIONS",
-        default_value_t = 20,
-        value_parser = clap::value_parser!(u32).range(1..=200),
-        value_name = "COUNT"
-    )]
-    pub database_connections: u32,
-    #[arg(long,env="LIBREPAPER_OBJECT_STORE",default_value="filesystem",value_parser=["filesystem","s3"])]
-    pub object_store: String,
-    #[arg(long, env = "LIBREPAPER_S3_ENDPOINT")]
-    pub s3_endpoint: Option<String>,
-    #[arg(long, env = "LIBREPAPER_S3_REGION", default_value = "us-east-1")]
-    pub s3_region: String,
-    #[arg(long, env = "LIBREPAPER_S3_BUCKET")]
-    pub s3_bucket: Option<String>,
-    #[arg(long,env="LIBREPAPER_S3_ALLOW_HTTP",default_value_t=false,action=clap::ArgAction::Set)]
-    pub s3_allow_http: bool,
-}
-
-impl StorageFlags {
-    pub fn options(&self) -> StorageOptions {
-        StorageOptions {
-            dir: self.data.clone(),
-            fsync: self.fsync,
-            database_url: self.database_url.clone(),
-            database_connections: self.database_connections,
-            object_store: self.object_store.clone(),
-            s3_endpoint: self.s3_endpoint.clone(),
-            s3_region: self.s3_region.clone(),
-            s3_bucket: self.s3_bucket.clone(),
-            s3_allow_http: self.s3_allow_http,
-        }
-    }
 }

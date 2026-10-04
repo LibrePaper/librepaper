@@ -44,12 +44,12 @@ pub struct ServeOptions {
     pub bind: std::net::IpAddr,
     pub port: u16,
     pub storage: StorageOptions,
-    /// The GitHub OAuth app's client id. Resolved by clap from `--github-client-id`
-    /// or `LIBREPAPER_GITHUB_CLIENT_ID`; the client secret is never a flag, and
-    /// is read straight from the environment by `secrets_from_environment`.
+    /// GitHub OAuth app credentials resolved from the TOML configuration.
     pub github_client_id: Option<String>,
-    /// The Google OAuth client's id, resolved the same way as the GitHub one.
+    pub github_client_secret: Option<String>,
+    /// Google OAuth app credentials resolved from the TOML configuration.
     pub google_client_id: Option<String>,
+    pub google_client_secret: Option<String>,
     pub publishers: Option<String>,
     pub commenters: Option<String>,
     /// Write each new account's starter documents as though they had been
@@ -75,7 +75,7 @@ pub struct ServeOptions {
     /// A directory of font files served to typst documents, or nothing. See
     /// `crate::server::fonts`.
     pub typst_fonts: Option<String>,
-    /// Starts the local app for this machine, or nothing for `--no-local`.
+    /// Starts the local app for this machine, or nothing when disabled in TOML.
     /// When present, `serve` also runs the loopback service that renders
     /// Quarto documents for an editor whose browser is on this host. The
     /// caller supplies it so the server does not depend on the service.
@@ -88,6 +88,7 @@ pub struct ServeOptions {
     /// The pinned LaTeX release, supplied by the caller for the same reason.
     pub latex_release: &'static str,
     pub config: Configuration,
+    pub metrics_address: Option<SocketAddr>,
 }
 
 /// Validate the only supported mirror shape before opening storage or binding
@@ -97,7 +98,7 @@ pub(crate) fn validate_asset_mirror(value: &str) -> Result<String, String> {
     let value = value.trim();
     let mut parsed = url::Url::parse(value).map_err(|_| {
         format!(
-            "--asset-mirror must be an https: URL for a static mirror; see the mirror documentation (got {value:?})"
+            "assets.mirror must be an https: URL for a static mirror (got {value:?})"
         )
     })?;
     if parsed.scheme() != "https"
@@ -107,7 +108,7 @@ pub(crate) fn validate_asset_mirror(value: &str) -> Result<String, String> {
         || parsed.query().is_some()
         || parsed.fragment().is_some()
     {
-        return Err("--asset-mirror must be an https: URL without credentials, a query, or a fragment; see https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md".to_string());
+        return Err("assets.mirror must be an https: URL without credentials, a query, or a fragment; see https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md".to_string());
     }
     parsed.set_path(&format!("{}/", parsed.path().trim_end_matches('/')));
     Ok(parsed.to_string())
@@ -121,7 +122,7 @@ pub(crate) fn validate_asset_mirror(value: &str) -> Result<String, String> {
 pub(crate) fn validate_site_origin(value: &str) -> Result<String, String> {
     let value = value.trim();
     let parsed = url::Url::parse(value).map_err(|_| {
-        format!("--site-origin must be a URL, for example https://paper.example (got {value:?})")
+        format!("server.site_origin must be a URL, for example https://paper.example (got {value:?})")
     })?;
     let loopback = matches!(parsed.host(), Some(url::Host::Domain("localhost")))
         || matches!(parsed.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
@@ -130,7 +131,7 @@ pub(crate) fn validate_site_origin(value: &str) -> Result<String, String> {
         || (parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback))
     {
         return Err(format!(
-            "--site-origin must be an https: URL, or http: on loopback (got {value:?})"
+            "server.site_origin must be an https: URL, or http: on loopback (got {value:?})"
         ));
     }
     if !parsed.username().is_empty()
@@ -140,28 +141,11 @@ pub(crate) fn validate_site_origin(value: &str) -> Result<String, String> {
         || !parsed.path().trim_matches('/').is_empty()
     {
         return Err(
-            "--site-origin must be an origin alone: no credentials, path, query or fragment"
+            "server.site_origin must be an origin alone: no credentials, path, query or fragment"
                 .to_string(),
         );
     }
     Ok(parsed.origin().ascii_serialization())
-}
-
-/// The GitHub and Google OAuth app client secrets. Secrets never travel as
-/// flags: a flag lands in the process table, where every other process on the
-/// machine can read it, and in the shell history of whoever typed it. This is
-/// the only place the server reads configuration straight out of the
-/// environment; every other option is resolved by clap before it gets here.
-struct Secrets {
-    github_client_secret: String,
-    google_client_secret: String,
-}
-
-fn secrets_from_environment() -> Secrets {
-    Secrets {
-        github_client_secret: std::env::var("LIBREPAPER_GITHUB_CLIENT_SECRET").unwrap_or_default(),
-        google_client_secret: std::env::var("LIBREPAPER_GOOGLE_CLIENT_SECRET").unwrap_or_default(),
-    }
 }
 
 /// Claims a port: the one asked for, or the first free one in the default
@@ -171,7 +155,7 @@ async fn listen(bind: std::net::IpAddr, port: u16) -> TcpListener {
         return match TcpListener::bind((bind, port)).await {
             Ok(listener) => listener,
             Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => die(format!(
-                "port {port} is already in use. Pick another with --port."
+                "port {port} is already in use. Pick another value for server.port."
             )),
             Err(err) => die(format!("could not listen on port {port}: {err}")),
         };
@@ -184,7 +168,7 @@ async fn listen(bind: std::net::IpAddr, port: u16) -> TcpListener {
         }
     }
     die(format!(
-        "ports {PORT_FIRST} to {PORT_LAST} are all in use. Pick one with --port."
+        "ports {PORT_FIRST} to {PORT_LAST} are all in use. Set server.port to a free port."
     ))
 }
 
@@ -219,22 +203,22 @@ pub fn sign_in_advice(
     if !github && (publishers.names_a_login() || commenters.names_a_login()) {
         advice.warnings.push(
             "warning: a policy names a GitHub login, but there is no GitHub OAuth app; \
-             nobody can sign in that way. Set LIBREPAPER_GITHUB_CLIENT_ID and \
-             LIBREPAPER_GITHUB_CLIENT_SECRET."
+             nobody can sign in that way. Configure auth.github.client_id and \
+             auth.github.client_secret in the TOML file."
                 .to_string(),
         );
     }
     if !google && (publishers.names_an_email_or_domain() || commenters.names_an_email_or_domain()) {
         advice.warnings.push(
             "warning: a policy names an email address or a domain, but there is no Google \
-             client; nobody can sign in that way. Set LIBREPAPER_GOOGLE_CLIENT_ID and \
-             LIBREPAPER_GOOGLE_CLIENT_SECRET."
+             client; nobody can sign in that way. Configure auth.google.client_id and \
+             auth.google.client_secret in the TOML file."
                 .to_string(),
         );
     }
     if !github && !google {
         advice.warnings.push(format!(
-            "warning: neither Google nor GitHub sign-in is configured; publishing and source writes are unavailable. Set LIBREPAPER_GITHUB_CLIENT_ID and LIBREPAPER_GITHUB_CLIENT_SECRET, or LIBREPAPER_GOOGLE_CLIENT_ID and LIBREPAPER_GOOGLE_CLIENT_SECRET (callbacks use {reader_origin}/auth/callback, or pass --port {port})."
+            "warning: neither Google nor GitHub sign-in is configured; publishing and source writes are unavailable. Configure auth.github or auth.google credentials in the TOML file (callbacks use {reader_origin}/auth/callback on port {port})."
         ));
     }
     advice
@@ -280,7 +264,69 @@ fn storage_policy(config: &Configuration) -> librepaper_engine::storage::postgre
     }
 }
 
+/// Validate every server setting before the server creates directories,
+/// claims sockets, or connects to PostgreSQL. `admin config check` calls this
+/// same pure preflight.
+pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
+    options.config.cost.validate()?;
+    options.config.validate_pending()?;
+    options.config.validate_budgets()?;
+    librepaper_engine::storage::validate_storage_options(&options.storage)?;
+    parse_retention(options.expire_after.as_deref().unwrap_or(""))
+        .map_err(|error| format!("retention.expire_after: {error}"))?;
+    parse_expire_from(options.expire_from.as_deref().unwrap_or(""))
+        .map_err(|error| format!("retention.expire_from: {error}"))?;
+    let origins = match options
+        .origin
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(reader) => Origins::configure(reader, options.docs_origin.as_deref())
+            .map_err(|error| format!("server.origin/server.docs_origin: {error}"))?,
+        None if options.docs_origin.is_some() => {
+            return Err("server.docs_origin requires server.origin".into());
+        }
+        None => Origins::loopback_only(),
+    };
+    let _ = origins;
+    validate_asset_mirror(&options.asset_mirror)?;
+    if let Some(site) = options.site_origin.as_deref() {
+        validate_site_origin(site)?;
+    }
+    if let Some(fonts) = options.typst_fonts.as_deref() {
+        crate::server::fonts::Library::open(fonts)
+            .map_err(|error| format!("assets.typst_fonts: {error}"))?;
+    }
+    let publishers = Policy::parse_publishers(options.publishers.as_deref().unwrap_or(""))?;
+    if !publishers.is_configured() {
+        return Err("access.publishers must name who may publish".into());
+    }
+    for (provider, client_id, client_secret) in [
+        (
+            "auth.github",
+            options.github_client_id.as_deref(),
+            options.github_client_secret.as_deref(),
+        ),
+        (
+            "auth.google",
+            options.google_client_id.as_deref(),
+            options.google_client_secret.as_deref(),
+        ),
+    ] {
+        if client_id.is_some_and(|value| !value.trim().is_empty())
+            != client_secret.is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err(format!(
+                "{provider}.client_id and {provider}.client_secret must be configured together"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub async fn serve(options: ServeOptions) {
+    validate_serve_options(&options).unwrap_or_else(|error| die(error));
     options
         .config
         .cost
@@ -341,7 +387,7 @@ pub async fn serve(options: ServeOptions) {
     // Claim the port first, so a port already in use costs nothing and the
     // advice below can name the callback URL this run would actually use.
     let listener = listen(options.bind, options.port).await;
-    let metrics_listener = super::metrics::bind_from_environment()
+    let metrics_listener = super::metrics::bind(options.metrics_address)
         .await
         .unwrap_or_else(|error| die(error));
     let port = listener
@@ -350,24 +396,20 @@ pub async fn serve(options: ServeOptions) {
         .unwrap_or(options.port);
     let address = format!(":{port}");
 
-    let oauth_secrets = secrets_from_environment();
     let app = GithubApp {
         client_id: options.github_client_id.unwrap_or_default(),
-        client_secret: oauth_secrets.github_client_secret,
+        client_secret: options.github_client_secret.unwrap_or_default(),
         ..GithubApp::default()
     };
     let google = GoogleApp {
         client_id: options.google_client_id.unwrap_or_default(),
-        client_secret: oauth_secrets.google_client_secret,
+        client_secret: options.google_client_secret.unwrap_or_default(),
         ..GoogleApp::default()
     };
     let publishers = Policy::parse_publishers(options.publishers.as_deref().unwrap_or(""))
         .unwrap_or_else(|error| die(error));
     if !publishers.is_configured() {
-        die("say who may publish, with --publishers.\n\n    \
-             --publishers your-github-login      only you\n    \
-             --publishers alice,bob              those accounts\n    \
-             --publishers any                    any authenticated Google or GitHub account");
+        die("set access.publishers to name who may publish, for example your-github-login, alice,bob, or any");
     }
     let commenters = Policy::parse(options.commenters.as_deref().unwrap_or("anyone"));
     let loopback_origin = format!("http://localhost{address}");
@@ -514,7 +556,7 @@ pub async fn serve(options: ServeOptions) {
         _ => {
             println!("librepaper serving http://localhost{address}");
             println!("  documents on http://{DOCS_PREFIX}localhost{address}");
-            println!("  no --origin: this deployment answers on loopback only");
+            println!("  no server.origin: this deployment answers on loopback only");
         }
     }
     println!("  data in {}", blobs.describe());
