@@ -22,7 +22,8 @@ async function makeFixture({ running = false, port, commandLineServer } = {}) {
 
   await Promise.all([
     mkdir(join(directory, "tools"), { recursive: true }),
-    mkdir(join(directory, "web"), { recursive: true }),
+    ...["web/src", "web/public", "crates", "skills", "docs/examples"].map((path) =>
+      mkdir(join(directory, path), { recursive: true })),
     mkdir(join(directory, "dist"), { recursive: true }),
     mkdir(mockBinDir, { recursive: true }),
   ]);
