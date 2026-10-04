@@ -138,7 +138,7 @@ impl Origins {
     /// certificate the manual asks for; an operator who wants an unrelated
     /// name says so and it is honored.
     pub fn configure(reader: &str, docs: Option<&str>) -> Result<Origins, String> {
-        let reader = Origin::parse(reader).map_err(|error| format!("server.origin: {error}"))?;
+        let reader = Origin::parse(reader).map_err(|error| format!("origins.app: {error}"))?;
         let docs = match docs {
             Some(value) => {
                 Origin::parse(value).map_err(|error| format!("server.docs_origin: {error}"))?

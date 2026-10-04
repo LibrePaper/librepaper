@@ -39,7 +39,7 @@ fn write_config(directory: &std::path::Path, database_url: &str) -> std::path::P
     fs::write(
         &path,
         format!(
-            "[server]\nbind = \"127.0.0.1\"\nport = 43123\norigin = \"https://paper.example\"\n\
+            "[server]\naddress = \"127.0.0.1:43123\"\n[origins]\napp = \"https://paper.example\"\n\
              [storage]\ndatabase_url = {database_url}\n\
              [access]\npublishers = [\"alice\"]\ncommenters = [\"anyone\"]\n"
         ),

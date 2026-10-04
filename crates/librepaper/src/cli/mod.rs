@@ -452,8 +452,7 @@ fn serve_options(
         start
     });
     librepaper_server::server::serve::ServeOptions {
-        bind: resolved.bind,
-        port: resolved.port,
+        address: resolved.address,
         storage: resolved.storage,
         github_client_id: resolved.github_client_id,
         github_client_secret: resolved.github_client_secret,
@@ -462,7 +461,7 @@ fn serve_options(
         publishers: Some(resolved.publishers.join(",")),
         commenters: Some(resolved.commenters.join(",")),
         simulate_activity: resolved.simulate_activity,
-        origin: resolved.origin,
+        app_origin: resolved.app_origin,
         docs_origin: resolved.docs_origin,
         site_origin: resolved.site_origin,
         expire_after: resolved.expire_after,

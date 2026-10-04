@@ -411,12 +411,12 @@ fn config_check_is_side_effect_free_and_validates_serve_inputs() {
 
     std::fs::write(
         &config,
-        "[server]\norigin = \"javascript:alert(1)\"\n[access]\npublishers = [\"any\"]\n",
+        "[origins]\napp = \"javascript:alert(1)\"\n[access]\npublishers = [\"any\"]\n",
     )
     .unwrap();
     let invalid = cli(&["admin", "config", "check", "--config", config_arg]);
     assert!(!invalid.status.success(), "{invalid:?}");
-    assert!(String::from_utf8_lossy(&invalid.stderr).contains("server.origin"));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("origins.app"));
     assert!(!temp.path().join("librepaper-data").exists());
 }
 
