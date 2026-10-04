@@ -106,7 +106,7 @@ impl Collector for SampledGauges {
             .read()
             .unwrap_or_else(|poison| poison.into_inner());
         for (family, value) in values.iter() {
-            const HELP: &str = "Aggregate LibrePaper operational measurement.";
+            const HELP: &str = "Aggregate LibrePaper operational measurement";
             if let Some(name) = family.strip_suffix("_total") {
                 let counter = ConstCounter::new(*value);
                 let metric = encoder.encode_descriptor(name, HELP, None, counter.metric_type())?;
@@ -146,26 +146,26 @@ impl Default for Metrics {
             .set(1);
         registry.register(
             "librepaper_build_info",
-            "Build version information.",
+            "Build version information",
             build_info,
         );
 
         let uptime = Gauge::<f64, AtomicU64>::default();
         registry.register(
             "librepaper_process_uptime_seconds",
-            "Time since this process started.",
+            "Time since this process started",
             uptime.clone(),
         );
         let snapshot_success = Gauge::<u64, AtomicU64>::default();
         registry.register(
             "librepaper_metrics_snapshot_success",
-            "Whether the latest aggregate sample completed.",
+            "Whether the latest aggregate sample completed",
             snapshot_success.clone(),
         );
         let snapshot_timestamp = Gauge::<u64, AtomicU64>::default();
         registry.register(
             "librepaper_metrics_snapshot_timestamp_seconds",
-            "Unix timestamp of the last successful aggregate sample.",
+            "Unix timestamp of the last successful aggregate sample",
             snapshot_timestamp.clone(),
         );
 
@@ -187,12 +187,12 @@ impl Default for Metrics {
         }
         registry.register(
             "librepaper_http_requests",
-            "Completed HTTP requests by bounded route, method, and response class.",
+            "Completed HTTP requests by bounded route, method, and response class",
             requests.clone(),
         );
         registry.register(
             "librepaper_http_request_duration_seconds",
-            "HTTP request handling time through response headers.",
+            "HTTP request handling time through response headers",
             durations.clone(),
         );
 
@@ -202,7 +202,7 @@ impl Default for Metrics {
         }
         registry.register(
             "librepaper_resource_refusals",
-            "Requests refused by bounded deployment resource reason.",
+            "Requests refused by bounded deployment resource reason",
             refusals.clone(),
         );
 
@@ -839,10 +839,10 @@ mod tests {
         );
         let text = metrics.render();
         assert!(text.contains("route=\"api_documents\",method=\"GET\",status_class=\"5xx\""));
-        assert!(text.contains("le=\"0.005\"} 0\n"));
-        assert!(text.contains("le=\"0.01\"} 0\n"));
-        assert!(text.contains("le=\"0.025\"} 1\n"));
-        assert!(text.contains("le=\"+Inf\"} 1\n"));
+        assert!(text.contains("le=\"0.005\",route=\"api_documents\",method=\"GET\"} 0\n"));
+        assert!(text.contains("le=\"0.01\",route=\"api_documents\",method=\"GET\"} 0\n"));
+        assert!(text.contains("le=\"0.025\",route=\"api_documents\",method=\"GET\"} 1\n"));
+        assert!(text.contains("le=\"+Inf\",route=\"api_documents\",method=\"GET\"} 1\n"));
         assert!(text.contains("librepaper_http_request_duration_seconds_count{route=\"api_documents\",method=\"GET\"} 1"));
         assert!(text.contains("librepaper_resource_refusals_total{reason=\"work_concurrency\"} 1"));
         for reason in REFUSALS {
@@ -882,7 +882,7 @@ mod tests {
             "librepaper_http_request_duration_seconds_count{route=\"health\",method=\"GET\"} 0\n"
         ));
         assert!(before.contains(
-            "librepaper_http_request_duration_seconds_bucket{route=\"health\",method=\"GET\",le=\"+Inf\"} 0\n"
+            "librepaper_http_request_duration_seconds_bucket{le=\"+Inf\",route=\"health\",method=\"GET\"} 0\n"
         ));
 
         metrics.record_request("health", "GET", 503, Duration::from_millis(12));
@@ -891,10 +891,10 @@ mod tests {
             "librepaper_http_requests_total{route=\"health\",method=\"GET\",status_class=\"5xx\"} 1\n"
         ));
         assert!(after.contains(
-            "librepaper_http_request_duration_seconds_bucket{route=\"health\",method=\"GET\",le=\"0.025\"} 1\n"
+            "librepaper_http_request_duration_seconds_bucket{le=\"0.025\",route=\"health\",method=\"GET\"} 1\n"
         ));
         assert!(after.contains(
-            "librepaper_http_request_duration_seconds_bucket{route=\"health\",method=\"GET\",le=\"+Inf\"} 1\n"
+            "librepaper_http_request_duration_seconds_bucket{le=\"+Inf\",route=\"health\",method=\"GET\"} 1\n"
         ));
         assert!(after.contains(
             "librepaper_http_request_duration_seconds_count{route=\"health\",method=\"GET\"} 1\n"

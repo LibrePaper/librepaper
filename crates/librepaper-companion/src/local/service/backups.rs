@@ -488,17 +488,12 @@ impl BackupManager {
         let mut config = self.config(origin, account_id).await;
         let token_missing =
             crate::local::credentials::stored_token_at(&inner.state_home, origin).is_empty();
-        if !token_missing
-            && config.error_is_identity()
-            && self.should_recheck_login(&key)
-        {
+        if !token_missing && config.error_is_identity() && self.should_recheck_login(&key) {
             let verification = verify_account(inner, origin, account_id).await;
             let refreshed_error = verification.err();
             let mut state = self.state.lock().await;
             if let Some(current) = state.configs.get_mut(&key) {
-                if current.error == config.error
-                    && current.error_is_identity()
-                {
+                if current.error == config.error && current.error_is_identity() {
                     let previous = (current.error.clone(), current.error_kind);
                     match &refreshed_error {
                         Some(error) => current.set_error(error),
@@ -2018,14 +2013,10 @@ mod tests {
         {
             let key = BackupConfig::key(&origin, &account_id);
             let mut state = inner.backups.state.lock().await;
-            state
-                .configs
-                .get_mut(&key)
-                .unwrap()
-                .set_error_text(
-                    "cached login account does not match the requested account",
-                    BackupErrorKind::AccountMismatch,
-                );
+            state.configs.get_mut(&key).unwrap().set_error_text(
+                "cached login account does not match the requested account",
+                BackupErrorKind::AccountMismatch,
+            );
             inner.backups.persist(&state).await.unwrap();
         }
         let status = inner.backups.status(&inner, &origin, &account_id).await;

@@ -443,7 +443,7 @@ mod tests {
         let exe = dir.join("quarto");
         std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let found = find_tool("quarto", &[dir.clone()]).unwrap();
+        let found = find_tool("quarto", std::slice::from_ref(&dir)).unwrap();
         assert_eq!(found, std::fs::canonicalize(&exe).unwrap());
     }
 

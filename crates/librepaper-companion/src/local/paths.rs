@@ -12,7 +12,9 @@ use etcetera::base_strategy::{BaseStrategy, Xdg};
 
 /// The user home directory, or nothing when the platform reports none.
 pub fn home() -> Option<PathBuf> {
-    Xdg::new().ok().map(|strategy| strategy.home_dir().to_path_buf())
+    Xdg::new()
+        .ok()
+        .map(|strategy| strategy.home_dir().to_path_buf())
 }
 
 /// The user configuration base directory (`$XDG_CONFIG_HOME` on Linux).
@@ -26,8 +28,8 @@ pub fn cache_home() -> Option<PathBuf> {
 }
 
 pub fn state_home() -> Result<PathBuf, String> {
-    let strategy = Xdg::new()
-        .map_err(|_| "no home directory to store LibrePaper state".to_string())?;
+    let strategy =
+        Xdg::new().map_err(|_| "no home directory to store LibrePaper state".to_string())?;
     Ok(strategy.state_dir().unwrap_or_else(|| strategy.data_dir()))
 }
 

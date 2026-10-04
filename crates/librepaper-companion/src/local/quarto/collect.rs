@@ -495,7 +495,10 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
             "[src], [href], [srcset], [poster], [style], object[data]",
             |element| {
                 let navigation = matches!(element.tag_name().as_str(), "a" | "area");
-                if let Some(value) = element.get_attribute("href") {
+                if let Some(value) = element
+                    .get_attribute("href")
+                    .map(|value| html_escape::decode_html_entities(&value).into_owned())
+                {
                     let kind = if navigation {
                         ReferenceKind::Navigation
                     } else {
@@ -504,23 +507,35 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
                     elements.push((value, kind));
                 }
                 for name in ["src", "poster"] {
-                    if let Some(value) = element.get_attribute(name) {
+                    if let Some(value) = element
+                        .get_attribute(name)
+                        .map(|value| html_escape::decode_html_entities(&value).into_owned())
+                    {
                         elements.push((value, ReferenceKind::Resource));
                     }
                 }
                 if element.tag_name() == "object" {
-                    if let Some(value) = element.get_attribute("data") {
+                    if let Some(value) = element
+                        .get_attribute("data")
+                        .map(|value| html_escape::decode_html_entities(&value).into_owned())
+                    {
                         elements.push((value, ReferenceKind::Resource));
                     }
                 }
-                if let Some(value) = element.get_attribute("srcset") {
+                if let Some(value) = element
+                    .get_attribute("srcset")
+                    .map(|value| html_escape::decode_html_entities(&value).into_owned())
+                {
                     for candidate in value.split(',') {
                         if let Some(url) = candidate.split_whitespace().next() {
                             elements.push((url.to_owned(), ReferenceKind::Resource));
                         }
                     }
                 }
-                if let Some(value) = element.get_attribute("style") {
+                if let Some(value) = element
+                    .get_attribute("style")
+                    .map(|value| html_escape::decode_html_entities(&value).into_owned())
+                {
                     for reference in css_references(&value) {
                         elements.push((reference, ReferenceKind::Resource));
                     }
@@ -536,7 +551,9 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
             Ok(())
         }));
     // A rewrite error (unparseable markup) keeps whatever was found so far.
-    let _ = rewrite_str(html, settings);
+    if let Err(error) = rewrite_str(html, settings) {
+        tracing::warn!("could not scan rendered HTML for resources: {error}");
+    }
     found.extend(elements);
     for reference in css_references(&inline_css) {
         found.push((reference, ReferenceKind::Resource));
@@ -555,11 +572,7 @@ fn scan_css(parser: &mut cssparser::Parser<'_>, out: &mut Vec<String>) {
     use cssparser::Token;
 
     let mut after_import = false;
-    loop {
-        let token = match parser.next() {
-            Ok(token) => token.clone(),
-            Err(_) => break,
-        };
+    while let Ok(token) = parser.next().cloned() {
         let was_import = std::mem::take(&mut after_import);
         match token {
             Token::UnquotedUrl(value) => out.push(value.to_string()),
@@ -599,8 +612,9 @@ fn resolve_reference(current: &str, raw: &str) -> Option<String> {
     {
         return None;
     }
-    let mut base = url::Url::parse("file:///root/").ok()?;
-    base.path_segments_mut().ok()?.extend(current.split('/'));
+    // Joining the current file onto the root keeps "a/b.html" as one path, so
+    // a sibling reference resolves beside it and never above the root.
+    let base = url::Url::parse("file:///root/").ok()?.join(current).ok()?;
     let joined = base.join(raw).ok()?;
     let relative = joined.path().strip_prefix("/root/")?;
     let decoded = percent_encoding::percent_decode_str(relative).decode_utf8_lossy();

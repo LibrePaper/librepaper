@@ -1022,12 +1022,8 @@ pub async fn run_job_with_bindings(
         }
     };
     let bundle_path = output.join("quarto-bundle.json");
-    if librepaper_base::private_files::publish(
-        &bundle_path,
-        &bundle_bytes,
-        "Quarto result bundle",
-    )
-    .is_err()
+    if librepaper_base::private_files::publish(&bundle_path, &bundle_bytes, "Quarto result bundle")
+        .is_err()
     {
         return failed(&request, &job_id, "could not commit Quarto result bundle");
     }

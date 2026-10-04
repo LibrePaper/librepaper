@@ -3447,6 +3447,7 @@ dependencies = [
  "etcetera",
  "futures-util",
  "hex",
+ "html-escape",
  "http-body-util",
  "include_dir",
  "librepaper-base",

@@ -392,74 +392,68 @@ async fn process_log_line(watch: &SessionWatch, raw_line: &str) {
     }
 }
 
+/// The longest prefix of `bytes` that does not end inside a multibyte
+/// character, so a line cut at the size limit still decodes cleanly.
 fn back_off_to_char_boundary(bytes: &[u8]) -> &[u8] {
-    let mut i = bytes.len();
-    while i > 0 && !std::str::is_char_boundary(bytes, i) {
-        i -= 1;
+    match std::str::from_utf8(bytes) {
+        Err(error) if error.error_len().is_none() => &bytes[..error.valid_up_to()],
+        _ => bytes,
     }
-    &bytes[..i]
 }
 
 async fn pump<R>(reader: R, watch: Arc<SessionWatch>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut buf_reader = tokio::io::BufReader::new(reader);
-    let mut line_buf = Vec::with_capacity(1024);
     const MAX_LINE_SIZE: usize = 64 * 1024;
+    let mut buf_reader = tokio::io::BufReader::new(reader);
+    let mut line_buf: Vec<u8> = Vec::with_capacity(1024);
+    // Set once a line has been cut at the size limit: the rest of that line
+    // is drained and dropped, so a backed-off head never gets later bytes
+    // spliced onto it. The head is kept rather than the tail because the
+    // start of a line carries the diagnostic; the tail is usually payload.
+    let mut line_cut = false;
 
     loop {
-        match buf_reader.fill_buf().await {
-            Ok([]) => {
-                if !line_buf.is_empty() {
-                    let line_str = String::from_utf8_lossy(&line_buf);
-                    {
-                        let mut guard = watch.log.lock().await;
-                        append_bounded(&mut guard, &line_str, PREVIEW_LOG_CAP_BYTES);
-                    }
-                    let trimmed = line_str.trim_end_matches(['\r', '\n']);
-                    process_log_line(&watch, trimmed).await;
-                }
-                break;
+        let buf = match buf_reader.fill_buf().await {
+            Ok([]) | Err(_) => break,
+            Ok(buf) => buf,
+        };
+        let newline = buf.iter().position(|&b| b == b'\n');
+        let take = newline.map_or(buf.len(), |at| at + 1);
+        if !line_cut {
+            let room = MAX_LINE_SIZE - line_buf.len();
+            if take <= room {
+                line_buf.extend_from_slice(&buf[..take]);
+            } else {
+                line_buf.extend_from_slice(&buf[..room]);
             }
-            Err(_) => break,
-            Ok(buf) => {
-                if let Some(newline_pos) = buf.iter().position(|&b| b == b'\n') {
-                    let to_append = &buf[..=newline_pos];
-                    if line_buf.len() + to_append.len() <= MAX_LINE_SIZE {
-                        line_buf.extend_from_slice(to_append);
-                    } else if line_buf.len() < MAX_LINE_SIZE {
-                        let available = MAX_LINE_SIZE - line_buf.len();
-                        let head = &to_append[..available];
-                        let backed_off = back_off_to_char_boundary(head);
-                        line_buf.extend_from_slice(backed_off);
-                    }
-                    buf_reader.consume(newline_pos + 1);
-                    let line_str = String::from_utf8_lossy(&line_buf);
-                    {
-                        let mut guard = watch.log.lock().await;
-                        append_bounded(&mut guard, &line_str, PREVIEW_LOG_CAP_BYTES);
-                    }
-                    let trimmed = line_str.trim_end_matches(['\r', '\n']);
-                    process_log_line(&watch, trimmed).await;
-                    line_buf.clear();
-                } else {
-                    let consumed = buf.len();
-                    if line_buf.len() < MAX_LINE_SIZE {
-                        let available = MAX_LINE_SIZE - line_buf.len();
-                        let to_append = if buf.len() <= available {
-                            buf
-                        } else {
-                            &buf[..available]
-                        };
-                        let backed_off = back_off_to_char_boundary(to_append);
-                        line_buf.extend_from_slice(backed_off);
-                    }
-                    buf_reader.consume(consumed);
-                }
+            if take > room || line_buf.len() == MAX_LINE_SIZE {
+                let keep = back_off_to_char_boundary(&line_buf).len();
+                line_buf.truncate(keep);
+                line_cut = true;
             }
         }
+        buf_reader.consume(take);
+        if newline.is_some() {
+            deliver_line(&watch, &line_buf).await;
+            line_buf.clear();
+            line_cut = false;
+        }
     }
+    if !line_buf.is_empty() {
+        deliver_line(&watch, &line_buf).await;
+    }
+}
+
+/// Records one complete line in the session log and hands it to the adapter.
+async fn deliver_line(watch: &SessionWatch, line: &[u8]) {
+    let line_str = String::from_utf8_lossy(line);
+    {
+        let mut guard = watch.log.lock().await;
+        append_bounded(&mut guard, &line_str, PREVIEW_LOG_CAP_BYTES);
+    }
+    process_log_line(watch, line_str.trim_end_matches(['\r', '\n'])).await;
 }
 
 impl Session {

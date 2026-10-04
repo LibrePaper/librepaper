@@ -13,6 +13,9 @@ build = "build.rs"
 doctest = false
 
 [dependencies]
+# lol_html hands attribute values back as written; the resource scanner
+# decodes their entities.
+html-escape.workspace = true
 cssparser.workspace = true
 lol_html.workspace = true
 thiserror.workspace = true
