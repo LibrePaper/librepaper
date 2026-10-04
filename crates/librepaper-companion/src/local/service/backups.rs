@@ -39,27 +39,131 @@ fn valid_frequency(minutes: u64) -> bool {
     FREQUENCIES.contains(&minutes)
 }
 
-fn identity_error(identity: &Value, account_id: &str) -> Option<&'static str> {
-    match identity.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
-        None => Some("cached login is no longer valid; sign in again"),
-        Some(id) if id != account_id => Some("cached login account does not match the requested account; sign in again with the intended account"),
+/// What kind of failure `BackupConfig::error` records, saved beside the text
+/// so nothing has to read the text to decide what to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BackupErrorKind {
+    Disconnected,
+    NotSignedIn,
+    LoginInvalid,
+    LoginRejected,
+    AccountMismatch,
+    Unverified,
+    Other,
+}
+
+impl BackupErrorKind {
+    /// The user has to sign in again.
+    fn is_login(self) -> bool {
+        matches!(
+            self,
+            Self::NotSignedIn | Self::LoginInvalid | Self::LoginRejected | Self::AccountMismatch
+        )
+    }
+
+    /// Re-verifying the account may clear this.
+    fn is_identity(self) -> bool {
+        self.is_login() || self == Self::Unverified
+    }
+
+    /// A different account is signed in: scheduled runs stop until the user
+    /// enables backups again.
+    fn disables_schedule(self) -> bool {
+        self == Self::AccountMismatch
+    }
+}
+
+/// Why a backup could not start or finish. The login and identity cases are
+/// variants so callers decide what to do by matching, not by reading text.
+/// `Display` is the message the settings page shows.
+#[derive(Debug, thiserror::Error)]
+enum BackupError {
+    #[error("This site is no longer connected.")]
+    Disconnected,
+    #[error("Sign in to this account from Settings to authorize backups.")]
+    NotSignedIn,
+    #[error("cached login is no longer valid; sign in again")]
+    LoginInvalid,
+    #[error("could not verify account: the cached login is no longer valid")]
+    LoginRejected,
+    #[error("cached login account does not match the requested account; sign in again with the intended account")]
+    AccountMismatch,
+    /// The identity check itself failed, which says nothing about the login.
+    #[error("could not verify account: {0}")]
+    Unverified(String),
+    /// The failure was recorded, but saving it failed too.
+    #[error("{cause}; could not save backup settings: {persist}")]
+    Unsaved {
+        cause: Box<BackupError>,
+        persist: String,
+    },
+    #[error("{0}")]
+    Other(String),
+}
+
+impl From<String> for BackupError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<&str> for BackupError {
+    fn from(message: &str) -> Self {
+        Self::Other(message.to_owned())
+    }
+}
+
+impl BackupError {
+    fn kind(&self) -> BackupErrorKind {
+        match self {
+            Self::Disconnected => BackupErrorKind::Disconnected,
+            Self::NotSignedIn => BackupErrorKind::NotSignedIn,
+            Self::LoginInvalid => BackupErrorKind::LoginInvalid,
+            Self::LoginRejected => BackupErrorKind::LoginRejected,
+            Self::AccountMismatch => BackupErrorKind::AccountMismatch,
+            Self::Unverified(_) => BackupErrorKind::Unverified,
+            Self::Unsaved { cause, .. } => cause.kind(),
+            Self::Other(_) => BackupErrorKind::Other,
+        }
+    }
+
+    /// The user has to sign in again.
+    fn is_login(&self) -> bool {
+        self.kind().is_login()
+    }
+
+    /// A different account is signed in: scheduled runs stop until the user
+    /// enables backups again.
+    fn disables_schedule(&self) -> bool {
+        self.kind().disables_schedule()
+    }
+}
+
+fn identity_error(identity: &Value, account_id: &str) -> Option<BackupError> {
+    match identity
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        None => Some(BackupError::LoginInvalid),
+        Some(id) if id != account_id => Some(BackupError::AccountMismatch),
         Some(_) => None,
     }
 }
 
-fn is_login_error(error: &str) -> bool {
+/// These two classify saved text from before `error_kind` existed. A record
+/// with a kind is matched on the kind; only a record saved by an older build
+/// falls back to reading the text.
+fn legacy_is_login_error(error: &str) -> bool {
     error.contains("not signed in")
         || error.contains("Sign in to this account from Settings")
         || error.contains("cached login")
         || error.contains("account does not match")
 }
 
-fn is_identity_error(error: &str) -> bool {
-    is_login_error(error) || error.starts_with("could not verify account:")
-}
-
-fn identity_error_disables_schedule(error: &str) -> bool {
-    error.contains("account does not match")
+fn legacy_is_identity_error(error: &str) -> bool {
+    legacy_is_login_error(error) || error.starts_with("could not verify account:")
 }
 
 fn is_due(config: &BackupConfig, now: u64) -> bool {
@@ -208,6 +312,8 @@ struct BackupConfig {
     last_attempt: Option<u64>,
     last_success: Option<u64>,
     error: Option<String>,
+    #[serde(default)]
+    error_kind: Option<BackupErrorKind>,
     projects: usize,
     updated: usize,
     #[serde(default)]
@@ -218,6 +324,37 @@ struct BackupConfig {
 }
 
 impl BackupConfig {
+    fn set_error(&mut self, error: &BackupError) {
+        self.error = Some(error.to_string());
+        self.error_kind = Some(error.kind());
+    }
+
+    fn set_error_text(&mut self, text: impl Into<String>, kind: BackupErrorKind) {
+        self.error = Some(text.into());
+        self.error_kind = Some(kind);
+    }
+
+    fn clear_error(&mut self) {
+        self.error = None;
+        self.error_kind = None;
+    }
+
+    fn error_is_login(&self) -> bool {
+        match (&self.error_kind, &self.error) {
+            (Some(kind), _) => kind.is_login(),
+            (None, Some(text)) => legacy_is_login_error(text),
+            (None, None) => false,
+        }
+    }
+
+    fn error_is_identity(&self) -> bool {
+        match (&self.error_kind, &self.error) {
+            (Some(kind), _) => kind.is_identity(),
+            (None, Some(text)) => legacy_is_identity_error(text),
+            (None, None) => false,
+        }
+    }
+
     fn key(origin: &str, account_id: &str) -> String {
         format!(
             "{}\0{account_id}",
@@ -235,6 +372,7 @@ impl BackupConfig {
             last_attempt: None,
             last_success: None,
             error: None,
+            error_kind: None,
             projects: 0,
             updated: 0,
             run_generation: 0,
@@ -259,7 +397,7 @@ fn restore_after_persist_failure(
     error: &str,
 ) {
     let mut config = previous.unwrap_or_else(|| BackupConfig::new(origin, account_id));
-    config.error = Some(error.to_owned());
+    config.set_error_text(error, BackupErrorKind::Other);
     state.configs.insert(key.to_owned(), config);
 }
 
@@ -350,24 +488,23 @@ impl BackupManager {
         let mut config = self.config(origin, account_id).await;
         let token_missing =
             crate::local::credentials::stored_token_at(&inner.state_home, origin).is_empty();
-        if !token_missing
-            && config.error.as_deref().is_some_and(is_identity_error)
-            && self.should_recheck_login(&key)
-        {
+        if !token_missing && config.error_is_identity() && self.should_recheck_login(&key) {
             let verification = verify_account(inner, origin, account_id).await;
             let refreshed_error = verification.err();
             let mut state = self.state.lock().await;
             if let Some(current) = state.configs.get_mut(&key) {
-                if current.error == config.error
-                    && current.error.as_deref().is_some_and(is_identity_error)
-                {
-                    let previous = std::mem::replace(&mut current.error, refreshed_error);
+                if current.error == config.error && current.error_is_identity() {
+                    let previous = (current.error.clone(), current.error_kind);
+                    match &refreshed_error {
+                        Some(error) => current.set_error(error),
+                        None => current.clear_error(),
+                    }
                     if let Err(error) = self.persist(&state).await {
                         if let Some(current) = state.configs.get_mut(&key) {
-                            current.error = previous;
+                            (current.error, current.error_kind) = previous;
                         }
                         if let Some(current) = state.configs.get_mut(&key) {
-                            current.error = Some(error);
+                            current.set_error_text(error, BackupErrorKind::Other);
                         }
                     }
                 }
@@ -386,7 +523,7 @@ impl BackupManager {
             "error": config.error,
             "projects": config.projects,
             "updated": config.updated,
-            "needs_login": token_missing || config.error.as_deref().is_some_and(is_login_error),
+            "needs_login": token_missing || config.error_is_login(),
         })
     }
 
@@ -578,7 +715,9 @@ impl BackupManager {
             if !inner.pairing.authenticate(&origin, pairing_token) {
                 return Err("This site is no longer connected.".into());
             }
-            verify_account_with_token(inner, &origin, account_id, &token).await?;
+            verify_account_with_token(inner, &origin, account_id, &token)
+                .await
+                .map_err(|error| error.to_string())?;
             let mut pending = self.authorizations.lock().await;
             let still_current = pending.get(authorization_id).is_some_and(|entry| {
                 entry.expires > Instant::now()
@@ -610,8 +749,8 @@ impl BackupManager {
             let key = BackupConfig::key(&origin, account_id);
             let mut state = self.state.lock().await;
             if let Some(config) = state.configs.get_mut(&key) {
-                if config.error.as_deref().is_some_and(is_identity_error) {
-                    config.error = None;
+                if config.error_is_identity() {
+                    config.clear_error();
                 }
             }
             if let Ok(mut checks) = self.auth_checks.lock() {
@@ -701,7 +840,7 @@ impl BackupManager {
         config.last_success = None;
         config.projects = 0;
         config.updated = 0;
-        config.error = None;
+        config.clear_error();
         config.revision = config.revision.wrapping_add(1);
         if let Err(error) = self.persist(&state).await {
             restore_after_persist_failure(&mut state, &key, previous, origin, account_id, &error);
@@ -718,7 +857,7 @@ impl BackupManager {
         account_id: &str,
         enabled: bool,
         frequency_minutes: u64,
-    ) -> Result<(), String> {
+    ) -> Result<(), BackupError> {
         if !valid_frequency(frequency_minutes) {
             return Err("frequency_minutes must be one of 1, 5, 15, 30, or 60".into());
         }
@@ -751,10 +890,8 @@ impl BackupManager {
                     .configs
                     .entry(key.clone())
                     .or_insert_with(|| BackupConfig::new(origin, account_id));
-                config.error = Some(error.clone());
-                if identity_error_disables_schedule(&error)
-                    || !inner.pairing.has_live_pairing(origin)
-                {
+                config.set_error(&error);
+                if error.disables_schedule() || !inner.pairing.has_live_pairing(origin) {
                     if config.enabled {
                         config.revision = config.revision.wrapping_add(1);
                         config.run_generation = config.run_generation.wrapping_add(1);
@@ -763,12 +900,13 @@ impl BackupManager {
                 }
                 let error = match self.persist(&state).await {
                     Ok(()) => error,
-                    Err(persist_error) => {
-                        format!("{error}; could not save backup settings: {persist_error}")
-                    }
+                    Err(persist) => BackupError::Unsaved {
+                        cause: Box::new(error),
+                        persist,
+                    },
                 };
                 if let Some(config) = state.configs.get_mut(&key) {
-                    config.error = Some(error.clone());
+                    config.set_error(&error);
                 }
                 return Err(error);
             }
@@ -796,8 +934,8 @@ impl BackupManager {
         let previous_frequency = config.frequency_minutes;
         config.enabled = enabled;
         config.frequency_minutes = frequency_minutes;
-        if enabled && config.error.as_deref().is_some_and(is_identity_error) {
-            config.error = None;
+        if enabled && config.error_is_identity() {
+            config.clear_error();
         }
         if previous_enabled != enabled || previous_frequency != frequency_minutes {
             config.revision = config.revision.wrapping_add(1);
@@ -811,7 +949,7 @@ impl BackupManager {
         }
         if let Err(error) = self.persist(&state).await {
             restore_after_persist_failure(&mut state, &key, previous, origin, account_id, &error);
-            return Err(error);
+            return Err(error.into());
         }
         self.changed.notify_one();
         Ok(())
@@ -871,17 +1009,14 @@ impl BackupManager {
                         current.last_success = Some(unix_now());
                         current.projects = report.projects;
                         current.updated = report.updated;
-                        current.error = None;
+                        current.clear_error();
                     }
                     Err(error) => {
-                        current.error = Some(error);
+                        current.set_error(&error);
                         // Identity mismatch or revoked pairing permanently stops
                         // scheduled runs until the user explicitly enables again.
                         if !inner.pairing.has_live_pairing(&current.origin)
-                            || current
-                                .error
-                                .as_deref()
-                                .is_some_and(identity_error_disables_schedule)
+                            || error.disables_schedule()
                         {
                             if current.enabled {
                                 current.revision = current.revision.wrapping_add(1);
@@ -895,7 +1030,7 @@ impl BackupManager {
         }
         if let Err(error) = self.persist(&state).await {
             if let Some(current) = state.configs.get_mut(&key) {
-                current.error = Some(error);
+                current.set_error_text(error, BackupErrorKind::Other);
             }
         }
         self.changed.notify_one();
@@ -1043,8 +1178,11 @@ pub(super) async fn handle_put(
             &inner.backups.status(inner, origin, &body.account_id).await,
         ),
         Err(error) => {
-            let needs_login = is_login_error(&error);
-            write_json(400, &json!({"error": error, "needs_login": needs_login}))
+            let needs_login = error.is_login();
+            write_json(
+                400,
+                &json!({"error": error.to_string(), "needs_login": needs_login}),
+            )
         }
     }
 }
@@ -1164,13 +1302,17 @@ pub(super) async fn handle_authorize_complete(
     }
 }
 
-async fn verify_account(inner: &Inner, origin: &str, account_id: &str) -> Result<String, String> {
+async fn verify_account(
+    inner: &Inner,
+    origin: &str,
+    account_id: &str,
+) -> Result<String, BackupError> {
     if !inner.pairing.has_live_pairing(origin) {
-        return Err("This site is no longer connected.".into());
+        return Err(BackupError::Disconnected);
     }
     let token = crate::local::credentials::stored_token_at(&inner.state_home, origin);
     if token.is_empty() {
-        return Err("Sign in to this account from Settings to authorize backups.".into());
+        return Err(BackupError::NotSignedIn);
     }
     verify_account_with_token(inner, origin, account_id, &token).await?;
     Ok(token)
@@ -1181,46 +1323,48 @@ async fn verify_account_with_token(
     origin: &str,
     account_id: &str,
     token: &str,
-) -> Result<(), String> {
+) -> Result<(), BackupError> {
     if !inner.pairing.has_live_pairing(origin) {
-        return Err("This site is no longer connected.".into());
+        return Err(BackupError::Disconnected);
     }
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|error| format!("could not verify account: {error}"))?;
+        .map_err(|error| BackupError::Unverified(error.to_string()))?;
     let response = client
         .get(format!("{}/api/me", origin.trim_end_matches('/')))
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|error| format!("could not verify account: {error}"))?;
+        .map_err(|error| BackupError::Unverified(error.to_string()))?;
     if response.status().is_redirection() {
-        return Err("could not verify account: the server redirected the identity check".into());
+        return Err(BackupError::Unverified(
+            "the server redirected the identity check".into(),
+        ));
     }
     if !response.status().is_success() {
         if matches!(
             response.status(),
             reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
         ) {
-            return Err("could not verify account: the cached login is no longer valid".into());
+            return Err(BackupError::LoginRejected);
         }
-        return Err(format!(
-            "could not verify account: identity server returned HTTP {}",
+        return Err(BackupError::Unverified(format!(
+            "identity server returned HTTP {}",
             response.status().as_u16()
-        ));
+        )));
     }
     let identity: Value = response
         .json()
         .await
-        .map_err(|error| format!("could not verify account: {error}"))?;
+        .map_err(|error| BackupError::Unverified(error.to_string()))?;
     if let Some(error) = identity_error(&identity, account_id) {
-        return Err(error.into());
+        return Err(error);
     }
     if !inner.pairing.has_live_pairing(origin) {
-        return Err("This site is no longer connected.".into());
+        return Err(BackupError::Disconnected);
     }
     Ok(())
 }
@@ -1228,10 +1372,10 @@ async fn verify_account_with_token(
 async fn run_backup(
     inner: &Inner,
     config: &BackupConfig,
-) -> Result<crate::local::backup::BackupReport, String> {
+) -> Result<crate::local::backup::BackupReport, BackupError> {
     let token = verify_account(inner, &config.origin, &config.account_id).await?;
     if !inner.pairing.has_live_pairing(&config.origin) {
-        return Err("This site is no longer connected.".into());
+        return Err(BackupError::Disconnected);
     }
     crate::local::backup::run_backup(
         &config.origin,
@@ -1240,6 +1384,7 @@ async fn run_backup(
         &config.destination,
     )
     .await
+    .map_err(BackupError::from)
 }
 
 pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
@@ -1260,7 +1405,7 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                     if !inner.pairing.has_live_pairing(&config.origin) {
                         if let Some(current) = state.configs.get_mut(&key) {
                             current.enabled = false;
-                            current.error = Some("This site is no longer connected.".into());
+                            current.set_error(&BackupError::Disconnected);
                             current.revision = current.revision.wrapping_add(1);
                             current.run_generation = current.run_generation.wrapping_add(1);
                             changed = true;
@@ -1269,8 +1414,10 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                         if !config.destination.is_dir() {
                             if let Some(current) = state.configs.get_mut(&key) {
                                 current.last_attempt = Some(now);
-                                current.error =
-                                    Some("The selected backup destination is unavailable.".into());
+                                current.set_error_text(
+                                    "The selected backup destination is unavailable.",
+                                    BackupErrorKind::Other,
+                                );
                             }
                             changed = true;
                             continue;
@@ -1290,7 +1437,7 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                 if changed {
                     if let Err(error) = inner.backups.persist(&state).await {
                         for config in state.configs.values_mut().filter(|config| config.running) {
-                            config.error = Some(error.clone());
+                            config.set_error_text(error.clone(), BackupErrorKind::Other);
                         }
                     }
                 }
@@ -1412,27 +1559,27 @@ mod tests {
     #[test]
     fn identity_must_match_the_requested_signed_in_account() {
         let account = uuid::Uuid::now_v7().to_string();
-        assert!(identity_error(&json!({"id": ""}), &account)
+        assert!(matches!(
+            identity_error(&json!({"id": ""}), &account),
+            Some(BackupError::LoginInvalid)
+        ));
+        assert!(matches!(
+            identity_error(&json!({"handle": "alice"}), &account),
+            Some(BackupError::LoginInvalid)
+        ));
+        assert!(matches!(
+            identity_error(&json!({"id": uuid::Uuid::now_v7().to_string()}), &account),
+            Some(BackupError::AccountMismatch)
+        ));
+        assert!(identity_error(&json!({"id": account.clone()}), &account).is_none());
+        assert!(!identity_error(&json!({"id": ""}), &account)
             .unwrap()
-            .contains("no longer valid"));
-        assert!(identity_error(&json!({"handle": "alice"}), &account)
-            .unwrap()
-            .contains("no longer valid"));
+            .disables_schedule());
         assert!(
             identity_error(&json!({"id": uuid::Uuid::now_v7().to_string()}), &account)
                 .unwrap()
-                .contains("does not match")
+                .disables_schedule()
         );
-        assert_eq!(
-            identity_error(&json!({"id": account.clone()}), &account),
-            None
-        );
-        assert!(!identity_error_disables_schedule(
-            identity_error(&json!({"id": ""}), &account).unwrap()
-        ));
-        assert!(identity_error_disables_schedule(
-            identity_error(&json!({"id": uuid::Uuid::now_v7().to_string()}), &account).unwrap()
-        ));
     }
 
     #[test]
@@ -1866,8 +2013,10 @@ mod tests {
         {
             let key = BackupConfig::key(&origin, &account_id);
             let mut state = inner.backups.state.lock().await;
-            state.configs.get_mut(&key).unwrap().error =
-                Some("cached login account does not match the requested account".into());
+            state.configs.get_mut(&key).unwrap().set_error_text(
+                "cached login account does not match the requested account",
+                BackupErrorKind::AccountMismatch,
+            );
             inner.backups.persist(&state).await.unwrap();
         }
         let status = inner.backups.status(&inner, &origin, &account_id).await;
@@ -2302,7 +2451,7 @@ mod tests {
             .await
             .unwrap();
         let result = enabling.await.unwrap();
-        assert!(result.unwrap_err().contains("settings changed"));
+        assert!(result.unwrap_err().to_string().contains("settings changed"));
         assert_eq!(
             inner.backups.status(&inner, &server, &account_id).await["enabled"],
             false
@@ -2392,8 +2541,9 @@ mod tests {
             let mut state = inner.backups.state.lock().await;
             let config = state.configs.get_mut(&key).unwrap();
             config.enabled = false;
-            config.error = Some(
-                "cached login account does not match the requested account; sign in again with the intended account".into(),
+            config.set_error_text(
+                "cached login account does not match the requested account; sign in again with the intended account",
+                BackupErrorKind::AccountMismatch,
             );
             inner.backups.persist(&state).await.unwrap();
         }

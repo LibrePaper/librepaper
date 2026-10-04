@@ -137,30 +137,29 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
     let object_root = destination.join("objects");
     let mut verified_references = Vec::with_capacity(references.len());
     for reference in references {
-        let body = blobs
-            .get(&reference.key)
-            .await
-            .map_err(|e| format!("backup object {}: {e}", reference.key))?;
-        if reference.bytes != 0 && reference.bytes != body.len() as i64 {
-            return Err(format!("backup object length mismatch: {}", reference.key));
-        }
-        let digest = hex::encode(Sha256::digest(&body));
-        if !reference.sha256.is_empty() && reference.sha256 != digest {
-            return Err(format!("backup object digest mismatch: {}", reference.key));
-        }
         let target = safe_target(&object_root, &reference.key)?;
         if let Some(parent) = target.parent() {
             super::create_private_dir(parent, "backup object directory")?;
         }
-        write_private_file(&target, &body)?;
+        let mut sink = HashingFile::create(&target)?;
+        let length = blobs
+            .get_to_writer(&reference.key, &mut sink)
+            .await
+            .map_err(|e| format!("backup object {}: {e}", reference.key))?;
+        let digest = sink.finish();
+        if reference.bytes != 0 && reference.bytes != length as i64 {
+            return Err(format!("backup object length mismatch: {}", reference.key));
+        }
+        if !reference.sha256.is_empty() && reference.sha256 != digest {
+            return Err(format!("backup object digest mismatch: {}", reference.key));
+        }
         verified_references.push(Reference {
             key: reference.key,
-            bytes: body.len() as i64,
+            bytes: length as i64,
             sha256: digest,
         });
     }
     lifecycle_lock.release_backup().await?;
-    let dump_bytes = std::fs::read(&dump).map_err(|e| e.to_string())?;
     let manifest = Manifest {
         format: "librepaper-postgres-backup-v1".into(),
         id: if id.is_empty() {
@@ -172,7 +171,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         completed_at: now()?,
         migration_version,
         database: "database.dump".into(),
-        database_sha256: hex::encode(Sha256::digest(dump_bytes)),
+        database_sha256: hash_file(&dump)?,
         objects: "objects".into(),
         references: verified_references,
         verified: true,
@@ -197,10 +196,7 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
         return Err("backup is not a verified supported recovery point".into());
     }
     let dump = backup.join(&manifest.database);
-    if hex::encode(Sha256::digest(
-        std::fs::read(&dump).map_err(|e| e.to_string())?,
-    )) != manifest.database_sha256
-    {
+    if hash_file(&dump)? != manifest.database_sha256 {
         return Err("database dump checksum mismatch".into());
     }
     if destination.exists() {
@@ -226,19 +222,21 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
     super::create_private_dir(&destination.join("objects"), "restored objects directory")?;
     for reference in &manifest.references {
         let source = safe_target(&backup.join(&manifest.objects), &reference.key)?;
-        let body = std::fs::read(&source)
+        let mut input = std::fs::File::open(&source)
             .map_err(|e| format!("missing backup object {}: {e}", reference.key))?;
-        if reference.bytes != 0 && reference.bytes != body.len() as i64 {
-            return Err(format!("backup object length mismatch: {}", reference.key));
-        }
-        if !reference.sha256.is_empty() && reference.sha256 != hex::encode(Sha256::digest(&body)) {
-            return Err(format!("backup object digest mismatch: {}", reference.key));
-        }
         let target = safe_target(&destination.join("objects"), &reference.key)?;
         if let Some(parent) = target.parent() {
             super::create_private_dir(parent, "restored object directory")?;
         }
-        write_private_file(&target, &body)?;
+        let mut sink = HashingFile::create(&target)?;
+        let length = std::io::copy(&mut input, &mut sink).map_err(|e| e.to_string())?;
+        let digest = sink.finish();
+        if reference.bytes != 0 && reference.bytes != length as i64 {
+            return Err(format!("backup object length mismatch: {}", reference.key));
+        }
+        if !reference.sha256.is_empty() && reference.sha256 != digest {
+            return Err(format!("backup object digest mismatch: {}", reference.key));
+        }
     }
     let status = postgres_tool("pg_restore", &database_url)?
         .args(["--no-owner", "--exit-on-error"])
@@ -308,8 +306,7 @@ fn postgres_tool(program: &str, database_url: &str) -> Result<tokio::process::Co
     Ok(command)
 }
 
-fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
+fn create_private_file(path: &Path) -> Result<std::fs::File, String> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -317,8 +314,46 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path).map_err(|error| error.to_string())?;
-    file.write_all(bytes).map_err(|error| error.to_string())
+    options.open(path).map_err(|error| error.to_string())
+}
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    create_private_file(path)?
+        .write_all(bytes)
+        .map_err(|error| error.to_string())
+}
+/// A private file that hashes everything written to it, so an object is
+/// copied and checksummed in one streaming pass.
+struct HashingFile {
+    file: std::fs::File,
+    hash: Sha256,
+}
+impl HashingFile {
+    fn create(path: &Path) -> Result<Self, String> {
+        Ok(Self {
+            file: create_private_file(path)?,
+            hash: Sha256::new(),
+        })
+    }
+    fn finish(self) -> String {
+        hex::encode(self.hash.finalize())
+    }
+}
+impl std::io::Write for HashingFile {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = self.file.write(bytes)?;
+        self.hash.update(&bytes[..written]);
+        Ok(written)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+fn hash_file(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hash = Sha256::new();
+    std::io::copy(&mut file, &mut hash).map_err(|e| e.to_string())?;
+    Ok(hex::encode(hash.finalize()))
 }
 fn safe_target(root: &Path, key: &str) -> Result<PathBuf, String> {
     super::blob::validate_object_key(key).map_err(|e| e.to_string())?;

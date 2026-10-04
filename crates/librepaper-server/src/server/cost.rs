@@ -2,61 +2,8 @@
 
 use super::*;
 use axum::body::HttpBody;
-use std::sync::Mutex;
-
-const MAX_KEYS: usize = 4096;
-
-struct RequestBucket {
-    tokens: f64,
-    sampled: std::time::Instant,
-}
-
-#[derive(Default)]
-struct Requests {
-    keys: HashMap<String, RequestBucket>,
-}
-
-impl Requests {
-    fn consume(&mut self, keys: &[(String, usize)]) -> bool {
-        let now = std::time::Instant::now();
-        if self.keys.len() + keys.len() > MAX_KEYS {
-            self.keys
-                .retain(|_, bucket| now.duration_since(bucket.sampled).as_secs() < 60);
-        }
-        let new_keys = keys
-            .iter()
-            .filter(|(key, _)| !self.keys.contains_key(key))
-            .count();
-        if self.keys.len() + new_keys > MAX_KEYS {
-            return false;
-        }
-        for (key, limit) in keys {
-            let bucket = self.keys.entry(key.clone()).or_insert(RequestBucket {
-                tokens: *limit as f64,
-                sampled: now,
-            });
-            bucket.tokens = (bucket.tokens
-                + now.duration_since(bucket.sampled).as_secs_f64() * *limit as f64 / 60.0)
-                .min(*limit as f64);
-            bucket.sampled = now;
-            if bucket.tokens < 1.0 {
-                return false;
-            }
-        }
-        for (key, _) in keys {
-            self.keys.get_mut(key).unwrap().tokens -= 1.0;
-        }
-        true
-    }
-}
-
-struct State {
-    requests: Requests,
-}
-
 pub struct CostMeter {
-    config: Arc<Configuration>,
-    state: Mutex<State>,
+    requests: Option<governor::DefaultKeyedRateLimiter<String>>,
     pub transfers: Arc<tokio::sync::Semaphore>,
     work: Arc<tokio::sync::Semaphore>,
     control_work: Arc<tokio::sync::Semaphore>,
@@ -69,20 +16,16 @@ impl CostMeter {
     // worth a query on a clock to save.
     pub fn new(config: &Arc<Configuration>) -> Self {
         Self {
-            config: config.clone(),
             transfers: Arc::new(tokio::sync::Semaphore::new(config.cost.artifact_transfers)),
             work: Arc::new(tokio::sync::Semaphore::new(config.cost.work_concurrency)),
             control_work: Arc::new(tokio::sync::Semaphore::new(16)),
-            state: Mutex::new(State {
-                requests: Requests::default(),
+            requests: std::num::NonZeroU32::new(
+                u32::try_from(config.cost.requests_per_principal_minute).unwrap_or(u32::MAX),
+            )
+            .map(|per_minute| {
+                governor::RateLimiter::keyed(governor::Quota::per_minute(per_minute))
             }),
         }
-    }
-
-    fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     fn admit_request(&self, network: &str, principal: &str) -> bool {
@@ -91,9 +34,19 @@ impl CostMeter {
         } else {
             format!("n:{network}")
         };
-        self.state()
-            .requests
-            .consume(&[(key, self.config.cost.requests_per_principal_minute)])
+        match &self.requests {
+            Some(requests) => requests.check_key(&key).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Drops the principals whose allowance has refilled. They are
+    /// indistinguishable from ones never seen, so this only frees memory and
+    /// never shuts anyone out. Called from the server's one-second tick.
+    pub fn housekeep(&self) {
+        if let Some(requests) = &self.requests {
+            requests.retain_recent();
+        }
     }
 }
 

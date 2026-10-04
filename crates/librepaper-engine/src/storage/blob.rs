@@ -43,27 +43,32 @@ pub struct BlobMetadata {
     pub size: u64,
     pub version: Option<String>,
 }
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum BlobError {
+    #[error("no such object")]
     NotFound,
+    #[error("the object was written by someone else")]
     Conflict,
+    #[error("{0}")]
     Other(String),
 }
-impl std::fmt::Display for BlobError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound => f.write_str("no such object"),
-            Self::Conflict => f.write_str("the object was written by someone else"),
-            Self::Other(message) => f.write_str(message),
-        }
-    }
-}
-impl std::error::Error for BlobError {}
 pub type BlobResult<T> = Result<T, BlobError>;
 
 #[async_trait]
 pub trait BlobStore: Send + Sync {
     async fn get(&self, key: &str) -> BlobResult<Vec<u8>>;
+    /// Writes the object to `out` and returns its length. The default reads
+    /// the whole object; stores that can stream override it.
+    async fn get_to_writer(
+        &self,
+        key: &str,
+        out: &mut (dyn std::io::Write + Send),
+    ) -> BlobResult<u64> {
+        let bytes = self.get(key).await?;
+        out.write_all(&bytes)
+            .map_err(|error| BlobError::Other(error.to_string()))?;
+        Ok(bytes.len() as u64)
+    }
     async fn head(&self, key: &str) -> BlobResult<BlobMetadata> {
         let bytes = self.get(key).await?;
         Ok(BlobMetadata {
@@ -184,6 +189,26 @@ impl BlobStore for ObjectBlobStore {
             .await
             .map_err(map_error)?
             .to_vec())
+    }
+    async fn get_to_writer(
+        &self,
+        key: &str,
+        out: &mut (dyn std::io::Write + Send),
+    ) -> BlobResult<u64> {
+        let mut stream = self
+            .inner
+            .get(&Self::path(key)?)
+            .await
+            .map_err(map_error)?
+            .into_stream();
+        let mut written = 0_u64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(map_error)?;
+            out.write_all(&chunk)
+                .map_err(|error| BlobError::Other(error.to_string()))?;
+            written += chunk.len() as u64;
+        }
+        Ok(written)
     }
     async fn head(&self, key: &str) -> BlobResult<BlobMetadata> {
         let row = self
@@ -307,6 +332,13 @@ impl FsStore {
 impl BlobStore for FsStore {
     async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
         self.0.get(key).await
+    }
+    async fn get_to_writer(
+        &self,
+        key: &str,
+        out: &mut (dyn std::io::Write + Send),
+    ) -> BlobResult<u64> {
+        self.0.get_to_writer(key, out).await
     }
     async fn head(&self, key: &str) -> BlobResult<BlobMetadata> {
         self.0.head(key).await

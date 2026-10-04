@@ -21,16 +21,9 @@ use tokio::sync::Notify;
 
 pub use librepaper_base::config::budget::{estimate, BUILD_TRANSIENT_EXPANSION, DEFAULT_EXPANSION};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("this deployment has no memory to read that document right now")]
 pub struct Busy;
-
-impl std::fmt::Display for Busy {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("this deployment has no memory to read that document right now")
-    }
-}
-
-impl std::error::Error for Busy {}
 
 /// Who to ask to give memory back when there is none left.
 ///

@@ -4,6 +4,7 @@
 //! next build.
 
 use serde::Serialize;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 pub mod budget;
@@ -262,7 +263,8 @@ pub struct CostPolicy {
     pub work_concurrency: usize,
     /// TCP peers whose X-Forwarded-For header may be used for client identity.
     /// An empty list means the TCP peer address is authoritative.
-    pub trusted_proxies: Vec<String>,
+    #[serde(serialize_with = "serialize_trusted_proxies")]
+    pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
 pub const DEFAULT_REQUESTS_PER_PRINCIPAL_MINUTE: usize = 6_000;
@@ -290,14 +292,14 @@ impl CostPolicy {
         if self.trusted_proxies.len() > 128 {
             return Err("trusted_proxies may contain at most 128 networks".into());
         }
-        for network in &self.trusted_proxies {
-            validate_proxy_network(network)?;
-        }
         Ok(())
     }
 }
 
-fn validate_proxy_network(value: &str) -> Result<(), String> {
+/// Parse a trusted proxy network string that may be a bare IP address or a CIDR block.
+/// A bare address is converted to /32 or /128 automatically. IPv4-mapped IPv6 addresses
+/// with prefix 96-128 are converted to IPv4 networks to match through normalized_ip().
+pub fn parse_trusted_proxy(value: &str) -> Result<ipnet::IpNet, String> {
     let value = value.trim();
     if value.is_empty() || value.len() > 64 {
         return Err(format!(
@@ -306,23 +308,33 @@ fn validate_proxy_network(value: &str) -> Result<(), String> {
     }
     let (address, prefix) = value.split_once('/').unwrap_or((value, ""));
     let address = address
-        .parse::<std::net::IpAddr>()
+        .parse::<IpAddr>()
         .map_err(|_| format!("trusted_proxies entry {value:?} is not an IP address or CIDR"))?;
     let bits = match address {
-        std::net::IpAddr::V4(_) => 32,
-        std::net::IpAddr::V6(_) => 128,
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
     };
     if prefix.is_empty() {
         return if value.contains('/') {
             Err("trusted_proxies CIDR requires a prefix".into())
         } else {
-            Ok(())
+            // Bare address becomes /32 or /128
+            let net = if let IpAddr::V6(ip) = address {
+                if let Some(mapped_v4) = ip.to_ipv4_mapped() {
+                    ipnet::IpNet::V4(ipnet::Ipv4Net::new(mapped_v4, 32).unwrap())
+                } else {
+                    ipnet::IpNet::new(address, bits).unwrap()
+                }
+            } else {
+                ipnet::IpNet::new(address, bits).unwrap()
+            };
+            Ok(net)
         };
     }
     let prefix = prefix
         .parse::<u8>()
         .map_err(|_| format!("trusted_proxies entry {value:?} has an invalid prefix"))?;
-    if matches!(address, std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some()) && prefix < 96 {
+    if matches!(address, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some()) && prefix < 96 {
         return Err("mapped IPv4 proxy CIDR requires a prefix between 96 and 128".into());
     }
     if prefix > bits {
@@ -330,7 +342,24 @@ fn validate_proxy_network(value: &str) -> Result<(), String> {
             "trusted_proxies entry {value:?} has prefix /{prefix}, but this address has {bits} bits"
         ));
     }
-    Ok(())
+    // For IPv4-mapped IPv6 addresses, convert to IPv4 network so it matches through normalized_ip
+    if let IpAddr::V6(ip) = address {
+        if let Some(mapped_v4) = ip.to_ipv4_mapped() {
+            return ipnet::Ipv4Net::new(mapped_v4, prefix - 96)
+                .map(ipnet::IpNet::V4)
+                .map_err(|_| format!("trusted_proxies entry {value:?} is not a valid network"));
+        }
+    }
+    ipnet::IpNet::new(address, prefix)
+        .map_err(|_| format!("trusted_proxies entry {value:?} is not a valid network"))
+}
+
+fn serialize_trusted_proxies<S>(networks: &[ipnet::IpNet], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let strings: Vec<String> = networks.iter().map(|n| n.to_string()).collect();
+    strings.serialize(serializer)
 }
 
 /// What the server-held document may cost: how big a state may travel inline,

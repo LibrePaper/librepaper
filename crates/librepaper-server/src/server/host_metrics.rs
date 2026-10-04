@@ -62,7 +62,7 @@ pub fn warn(config: &librepaper_base::config::Configuration, primary: &Path) {
         if config.storage.total >= 0
             && config.storage.total as u64 > free.saturating_sub(256 * 1024 * 1024)
         {
-            eprintln!("warning: the storage ceiling leaves less than 256 MiB of currently available filesystem headroom");
+            tracing::warn!("the storage ceiling leaves less than 256 MiB of currently available filesystem headroom");
         }
     }
     let measurements = snapshot();
@@ -79,7 +79,7 @@ pub fn warn(config: &librepaper_base::config::Configuration, primary: &Path) {
             .saturating_add(pending_scratch)
             > memory.saturating_mul(3) / 4
         {
-            eprintln!("warning: the decoded-document and pending-source memory ceilings exceed three quarters of detected host/container memory; leave space for the binary, proxy and operating system");
+            tracing::warn!("the decoded-document and pending-source memory ceilings exceed three quarters of detected host/container memory; leave space for the binary, proxy and operating system");
         }
     }
 }

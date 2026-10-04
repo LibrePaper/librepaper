@@ -392,10 +392,13 @@ pub struct DocumentInput {
 /// What `put` returns when a storage rule refuses an upload: the HTTP status
 /// and message the rule names, so the handler answers with exactly what the
 /// rule decided.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PutError {
+    #[error("{message}")]
     Quota { status: u16, message: &'static str },
+    #[error("{message}")]
     Authorization { status: u16, message: &'static str },
+    #[error("{0}")]
     Storage(String),
 }
 
@@ -441,16 +444,6 @@ impl MutationActor {
             automation: self.automation,
         };
         authority.mutation_authorization()
-    }
-}
-
-impl std::fmt::Display for PutError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PutError::Quota { message, .. } => write!(f, "{message}"),
-            PutError::Authorization { message, .. } => write!(f, "{message}"),
-            PutError::Storage(message) => write!(f, "{message}"),
-        }
     }
 }
 

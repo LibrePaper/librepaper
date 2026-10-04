@@ -343,7 +343,7 @@ impl Room {
         self.peers.lock().await.remove(&socket);
         if self.log.unsubscribe(socket).await {
             if let Err(error) = self.log.flush(FlushReason::LastSubscriberLeft).await {
-                log::warn!(
+                tracing::warn!(
                     "could not flush {} as its last socket left: {error}",
                     self.slug
                 );

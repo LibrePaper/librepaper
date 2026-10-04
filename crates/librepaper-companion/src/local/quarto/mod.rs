@@ -428,11 +428,7 @@ fn quarto_version_parts(value: &str) -> Option<(u32, u32)> {
 }
 
 fn executable(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())?
-        .into_iter()
-        .map(|dir| dir.join(name))
-        .find(|path| path.is_file())
+    which::which(name).ok()
 }
 
 pub(crate) fn find_quarto() -> Option<PathBuf> {
@@ -1026,9 +1022,8 @@ pub async fn run_job_with_bindings(
         }
     };
     let bundle_path = output.join("quarto-bundle.json");
-    let temporary_bundle = output.join("quarto-bundle.json.tmp");
-    if std::fs::write(&temporary_bundle, &bundle_bytes).is_err()
-        || std::fs::rename(&temporary_bundle, &bundle_path).is_err()
+    if librepaper_base::private_files::publish(&bundle_path, &bundle_bytes, "Quarto result bundle")
+        .is_err()
     {
         return failed(&request, &job_id, "could not commit Quarto result bundle");
     }

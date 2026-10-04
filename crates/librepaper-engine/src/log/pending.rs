@@ -47,16 +47,9 @@ use tokio::sync::Notify;
 /// What a deployment-wide pending refusal is. Always retryable: the bytes
 /// standing in the way are somebody else's unsaved work, and it leaves as it
 /// is written.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("this deployment is holding all the unsaved work it can")]
 pub struct Pressure;
-
-impl std::fmt::Display for Pressure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("this deployment is holding all the unsaved work it can")
-    }
-}
-
-impl std::error::Error for Pressure {}
 
 /// Which pool a reservation came from. Only used to keep the two `Drop`
 /// implementations from being written twice.

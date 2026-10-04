@@ -1,13 +1,13 @@
 //! GitHub: the OAuth app a browser signs in through, the token check a bearer
 //! goes through, and the account lookup grants are resolved against.
 
-use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Semaphore;
 
 use base64::Engine;
+use moka::Expiry;
 use serde::Deserialize;
 
 use crate::auth::Identity;
@@ -205,50 +205,26 @@ impl GithubApp {
 /// the one expected negative answer and is represented by `Ok(None)` instead;
 /// every other failure must remain distinguishable from an invalid token so a
 /// transient GitHub outage cannot be cached as a negative authentication.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderError {
+    #[error("GitHub app credentials are not configured")]
     NotConfigured,
+    #[error("authentication checks are busy; retry shortly")]
     Busy,
-    Authentication {
-        status: u16,
-    },
+    #[error("GitHub authentication failed (HTTP {status})")]
+    Authentication { status: u16 },
+    #[error("GitHub rate limit reached (HTTP {status})")]
     RateLimited {
         status: u16,
         retry_after: Option<Duration>,
     },
-    Upstream {
-        status: u16,
-    },
+    #[error("GitHub returned HTTP {status}")]
+    Upstream { status: u16 },
+    #[error("could not reach GitHub")]
     Network,
-    MalformedResponse {
-        status: u16,
-    },
+    #[error("GitHub returned an invalid response (HTTP {status})")]
+    MalformedResponse { status: u16 },
 }
-
-impl fmt::Display for ProviderError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotConfigured => formatter.write_str("GitHub app credentials are not configured"),
-            Self::Busy => formatter.write_str("authentication checks are busy; retry shortly"),
-            Self::Authentication { status } => {
-                write!(formatter, "GitHub authentication failed (HTTP {status})")
-            }
-            Self::RateLimited { status, .. } => {
-                write!(formatter, "GitHub rate limit reached (HTTP {status})")
-            }
-            Self::Upstream { status } => write!(formatter, "GitHub returned HTTP {status}"),
-            Self::Network => formatter.write_str("could not reach GitHub"),
-            Self::MalformedResponse { status } => {
-                write!(
-                    formatter,
-                    "GitHub returned an invalid response (HTTP {status})"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ProviderError {}
 
 /// Asks GitHub who a token belongs to, via the browser OAuth flow's own token:
 /// the code exchange already proves it was issued to this app, so the plain
@@ -289,6 +265,41 @@ pub trait Accounts: Send + Sync {
     async fn lookup(&self, login: &str) -> Option<Identity>;
 }
 
+/// Determines per-entry expiry for cached GitHub accounts.
+/// Found accounts expire after GITHUB_ACCOUNT_POSITIVE_TTL,
+/// not-found accounts expire after GITHUB_ACCOUNT_NEGATIVE_TTL.
+struct GithubAccountExpiry;
+
+impl GithubAccountExpiry {
+    fn ttl_for(&self, value: &Option<Identity>) -> Option<Duration> {
+        match value {
+            Some(_) => Some(GITHUB_ACCOUNT_POSITIVE_TTL),
+            None => Some(GITHUB_ACCOUNT_NEGATIVE_TTL),
+        }
+    }
+}
+
+impl Expiry<String, Option<Identity>> for GithubAccountExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &Option<Identity>,
+        _created_at: std::time::Instant,
+    ) -> Option<Duration> {
+        self.ttl_for(value)
+    }
+
+    fn expire_after_update(
+        &self,
+        _key: &String,
+        value: &Option<Identity>,
+        _updated_at: std::time::Instant,
+        _duration_until_expiry: Option<Duration>,
+    ) -> Option<Duration> {
+        self.ttl_for(value)
+    }
+}
+
 /// The real one: GitHub's public user endpoint. It authenticates with the app
 /// credentials when available, which gives GitHub the higher rate limit for a
 /// deployment serving many grant lookups.
@@ -296,69 +307,36 @@ pub struct GithubAccounts {
     client_id: String,
     client_secret: String,
     users_url: String,
-    cache: Mutex<HashMap<String, CachedAccount>>,
+    cache: moka::sync::Cache<String, Option<Identity>>,
     lookup_slots: Arc<Semaphore>,
-}
-
-struct CachedAccount {
-    identity: Option<Identity>,
-    expires: Instant,
 }
 
 impl GithubAccounts {
     pub fn new(app: &GithubApp) -> GithubAccounts {
+        let cache = moka::sync::CacheBuilder::new(GITHUB_ACCOUNT_CACHE_CAP as u64)
+            .expire_after(GithubAccountExpiry)
+            .build();
         GithubAccounts {
             client_id: app.client_id.clone(),
             client_secret: app.client_secret.clone(),
             users_url: app.users_url.clone(),
-            cache: Mutex::new(HashMap::new()),
+            cache,
             lookup_slots: Arc::new(Semaphore::new(GITHUB_ACCOUNT_LOOKUP_CONCURRENCY)),
         }
     }
 
     #[cfg(test)]
     fn cache_len(&self) -> usize {
-        self.cache
-            .lock()
-            .expect("GitHub account cache poisoned")
-            .len()
+        self.cache.run_pending_tasks();
+        self.cache.entry_count() as usize
     }
 
     fn cache_lookup(&self, login: &str) -> Option<Option<Identity>> {
-        let Ok(mut cache) = self.cache.lock() else {
-            return None;
-        };
-        let entry = cache.get(login)?;
-        if entry.expires <= Instant::now() {
-            cache.remove(login);
-            return None;
-        }
-        Some(entry.identity.clone())
+        self.cache.get(login)
     }
 
     fn cache_insert(&self, login: String, identity: Option<Identity>) {
-        let Ok(mut cache) = self.cache.lock() else {
-            return;
-        };
-        let now = Instant::now();
-        cache.retain(|_, entry| entry.expires > now);
-        if cache.len() >= GITHUB_ACCOUNT_CACHE_CAP && !cache.contains_key(&login) {
-            if let Some(oldest) = cache.keys().next().cloned() {
-                cache.remove(&oldest);
-            }
-        }
-        let ttl = if identity.is_some() {
-            GITHUB_ACCOUNT_POSITIVE_TTL
-        } else {
-            GITHUB_ACCOUNT_NEGATIVE_TTL
-        };
-        cache.insert(
-            login,
-            CachedAccount {
-                identity,
-                expires: now + ttl,
-            },
-        );
+        self.cache.insert(login, identity);
     }
 }
 

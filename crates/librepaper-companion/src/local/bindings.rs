@@ -149,10 +149,8 @@ impl BindingStore {
             return Err("invalid binding store path".into());
         };
         std::fs::create_dir_all(parent).map_err(|e| format!("create binding store: {e}"))?;
-        let temporary = self.path.with_extension("json.tmp");
         let bytes = serde_json::to_vec_pretty(file).map_err(|e| format!("encode bindings: {e}"))?;
-        std::fs::write(&temporary, bytes).map_err(|e| format!("write bindings: {e}"))?;
-        std::fs::rename(&temporary, &self.path).map_err(|e| format!("commit bindings: {e}"))
+        librepaper_base::private_files::publish(&self.path, &bytes, "binding store")
     }
 
     /// Grant a binding after resolving the root and entrypoint. The root is
