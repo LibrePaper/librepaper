@@ -68,6 +68,9 @@ try {
   await until("open dashboard instructions", () => b.evaluate('document.querySelector("#locked") && !document.querySelector("#locked").hidden'));
   assert.match(await b.evaluate('document.querySelector("#locked").innerText'), /librepaper desktop/);
 
+  // Force a document navigation so the deferred dashboard script reads the
+  // bootstrap fragment; changing only the hash would not reload this page.
+  await b.navigate("about:blank");
   await b.navigate(`${address}/companion/#token=${encodeURIComponent(control.token)}`);
   await until("authenticated dashboard", () => b.evaluate('document.querySelector("#dashboard") && !document.querySelector("#dashboard").hidden'));
   await until("companion status loaded", () => b.evaluate('document.querySelector("#connection-label").textContent === "Companion is running"'));
