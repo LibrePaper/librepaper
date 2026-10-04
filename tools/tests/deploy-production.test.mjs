@@ -160,7 +160,7 @@ case "$command" in
       '{"data":{"result":[{"values":[[1,"1"],[2,"1"]]}]}}' \\
       '${pgUpHealthy ? '{"data":{"result":[{"value":[3,"1"]}]}}' : '{"data":{"result":[]}}'}'
     ;;
-  *'docker compose up -d --wait'*)
+  *'docker compose up -d --wait --wait-timeout 180'*)
     printf called >> "$COMPOSE_UP_FILE"
     printf 'up\\n' >> "$ORDER_FILE"
     ;;
@@ -665,7 +665,7 @@ test("deploy re-pins _sqlx_migrations when the tree holds a single squashed file
     assert.ok(pin.includes(sha384(defaultMigration)));
     assert.equal(existsSync(f.composeUpFile), true);
     assert.equal(existsSync(f.backupFile), true);
-    assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), ['pin', 'up']);
+    assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), ['config-check', 'pin', 'config-install', 'up']);
   } finally {
     f.cleanup();
   }
