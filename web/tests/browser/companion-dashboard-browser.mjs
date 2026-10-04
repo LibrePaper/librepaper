@@ -15,6 +15,7 @@ import { browser, until } from "../../tools/browser-driver.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
 const binary = process.env.LIBREPAPER_TEST_BINARY || join(root, "dist", "librepaper");
+const agentCommand = process.execPath;
 if (!existsSync(binary)) {
   console.log(`companion-dashboard-browser: no binary at ${binary}; skipping (build it or set LIBREPAPER_TEST_BINARY)`);
   process.exit(0);
@@ -164,20 +165,25 @@ try {
   const testAgent = `Dashboard check ${Date.now()}`;
   await b.evaluate(`(() => {
     document.querySelector("#agent-name").value = ${JSON.stringify(testAgent)};
-    document.querySelector("#agent-command").value = "/bin/echo";
-    document.querySelector("#agent-args").value = "hello";
+    document.querySelector("#agent-command").value = ${JSON.stringify(agentCommand)};
+    document.querySelector("#agent-args").value = "--version";
     document.querySelector("#agent-form").requestSubmit();
   })()`);
   let agentId = "";
-  await until("custom agent persisted and shown", async () => {
-    const response = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } });
-    if (!response.ok) return false;
-    const state = await response.json();
-    const agent = state.custom_agents.find((entry) => entry.label === testAgent);
-    if (!agent) return false;
-    agentId = agent.id;
-    return await b.evaluate(`document.querySelector("#agents").innerText.includes(${JSON.stringify(testAgent)})`);
-  }, 8000);
+  try {
+    await until("custom agent persisted and shown", async () => {
+      const response = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } });
+      if (!response.ok) return false;
+      const state = await response.json();
+      const agent = state.custom_agents.find((entry) => entry.label === testAgent);
+      if (!agent) return false;
+      agentId = agent.id;
+      return await b.evaluate(`document.querySelector("#agents").innerText.includes(${JSON.stringify(testAgent)})`);
+    }, 8000);
+  } catch (error) {
+    const dashboardNotice = await b.evaluate('document.querySelector("#notice").textContent').catch(() => "unavailable");
+    throw new Error(`${error.message}\ndashboard notice: ${dashboardNotice}`);
+  }
   await b.evaluate('window.confirm = () => true');
   await b.evaluate(`(() => {
     const card = [...document.querySelectorAll("#agents .list-card")].find((item) => item.innerText.includes(${JSON.stringify(testAgent)}));
