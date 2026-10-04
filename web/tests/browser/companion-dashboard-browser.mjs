@@ -1,12 +1,14 @@
-// End-to-end check for the private companion dashboard and its loopback API.
+// End-to-end check for the main Settings dialog's local companion controls.
 // Uses a real companion process and browser with isolated HOME/state/cache.
-// Run with LIBREPAPER_TEST_BINARY=dist/librepaper; never run this against a
-// person's existing companion state.
+// Run with LIBREPAPER_TEST_BINARY=dist/librepaper.
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { build } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
+import tailwindcss from "@tailwindcss/vite";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,13 +17,17 @@ import { browser, until } from "../../tools/browser-driver.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
 const binary = process.env.LIBREPAPER_TEST_BINARY || join(root, "dist", "librepaper");
-const agentCommand = process.execPath;
 if (!existsSync(binary)) {
-  console.log(`companion-dashboard-browser: no binary at ${binary}; skipping (build it or set LIBREPAPER_TEST_BINARY)`);
+  console.log(`companion-settings-browser: no binary at ${binary}; skipping (build it or set LIBREPAPER_TEST_BINARY)`);
   process.exit(0);
 }
 
-const temporary = mkdtempSync(join(tmpdir(), "librepaper-dashboard-check-"));
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-settings-check-"));
+const output = join(temporary, "build");
+const entry = join(temporary, "entry.js");
+const harness = join(temporary, "Harness.svelte");
+const statusMock = join(temporary, "status.svelte.js");
+const clientMock = join(temporary, "client.js");
 const stateHome = join(temporary, "state");
 const cacheHome = join(temporary, "cache");
 const appEnv = {
@@ -32,216 +38,253 @@ const appEnv = {
   XDG_CONFIG_HOME: join(temporary, "config"),
   XDG_DATA_HOME: join(temporary, "data"),
   DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(temporary, "no-dbus", "bus")}`,
+  LIBREPAPER_SERVER: "",
 };
 delete appEnv.DISPLAY;
 delete appEnv.WAYLAND_DISPLAY;
 
 async function freePort() {
-  const server = createServer();
-  await new Promise((done) => server.listen(0, "127.0.0.1", done));
-  const port = server.address().port;
-  await new Promise((done) => server.close(done));
+  const probe = createServer();
+  await new Promise((done) => probe.listen(0, "127.0.0.1", done));
+  const port = probe.address().port;
+  await new Promise((done) => probe.close(done));
   return port;
 }
 
-const port = await freePort();
-const address = `http://127.0.0.1:${port}`;
-const app = spawn(binary, ["start", "--foreground", "--port", String(port)], { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
-const appDone = new Promise((done) => app.once("exit", done));
-let appLog = "";
-app.stdout.on("data", (chunk) => { appLog += chunk; });
-app.stderr.on("data", (chunk) => { appLog += chunk; });
+writeFileSync(harness, `
+<script>
+  import SettingsDialog from ${JSON.stringify(join(root, "web/src/components/settings/SettingsDialog.svelte"))};
+  let open = $state(true);
+  let category = $state("local");
+</script>
+<SettingsDialog bind:open bind:category sourceFormat="quarto" mayEdit={true} userId="browser-check"
+                remoteConnected={true} />
+`);
+
+writeFileSync(statusMock, `
+let current = $state.raw({ state: "unreachable", address: "http://127.0.0.1:8763/", instance: null });
+export const companion = { get status() { return current; }, watch() { return () => {}; } };
+`);
+
+writeFileSync(clientMock, `
+export const DEFAULT_ADDRESS = "http://127.0.0.1:8763/";
+export function address() { return DEFAULT_ADDRESS; }
+export function setAddress() {}
+export function probe() { return Promise.resolve(); }
+export function retry() { return Promise.resolve(); }
+export function disconnect() { return Promise.resolve(); }
+export function connectApp() { return Promise.resolve(); }
+export function capabilities() { return Promise.resolve({}); }
+export function settings() { return Promise.resolve({ standalone: false, integrations: {} }); }
+export function setStartup() { return Promise.resolve(); }
+export function quit() { return Promise.resolve(); }
+`);
+
+writeFileSync(entry, `
+import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
+import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
+import * as control from ${JSON.stringify(join(root, "web/src/lib/companion/control.js"))};
+import Harness from ${JSON.stringify(harness)};
+await control.intake();
+mount(Harness, { target: document.body });
+`);
+
+const mockModules = {
+  name: "companion-settings-browser-test-mocks",
+  enforce: "pre",
+  resolveId(source) {
+    if (source.endsWith("/lib/companion/status.svelte.js")) return statusMock;
+    if (source.endsWith("/lib/companion/client.js")) return clientMock;
+    return null;
+  },
+};
+
+let app;
+let appDone;
 let b;
+let server;
+let appLog = "";
 
 try {
-  await until("companion dashboard", async () => {
-    const response = await fetch(`${address}/companion/`).catch(() => null);
+  await build({
+    configFile: false,
+    root: join(root, "web"),
+    logLevel: "error",
+    plugins: [mockModules, svelte(), tailwindcss()],
+    build: {
+      outDir: output,
+      emptyOutDir: true,
+      lib: { entry, formats: ["es"], fileName: () => "check.js", cssFileName: "check" },
+      rollupOptions: { output: { codeSplitting: false } },
+    },
+  });
+
+  const page = `<!doctype html><html data-theme="librepaper"><head><meta charset="utf-8"><link rel="stylesheet" href="/check.css"><title>LibrePaper Settings</title></head><body><script type="module" src="/check.js"></script></body></html>`;
+  server = createServer((request, response) => {
+    if (request.url === "/check.js") {
+      response.setHeader("content-type", "text/javascript");
+      response.end(readFileSync(join(output, "check.js")));
+    } else if (request.url === "/check.css") {
+      response.setHeader("content-type", "text/css");
+      response.end(readFileSync(join(output, "check.css")));
+    } else {
+      response.setHeader("content-type", "text/html");
+      response.end(page);
+    }
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  const appPort = server.address().port;
+  const appOrigin = `http://127.0.0.1:${appPort}`;
+  appEnv.LIBREPAPER_SERVER = `${appOrigin}/`;
+
+  const companionPort = await freePort();
+  const companionAddress = `http://127.0.0.1:${companionPort}/`;
+  app = spawn(binary, ["start", "--foreground", "--port", String(companionPort)], {
+    env: appEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  appDone = new Promise((done) => app.once("exit", done));
+  app.stdout.on("data", (chunk) => { appLog += chunk; });
+  app.stderr.on("data", (chunk) => { appLog += chunk; });
+
+  await until("companion health", async () => {
+    const response = await fetch(`${companionAddress}librepaper/local/health`).catch(() => null);
     return Boolean(response && response.ok);
   }, 15000).catch((error) => { throw new Error(`${error.message}\ncompanion output:\n${appLog}`); });
-  const tokenFile = join(stateHome, "librepaper", "local", "control-token.json");
-  await until("private dashboard token fixture", () => existsSync(tokenFile), 5000);
-  const control = JSON.parse(readFileSync(tokenFile, "utf8"));
-  assert.equal(typeof control.token, "string");
-  assert.ok(control.token.length >= 32);
+
+  const tokenPath = join(stateHome, "librepaper", "local", "control-token.json");
+  await until("private Settings credential", () => existsSync(tokenPath), 5000);
+  const credential = JSON.parse(readFileSync(tokenPath, "utf8"));
+  assert.equal(credential.server, `${appOrigin}/`, "the app target is persisted with the credential");
+  assert.equal(credential.instance.length, 16);
+  assert.equal(credential.token.length, 43);
 
   b = await browser("chromium", join(temporary, "chrome"), await freePort());
-  await b.navigate(`${address}/companion/`);
-  await until("open dashboard instructions", () => b.evaluate('document.querySelector("#locked") && !document.querySelector("#locked").hidden'));
-  const lockedInstructions = await b.evaluate('document.querySelector("#locked").innerText');
-  assert.match(lockedInstructions, /librepaper start/);
-  assert.match(lockedInstructions, /Open companion/);
-  assert.doesNotMatch(lockedInstructions, /librepaper desktop/);
-
-  // Force a document navigation so the deferred dashboard script reads the
-  // bootstrap fragment; changing only the hash would not reload this page.
-  await b.navigate("about:blank");
-  await b.navigate(`${address}/companion/#token=${encodeURIComponent(control.token)}`);
-  await until("authenticated dashboard", () => b.evaluate('document.querySelector("#dashboard") && !document.querySelector("#dashboard").hidden'));
-  await until("companion status loaded", () => b.evaluate('document.querySelector("#connection-label").textContent === "Companion is running"'));
-  assert.equal(await b.evaluate("location.hash"), "", "the bootstrap fragment is removed immediately");
-  assert.equal(await b.evaluate(`sessionStorage.getItem("librepaper-companion-control") === ${JSON.stringify(control.token)}`), true, "the private token is kept in this tab's session storage");
-  assert.equal(await b.evaluate('document.querySelector("#connection-label").textContent'), "Companion is running");
-  const auth = await b.evaluate(`fetch("/companion/api/state", {headers:{Authorization:"Bearer " + sessionStorage.getItem("librepaper-companion-control")}}).then(r => r.status)`);
-  assert.equal(auth, 200, "the UI's token authorizes status requests");
-
-  // A website cannot use the dashboard bearer token. The authenticated API
-  // rejects an unrelated Origin even when it presents the same bearer.
-  const foreign = await fetch(`${address}/companion/api/state`, {
-    headers: { Authorization: `Bearer ${control.token}`, Origin: "https://untrusted.example" },
+  const fragment = new URLSearchParams({
+    settings: "local",
+    companion_address: companionAddress,
+    companion_control: credential.token,
+    companion_instance: credential.instance,
   });
-  assert.ok([401, 403].includes(foreign.status), `foreign origin was rejected (${foreign.status})`);
+  await b.navigate(`${appOrigin}/#${fragment}`);
+  await until("real companion Settings sections", () => b.evaluate(`[
+    "companion-approvals-heading", "companion-sites-heading", "companion-folders-heading",
+    "companion-activity-heading", "companion-agents-heading", "companion-tool-paths-heading"
+  ].every((id) => document.querySelector("#" + id))`), 12000);
 
-  const requestId = (suffix) => `${Buffer.from(`dashboard-${suffix}-${Date.now()}`).toString("base64url")}abcdefghijklmnop`;
-  async function askForPair(label) {
-    const id = requestId(label);
-    const challenge = "a".repeat(64);
-    const response = await fetch(`${address}/librepaper/local/pair/request`, {
+  assert.equal(await b.evaluate("location.hash"), "", "the secret handoff fragment is removed");
+  assert.equal(await b.evaluate(`document.documentElement.innerHTML.includes(${JSON.stringify(credential.token)})`), false, "the token is not rendered into the page");
+  assert.equal(await b.evaluate('document.querySelectorAll(".request-card").length'), 0, "approvals use existing SettingRow layout");
+  assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
+  assert.equal(await b.evaluate('document.querySelectorAll(".settings-subsection").length >= 6'), true, "management is organized under Settings sections");
+
+  for (const path of ["/companion", "/companion/", "/companion/index.html", "/companion/app.js", "/companion/style.css"]) {
+    const response = await fetch(`${companionAddress.replace(/\/$/, "")}${path}`);
+    assert.equal(response.status, 404, `standalone companion page is gone: ${path}`);
+  }
+
+  const apiState = async (headers = {}) => fetch(`${companionAddress}companion/api/state`, {
+    headers: { Origin: appOrigin, Authorization: `Bearer ${credential.token}`, ...headers },
+  });
+  const trusted = await apiState();
+  assert.equal(trusted.status, 200, "the configured app Origin can use the control API");
+  const foreign = await apiState({ Origin: "https://untrusted.example" });
+  assert.equal(foreign.status, 403, "the credential is bound to the configured app Origin");
+  const missingOrigin = await fetch(`${companionAddress}companion/api/state`, {
+    headers: { Authorization: `Bearer ${credential.token}` },
+  });
+  assert.equal(missingOrigin.status, 403, "management requires an Origin header");
+
+  await until("Settings control state loaded", () => b.evaluate(`
+    document.querySelector('[aria-label="Extra tool search folders"]')?.disabled === false
+  `), 10000);
+
+  const requestId = Buffer.from(`settings-allow-${Date.now()}`).toString("base64url").padEnd(32, "x");
+  const challenge = "a".repeat(64);
+  async function askForPair(id) {
+    const response = await fetch(`${companionAddress}librepaper/local/pair/request`, {
       method: "POST",
-      headers: { "content-type": "application/json", origin: address },
-      body: JSON.stringify({ origin: address, request: id, challenge, return: `${address}/companion/` }),
+      headers: { "content-type": "application/json", Origin: appOrigin },
+      body: JSON.stringify({
+        origin: appOrigin,
+        request: id,
+        challenge,
+        return: `${appOrigin}/document`,
+      }),
     });
     assert.equal(response.status, 202, `pair request queued: ${await response.text()}`);
-    return id;
+  }
+  async function pairStatus(id) {
+    return fetch(`${companionAddress}librepaper/local/pair/status?request=${encodeURIComponent(id)}`)
+      .then((response) => response.status);
   }
   async function waitForApproval() {
-    await until("dashboard approval card", async () => b.evaluate('document.querySelectorAll("#approvals .request-card").length === 1'), 8000);
+    await until("approval visible in Settings", () => b.evaluate(`
+      [...document.querySelector("#companion-approvals-heading").closest("section").querySelectorAll(".setting-title")]
+        .some((node) => /Connect|Pair/i.test(node.textContent))
+    `), 10000);
   }
-  async function pairingStatus(id) {
-    const response = await fetch(`${address}/librepaper/local/pair/status?request=${encodeURIComponent(id)}`);
-    return response.status;
+  async function decide(label, decision, expected) {
+    const id = `${requestId.slice(0, 26)}${label.padEnd(6, "x")}`;
+    await askForPair(id);
+    await waitForApproval();
+    await b.evaluate(`(() => {
+      const section = document.querySelector("#companion-approvals-heading").closest("section");
+      const row = [...section.querySelectorAll(".setting-row")].find((item) => /Connect|Pair/i.test(item.textContent));
+      const labels = ${JSON.stringify(decision === "allow" ? ["Allow", "Connect"] : ["Deny"])};
+      const action = [...row.querySelectorAll("button")].find((item) => labels.includes(item.textContent.trim()));
+      if (!action) throw new Error("Could not find the " + ${JSON.stringify(decision)} + " action in Settings approvals");
+      action.click();
+    })()`);
+    await until(`pair ${decision} result`, async () => (await pairStatus(id)) === expected, 10000);
+    if (decision === "allow") {
+      await until("approved request removed from Settings", () => b.evaluate(`
+        ![...document.querySelector("#companion-approvals-heading").closest("section").querySelectorAll(".setting-title")]
+          .some((node) => /Connect|Pair/i.test(node.textContent))
+      `), 10000);
+    }
   }
 
-  const allowedRequest = await askForPair("allow");
+  await decide("allow", "allow", 200);
+  const deniedId = `${requestId.slice(0, 26)}denyxx`;
+  await askForPair(deniedId);
   await waitForApproval();
-  const approvalTitle = await b.evaluate('document.querySelector("#approvals .request-card h3").textContent');
-  assert.match(approvalTitle, /Connect/i);
-  await b.evaluate('document.querySelector("#approvals .request-card .button.primary").click()');
-  await until("pair request allowed", async () => (await pairingStatus(allowedRequest)) === 200, 8000);
-  await until("approval removed after decision", () => b.evaluate('document.querySelectorAll("#approvals .request-card").length === 0'));
-
-  const deniedRequest = await askForPair("deny");
-  await waitForApproval();
-  await b.evaluate('document.querySelector("#approvals .request-card .button.quiet").click()');
-  await until("pair request denied", async () => (await pairingStatus(deniedRequest)) === 403, 8000);
-
-  // Reusing a consumed approval is stale. The API keeps one-time decisions
-  // idempotently closed and the dashboard reports that refusal clearly.
-  const stale = await fetch(`${address}/companion/api/approvals/stale-approval-id`, {
-    method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${control.token}` },
-    body: JSON.stringify({ decision: "allow" }),
-  });
-  assert.equal(stale.status, 404, "an expired or unknown approval is rejected");
-
-  // Exercise the actual settings form and confirm persistence through a fresh
-  // state response. Editing remains intact across several status polls.
   await b.evaluate(`(() => {
-    const paths = document.querySelector("#tool-paths");
-    paths.value = ${JSON.stringify(join(temporary, "extra-tools"))};
-    paths.dispatchEvent(new Event("input", {bubbles:true}));
-    const integration = document.querySelector('.integration-card[data-integration="quarto"]');
-    const executable = integration.querySelector('[data-setting="path"]');
-    executable.value = ${JSON.stringify("/usr/bin/quarto")};
-    executable.dispatchEvent(new Event("input", {bubbles:true}));
-    const args = integration.querySelector('[data-setting="args"]');
-    args.value = ${JSON.stringify("--verbose\n--profile=test")};
-    args.dispatchEvent(new Event("input", {bubbles:true}));
+    const section = document.querySelector("#companion-approvals-heading").closest("section");
+    const row = [...section.querySelectorAll(".setting-row")].find((item) => /Connect|Pair/i.test(item.textContent));
+    [...row.querySelectorAll("button")].find((item) => item.textContent.trim() === "Deny").click();
   })()`);
-  await new Promise((done) => setTimeout(done, 4300));
-  assert.equal(await b.evaluate('document.querySelector("#tool-paths").value'), join(temporary, "extra-tools"), "polling does not overwrite an in-progress settings edit");
-  assert.equal(await b.evaluate('document.querySelector(".integration-card[data-integration=quarto] [data-setting=path]").value'), "/usr/bin/quarto", "polling preserves the integration path field");
-  assert.equal(await b.evaluate('document.querySelector(".integration-card[data-integration=quarto] [data-setting=args]").value'), "--verbose\n--profile=test", "polling preserves integration arguments");
-  await b.evaluate('document.querySelector("#settings-form").requestSubmit()');
-  await until("settings saved", async () => {
-    const response = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } });
+  await until("pair deny result", async () => (await pairStatus(deniedId)) === 403, 10000);
+
+  const paths = join(temporary, "extra-tools");
+  await b.evaluate(`(() => {
+    const field = document.querySelector('[aria-label="Extra tool search folders"]');
+    field.value = ${JSON.stringify(paths)};
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await new Promise((done) => setTimeout(done, 5500));
+  assert.equal(await b.evaluate('document.querySelector("[aria-label=\"Extra tool search folders\"]").value'), paths, "polling does not overwrite an in-progress edit");
+  await b.evaluate(`[...document.querySelectorAll("button")].find((item) => item.textContent.trim() === "Save folders").click()`);
+  await until("tool folder persisted", async () => {
+    const response = await apiState();
     if (!response.ok) return false;
-    const state = await response.json();
-    const quarto = state.settings.integrations.quarto;
-    return state.settings.tool_paths.includes(join(temporary, "extra-tools"))
-      && quarto.path === "/usr/bin/quarto"
-      && quarto.args.join("\n") === "--verbose\n--profile=test";
-  }, 8000);
-  const savedState = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } }).then((response) => response.json());
-  assert.equal(Object.hasOwn(savedState.settings, "tray_enabled"), false, "tray availability is not exposed as a preference");
-  assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "dashboard has no tray preference toggle");
-  assert.equal(typeof savedState.settings.startup_enabled, "boolean", "standalone startup preference remains available through the API");
-  assert.equal(await b.evaluate('document.querySelector("#startup-enabled") !== null'), true, "dashboard retains the startup preference toggle");
+    return (await response.json()).settings.tool_paths.includes(paths);
+  }, 10000);
 
-  const testAgent = `Dashboard check ${Date.now()}`;
-  await b.evaluate(`(() => {
-    document.querySelector("#agent-name").value = ${JSON.stringify(testAgent)};
-    document.querySelector("#agent-command").value = ${JSON.stringify(agentCommand)};
-    document.querySelector("#agent-args").value = "--version";
-    document.querySelector("#agent-form").requestSubmit();
-  })()`);
-  let agentId = "";
-  try {
-    await until("custom agent persisted and shown", async () => {
-      const response = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } });
-      if (!response.ok) return false;
-      const state = await response.json();
-      const agent = state.custom_agents.find((entry) => entry.label === testAgent);
-      if (!agent) return false;
-      agentId = agent.id;
-      return await b.evaluate(`(() => [...document.querySelectorAll("#agents h3")].filter((heading) => heading.textContent === ${JSON.stringify(testAgent)}).length === 1)()`);
-    }, 8000);
-  } catch (error) {
-    const dashboardNotice = await b.evaluate('document.querySelector("#notice").textContent').catch(() => "unavailable");
-    throw new Error(`${error.message}\ndashboard notice: ${dashboardNotice}`);
-  }
-  await b.evaluate('window.confirm = () => true');
-  await b.evaluate(`(() => {
-    const card = [...document.querySelectorAll("#agents .list-card")].find((item) => item.innerText.includes(${JSON.stringify(testAgent)}));
-    card.querySelector("button").click();
-  })()`);
-  await until("custom agent removed", async () => {
-    const response = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } });
-    return response.ok && !(await response.json()).custom_agents.some((entry) => entry.id === agentId);
-  }, 8000);
-
-  await b.evaluate(`(() => {
-    const card = [...document.querySelectorAll("#pairings .list-card")].find((item) => item.innerText.includes(${JSON.stringify(address)}));
-    if (!card) throw new Error("allowed site did not appear in the dashboard");
-    card.querySelector("button").click();
-  })()`);
-  await until("site access revoked from dashboard", async () => {
-    const response = await fetch(`${address}/companion/api/state`, { headers: { Authorization: `Bearer ${control.token}` } });
-    return response.ok && !(await response.json()).pairings.some((entry) => entry.origin === address);
-  }, 8000);
-
-  if (process.env.LIBREPAPER_SCREENSHOT) {
+  if (process.env.LIBREPAPER_SETTINGS_SCREENSHOT) {
     const shot = await b.command("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
-    writeFileSync(resolve(process.env.LIBREPAPER_SCREENSHOT), Buffer.from(shot.data, "base64"));
+    const screenshot = resolve(process.env.LIBREPAPER_SETTINGS_SCREENSHOT);
+    mkdirSync(dirname(screenshot), { recursive: true });
+    writeFileSync(screenshot, Buffer.from(shot.data, "base64"));
   }
 
-  // Feed a hostile-looking state record through the page renderer once. It
-  // must remain text, never become markup or execute an event handler.
-  await b.evaluate(`(() => {
-    const realFetch = window.fetch.bind(window);
-    window.fetch = (input, init) => String(input).includes("/companion/api/state")
-      ? Promise.resolve(new Response(JSON.stringify({version:"test",standalone:true,tools:{tools:{quarto:{available:true,version:"Quarto 1.7",note:"Installed"}},platform:"test",builders:[{id:"typst",available:true,version:"Typst 0.13",note:"Ready for local PDF builds."},{id:"pandoc",available:false,version:null,note:"Install Pandoc and rescan tools."},{id:"quarto",available:true,version:"Quarto 1.7",note:"Installed"}]},pairings:[],bindings:[],approvals:[{id:"xss",title:"<img src=x onerror=window.__xss=1>",message:"<script>window.__xss=2</script>",allow_label:"Allow"}],jobs:[{id:"job-x",kind:"Quarto",status:"running",stage:"Rendering",log_tail:"recent output"}],previews:[],agents:[],sessions:[],settings:{tool_paths:[],integrations:[],custom_agents:[]}}), {headers:{"content-type":"application/json"}}))
-      : realFetch(input, init);
-  })()`);
-  await b.evaluate('document.dispatchEvent(new Event("visibilitychange"))');
-  await until("hostile text rendered", () => b.evaluate('document.querySelector("#approvals h3")?.textContent.includes("<img")'));
-  assert.equal(await b.evaluate('document.querySelector("#approvals img, #approvals script") !== null'), false, "untrusted state is rendered with textContent");
-  assert.equal(await b.evaluate("window.__xss || 0"), 0, "untrusted state did not execute");
-  const toolCards = await b.evaluate('JSON.stringify([...document.querySelectorAll("#tools .tool-card")].map((card) => card.innerText))');
-  assert.match(toolCards, /Typst[\s\S]*Available[\s\S]*Typst 0\.13/);
-  assert.match(toolCards, /Pandoc[\s\S]*Not found[\s\S]*Install Pandoc and rescan tools/);
-  assert.equal(await b.evaluate('[...document.querySelectorAll("#tools h3")].filter((heading) => heading.textContent === "Quarto").length'), 1, "builder and integration records are deduplicated");
-  await b.evaluate('document.querySelector("#activity details summary").click()');
-  await new Promise((done) => setTimeout(done, 2300));
-  assert.equal(await b.evaluate('document.querySelector("#activity details").open'), true, "polling preserves expanded bounded logs");
-
-  console.log("companion-dashboard-browser: private bootstrap, auth, approvals, settings and agent CRUD, access revocation, safe text rendering and polling stability passed");
+  console.log("companion-settings-browser: trusted fragment intake, unified Settings management, approval allow/deny, persisted tool folders and removed standalone page passed");
 } finally {
   if (b) await b.close();
-  if (app.exitCode === null) {
+  if (app && app.exitCode === null) {
     app.kill();
-    await Promise.race([
-      appDone,
-      new Promise((done) => setTimeout(done, 2000)),
-    ]);
+    await Promise.race([appDone, new Promise((done) => setTimeout(done, 2000))]);
   }
+  if (server) server.close();
   rmSync(temporary, { recursive: true, force: true });
 }
