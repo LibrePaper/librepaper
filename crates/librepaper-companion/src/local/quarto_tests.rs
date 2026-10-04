@@ -951,6 +951,20 @@ fn scanner_reads_inline_svg_image_references() {
 }
 
 #[test]
+fn scanner_reads_svg_presentation_attributes_and_anchor_links() {
+    let references = closure_of(
+        "<svg><rect filter=\"url(filters.svg#blur)\" fill=\"url(paint.svg#g)\"/></svg>",
+        &["filters.svg", "paint.svg"],
+    )
+    .expect("SVG presentation attributes name resources");
+    assert!(references.contains("filters.svg") && references.contains("paint.svg"));
+
+    let references = closure_of("<svg><a xlink:href=\"other.html\"></a></svg>", &[])
+        .expect("an SVG anchor is navigation, so an absent target is allowed");
+    assert!(references.is_empty());
+}
+
+#[test]
 fn scanner_reads_url_inside_inline_style() {
     let references =
         closure_of("<style>.a{background:url(bg.png)}</style>", &["bg.png"]).expect("present");

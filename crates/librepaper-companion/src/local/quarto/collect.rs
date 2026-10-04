@@ -493,56 +493,52 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
     let mut inline_css: Vec<String> = vec![String::new()];
     let mut elements: Vec<(String, ReferenceKind)> = Vec::new();
     let settings = RewriteStrSettings::new()
-        .append_element_content_handler(element!(
-            "[src], [href], [xlink\\:href], [srcset], [poster], [style], object[data]",
-            |element| {
-                let navigation = matches!(element.tag_name().as_str(), "a" | "area");
-                if let Some(value) = element
-                    .get_attribute("href")
-                    .map(|value| html_escape::decode_html_entities(&value).into_owned())
-                {
-                    let kind = if navigation {
-                        ReferenceKind::Navigation
-                    } else {
-                        ReferenceKind::Resource
-                    };
-                    elements.push((value, kind));
-                }
-                for name in ["src", "poster", "xlink:href"] {
-                    if let Some(value) = element
-                        .get_attribute(name)
-                        .map(|value| html_escape::decode_html_entities(&value).into_owned())
-                    {
+        .append_element_content_handler(element!("*", |element| {
+            // lol_html hands attribute values back as written; entities are
+            // decoded here, once, for every attribute the scanner reads.
+            let attributes: Vec<(String, String)> = element
+                .attributes()
+                .iter()
+                .map(|attribute| {
+                    (
+                        attribute.name(),
+                        html_escape::decode_html_entities(&attribute.value()).into_owned(),
+                    )
+                })
+                .collect();
+            let tag = element.tag_name();
+            let navigation = matches!(tag.as_str(), "a" | "area");
+            let link_kind = if navigation {
+                ReferenceKind::Navigation
+            } else {
+                ReferenceKind::Resource
+            };
+            for (name, value) in attributes {
+                match name.as_str() {
+                    // A link on an anchor is navigation, whether HTML or SVG.
+                    "href" | "xlink:href" => elements.push((value, link_kind)),
+                    "src" | "poster" => elements.push((value, ReferenceKind::Resource)),
+                    "data" if tag == "object" => {
                         elements.push((value, ReferenceKind::Resource));
                     }
-                }
-                if element.tag_name() == "object" {
-                    if let Some(value) = element
-                        .get_attribute("data")
-                        .map(|value| html_escape::decode_html_entities(&value).into_owned())
-                    {
-                        elements.push((value, ReferenceKind::Resource));
+                    "srcset" => {
+                        for url in srcset_urls(&value) {
+                            elements.push((url, ReferenceKind::Resource));
+                        }
                     }
-                }
-                if let Some(value) = element
-                    .get_attribute("srcset")
-                    .map(|value| html_escape::decode_html_entities(&value).into_owned())
-                {
-                    for url in srcset_urls(&value) {
-                        elements.push((url, ReferenceKind::Resource));
+                    // `style`, and SVG presentation attributes such as
+                    // `filter="url(filters.svg#blur)"`: anything spelled as
+                    // CSS is scanned as CSS.
+                    _ if value.contains("url(") => {
+                        for reference in css_references(&value) {
+                            elements.push((reference, ReferenceKind::Resource));
+                        }
                     }
+                    _ => {}
                 }
-                if let Some(value) = element
-                    .get_attribute("style")
-                    .map(|value| html_escape::decode_html_entities(&value).into_owned())
-                {
-                    for reference in css_references(&value) {
-                        elements.push((reference, ReferenceKind::Resource));
-                    }
-                }
-                Ok(())
             }
-        ))
+            Ok(())
+        }))
         .append_element_content_handler(text!("style", |chunk| {
             if let Some(current) = inline_css.last_mut() {
                 current.push_str(chunk.as_str());
