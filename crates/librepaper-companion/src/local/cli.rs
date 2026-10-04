@@ -43,6 +43,9 @@ pub struct LaunchArgs {
         help_heading = "Companion"
     )]
     pub tool_path: Vec<PathBuf>,
+    /// Lossless path transport used only by the detached companion launcher.
+    #[arg(long, value_name = "DIR", hide = true)]
+    pub internal_tool_path: Vec<PathBuf>,
 }
 
 /// `librepaper local <command>` compatibility commands. Keep these aliases
@@ -134,7 +137,9 @@ pub async fn run(args: LocalArgs) {
                     die(error);
                 }
             }
-            let tool_path = crate::local::settings::tool_paths(&state_home(), args.tool_path)
+            let mut override_paths = args.tool_path;
+            override_paths.extend(args.internal_tool_path);
+            let tool_path = crate::local::settings::tool_paths(&state_home(), override_paths)
                 .unwrap_or_else(|error| die(error));
             if args.foreground {
                 start_foreground(port, tool_path).await

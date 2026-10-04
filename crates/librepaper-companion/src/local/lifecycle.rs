@@ -95,7 +95,7 @@ pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<Servic
         &if port == 0 { DEFAULT_PORT } else { port }.to_string(),
     ]);
     for path in &tool_path {
-        command.arg("--tool-path").arg(path);
+        command.arg("--internal-tool-path").arg(path);
     }
     let log_dir = state_home.join("librepaper/local");
     std::fs::create_dir_all(&log_dir).map_err(|error| error.to_string())?;
@@ -786,6 +786,28 @@ fn powershell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(clap::Parser)]
+    struct LaunchPathProbe {
+        #[command(flatten)]
+        launch: crate::local::cli::LaunchArgs,
+    }
+
+    #[test]
+    fn internal_child_tool_paths_preserve_colons_without_delimiter_splitting() {
+        let paths = [
+            PathBuf::from(r"Q:\Tools:Preview"),
+            PathBuf::from("/tmp/native:tools"),
+        ];
+        let mut arguments = vec![std::ffi::OsString::from("librepaper")];
+        for path in &paths {
+            arguments.push("--internal-tool-path".into());
+            arguments.push(path.as_os_str().to_owned());
+        }
+
+        let parsed = LaunchPathProbe::try_parse_from(arguments).unwrap();
+        assert_eq!(parsed.launch.internal_tool_path, paths.to_vec());
+    }
 
     #[test]
     fn control_panel_url_reads_only_a_bounded_token_for_the_live_instance() {
