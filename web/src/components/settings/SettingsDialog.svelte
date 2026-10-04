@@ -19,6 +19,7 @@
   import RemoteSettings from "./RemoteSettings.svelte";
   import BackupsSettings from "./BackupsSettings.svelte";
   import CompanionTools from "./CompanionTools.svelte";
+  import AgentSettings from "./AgentSettings.svelte";
 
   let {
     open = $bindable(false),
@@ -125,6 +126,8 @@
           </section>
         {:else if shown.id === "local"}
           <LocalAppSettings />
+        {:else if shown.id === "agents"}
+          <AgentSettings />
         {:else if shown.id === "backups"}
           <BackupsSettings {account} />
         {:else if shown.id === "account"}

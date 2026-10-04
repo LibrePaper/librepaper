@@ -54,16 +54,23 @@ export const CATEGORIES = [
     id: "local", says: "Companion", offered: always,
     note: "This computer",
     entries: [
-      { id: "local-status", says: "Connection", terms: "connect disconnect retry status install installer setup linux macos windows allow site agent claude codex pi opencode zotero quarto companion" },
+      { id: "local-status", says: "Connection", terms: "connect disconnect retry status install installer setup linux macos windows allow site claude codex pi opencode zotero quarto companion" },
       { id: "local-address", says: "Companion address", terms: "address port url localhost host version disconnect" },
       { id: "local-startup", says: "Start at login", terms: "startup login background standalone companion" },
       { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
       { id: "companion-lifecycle-heading", says: "General", terms: "running start login startup quit companion version" },
-      { id: "companion-approvals-heading", says: "Approvals", terms: "allow deny approval pending requests access" },
+      { id: "companion-approvals-heading", says: "Waiting for your answer", terms: "allow deny approval pending requests access" },
       { id: "companion-sites-heading", says: "Connected sites", terms: "pairing revoke origin website site access" },
       { id: "companion-folders-heading", says: "Project folders", terms: "bindings folder grant revoke directory project access" },
       { id: "companion-activity-heading", says: "Activity", terms: "jobs previews sessions cancel stop output logs" },
-      { id: "companion-agents-heading", says: "Agents on this computer", terms: "custom agent add remove configured detected command" },
+    ],
+  },
+  {
+    id: "agents", says: "Agents", offered: always,
+    note: "This computer",
+    entries: [
+      { id: "agents-list", says: "Agents on this computer", terms: "agent agents claude codex opencode pi detected configured custom remove" },
+      { id: "agents-add", says: "Add an agent", terms: "agent add custom command executable arguments" },
     ],
   },
   {

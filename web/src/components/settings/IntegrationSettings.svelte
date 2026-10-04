@@ -4,6 +4,7 @@
   import * as localBridge from "../../lib/companion/client.js";
   import * as control from "../../lib/companion/control.js";
   import { companion } from "../../lib/companion/status.svelte.js";
+  import { splitArgs, joinArgs } from "../../lib/companion/args.js";
 
   let { name = "quarto" } = $props();
 
@@ -65,51 +66,6 @@
     }
   });
 
-  function quoteAwareJoin(args) {
-    if (!Array.isArray(args)) return "";
-    return args.map((arg) => {
-      if (arg.includes(" ") || arg.includes('"') || arg.includes("'")) {
-        return `"${arg.replace(/"/g, '\\"')}"`;
-      }
-      return arg;
-    }).join(" ");
-  }
-
-  function quoteAwareSplit(text) {
-    const args = [];
-    let current = "";
-    let inQuote = false;
-    let quoteChar = "";
-    let i = 0;
-    while (i < text.length) {
-      const ch = text[i];
-      if ((ch === '"' || ch === "'") && (i === 0 || text[i - 1] !== "\\")) {
-        if (inQuote && ch === quoteChar) {
-          inQuote = false;
-          quoteChar = "";
-        } else if (!inQuote) {
-          inQuote = true;
-          quoteChar = ch;
-        } else {
-          current += ch;
-        }
-      } else if (ch === " " && !inQuote) {
-        if (current) args.push(current);
-        current = "";
-      } else {
-        if (ch === "\\" && i + 1 < text.length && (text[i + 1] === '"' || text[i + 1] === "'")) {
-          current += text[i + 1];
-          i++;
-        } else {
-          current += ch;
-        }
-      }
-      i++;
-    }
-    if (current) args.push(current);
-    return args;
-  }
-
   async function loadSettings(requestId, requestedName, address, instance) {
     try {
       const integration = (await localBridge.settings())?.integrations?.[requestedName];
@@ -149,7 +105,7 @@
     savedPath = integration.path || "";
     savedArgs = integration.args || [];
     editingPath = savedPath;
-    editingArgs = quoteAwareJoin(savedArgs);
+    editingArgs = joinArgs(savedArgs);
   }
 
   // Every change goes through the companion's confirmation dialog.
@@ -194,7 +150,7 @@
   const isConnected = $derived(managedAvailable || local?.state === "connected");
   const canEdit = $derived(isConnected && settingsLoaded && !pendingDialogAction);
   const showFields = $derived(name !== "zotero");
-  const unchanged = $derived(editingPath === savedPath && quoteAwareJoin(quoteAwareSplit(editingArgs)) === quoteAwareJoin(savedArgs));
+  const unchanged = $derived(editingPath === savedPath && joinArgs(splitArgs(editingArgs)) === joinArgs(savedArgs));
   const isDefault = $derived(!savedPath && savedArgs.length === 0);
 </script>
 
@@ -223,12 +179,12 @@
     </SettingRow>
 
     <div class="setting-actions integration-actions">
-      <button type="button" class="btn btn-sm lp-control-brand" disabled={!canEdit || unchanged} onclick={() => void apply(editingPath.trim() || null, quoteAwareSplit(editingArgs))}>{pendingDialogAction ? "Saving…" : "Save"}</button>
+      <button type="button" class="btn btn-sm lp-control-brand" disabled={!canEdit || unchanged} onclick={() => void apply(editingPath.trim() || null, splitArgs(editingArgs))}>{pendingDialogAction ? "Saving…" : "Save"}</button>
       <button type="button" class="btn btn-sm lp-control-outline" disabled={!canEdit || isDefault} onclick={() => void apply(null, [])}>Reset to default</button>
       {#if savedFeedback}<span class="setting-feedback" role="status">Saved</span>{/if}
     </div>
     {#if pendingDialogAction}
-      <p class="setting-description">Approve this request in Settings → Companion → Approvals.</p>
+      <p class="setting-description">Answer the companion's request on this computer or in Settings → Companion.</p>
     {/if}
   {/if}
 {#if name === "zotero"}

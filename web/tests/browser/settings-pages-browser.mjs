@@ -97,10 +97,10 @@ mount(Harness, { target: document.body });
 const mockModules = {
   name: "settings-pages-test-mocks",
   enforce: "pre",
-  resolveId(source) {
+  resolveId(source, importer) {
     if (source.endsWith("/lib/companion/status.svelte.js")) return statusMock;
-    if (source.endsWith("/lib/companion/client.js")) return clientMock;
-    if (source.endsWith("/lib/companion/control.js")) return controlMock;
+    if (source.endsWith("/lib/companion/client.js") || (source === "./client.js" && importer?.endsWith("/lib/companion/machine.svelte.js"))) return clientMock;
+    if (source.endsWith("/lib/companion/control.js") || (source === "./control.js" && importer?.endsWith("/lib/companion/machine.svelte.js"))) return controlMock;
     return null;
   },
 };
@@ -165,7 +165,7 @@ try {
   await until("harness mounted", () => b.evaluate("typeof window.show === \"function\""), 10000);
   await show("render", "quarto", "Render");
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
-    ["Editor", "Render", "Integrations", "Companion", "Backups", "Account"]);
+    ["Editor", "Render", "Integrations", "Companion", "Agents", "Backups", "Account"]);
 
   // Render always shows four sections with global build options visible for all formats.
   await until("the Quarto rows", () => present(["quarto-executable"]).then((found) => found.length === 1), 5000);
