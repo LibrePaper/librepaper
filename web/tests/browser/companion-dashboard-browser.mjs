@@ -234,10 +234,21 @@ try {
         .some((node) => /Connect|Pair/i.test(node.textContent))
     `), 10000);
   }
+  async function waitForEnabledButton(label, scopeId) {
+    await until(`${label} action enabled`, () => b.evaluate(`(() => {
+      const scope = ${JSON.stringify(scopeId)}
+        ? document.querySelector(${JSON.stringify(scopeId)}).closest("section")
+        : document;
+      return [...scope.querySelectorAll("button")].some((button) =>
+        button.textContent.trim() === ${JSON.stringify(label)} && !button.disabled
+      );
+    })()`), 10000);
+  }
   async function decide(label, decision, expected) {
     const id = `${requestId.slice(0, 26)}${label.padEnd(6, "x")}`;
     await askForPair(id);
     await waitForApproval();
+    await waitForEnabledButton(decision === "allow" ? "Connect" : "Deny", "#companion-approvals-heading");
     await b.evaluate(`(() => {
       const section = document.querySelector("#companion-approvals-heading").closest("section");
       const row = [...section.querySelectorAll(".setting-row")].find((item) => /Connect|Pair/i.test(item.textContent));
@@ -259,6 +270,7 @@ try {
   const deniedId = `${requestId.slice(0, 26)}denyxx`;
   await askForPair(deniedId);
   await waitForApproval();
+  await waitForEnabledButton("Deny", "#companion-approvals-heading");
   await b.evaluate(`(() => {
     const section = document.querySelector("#companion-approvals-heading").closest("section");
     const row = [...section.querySelectorAll(".setting-row")].find((item) => /Connect|Pair/i.test(item.textContent));
@@ -274,6 +286,7 @@ try {
   })()`);
   await new Promise((done) => setTimeout(done, 5500));
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Extra tool search folders"]').value`), paths, "polling does not overwrite an in-progress edit");
+  await waitForEnabledButton("Save folders", "#companion-tool-paths-heading");
   await b.evaluate(`[...document.querySelectorAll("button")].find((item) => item.textContent.trim() === "Save folders").click()`);
   await until("tool folder persisted", async () => {
     const response = await apiState();
@@ -290,6 +303,10 @@ try {
     section.querySelector('input[name="command"]').dispatchEvent(new Event("input", { bubbles: true }));
     section.querySelector('textarea[name="args"]').value = "--version";
     section.querySelector('textarea[name="args"]').dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await waitForEnabledButton("Add agent", "#companion-agents-heading");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#companion-agents-heading").closest("section");
     [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Add agent").click();
   })()`);
   let agentId = "";
@@ -301,10 +318,11 @@ try {
     agentId = agent.id;
     return b.evaluate(`(() => {
       const section = document.querySelector("#companion-agents-heading").closest("section");
-      return [...section.querySelectorAll(".setting-title")].some((item) => item.textContent === ${JSON.stringify(agentLabel)});
+      return [...section.querySelectorAll(".setting-title")].filter((item) => item.textContent === ${JSON.stringify(agentLabel)}).length === 1;
     })()`);
   }, 10000);
   await b.evaluate("window.confirm = () => true");
+  await waitForEnabledButton("Remove", "#companion-agents-heading");
   await b.evaluate(`(() => {
     const section = document.querySelector("#companion-agents-heading").closest("section");
     const row = [...section.querySelectorAll(".setting-row")].find((item) => item.textContent.includes(${JSON.stringify(agentLabel)}));
@@ -319,6 +337,7 @@ try {
     [...document.querySelector("#companion-sites-heading").closest("section").querySelectorAll(".setting-row")]
       .some((item) => item.textContent.includes(${JSON.stringify(appOrigin)}))
   `), 10000);
+  await waitForEnabledButton("Revoke", "#companion-sites-heading");
   await b.evaluate(`(() => {
     const section = document.querySelector("#companion-sites-heading").closest("section");
     const row = [...section.querySelectorAll(".setting-row")].find((item) => item.textContent.includes(${JSON.stringify(appOrigin)}));
@@ -344,7 +363,10 @@ try {
     const args = document.querySelector("#quarto-arguments input");
     args.value = ${JSON.stringify(quartoArgs)};
     args.dispatchEvent(new Event("input", { bubbles: true }));
-    const section = path.closest(".settings-subsection");
+  })()`);
+  await waitForEnabledButton("Save", "#quarto-executable");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#quarto-executable").closest(".settings-subsection");
     [...section.querySelectorAll(".integration-actions button")].find((item) => item.textContent.trim() === "Save").click();
   })()`);
   await until("Quarto integration path and arguments persisted", async () => {
