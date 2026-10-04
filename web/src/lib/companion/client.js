@@ -824,17 +824,21 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
   let asked = false;
   // Trusted app origins can establish a management session in this user
   // action and queue the normal approval request inside Settings.
+  let trustedControl = false;
   try {
     await deps.control.connect(address());
     checkScope();
+    trustedControl = true;
+  } catch {
+    checkScope();
+    // External origins and older companions retain the public compatibility flow.
+  }
+  if (trustedControl) {
     deps.control.showSettings();
     await deps.control.request("/pair/request", {
       method: "POST", body: { origin, request, challenge, return: returnUrl },
     });
     asked = true;
-  } catch (error) {
-    checkScope();
-    // External origins and older companions retain the public compatibility flow.
   }
   if (!asked) {
   try {

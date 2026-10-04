@@ -222,7 +222,7 @@ export function createControlClient(deps = {}) {
   /** @param {string} path @param {{ method?: string, body?: unknown }} [options] */
   async function request(path, { method = "GET", body } = {}) {
     const credential = readActive();
-    if (!credential) throw Object.assign(new Error("Open the companion from its tray menu to manage it."), { name: "Unavailable" });
+    if (!credential) throw Object.assign(new Error("Connect to the companion to manage it."), { name: "Unavailable" });
     if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
       throw new TypeError("Invalid companion control path");
     }

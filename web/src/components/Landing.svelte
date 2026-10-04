@@ -37,6 +37,7 @@
   import { FORMATS, formatNamed, fillTemplate, matchTemplates } from "../lib/starter.js";
   import { BUILT_IN, templateFiles } from "../lib/templates.js";
   import { preparedProjects } from "../lib/offline-projects.js";
+  import * as localBridge from "../lib/companion/client.js";
 
   let { initialSettings = "" } = $props();
   let settingsOpen = $state(untrack(() => initialSettings === "local"));
@@ -882,6 +883,10 @@
 
   $effect(() => {
     void showOfflineProjects();
+    localBridge.configure({ project: null, origin: location.origin, active: true });
+    get("/api/config").then((answer) => {
+      if (answer?.local_app?.address) localBridge.setAdvertisedAddress(answer.local_app.address);
+    }).catch(() => {});
     // Not the shared me(), which folds a failed request into an empty account:
     // this page needs to tell the two apart in order to say which it is.
     get("/api/me")

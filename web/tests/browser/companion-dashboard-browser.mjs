@@ -69,7 +69,7 @@ export const companion = { get status() { return current; }, watch() { return ()
 
 writeFileSync(clientMock, `
 export const DEFAULT_ADDRESS = "http://127.0.0.1:8763/";
-export function address() { return DEFAULT_ADDRESS; }
+export function address() { return window.__companionAddress || DEFAULT_ADDRESS; }
 export function setAddress() {}
 export function probe() { return Promise.resolve(); }
 export function retry() { return Promise.resolve(); }
@@ -128,7 +128,8 @@ try {
     },
   });
 
-  const page = `<!doctype html><html data-theme="librepaper"><head><meta charset="utf-8"><link rel="stylesheet" href="/check.css"><title>LibrePaper Settings</title></head><body><script type="module" src="/check.js"></script></body></html>`;
+  let companionAddressForPage = "";
+  const page = () => `<!doctype html><html data-theme="librepaper"><head><meta charset="utf-8"><link rel="stylesheet" href="/check.css"><title>LibrePaper Settings</title></head><body><script>window.__companionAddress=${JSON.stringify(companionAddressForPage)}</script><script type="module" src="/check.js"></script></body></html>`;
   server = createServer((request, response) => {
     if (request.url === "/check.js") {
       response.setHeader("content-type", "text/javascript");
@@ -138,7 +139,7 @@ try {
       response.end(readFileSync(join(output, "check.css")));
     } else {
       response.setHeader("content-type", "text/html");
-      response.end(page);
+      response.end(page());
     }
   });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
@@ -148,6 +149,7 @@ try {
 
   const companionPort = await freePort();
   const companionAddress = `http://127.0.0.1:${companionPort}/`;
+  companionAddressForPage = companionAddress;
   app = spawn(binary, ["start", "--foreground", "--port", String(companionPort)], {
     env: appEnv,
     stdio: ["ignore", "pipe", "pipe"],
@@ -169,23 +171,24 @@ try {
   assert.equal(credential.token.length, 43);
 
   b = await browser("chromium", join(temporary, "chrome"), await freePort());
-  const fragment = new URLSearchParams({
-    settings: "local",
-    companion_address: companionAddress,
-    companion_control: credential.token,
-    companion_instance: credential.instance,
-  });
-  await b.navigate(`${appOrigin}/#${fragment}`);
+  await b.navigate(`${appOrigin}/`);
+  await until("Manage this computer button", () => b.evaluate(`
+    [...document.querySelectorAll("button")].some((button) => button.textContent.trim() === "Manage this computer")
+  `), 8000);
+  await b.evaluate(`[...document.querySelectorAll("button")].find((button) => button.textContent.trim() === "Manage this computer").click()`);
   await until("real companion Settings sections", () => b.evaluate(`[
-    "companion-approvals-heading", "companion-sites-heading", "companion-folders-heading",
-    "companion-activity-heading", "companion-agents-heading", "companion-tool-paths-heading"
+    "companion-approvals-heading", "companion-sites-heading",
+    "companion-activity-heading", "companion-agents-heading"
   ].every((id) => document.querySelector("#" + id))`), 12000);
 
-  assert.equal(await b.evaluate("location.hash"), "", "the secret handoff fragment is removed");
+  assert.equal(await b.evaluate("location.hash"), "", "management bootstrap does not add a fragment");
+  assert.equal(await b.evaluate("location.href"), `${appOrigin}/`, "management opens in place without changing the document URL");
   assert.equal(await b.evaluate(`document.documentElement.innerHTML.includes(${JSON.stringify(credential.token)})`), false, "the token is not rendered into the page");
   assert.equal(await b.evaluate('document.querySelectorAll(".request-card").length'), 0, "approvals use existing SettingRow layout");
   assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
   assert.equal(await b.evaluate('document.querySelectorAll(".settings-subsection").length >= 6'), true, "management is organized under Settings sections");
+  assert.equal(await b.evaluate('document.body.innerText.includes("Tool search folders")'), false, "tool search folders are not configurable");
+  assert.equal(await b.evaluate('document.querySelector("#companion-folders-heading") === null'), true, "empty project-folder grants have no heading");
 
   for (const path of ["/companion", "/companion/", "/companion/index.html", "/companion/app.js", "/companion/style.css"]) {
     const response = await fetch(`${companionAddress.replace(/\/$/, "")}${path}`);
@@ -205,7 +208,7 @@ try {
   assert.equal(missingOrigin.status, 403, "management requires an Origin header");
 
   await until("Settings control state loaded", () => b.evaluate(`
-    document.querySelector('[aria-label="Extra tool search folders"]')?.disabled === false
+    document.querySelector("#companion-agents-heading")?.closest("section")?.querySelector('input[name="label"]')?.disabled === false
   `), 10000);
   await captureSettingsScreenshot();
 
@@ -278,28 +281,12 @@ try {
   })()`);
   await until("pair deny result", async () => (await pairStatus(deniedId)) === 403, 10000);
 
-  const paths = join(temporary, "extra-tools");
-  await b.evaluate(`(() => {
-    const field = document.querySelector('[aria-label="Extra tool search folders"]');
-    field.value = ${JSON.stringify(paths)};
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-  })()`);
-  await new Promise((done) => setTimeout(done, 5500));
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Extra tool search folders"]').value`), paths, "polling does not overwrite an in-progress edit");
-  await waitForEnabledButton("Save folders", "#companion-tool-paths-heading");
-  await b.evaluate(`[...document.querySelectorAll("button")].find((item) => item.textContent.trim() === "Save folders").click()`);
-  await until("tool folder persisted", async () => {
-    const response = await apiState();
-    if (!response.ok) return false;
-    return (await response.json()).settings.tool_paths.includes(paths);
-  }, 10000);
-
-  const agentLabel = `Settings browser ${Date.now()}`;
+  const agentLabel = "Claude";
   await b.evaluate(`(() => {
     const section = document.querySelector("#companion-agents-heading").closest("section");
-    section.querySelector('input[name="label"]').value = ${JSON.stringify(agentLabel)};
+    section.querySelector('input[name="label"]').value = "Claude";
     section.querySelector('input[name="label"]').dispatchEvent(new Event("input", { bubbles: true }));
-    section.querySelector('input[name="command"]').value = ${JSON.stringify(process.execPath)};
+    section.querySelector('input[name="command"]').value = "librepaper-no-such-executable-for-test";
     section.querySelector('input[name="command"]').dispatchEvent(new Event("input", { bubbles: true }));
     section.querySelector('textarea[name="args"]').value = "--version";
     section.querySelector('textarea[name="args"]').dispatchEvent(new Event("input", { bubbles: true }));
@@ -307,6 +294,26 @@ try {
   await waitForEnabledButton("Add agent", "#companion-agents-heading");
   await b.evaluate(`(() => {
     const section = document.querySelector("#companion-agents-heading").closest("section");
+    [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Add agent").click();
+  })()`);
+  await until("invalid executable error", () => b.evaluate(`
+    [...document.querySelector("#companion-agents-heading").closest("section").querySelectorAll('[role="alert"]')]
+      .some((node) => node.textContent.trim().length > 0)
+  `), 5000);
+  await new Promise((done) => setTimeout(done, 5500));
+  assert.equal(await b.evaluate(`
+    (() => {
+      const section = document.querySelector("#companion-agents-heading").closest("section");
+      return [...section.querySelectorAll('[role="alert"]')].some((node) => node.textContent.trim().length > 0)
+        && section.querySelector('input[name="label"]').value === "Claude"
+        && section.querySelector('input[name="command"]').value === "librepaper-no-such-executable-for-test";
+    })()
+  `), true, "agent server error and inputs survive polling");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#companion-agents-heading").closest("section");
+    const field = section.querySelector('input[name="command"]');
+    field.value = ${JSON.stringify(process.execPath)};
+    field.dispatchEvent(new Event("input", { bubbles: true }));
     [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Add agent").click();
   })()`);
   let agentId = "";
@@ -378,7 +385,7 @@ try {
 
   await captureSettingsScreenshot();
 
-  console.log("companion-settings-browser: trusted fragment intake, unified Settings management, approval decisions, folder/tool saves, agent/site management and removed standalone page passed");
+  console.log("companion-settings-browser: in-place trusted Settings bootstrap, approval decisions, agent/site management and removed standalone page passed");
 } finally {
   if (b) await b.close();
   if (app && app.exitCode === null) {
