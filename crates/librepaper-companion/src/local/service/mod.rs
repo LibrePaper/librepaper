@@ -118,10 +118,7 @@ pub struct NativeRunner {
 impl NativeRunner {
     /// A runner that executes granted projects and, under `base`, the hosted
     /// workspace every document has without a grant.
-    pub fn with_hosted_workspaces(
-        state_home: &std::path::Path,
-        base: PathBuf,
-    ) -> Self {
+    pub fn with_hosted_workspaces(state_home: &std::path::Path, base: PathBuf) -> Self {
         Self {
             binding_store: BindingStore::new(state_home).with_hosted_workspaces(base),
         }
@@ -137,14 +134,8 @@ impl Runner for NativeRunner {
         cancel: watch::Receiver<bool>,
         progress: mpsc::UnboundedSender<JobStatus>,
     ) -> JobOutcome {
-        crate::local::engine_adapter::run(
-            request,
-            workspace,
-            cancel,
-            progress,
-            &self.binding_store,
-        )
-        .await
+        crate::local::engine_adapter::run(request, workspace, cancel, progress, &self.binding_store)
+            .await
     }
 
     async fn capabilities(&self, refresh: bool) -> Capabilities {

@@ -63,10 +63,8 @@ pub async fn run(
 /// branch and cannot accidentally advertise a future engine.
 pub async fn capabilities(refresh: bool) -> Capabilities {
     let zotero_client = super::zotero::Client::local();
-    let (mut capabilities, zotero) = tokio::join!(
-        super::discovery::discover(refresh),
-        zotero_client.probe()
-    );
+    let (mut capabilities, zotero) =
+        tokio::join!(super::discovery::discover(refresh), zotero_client.probe());
     capabilities.zotero = match zotero {
         Ok(()) => super::protocol::Tool {
             available: true,

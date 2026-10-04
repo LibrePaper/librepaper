@@ -593,7 +593,8 @@ async fn run_admin(command: AdminCommand) {
                         || -> librepaper_server::server::serve::StartLocal {
                             Box::new(|base| {
                                 Box::pin(async move {
-                                    let app = librepaper_companion::local::embedded::start(&base).await?;
+                                    let app =
+                                        librepaper_companion::local::embedded::start(&base).await?;
                                     let stopper = app.clone();
                                     Ok(librepaper_server::server::serve::LocalApp {
                                         address: app.address.clone(),
@@ -791,20 +792,17 @@ mod socket_policy_tests {
         assert!(!bare.launch.at_login);
         assert!(bare.launch.port.is_none());
 
-        let configured = Cli::try_parse_from([
-            "librepaper",
-            "--foreground",
-            "--at-login",
-            "--port",
-            "9123",
-        ])
-        .unwrap();
+        let configured =
+            Cli::try_parse_from(["librepaper", "--foreground", "--at-login", "--port", "9123"])
+                .unwrap();
         assert!(configured.launch.foreground);
         assert!(configured.launch.at_login);
         assert_eq!(configured.launch.port, Some(9123));
         assert!(Cli::try_parse_from(["librepaper", "--tool-path", "/opt/tools"]).is_err());
         assert!(Cli::try_parse_from(["librepaper", "start", "--tool-path", "/opt/tools"]).is_err());
-        assert!(Cli::try_parse_from(["librepaper", "status", "--tool-path", "/opt/tools"]).is_err());
+        assert!(
+            Cli::try_parse_from(["librepaper", "status", "--tool-path", "/opt/tools"]).is_err()
+        );
 
         assert!(
             Cli::try_parse_from(["librepaper", "start", "--foreground", "--port", "9123"]).is_ok()

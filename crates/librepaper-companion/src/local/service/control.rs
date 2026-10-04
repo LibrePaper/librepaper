@@ -209,7 +209,10 @@ pub(super) async fn handle(
                 media_type.trim().eq_ignore_ascii_case("application/json")
             })
         }) {
-            write_json(415, &json!({"error":"application/json content type required"}))
+            write_json(
+                415,
+                &json!({"error":"application/json content type required"}),
+            )
         } else {
             write_json(
                 200,
@@ -628,11 +631,7 @@ async fn add_agent(inner: &Inner, request: Request<Body>) -> Reply {
             .collect::<HashSet<_>>();
         agent_id(&body.label, &existing)
     });
-    match store.add(
-        &id,
-        &body.label,
-        &body.command,
-    ) {
+    match store.add(&id, &body.label, &body.command) {
         Ok(()) => write_json(200, &json!({"id":id})),
         Err(error) => write_json(400, &json!({"error":error})),
     }
@@ -754,14 +753,7 @@ mod tests {
         origin: Option<&str>,
         host: &str,
     ) -> Request<Body> {
-        api_request(
-            method,
-            token,
-            origin,
-            host,
-            "/companion/api/state",
-            None,
-        )
+        api_request(method, token, origin, host, "/companion/api/state", None)
     }
 
     fn api_request(
@@ -856,7 +848,10 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["access-control-allow-origin"], origin);
-        assert_eq!(response.headers()["cache-control"], "no-store, no-cache, must-revalidate");
+        assert_eq!(
+            response.headers()["cache-control"],
+            "no-store, no-cache, must-revalidate"
+        );
         let bytes = axum::body::to_bytes(response.into_body(), 4096)
             .await
             .unwrap();
@@ -893,7 +888,10 @@ mod tests {
             peer,
         )
         .await;
-        assert_eq!(missing_content_type.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(
+            missing_content_type.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
 
         let wrong_content_type = send_api(
             &inner,
@@ -908,7 +906,10 @@ mod tests {
             peer,
         )
         .await;
-        assert_eq!(wrong_content_type.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(
+            wrong_content_type.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
 
         let missing_origin = send_api(
             &inner,

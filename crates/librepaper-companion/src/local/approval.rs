@@ -383,13 +383,17 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(opens.load(Ordering::SeqCst), 0);
         let id = broker.list().pop().expect("inline approval pending").id;
-        assert_eq!(broker.decide(&id, Decision::Allowed), DecisionResult::Applied);
+        assert_eq!(
+            broker.decide(&id, Decision::Allowed),
+            DecisionResult::Applied
+        );
         assert_eq!(inline.await.unwrap(), Decision::Allowed);
 
         let ordinary_broker = broker.clone();
-        let ordinary = tokio::spawn(async move {
-            ordinary_broker.ask(&request, Duration::from_secs(5)).await
-        });
+        let ordinary =
+            tokio::spawn(
+                async move { ordinary_broker.ask(&request, Duration::from_secs(5)).await },
+            );
         tokio::task::yield_now().await;
         assert_eq!(opens.load(Ordering::SeqCst), 1);
         broker.deny_all();

@@ -440,21 +440,17 @@ mod tests {
 
     #[test]
     fn cache_from_the_old_configured_path_schema_is_stale() {
-        let old: Cache = serde_json::from_str(
-            r#"{"configured_paths":["/legacy/tools"],"tools":{}}"#,
-        )
-        .unwrap();
+        let old: Cache =
+            serde_json::from_str(r#"{"configured_paths":["/legacy/tools"],"tools":{}}"#).unwrap();
         assert_eq!(old.path_fingerprint, "");
         assert!(cache_is_stale(&old, "path-v2:\"/current/path\""));
     }
 
     #[test]
     fn search_directories_are_exactly_the_supplied_path() {
-        let path = std::env::join_paths([
-            PathBuf::from("/first/bin"),
-            PathBuf::from("/second/bin"),
-        ])
-        .unwrap();
+        let path =
+            std::env::join_paths([PathBuf::from("/first/bin"), PathBuf::from("/second/bin")])
+                .unwrap();
         assert_eq!(
             search_dirs(&path),
             vec![PathBuf::from("/first/bin"), PathBuf::from("/second/bin")]

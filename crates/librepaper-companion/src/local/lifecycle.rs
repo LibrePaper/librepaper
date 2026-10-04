@@ -745,10 +745,7 @@ mod tests {
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(
-            arguments,
-            vec!["start", "--foreground", "--port", "8763"]
-        );
+        assert_eq!(arguments, vec!["start", "--foreground", "--port", "8763"]);
     }
 
     #[test]

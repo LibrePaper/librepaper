@@ -100,4 +100,3 @@ pub async fn start(base: &Path) -> Result<Arc<Embedded>, String> {
         service,
     }))
 }
-

@@ -136,10 +136,7 @@ pub fn init(state_home: &Path) {
         .join("local")
         .join("integrations.json");
     let entries = load_or_default(&path);
-    *STATE.write().unwrap_or_else(|poison| poison.into_inner()) = Some(State {
-        path,
-        entries,
-    });
+    *STATE.write().unwrap_or_else(|poison| poison.into_inner()) = Some(State { path, entries });
 }
 
 /// The configuration for one integration; the default before [`init`].
@@ -413,7 +410,14 @@ mod tests {
         }
         let state_home = tempfile::tempdir().unwrap();
         init(state_home.path());
-        set(Integration::Quarto, Custom { path: Some(quarto.clone()), args: Vec::new() }).unwrap();
+        set(
+            Integration::Quarto,
+            Custom {
+                path: Some(quarto.clone()),
+                args: Vec::new(),
+            },
+        )
+        .unwrap();
         assert_eq!(executable(Integration::Quarto), Some(quarto));
     }
 }
