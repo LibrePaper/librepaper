@@ -97,9 +97,7 @@
   import { defaultKeymap, indentWithTab, selectAll } from "@codemirror/commands";
   import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, startCompletion } from "@codemirror/autocomplete";
   import { searchKeymap, highlightSelectionMatches, openSearchPanel } from "@codemirror/search";
-  import { syntaxHighlighting, HighlightStyle, defaultHighlightStyle, StreamLanguage, bracketMatching, foldGutter, foldKeymap, indentOnInput } from "@codemirror/language";
-  import { markdown } from "@codemirror/lang-markdown";
-  import { html as htmlLanguage } from "@codemirror/lang-html";
+  import { bracketMatching, foldGutter, foldKeymap, indentOnInput } from "@codemirror/language";
   import {
     lintGutter,
     lintKeymap,
@@ -110,7 +108,8 @@
   import { undoManagerField, undo as undoCommand, redo as redoCommand } from "../lib/loro-undo.js";
   import { LoroText, UndoManager } from "loro-crdt";
 
-  import { typstLanguage } from "../lib/typst-mode.js";
+  import { sourceLanguage } from "../lib/source-language.js";
+  import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
   import { hasPairing, searchZotero, zoteroItem } from "../lib/companion/client.js";
@@ -489,12 +488,6 @@
     }
   }
 
-  const sourceHighlightStyle = HighlightStyle.define(
-    defaultHighlightStyle.specs.map((rule) =>
-      rule.fontWeight === "bold" ? { ...rule, fontWeight: "600" } : rule,
-    ),
-  );
-
   let host = $state(null);
   let view = null;
   // One editor state per file, made the first time that file is opened and
@@ -516,16 +509,6 @@
   // Which file the view is currently showing, so a swap can put the state it
   // is leaving back in the map before taking the next one.
   let showing = "";
-
-  // What a document is written in decides how it is coloured. Markdown has a
-  // maintained mode; typst has the small one beside this file, which knows the
-  // handful of things worth telling apart in a source you are editing.
-  function language(format) {
-    if (format === "typst") return StreamLanguage.define(typstLanguage);
-    if (format === "html") return htmlLanguage();
-    if (format === "quarto") return markdown();
-    return markdown();
-  }
 
   // What the compiler last said. `all` is every diagnostic, across every file
   // in the document, because walking them is a walk through the document and
@@ -856,22 +839,6 @@
     return true;
   }
 
-  /// What a document is written in decides how the *file being edited* is
-  /// coloured, which is not always the document's own format: a `.bib` beside
-  /// a `.tex` is neither LaTeX nor markdown, and colouring it as though it
-  /// were is worse than colouring it as nothing.
-  function languageOf(path, fallback) {
-    const lower = (path || "").toLowerCase();
-    if (lower.endsWith(".typ")) return language("typst");
-    if (lower.endsWith(".md") || lower.endsWith(".markdown") || lower.endsWith(".qmd")) return language("markdown");
-    if (lower.endsWith(".html") || lower.endsWith(".htm")) return language("html");
-    // A file with no mode of its own -- .bib, .sty, .csv -- is shown as plain
-    // text rather than coloured by the document's format, which would be a
-    // guess dressed as knowledge.
-    if (lower && !lower.endsWith(".txt")) return [];
-    return language(fallback);
-  }
-
   /// Builds the state for one file, bound to its own LoroText.
   /// When tracking is on, binds to the proposal's text; otherwise binds to the room's.
   function stateFor(id) {
@@ -927,8 +894,8 @@
         foldGutter(),
         indentOnInput(),
         highlightSelectionMatches(),
-        syntaxHighlighting(sourceHighlightStyle, { fallback: true }),
-        languageOf(path, format),
+        sourceHighlighting,
+        sourceLanguage(path, format),
         autocompletion({
           activateOnTyping: true,
           override: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(boundDoc(), showing)), remote: remoteBibliography, onRemote: importZotero })],
