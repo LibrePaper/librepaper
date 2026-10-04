@@ -227,7 +227,7 @@ try {
   await b.evaluate(`window.setCompanionState("unreachable")`);
   await show("render", "quarto", "Render");
   await capture("render-offline");
-  assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  assert.deepEqual(await subheads(), ["Detected tools", "LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   await until("offline render settings", () => present(["render-latex-engine"]).then((found) => found.length === 1), 5000);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="LaTeX engine"]').disabled`), false);
   assert.equal(await b.evaluate(`document.querySelector("#calepin-status .setting-status-pill")?.textContent.trim()`), "Not checked");
