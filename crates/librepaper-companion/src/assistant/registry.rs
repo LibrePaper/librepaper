@@ -153,6 +153,7 @@ impl SessionRegistry {
     #[allow(clippy::too_many_arguments)] // Keep the authenticated owner explicit alongside the session credentials.
     pub(crate) async fn start(
         &self,
+        pairing: &crate::local::pairing::PairingStore,
         link: &DocumentLink,
         origin: &str,
         pairing_token: &str,
@@ -165,9 +166,7 @@ impl SessionRegistry {
         let key = lifecycle::session_key(link, conversation)?;
         let gate = self.start_gate.lock().await;
         let requester = crate::local::pairing::normalize_origin(origin);
-        if !crate::local::pairing::PairingStore::new(&self.state_home, None)
-            .authenticate(origin, pairing_token)
-        {
+        if !pairing.authenticate(origin, pairing_token) {
             return Err("the local pairing is no longer valid; reconnect this site".into());
         }
         self.reap(&key).await;
@@ -196,12 +195,6 @@ impl SessionRegistry {
                     .map_err(|error| error.to_string())?;
             }
             let peer = AutomationPeer::open_scoped(link.clone(), agent_token.to_string()).await?;
-            if !crate::local::pairing::PairingStore::new(&self.state_home, None)
-                .authenticate(origin, pairing_token)
-            {
-                return Err("the local pairing is no longer valid; reconnect this site".into());
-            }
-            let grant = Some(peer.token_source());
             let config = runtime::config(
                 conversation.to_string(),
                 Some(chat_token.to_string()),
@@ -209,6 +202,12 @@ impl SessionRegistry {
                 self.state_home.clone(),
                 agent_environment.to_vec(),
             )?;
+            let admission = pairing.admission_gate().lock().await;
+            if !pairing.authenticate(origin, pairing_token) {
+                return Err("the local pairing is no longer valid; reconnect this site".into());
+            }
+            self.publish_runner_connection(link, origin, conversation, chat_token)?;
+            let grant = Some(peer.token_source());
             self.spawn_running(
                 &key,
                 &wanted,
@@ -216,15 +215,17 @@ impl SessionRegistry {
                 grant,
                 move |status, stop| async move { runtime::run(&peer, config, status, stop).await },
             );
+            drop(admission);
         } else {
             self.validate_agent_token(link, agent_token).await?;
-            if !crate::local::pairing::PairingStore::new(&self.state_home, None)
-                .authenticate(origin, pairing_token)
-            {
+            let (owner, grant) = self.active_grant(&key)?;
+            let admission = pairing.admission_gate().lock().await;
+            if !pairing.authenticate(origin, pairing_token) {
                 return Err("the local pairing is no longer valid; reconnect this site".into());
             }
-            let (owner, grant) = self.active_grant(&key)?;
+            self.publish_runner_connection(link, origin, conversation, chat_token)?;
             replace_agent_grant(owner.as_deref(), &requester, &grant, agent_token)?;
+            drop(admission);
         }
         drop(gate);
         self.wait_until_settled(&key).await
@@ -315,6 +316,18 @@ impl SessionRegistry {
             return Err("the assistant is not running; start it again from the document".into());
         };
         Ok((origin.clone(), grant.clone()))
+    }
+
+    fn publish_runner_connection(
+        &self,
+        link: &DocumentLink,
+        origin: &str,
+        conversation: &str,
+        chat_token: &str,
+    ) -> Result<(), String> {
+        crate::local::connections::ConnectionStore::new(&self.state_home)
+            .put_runner(&link.credential_url(), origin, conversation, chat_token)
+            .map(|_| ())
     }
 
     async fn validate_agent_token(&self, link: &DocumentLink, token: &str) -> Result<(), String> {
@@ -626,6 +639,69 @@ mod tests {
         assert!(registry.status_by_key("session-a").await.is_none());
         assert!(registry.status_by_key("session-b").await.is_some());
         registry.stop_by_key("session-b").await.unwrap();
+    }
+
+    /// Connection publication belongs inside the authorized registry start:
+    /// a rejected start from another paired site must not overwrite the
+    /// current owner's durable link or chat credential.
+    #[tokio::test]
+    async fn rejected_cross_origin_start_preserves_runner_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let pairing = crate::local::pairing::PairingStore::new(dir.path(), None);
+        let (_owner_token, _) = pairing.issue("https://owner.example", "Owner").unwrap();
+        let (other_token, _) = pairing.issue("https://other.example", "Other").unwrap();
+        let link = DocumentLink::parse("https://papers.example/docs/paper#k=secret", "")
+            .unwrap();
+        let conversation = "conversation-1";
+        let connections = crate::local::connections::ConnectionStore::new(dir.path());
+        let connection_name = connections
+            .put_runner(
+                &link.credential_url(),
+                "https://owner.example",
+                conversation,
+                "owner-chat-token",
+            )
+            .unwrap();
+
+        let registry = SessionRegistry::new(dir.path().to_path_buf());
+        let key = lifecycle::session_key(&link, conversation).unwrap();
+        registry.spawn_running(
+            &key,
+            "existing-config",
+            Some("https://owner.example".into()),
+            Some(std::sync::Arc::new(std::sync::RwLock::new(
+                "owner-agent-token".into(),
+            ))),
+            |_status, _stop| async move {
+                std::future::pending::<()>().await;
+                Ok(())
+            },
+        );
+
+        let error = registry
+            .start(
+                &pairing,
+                &link,
+                "https://other.example",
+                &other_token,
+                conversation,
+                "other-chat-token",
+                "invalid-agent-token",
+                &[],
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "the assistant session is already owned by another paired site"
+        );
+        let connection = connections.resolve(&connection_name).unwrap();
+        assert_eq!(connection.origin, "https://owner.example");
+        assert_eq!(connection.chat_token.as_deref(), Some("owner-chat-token"));
+        let (_, owner_grant) = registry.active_grant(&key).unwrap();
+        assert_eq!(*owner_grant.read().unwrap(), "owner-agent-token");
+        registry.stop_by_key(&key).await.unwrap();
     }
 
     /// A session task that panics must surface as a failed status, not take
