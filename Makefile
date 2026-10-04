@@ -229,6 +229,9 @@ demo:  ## Serve the site, the app, a local companion and simulated activity (SIM
 		exec $(MAKE) --no-print-directory demo-run; \
 	fi
 
+# A demo's embedded companion must trust this local app origin, even when the
+# caller exported or supplied a production LIBREPAPER_SERVER on the make line.
+demo-run: override LIBREPAPER_SERVER = http://localhost:$(PORT)
 demo-run: SIMULATE_ACTIVITY ?= 21
 demo-run: $(BIN)
 	@tools/deploy-assets check
@@ -239,7 +242,7 @@ demo-run: $(BIN)
 	if $(BIN) status >/dev/null 2>&1; then \
 		echo "local $$($(BIN) status | sed -n 2p)  (already running; left alone)"; \
 	else \
-		$(BIN) start --foreground >/dev/null 2>&1 & \
+		LIBREPAPER_SERVER="http://localhost:$(PORT)" $(BIN) start --foreground >/dev/null 2>&1 & \
 		companion_pid=$$!; \
 	fi; \
 	trap "kill $$site_pid $$companion_pid 2>/dev/null || true" EXIT INT TERM; \
@@ -247,7 +250,7 @@ demo-run: $(BIN)
 	echo "site  http://localhost:$(SITE_PORT)"; \
 	echo "app   http://localhost:$(PORT)"; \
 	LIBREPAPER_SITE_ORIGIN=http://localhost:$(SITE_PORT) \
-		$(MAKE) serve OPEN=0 LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY)
+		$(MAKE) serve OPEN=0 LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY) LIBREPAPER_SERVER="http://localhost:$(PORT)"
 
 # --- the web app -----------------------------------------------------------
 #
