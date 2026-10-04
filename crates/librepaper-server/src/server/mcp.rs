@@ -334,10 +334,10 @@ impl Server {
         if !who.at_least(Role::Commenter) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
-        let Some(tool) = schema::tools().iter().find(|tool| tool["name"] == name) else {
+        if !schema::tools().iter().any(|tool| tool["name"] == name) {
             return tool_result(Err(Failure::new("invalid_params", "unknown document tool")));
-        };
-        if let Err(error) = schema::validate(&tool["inputSchema"], &args) {
+        }
+        if let Err(error) = schema::validate_tool(name, &args) {
             return tool_result(Err(Failure::new("invalid_params", error)));
         }
         let _permit = match self.mcp_capacity.acquire(&who) {
