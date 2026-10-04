@@ -281,7 +281,7 @@ window.sourceHighlightingCheck = async () => {
   await tick();
   const switched = EditorView.findFromDOM(host.querySelector(".cm-editor"));
   const texComment = await waitForToken(host, "% comment");
-  const texCommand = await waitForToken(host, "\\documentclass");
+  const texCommand = await waitForToken(host, "\\\\documentclass");
   const texStyles = [styleOf(texComment), styleOf(texCommand)];
   source.$set({ file: qmd });
   await tick();
@@ -304,7 +304,7 @@ window.sourceHighlightingCheck = async () => {
   });
   await tick();
   const mergeComment = await waitForToken(mergeHost, "% comment");
-  const mergeCommand = await waitForToken(mergeHost, "\\documentclass");
+  const mergeCommand = await waitForToken(mergeHost, "\\\\documentclass");
   result.mergeStyles = [styleOf(mergeComment), styleOf(mergeCommand)];
   merge.$destroy();
   mergeHost.remove();
