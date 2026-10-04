@@ -299,6 +299,9 @@ impl Registry {
         for sequencer in &resident {
             sequencer.recheck_compaction().await;
         }
+        for sequencer in &resident {
+            sequencer.prune_rate_limiter();
+        }
         self.retire_fenced().await;
         self.retire_idle().await;
     }

@@ -732,9 +732,6 @@ struct Inner {
     /// it from one that needs it.
     base_vector: VersionVector,
     has_base: bool,
-    /// When `ingest` last dropped the principals whose allowance had refilled
-    /// from the sequencer's `rate` limiter.
-    rate_pruned: Instant,
 }
 
 /// The clock the per-principal limiter reads. Governor's own in production;
@@ -753,9 +750,6 @@ type PrincipalRate = governor::RateLimiter<
     RateClock,
     governor::middleware::NoOpMiddleware<<RateClock as governor::clock::Clock>::Instant>,
 >;
-
-/// How often `ingest` drops the principals whose allowance has refilled.
-const RATE_PRUNE_EVERY: Duration = Duration::from_secs(1);
 
 impl Inner {
     /// Refuses a caller when this process no longer holds the writer lease.
@@ -1057,7 +1051,6 @@ impl Sequencer {
                 uncompacted_count,
                 base_vector,
                 has_base,
-                rate_pruned: Instant::now(),
             }),
             catalog,
             blobs,
@@ -1088,6 +1081,15 @@ impl Sequencer {
     #[cfg(test)]
     pub fn advance_rate_clock(&self, by: Duration) {
         self.rate_clock.advance(by);
+    }
+
+    /// Drops the principals whose allowance has refilled. A refilled
+    /// principal is indistinguishable from one never seen, so nothing is
+    /// lost. Takes no lock on `inner`; the registry's sweep calls it.
+    pub fn prune_rate_limiter(&self) {
+        if let Some(rate) = &self.rate {
+            rate.retain_recent();
+        }
     }
 
     // -- section 5: the typing path -------------------------------------
@@ -1179,18 +1181,7 @@ impl Sequencer {
         // principal is what decides how much a rotation is worth, and
         // `run_socket` chooses it there.
         let admitted = match &self.rate {
-            Some(rate) => {
-                // Admitting a principal is the only place the limiter's
-                // map can grow, so the principals whose allowance has
-                // refilled are dropped here, at most once a second, instead
-                // of by a timer. A refilled principal is indistinguishable
-                // from one never seen, so nothing is lost.
-                if inner.rate_pruned.elapsed() >= RATE_PRUNE_EVERY {
-                    rate.retain_recent();
-                    inner.rate_pruned = Instant::now();
-                }
-                rate.check_key(&principal_key.to_string()).is_ok()
-            }
+            Some(rate) => rate.check_key(&principal_key.to_string()).is_ok(),
             None => false,
         };
         if !admitted {
