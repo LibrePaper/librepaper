@@ -42,9 +42,7 @@
     <p class="setting-description">Coding agents installed on this computer, used from the sidebar.</p>
     {#if view.loadError}<p class="setting-description management-error" role="alert">{view.loadError}</p>{/if}
     {#each detectedAgents as agent (agent.id)}
-      <ToolRow title={agent.label || agent.id} description={agent.assistant_note || (agent.assistant_fetches ? "Downloads its adapter the first time you use it." : "")} status={agentStatus(agent)}>
-        {#if agent.assistant_blocked}<p class="setting-description">{agent.assistant_blocked}</p>{/if}
-      </ToolRow>
+      <ToolRow title={agent.label || agent.id} description={agent.assistant_blocked || agent.assistant_note || (agent.assistant_fetches ? "Downloads its adapter the first time you use it." : "")} status={agentStatus(agent)} />
     {/each}
     {#each list(view.state?.custom_agents) as agent (agent.id)}
       <ToolRow title={agent.label || agent.id || "Configured agent"} description={list(agent.command).join(" ")} status={{ label: "Added", tone: "neutral" }}>

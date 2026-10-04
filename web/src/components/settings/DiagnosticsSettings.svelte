@@ -189,7 +189,7 @@
         <span class="switch-thumb" data-state={view.state?.settings?.startup_enabled == null ? "unknown" : view.state.settings.startup_enabled ? "checked" : "unchecked"}></span>
       </button>
     </SettingRow>
-    <SettingRow title="Quit" description="Close the companion on this computer.">
+    <SettingRow title="Quit companion" description="Close the companion on this computer.">
       <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm("Quit LibrePaper companion? Connected sites will no longer reach local tools until it is started again.")) void view.act("quit", "Quit request sent.", "/quit", { method: "POST" }); }}>Quit companion</button>
     </SettingRow>
     {/if}
@@ -242,6 +242,11 @@
   <button type="button" class="btn btn-sm lp-control-outline" disabled={!connected} onclick={() => void doctorReport()}>Check</button>
 </SettingRow>
 {#if doctor}<pre class="setting-log" role="status">{doctor}</pre>{/if}
+
+<SettingRow id="diagnostics-activity" title="Activity" description="Connect to see and stop what is running on this computer.">
+  {#if view.connectError}<span class="setting-description management-error" role="alert">{view.connectError}</span>{/if}
+  <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.manageThisComputer()}>{view.pending === "connect" ? "Connecting…" : "Manage this computer"}</button>
+</SettingRow>
 {/if}
 
 <p class="setting-description diagnostics-help">Still stuck? <a href="https://github.com/LibrePaper/librepaper/issues" target="_blank" rel="noreferrer">Report a problem</a> with the setup report attached.</p>

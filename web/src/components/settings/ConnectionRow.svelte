@@ -1,4 +1,7 @@
 <script>
+  // Whether the companion is running here, and the ways forward when it is
+  // not. It watches the status and never probes when it mounts: opening a
+  // settings page must not make the browser ask to reach this computer.
   import SettingRow from "./SettingRow.svelte";
   import StatusPill from "./StatusPill.svelte";
   import * as localBridge from "../../lib/companion/client.js";
@@ -24,7 +27,7 @@
   const connected = $derived(local?.state === "connected");
   const says = $derived(connected && local?.version ? `${state.says} · ${local.version}` : state.says);
   const description = $derived(
-    connected
+    managedAvailable || connected
       ? "Runs local programs for LibrePaper on this computer."
       : [needs ? `Needed for ${needs}.` : "", state.hint || ""].filter(Boolean).join(" ")
   );
@@ -48,7 +51,7 @@
   }
 </script>
 
-<SettingRow {id} title="Companion" description={managedAvailable || connected ? "Runs local programs for LibrePaper on this computer." : description}>
+<SettingRow {id} title="Companion" {description}>
   <div class="setting-actions">
     {#if managedAvailable}
       <StatusPill label={local?.version ? `Connected · ${local.version}` : "Connected"} tone="good" />

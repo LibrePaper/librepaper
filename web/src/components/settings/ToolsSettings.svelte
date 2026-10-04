@@ -94,9 +94,11 @@
     {#if view.available}<button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act("rescan", "Tool scan complete.", "/tools/rescan", { method: "POST" })}>{view.pending === "rescan" ? "Scanning…" : "Rescan"}</button>{/if}
   </div>
   {#each tools as { key, title, tool } (key)}
-    <ToolRow id={`tools-${key}`} {title} description={description(key, title, tool)} status={status(tool)}>
-      {#if CONFIGURABLE.includes(key)}<ToolCommand name={key} />{/if}
-    </ToolRow>
+    {#if CONFIGURABLE.includes(key)}
+      <ToolRow id={`tools-${key}`} {title} description={description(key, title, tool)} status={status(tool)}><ToolCommand name={key} /></ToolRow>
+    {:else}
+      <ToolRow id={`tools-${key}`} {title} description={description(key, title, tool)} status={status(tool)} />
+    {/if}
   {/each}
 </section>
 
