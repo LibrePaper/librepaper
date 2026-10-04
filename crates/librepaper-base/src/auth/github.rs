@@ -212,24 +212,18 @@ pub enum ProviderError {
     #[error("authentication checks are busy; retry shortly")]
     Busy,
     #[error("GitHub authentication failed (HTTP {status})")]
-    Authentication {
-        status: u16,
-    },
+    Authentication { status: u16 },
     #[error("GitHub rate limit reached (HTTP {status})")]
     RateLimited {
         status: u16,
         retry_after: Option<Duration>,
     },
     #[error("GitHub returned HTTP {status}")]
-    Upstream {
-        status: u16,
-    },
+    Upstream { status: u16 },
     #[error("could not reach GitHub")]
     Network,
     #[error("GitHub returned an invalid response (HTTP {status})")]
-    MalformedResponse {
-        status: u16,
-    },
+    MalformedResponse { status: u16 },
 }
 
 /// Asks GitHub who a token belongs to, via the browser OAuth flow's own token:

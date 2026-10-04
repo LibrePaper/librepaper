@@ -83,20 +83,12 @@ impl BackupError {
     /// The user has to sign in again.
     fn is_login(&self) -> bool {
         match self {
-            Self::NotSignedIn | Self::LoginInvalid | Self::LoginRejected | Self::AccountMismatch => {
-                true
-            }
+            Self::NotSignedIn
+            | Self::LoginInvalid
+            | Self::LoginRejected
+            | Self::AccountMismatch => true,
             Self::Unsaved { cause, .. } => cause.is_login(),
             Self::Disconnected | Self::Unverified(_) | Self::Other(_) => false,
-        }
-    }
-
-    /// Re-verifying the account may clear this.
-    fn is_identity(&self) -> bool {
-        match self {
-            Self::Unverified(_) => true,
-            Self::Unsaved { cause, .. } => cause.is_identity(),
-            other => other.is_login(),
         }
     }
 
@@ -112,7 +104,11 @@ impl BackupError {
 }
 
 fn identity_error(identity: &Value, account_id: &str) -> Option<BackupError> {
-    match identity.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+    match identity
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
         None => Some(BackupError::LoginInvalid),
         Some(id) if id != account_id => Some(BackupError::AccountMismatch),
         Some(_) => None,
@@ -824,9 +820,7 @@ impl BackupManager {
                     .entry(key.clone())
                     .or_insert_with(|| BackupConfig::new(origin, account_id));
                 config.error = Some(error.to_string());
-                if error.disables_schedule()
-                    || !inner.pairing.has_live_pairing(origin)
-                {
+                if error.disables_schedule() || !inner.pairing.has_live_pairing(origin) {
                     if config.enabled {
                         config.revision = config.revision.wrapping_add(1);
                         config.run_generation = config.run_generation.wrapping_add(1);
@@ -838,7 +832,7 @@ impl BackupManager {
                     Err(persist) => BackupError::Unsaved {
                         cause: Box::new(error),
                         persist,
-                    }
+                    },
                 };
                 if let Some(config) = state.configs.get_mut(&key) {
                     config.error = Some(error.to_string());
@@ -951,8 +945,7 @@ impl BackupManager {
                         // Identity mismatch or revoked pairing permanently stops
                         // scheduled runs until the user explicitly enables again.
                         if !inner.pairing.has_live_pairing(&current.origin)
-                            || current
-                                error.disables_schedule()
+                            || error.disables_schedule()
                         {
                             if current.enabled {
                                 current.revision = current.revision.wrapping_add(1);

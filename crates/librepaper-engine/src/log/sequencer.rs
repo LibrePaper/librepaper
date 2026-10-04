@@ -454,9 +454,7 @@ pub enum CommandError {
     /// A rendered selection was made against a projection that is no longer
     /// the head one (§7.1). The current digest comes back with it.
     #[error("the document moved under that selection")]
-    StaleSelection {
-        digest: String,
-    },
+    StaleSelection { digest: String },
     #[error(transparent)]
     Storage(#[from] postgres::Error),
     #[error(transparent)]
