@@ -29,6 +29,9 @@ pub mod protocol;
 pub mod quarto;
 pub mod quarto_capture;
 pub mod service;
+pub mod settings;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod tray;
 pub(crate) mod tools;
 
 pub mod zotero;

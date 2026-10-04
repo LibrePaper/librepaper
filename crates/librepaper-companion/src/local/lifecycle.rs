@@ -58,6 +58,14 @@ pub async fn running(state_home: &Path) -> Option<ServiceState> {
     reachable(&state).await.then_some(state)
 }
 
+pub(crate) fn service_state(state_home: &Path) -> Option<ServiceState> {
+    PairingStore::new(state_home, None).read_service()
+}
+
+pub(crate) fn running_state(state_home: &Path) -> bool {
+    service_state(state_home).is_some() && !stop_requested(state_home)
+}
+
 /// Idempotent launch, with bounded readiness checks. The CLI reports success
 /// only after identifying the running instance rather than merely spawning.
 pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<ServiceState, String> {
@@ -69,9 +77,15 @@ pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<Servic
                 state.port
             ));
         }
+        if super::settings::tray_enabled(&state_home) {
+            if let Err(error) = ensure_tray(&state_home) {
+                eprintln!("tray helper could not start: {error}");
+            }
+        }
         return Ok(state);
     }
     let executable = super::paths::current_executable()?;
+    let tool_path = super::settings::tool_paths(&state_home, tool_path.to_vec())?;
     let mut command = Command::new(executable);
     command.args([
         "start",
@@ -79,7 +93,7 @@ pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<Servic
         "--port",
         &if port == 0 { DEFAULT_PORT } else { port }.to_string(),
     ]);
-    for path in tool_path {
+    for path in &tool_path {
         command.arg("--tool-path").arg(path);
     }
     let log_dir = state_home.join("librepaper/local");
@@ -115,6 +129,11 @@ pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<Servic
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(state) = running(&state_home).await {
+            if super::settings::tray_enabled(&state_home) {
+                if let Err(error) = ensure_tray(&state_home) {
+                    eprintln!("tray helper could not start: {error}");
+                }
+            }
             return Ok(state);
         }
         if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
@@ -133,6 +152,102 @@ pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<Servic
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Start the optional, separately locked tray process when the preference is
+/// enabled. Repeated calls are safe: the helper owns a per-user lock.
+pub fn ensure_tray(state_home: &Path) -> Result<(), String> {
+    if !super::settings::tray_enabled(state_home) {
+        return Ok(());
+    }
+    let executable = super::paths::current_executable()?;
+    let mut command = Command::new(executable);
+    command.args(["local", "tray"]);
+    let local_dir = state_home.join("librepaper/local");
+    std::fs::create_dir_all(&local_dir).map_err(|error| error.to_string())?;
+    let log_path = local_dir.join("companion.log");
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let log = options.open(log_path).map_err(|error| error.to_string())?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(log));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000 | 0x00000200); // no console window, new process group
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("could not launch LibrePaper tray helper: {error}"))?;
+    std::thread::Builder::new()
+        .name("librepaper-tray-wait".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })
+        .map_err(|error| format!("could not supervise tray helper: {error}"))?;
+    Ok(())
+}
+
+/// Read the private control-panel token for this service instance and open
+/// the browser with it in the URL fragment, which the local server never sees.
+pub fn open_control_panel(state_home: &Path, port: u16, instance: &str) -> Result<(), String> {
+    let url = control_panel_url(state_home, port, instance)?;
+    open_browser(&url)
+}
+
+pub fn control_panel_url(state_home: &Path, port: u16, instance: &str) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    struct ControlToken {
+        instance: String,
+        token: String,
+    }
+    let path = state_home.join("librepaper/local/control-token.json");
+    let metadata = std::fs::metadata(&path).map_err(|error| {
+        format!("could not read the private control-panel token {}: {error}", path.display())
+    })?;
+    if metadata.len() > 4096 {
+        return Err("the private control-panel token file is too large".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("the control-panel token file is not private".into());
+        }
+    }
+    let mut file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > 4096 {
+        return Err("the private control-panel token file is too large".into());
+    }
+    let token: ControlToken = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("invalid control-panel token file: {error}"))?;
+    if token.instance != instance
+        || !(32..=256).contains(&token.token.len())
+        || !token
+            .token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'='))
+    {
+        return Err("the control-panel token is invalid for this companion instance".into());
+    }
+    Ok(format!("http://127.0.0.1:{port}/companion/#token={}", token.token))
 }
 
 pub async fn stop(state_home: &Path) -> Result<(), String> {
@@ -441,6 +556,32 @@ pub fn startup_enabled() -> bool {
     }
 }
 
+/// Best-effort distinction between the saved tray preference and whether
+/// this process appears to have a desktop session. Linux may still lack a
+/// StatusNotifier host even when a D-Bus session is present.
+pub fn tray_availability() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        let display = std::env::var_os("DISPLAY").is_some()
+            || std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
+            || std::env::var_os("XDG_RUNTIME_DIR").is_some();
+        if display && bus {
+            "desktop session detected; a tray host is still required"
+        } else {
+            "no graphical desktop session detected"
+        }
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        "supported on this platform"
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        "unsupported on this platform"
+    }
+}
+
 /// The five characters XML text cannot hold verbatim.
 #[cfg(target_os = "macos")]
 fn xml_escape(text: &str) -> String {
@@ -532,9 +673,123 @@ fn write_startup_file(path: &std::path::Path, contents: String) -> Result<(), St
     std::fs::write(path, contents).map_err(|e| e.to_string())
 }
 
+/// Install a native launcher that calls `librepaper desktop`, which starts or
+/// reuses the service and opens the private local control panel.
+pub fn install_desktop_shortcut() -> Result<PathBuf, String> {
+    let executable = super::paths::current_executable()?;
+    #[cfg(target_os = "linux")]
+    {
+        let data = std::env::var_os("XDG_DATA_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+            .ok_or("Cannot locate user data directory.")?;
+        let file = data.join("applications/librepaper.desktop");
+        write_startup_file(
+            &file,
+            format!(
+                "[Desktop Entry]\nType=Application\nName=LibrePaper\nComment=Open the LibrePaper local companion\nExec={} desktop\nTerminal=false\nCategories=Office;Utility;\n",
+                desktop_quote(&executable)
+            ),
+        )?;
+        Ok(file)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME").ok_or("Cannot locate home directory.")?;
+        let app = PathBuf::from(home).join("Applications/LibrePaper.app");
+        let contents = app.join("Contents");
+        let macos = contents.join("MacOS");
+        std::fs::create_dir_all(&macos).map_err(|error| error.to_string())?;
+        write_startup_file(
+            &contents.join("Info.plist"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>LibrePaper</string><key>CFBundleIdentifier</key><string>org.librepaper.desktop</string><key>CFBundleName</key><string>LibrePaper</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>".into(),
+        )?;
+        let wrapper = macos.join("LibrePaper");
+        write_startup_file(
+            &wrapper,
+            format!("#!/bin/sh\nexec {} desktop \"$@\"\n", shell_quote(&executable)),
+        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(app)
+    }
+    #[cfg(windows)]
+    {
+        let appdata = std::env::var_os("APPDATA").ok_or("Cannot locate the Start Menu directory.")?;
+        let programs = PathBuf::from(appdata).join("Microsoft/Windows/Start Menu/Programs");
+        std::fs::create_dir_all(&programs).map_err(|error| error.to_string())?;
+        let shortcut = programs.join("LibrePaper.lnk");
+        let script = format!(
+            "$shell = New-Object -ComObject WScript.Shell; $link = $shell.CreateShortcut({}); $link.TargetPath = {}; $link.Arguments = 'desktop'; $link.WorkingDirectory = {}; $link.Description = 'Open the LibrePaper local companion'; $link.Save()",
+            powershell_quote(&shortcut.to_string_lossy()),
+            powershell_quote(&executable.to_string_lossy()),
+            powershell_quote(&std::env::current_dir().unwrap_or_default().to_string_lossy()),
+        );
+        let wide: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(wide);
+        let status = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+            .status()
+            .map_err(|error| format!("could not create Start Menu shortcut: {error}"))?;
+        if status.success() {
+            Ok(shortcut)
+        } else {
+            Err("could not create Start Menu shortcut".into())
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = executable;
+        Err("desktop launchers are unsupported on this platform".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+#[cfg(windows)]
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_panel_url_reads_only_a_bounded_token_for_the_live_instance() {
+        let state = tempfile::tempdir().unwrap();
+        let path = state.path().join("librepaper/local/control-token.json");
+        librepaper_base::private_files::publish(
+            &path,
+            &serde_json::json!({"instance": "live", "token": "a".repeat(64)}).to_string().into_bytes(),
+            "test control token",
+        )
+        .unwrap();
+        assert_eq!(
+            control_panel_url(state.path(), 8763, "live").unwrap(),
+            format!("http://127.0.0.1:8763/companion/#token={}", "a".repeat(64))
+        );
+        assert!(control_panel_url(state.path(), 8763, "other").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn desktop_launcher_exec_field_quotes_paths_without_expanding_shell_fields() {
+        let quoted = desktop_quote(Path::new("/tmp/Libre Paper $draft%2"));
+        assert!(quoted.starts_with('"') && quoted.ends_with('"'));
+        assert!(quoted.contains("Libre Paper"));
+        assert!(quoted.contains("%%2"));
+        assert!(quoted.contains("\\\\$draft"));
+    }
     #[test]
     fn connect_links_carry_only_validated_pair_fields() {
         let query = format!(
