@@ -310,7 +310,7 @@ impl Server {
             Ok(raw) => raw,
             Err(_) => return plain(413, "request exceeds 64 KiB"),
         };
-        let args: Value = if raw.is_empty() {
+        let mut args: Value = if raw.is_empty() {
             json!({})
         } else {
             match serde_json::from_slice(&raw) {
@@ -340,6 +340,7 @@ impl Server {
         if let Err(error) = schema::validate_tool(name, &args) {
             return tool_result(Err(Failure::new("invalid_params", error)));
         }
+        schema::normalize_integers(&mut args);
         let _permit = match self.mcp_capacity.acquire(&who) {
             Ok(permit) => permit,
             Err(error) => return tool_result(Err(error)),

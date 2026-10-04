@@ -142,6 +142,32 @@ pub(super) fn validate_tool(name: &str, args: &Value) -> Result<(), String> {
     }
 }
 
+/// JSON Schema calls `10.0` an integer, and the handlers read integers with
+/// `as_u64` and `as_i64`, which refuse a float. Every integral float in the
+/// validated arguments becomes the integer it names, so both spellings reach
+/// a handler the same way.
+pub(super) fn normalize_integers(value: &mut Value) {
+    match value {
+        Value::Number(number) => {
+            if let Some(float) = number
+                .as_f64()
+                .filter(|f| f.fract() == 0.0 && f.is_finite())
+            {
+                if number.is_f64() {
+                    if float >= 0.0 && float <= u64::MAX as f64 {
+                        *number = serde_json::Number::from(float as u64);
+                    } else if float >= i64::MIN as f64 {
+                        *number = serde_json::Number::from(float as i64);
+                    }
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(normalize_integers),
+        Value::Object(map) => map.values_mut().for_each(normalize_integers),
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +197,17 @@ mod tests {
         assert!(validate_tool("document_propose", &args).is_ok());
         args["operation"]["id"] = json!("not-a-valid-key");
         assert!(validate_tool("document_propose", &args).is_err());
+    }
+
+    #[test]
+    fn integral_floats_become_integers_after_validation() {
+        let mut args = json!({"view_id":"v","line":10.0,"end_line":12.0,"nested":[1.0,{"n":2.5}],"text":"10.0"});
+        normalize_integers(&mut args);
+        assert_eq!(args["line"].as_u64(), Some(10));
+        assert_eq!(args["end_line"].as_u64(), Some(12));
+        assert_eq!(args["nested"][0].as_u64(), Some(1));
+        assert_eq!(args["nested"][1]["n"].as_f64(), Some(2.5));
+        assert_eq!(args["text"].as_str(), Some("10.0"));
     }
 
     #[test]
