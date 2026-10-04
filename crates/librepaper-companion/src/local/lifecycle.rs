@@ -569,15 +569,7 @@ pub fn startup_enabled() -> bool {
 pub fn tray_availability() -> &'static str {
     #[cfg(target_os = "linux")]
     {
-<<<<<<< HEAD
-        let display =
-            std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
-        let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
-            || std::env::var_os("XDG_RUNTIME_DIR").is_some();
-        if display && bus {
-=======
         if tray_available() {
->>>>>>> 6907ba03
             "desktop session detected; a tray host is still required"
         } else {
             "no graphical desktop session detected"
@@ -599,8 +591,8 @@ pub fn tray_availability() -> &'static str {
 pub fn tray_available() -> bool {
     #[cfg(target_os = "linux")]
     {
-        let display = std::env::var_os("DISPLAY").is_some()
-            || std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let display =
+            std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
         let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
             || std::env::var_os("XDG_RUNTIME_DIR").is_some();
         display && bus
