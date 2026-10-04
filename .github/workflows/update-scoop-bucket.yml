@@ -36,11 +36,11 @@ jobs:
           RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         shell: bash
-        run: bash scripts/resolve-stable-release.sh
+        run: bash tools/release/resolve-stable-release.sh
 
       - name: Update Scoop bucket
         if: steps.resolve.outputs.proceed == 'true'
-        run: bash scripts/update-scoop-bucket.sh
+        run: bash tools/release/update-scoop-bucket.sh
         env:
           LIBREPAPER_RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
           SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}

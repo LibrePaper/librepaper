@@ -102,7 +102,7 @@ rmcp = { version = "3.4.0", default-features = false, features = ["server", "tra
 # corpus test only.
 html-escape = "0.2"
 # The collaboration substrate (SPEC-loro.md). This version and `loro-crdt` in
-# web/package.json are one pin: see tools/check-loro-pin.sh.
+# web/package.json are one pin: see tools/tests/loro-pin.test.mjs.
 loro = "1.16.0"
 unicode-normalization = "0.1.25"
 # Source versions are deterministic tar streams stored as zstd blobs.

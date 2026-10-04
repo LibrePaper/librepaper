@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const resolver = path.join(repository, "scripts/resolve-stable-release.sh");
+const resolver = path.join(repository, "tools/release/resolve-stable-release.sh");
 
 function git(directory, ...args) {
   return execFileSync("git", args, {

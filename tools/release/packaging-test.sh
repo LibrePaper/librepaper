@@ -81,20 +81,20 @@ reset_mock() {
 }
 
 reset_mock
-if LIBREPAPER_RELEASE_TAG=v1.2.3-rc.1 bash "$root/scripts/update-homebrew-tap.sh" >/dev/null 2>&1; then
+if LIBREPAPER_RELEASE_TAG=v1.2.3-rc.1 bash "$root/tools/release/update-homebrew-tap.sh" >/dev/null 2>&1; then
   fail 'Homebrew updater accepted a prerelease tag'
 fi
 [[ ! -e "$tmp/cloned" ]] || fail 'invalid tag reached git clone'
 
 reset_mock
 export MOCK_BAD_CHECKSUM=1
-if LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/scripts/update-scoop-bucket.sh" >/dev/null 2>&1; then
+if LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-scoop-bucket.sh" >/dev/null 2>&1; then
   fail 'Scoop updater accepted a mismatched checksum'
 fi
 [[ ! -e "$tmp/cloned" ]] || fail 'checksum failure reached git clone'
 
 reset_mock
-LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/scripts/update-homebrew-tap.sh" >/dev/null
+LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-homebrew-tap.sh" >/dev/null
 [[ -f "$tmp/capture/Formula/librepaper.rb" ]] || fail 'Homebrew formula was not generated'
 for target in \
   x86_64-unknown-linux-musl \
@@ -108,7 +108,7 @@ grep -Fq 'license "MIT"' "$tmp/capture/Formula/librepaper.rb" || fail 'formula m
 [[ -e "$tmp/pushed" ]] || fail 'Homebrew formula was not pushed'
 
 reset_mock
-LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/scripts/update-scoop-bucket.sh" >/dev/null
+LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-scoop-bucket.sh" >/dev/null
 [[ -f "$tmp/capture/bucket/librepaper.json" ]] || fail 'Scoop manifest was not generated'
 grep -Fq '"version": "1.2.3"' "$tmp/capture/bucket/librepaper.json" || fail 'manifest has wrong version'
 grep -Fq '"license": "MIT"' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing MIT license metadata'
