@@ -190,7 +190,7 @@ impl SessionRegistry {
             .map(|(config_hash, _)| config_hash.as_str());
         if current_hash != Some(wanted.as_str()) {
             if current_hash.is_some() {
-                self.stop(link, conversation)
+                self.stop_by_key(&key)
                     .await
                     .map_err(|error| error.to_string())?;
             }
@@ -445,6 +445,7 @@ impl SessionRegistry {
         if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("unknown assistant session".into());
         }
+        let _gate = self.start_gate.lock().await;
         self.stop_by_key(id)
             .await
             .map_err(|error| error.to_string())
@@ -476,6 +477,7 @@ impl SessionRegistry {
         link: &DocumentLink,
         conversation: &str,
     ) -> Result<(), lifecycle::Error> {
+        let _gate = self.start_gate.lock().await;
         let key = lifecycle::session_key(link, conversation)
             .map_err(lifecycle::Error::InvalidConfiguration)?;
         self.stop_by_key(&key).await?;
@@ -540,6 +542,26 @@ mod tests {
     use crate::assistant::task::{State, Task};
     use serde_json::json;
 
+    struct PauseInDrop {
+        entered: std::sync::Arc<tokio::sync::Notify>,
+        release: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl Drop for PauseInDrop {
+        fn drop(&mut self) {
+            self.entered.notify_one();
+            let (released, ready) = &*self.release;
+            let released = released.lock().unwrap_or_else(|error| error.into_inner());
+            let _released = ready
+                .wait_timeout_while(
+                    released,
+                    std::time::Duration::from_secs(30),
+                    |released| !*released,
+                )
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+
     #[test]
     fn running_session_cannot_be_reused_by_a_different_paired_origin() {
         assert!(
@@ -600,6 +622,91 @@ mod tests {
         let two = registry.status_by_key("two").await.unwrap();
         assert_eq!(two.state, Some(RunnerState::Ready));
         registry.stop_by_key("two").await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_stop_paths_serialize_cleanup_before_replacement() {
+        for dashboard_stop in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let registry = std::sync::Arc::new(SessionRegistry::new(dir.path().to_path_buf()));
+            let link =
+                DocumentLink::parse("https://example.test/docs/paper#k=secret", "").unwrap();
+            let conversation = "conversation-1";
+            let key = lifecycle::session_key(&link, conversation).unwrap();
+            let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+            let release = std::sync::Arc::new((
+                std::sync::Mutex::new(false),
+                std::sync::Condvar::new(),
+            ));
+            let drop_guard = PauseInDrop {
+                entered: entered.clone(),
+                release: release.clone(),
+            };
+            registry.spawn_running(
+                &key,
+                "old-config",
+                None,
+                None,
+                move |_status, _stop| async move {
+                    let _drop_guard = drop_guard;
+                    std::future::pending::<()>().await;
+                    Ok(())
+                },
+            );
+
+            let cancel_registry = registry.clone();
+            let cancel_key = key.clone();
+            let cancel_link = link.clone();
+            let cancel = tokio::spawn(async move {
+                if dashboard_stop {
+                    cancel_registry.stop_dashboard_session(&cancel_key).await
+                } else {
+                    cancel_registry
+                        .stop(&cancel_link, conversation)
+                        .await
+                        .map_err(|error| error.to_string())
+                }
+            });
+            // The aborted task pauses in its destructor while the real public
+            // stop call should still own start_gate through cleanup.
+            entered.notified().await;
+            let gate_held_during_cleanup = registry.start_gate.try_lock().is_err();
+
+            // Always unblock Drop before assertions so a failure cannot leave
+            // a Tokio worker stuck during runtime shutdown.
+            let (released, ready) = &*release;
+            *released.lock().unwrap_or_else(|error| error.into_inner()) = true;
+            ready.notify_all();
+
+            cancel.await.unwrap().unwrap();
+            let gate_available_after_cleanup = registry.start_gate.try_lock().is_ok();
+            let _gate = registry.start_gate.lock().await;
+            registry.spawn_running(
+                &key,
+                "new-config",
+                None,
+                None,
+                |status, _stop| async move {
+                    status.set(RunnerState::Ready, None, None);
+                    std::future::pending::<()>().await;
+                    Ok(())
+                },
+            );
+            drop(_gate);
+            let replacement_registered = matches!(
+                registry
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .get(&key),
+                Some(Entry::Running { config_hash, .. }) if config_hash == "new-config"
+            );
+
+            assert!(gate_held_during_cleanup);
+            assert!(gate_available_after_cleanup);
+            assert!(replacement_registered);
+            registry.stop(&link, conversation).await.unwrap();
+        }
     }
 
     /// Revoking a paired site's origin stops only sessions started by that
