@@ -11,6 +11,11 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { createHash, randomBytes } from "node:crypto";
 
+if (process.platform !== "linux") {
+  console.log("companion-settings-launch: this fixture intercepts the Linux desktop opener; skipping");
+  process.exit(0);
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(here, "../../..");
 const binary = resolve(process.env.LIBREPAPER_TEST_BINARY || join(repository, "target/debug/librepaper"));
