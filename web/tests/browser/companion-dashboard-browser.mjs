@@ -56,6 +56,7 @@ writeFileSync(harness, `
   import SettingsDialog from ${JSON.stringify(join(root, "web/src/components/settings/SettingsDialog.svelte"))};
   let open = $state(true);
   let category = $state("local");
+  window.showSettingsCategory = (next) => category = next;
 </script>
 <SettingsDialog bind:open bind:category sourceFormat="quarto" mayEdit={true} userId="browser-check"
                 remoteConnected={true} />
@@ -104,6 +105,14 @@ let appDone;
 let b;
 let server;
 let appLog = "";
+
+async function captureSettingsScreenshot() {
+  if (!b || !process.env.LIBREPAPER_SETTINGS_SCREENSHOT) return;
+  const shot = await b.command("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
+  const screenshot = resolve(process.env.LIBREPAPER_SETTINGS_SCREENSHOT);
+  mkdirSync(dirname(screenshot), { recursive: true });
+  writeFileSync(screenshot, Buffer.from(shot.data, "base64"));
+}
 
 try {
   await build({
@@ -198,6 +207,7 @@ try {
   await until("Settings control state loaded", () => b.evaluate(`
     document.querySelector('[aria-label="Extra tool search folders"]')?.disabled === false
   `), 10000);
+  await captureSettingsScreenshot();
 
   const requestId = Buffer.from(`settings-allow-${Date.now()}`).toString("base64url").padEnd(32, "x");
   const challenge = "a".repeat(64);
@@ -263,7 +273,7 @@ try {
     field.dispatchEvent(new Event("input", { bubbles: true }));
   })()`);
   await new Promise((done) => setTimeout(done, 5500));
-  assert.equal(await b.evaluate('document.querySelector("[aria-label=\"Extra tool search folders\"]").value'), paths, "polling does not overwrite an in-progress edit");
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Extra tool search folders"]').value`), paths, "polling does not overwrite an in-progress edit");
   await b.evaluate(`[...document.querySelectorAll("button")].find((item) => item.textContent.trim() === "Save folders").click()`);
   await until("tool folder persisted", async () => {
     const response = await apiState();
@@ -271,14 +281,82 @@ try {
     return (await response.json()).settings.tool_paths.includes(paths);
   }, 10000);
 
-  if (process.env.LIBREPAPER_SETTINGS_SCREENSHOT) {
-    const shot = await b.command("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
-    const screenshot = resolve(process.env.LIBREPAPER_SETTINGS_SCREENSHOT);
-    mkdirSync(dirname(screenshot), { recursive: true });
-    writeFileSync(screenshot, Buffer.from(shot.data, "base64"));
-  }
+  const agentLabel = `Settings browser ${Date.now()}`;
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#companion-agents-heading").closest("section");
+    section.querySelector('input[name="label"]').value = ${JSON.stringify(agentLabel)};
+    section.querySelector('input[name="label"]').dispatchEvent(new Event("input", { bubbles: true }));
+    section.querySelector('input[name="command"]').value = ${JSON.stringify(process.execPath)};
+    section.querySelector('input[name="command"]').dispatchEvent(new Event("input", { bubbles: true }));
+    section.querySelector('textarea[name="args"]').value = "--version";
+    section.querySelector('textarea[name="args"]').dispatchEvent(new Event("input", { bubbles: true }));
+    [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Add agent").click();
+  })()`);
+  let agentId = "";
+  await until("custom agent added through Settings", async () => {
+    const response = await apiState();
+    if (!response.ok) return false;
+    const agent = (await response.json()).custom_agents.find((item) => item.label === agentLabel);
+    if (!agent) return false;
+    agentId = agent.id;
+    return b.evaluate(`(() => {
+      const section = document.querySelector("#companion-agents-heading").closest("section");
+      return [...section.querySelectorAll(".setting-title")].some((item) => item.textContent === ${JSON.stringify(agentLabel)});
+    })()`);
+  }, 10000);
+  await b.evaluate("window.confirm = () => true");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#companion-agents-heading").closest("section");
+    const row = [...section.querySelectorAll(".setting-row")].find((item) => item.textContent.includes(${JSON.stringify(agentLabel)}));
+    row.querySelector("button").click();
+  })()`);
+  await until("custom agent removed through Settings", async () => {
+    const response = await apiState();
+    return response.ok && !(await response.json()).custom_agents.some((item) => item.id === agentId);
+  }, 10000);
 
-  console.log("companion-settings-browser: trusted fragment intake, unified Settings management, approval allow/deny, persisted tool folders and removed standalone page passed");
+  await until("allowed site visible in Settings", () => b.evaluate(`
+    [...document.querySelector("#companion-sites-heading").closest("section").querySelectorAll(".setting-row")]
+      .some((item) => item.textContent.includes(${JSON.stringify(appOrigin)}))
+  `), 10000);
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#companion-sites-heading").closest("section");
+    const row = [...section.querySelectorAll(".setting-row")].find((item) => item.textContent.includes(${JSON.stringify(appOrigin)}));
+    if (!row) throw new Error("allowed site did not appear in Settings");
+    row.querySelector("button").click();
+  })()`);
+  await until("connected site revoked through Settings", async () => {
+    const response = await apiState();
+    return response.ok && !(await response.json()).pairings.some((item) => item.origin === appOrigin);
+  }, 10000);
+
+  await b.evaluate('window.showSettingsCategory("render")');
+  await until("real Quarto integration in Render", () => b.evaluate(`
+    document.querySelector(".settings-category")?.textContent.trim() === "Render"
+      && document.querySelector("#quarto-executable input")?.disabled === false
+  `), 10000);
+  const quartoPath = process.execPath;
+  const quartoArgs = "--profile=test --verbose";
+  await b.evaluate(`(() => {
+    const path = document.querySelector("#quarto-executable input");
+    path.value = ${JSON.stringify(quartoPath)};
+    path.dispatchEvent(new Event("input", { bubbles: true }));
+    const args = document.querySelector("#quarto-arguments input");
+    args.value = ${JSON.stringify(quartoArgs)};
+    args.dispatchEvent(new Event("input", { bubbles: true }));
+    const section = path.closest(".settings-subsection");
+    [...section.querySelectorAll(".integration-actions button")].find((item) => item.textContent.trim() === "Save").click();
+  })()`);
+  await until("Quarto integration path and arguments persisted", async () => {
+    const response = await apiState();
+    if (!response.ok) return false;
+    const quarto = (await response.json()).settings.integrations.quarto;
+    return quarto.path === quartoPath && quarto.args.join(" ") === quartoArgs;
+  }, 10000);
+
+  await captureSettingsScreenshot();
+
+  console.log("companion-settings-browser: trusted fragment intake, unified Settings management, approval decisions, folder/tool saves, agent/site management and removed standalone page passed");
 } finally {
   if (b) await b.close();
   if (app && app.exitCode === null) {
