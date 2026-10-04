@@ -175,7 +175,16 @@ prepare_deployment() {
 
 	site_build
 	step "Kit: tools/deploy-docker/ -> $HOST:librepaper/"
-	rsync -a --out-format='    %n' tools/deploy-docker/ "$HOST:librepaper/"
+	# A deployment kit may live beside operator-local state. Never sync active
+	# credentials, config, overrides, or locally staged binaries from that tree;
+	# config.toml is installed only after the candidate has accepted it.
+	rsync -a \
+		--exclude='/.env' --exclude='/.env.tmp' \
+		--exclude='/config.toml' --exclude='/config.toml.tmp' \
+		--exclude='/config.toml.candidate*' \
+		--exclude='/compose.override.yaml' --exclude='/compose.override.yaml.tmp' \
+		--exclude='/librepaper' --exclude='/librepaper.candidate*' \
+		--out-format='    %n' tools/deploy-docker/ "$HOST:librepaper/"
 	ok "synced"
 	site_sync
 
@@ -373,6 +382,11 @@ start_application() {
 		note "kept the checked local binary available for future Docker rebuilds"
 	fi
 	install_config
+	# Renaming config.toml changes its inode without changing the Compose model,
+	# so recreate only the app container to ensure it opens the validated file.
+	# PostgreSQL is already up from bootstrap; the following full-stack up starts
+	# any remaining services without force-recreating them.
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'
 	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --wait --wait-timeout 180'
 	ok "running"
 }

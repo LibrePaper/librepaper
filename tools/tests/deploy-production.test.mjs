@@ -44,6 +44,8 @@ function fixture({
   googleLocation = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
   sopsFailureKey = '',
   configCheckFailure = false,
+  localKitConfig = '',
+  runningConfig = 'previous container config\n',
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
   const bin = path.join(root, 'bin');
@@ -67,6 +69,8 @@ function fixture({
   const composeUpFile = path.join(root, 'compose-up');
   const backupFile = path.join(root, 'backup');
   const orderFile = path.join(root, 'order');
+  const localKitConfigFile = path.join(root, 'local-kit-config.toml');
+  const runningConfigFile = path.join(root, 'running-config.toml');
   mkdirSync(migrationsDir);
   for (const [name, contents] of Object.entries(migrations)) writeFileSync(path.join(migrationsDir, name), contents);
   writeFileSync(remoteMigrationsFile, `${remoteMigrations}\n`);
@@ -74,6 +78,8 @@ function fixture({
   writeFileSync(squashSchemaFile, `${squashSchema}\n`);
   writeFileSync(adminPasswordFile, adminPassword);
   writeFileSync(exporterPasswordFile, exporterPassword);
+  if (localKitConfig) writeFileSync(localKitConfigFile, localKitConfig);
+  writeFileSync(runningConfigFile, runningConfig);
 
   mockCommand(bin, 'make', 'printf called >> "$MAKE_CALLED_FILE"; exit 0');
   mockCommand(bin, 'dig', 'printf "192.0.2.7\\n"');
@@ -107,6 +113,10 @@ previous= last=
 for arg do previous="$last"; last="$arg"; done
 source="$previous"
 destination="$last"
+exclude_config=no
+for arg do
+  case "$arg" in --exclude=/config.toml) exclude_config=yes ;; esac
+done
 case "$destination" in
   *:librepaper/librepaper.candidate.tmp)
     mkdir -p "$REMOTE_ROOT"
@@ -118,6 +128,9 @@ case "$destination" in
     ;;
   *:librepaper/)
     mkdir -p "$REMOTE_ROOT"
+    if [ -n "$LOCAL_KIT_CONFIG_FILE" ] && [ -f "$LOCAL_KIT_CONFIG_FILE" ] && [ "$exclude_config" = no ]; then
+      cp "$LOCAL_KIT_CONFIG_FILE" "$REMOTE_ROOT/config.toml"
+    fi
     ;;
 esac`);
 mockCommand(bin, 'ssh', `
@@ -162,7 +175,11 @@ case "$command" in
     ;;
   *'docker compose up -d --wait --wait-timeout 180'*)
     printf called >> "$COMPOSE_UP_FILE"
-    printf 'up\\n' >> "$ORDER_FILE"
+    printf 'stack-up\\n' >> "$ORDER_FILE"
+    ;;
+  *'docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'*)
+    cp "$REMOTE_ROOT/config.toml" "$RUNNING_CONFIG_FILE"
+    printf 'app-recreate\\n' >> "$ORDER_FILE"
     ;;
   *'docker compose build librepaper'*) : ;;
   *'docker compose run --rm --no-deps librepaper admin config check'*)
@@ -285,6 +302,8 @@ exit 0`);
       COMPOSE_UP_FILE: composeUpFile,
       BACKUP_FILE: backupFile,
       ORDER_FILE: orderFile,
+      LOCAL_KIT_CONFIG_FILE: localKitConfig ? localKitConfigFile : '',
+      RUNNING_CONFIG_FILE: runningConfigFile,
       HOST: 'ubuntu@test-host',
       TMPDIR: temp,
       NODE_EXECUTABLE: process.execPath,
@@ -315,6 +334,7 @@ exit 0`);
     composeUpFile,
     backupFile,
     orderFile,
+    runningConfigFile,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
@@ -366,14 +386,37 @@ test('deploy-local stages Google OAuth credentials and the candidate binary for 
   }
 });
 
+for (const command of ['deploy', 'deploy-local']) {
+  test(`${command} replaces the running app config even when the image is unchanged`, () => {
+    const f = fixture({
+      localKitConfig: 'operator-local config that must not be deployed\n',
+      runningConfig: 'previously mounted config\n',
+    });
+    try {
+      writeFileSync(path.join(f.remote, 'config.toml'), 'previously installed config\n');
+      const result = runProduction(f, command);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const installed = readFileSync(path.join(f.remote, 'config.toml'), 'utf8');
+      assert.doesNotMatch(installed, /operator-local config/);
+      assert.equal(readFileSync(f.runningConfigFile, 'utf8'), installed);
+      assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), [
+        'config-check', 'config-install', 'app-recreate', 'stack-up',
+      ]);
+    } finally {
+      f.cleanup();
+    }
+  });
+}
+
 test('a binary without TOML config support leaves the installed config and running app in place', () => {
-  const f = fixture({ configCheckFailure: true });
+  const f = fixture({ configCheckFailure: true, localKitConfig: 'operator-local config\n' });
   try {
     writeFileSync(path.join(f.remote, 'config.toml'), 'previous production config\n');
     const result = runProduction(f, 'deploy');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /candidate binary cannot load config\.toml/);
     assert.equal(readFileSync(path.join(f.remote, 'config.toml'), 'utf8'), 'previous production config\n');
+    assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
     assert.equal(existsSync(f.composeUpFile), false);
   } finally {
     f.cleanup();
@@ -381,7 +424,7 @@ test('a binary without TOML config support leaves the installed config and runni
 });
 
 test('an incompatible local candidate leaves the installed executable untouched', () => {
-  const f = fixture({ configCheckFailure: true });
+  const f = fixture({ configCheckFailure: true, localKitConfig: 'operator-local config\n' });
   try {
     writeFileSync(path.join(f.remote, 'librepaper'), 'previous production executable\n');
     writeFileSync(path.join(f.remote, 'config.toml'), 'previous production config\n');
@@ -390,6 +433,7 @@ test('an incompatible local candidate leaves the installed executable untouched'
     assert.match(result.stderr, /candidate binary cannot load config\.toml/);
     assert.equal(readFileSync(path.join(f.remote, 'librepaper'), 'utf8'), 'previous production executable\n');
     assert.equal(readFileSync(path.join(f.remote, 'config.toml'), 'utf8'), 'previous production config\n');
+    assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
     assert.equal(existsSync(f.composeUpFile), false);
   } finally {
     f.cleanup();
@@ -665,7 +709,9 @@ test("deploy re-pins _sqlx_migrations when the tree holds a single squashed file
     assert.ok(pin.includes(sha384(defaultMigration)));
     assert.equal(existsSync(f.composeUpFile), true);
     assert.equal(existsSync(f.backupFile), true);
-    assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), ['config-check', 'pin', 'config-install', 'up']);
+    assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), [
+      'config-check', 'pin', 'config-install', 'app-recreate', 'stack-up',
+    ]);
   } finally {
     f.cleanup();
   }
