@@ -46,12 +46,12 @@ client_id = { env = "LIBREPAPER_GOOGLE_CLIENT_ID" }
 client_secret = { env = "LIBREPAPER_GOOGLE_CLIENT_SECRET" }
 
 # publishers: "any" signed-in account, a GitHub login, a verified Google
-# email, or @example.org (that exact domain, not subdomains). commenters:
-# "anyone" also allows anonymous comments. Reading by link never needs
-# sign-in.
+# email, or @example.org (that exact domain, not subdomains). commenters take
+# the same values; "anyone" also allows anonymous comments. Reading by link
+# never needs sign-in.
 [access]
 publishers = ["any"]
-commenters = ["anyone"]
+commenters = ["any"]
 
 # Storage is per publisher, in MiB; uploads counts project creation, forks and
 # figure uploads per rolling hour. deployment_storage_mib caps the whole server.

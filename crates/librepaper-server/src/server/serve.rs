@@ -407,7 +407,7 @@ pub async fn serve(options: ServeOptions) {
     if !publishers.is_configured() {
         die("set access.publishers to name who may publish, for example your-github-login, alice,bob, or any");
     }
-    let commenters = Policy::parse(options.commenters.as_deref().unwrap_or("anyone"));
+    let commenters = Policy::parse(options.commenters.as_deref().unwrap_or("any"));
     let loopback_origin = format!("http://localhost{address}");
 
     let advice = sign_in_advice(

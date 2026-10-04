@@ -590,7 +590,7 @@ pub(crate) fn load_with_postgres_env(
     let commenters = r.value(
         "access.commenters",
         raw.access.commenters,
-        vec!["anyone".into()],
+        vec!["any".into()],
     )?;
     Policy::parse_publishers(&publishers.join(","))
         .map_err(|e| format!("access.publishers: {e}"))?;
