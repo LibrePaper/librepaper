@@ -99,8 +99,8 @@ fn configured_server() -> Result<url::Url, String> {
 }
 
 fn validate_server(raw: &str) -> Result<url::Url, String> {
-    let server = url::Url::parse(raw)
-        .map_err(|error| format!("invalid LIBREPAPER_SERVER: {error}"))?;
+    let server =
+        url::Url::parse(raw).map_err(|error| format!("invalid LIBREPAPER_SERVER: {error}"))?;
     let loopback_http = server.scheme() == "http"
         && server.host().is_some_and(|host| match host {
             url::Host::Domain(domain) => domain == "localhost",
@@ -207,9 +207,10 @@ pub(super) async fn handle(
     });
     let credential_error = match credential {
         None => Some(write_json(401, &json!({"error":"authorization required"}))),
-        Some(token) if !auth.accepts(token, &inner.instance) => {
-            Some(write_json(401, &json!({"error":"invalid control credential"})))
-        }
+        Some(token) if !auth.accepts(token, &inner.instance) => Some(write_json(
+            401,
+            &json!({"error":"invalid control credential"}),
+        )),
         _ => None,
     };
     drop(control);
@@ -290,9 +291,17 @@ pub(super) async fn handle(
 fn apply_api_cors(response: &mut Reply, origin: &str, preflight: bool) {
     set(response, "vary", "Origin");
     set(response, "access-control-allow-origin", origin);
-    set(response, "access-control-allow-headers", "authorization, content-type");
+    set(
+        response,
+        "access-control-allow-headers",
+        "authorization, content-type",
+    );
     if preflight {
-        set(response, "access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
+        set(
+            response,
+            "access-control-allow-methods",
+            "GET, POST, PUT, DELETE, OPTIONS",
+        );
         set(response, "access-control-allow-private-network", "true");
         set(response, "access-control-max-age", "600");
     }
@@ -808,12 +817,7 @@ mod tests {
         .await;
         assert_eq!(paired_response.status(), StatusCode::UNAUTHORIZED);
 
-        let get_quit = request(
-            Method::GET,
-            Some(&token),
-            Some(&origin),
-            "127.0.0.1:8765",
-        );
+        let get_quit = request(Method::GET, Some(&token), Some(&origin), "127.0.0.1:8765");
         let get_quit_headers = get_quit.headers().clone();
         let get_quit_response = handle(
             &inner,
@@ -844,12 +848,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-        let trusted = request(
-            Method::GET,
-            Some(&token),
-            Some(&origin),
-            "127.0.0.1:8765",
-        );
+        let trusted = request(Method::GET, Some(&token), Some(&origin), "127.0.0.1:8765");
         let trusted_headers = trusted.headers().clone();
         let response = handle(
             &inner,
@@ -875,7 +874,9 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(!response.headers().contains_key("access-control-allow-origin"));
+        assert!(!response
+            .headers()
+            .contains_key("access-control-allow-origin"));
 
         let options = request(Method::OPTIONS, None, Some(&origin), "127.0.0.1:8765");
         let options_headers = options.headers().clone();
@@ -912,7 +913,9 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(!response.headers().contains_key("access-control-allow-origin"));
+        assert!(!response
+            .headers()
+            .contains_key("access-control-allow-origin"));
     }
 
     #[tokio::test]
@@ -958,15 +961,7 @@ mod tests {
                 .body(Body::empty())
                 .unwrap();
             let headers = request.headers().clone();
-            let response = handle(
-                &inner,
-                &Method::GET,
-                path,
-                &headers,
-                peer,
-                request,
-            )
-            .await;
+            let response = handle(&inner, &Method::GET, path, &headers, peer, request).await;
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
         }
     }

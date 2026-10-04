@@ -809,18 +809,17 @@ mod tests {
                 "token": "a".repeat(64),
                 "server": "https://app.example/"
             })
-                .to_string()
-                .into_bytes(),
+            .to_string()
+            .into_bytes(),
             "test control token",
         )
         .unwrap();
         let target = url::Url::parse(&settings_url(state.path(), 8763, "live").unwrap()).unwrap();
         assert_eq!(target.origin().ascii_serialization(), "https://app.example");
-        let fields: std::collections::HashMap<_, _> = url::form_urlencoded::parse(
-            target.fragment().unwrap().as_bytes(),
-        )
-        .into_owned()
-        .collect();
+        let fields: std::collections::HashMap<_, _> =
+            url::form_urlencoded::parse(target.fragment().unwrap().as_bytes())
+                .into_owned()
+                .collect();
         assert_eq!(fields["settings"], "local");
         assert_eq!(fields["companion_address"], "http://127.0.0.1:8763/");
         assert_eq!(fields["companion_control"], "a".repeat(64));
@@ -943,7 +942,10 @@ mod tests {
             "librepaper://settings#anything",
             "librepaper://settings?",
         ] {
-            assert!(connection_target(invalid, 8763).is_err(), "accepted {invalid}");
+            assert!(
+                connection_target(invalid, 8763).is_err(),
+                "accepted {invalid}"
+            );
         }
     }
     #[test]

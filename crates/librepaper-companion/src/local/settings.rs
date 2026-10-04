@@ -64,7 +64,11 @@ mod tests {
     fn legacy_tray_preference_is_ignored_and_unknown_fields_survive_updates() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temp.path().join("librepaper/local")).unwrap();
-        std::fs::write(path(temp.path()), r#"{"tray_enabled":false,"future":{"x":1}}"#).unwrap();
+        std::fs::write(
+            path(temp.path()),
+            r#"{"tray_enabled":false,"future":{"x":1}}"#,
+        )
+        .unwrap();
         let mut settings = load(temp.path()).unwrap();
         assert!(!settings.extra.contains_key("tray_enabled"));
         settings

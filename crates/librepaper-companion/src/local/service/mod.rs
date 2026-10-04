@@ -622,9 +622,7 @@ impl LocalService {
             let port = self.inner.port;
             let instance = self.inner.instance.clone();
             self.inner.approvals.set_opener(Some(Arc::new(move || {
-                if let Err(error) =
-                    super::lifecycle::open_settings(&state_home, port, &instance)
-                {
+                if let Err(error) = super::lifecycle::open_settings(&state_home, port, &instance) {
                     eprintln!("could not open LibrePaper Settings: {error}");
                 }
             })));

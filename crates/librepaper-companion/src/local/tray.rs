@@ -149,8 +149,7 @@ async fn run_ksni(state_home: std::path::PathBuf) -> Result<(), String> {
         } else if saw_companion || tokio::time::Instant::now() >= ready_deadline {
             break;
         }
-        if handle_menu(&state_home, &ids) || super::lifecycle::stop_requested(&state_home)
-        {
+        if handle_menu(&state_home, &ids) || super::lifecycle::stop_requested(&state_home) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -213,7 +212,8 @@ fn run_native(state_home: std::path::PathBuf) -> Result<(), String> {
                 }
             }
         }
-        if handle_menu(&state_home, &ids) || super::lifecycle::stop_requested(&state_home)
+        if handle_menu(&state_home, &ids)
+            || super::lifecycle::stop_requested(&state_home)
             || !companion_alive.load(std::sync::atomic::Ordering::Relaxed)
         {
             *control_flow = ControlFlow::Exit;
