@@ -86,8 +86,6 @@ pub enum LocalCommand {
         /// Origin (e.g. https://papers.example)
         origin: String,
     },
-    /// Start or reuse the companion and open its local control panel.
-    Desktop,
     /// Internal helper process for the optional system tray.
     #[command(hide = true)]
     Tray,
@@ -152,7 +150,6 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Status { tool_path } => status(tool_path).await,
         LocalCommand::Approve { code } => approve(&code).await,
         LocalCommand::Disconnect { origin } => disconnect(origin),
-        LocalCommand::Desktop => desktop().await,
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         LocalCommand::Tray => super::tray::run().await,
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -175,22 +172,10 @@ fn cache_home() -> PathBuf {
 async fn start_background(port: u16, tool_path: &[PathBuf]) {
     match crate::local::lifecycle::spawn_background(port, tool_path).await {
         Ok(state) => println!(
-            "Companion ready on port {}. Next: Settings → Local app.",
+            "Companion ready on port {}. Next: Settings → Local app. When available, use the tray menu to open it.",
             state.port
         ),
         Err(error) => die(error),
-    }
-}
-
-async fn desktop() {
-    let state_home = state_home();
-    let state = crate::local::lifecycle::spawn_background(0, &[])
-        .await
-        .unwrap_or_else(|error| die(error));
-    if let Err(error) =
-        crate::local::lifecycle::open_control_panel(&state_home, state.port, &state.instance)
-    {
-        die(error);
     }
 }
 
@@ -236,10 +221,8 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     if let Err(err) = pairing.write_service(&state) {
         die(format!("could not write service.json: {err}"));
     }
-    if crate::local::settings::tray_enabled(&state_home) {
-        if let Err(error) = crate::local::lifecycle::ensure_tray(&state_home) {
-            eprintln!("tray helper could not start: {error}");
-        }
+    if let Err(error) = crate::local::lifecycle::ensure_tray(&state_home) {
+        eprintln!("tray helper could not start: {error}");
     }
 
     // Every document renders in a workspace of its own under the cache,
@@ -279,6 +262,7 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
         protocol::BASE_PATH
     );
     println!("Next: Settings → Local app.");
+    println!("When available, use the tray menu to open the control panel.");
     print_pairings(&pairing);
     println!("Ctrl-C to stop.");
 
@@ -400,15 +384,7 @@ async fn status(tool_path: Vec<PathBuf>) {
                 }
             }
             print_pairings(&pairing);
-            println!(
-                "tray: {} ({})",
-                if crate::local::settings::tray_enabled(&home) {
-                    "enabled"
-                } else {
-                    "disabled"
-                },
-                crate::local::lifecycle::tray_availability()
-            );
+            println!("tray: {}", crate::local::lifecycle::tray_availability());
         }
         None => {
             println!("Companion is not running");

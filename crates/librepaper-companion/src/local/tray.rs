@@ -1,4 +1,4 @@
-//! Optional desktop tray process. Linux uses tray-icon's KSNI backend, which
+//! Desktop tray process. Linux uses tray-icon's KSNI backend, which
 //! speaks D-Bus without GTK or libappindicator. macOS and Windows keep the
 //! icon on Tao's native event-loop thread.
 
@@ -7,13 +7,6 @@ use std::time::Duration;
 
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
-
-/// Best-effort desktop-session check for status views. A Linux D-Bus session
-/// without an installed StatusNotifier host can still reject tray creation,
-/// so this is an availability hint rather than a guarantee.
-pub fn session_available() -> bool {
-    super::lifecycle::tray_available()
-}
 
 fn app_icon() -> Result<Icon, String> {
     // Offline-rasterized from assets/tray-outline.svg. Keeping raw RGBA here
@@ -92,7 +85,7 @@ async fn run_inner() -> Result<(), String> {
     let Some(_lock) = lock_helper(&state_home)? else {
         return Ok(());
     };
-    if !super::settings::tray_enabled(&state_home) {
+    if !super::lifecycle::tray_available() {
         return Ok(());
     }
     #[cfg(target_os = "linux")]
@@ -156,9 +149,7 @@ async fn run_ksni(state_home: std::path::PathBuf) -> Result<(), String> {
         } else if saw_companion || tokio::time::Instant::now() >= ready_deadline {
             break;
         }
-        if handle_menu(&state_home, &ids)
-            || !super::settings::tray_enabled(&state_home)
-            || super::lifecycle::stop_requested(&state_home)
+        if handle_menu(&state_home, &ids) || super::lifecycle::stop_requested(&state_home)
         {
             break;
         }
@@ -222,9 +213,7 @@ fn run_native(state_home: std::path::PathBuf) -> Result<(), String> {
                 }
             }
         }
-        if handle_menu(&state_home, &ids)
-            || !super::settings::tray_enabled(&state_home)
-            || super::lifecycle::stop_requested(&state_home)
+        if handle_menu(&state_home, &ids) || super::lifecycle::stop_requested(&state_home)
             || !companion_alive.load(std::sync::atomic::Ordering::Relaxed)
         {
             *control_flow = ControlFlow::Exit;

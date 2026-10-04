@@ -4,13 +4,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Per-user companion preferences. Unknown values are retained when this
-/// version updates one setting so a newer dashboard field is not discarded.
+/// Per-user companion settings. Unknown values are retained when this
+/// version updates a setting so a newer dashboard field is not discarded.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LocalSettings {
-    /// Show the optional tray helper while the companion is running.
-    pub tray_enabled: bool,
     /// Extra directories searched for local document tools.
     pub tool_paths: Vec<PathBuf>,
     #[serde(flatten)]
@@ -21,12 +19,19 @@ pub fn path(state_home: &Path) -> PathBuf {
     state_home.join("librepaper/local/settings.json")
 }
 
-/// Missing preferences mean a fresh install: tray disabled and tools from PATH.
+/// Missing settings mean tools from PATH.
 pub fn load(state_home: &Path) -> Result<LocalSettings, String> {
     let path = path(state_home);
     match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|error| format!("could not read local settings {}: {error}", path.display())),
+        Ok(bytes) => {
+            let mut settings: LocalSettings = serde_json::from_slice(&bytes).map_err(|error| {
+                format!("could not read local settings {}: {error}", path.display())
+            })?;
+            // This used to control tray startup. Discard it instead of
+            // persisting it as an unknown flattened setting.
+            settings.extra.remove("tray_enabled");
+            Ok(settings)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(LocalSettings::default()),
         Err(error) => Err(format!(
             "could not read local settings {}: {error}",
@@ -40,10 +45,6 @@ pub fn save(state_home: &Path, settings: &LocalSettings) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(settings)
         .map_err(|error| format!("could not encode local settings: {error}"))?;
     librepaper_base::private_files::publish(&path, &bytes, "local settings")
-}
-
-pub fn tray_enabled(state_home: &Path) -> bool {
-    load(state_home).is_ok_and(|settings| settings.tray_enabled)
 }
 
 /// Tool paths supplied on the current command line or environment take
@@ -60,14 +61,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_settings_default_to_tray_off_and_unknown_fields_survive_updates() {
+    fn legacy_tray_preference_is_ignored_and_unknown_fields_survive_updates() {
         let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("librepaper/local")).unwrap();
+        std::fs::write(path(temp.path()), r#"{"tray_enabled":false,"future":{"x":1}}"#).unwrap();
         let mut settings = load(temp.path()).unwrap();
-        assert!(!settings.tray_enabled);
+        assert!(!settings.extra.contains_key("tray_enabled"));
         settings
             .extra
             .insert("future".into(), serde_json::json!({"x": 1}));
         save(temp.path(), &settings).unwrap();
+        let saved = std::fs::read_to_string(path(temp.path())).unwrap();
+        assert!(!saved.contains("tray_enabled"));
         assert_eq!(load(temp.path()).unwrap().extra["future"]["x"], 1);
+    }
+
+    #[test]
+    fn missing_settings_default_to_path_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = load(temp.path()).unwrap();
+        assert!(settings.tool_paths.is_empty());
+        assert!(settings.extra.is_empty());
     }
 }

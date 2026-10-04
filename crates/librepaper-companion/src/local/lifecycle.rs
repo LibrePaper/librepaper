@@ -96,10 +96,8 @@ pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<Servic
                 state.port
             ));
         }
-        if super::settings::tray_enabled(&state_home) {
-            if let Err(error) = ensure_tray(&state_home) {
-                eprintln!("tray helper could not start: {error}");
-            }
+        if let Err(error) = ensure_tray(&state_home) {
+            eprintln!("tray helper could not start: {error}");
         }
         return Ok(state);
     }
@@ -139,10 +137,8 @@ pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<Servic
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(state) = running(&state_home).await {
-            if super::settings::tray_enabled(&state_home) {
-                if let Err(error) = ensure_tray(&state_home) {
-                    eprintln!("tray helper could not start: {error}");
-                }
+            if let Err(error) = ensure_tray(&state_home) {
+                eprintln!("tray helper could not start: {error}");
             }
             return Ok(state);
         }
@@ -164,10 +160,10 @@ pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<Servic
     }
 }
 
-/// Start the optional, separately locked tray process when the preference is
-/// enabled. Repeated calls are safe: the helper owns a per-user lock.
+/// Best-effort start of the separately locked tray process. Repeated calls
+/// are safe: the helper owns a per-user lock.
 pub fn ensure_tray(state_home: &Path) -> Result<(), String> {
-    if !super::settings::tray_enabled(state_home) {
+    if !tray_available() {
         return Ok(());
     }
     let executable = super::paths::current_executable()?;
@@ -567,9 +563,8 @@ pub fn startup_enabled() -> bool {
     }
 }
 
-/// Best-effort distinction between the saved tray preference and whether
-/// this process appears to have a desktop session. Linux may still lack a
-/// StatusNotifier host even when a D-Bus session is present.
+/// Best-effort description of whether this process appears to have a desktop
+/// session. Linux may still lack a tray host when a D-Bus session is present.
 pub fn tray_availability() -> &'static str {
     #[cfg(target_os = "linux")]
     {
@@ -699,8 +694,7 @@ fn write_startup_file(path: &std::path::Path, contents: String) -> Result<(), St
     std::fs::write(path, contents).map_err(|e| e.to_string())
 }
 
-/// Install a native launcher that calls `librepaper desktop`, which starts or
-/// reuses the service and opens the private local control panel.
+/// Install a native launcher that starts or reuses the companion.
 pub fn install_desktop_shortcut() -> Result<PathBuf, String> {
     let executable = super::paths::current_executable()?;
     #[cfg(target_os = "linux")]
@@ -716,7 +710,7 @@ pub fn install_desktop_shortcut() -> Result<PathBuf, String> {
         write_startup_file(
             &file,
             format!(
-                "[Desktop Entry]\nType=Application\nName=LibrePaper\nComment=Open the LibrePaper local companion\nExec={} desktop\nTerminal=false\nCategories=Office;Utility;\n",
+                "[Desktop Entry]\nType=Application\nName=LibrePaper\nComment=Start the LibrePaper local companion\nExec={} start\nTerminal=false\nCategories=Office;Utility;\n",
                 desktop_quote(&executable)
             ),
         )?;
@@ -737,7 +731,7 @@ pub fn install_desktop_shortcut() -> Result<PathBuf, String> {
         write_startup_file(
             &wrapper,
             format!(
-                "#!/bin/sh\nexec {} desktop \"$@\"\n",
+                "#!/bin/sh\nexec {} start \"$@\"\n",
                 shell_quote(&executable)
             ),
         )?;
@@ -757,7 +751,7 @@ pub fn install_desktop_shortcut() -> Result<PathBuf, String> {
         std::fs::create_dir_all(&programs).map_err(|error| error.to_string())?;
         let shortcut = programs.join("LibrePaper.lnk");
         let script = format!(
-            "$shell = New-Object -ComObject WScript.Shell; $link = $shell.CreateShortcut({}); $link.TargetPath = {}; $link.Arguments = 'desktop'; $link.WorkingDirectory = {}; $link.Description = 'Open the LibrePaper local companion'; $link.Save()",
+            "$shell = New-Object -ComObject WScript.Shell; $link = $shell.CreateShortcut({}); $link.TargetPath = {}; $link.Arguments = 'start'; $link.WorkingDirectory = {}; $link.Description = 'Start the LibrePaper local companion'; $link.Save()",
             powershell_quote(&shortcut.to_string_lossy()),
             powershell_quote(&executable.to_string_lossy()),
             powershell_quote(&std::env::current_dir().unwrap_or_default().to_string_lossy()),
