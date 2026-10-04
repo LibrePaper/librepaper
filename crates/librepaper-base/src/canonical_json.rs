@@ -27,7 +27,10 @@ mod tests {
         let a: Value = serde_json::from_str(r#"{"a":1,"b":{"x":1,"y":2}}"#).unwrap();
         let b: Value = serde_json::from_str(r#"{"b":{"y":2,"x":1},"a":1}"#).unwrap();
         assert_eq!(sha256_hex(&a), sha256_hex(&b));
-        assert_ne!(sha256_hex(&a), sha256_hex(&json!({"a":2,"b":{"x":1,"y":2}})));
+        assert_ne!(
+            sha256_hex(&a),
+            sha256_hex(&json!({"a":2,"b":{"x":1,"y":2}}))
+        );
     }
 
     #[test]

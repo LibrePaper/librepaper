@@ -179,7 +179,7 @@ impl TokenCache {
     /// How many token digests are currently held, for a test to check against
     /// the cap.
     #[cfg(test)]
-    pub async fn len(&self) -> u64 {
+    pub async fn entry_count(&self) -> u64 {
         self.entries.run_pending_tasks().await;
         self.entries.entry_count()
     }
@@ -831,7 +831,7 @@ mod tests {
             )
             .await;
         assert_eq!(first, Err(ProviderError::Upstream { status: 503 }));
-        assert_eq!(cache.len().await, 0);
+        assert_eq!(cache.entry_count().await, 0);
 
         let second = cache
             .verify(
@@ -841,7 +841,7 @@ mod tests {
             .await
             .expect("the next check should be admitted");
         assert!(!second.is_signed_in());
-        assert_eq!(cache.len().await, 1);
+        assert_eq!(cache.entry_count().await, 1);
     }
 
     #[tokio::test]
