@@ -5,13 +5,14 @@
 use std::path::Path;
 use std::time::Duration;
 
-use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
 /// Best-effort desktop-session check for status views. A Linux D-Bus session
 /// without an installed StatusNotifier host can still reject tray creation,
 /// so this is an availability hint rather than a guarantee.
 pub fn session_available() -> bool {
+<<<<<<< HEAD
     #[cfg(target_os = "linux")]
     {
         let display =
@@ -28,6 +29,9 @@ pub fn session_available() -> bool {
     {
         false
     }
+=======
+    super::lifecycle::tray_available()
+>>>>>>> 6907ba03
 }
 
 fn app_icon() -> Result<Icon, String> {
