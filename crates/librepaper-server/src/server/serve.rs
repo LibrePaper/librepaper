@@ -22,9 +22,8 @@ use librepaper_document::document::retention::{
 use librepaper_engine::storage::store::Store;
 use librepaper_engine::storage::{open_storage, StorageOptions};
 
-/// With no --port, serve takes the first free port in this range, so a second
-/// deployment on the same machine, or a port something else has already
-/// taken, needs no thought.
+/// With `server.port = 0`, serve takes the first free port in this range, so a
+/// second deployment on the same machine needs no manually picked port.
 const PORT_FIRST: u16 = 8080;
 const PORT_LAST: u16 = 8099;
 

@@ -1075,7 +1075,7 @@ impl Server {
 
     /// The most this deployment's switches will let a document give one
     /// caller. `access.publishers` governs editing, because an editor puts content
-    /// on the server; `--commenters` governs commenting. A link asks the same
+    /// on the server; `access.commenters` governs commenting. A link asks the same
     /// question with an empty handle, since it names nobody, and that is
     /// exactly what makes "a link cannot edit unless the deployment lets
     /// anyone publish" fall out of the same switch a named caller is asked
