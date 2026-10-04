@@ -436,6 +436,11 @@ where
         }
         buf_reader.consume(take);
         if newline.is_some() {
+            if line_cut {
+                // The cut dropped the terminator with the rest of the line; the
+                // next line must still start on its own line in the log.
+                line_buf.push(b'\n');
+            }
             deliver_line(&watch, &line_buf).await;
             line_buf.clear();
             line_cut = false;
@@ -696,6 +701,10 @@ mod tests {
         assert!(
             !final_log.contains('\u{FFFD}'),
             "Truncated line should not contain replacement character U+FFFD"
+        );
+        assert!(
+            final_log.contains("\nok"),
+            "the line after a cut line starts on its own line"
         );
     }
 }
