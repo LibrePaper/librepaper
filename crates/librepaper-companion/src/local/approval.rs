@@ -72,6 +72,8 @@ pub(crate) type ApprovalOpener = Arc<dyn Fn() + Send + Sync>;
 pub(crate) struct ApprovalBroker {
     state: Arc<Mutex<State>>,
     opener: Arc<Mutex<Option<ApprovalOpener>>>,
+    #[cfg(test)]
+    browser_available_override: Arc<Mutex<Option<bool>>>,
 }
 
 struct PendingGuard {
@@ -92,6 +94,21 @@ impl Drop for PendingGuard {
 
 impl ApprovalBroker {
     pub(crate) async fn ask(&self, approval: &Approval, ttl: Duration) -> Decision {
+        self.ask_with_opener(approval, ttl, true).await
+    }
+
+    /// Queue an approval without opening a second browser window. Inline
+    /// clients already have the main Settings page open for the decision.
+    pub(crate) async fn ask_inline(&self, approval: &Approval, ttl: Duration) -> Decision {
+        self.ask_with_opener(approval, ttl, false).await
+    }
+
+    async fn ask_with_opener(
+        &self,
+        approval: &Approval,
+        ttl: Duration,
+        launch_opener: bool,
+    ) -> Decision {
         #[cfg(test)]
         let scripted = SCRIPTED.with(|script| *script.borrow());
 
@@ -137,7 +154,7 @@ impl ApprovalBroker {
             "LibrePaper approval pending: {}. Approve in Settings → Companion or run: librepaper local approve {}",
             approval.title, code
         );
-        if should_open && browser_available() {
+        if launch_opener && should_open && self.browser_available() {
             if let Some(open) = self
                 .opener
                 .lock()
@@ -167,6 +184,26 @@ impl ApprovalBroker {
             .opener
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = opener;
+    }
+
+    fn browser_available(&self) -> bool {
+        #[cfg(test)]
+        if let Some(available) = *self
+            .browser_available_override
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+        {
+            return available;
+        }
+        browser_available()
+    }
+
+    #[cfg(test)]
+    fn set_browser_available_for_test(&self, available: bool) {
+        *self
+            .browser_available_override
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(available);
     }
 
     pub(crate) fn list(&self) -> Vec<PendingView> {
@@ -317,6 +354,47 @@ pub(crate) fn unscript() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn inline_approvals_skip_opener_while_standard_approvals_keep_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let broker = ApprovalBroker::default();
+        broker.set_browser_available_for_test(true);
+        let opens = Arc::new(AtomicUsize::new(0));
+        let opened = opens.clone();
+        broker.set_opener(Some(Arc::new(move || {
+            opened.fetch_add(1, Ordering::SeqCst);
+        })));
+        let request = Approval {
+            title: "Test".into(),
+            message: "Allow?".into(),
+            allow_label: "Allow".into(),
+            scope: None,
+        };
+
+        let inline_broker = broker.clone();
+        let inline_request = request.clone();
+        let inline = tokio::spawn(async move {
+            inline_broker
+                .ask_inline(&inline_request, Duration::from_secs(5))
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+        let id = broker.list().pop().expect("inline approval pending").id;
+        assert_eq!(broker.decide(&id, Decision::Allowed), DecisionResult::Applied);
+        assert_eq!(inline.await.unwrap(), Decision::Allowed);
+
+        let ordinary_broker = broker.clone();
+        let ordinary = tokio::spawn(async move {
+            ordinary_broker.ask(&request, Duration::from_secs(5)).await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        broker.deny_all();
+        assert_eq!(ordinary.await.unwrap(), Decision::Denied);
+    }
 
     #[tokio::test]
     async fn decisions_are_one_shot_and_scoped_to_the_broker() {
