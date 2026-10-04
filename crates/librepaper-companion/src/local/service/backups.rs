@@ -39,6 +39,41 @@ fn valid_frequency(minutes: u64) -> bool {
     FREQUENCIES.contains(&minutes)
 }
 
+/// What kind of failure `BackupConfig::error` records, saved beside the text
+/// so nothing has to read the text to decide what to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BackupErrorKind {
+    Disconnected,
+    NotSignedIn,
+    LoginInvalid,
+    LoginRejected,
+    AccountMismatch,
+    Unverified,
+    Other,
+}
+
+impl BackupErrorKind {
+    /// The user has to sign in again.
+    fn is_login(self) -> bool {
+        matches!(
+            self,
+            Self::NotSignedIn | Self::LoginInvalid | Self::LoginRejected | Self::AccountMismatch
+        )
+    }
+
+    /// Re-verifying the account may clear this.
+    fn is_identity(self) -> bool {
+        self.is_login() || self == Self::Unverified
+    }
+
+    /// A different account is signed in: scheduled runs stop until the user
+    /// enables backups again.
+    fn disables_schedule(self) -> bool {
+        self == Self::AccountMismatch
+    }
+}
+
 /// Why a backup could not start or finish. The login and identity cases are
 /// variants so callers decide what to do by matching, not by reading text.
 /// `Display` is the message the settings page shows.
@@ -80,26 +115,28 @@ impl From<&str> for BackupError {
 }
 
 impl BackupError {
+    fn kind(&self) -> BackupErrorKind {
+        match self {
+            Self::Disconnected => BackupErrorKind::Disconnected,
+            Self::NotSignedIn => BackupErrorKind::NotSignedIn,
+            Self::LoginInvalid => BackupErrorKind::LoginInvalid,
+            Self::LoginRejected => BackupErrorKind::LoginRejected,
+            Self::AccountMismatch => BackupErrorKind::AccountMismatch,
+            Self::Unverified(_) => BackupErrorKind::Unverified,
+            Self::Unsaved { cause, .. } => cause.kind(),
+            Self::Other(_) => BackupErrorKind::Other,
+        }
+    }
+
     /// The user has to sign in again.
     fn is_login(&self) -> bool {
-        match self {
-            Self::NotSignedIn
-            | Self::LoginInvalid
-            | Self::LoginRejected
-            | Self::AccountMismatch => true,
-            Self::Unsaved { cause, .. } => cause.is_login(),
-            Self::Disconnected | Self::Unverified(_) | Self::Other(_) => false,
-        }
+        self.kind().is_login()
     }
 
     /// A different account is signed in: scheduled runs stop until the user
     /// enables backups again.
     fn disables_schedule(&self) -> bool {
-        match self {
-            Self::AccountMismatch => true,
-            Self::Unsaved { cause, .. } => cause.disables_schedule(),
-            _ => false,
-        }
+        self.kind().disables_schedule()
     }
 }
 
@@ -115,17 +152,18 @@ fn identity_error(identity: &Value, account_id: &str) -> Option<BackupError> {
     }
 }
 
-/// Classifies an error that was saved to disk as text. A fresh failure is a
-/// `BackupError` and is matched on directly.
-fn is_login_error(error: &str) -> bool {
+/// These two classify saved text from before `error_kind` existed. A record
+/// with a kind is matched on the kind; only a record saved by an older build
+/// falls back to reading the text.
+fn legacy_is_login_error(error: &str) -> bool {
     error.contains("not signed in")
         || error.contains("Sign in to this account from Settings")
         || error.contains("cached login")
         || error.contains("account does not match")
 }
 
-fn is_identity_error(error: &str) -> bool {
-    is_login_error(error) || error.starts_with("could not verify account:")
+fn legacy_is_identity_error(error: &str) -> bool {
+    legacy_is_login_error(error) || error.starts_with("could not verify account:")
 }
 
 fn is_due(config: &BackupConfig, now: u64) -> bool {
@@ -274,6 +312,8 @@ struct BackupConfig {
     last_attempt: Option<u64>,
     last_success: Option<u64>,
     error: Option<String>,
+    #[serde(default)]
+    error_kind: Option<BackupErrorKind>,
     projects: usize,
     updated: usize,
     #[serde(default)]
@@ -284,6 +324,37 @@ struct BackupConfig {
 }
 
 impl BackupConfig {
+    fn set_error(&mut self, error: &BackupError) {
+        self.error = Some(error.to_string());
+        self.error_kind = Some(error.kind());
+    }
+
+    fn set_error_text(&mut self, text: impl Into<String>, kind: BackupErrorKind) {
+        self.error = Some(text.into());
+        self.error_kind = Some(kind);
+    }
+
+    fn clear_error(&mut self) {
+        self.error = None;
+        self.error_kind = None;
+    }
+
+    fn error_is_login(&self) -> bool {
+        match (&self.error_kind, &self.error) {
+            (Some(kind), _) => kind.is_login(),
+            (None, Some(text)) => legacy_is_login_error(text),
+            (None, None) => false,
+        }
+    }
+
+    fn error_is_identity(&self) -> bool {
+        match (&self.error_kind, &self.error) {
+            (Some(kind), _) => kind.is_identity(),
+            (None, Some(text)) => legacy_is_identity_error(text),
+            (None, None) => false,
+        }
+    }
+
     fn key(origin: &str, account_id: &str) -> String {
         format!(
             "{}\0{account_id}",
@@ -301,6 +372,7 @@ impl BackupConfig {
             last_attempt: None,
             last_success: None,
             error: None,
+            error_kind: None,
             projects: 0,
             updated: 0,
             run_generation: 0,
@@ -325,7 +397,7 @@ fn restore_after_persist_failure(
     error: &str,
 ) {
     let mut config = previous.unwrap_or_else(|| BackupConfig::new(origin, account_id));
-    config.error = Some(error.to_owned());
+    config.set_error_text(error, BackupErrorKind::Other);
     state.configs.insert(key.to_owned(), config);
 }
 
@@ -417,23 +489,27 @@ impl BackupManager {
         let token_missing =
             crate::local::credentials::stored_token_at(&inner.state_home, origin).is_empty();
         if !token_missing
-            && config.error.as_deref().is_some_and(is_identity_error)
+            && config.error_is_identity()
             && self.should_recheck_login(&key)
         {
             let verification = verify_account(inner, origin, account_id).await;
-            let refreshed_error = verification.err().map(|error| error.to_string());
+            let refreshed_error = verification.err();
             let mut state = self.state.lock().await;
             if let Some(current) = state.configs.get_mut(&key) {
                 if current.error == config.error
-                    && current.error.as_deref().is_some_and(is_identity_error)
+                    && current.error_is_identity()
                 {
-                    let previous = std::mem::replace(&mut current.error, refreshed_error);
+                    let previous = (current.error.clone(), current.error_kind);
+                    match &refreshed_error {
+                        Some(error) => current.set_error(error),
+                        None => current.clear_error(),
+                    }
                     if let Err(error) = self.persist(&state).await {
                         if let Some(current) = state.configs.get_mut(&key) {
-                            current.error = previous;
+                            (current.error, current.error_kind) = previous;
                         }
                         if let Some(current) = state.configs.get_mut(&key) {
-                            current.error = Some(error);
+                            current.set_error_text(error, BackupErrorKind::Other);
                         }
                     }
                 }
@@ -452,7 +528,7 @@ impl BackupManager {
             "error": config.error,
             "projects": config.projects,
             "updated": config.updated,
-            "needs_login": token_missing || config.error.as_deref().is_some_and(is_login_error),
+            "needs_login": token_missing || config.error_is_login(),
         })
     }
 
@@ -678,8 +754,8 @@ impl BackupManager {
             let key = BackupConfig::key(&origin, account_id);
             let mut state = self.state.lock().await;
             if let Some(config) = state.configs.get_mut(&key) {
-                if config.error.as_deref().is_some_and(is_identity_error) {
-                    config.error = None;
+                if config.error_is_identity() {
+                    config.clear_error();
                 }
             }
             if let Ok(mut checks) = self.auth_checks.lock() {
@@ -769,7 +845,7 @@ impl BackupManager {
         config.last_success = None;
         config.projects = 0;
         config.updated = 0;
-        config.error = None;
+        config.clear_error();
         config.revision = config.revision.wrapping_add(1);
         if let Err(error) = self.persist(&state).await {
             restore_after_persist_failure(&mut state, &key, previous, origin, account_id, &error);
@@ -819,7 +895,7 @@ impl BackupManager {
                     .configs
                     .entry(key.clone())
                     .or_insert_with(|| BackupConfig::new(origin, account_id));
-                config.error = Some(error.to_string());
+                config.set_error(&error);
                 if error.disables_schedule() || !inner.pairing.has_live_pairing(origin) {
                     if config.enabled {
                         config.revision = config.revision.wrapping_add(1);
@@ -835,7 +911,7 @@ impl BackupManager {
                     },
                 };
                 if let Some(config) = state.configs.get_mut(&key) {
-                    config.error = Some(error.to_string());
+                    config.set_error(&error);
                 }
                 return Err(error);
             }
@@ -863,8 +939,8 @@ impl BackupManager {
         let previous_frequency = config.frequency_minutes;
         config.enabled = enabled;
         config.frequency_minutes = frequency_minutes;
-        if enabled && config.error.as_deref().is_some_and(is_identity_error) {
-            config.error = None;
+        if enabled && config.error_is_identity() {
+            config.clear_error();
         }
         if previous_enabled != enabled || previous_frequency != frequency_minutes {
             config.revision = config.revision.wrapping_add(1);
@@ -938,10 +1014,10 @@ impl BackupManager {
                         current.last_success = Some(unix_now());
                         current.projects = report.projects;
                         current.updated = report.updated;
-                        current.error = None;
+                        current.clear_error();
                     }
                     Err(error) => {
-                        current.error = Some(error.to_string());
+                        current.set_error(&error);
                         // Identity mismatch or revoked pairing permanently stops
                         // scheduled runs until the user explicitly enables again.
                         if !inner.pairing.has_live_pairing(&current.origin)
@@ -959,7 +1035,7 @@ impl BackupManager {
         }
         if let Err(error) = self.persist(&state).await {
             if let Some(current) = state.configs.get_mut(&key) {
-                current.error = Some(error);
+                current.set_error_text(error, BackupErrorKind::Other);
             }
         }
         self.changed.notify_one();
@@ -1334,7 +1410,7 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                     if !inner.pairing.has_live_pairing(&config.origin) {
                         if let Some(current) = state.configs.get_mut(&key) {
                             current.enabled = false;
-                            current.error = Some("This site is no longer connected.".into());
+                            current.set_error(&BackupError::Disconnected);
                             current.revision = current.revision.wrapping_add(1);
                             current.run_generation = current.run_generation.wrapping_add(1);
                             changed = true;
@@ -1343,8 +1419,10 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                         if !config.destination.is_dir() {
                             if let Some(current) = state.configs.get_mut(&key) {
                                 current.last_attempt = Some(now);
-                                current.error =
-                                    Some("The selected backup destination is unavailable.".into());
+                                current.set_error_text(
+                                    "The selected backup destination is unavailable.",
+                                    BackupErrorKind::Other,
+                                );
                             }
                             changed = true;
                             continue;
@@ -1364,7 +1442,7 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                 if changed {
                     if let Err(error) = inner.backups.persist(&state).await {
                         for config in state.configs.values_mut().filter(|config| config.running) {
-                            config.error = Some(error.clone());
+                            config.set_error_text(error.clone(), BackupErrorKind::Other);
                         }
                     }
                 }
@@ -1940,8 +2018,14 @@ mod tests {
         {
             let key = BackupConfig::key(&origin, &account_id);
             let mut state = inner.backups.state.lock().await;
-            state.configs.get_mut(&key).unwrap().error =
-                Some("cached login account does not match the requested account".into());
+            state
+                .configs
+                .get_mut(&key)
+                .unwrap()
+                .set_error_text(
+                    "cached login account does not match the requested account",
+                    BackupErrorKind::AccountMismatch,
+                );
             inner.backups.persist(&state).await.unwrap();
         }
         let status = inner.backups.status(&inner, &origin, &account_id).await;
@@ -2464,8 +2548,9 @@ mod tests {
             let mut state = inner.backups.state.lock().await;
             let config = state.configs.get_mut(&key).unwrap();
             config.enabled = false;
-            config.error = Some(
-                "cached login account does not match the requested account; sign in again with the intended account".into(),
+            config.set_error_text(
+                "cached login account does not match the requested account; sign in again with the intended account",
+                BackupErrorKind::AccountMismatch,
             );
             inner.backups.persist(&state).await.unwrap();
         }
