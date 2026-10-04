@@ -908,7 +908,7 @@ impl Server {
             Ok(false) => {}
             Ok(true) => return plain(404, "not found"),
             Err(error) => {
-                eprintln!("could not check moderation state for {slug}: {error}");
+                tracing::warn!("could not check moderation state for {slug}: {error}");
                 return plain(503, "catalogue temporarily unavailable");
             }
         }
@@ -1330,7 +1330,7 @@ impl Server {
         {
             Ok(entries) => entries,
             Err(error) => {
-                eprintln!("could not query document listing: {error}");
+                tracing::warn!("could not query document listing: {error}");
                 return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
             }
         };
@@ -1421,7 +1421,7 @@ impl Server {
         {
             Ok(entries) => entries,
             Err(error) => {
-                eprintln!("could not query backup project listing: {error}");
+                tracing::warn!("could not query backup project listing: {error}");
                 return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
             }
         };

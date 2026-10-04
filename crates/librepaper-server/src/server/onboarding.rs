@@ -238,7 +238,7 @@ impl Server {
                     .simulate_starter(catalog, &slug, starter, &actor, account_id, days)
                     .await
                 {
-                    eprintln!("warning: {slug} activity not simulated: {error}");
+                    tracing::warn!("{slug} activity not simulated: {error}");
                 }
             } else {
                 self.store

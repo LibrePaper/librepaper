@@ -20,19 +20,12 @@ const DIRECTORY: &str = "assistant";
 const STATE: &str = "runner.json";
 const BINDING: &str = "runner.binding";
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
+    #[error("no assistant session is running")]
     NotRunning,
+    #[error("{0}")]
     InvalidConfiguration(String),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotRunning => formatter.write_str("no assistant session is running"),
-            Self::InvalidConfiguration(detail) => formatter.write_str(detail),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]

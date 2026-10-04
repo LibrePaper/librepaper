@@ -4,10 +4,11 @@
 //! selected from fixed enums, and gauges come from an explicit allowlist of
 //! aggregate numeric status fields. No account, document, network, or path
 //! identifier can enter the exposition.
+//!
+//! The body is OpenMetrics text produced by `prometheus-client`.
 
-use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,14 @@ use axum::http::{header, StatusCode};
 use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
+use prometheus_client::collector::Collector;
+use prometheus_client::encoding::text::encode;
+use prometheus_client::encoding::{DescriptorEncoder, EncodeLabelSet, EncodeMetric};
+use prometheus_client::metrics::counter::{ConstCounter, Counter};
+use prometheus_client::metrics::family::Family;
+use prometheus_client::metrics::gauge::{ConstGauge, Gauge};
+use prometheus_client::metrics::histogram::Histogram;
+use prometheus_client::registry::Registry;
 use serde_json::Value;
 use tokio::net::TcpListener;
 
@@ -52,34 +61,164 @@ const REFUSALS: &[&str] = &[
 pub(super) const METRIC_LISTENER_CONCURRENCY: usize = 2;
 const SCRAPE_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 
+const OPENMETRICS_CONTENT_TYPE: &str = "application/openmetrics-text; version=1.0.0; charset=utf-8";
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct RequestLabels {
+    route: &'static str,
+    method: &'static str,
+    status_class: &'static str,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct DurationLabels {
+    route: &'static str,
+    method: &'static str,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct RefusalLabels {
+    reason: &'static str,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct BuildLabels {
+    version: &'static str,
+}
+
+type DurationFamily = Family<DurationLabels, Histogram, fn() -> Histogram>;
+
+fn new_duration_histogram() -> Histogram {
+    Histogram::new(HISTOGRAM_EDGES_SECONDS.iter().copied())
+}
+
+/// The sampled gauges, exported only when present in the last good sample.
+/// Names ending in `_total` are exported as counters, as before.
+#[derive(Debug, Default)]
+struct SampledGauges {
+    values: RwLock<Vec<(&'static str, f64)>>,
+}
+
+impl Collector for SampledGauges {
+    fn encode(&self, mut encoder: DescriptorEncoder) -> Result<(), std::fmt::Error> {
+        let values = self
+            .values
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner());
+        for (family, value) in values.iter() {
+            const HELP: &str = "Aggregate LibrePaper operational measurement";
+            if let Some(name) = family.strip_suffix("_total") {
+                let counter = ConstCounter::new(*value);
+                let metric = encoder.encode_descriptor(name, HELP, None, counter.metric_type())?;
+                counter.encode(metric)?;
+            } else {
+                let gauge = ConstGauge::new(*value);
+                let metric = encoder.encode_descriptor(family, HELP, None, gauge.metric_type())?;
+                gauge.encode(metric)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Optional exporter state shared with the request admission middleware.
 pub struct Metrics {
     started: Instant,
-    requests: Vec<AtomicU64>,
-    histogram_buckets: Vec<AtomicU64>,
-    histogram_sum_micros: Vec<AtomicU64>,
-    refusals: Vec<AtomicU64>,
-    gauges: RwLock<Vec<(&'static str, f64)>>,
-    snapshot_success: AtomicU64,
-    snapshot_timestamp: AtomicU64,
+    registry: Registry,
+    requests: Family<RequestLabels, Counter>,
+    durations: DurationFamily,
+    refusals: Family<RefusalLabels, Counter>,
+    uptime: Gauge<f64, AtomicU64>,
+    snapshot_success: Gauge<u64, AtomicU64>,
+    snapshot_timestamp: Gauge<u64, AtomicU64>,
+    samples: Arc<SampledGauges>,
 }
 
 impl Default for Metrics {
     fn default() -> Self {
-        let route_method_count = ROUTES.len() * METHODS.len();
+        let mut registry = Registry::default();
+
+        let build_info: Family<BuildLabels, Gauge> = Family::default();
+        build_info
+            .get_or_create(&BuildLabels {
+                version: env!("LIBREPAPER_PKG_VERSION"),
+            })
+            .set(1);
+        registry.register(
+            "librepaper_build_info",
+            "Build version information",
+            build_info,
+        );
+
+        let uptime = Gauge::<f64, AtomicU64>::default();
+        registry.register(
+            "librepaper_process_uptime_seconds",
+            "Time since this process started",
+            uptime.clone(),
+        );
+        let snapshot_success = Gauge::<u64, AtomicU64>::default();
+        registry.register(
+            "librepaper_metrics_snapshot_success",
+            "Whether the latest aggregate sample completed",
+            snapshot_success.clone(),
+        );
+        let snapshot_timestamp = Gauge::<u64, AtomicU64>::default();
+        registry.register(
+            "librepaper_metrics_snapshot_timestamp_seconds",
+            "Unix timestamp of the last successful aggregate sample",
+            snapshot_timestamp.clone(),
+        );
+
+        // Every bounded series exists from startup so rate() sees a zero.
+        let requests: Family<RequestLabels, Counter> = Family::default();
+        let durations: DurationFamily =
+            Family::new_with_constructor(new_duration_histogram as fn() -> Histogram);
+        for &route in ROUTES {
+            for &method in METHODS {
+                drop(durations.get_or_create(&DurationLabels { route, method }));
+                for &status_class in STATUS_CLASSES {
+                    drop(requests.get_or_create(&RequestLabels {
+                        route,
+                        method,
+                        status_class,
+                    }));
+                }
+            }
+        }
+        registry.register(
+            "librepaper_http_requests",
+            "Completed HTTP requests by bounded route, method, and response class",
+            requests.clone(),
+        );
+        registry.register(
+            "librepaper_http_request_duration_seconds",
+            "HTTP request handling time through response headers",
+            durations.clone(),
+        );
+
+        let refusals: Family<RefusalLabels, Counter> = Family::default();
+        for &reason in REFUSALS {
+            drop(refusals.get_or_create(&RefusalLabels { reason }));
+        }
+        registry.register(
+            "librepaper_resource_refusals",
+            "Requests refused by bounded deployment resource reason",
+            refusals.clone(),
+        );
+
+        let samples = Arc::new(SampledGauges::default());
+        registry.register_collector(Box::new(samples.clone()));
+
         Self {
             started: Instant::now(),
-            requests: (0..route_method_count * STATUS_CLASSES.len())
-                .map(|_| AtomicU64::new(0))
-                .collect(),
-            histogram_buckets: (0..route_method_count * (HISTOGRAM_EDGES_SECONDS.len() + 1))
-                .map(|_| AtomicU64::new(0))
-                .collect(),
-            histogram_sum_micros: (0..route_method_count).map(|_| AtomicU64::new(0)).collect(),
-            refusals: (0..REFUSALS.len()).map(|_| AtomicU64::new(0)).collect(),
-            gauges: RwLock::new(Vec::new()),
-            snapshot_success: AtomicU64::new(0),
-            snapshot_timestamp: AtomicU64::new(0),
+            registry,
+            requests,
+            durations,
+            refusals,
+            uptime,
+            snapshot_success,
+            snapshot_timestamp,
+            samples,
         }
     }
 }
@@ -90,24 +229,19 @@ impl Metrics {
     }
 
     pub fn record_request(&self, route: &str, method: &str, status: u16, elapsed: Duration) {
-        let route = route_index(route);
-        let method = method_index(method);
-        let route_method = route * METHODS.len() + method;
-        let status_class = usize::from(status / 100).saturating_sub(1).min(4);
-        self.requests[route_method * STATUS_CLASSES.len() + status_class]
-            .fetch_add(1, Ordering::Relaxed);
-
-        let seconds = elapsed.as_secs_f64();
-        let bucket = HISTOGRAM_EDGES_SECONDS
-            .iter()
-            .position(|edge| seconds <= *edge)
-            .unwrap_or(HISTOGRAM_EDGES_SECONDS.len());
-        self.histogram_buckets[route_method * (HISTOGRAM_EDGES_SECONDS.len() + 1) + bucket]
-            .fetch_add(1, Ordering::Relaxed);
-        self.histogram_sum_micros[route_method].fetch_add(
-            elapsed.as_micros().min(u128::from(u64::MAX)) as u64,
-            Ordering::Relaxed,
-        );
+        let route = ROUTES[route_index(route)];
+        let method = METHODS[method_index(method)];
+        let status_class = STATUS_CLASSES[usize::from(status / 100).saturating_sub(1).min(4)];
+        self.requests
+            .get_or_create(&RequestLabels {
+                route,
+                method,
+                status_class,
+            })
+            .inc();
+        self.durations
+            .get_or_create(&DurationLabels { route, method })
+            .observe(elapsed.as_secs_f64());
     }
 
     pub(super) fn record_middleware_result(
@@ -121,8 +255,8 @@ impl Metrics {
     }
 
     pub fn record_refusal(&self, reason: &str) {
-        if let Some(index) = REFUSALS.iter().position(|known| *known == reason) {
-            self.refusals[index].fetch_add(1, Ordering::Relaxed);
+        if let Some(&reason) = REFUSALS.iter().find(|known| **known == reason) {
+            self.refusals.get_or_create(&RefusalLabels { reason }).inc();
         }
     }
 
@@ -289,108 +423,29 @@ impl Metrics {
             ));
         }
 
-        self.snapshot_success.store(1, Ordering::Relaxed);
-        self.snapshot_timestamp.store(
+        self.snapshot_success.set(1);
+        self.snapshot_timestamp.set(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
-            Ordering::Relaxed,
         );
         *self
-            .gauges
+            .samples
+            .values
             .write()
             .unwrap_or_else(|poison| poison.into_inner()) = gauges;
     }
 
     fn note_snapshot_failure(&self) {
-        self.snapshot_success.store(0, Ordering::Relaxed);
+        self.snapshot_success.set(0);
     }
 
     fn render(&self) -> String {
+        self.uptime.set(self.started.elapsed().as_secs_f64());
         let mut out = String::with_capacity(32 * 1024);
-        out.push_str("# HELP librepaper_build_info Build version information.\n# TYPE librepaper_build_info gauge\n");
-        out.push_str(&format!(
-            "librepaper_build_info{{version=\"{}\"}} 1\n",
-            env!("LIBREPAPER_PKG_VERSION")
-        ));
-        out.push_str("# HELP librepaper_process_uptime_seconds Time since this process started.\n# TYPE librepaper_process_uptime_seconds gauge\n");
-        out.push_str(&format!(
-            "librepaper_process_uptime_seconds {:.3}\n",
-            self.started.elapsed().as_secs_f64()
-        ));
-        out.push_str("# HELP librepaper_metrics_snapshot_success Whether the latest aggregate sample completed.\n# TYPE librepaper_metrics_snapshot_success gauge\n");
-        out.push_str(&format!(
-            "librepaper_metrics_snapshot_success {}\n",
-            self.snapshot_success.load(Ordering::Relaxed)
-        ));
-        out.push_str("# HELP librepaper_metrics_snapshot_timestamp_seconds Unix timestamp of the last successful aggregate sample.\n# TYPE librepaper_metrics_snapshot_timestamp_seconds gauge\n");
-        out.push_str(&format!(
-            "librepaper_metrics_snapshot_timestamp_seconds {}\n",
-            self.snapshot_timestamp.load(Ordering::Relaxed)
-        ));
-
-        out.push_str("# HELP librepaper_http_requests_total Completed HTTP requests by bounded route, method, and response class.\n# TYPE librepaper_http_requests_total counter\n");
-        for (route_index, route) in ROUTES.iter().enumerate() {
-            for (method_index, method) in METHODS.iter().enumerate() {
-                for (status_index, status_class) in STATUS_CLASSES.iter().enumerate() {
-                    let index = ((route_index * METHODS.len() + method_index)
-                        * STATUS_CLASSES.len())
-                        + status_index;
-                    let count = self.requests[index].load(Ordering::Relaxed);
-                    out.push_str(&format!("librepaper_http_requests_total{{route=\"{route}\",method=\"{method}\",status_class=\"{status_class}\"}} {count}\n"));
-                }
-            }
-        }
-
-        out.push_str("# HELP librepaper_http_request_duration_seconds HTTP request handling time through response headers.\n# TYPE librepaper_http_request_duration_seconds histogram\n");
-        for (route_index, route) in ROUTES.iter().enumerate() {
-            for (method_index, method) in METHODS.iter().enumerate() {
-                let index = route_index * METHODS.len() + method_index;
-                let bucket_counts: [u64; HISTOGRAM_EDGES_SECONDS.len() + 1] =
-                    std::array::from_fn(|bucket| {
-                        self.histogram_buckets[index * (HISTOGRAM_EDGES_SECONDS.len() + 1) + bucket]
-                            .load(Ordering::Relaxed)
-                    });
-                let mut cumulative = 0;
-                for (edge, bucket_count) in HISTOGRAM_EDGES_SECONDS.iter().zip(bucket_counts.iter())
-                {
-                    cumulative += *bucket_count;
-                    out.push_str(&format!("librepaper_http_request_duration_seconds_bucket{{route=\"{route}\",method=\"{method}\",le=\"{edge}\"}} {cumulative}\n"));
-                }
-                let count: u64 = bucket_counts.iter().sum();
-                out.push_str(&format!("librepaper_http_request_duration_seconds_bucket{{route=\"{route}\",method=\"{method}\",le=\"+Inf\"}} {count}\n"));
-                let sum =
-                    self.histogram_sum_micros[index].load(Ordering::Relaxed) as f64 / 1_000_000.0;
-                out.push_str(&format!("librepaper_http_request_duration_seconds_sum{{route=\"{route}\",method=\"{method}\"}} {sum:.6}\n"));
-                out.push_str(&format!("librepaper_http_request_duration_seconds_count{{route=\"{route}\",method=\"{method}\"}} {count}\n"));
-            }
-        }
-
-        out.push_str("# HELP librepaper_resource_refusals_total Requests refused by bounded deployment resource reason.\n# TYPE librepaper_resource_refusals_total counter\n");
-        for (index, reason) in REFUSALS.iter().enumerate() {
-            let count = self.refusals[index].load(Ordering::Relaxed);
-            out.push_str(&format!(
-                "librepaper_resource_refusals_total{{reason=\"{reason}\"}} {count}\n"
-            ));
-        }
-
-        let gauges = self
-            .gauges
-            .read()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let mut described = HashSet::new();
-        for (family, value) in gauges.iter() {
-            if described.insert(*family) {
-                let kind = if family.ends_with("_total") {
-                    "counter"
-                } else {
-                    "gauge"
-                };
-                out.push_str(&format!("# HELP {family} Aggregate LibrePaper operational measurement.\n# TYPE {family} {kind}\n"));
-            }
-            out.push_str(&format!("{family} {value}\n"));
-        }
+        // Writing to a String cannot fail.
+        let _ = encode(&mut out, &self.registry);
         out
     }
 }
@@ -511,10 +566,7 @@ async fn handle_metrics(State(server): State<Arc<super::Server>>) -> Response<Bo
     match body {
         Ok(body) => Response::builder()
             .status(StatusCode::OK)
-            .header(
-                header::CONTENT_TYPE,
-                "text/plain; version=0.0.4; charset=utf-8",
-            )
+            .header(header::CONTENT_TYPE, OPENMETRICS_CONTENT_TYPE)
             .body(Body::from(body))
             .unwrap(),
         Err(_) => Response::builder()
@@ -759,6 +811,7 @@ const GAUGE_FIELDS: &[(&str, &str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn route_classes_never_retain_dynamic_path_segments() {
@@ -786,10 +839,10 @@ mod tests {
         );
         let text = metrics.render();
         assert!(text.contains("route=\"api_documents\",method=\"GET\",status_class=\"5xx\""));
-        assert!(text.contains("le=\"0.005\"} 0\n"));
-        assert!(text.contains("le=\"0.01\"} 0\n"));
-        assert!(text.contains("le=\"0.025\"} 1\n"));
-        assert!(text.contains("le=\"+Inf\"} 1\n"));
+        assert!(text.contains("le=\"0.005\",route=\"api_documents\",method=\"GET\"} 0\n"));
+        assert!(text.contains("le=\"0.01\",route=\"api_documents\",method=\"GET\"} 0\n"));
+        assert!(text.contains("le=\"0.025\",route=\"api_documents\",method=\"GET\"} 1\n"));
+        assert!(text.contains("le=\"+Inf\",route=\"api_documents\",method=\"GET\"} 1\n"));
         assert!(text.contains("librepaper_http_request_duration_seconds_count{route=\"api_documents\",method=\"GET\"} 1"));
         assert!(text.contains("librepaper_resource_refusals_total{reason=\"work_concurrency\"} 1"));
         for reason in REFUSALS {
@@ -829,7 +882,7 @@ mod tests {
             "librepaper_http_request_duration_seconds_count{route=\"health\",method=\"GET\"} 0\n"
         ));
         assert!(before.contains(
-            "librepaper_http_request_duration_seconds_bucket{route=\"health\",method=\"GET\",le=\"+Inf\"} 0\n"
+            "librepaper_http_request_duration_seconds_bucket{le=\"+Inf\",route=\"health\",method=\"GET\"} 0\n"
         ));
 
         metrics.record_request("health", "GET", 503, Duration::from_millis(12));
@@ -838,10 +891,10 @@ mod tests {
             "librepaper_http_requests_total{route=\"health\",method=\"GET\",status_class=\"5xx\"} 1\n"
         ));
         assert!(after.contains(
-            "librepaper_http_request_duration_seconds_bucket{route=\"health\",method=\"GET\",le=\"0.025\"} 1\n"
+            "librepaper_http_request_duration_seconds_bucket{le=\"0.025\",route=\"health\",method=\"GET\"} 1\n"
         ));
         assert!(after.contains(
-            "librepaper_http_request_duration_seconds_bucket{route=\"health\",method=\"GET\",le=\"+Inf\"} 1\n"
+            "librepaper_http_request_duration_seconds_bucket{le=\"+Inf\",route=\"health\",method=\"GET\"} 1\n"
         ));
         assert!(after.contains(
             "librepaper_http_request_duration_seconds_count{route=\"health\",method=\"GET\"} 1\n"
@@ -877,7 +930,7 @@ mod tests {
             &serde_json::json!({"rooms":{"documents":1}}),
             &librepaper_base::config::Configuration::default(),
         );
-        let timestamp = metrics.snapshot_timestamp.load(Ordering::Relaxed);
+        let timestamp = metrics.snapshot_timestamp.get();
         assert_ne!(timestamp, 0);
         metrics.note_snapshot_failure();
         let text = metrics.render();
@@ -977,5 +1030,45 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap().to_string();
         assert!(bind_address(Some(&address)).await.is_err());
+    }
+
+    #[test]
+    fn exposition_keeps_names_types_and_help_and_ends_with_eof() {
+        let metrics = Metrics::new();
+        metrics.update_gauges(
+            &serde_json::json!({
+                "rooms": {"documents": 3},
+                "memory_budget": {"evicted_caches": 4},
+            }),
+            &librepaper_base::config::Configuration::default(),
+        );
+        let text = metrics.render();
+        assert!(text.ends_with("# EOF\n"));
+        for (name, kind) in [
+            ("librepaper_build_info", "gauge"),
+            ("librepaper_process_uptime_seconds", "gauge"),
+            ("librepaper_metrics_snapshot_success", "gauge"),
+            ("librepaper_metrics_snapshot_timestamp_seconds", "gauge"),
+            ("librepaper_http_requests", "counter"),
+            ("librepaper_http_request_duration_seconds", "histogram"),
+            ("librepaper_resource_refusals", "counter"),
+            ("librepaper_rooms_documents", "gauge"),
+            ("librepaper_memory_budget_evicted_caches", "counter"),
+        ] {
+            assert!(
+                text.contains(&format!("# TYPE {name} {kind}\n")),
+                "missing TYPE for {name}"
+            );
+        }
+        assert!(text.contains(&format!(
+            "librepaper_build_info{{version=\"{}\"}} 1\n",
+            env!("LIBREPAPER_PKG_VERSION")
+        )));
+        assert!(text.contains(
+            "# HELP librepaper_http_requests Completed HTTP requests by bounded route, method, and response class.\n"
+        ));
+        assert!(text.contains("librepaper_memory_budget_evicted_caches_total 4"));
+        assert!(!text.contains("librepaper_memory_budget_evicted_caches_total_total"));
+        assert!(!text.contains("librepaper_http_requests_total_total"));
     }
 }

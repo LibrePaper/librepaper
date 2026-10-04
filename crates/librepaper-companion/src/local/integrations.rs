@@ -190,12 +190,10 @@ pub fn executable(which: Integration) -> Option<PathBuf> {
         }
     }
     if let Some(path) = get(which).path {
-        let exe = if path.is_dir() {
-            path.join(which.program())
-        } else {
-            path
-        };
-        return exe.is_file().then_some(exe);
+        if path.is_dir() {
+            return which::which(path.join(which.program())).ok();
+        }
+        return path.is_file().then_some(path);
     }
     crate::local::tools::find(which.override_var(), which.as_str())
 }
@@ -344,6 +342,12 @@ mod tests {
             #[cfg(not(windows))]
             {
                 std::fs::write(bin_dir.join("quarto"), "#!/bin/sh").expect("write");
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    bin_dir.join("quarto"),
+                    std::fs::Permissions::from_mode(0o755),
+                )
+                .expect("chmod");
             }
             #[cfg(windows)]
             {

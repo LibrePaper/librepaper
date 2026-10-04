@@ -54,7 +54,7 @@ pub(super) fn parse_uuid(value: &str, what: &str) -> Result<uuid::Uuid, Failure>
 pub(crate) fn command_failure(error: librepaper_engine::log::sequencer::CommandError) -> Failure {
     let (error, digest) = crate::server::reply::classify_command(error);
     if let Some(context) = error.log_context() {
-        eprintln!("warning: annotation command: {context}");
+        tracing::warn!("annotation command: {context}");
     }
     if let Some(digest) = digest {
         // §7.1: the words the caller quoted no longer resolve to one place.

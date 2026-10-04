@@ -114,11 +114,43 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = ["c
 # other HTTP and database clients select the same AWS-LC implementation.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 chacha20poly1305 = "0.10"
+# Constant-time comparison for token digests and pairing challenges; what the
+# RustCrypto crates use themselves.
+subtle = "2"
+# Bounded caches with per-entry expiry and request coalescing.
+moka = { version = "0.12", features = ["sync", "future"] }
+# A real unified diff for the permission prompt.
+similar = "3"
+# Executable lookup on PATH, honouring the execute bit and PATHEXT.
+which = "8"
+# Platform base directories: XDG on Linux, the native folders elsewhere.
+etcetera = "0.8"
+# Typed IP networks for the trusted proxies.
+ipnet = "2"
+# GCRA rate limiting, keyed, with a fake clock for tests.
+governor = "0.10"
+# Structured diagnostics. The binaries install the subscriber; every crate
+# emits through the macros.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+# Wave 3 of librepaper#d3m7: the MCP tool schemas are validated by a real
+# JSON Schema implementation, metrics are encoded by the official client,
+# UTF-16 offsets are converted without re-encoding, the Quarto resource
+# scanner parses HTML and CSS, and digests use RFC 8785 canonical JSON.
+jsonschema = { version = "0.58", default-features = false }
+prometheus-client = "0.25"
+str_indices = "0.4"
+lol_html = "3"
+cssparser = "0.38"
+serde_jcs = "0.2"
 # PostgreSQL is the production catalogue. SQLx supplies the async pool and
 # compile-independent migrations; queries are exercised against PostgreSQL in
 # integration tests against the production database engine.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "uuid", "time", "json", "migrate", "macros"] }
-uuid = { version = "1", features = ["v7", "serde"] }
+uuid = { version = "1", features = ["v7", "v8", "serde"] }
+# sqlx names its statement-logging level with log::LevelFilter. The engine
+# emits through tracing; the subscriber bridges log records as well.
 log = "0.4"
 # Free-space statistics for the storage ceiling warning and the capacity
 # snapshot. std has file locks; it has no statvfs.

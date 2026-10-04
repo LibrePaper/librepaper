@@ -479,7 +479,7 @@ pub(super) async fn handle_jobs_post(
         let persisted = jobs
             .get(&id)
             .ok_or_else(|| "admitted Quarto job disappeared".to_string())
-            .and_then(|entry| persist_quarto_job(&id, entry));
+            .and_then(persist_quarto_job);
         if persisted.is_err() {
             jobs.remove(&id);
             drop(queue);

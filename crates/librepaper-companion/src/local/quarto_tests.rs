@@ -867,3 +867,182 @@ async fn real_quarto_render_reports_success_and_retains_a_failure_log() {
         "a failed render must retain its log"
     );
 }
+
+fn closure_of(html: &str, files: &[&str]) -> Result<BTreeSet<String>, String> {
+    let dir = tempdir().expect("project");
+    let output = dir.path().join("output");
+    std::fs::create_dir_all(&output).expect("output directory");
+    for file in files {
+        let path = output.join(file);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("parent directory");
+        std::fs::write(path, b"body{}").expect("resource");
+    }
+    referenced_resource_closure(&output, None, None, "paper.html", html.as_bytes())
+}
+
+#[test]
+fn scanner_decodes_entities_in_attributes() {
+    let references = closure_of(
+        "<link rel=\"stylesheet\" href=\"a.css?x=1&amp;y=2\">",
+        &["a.css"],
+    )
+    .expect("entity-decoded query is stripped");
+    assert!(references.contains("a.css"));
+    let references = closure_of("<img src=\"a&amp;b.png\">", &["a&b.png"])
+        .expect("entity decodes to the file name");
+    assert!(references.contains("a&b.png"));
+}
+
+#[test]
+fn scanner_percent_decodes_paths() {
+    let references = closure_of("<img src=\"my%20fig.png\">", &["my fig.png"])
+        .expect("percent-encoded name resolves to the file");
+    assert!(references.contains("my fig.png"));
+}
+
+#[test]
+fn scanner_reads_srcset_poster_and_object_data() {
+    let references = closure_of(
+        "<img srcset=\"a.png 1x, b.png 2x\"><video poster=\"p.png\"></video><object data=\"o.svg\"></object>",
+        &["a.png", "b.png", "p.png", "o.svg"],
+    )
+    .expect("all present");
+    for name in ["a.png", "b.png", "p.png", "o.svg"] {
+        assert!(references.contains(name), "{name}");
+    }
+    let error = closure_of("<img srcset=\"a.png 1x, b.png 2x\">", &["a.png"]).unwrap_err();
+    assert!(error.contains("b.png"));
+}
+
+#[test]
+fn scanner_follows_css_import_and_url() {
+    let dir = tempdir().expect("project");
+    let output = dir.path().join("output");
+    std::fs::create_dir_all(output.join("sub")).expect("directory");
+    std::fs::write(
+        output.join("sub/main.css"),
+        b"@import \"extra.css\";\n@font-face{src:url('font.woff')}\nbody{background:url(bg.png)}",
+    )
+    .expect("css");
+    std::fs::write(output.join("sub/extra.css"), b"p{}").expect("css");
+    std::fs::write(output.join("sub/font.woff"), b"f").expect("font");
+    std::fs::write(output.join("sub/bg.png"), b"b").expect("image");
+    let references = referenced_resource_closure(
+        &output,
+        None,
+        None,
+        "paper.html",
+        b"<link rel=\"stylesheet\" href=\"sub/main.css\">",
+    )
+    .expect("all css references resolve");
+    for name in ["sub/extra.css", "sub/font.woff", "sub/bg.png"] {
+        assert!(references.contains(name), "{name}");
+    }
+}
+
+#[test]
+fn scanner_reads_inline_svg_image_references() {
+    let references = closure_of(
+        "<svg><image xlink:href=\"figure.png\"/></svg><svg><image href=\"plot.png\"/></svg>",
+        &["figure.png", "plot.png"],
+    )
+    .expect("inline SVG images are resources");
+    assert!(references.contains("figure.png") && references.contains("plot.png"));
+}
+
+#[test]
+fn scanner_reads_svg_presentation_attributes_and_anchor_links() {
+    let references = closure_of(
+        "<svg><rect filter=\"url(filters.svg#blur)\" fill=\"url(paint.svg#g)\"/></svg>",
+        &["filters.svg", "paint.svg"],
+    )
+    .expect("SVG presentation attributes name resources");
+    assert!(references.contains("filters.svg") && references.contains("paint.svg"));
+
+    let references = closure_of("<svg><a xlink:href=\"other.html\"></a></svg>", &[])
+        .expect("an SVG anchor is navigation, so an absent target is allowed");
+    assert!(references.is_empty());
+
+    let references = closure_of(
+        "<div style=\"background:URL(bg.png)\"></div><svg><rect fill=\"Url(paint.svg#g)\"/></svg>",
+        &["bg.png", "paint.svg"],
+    )
+    .expect("the url function is case-insensitive");
+    assert!(references.contains("bg.png") && references.contains("paint.svg"));
+}
+
+#[test]
+fn scanner_reads_url_inside_inline_style() {
+    let references =
+        closure_of("<style>.a{background:url(bg.png)}</style>", &["bg.png"]).expect("present");
+    assert!(references.contains("bg.png"));
+    let error = closure_of("<style>.a{background:url(\"bg.png\")}</style>", &[]).unwrap_err();
+    assert!(error.contains("bg.png"));
+    let references = closure_of(
+        "<style>/*</style><style>body{background:url(bg.png)}</style>",
+        &["bg.png"],
+    )
+    .expect("an open comment in one style element does not swallow the next");
+    assert!(references.contains("bg.png"));
+}
+
+#[test]
+fn scanner_ignores_src_text_inside_script() {
+    let references = closure_of(
+        "<script>var s = '<img src=\"ghost.png\">'; var t = \"src=other.js\";</script>",
+        &[],
+    )
+    .expect("script text is not a reference");
+    assert!(references.is_empty());
+}
+
+#[test]
+fn srcset_candidates_follow_html_syntax() {
+    let references = closure_of("<img srcset=\"a.png 1x, b.png 2x\">", &["a.png", "b.png"])
+        .expect("both candidates");
+    assert!(references.contains("a.png") && references.contains("b.png"));
+
+    let references = closure_of(
+        "<img srcset=\"data:image/png;base64,iVBORw0KGgo= 1x, c.png 2x\">",
+        &["c.png"],
+    )
+    .expect("the data URL is not a local dependency");
+    assert_eq!(references.len(), 1);
+    assert!(references.contains("c.png"));
+
+    let references = closure_of("<img srcset=\"x,y.png 1x\">", &["x,y.png"])
+        .expect("a comma inside a file name is kept");
+    assert!(references.contains("x,y.png"));
+
+    let references = closure_of("<img srcset=\"a.png 1x,b.png 2x\">", &["a.png", "b.png"])
+        .expect("a descriptor comma without a space still ends the candidate");
+    assert!(references.contains("a.png") && references.contains("b.png"));
+
+    let references = closure_of("<img srcset=\"a.png,, b.png 2x\">", &["a.png", "b.png"])
+        .expect("repeated separators collapse");
+    assert!(references.contains("a.png") && references.contains("b.png"));
+    assert_eq!(references.len(), 2);
+}
+
+#[test]
+fn css_resolves_beside_a_directory_with_url_special_characters() {
+    for directory in ["assets#old", "100%25"] {
+        let dir = tempdir().expect("project");
+        let output = dir.path().join("output");
+        std::fs::create_dir_all(output.join(directory)).expect("directory");
+        std::fs::write(output.join(directory).join("bg.png"), b"b").expect("image");
+        let sheet = "body{background:url(bg.png)}".to_string();
+        std::fs::write(output.join(directory).join("style.css"), sheet).expect("css");
+        let href = format!(
+            "<link rel=\"stylesheet\" href=\"{}/style.css\">",
+            directory.replace('%', "%25").replace('#', "%23")
+        );
+        let references =
+            referenced_resource_closure(&output, None, None, "paper.html", href.as_bytes())
+                .expect("sheet and image resolve");
+        assert!(
+            references.contains(&format!("{directory}/bg.png")),
+            "{directory}"
+        );
+    }
+}

@@ -11,6 +11,7 @@ repository.workspace = true
 doctest = false
 
 [dependencies]
+html-escape.workspace = true
 librepaper-base = { path = "../librepaper-base" }
 hex.workspace = true
 loro.workspace = true

@@ -676,7 +676,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // here on is invisible otherwise: the assistant answers happily with no
     // document tools and nothing anywhere says which of the agent, the
     // adapter or the connection was at fault.
-    eprintln!("agent command: {:?}", config.agent);
+    tracing::info!("agent command: {:?}", config.agent);
     let mut agent = start_agent_with_bridge(
         config,
         lease,
@@ -946,7 +946,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                 if let (Some(id), Some(chosen)) = (value["option"].as_str(), value["value"].as_str()) {
                                     match agent.set_option(id, chosen).await {
                                         Ok(updated) => options = updated,
-                                        Err(error) => eprintln!("could not set agent option {id}: {error}"),
+                                        Err(error) => tracing::warn!("could not set agent option {id}: {error}"),
                                     }
                                     publish_agent_label(&session_path, &options)?;
                                     emit_options(&transport, &options).await?;

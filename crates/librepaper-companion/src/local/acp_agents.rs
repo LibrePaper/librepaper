@@ -240,12 +240,9 @@ impl CustomStore {
 }
 
 /// Look up `name` on PATH. Returns the absolute path to the first match that
-/// is a file, which is all a caller needs to decide whether to offer it.
+/// is executable, which is all a caller needs to decide whether to offer it.
 pub fn on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+    which::which(name).ok()
 }
 
 /// Every known agent present on this computer, in the order the sidebar

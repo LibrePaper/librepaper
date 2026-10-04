@@ -157,13 +157,13 @@ impl Handle {
             Err(tokio::sync::mpsc::error::TrySendError::Full(task)) => {
                 self.meter.refused_wake_ups.fetch_add(1, Ordering::Relaxed);
                 if !self.rescan.swap(true, Ordering::AcqRel) {
-                    ::log::debug!(
+                    tracing::debug!(
                         "background worker queue full; retaining durable wake-up for {task:?}"
                     );
                 }
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(task)) => {
-                ::log::debug!("background worker stopped before accepting {task:?}");
+                tracing::debug!("background worker stopped before accepting {task:?}");
             }
         }
     }
@@ -691,13 +691,13 @@ impl Worker {
             // deadline is folded into the earliest refusal time. That wake-up
             // rescans durable work and reconstructs periodic orphan work from
             // its separately retained deadline.
-            ::log::warn!(
+            tracing::warn!(
                 "background task {task:?} failed and the retry map is full \
                  ({} deadlines); work will be reconstructed after a rescan: {error}",
                 self.deadlines.len()
             );
         } else {
-            ::log::warn!(
+            tracing::warn!(
                 "background task {task:?} failed ({} in a row); \
                  trying again in {}s: {error}",
                 self.deadlines.failures(&task),

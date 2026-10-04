@@ -22,39 +22,16 @@ use uuid::Uuid;
 use super::blob::{BlobError, BlobStore};
 use super::postgres::{NewSnapshot, PostgresCatalog};
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-    Database(super::postgres::Error),
-    Blob(BlobError),
+    #[error(transparent)]
+    Database(#[from] super::postgres::Error),
+    #[error(transparent)]
+    Blob(#[from] BlobError),
+    #[error("{0}")]
     Invalid(String),
-    Io(std::io::Error),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Database(e) => e.fmt(f),
-            Self::Blob(e) => e.fmt(f),
-            Self::Invalid(e) => f.write_str(e),
-            Self::Io(e) => e.fmt(f),
-        }
-    }
-}
-impl std::error::Error for Error {}
-impl From<super::postgres::Error> for Error {
-    fn from(v: super::postgres::Error) -> Self {
-        Self::Database(v)
-    }
-}
-impl From<BlobError> for Error {
-    fn from(v: BlobError) -> Self {
-        Self::Blob(v)
-    }
-}
-impl From<std::io::Error> for Error {
-    fn from(v: std::io::Error) -> Self {
-        Self::Io(v)
-    }
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 pub struct CollaborationStorage {

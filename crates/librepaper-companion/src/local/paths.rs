@@ -1,15 +1,36 @@
 //! Process and state paths shared by non-CLI entry points.
+//!
+//! Every platform uses the XDG layout (`~/.local/state`, `~/.config`,
+//! `~/.cache`), not the native folders, so existing tokens, pairings,
+//! bindings and backup schedules stay where earlier versions put them.
+//! etcetera still resolves the home directory natively, which is what
+//! makes this work on Windows.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use etcetera::base_strategy::{BaseStrategy, Xdg};
+
+/// The user home directory, or nothing when the platform reports none.
+pub fn home() -> Option<PathBuf> {
+    Xdg::new()
+        .ok()
+        .map(|strategy| strategy.home_dir().to_path_buf())
+}
+
+/// The user configuration base directory (`$XDG_CONFIG_HOME` on Linux).
+pub fn config_home() -> Option<PathBuf> {
+    Xdg::new().ok().map(|strategy| strategy.config_dir())
+}
+
+/// The user cache base directory (`$XDG_CACHE_HOME` on Linux).
+pub fn cache_home() -> Option<PathBuf> {
+    Xdg::new().ok().map(|strategy| strategy.cache_dir())
+}
 
 pub fn state_home() -> Result<PathBuf, String> {
-    if let Some(base) = std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(base));
-    }
-    let home = std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .ok_or("no home directory to store LibrePaper state")?;
-    Ok(Path::new(&home).join(".local").join("state"))
+    let strategy =
+        Xdg::new().map_err(|_| "no home directory to store LibrePaper state".to_string())?;
+    Ok(strategy.state_dir().unwrap_or_else(|| strategy.data_dir()))
 }
 
 /// The state directory to read and write under, following XDG: where the
