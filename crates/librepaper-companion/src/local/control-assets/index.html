@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>LibrePaper companion</title>
+    <link rel="stylesheet" href="/companion/style.css">
+    <script src="/companion/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/companion/" aria-label="LibrePaper companion home">
+        <span class="brand-mark" aria-hidden="true">L</span>
+        <span>LibrePaper <span class="brand-light">companion</span></span>
+      </a>
+      <div class="connection" aria-live="polite">
+        <span id="connection-dot" class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-label">Connecting…</span>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section id="locked" class="welcome panel" hidden>
+        <div class="eyebrow">LOCAL CONTROL PANEL</div>
+        <h1>Open this page from LibrePaper</h1>
+        <p>This dashboard is private to the companion running on this computer. Open it from the LibrePaper app or tray menu.</p>
+        <p class="subtle">The private link is created on this computer and is never shared with a requesting website.</p>
+        <div class="help-box"><strong>From a terminal</strong><code>librepaper desktop</code><span>LibrePaper starts the companion and opens your private dashboard.</span></div>
+      </section>
+
+      <section id="dashboard" hidden>
+        <div class="page-heading">
+          <div><div class="eyebrow">YOUR COMPUTER</div><h1>Companion dashboard</h1><p id="welcome-line" class="subtle">Local tools and access for LibrePaper.</p></div>
+          <button id="refresh-button" class="button quiet" type="button">Refresh status</button>
+        </div>
+
+        <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+        <section class="section" aria-labelledby="approvals-heading">
+          <div class="section-heading"><div><div class="eyebrow">NEEDS YOUR DECISION</div><h2 id="approvals-heading">Approvals</h2></div><span id="approval-count" class="count">0</span></div>
+          <div id="approvals" class="card-list"><div class="empty panel">No requests are waiting.</div></div>
+        </section>
+
+        <section class="section" aria-labelledby="tools-heading">
+          <div class="section-heading"><div><div class="eyebrow">LOCAL CAPABILITIES</div><h2 id="tools-heading">Tools</h2></div><button id="rescan-button" class="button quiet" type="button">Rescan tools</button></div>
+          <div id="tools" class="tool-grid"></div>
+        </section>
+
+        <div class="columns">
+          <section class="section" aria-labelledby="sites-heading">
+            <div class="section-heading"><div><div class="eyebrow">CONNECTED SITES</div><h2 id="sites-heading">Sites</h2></div></div>
+            <div id="pairings" class="card-list"><div class="empty panel">No connected sites.</div></div>
+          </section>
+          <section class="section" aria-labelledby="folders-heading">
+            <div class="section-heading"><div><div class="eyebrow">LOCAL FILE ACCESS</div><h2 id="folders-heading">Authorized folders</h2></div></div>
+            <div id="bindings" class="card-list"><div class="empty panel">No folders are authorized.</div></div>
+          </section>
+        </div>
+
+        <section class="section" aria-labelledby="activity-heading">
+          <div class="section-heading"><div><div class="eyebrow">RECENT WORK</div><h2 id="activity-heading">Activity</h2></div></div>
+          <div id="activity" class="card-list"><div class="empty panel">Nothing is running.</div></div>
+        </section>
+
+        <section class="section" aria-labelledby="settings-heading">
+          <div class="section-heading"><div><div class="eyebrow">ON THIS COMPUTER</div><h2 id="settings-heading">Settings</h2></div></div>
+          <form id="settings-form" class="panel settings-form">
+            <label class="field"><span>Extra tool search folders</span><textarea id="tool-paths" rows="3" spellcheck="false" placeholder="One folder path per line"></textarea><small>These folders are searched before the usual PATH. Paths stay on this computer.</small></label>
+            <div id="integration-settings" class="integration-grid"></div>
+            <div id="startup-setting" class="toggle-row" hidden><label for="startup-enabled"><span><strong>Start at login</strong><small>Ask LibrePaper to start when you sign in to this computer.</small></span><input id="startup-enabled" type="checkbox"></label></div>
+            <div id="tray-setting" class="toggle-row" hidden><label for="tray-enabled"><span><strong>Show tray icon</strong><small id="tray-help">Keep quick controls available in the system tray when supported.</small></span><input id="tray-enabled" type="checkbox"></label></div>
+            <div class="settings-actions"><span id="settings-hint" class="subtle">Tray preference changes take effect immediately when supported.</span><button class="button primary" type="submit">Save settings</button></div>
+          </form>
+          <div class="section-heading subsection"><div><h3>Agents available here</h3><p class="subtle">Commands are run on this computer when a document asks you to start an agent.</p></div></div>
+          <div id="agents" class="card-list"></div>
+          <form id="agent-form" class="panel agent-form">
+            <h3>Add an agent</h3>
+            <div class="field-grid"><label class="field"><span>Name</span><input id="agent-name" required autocomplete="off" placeholder="For example, My writing agent"></label><label class="field"><span>Command</span><input id="agent-command" required autocomplete="off" placeholder="For example, my-agent"></label></div>
+            <label class="field"><span>Arguments</span><textarea id="agent-args" rows="2" spellcheck="false" placeholder="One argument per line"></textarea></label>
+            <button class="button quiet" type="submit">Add agent</button>
+          </form>
+        </section>
+
+        <footer class="footer"><span id="version-label">LibrePaper companion</span><span id="standalone-note"></span><button id="quit-button" class="button danger" type="button" hidden>Quit companion</button></footer>
+      </section>
+    </main>
+  </body>
+</html>

@@ -37,8 +37,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch, Mutex, Notify};
 
-use crate::local::pairing::{self, PairingStore};
 use crate::local::approval::ApprovalBroker;
+use crate::local::pairing::{self, PairingStore};
 use crate::local::preview;
 use crate::local::protocol::{
     self, Capabilities, JobOptions, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace,
@@ -612,7 +612,9 @@ impl LocalService {
             let port = self.inner.port;
             let instance = self.inner.instance.clone();
             self.inner.approvals.set_opener(Some(Arc::new(move || {
-                if let Err(error) = super::lifecycle::open_control_panel(&state_home, port, &instance) {
+                if let Err(error) =
+                    super::lifecycle::open_control_panel(&state_home, port, &instance)
+                {
                     eprintln!("could not open companion control panel: {error}");
                 }
             })));
@@ -627,7 +629,11 @@ impl LocalService {
         if self.inner.control.lock().await.is_none() {
             self.enable_control_panel().await?;
         }
-        super::lifecycle::open_control_panel(&self.inner.state_home, self.inner.port, &self.inner.instance)
+        super::lifecycle::open_control_panel(
+            &self.inner.state_home,
+            self.inner.port,
+            &self.inner.instance,
+        )
     }
 
     /// Resolve any in-flight consent handlers as denied before graceful
@@ -1024,9 +1030,7 @@ async fn handle(
         };
     }
 
-    if path == "/companion"
-        || path.starts_with("/companion/")
-    {
+    if path == "/companion" || path.starts_with("/companion/") {
         let response = control::handle(&inner, &method, &path, &headers, peer, request).await;
         return control::apply_headers(response, &path);
     }

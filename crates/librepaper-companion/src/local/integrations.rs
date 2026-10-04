@@ -427,9 +427,11 @@ mod tests {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let directory = tempfile::tempdir().unwrap();
-        let quarto = directory
-            .path()
-            .join(if cfg!(windows) { "quarto.exe" } else { "quarto" });
+        let quarto = directory.path().join(if cfg!(windows) {
+            "quarto.exe"
+        } else {
+            "quarto"
+        });
         std::fs::write(&quarto, b"fixture executable").unwrap();
         let state_home = tempfile::tempdir().unwrap();
         init_with_tool_paths(state_home.path(), vec![directory.path().to_path_buf()]);

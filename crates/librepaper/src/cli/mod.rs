@@ -29,6 +29,7 @@ pub use tokens::*;
 #[command(name = "librepaper", version = crate::VERSION, about = "launch the companion to connect local tools to documents; host HTML, markdown and typst documents", long_about = None, args_conflicts_with_subcommands = true)]
 #[command(
     after_help = "Run `librepaper` or `librepaper start` to launch the companion, then connect it in Settings → Local app.
+Run `librepaper desktop` to open the local control panel, or `librepaper install-desktop` to install a desktop launcher.
 
 To sign in from this terminal, set the deployment and run `librepaper login`:
 
@@ -288,6 +289,10 @@ pub(crate) enum Command {
         )]
         tool_path: Vec<PathBuf>,
     },
+    /// Open the local companion control panel in a browser.
+    Desktop,
+    /// Install a native launcher for `librepaper desktop`.
+    InstallDesktop,
     /// Manage agents this computer offers to the document sidebar
     Agent {
         #[command(subcommand)]
@@ -501,6 +506,18 @@ pub async fn main() {
                 command: LocalCommand::Status { tool_path },
             })
             .await
+        }
+        Command::Desktop => {
+            librepaper_companion::local::cli::run(LocalArgs {
+                command: LocalCommand::Desktop,
+            })
+            .await
+        }
+        Command::InstallDesktop => {
+            match librepaper_companion::local::lifecycle::install_desktop_shortcut() {
+                Ok(path) => println!("LibrePaper launcher installed at {}", path.display()),
+                Err(error) => die(error),
+            }
         }
         Command::Agent { command } => {
             librepaper_companion::local::cli::run(LocalArgs {
@@ -797,6 +814,8 @@ mod socket_policy_tests {
         for args in [
             vec!["librepaper", "stop"],
             vec!["librepaper", "status"],
+            vec!["librepaper", "desktop"],
+            vec!["librepaper", "install-desktop"],
             vec!["librepaper", "agent", "list"],
             vec!["librepaper", "local", "start", "--foreground"],
             vec!["librepaper", "local", "stop"],
@@ -810,6 +829,7 @@ mod socket_policy_tests {
         assert!(
             Cli::try_parse_from(["librepaper", "local", "open", "librepaper://connect"]).is_ok()
         );
+        assert!(Cli::try_parse_from(["librepaper", "local", "tray"]).is_ok());
     }
 
     #[test]
@@ -822,7 +842,17 @@ mod socket_policy_tests {
             assert!(Cli::try_parse_from(args).is_err());
         }
         let help = Cli::command().render_help().to_string();
-        for command in ["start", "stop", "status", "agent", "login", "list", "admin"] {
+        for command in [
+            "start",
+            "stop",
+            "status",
+            "desktop",
+            "install-desktop",
+            "agent",
+            "login",
+            "list",
+            "admin",
+        ] {
             assert!(help.contains(command), "missing {command} in {help}");
         }
         assert!(!help.contains("local start"));

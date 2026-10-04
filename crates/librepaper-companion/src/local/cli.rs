@@ -83,6 +83,11 @@ pub enum LocalCommand {
         /// Origin (e.g. https://papers.example)
         origin: String,
     },
+    /// Start or reuse the companion and open its local control panel.
+    Desktop,
+    /// Internal helper process for the optional system tray.
+    #[command(hide = true)]
+    Tray,
     /// Teach this computer an ACP agent the sidebar can drive
     #[command(hide = true)]
     Agent {
@@ -129,10 +134,12 @@ pub async fn run(args: LocalArgs) {
                     die(error);
                 }
             }
+            let tool_path = crate::local::settings::tool_paths(&state_home(), args.tool_path)
+                .unwrap_or_else(|error| die(error));
             if args.foreground {
-                start_foreground(port, args.tool_path).await
+                start_foreground(port, tool_path).await
             } else {
-                start_background(port, &args.tool_path).await
+                start_background(port, &tool_path).await
             }
         }
         LocalCommand::Stop => stop().await,
@@ -140,7 +147,34 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Status { tool_path } => status(tool_path).await,
         LocalCommand::Approve { code } => approve(&code).await,
         LocalCommand::Disconnect { origin } => disconnect(origin),
+        LocalCommand::Desktop => desktop().await,
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        LocalCommand::Tray => super::tray::run().await,
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        LocalCommand::Tray => die("tray icons are unsupported on this platform"),
         LocalCommand::Agent { command } => local_agent(command),
+    }
+}
+
+#[cfg(test)]
+mod cache_path_tests {
+    use super::*;
+
+    #[test]
+    fn cache_home_uses_local_app_data_when_windows_has_no_home() {
+        let result =
+            cache_home_from(None, None, Some(r"C:\Users\Ada\AppData\Local".into())).unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from(r"C:\Users\Ada\AppData\Local")
+                .join("LibrePaper")
+                .join("Cache")
+        );
+        assert_eq!(
+            cache_home_from(None, Some("/home/ada".into()), Some("C:\\local".into())).unwrap(),
+            PathBuf::from("/home/ada/.cache"),
+            "HOME retains precedence over the Windows fallback"
+        );
     }
 }
 
@@ -151,16 +185,34 @@ pub async fn run(args: LocalArgs) {
 /// testable with an explicit directory -- the same reasoning
 /// `crate::local::paths::state_home_or_die` gives for the token cache.
 fn cache_home() -> PathBuf {
-    match std::env::var("XDG_CACHE_HOME") {
-        Ok(base) if !base.is_empty() => PathBuf::from(base),
-        _ => {
-            let home = std::env::var("HOME")
-                .ok()
-                .filter(|h| !h.is_empty())
-                .unwrap_or_else(|| die("no home directory to store the job cache in"));
-            PathBuf::from(home).join(".cache")
-        }
+    let local_app_data = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA")
+    } else {
+        None
+    };
+    cache_home_from(
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+        local_app_data,
+    )
+    .unwrap_or_else(|error| die(error))
+}
+
+fn cache_home_from(
+    xdg_cache: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+    local_app_data: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    if let Some(base) = xdg_cache.filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(base));
     }
+    if let Some(home) = home.filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(home).join(".cache"));
+    }
+    if let Some(base) = local_app_data.filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(base).join("LibrePaper").join("Cache"));
+    }
+    Err("no home directory to store the job cache in".into())
 }
 
 async fn start_background(port: u16, tool_path: &[PathBuf]) {
@@ -170,6 +222,18 @@ async fn start_background(port: u16, tool_path: &[PathBuf]) {
             state.port
         ),
         Err(error) => die(error),
+    }
+}
+
+async fn desktop() {
+    let state_home = state_home();
+    let state = crate::local::lifecycle::spawn_background(0, &[])
+        .await
+        .unwrap_or_else(|error| die(error));
+    if let Err(error) =
+        crate::local::lifecycle::open_control_panel(&state_home, state.port, &state.instance)
+    {
+        die(error);
     }
 }
 
@@ -215,6 +279,11 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     if let Err(err) = pairing.write_service(&state) {
         die(format!("could not write service.json: {err}"));
     }
+    if crate::local::settings::tray_enabled(&state_home) {
+        if let Err(error) = crate::local::lifecycle::ensure_tray(&state_home) {
+            eprintln!("tray helper could not start: {error}");
+        }
+    }
 
     // Every document renders in a workspace of its own under the cache,
     // written from the files the browser sends with each job: nothing has
@@ -239,6 +308,13 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
         None,
         workspaces,
     );
+    // Production starts keep the control token private and expose it only to
+    // explicit browser launches or the local approval broker. The returned
+    // URL is deliberately discarded here and never reaches stdout or logs.
+    let _control_panel_url = service
+        .enable_control_panel()
+        .await
+        .unwrap_or_else(|error| die(error));
     let router = service.router();
 
     println!(
@@ -261,6 +337,7 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     };
 
     let make_v4 = router.into_make_service_with_connect_info::<SocketAddr>();
+    let shutdown_service = service.clone();
     let shutdown = async move {
         let stop_poll = async {
             let mut poll = tokio::time::interval(Duration::from_millis(250));
@@ -275,6 +352,7 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
             _ = tokio::signal::ctrl_c() => {},
             _ = stop_poll => {},
         }
+        shutdown_service.deny_pending_approvals().await;
     };
     if let Err(err) = axum::serve(listener, make_v4)
         .with_graceful_shutdown(shutdown)
@@ -365,6 +443,15 @@ async fn status(tool_path: Vec<PathBuf>) {
                 }
             }
             print_pairings(&pairing);
+            println!(
+                "tray: {} ({})",
+                if crate::local::settings::tray_enabled(&home) {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                crate::local::lifecycle::tray_availability()
+            );
         }
         None => {
             println!("Companion is not running");

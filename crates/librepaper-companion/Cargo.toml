@@ -56,21 +56,14 @@ zip.workspace = true
 # external programs. macOS and Windows use the system toolkits through rfd.
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 rfd.workspace = true
+tray-icon.workspace = true
+tao.workspace = true
 
-# Linux draws its own approval dialog (local::dialog) and asks the desktop
-# portal for folders. The release binary is static musl, so nothing here may
-# link or dlopen a C library: wayland-backend without `client_system` speaks
-# the protocol in Rust, sctk without `xkbcommon` (dialog.rs reads raw
-# keycodes), x11rb without `allow-unsafe-code`, ashpd over zbus.
+# Linux asks the desktop portal for folders through the pure-Rust D-Bus client.
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd.workspace = true
-wayland-backend.workspace = true
-wayland-client.workspace = true
-smithay-client-toolkit.workspace = true
-x11rb.workspace = true
-ab_glyph.workspace = true
-epaint_default_fonts.workspace = true
-tiny-skia.workspace = true
+tray-icon = { workspace = true, features = ["ksni"] }
+
 
 [dev-dependencies]
 # `start_paused` and `advance`, so the deadline tests move a clock instead of

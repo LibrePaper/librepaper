@@ -9,6 +9,8 @@ After [installing LibrePaper](install.html), run `librepaper` in a terminal to s
 ```sh
 librepaper                                      # start in background
 librepaper start                                # explicit equivalent
+librepaper desktop                              # start/reuse companion and open dashboard
+librepaper install-desktop                      # install a native desktop launcher
 librepaper --at-login                           # start now and at login
 librepaper --foreground                        # run in this process
 librepaper --port 8763                          # use a chosen port
@@ -25,7 +27,9 @@ librepaper export c9k ./paper-copy --key URL    # read as share-link holder
 librepaper export c9k ./paper-copy --at "v1"    # historical version
 ```
 
-On a machine with no display, check `companion.log` for the code and run `librepaper local approve <code>` within 5 minutes.
+The dashboard is a browser tab. Closing the tab leaves the companion running; use **Quit companion** or `librepaper stop` to stop it. Start-at-login is optional. The tray icon is optional and depends on desktop-environment support. Folder selection uses the operating system's native chooser.
+
+On a machine with no display, check `companion.log` for the approval code and run `librepaper local approve <code>` within two minutes. This headless fallback does not require a browser dashboard.
 
 For scheduled local backups, see [account backups](backups.html).
 

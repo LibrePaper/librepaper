@@ -26,10 +26,7 @@ pub(super) struct ControlAuth {
 
 impl ControlAuth {
     pub(super) fn create(state_home: &Path, instance: &str) -> Result<Self, String> {
-        let path = state_home
-            .join("librepaper")
-            .join("local")
-            .join(TOKEN_FILE);
+        let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
         if let Ok(bytes) = crate::local::service::read_bounded_public(&path, 4096) {
             if let Ok(file) = serde_json::from_slice::<TokenFile>(&bytes) {
                 if file.instance == instance && (32..=128).contains(&file.token.len()) {
@@ -85,7 +82,10 @@ pub(super) async fn handle(
             format!("http://localhost:{}", inner.port),
             format!("http://[::1]:{}", inner.port),
         ];
-        if !expected.iter().any(|allowed| origin.eq_ignore_ascii_case(allowed)) {
+        if !expected
+            .iter()
+            .any(|allowed| origin.eq_ignore_ascii_case(allowed))
+        {
             return write_json(403, &json!({"error":"foreign origin denied"}));
         }
     }
@@ -118,7 +118,9 @@ pub(super) async fn handle(
         return plain(404, "not found");
     };
     let Some(token) = header_str(headers, "authorization").and_then(|value| {
-        value.strip_prefix("Bearer ").filter(|value| !value.is_empty())
+        value
+            .strip_prefix("Bearer ")
+            .filter(|value| !value.is_empty())
     }) else {
         return write_json(401, &json!({"error":"authorization required"}));
     };
@@ -133,7 +135,12 @@ pub(super) async fn handle(
 
     let path = rest.trim_end_matches('/');
     let mut segments = path.split('/');
-    let route = (segments.next(), segments.next(), segments.next(), segments.next());
+    let route = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    );
     if segments.next().is_some() {
         return write_json(404, &json!({"error":"not found"}));
     }
@@ -168,7 +175,9 @@ pub(super) async fn handle(
                 write_json(404, &json!({"error":"preview not found"}))
             }
         }
-        (Some("agents"), None, None, None) if *method == Method::POST => add_agent(inner, request).await,
+        (Some("agents"), None, None, None) if *method == Method::POST => {
+            add_agent(inner, request).await
+        }
         (Some("agents"), Some(id), None, None) if *method == Method::DELETE => {
             let removed = crate::local::acp_agents::CustomStore::new(&inner.state_home).remove(id);
             write_json(200, &json!({"removed":removed}))
@@ -185,7 +194,11 @@ pub(super) async fn handle(
 }
 
 pub(super) fn apply_headers(mut response: Reply, path: &str) -> Reply {
-    set(&mut response, "cache-control", "no-store, no-cache, must-revalidate");
+    set(
+        &mut response,
+        "cache-control",
+        "no-store, no-cache, must-revalidate",
+    );
     set(&mut response, "pragma", "no-cache");
     set(&mut response, "referrer-policy", "no-referrer");
     set(&mut response, "x-content-type-options", "nosniff");
@@ -197,7 +210,11 @@ pub(super) fn apply_headers(mut response: Reply, path: &str) -> Reply {
         "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
     );
     if path.starts_with("/companion/api/") {
-        set(&mut response, "content-type", "application/json; charset=utf-8");
+        set(
+            &mut response,
+            "content-type",
+            "application/json; charset=utf-8",
+        );
     }
     response
 }
@@ -331,14 +348,19 @@ async fn decide_approval(inner: &Inner, id: &str, request: Request<Body>) -> Rep
 }
 
 async fn revoke_pairing(inner: &Inner, id: &str) -> Reply {
-    let origin = inner.pairing.active_details().into_iter().find_map(
-        |(candidate, origin, _, _, _)| (candidate == id).then_some(origin),
-    );
+    let origin = inner
+        .pairing
+        .active_details()
+        .into_iter()
+        .find_map(|(candidate, origin, _, _, _)| (candidate == id).then_some(origin));
     let Some(origin) = origin else {
         return write_json(404, &json!({"error":"pairing not found"}));
     };
     let connections = super::consent::revoke_origin(inner, &origin).await;
-    write_json(200, &json!({"revoked":true,"connections_removed":connections}))
+    write_json(
+        200,
+        &json!({"revoked":true,"connections_removed":connections}),
+    )
 }
 
 async fn cancel_job(inner: &Inner, id: &str) -> Reply {
@@ -381,7 +403,10 @@ async fn choose_binding_folder(inner: &Inner, request: Request<Body>) -> Reply {
         Err(response) => return response,
     };
     let Some(origin) = crate::local::pairing::valid_origin(&body.origin) else {
-        return write_json(400, &json!({"error":"binding needs a valid paired site origin"}));
+        return write_json(
+            400,
+            &json!({"error":"binding needs a valid paired site origin"}),
+        );
     };
     if !inner.pairing.has_live_pairing(&origin) {
         return write_json(404, &json!({"error":"site pairing not found"}));
@@ -393,16 +418,25 @@ async fn choose_binding_folder(inner: &Inner, request: Request<Body>) -> Reply {
         return write_json(400, &json!({"error":error}));
     }
     let Ok(_dialog) = inner.folder_dialog.try_lock() else {
-        return write_json(409, &json!({"error":"A folder chooser is already open on this computer."}));
+        return write_json(
+            409,
+            &json!({"error":"A folder chooser is already open on this computer."}),
+        );
     };
     let root = match super::super::folder::choose_directory(&origin, &project).await {
         Ok(root) => root,
         Err(error) => return write_json(400, &json!({"error":error})),
     };
     if !inner.pairing.has_live_pairing(&origin) {
-        return write_json(401, &json!({"error":"site pairing was revoked while choosing a folder"}));
+        return write_json(
+            401,
+            &json!({"error":"site pairing was revoked while choosing a folder"}),
+        );
     }
-    match inner.quarto_bindings.grant(&origin, &project, &root, &body.entrypoint) {
+    match inner
+        .quarto_bindings
+        .grant(&origin, &project, &root, &body.entrypoint)
+    {
         Ok(binding) => write_json(200, &json!({"binding":binding})),
         Err(error) => write_json(400, &json!({"error":error})),
     }
@@ -420,13 +454,23 @@ async fn add_agent(inner: &Inner, request: Request<Body>) -> Reply {
         Ok(body) => body,
         Err(response) => return response,
     };
-    if body.command.len() > 64 || body.command.iter().any(|part| part.len() > 4096 || part.contains('\0')) {
-        return write_json(400, &json!({"error":"agent command is too large or invalid"}));
+    if body.command.len() > 64
+        || body
+            .command
+            .iter()
+            .any(|part| part.len() > 4096 || part.contains('\0'))
+    {
+        return write_json(
+            400,
+            &json!({"error":"agent command is too large or invalid"}),
+        );
     }
     let id = body.id.unwrap_or_else(|| agent_id(&body.label));
-    match crate::local::acp_agents::CustomStore::new(&inner.state_home)
-        .add(&id, &body.label, &body.command)
-    {
+    match crate::local::acp_agents::CustomStore::new(&inner.state_home).add(
+        &id,
+        &body.label,
+        &body.command,
+    ) {
         Ok(()) => write_json(200, &json!({"id":id})),
         Err(error) => write_json(400, &json!({"error":error})),
     }
@@ -450,7 +494,11 @@ fn agent_id(label: &str) -> String {
     while id.ends_with('-') {
         id.pop();
     }
-    if id.is_empty() { "agent".into() } else { id }
+    if id.is_empty() {
+        "agent".into()
+    } else {
+        id
+    }
 }
 
 #[derive(Deserialize)]
@@ -471,7 +519,10 @@ async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
         Err(error) => return write_json(500, &json!({"error":error})),
     };
     if body.startup_enabled.is_some() && !super::standalone(inner) {
-        return write_json(409, &json!({"error":"startup is available only in standalone mode"}));
+        return write_json(
+            409,
+            &json!({"error":"startup is available only in standalone mode"}),
+        );
     }
     let integration_updates: Vec<_> = if let Some(integrations) = &body.integrations {
         let mut updates = Vec::with_capacity(integrations.len());
@@ -491,7 +542,10 @@ async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
     };
     if let Some(paths) = body.tool_paths.as_ref() {
         if paths.len() > MAX_TOOL_PATHS || paths.iter().any(|path| !path.is_absolute()) {
-            return write_json(400, &json!({"error":"tool_paths must contain at most 64 absolute paths"}));
+            return write_json(
+                400,
+                &json!({"error":"tool_paths must contain at most 64 absolute paths"}),
+            );
         }
         settings.tool_paths = paths.clone();
     }
@@ -534,7 +588,10 @@ async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
 
 async fn quit(inner: &Inner) -> Reply {
     if !super::standalone(inner) {
-        return write_json(409, &json!({"error":"quit is available only in standalone mode"}));
+        return write_json(
+            409,
+            &json!({"error":"quit is available only in standalone mode"}),
+        );
     }
     inner.approvals.deny_all();
     match super::super::lifecycle::request_stop(&inner.state_home) {
@@ -549,13 +606,20 @@ mod tests {
     use axum::http::header::{AUTHORIZATION, HOST, ORIGIN};
     use std::net::{Ipv4Addr, SocketAddrV4};
 
-    fn request(method: Method, token: Option<&str>, origin: Option<&str>, host: &str) -> Request<Body> {
+    fn request(
+        method: Method,
+        token: Option<&str>,
+        origin: Option<&str>,
+        host: &str,
+    ) -> Request<Body> {
         let mut request = Request::builder()
             .method(method)
             .uri("/companion/api/state")
             .body(Body::empty())
             .unwrap();
-        request.headers_mut().insert(HOST, HeaderValue::from_str(host).unwrap());
+        request
+            .headers_mut()
+            .insert(HOST, HeaderValue::from_str(host).unwrap());
         if let Some(token) = token {
             request.headers_mut().insert(
                 AUTHORIZATION,
@@ -563,7 +627,9 @@ mod tests {
             );
         }
         if let Some(origin) = origin {
-            request.headers_mut().insert(ORIGIN, HeaderValue::from_str(origin).unwrap());
+            request
+                .headers_mut()
+                .insert(ORIGIN, HeaderValue::from_str(origin).unwrap());
         }
         request
     }
@@ -616,12 +682,7 @@ mod tests {
         assert_eq!(no_token.status(), StatusCode::UNAUTHORIZED);
 
         let (site_token, _) = inner.pairing.issue("https://site.example", "test").unwrap();
-        let paired_request = request(
-            Method::GET,
-            Some(&site_token),
-            None,
-            "127.0.0.1:8765",
-        );
+        let paired_request = request(Method::GET, Some(&site_token), None, "127.0.0.1:8765");
         let paired_headers = paired_request.headers().clone();
         let paired_response = handle(
             &inner,
@@ -709,7 +770,9 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(
-                state_home.path().join("librepaper/local/control-token.json"),
+                state_home
+                    .path()
+                    .join("librepaper/local/control-token.json"),
             )
             .unwrap()
             .permissions()

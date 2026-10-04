@@ -130,19 +130,13 @@ object_store = { version = "0.14", features = ["aws", "fs"] }
 # Native dialogs for the companion's approval and folder prompts, with no
 # external programs. macOS and Windows use the system toolkits through rfd.
 rfd = "0.15"
-# Linux draws its own approval dialog (local::dialog) and asks the desktop
-# portal for folders. The release binary is static musl, so nothing here may
-# link or dlopen a C library: wayland-backend without `client_system` speaks
-# the protocol in Rust, sctk without `xkbcommon` (dialog.rs reads raw
-# keycodes), x11rb without `allow-unsafe-code`, ashpd over zbus.
+# Optional desktop tray support. Linux is built against the D-Bus KSNI
+# backend, which does not pull GTK or libappindicator into static releases.
+tray-icon = { version = "0.26", default-features = false }
+tao = "0.37"
+# Linux asks the desktop portal for folders. This backend speaks D-Bus in Rust
+# and does not link GTK or libappindicator into static release binaries.
 ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
-wayland-backend = { version = "0.3.17", default-features = false }
-wayland-client = "0.31.15"
-smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop"] }
-x11rb = "0.14.0"
-ab_glyph = { version = "0.2.32", default-features = false, features = ["std"] }
-epaint_default_fonts = "0.36.2"
-tiny-skia = { version = "0.12.0", default-features = false, features = ["std"] }
 # A font file for the tests to put in a library.
 typst-assets = { version = "=0.15.1", features = ["fonts"] }
 # Test-only: check that the family names our ttf-parser code extracts match
