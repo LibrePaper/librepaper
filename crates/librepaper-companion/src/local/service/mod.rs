@@ -20,7 +20,6 @@
 //! installed on the machine that runs `cargo test`.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::fs::OpenOptions;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -813,13 +812,7 @@ fn persist_quarto_job(entry: &JobEntry) -> Result<(), String> {
             librepaper_document::results::sha256(name.as_bytes())
         );
         let path = files_root.join(&storage);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| error.to_string())?;
-        use std::io::Write;
-        file.write_all(bytes).map_err(|error| error.to_string())?;
+        librepaper_base::private_files::publish(&path, bytes, "quarto job payload")?;
         names.push(DurableQuartoFile {
             name: name.clone(),
             storage,
