@@ -27,8 +27,7 @@ with a `main.tex`; each has a distinct purpose:
   distributions are held to. It asks for `booktabs`, `siunitx`, `tikz`
   and `biblatex`, which is what an ordinary paper asks for and the four
   above do not, and it exists to measure a package set rather than a
-  compiler. Two pages on a TeX Live; `MEASUREMENTS.md` records what it
-  can and cannot do on SwiftLaTeX pdfTeX.
+  compiler. Two pages on a TeX Live.
 
 - **`xetex/`** — a document that needs XeTeX and `fontspec`. It is how a
   pdfTeX-only distribution is shown refusing cleanly, with the error
@@ -59,7 +58,6 @@ with a `main.tex`; each has a distinct purpose:
   harness compares only its explicit `article`, `paper`, `packages`, and
   `xetex` cases.
 - `broken/expected.json` — the diagnostics, per engine.
-- `MEASUREMENTS.md` — bytes and seconds per distribution per document.
 
 Nothing here is checked into the mirror and nothing here is uploaded
 anywhere. `tools/latex/mirror/` is a local directory, ignored by git.

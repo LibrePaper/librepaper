@@ -77,7 +77,7 @@ acceptance. Run the relevant benchmark before a performance release, and run
 the isolated recovery drill before a storage or recovery release. The throughput
 benchmark truncates its configured database. The socket benchmark instead
 uses `LIBREPAPER_BENCH_POSTGRES_URL`; the mixed workload and its PostgreSQL
-setup are documented in [`tools/frugal-mixed-bench/README.md`](../../tools/frugal-mixed-bench/README.md).
+setup are documented in the `frugal_mixed_bench` test at `crates/librepaper/tests/frugal_mixed_bench.rs`.
 The isolated backup/restore recovery drill has its own disposable-database
 checks and exact prerequisites in [`tools/frugal-recovery/README.md`](../../tools/frugal-recovery/README.md).
 
