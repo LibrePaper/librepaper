@@ -135,13 +135,18 @@
     if (capabilities && capabilities.calepin) items.push(["Calepin", capabilities.calepin]);
     if (capabilities && capabilities.zotero) items.push(["Zotero", capabilities.zotero]);
     if (capabilities && capabilities.quarto && capabilities.quarto.tool) items.push(["Quarto", capabilities.quarto.tool]);
-    const seen = new Set();
-    return items.filter(([name]) => {
+    for (const builder of list(capabilities && capabilities.builders)) {
+      if (builder && builder.id) items.push([builder.id, builder]);
+    }
+    const byName = new Map();
+    for (const [name, tool] of items) {
       const key = name.toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+      const existing = byName.get(key);
+      if (!existing || (!existing[1].available && tool.available) || (!existing[1].version && tool.version)) {
+        byName.set(key, [name, tool]);
+      }
+    }
+    return [...byName.values()];
   }
 
   function renderTools(capabilities) {
