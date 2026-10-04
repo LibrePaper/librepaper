@@ -46,8 +46,7 @@ for (const name of browsers) {
   const serverConfig = join(directory, "server.toml");
   writeFileSync(serverConfig, [
     "[server]",
-    'bind = "0.0.0.0"',
-    `port = ${port}`,
+    `address = "0.0.0.0:${port}"`,
     "local_companion = true",
     "",
     "[storage]",

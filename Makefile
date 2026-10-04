@@ -123,12 +123,12 @@ clean:  ## Remove build output
 	@rm -rf dist target/release/librepaper web/dist web/node_modules
 
 # The port is fixed because the GitHub OAuth app's callback URL names it.
-PORT       ?= 8081
-# The static site is a second server on a second port: it is a directory of
-# files with no application behind it, and the application is what the Sign in
-# button on it points at.
-SITE_PORT  ?= 8082
-DATA       ?= librepaper-data
+PORT       := 8081
+# The static site's port.
+SITE_PORT  := 8082
+# Local data directory. Both PORT, SITE_PORT and DATA must match
+# tools/dev.toml and tools/dev-oauth.toml.
+DATA       := librepaper-data
 CONFIG_ORIGIN := $(origin CONFIG)
 CONFIG     ?= tools/dev.toml
 DEV_CONFIGS := $(abspath tools/dev.toml tools/dev-oauth.toml)
@@ -144,17 +144,9 @@ serve: $(BIN)  ## Run the server and open it in Firefox (CONFIG=tools/dev.toml)
 		sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 & \
 	fi
 	@if [ "$(CONFIG_IS_DEV)" = yes ]; then \
-		if [ -n "$$LIBREPAPER_DATABASE_URL" ]; then db_url="$$LIBREPAPER_DATABASE_URL"; \
-		else tools/db dev >/dev/null || exit 1; db_url=$$(tools/db url) || exit 1; fi; \
-		LIBREPAPER_DATABASE_URL="$$db_url" \
-			LIBREPAPER_PORT="$(PORT)" LIBREPAPER_DATA="$(abspath $(DATA))" \
-			LIBREPAPER_APP_ORIGIN="http://localhost:$(PORT)" \
-			LIBREPAPER_SITE_ORIGIN="$${LIBREPAPER_SITE_ORIGIN:-http://localhost:$(PORT)}" \
-			LIBREPAPER_SIMULATE_ACTIVITY="$(if $(SIMULATE_ACTIVITY),$(SIMULATE_ACTIVITY),0)" \
-			$(BIN) admin serve --config "$(CONFIG)"; \
-	else \
-		$(BIN) admin serve --config "$(CONFIG)"; \
+		tools/db dev >/dev/null || exit 1; \
 	fi
+	@$(BIN) admin serve --config "$(CONFIG)"
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
@@ -168,15 +160,10 @@ kill:  ## Stop a server started with make serve
 # swap are encoded for the engine that was replaced, and the reader says so
 # ("Invalid magic bytes") instead of opening them.
 #
-# Only the Docker deployment tools/db owns. A configured
-# LIBREPAPER_DATABASE_URL points somewhere this target has no business
-# dropping, so it refuses rather than guessing.
+# Dev configs always use the Docker deployment tools/db owns.
 wipe:  ## Delete the local deployment -- database and data directory -- and start over
 	@if [ "$(CONFIG)" != tools/dev.toml ]; then echo "wipe only supports CONFIG=tools/dev.toml"; exit 1; fi
 	@case "$(DATA)" in ""|.|..|/|../*|*/..|*/../*|/*) echo "unsafe DATA path: $(DATA)"; exit 1;; esac
-	@if [ -n "$(LIBREPAPER_DATABASE_URL)" ]; then \
-		echo "LIBREPAPER_DATABASE_URL is set: wipe that database yourself."; exit 1; \
-	fi
 	@$(MAKE) --no-print-directory kill >/dev/null
 	@tools/db dev >/dev/null
 	@# FORCE, because a server that outlived `kill` still holds a connection
@@ -196,10 +183,10 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # three weeks of drafting, so the history panel and the activity calendar have
 # something in them the first time they are opened. The operations are real
 # and every version opens; only the clock is invented (seed::activity).
-# SIMULATE_ACTIVITY=0 asks for the honest history of a document published
-# once, and any other number overrides the three weeks. It applies to the
-# examples an account is given at first sign-in, so changing it means `wipe`
-# and signing in again.
+# The simulate_activity_days setting in tools/dev-oauth.toml controls this:
+# 0 gives the honest history of a document published once, and any other
+# number overrides the three weeks. It applies to the examples an account is
+# given at first sign-in, so changing it means `wipe` and signing in again.
 # The whole product, locally: the marketing site on one port and the
 # application on the other, with the site built to point its Sign in button at
 # the application this target just started rather than at the published
@@ -215,7 +202,7 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # http://localhost:$(PORT). Without sops or the key, the demo starts with no
 # sign-in, and reading and commenting still work.
 DEMO_KEYS ?= tools/deploy-keys.yaml
-demo:  ## Serve the site, the app, a local companion and simulated activity (SIMULATE_ACTIVITY=21)
+demo:  ## Serve the site, the app, a local companion and simulated activity (21 days in tools/dev-oauth.toml)
 	@if [ "$(CONFIG_WAS_SUPPLIED)" = yes ]; then \
 		echo "demo: using CONFIG=$(CONFIG)"; \
 		exec $(MAKE) --no-print-directory demo-run CONFIG="$(CONFIG)"; \
@@ -234,7 +221,6 @@ demo:  ## Serve the site, the app, a local companion and simulated activity (SIM
 # The companion setting is local to the demo, independent of the caller's
 # shell. Backend settings come from the selected TOML file and its references.
 demo-run: override LIBREPAPER_SERVER = http://localhost:$(PORT)
-demo-run: SIMULATE_ACTIVITY ?= 21
 demo-run: $(BIN)
 	@tools/deploy-assets check
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
@@ -251,9 +237,7 @@ demo-run: $(BIN)
 	command -v firefox >/dev/null && (sleep 2; firefox http://localhost:$(SITE_PORT) >/dev/null 2>&1 &) || true; \
 	echo "site  http://localhost:$(SITE_PORT)"; \
 	echo "app   http://localhost:$(PORT)"; \
-	LIBREPAPER_SITE_ORIGIN=http://localhost:$(SITE_PORT) \
-		$(MAKE) serve OPEN=0 CONFIG="$(CONFIG)" SIMULATE_ACTIVITY="$(SIMULATE_ACTIVITY)" \
-			LIBREPAPER_SERVER="http://localhost:$(PORT)" LIBREPAPER_SITE_ORIGIN="http://localhost:$(SITE_PORT)"
+	$(MAKE) serve OPEN=0 CONFIG="$(CONFIG)"
 
 # --- the web app -----------------------------------------------------------
 #

@@ -104,7 +104,7 @@ const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
 const configPath = join(dataDirectory, "config.toml");
 writeFileSync(configPath, [
-  "[server]", 'bind = "127.0.0.1"', `port = ${port}`, "local_companion = false", "",
+  "[server]", `address = "127.0.0.1:${port}"`, "local_companion = false", "",
   "[storage]", `directory = ${JSON.stringify(resolve(dataDirectory))}`, 'database_url = { env = "LIBREPAPER_SOURCE_URL" }', "fsync = false", 'object_store = "filesystem"', "",
   "[auth.github]", 'client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }', 'client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }', "",
   "[access]", 'publishers = ["any"]', 'commenters = ["anyone"]', "",

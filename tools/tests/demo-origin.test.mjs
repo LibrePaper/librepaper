@@ -65,12 +65,7 @@ function runDemoRun(fixture) {
     makefile,
     "SHELL=/bin/sh",
     `BIN=${fixture.binPath}`,
-    `PORT=${fixture.port}`,
-    `SITE_PORT=${fixture.port + 1}`,
-    "DATA=demo-data",
-    "SIMULATE_ACTIVITY=0",
     `MAKE=${join(fixture.directory, "mock-make")}`,
-    "LIBREPAPER_DATABASE_URL=postgres://unused",
   ];
   if (fixture.commandLineServer) args.push(`LIBREPAPER_SERVER=${fixture.commandLineServer}`);
   args.push("demo-run");
@@ -116,24 +111,22 @@ async function logs(fixture) {
 }
 
 for (const scenario of [
-  { name: "inherited production server", port: 9137 },
-  { name: "command-line server", port: 9237, commandLineServer: "https://caller.example/" },
+  { name: "inherited production server", commandLineServer: null },
+  { name: "command-line server", commandLineServer: "https://caller.example/" },
 ]) {
   test(`demo-run gives the local companion origin precedence over the ${scenario.name}`, async () => {
-    const fixture = await makeFixture(scenario);
+    const fixture = await makeFixture({ port: 8081, commandLineServer: scenario.commandLineServer });
     try {
       runDemoRun(fixture);
       const { makeCalls, companionCalls } = await logs(fixture);
-      const localServer = `http://localhost:${scenario.port}`;
+      const localServer = "http://localhost:8081";
       const starts = companionCalls.filter(([kind]) => kind === "start");
       assert.equal(starts.length, 1, "demo-run starts the companion when status reports it stopped");
-      assert.equal(starts[0][2], localServer, "start receives LIBREPAPER_SERVER for the app on PORT");
+      assert.equal(starts[0][2], localServer, "start receives LIBREPAPER_SERVER for the app on fixed PORT");
 
       const serve = makeCalls.find((call) => call.target === "serve");
       assert.ok(serve, "demo-run invokes the recursive serve target");
       assert.equal(serve.server, localServer, "recursive serve receives the local app origin");
-      assert.ok(serve.args.split(/\s+/).includes(`LIBREPAPER_SERVER=${localServer}`),
-        "the local origin is passed explicitly to recursive make");
       assert.equal(serve.app, "", "serve does not inherit the site's app-build origin");
     } finally {
       await rm(fixture.directory, { recursive: true, force: true });
@@ -142,19 +135,19 @@ for (const scenario of [
 }
 
 test("demo-run leaves an already running companion untouched but scopes recursive serve locally", async () => {
-  const fixture = await makeFixture({ running: true, port: 9337 });
+  const fixture = await makeFixture({ running: true, port: 8081 });
   try {
     runDemoRun(fixture);
     const { makeCalls, companionCalls } = await logs(fixture);
     assert.ok(companionCalls.length > 0);
     assert.ok(companionCalls.every(([kind]) => kind === "status"), "an already running companion is only inspected");
     assert.equal(companionCalls.some(([kind]) => kind === "start"), false);
-    assert.ok(companionCalls.every(([, server]) => server === "http://localhost:9337"),
+    assert.ok(companionCalls.every(([, server]) => server === "http://localhost:8081"),
       "status inspection receives the same local origin");
 
     const serve = makeCalls.find((call) => call.target === "serve");
     assert.ok(serve);
-    assert.equal(serve.server, "http://localhost:9337");
+    assert.equal(serve.server, "http://localhost:8081");
   } finally {
     await rm(fixture.directory, { recursive: true, force: true });
   }

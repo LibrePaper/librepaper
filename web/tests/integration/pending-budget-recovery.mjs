@@ -33,9 +33,9 @@ import { browser } from "../../tools/browser-driver.mjs";
 import { psqlCommand } from "../../tools/postgres-test.mjs";
 import { startDeployment, until } from "../helpers/deployment.mjs";
 
-// The smallest pending ceilings the server will accept. `pending_mb` may not
+// The smallest pending ceilings the server will accept. `pending_mib` may not
 // go below one document's own buffer allowance (4 MiB plus its framing), and
-// `pending_scratch_mb` may not go below what one maximum-size row costs to
+// `pending_scratch_mib` may not go below what one maximum-size row costs to
 // write -- a deployment that could not write its largest row would admit work
 // it could never persist, which is the thing the two-pool design exists to
 // prevent. So this is pressure reached as cheaply as the server permits.
@@ -50,7 +50,7 @@ const DOCUMENTS = 3;
 const noise = process.env.LIBREPAPER_TEST_VERBOSE ? console.error : () => {};
 const deployment = await startDeployment({
   label: "pending_budget",
-  advanced: `[limits]\npending_mb = ${PENDING_MB}\npending_scratch_mb = ${SCRATCH_MB}\n`,
+  advanced: `[limits]\npending_mib = ${PENDING_MB}\npending_scratch_mib = ${SCRATCH_MB}\n`,
 });
 if (!deployment || deployment.unavailable) {
   console.log(`pending-budget-recovery: ${deployment?.unavailable || "no librepaper binary; run cargo build"}; skipping`);

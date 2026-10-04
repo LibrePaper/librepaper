@@ -86,8 +86,7 @@ async function main() {
   const serverConfig = join(config, "server.toml");
   writeFileSync(serverConfig, [
     "[server]",
-    'bind = "0.0.0.0"',
-    `port = ${PORT}`,
+    `address = "0.0.0.0:${PORT}"`,
     "local_companion = true",
     "",
     "[storage]",
