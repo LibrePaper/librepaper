@@ -29,7 +29,7 @@ pub use tokens::*;
 #[command(name = "librepaper", version = crate::VERSION, about = "launch the companion to connect local tools to documents; host HTML, markdown and typst documents", long_about = None, args_conflicts_with_subcommands = true)]
 #[command(
     after_help = "Run `librepaper` or `librepaper start` to launch the companion, then connect it in Settings → Local app.
-Run `librepaper desktop` to open the local control panel, or `librepaper install-desktop` to install a desktop launcher.
+On supported desktops, the companion also shows a tray icon whose menu opens the control panel. Run `librepaper install-desktop` to install a desktop launcher for starting the companion.
 
 To sign in from this terminal, set the deployment and run `librepaper login`:
 
@@ -296,9 +296,7 @@ pub(crate) enum Command {
         )]
         tool_path: Vec<PathBuf>,
     },
-    /// Open the local companion control panel in a browser.
-    Desktop,
-    /// Install a native launcher for `librepaper desktop`.
+    /// Install a native launcher for starting the companion.
     InstallDesktop,
     /// Manage agents this computer offers to the document sidebar
     Agent {
@@ -526,12 +524,6 @@ pub async fn main() {
         Command::Status { tool_path } => {
             librepaper_companion::local::cli::run(LocalArgs {
                 command: LocalCommand::Status { tool_path },
-            })
-            .await
-        }
-        Command::Desktop => {
-            librepaper_companion::local::cli::run(LocalArgs {
-                command: LocalCommand::Desktop,
             })
             .await
         }
@@ -836,7 +828,6 @@ mod socket_policy_tests {
         for args in [
             vec!["librepaper", "stop"],
             vec!["librepaper", "status"],
-            vec!["librepaper", "desktop"],
             vec!["librepaper", "install-desktop"],
             vec!["librepaper", "agent", "list"],
             vec!["librepaper", "local", "start", "--foreground"],
@@ -848,6 +839,7 @@ mod socket_policy_tests {
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
         }
+        assert!(Cli::try_parse_from(["librepaper", "desktop"]).is_err());
         assert!(
             Cli::try_parse_from(["librepaper", "local", "open", "librepaper://connect"]).is_ok()
         );
@@ -868,7 +860,6 @@ mod socket_policy_tests {
             "start",
             "stop",
             "status",
-            "desktop",
             "install-desktop",
             "agent",
             "login",

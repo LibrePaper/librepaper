@@ -42,7 +42,6 @@ fn top_level_help_lists_exactly_the_public_commands() {
         "start",
         "stop",
         "status",
-        "desktop",
         "install-desktop",
         "agent",
         "login",
@@ -60,6 +59,14 @@ fn top_level_help_lists_exactly_the_public_commands() {
     assert!(
         !lists_command(&help, "mcp"),
         "mcp should not be listed in top-level help:\n{help}"
+    );
+    assert!(
+        !cli(&["desktop"]).status.success(),
+        "the removed desktop subcommand should be rejected"
+    );
+    assert!(
+        !cli(&["local", "desktop"]).status.success(),
+        "the removed local desktop subcommand should be rejected"
     );
 }
 
