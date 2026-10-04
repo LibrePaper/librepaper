@@ -820,7 +820,8 @@ mod tests {
         let method = request.method().clone();
         let path = request.uri().path().to_string();
         let headers = request.headers().clone();
-        handle(inner, &method, &path, &headers, peer, request).await
+        let response = handle(inner, &method, &path, &headers, peer, request).await;
+        apply_headers(response, &path)
     }
 
     #[tokio::test]
