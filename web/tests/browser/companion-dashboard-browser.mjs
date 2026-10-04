@@ -337,8 +337,9 @@ try {
   await waitForEnabledButton("Remove", "#companion-agents-heading");
   await b.evaluate(`(() => {
     const section = document.querySelector("#companion-agents-heading").closest("section");
-    const row = [...section.querySelectorAll(".setting-row")].find((item) => item.textContent.includes(${JSON.stringify(agentLabel)}));
-    row.querySelector("button").click();
+    const row = [...section.querySelectorAll(".setting-row")].find((item) =>
+      [...item.querySelectorAll(".setting-title")].some((title) => title.textContent.trim() === ${JSON.stringify(agentLabel)}));
+    [...row.querySelectorAll("button")].find((button) => button.textContent.trim() === "Remove").click();
   })()`);
   await until("custom agent removed through Settings", async () => {
     const response = await apiState();
