@@ -29,7 +29,7 @@ librepaper export c9k ./paper-copy --at "v1"    # historical version
 
 The dashboard is a browser tab. Closing the tab leaves the companion running; use **Quit companion** or `librepaper stop` to stop it. Start-at-login is optional. The tray icon is optional and depends on desktop-environment support. Folder selection uses the operating system's native chooser.
 
-On a machine with no display, check `companion.log` for the approval code and run `librepaper local approve <code>` within 5 minutes. This headless fallback does not require a browser dashboard.
+On a machine with no display, check `companion.log` for the approval code and run `librepaper local approve <code>` within two minutes. This headless fallback does not require a browser dashboard.
 
 For scheduled local backups, see [account backups](backups.html).
 

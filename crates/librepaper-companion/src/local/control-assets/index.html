@@ -69,8 +69,8 @@
             <label class="field"><span>Extra tool search folders</span><textarea id="tool-paths" rows="3" spellcheck="false" placeholder="One folder path per line"></textarea><small>These folders are searched before the usual PATH. Paths stay on this computer.</small></label>
             <div id="integration-settings" class="integration-grid"></div>
             <div id="startup-setting" class="toggle-row" hidden><label for="startup-enabled"><span><strong>Start at login</strong><small>Ask LibrePaper to start when you sign in to this computer.</small></span><input id="startup-enabled" type="checkbox"></label></div>
-            <div id="tray-setting" class="toggle-row" hidden><label for="tray-enabled"><span><strong>Show tray icon</strong><small>Keep quick controls available in the system tray when supported.</small></span><input id="tray-enabled" type="checkbox"></label></div>
-            <div class="settings-actions"><span id="settings-hint" class="subtle">Tray preference is applied the next time the companion starts.</span><button class="button primary" type="submit">Save settings</button></div>
+            <div id="tray-setting" class="toggle-row" hidden><label for="tray-enabled"><span><strong>Show tray icon</strong><small id="tray-help">Keep quick controls available in the system tray when supported.</small></span><input id="tray-enabled" type="checkbox"></label></div>
+            <div class="settings-actions"><span id="settings-hint" class="subtle">Tray preference changes take effect immediately when supported.</span><button class="button primary" type="submit">Save settings</button></div>
           </form>
           <div class="section-heading subsection"><div><h3>Agents available here</h3><p class="subtle">Commands are run on this computer when a document asks you to start an agent.</p></div></div>
           <div id="agents" class="card-list"></div>
