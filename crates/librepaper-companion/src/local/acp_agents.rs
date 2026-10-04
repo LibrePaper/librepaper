@@ -307,8 +307,8 @@ fn built_in() -> Vec<Detected> {
                 assistant_blocked: match adapter {
                     Some(_) => String::new(),
                     None => format!(
-                        "{} needs its ACP adapter ({}) to be driven from the sidebar",
-                        kind.label, kind.acp[0]
+                        "Install {} to use {} in LibrePaper.",
+                        kind.acp[0], kind.label
                     ),
                 },
                 assistant_note: match adapter {
