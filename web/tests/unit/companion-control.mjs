@@ -114,8 +114,29 @@ function harness(hash = "") {
 
 {
   const h = harness();
-  h.client.openSettings();
-  assert.deepEqual(h.requests, [{ launch: "librepaper://settings" }]);
+  let opened = 0;
+  h.client.onSettingsRequested(() => opened++);
+  h.client.showSettings();
+  assert.equal(opened, 1);
+  assert.deepEqual(h.requests, []);
+}
+
+// A user-initiated trusted session is stored for the active app and emits no
+// navigation. The response address must remain the exact loopback target.
+{
+  const h = harness();
+  h.setFetch(async (url, init) => {
+    h.requests.push({ url, init });
+    return { ok: true, status: 200, json: async () => ({ address, token, instance }) };
+  });
+  const connected = await h.client.connect(address);
+  assert.deepEqual(connected, { address, instance });
+  assert.equal(h.client.available(), true);
+  assert.equal(h.client.scope(), `${address}|${instance}`);
+  assert.equal(h.requests[0].url, `${address}companion/api/session`);
+  assert.equal(h.requests[0].init.method, "POST");
+  assert.equal(h.requests[0].init.cache, "no-store");
+  assert.equal(h.requests.some((item) => item.launch), false);
 }
 
 // If the browser denies sessionStorage, the control token remains available

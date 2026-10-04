@@ -23,6 +23,7 @@
 
 import { bytesOf, toArrayBuffer } from "../bytes.js";
 import { named } from "../latex/errors.js";
+import * as controlClient from "./control.js";
 
 /** @typedef {{ targetAddressSpace?: "loopback" } & RequestInit} LocalRequestInit */
 /** @typedef {{ fetch: (input: RequestInfo | URL, init?: LocalRequestInit) => Promise<Response>, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, localNetworkPermission: () => Promise<PermissionState | null>, replaceHash: (hash: string) => void, launchLink: (url: string) => void }} CompanionDeps */
@@ -86,6 +87,7 @@ function realWait(ms, signal) {
 function defaultDeps() {
   return {
     fetch: (input, init) => globalThis.fetch(input, init),
+    control: controlClient,
     storage: typeof localStorage !== "undefined" ? localStorage : null,
     now: () => Date.now(),
     wait: realWait,
@@ -124,7 +126,15 @@ function defaultDeps() {
 let deps = defaultDeps();
 
 export const _testing = {
-  inject(overrides) { Object.assign(deps, overrides); },
+  inject(overrides) {
+    Object.assign(deps, overrides);
+    // Existing harnesses replace the document client fetch and must never
+    // accidentally initiate a real management session against loopback.
+    if (overrides.fetch && !overrides.control) {
+      deps.control = { connect: async () => { throw new Error("No trusted control session in test"); },
+        request: async () => { throw new Error("No trusted control session in test"); }, showSettings() {} };
+    }
+  },
   reset() {
     deps = defaultDeps();
     negative = null;
@@ -597,7 +607,7 @@ async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
   let response;
   try {
     response = await deps.fetch(url, { method, mode: "cors", credentials: "omit", headers, body, signal });
-  } catch (error) {
+  } catch {
     if (signal?.aborted) {
       throw named("Canceled", "Canceled");
     }
@@ -812,6 +822,21 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
   // not be registered. The link, which starts it and asks it the same way, is
   // only for a companion this request cannot reach.
   let asked = false;
+  // Trusted app origins can establish a management session in this user
+  // action and queue the normal approval request inside Settings.
+  try {
+    await deps.control.connect(address());
+    checkScope();
+    deps.control.showSettings();
+    await deps.control.request("/pair/request", {
+      method: "POST", body: { origin, request, challenge, return: returnUrl },
+    });
+    asked = true;
+  } catch (error) {
+    checkScope();
+    // External origins and older companions retain the public compatibility flow.
+  }
+  if (!asked) {
   try {
     const response = await deps.fetch(`${address()}${LOCAL_BASE}pair/request`, {
       method: "POST", mode: "cors", credentials: "omit",
@@ -827,6 +852,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
   } catch (error) {
     if (asked) throw error;
     // Unreachable after all: fall through to the link.
+  }
   }
   checkScope();
   if (!asked) {

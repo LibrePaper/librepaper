@@ -38,10 +38,11 @@ export function createControlClient(deps = {}) {
   const getStorage = deps.storage || (() => globalThis.sessionStorage);
   const fetcher = deps.fetch || ((input, init) => globalThis.fetch(input, init));
   const replaceUrl = deps.replaceUrl || ((url) => globalThis.history.replaceState(null, "", url));
-  const launchLink = deps.launchLink || ((url) => { globalThis.location.href = url; });
   const listeners = new Set();
   const rejectedCredentials = new Set();
   let active = null;
+  let connectGeneration = 0;
+  const settingsListeners = new Set();
 
   function identity(credential) {
     return `${credential?.key || ""}\n${credential?.token || ""}`;
@@ -110,6 +111,7 @@ export function createControlClient(deps = {}) {
   }
 
   function intake() {
+    connectGeneration += 1;
     let loc;
     try { loc = getLocation(); } catch { return false; }
     const raw = String(loc?.hash || "").replace(/^#/, "");
@@ -158,6 +160,63 @@ export function createControlClient(deps = {}) {
       notify();
     }
     return requested;
+  }
+
+  /** Open a trusted session only after the user explicitly asks to manage this companion. */
+  async function connect(addressValue) {
+    const generation = ++connectGeneration;
+    const address = loopbackAddress(addressValue);
+    if (!address) throw new TypeError("Enter a local companion address such as http://127.0.0.1:8763/.");
+    const appOrigin = origin();
+    let response;
+    try {
+      response = await fetcher(new URL("companion/api/session", address).href, {
+        method: "POST", mode: "cors", credentials: "omit", cache: "no-store",
+        headers: new Headers({ "Content-Type": "application/json" }), body: "{}",
+        targetAddressSpace: "loopback",
+      });
+    } catch (error) {
+      throw Object.assign(new Error("Could not establish a local companion session."), { name: "Unreachable", cause: error });
+    }
+    if (!response.ok) {
+      let detail = "";
+      try { detail = (await response.json())?.error || ""; } catch { /* no JSON detail */ }
+      throw Object.assign(new Error(detail || `The companion session request failed (${response.status}).`), { name: "RequestFailed", status: response.status });
+    }
+    const session = await response.json();
+    if (generation !== connectGeneration || appOrigin !== origin()) throw Object.assign(new Error("A newer companion connection was requested."), { name: "Canceled" });
+    if (loopbackAddress(session?.address) !== address || !TOKEN.test(session?.token || "") || !validInstance(session?.instance)) {
+      throw Object.assign(new Error("The companion returned an invalid control session."), { name: "InvalidSession" });
+    }
+    const credential = { address, instance: session.instance, token: session.token,
+      key: credentialKey(appOrigin, address, session.instance), activeKey: activeKey(appOrigin), origin: appOrigin };
+    active = credential;
+    const store = storage();
+    if (store && appOrigin) {
+      try {
+        store.setItem(credential.key, credential.token);
+        store.setItem(credential.activeKey, JSON.stringify({ address, instance: session.instance }));
+      } catch { /* keep the session in memory when storage is unavailable */ }
+    }
+    notify();
+    return { address, instance: session.instance };
+  }
+
+  function showSettings() {
+    for (const listener of settingsListeners) {
+      try { listener(); } catch { /* a view cannot break navigation */ }
+    }
+  }
+
+  function onSettingsRequested(listener) {
+    if (typeof listener !== "function") return () => {};
+    settingsListeners.add(listener);
+    return () => settingsListeners.delete(listener);
+  }
+
+  async function openSettings(address) {
+    if (address) await connect(address);
+    showSettings();
   }
 
   /** @param {string} path @param {{ method?: string, body?: unknown }} [options] */
@@ -222,10 +281,6 @@ export function createControlClient(deps = {}) {
     return type.includes("json") ? response.json() : response.text();
   }
 
-  function openSettings() {
-    launchLink("librepaper://settings");
-  }
-
   function subscribe(listener) {
     if (typeof listener !== "function") return () => {};
     listeners.add(listener);
@@ -233,7 +288,7 @@ export function createControlClient(deps = {}) {
     return () => listeners.delete(listener);
   }
 
-  return { intake, available, scope, request, openSettings, subscribe };
+  return { intake, available, scope, request, connect, showSettings, onSettingsRequested, openSettings, subscribe };
 }
 
 const client = createControlClient();
@@ -241,5 +296,8 @@ export const intake = client.intake;
 export const available = client.available;
 export const scope = client.scope;
 export const request = client.request;
+export const connect = client.connect;
+export const showSettings = client.showSettings;
+export const onSettingsRequested = client.onSettingsRequested;
 export const openSettings = client.openSettings;
 export const subscribe = client.subscribe;

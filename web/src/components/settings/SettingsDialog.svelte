@@ -4,6 +4,7 @@
   // opens from the workspace navbar or sidebar, and any entry point can open
   // it on a given category -- connection controls can land on Companion.
   import { tick } from "svelte";
+  import * as companionControl from "../../lib/companion/control.js";
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
   import EditorSettings from "./EditorSettings.svelte";
@@ -56,6 +57,10 @@
   const entriesOf = (id) => found?.find((match) => match.category.id === id)?.entries || [];
 
   let body = $state(null);
+  $effect(() => companionControl.onSettingsRequested(() => {
+    category = "local";
+    open = true;
+  }));
   async function go(id, entry = "") {
     category = id;
     if (!entry) return;
