@@ -27,16 +27,12 @@ pub(super) struct ControlAuth {
 impl ControlAuth {
     pub(super) fn create(state_home: &Path, instance: &str) -> Result<Self, String> {
         let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
-        if let Ok(bytes) = crate::local::service::read_bounded_public(&path, 4096) {
-            if let Ok(file) = serde_json::from_slice::<TokenFile>(&bytes) {
-                if file.instance == instance && (32..=128).contains(&file.token.len()) {
-                    return Ok(Self {
-                        instance: instance.to_string(),
-                        token_hash: hex::encode(Sha256::digest(file.token.as_bytes())),
-                        token: file.token,
-                    });
-                }
-            }
+        if let Some(token) = read_private_token(&path, instance) {
+            return Ok(Self {
+                instance: instance.to_string(),
+                token_hash: hex::encode(Sha256::digest(token.as_bytes())),
+                token,
+            });
         }
         let token = crate::local::pairing::random_token();
         let file = TokenFile {
@@ -56,13 +52,35 @@ impl ControlAuth {
         format!("http://127.0.0.1:{port}/companion/#token={}", self.token)
     }
 
-    fn accepts(&self, token: &str, instance: &str) -> bool {
+    pub(super) fn accepts(&self, token: &str, instance: &str) -> bool {
         self.instance == instance
             && librepaper_base::util::constant_time_eq(
                 self.token_hash.as_bytes(),
                 hex::encode(Sha256::digest(token.as_bytes())).as_bytes(),
             )
     }
+}
+
+pub(super) fn token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
+    let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
+    read_private_token(&path, instance)
+}
+
+fn read_private_token(path: &Path, instance: &str) -> Option<String> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 4096 {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return None;
+        }
+    }
+    let bytes = crate::local::service::read_bounded_public(path, 4096).ok()?;
+    let file = serde_json::from_slice::<TokenFile>(&bytes).ok()?;
+    (file.instance == instance && (32..=128).contains(&file.token.len())).then_some(file.token)
 }
 
 pub(super) async fn handle(
@@ -296,6 +314,7 @@ async fn state(inner: &Inner) -> Reply {
     } else {
         None
     };
+    let standalone = super::standalone(inner);
     write_json(
         200,
         &json!({
@@ -311,9 +330,9 @@ async fn state(inner: &Inner) -> Reply {
             "custom_agents":crate::local::acp_agents::CustomStore::new(&inner.state_home).list().into_iter().map(|(id, agent)| json!({"id":id,"label":agent.label,"command":agent.command})).collect::<Vec<_>>(),
             "sessions":sessions,
             "settings":{
-                "tool_paths":settings.tool_paths,
-                "tray_enabled":settings.tray_enabled,
-                "tray_available":super::super::tray::session_available(),
+                "tool_paths":inner.runner.tool_paths(),
+                "tray_enabled":if standalone { Some(settings.tray_enabled) } else { None },
+                "tray_available":if standalone { Some(super::super::tray::session_available()) } else { None },
                 "startup_enabled":startup_enabled,
                 "integrations":crate::local::integrations::all(),
             }
@@ -518,11 +537,23 @@ async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
         Ok(settings) => settings,
         Err(error) => return write_json(500, &json!({"error":error})),
     };
+    let standalone = super::standalone(inner);
+    if body.tray_enabled.is_some() && !standalone {
+        return write_json(
+            409,
+            &json!({"error":"tray settings are available only in standalone mode"}),
+        );
+    }
     if body.startup_enabled.is_some() && !super::standalone(inner) {
         return write_json(
             409,
             &json!({"error":"startup is available only in standalone mode"}),
         );
+    }
+    if body.tool_paths.is_none() {
+        // Keep CLI-provided effective paths if the user saves only another
+        // setting; otherwise an unrelated save would erase them on restart.
+        settings.tool_paths = inner.runner.tool_paths();
     }
     let integration_updates: Vec<_> = if let Some(integrations) = &body.integrations {
         let mut updates = Vec::with_capacity(integrations.len());
@@ -578,7 +609,7 @@ async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
             }
         }
     }
-    if settings.tray_enabled {
+    if standalone && settings.tray_enabled {
         if let Err(error) = super::super::lifecycle::ensure_tray(&inner.state_home) {
             return write_json(500, &json!({"error":error}));
         }
