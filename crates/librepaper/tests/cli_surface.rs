@@ -39,7 +39,7 @@ fn lists_command(help: &str, command: &str) -> bool {
 fn top_level_help_lists_exactly_the_public_commands() {
     let help = help_of(&["--help"]);
     for command in [
-        "start", "stop", "status", "agent", "login", "logout", "list", "export", "local", "admin",
+        "start", "stop", "status", "desktop", "install-desktop", "agent", "login", "logout", "list", "export", "local", "admin",
     ] {
         assert!(
             lists_command(&help, command),
@@ -76,7 +76,7 @@ fn local_help_lists_only_approval_and_pairing_controls() {
             "local command {command:?} is absent from local help:\n{help}"
         );
     }
-    for hidden_command in ["start", "stop", "status", "agent", "open"] {
+    for hidden_command in ["start", "stop", "status", "agent", "open", "tray"] {
         assert!(
             !lists_command(&help, hidden_command),
             "compatibility command {hidden_command:?} should be hidden from local help:\n{help}"
