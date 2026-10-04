@@ -191,8 +191,7 @@ pub fn executable(which: Integration) -> Option<PathBuf> {
     }
     if let Some(path) = get(which).path {
         if path.is_dir() {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            return which::which_in(which.program(), Some(path.as_os_str()), cwd).ok();
+            return which::which(path.join(which.program())).ok();
         }
         return path.is_file().then_some(path);
     }

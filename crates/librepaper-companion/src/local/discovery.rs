@@ -125,9 +125,10 @@ fn conventional_dirs() -> Vec<PathBuf> {
 /// are preserved as-is: this never shells out to find the file, only
 /// `std::fs` metadata, so nothing here re-tokenises the path.
 fn find_tool(tool: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    let cwd = std::env::current_dir().unwrap_or_default();
     for dir in dirs {
-        if let Ok(candidate) = which::which_in(tool, Some(dir.as_os_str()), &cwd) {
+        // A path with a separator is resolved directly, so a directory name
+        // holding the PATH separator is not split in two.
+        if let Ok(candidate) = which::which(dir.join(tool)) {
             return std::fs::canonicalize(&candidate).ok().or(Some(candidate));
         }
     }
@@ -431,6 +432,20 @@ async fn discover_cache(refresh: bool, tool_path: &[PathBuf]) -> Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn find_tool_keeps_a_directory_name_with_the_path_separator_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("tools:custom");
+        std::fs::create_dir(&dir).unwrap();
+        let exe = dir.join("quarto");
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let found = find_tool("quarto", &[dir.clone()]).unwrap();
+        assert_eq!(found, std::fs::canonicalize(&exe).unwrap());
+    }
 
     #[test]
     fn tool_from_banner_keeps_the_version_line() {
