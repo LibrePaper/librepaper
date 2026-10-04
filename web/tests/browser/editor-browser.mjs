@@ -25,6 +25,8 @@ const entry = join(temporary, "entry.js");
 const port = 19000 + Math.floor(Math.random() * 1000);
 
 const source = `
+import ${JSON.stringify(join(root, "web/src/styles/theme.css"))};
+import ${JSON.stringify(join(root, "web/src/styles/librepaper.css"))};
 import { LoroDoc } from "loro-crdt";
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
@@ -237,6 +239,77 @@ window.quartoEditorCheck = async () => {
   await tick();
   const view = EditorView.findFromDOM(document.querySelector(".cm-editor"));
   return { text: view.state.doc.toString(), lineCount: view.state.doc.lines, mode: document.querySelector(".cm-editor")?.className || "" };
+};
+// Check what reaches the editor DOM after the lazy fence parser has loaded.
+// The assertions use visible token styles and source text, not CodeMirror's
+// generated class names, so they cover both the language and shared theme.
+window.sourceHighlightingCheck = async () => {
+  const waitForToken = async (root, text) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const nodes = [...root.querySelectorAll(".cm-line span")];
+      const match = nodes.find((node) => node.textContent === text);
+      if (match) return match;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return null;
+  };
+  const styleOf = (node) => {
+    if (!node) return "";
+    const style = getComputedStyle(node);
+    return [style.color, style.fontWeight, style.fontStyle, style.textDecorationLine].join("|");
+  };
+  const quartoText = [
+    "---", "title: Demo", "---", "", "\`\`\`{python label=fig-x}",
+    "# comment", "if True:", "    print(\\\"plot\\\")", "\`\`\`", "",
+  ].join("\\n");
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const qmd = value.addText("highlight.qmd", quartoText);
+  const tex = value.addText("highlight.tex", "% comment\\n\\\\documentclass{article}");
+  const host = document.createElement("section");
+  document.body.append(host);
+  const source = createClassComponent({
+    component: Editor, target: host,
+    props: { session: value, format: "markdown", file: qmd },
+  });
+  await tick();
+  let view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  const comment = await waitForToken(host, "# comment");
+  const keyword = await waitForToken(host, "if");
+  const string = await waitForToken(host, "\\\"plot\\\"");
+  const quartoStyles = [styleOf(comment), styleOf(keyword), styleOf(string)];
+  source.$set({ file: tex });
+  await tick();
+  const switched = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  const texComment = await waitForToken(host, "% comment");
+  const texCommand = await waitForToken(host, "\\\\documentclass");
+  const texStyles = [styleOf(texComment), styleOf(texCommand)];
+  source.$set({ file: qmd });
+  await tick();
+  await waitForToken(host, "# comment");
+  const returned = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  const result = {
+    sameView: view === switched && switched === returned,
+    quartoText: returned.state.doc.toString(),
+    quartoStyles,
+    texStyles,
+  };
+  source.$destroy();
+  host.remove();
+
+  const mergeHost = document.createElement("section");
+  document.body.append(mergeHost);
+  const merge = createClassComponent({
+    component: MergeEditor, target: mergeHost,
+    props: { path: "merge.tex", oldText: "% comment\\n\\\\documentclass{article}", diff: false },
+  });
+  await tick();
+  const mergeComment = await waitForToken(mergeHost, "% comment");
+  const mergeCommand = await waitForToken(mergeHost, "\\\\documentclass");
+  result.mergeStyles = [styleOf(mergeComment), styleOf(mergeCommand)];
+  merge.$destroy();
+  mergeHost.remove();
+  value.leave();
+  return result;
 };
 window.vimUndoCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
@@ -760,7 +833,7 @@ try {
     build: {
       outDir: output,
       emptyOutDir: true,
-      lib: { entry, formats: ["es"], fileName: () => "editor-check.js" },
+      lib: { entry, formats: ["es"], fileName: () => "editor-check.js", cssFileName: "editor-check" },
     },
   });
 
@@ -772,7 +845,7 @@ try {
       return;
     }
     response.setHeader("Content-Type", "text/html");
-    response.end('<body><script type="module" src="/editor-check.js"></script></body>');
+    response.end('<body data-theme="librepaper"><link rel="stylesheet" href="/editor-check.css"><script type="module" src="/editor-check.js"></script></body>');
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -870,6 +943,16 @@ try {
   assert.match(quarto.text, /fig-one/);
   assert.ok(quarto.lineCount >= 7);
   console.log("editor-browser: qmd source opens with Markdown editing and Quarto cell text preserved");
+  const highlighting = await evaluate("sourceHighlightingCheck()");
+  assert.equal(highlighting.sameView, true, "switching syntax modes rebuilt the source editor");
+  assert.match(highlighting.quartoText, /```\{python label=fig-x\}/);
+  assert.ok(highlighting.quartoStyles.every(Boolean), "Quarto's Python comment, keyword or string did not reach the highlighted DOM");
+  assert.equal(new Set(highlighting.quartoStyles).size, 3, "Quarto comment, keyword and string did not have distinct visible styles");
+  assert.ok(highlighting.texStyles.every(Boolean), "switching to TeX lost its comment or command highlighting");
+  assert.notEqual(highlighting.texStyles[0], highlighting.texStyles[1], "TeX comments and commands had the same visible style");
+  assert.ok(highlighting.mergeStyles.every(Boolean), "MergeEditor did not render TeX highlighting");
+  assert.notEqual(highlighting.mergeStyles[0], highlighting.mergeStyles[1], "MergeEditor comments and commands had the same visible style");
+  console.log("editor-browser: Editor and MergeEditor render source highlighting across file switches");
   const remoteUndo = await evaluate("remoteUndoCheck()");
   assert.equal(remoteUndo.remoteOnly, "REMOTE alpha");
   assert.equal(remoteUndo.localUndone, "REMOTE alpha");
