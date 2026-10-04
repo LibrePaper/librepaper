@@ -121,6 +121,7 @@ impl SessionRegistry {
     /// Bounded the same 75 seconds the old background-process poll was, so a
     /// wedged agent handshake still surfaces as a timeout rather than hanging
     /// the browser's request forever.
+    #[allow(clippy::too_many_arguments)] // Keep the authenticated owner explicit alongside the session credentials.
     pub(crate) async fn start(
         &self,
         link: &DocumentLink,
