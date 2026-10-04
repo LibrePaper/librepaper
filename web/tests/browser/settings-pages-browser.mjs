@@ -1,7 +1,7 @@
 // Where a setting lives, in the dialog itself. A tool that builds the
 // document is configured on the Render page, whole; Integrations holds what
-// feeds a document without building it; the Companion page is the connection
-// and nothing else; and the Account page carries the server for everybody.
+// feeds a document without building it; the Companion page manages this
+// computer; and the Account page carries the server for everybody.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -23,6 +23,7 @@ const entry = join(temporary, "entry.js");
 const harness = join(temporary, "Harness.svelte");
 const statusMock = join(temporary, "status.svelte.js");
 const clientMock = join(temporary, "client.js");
+const controlMock = join(temporary, "control.js");
 async function freePort() {
   const probe = createServer();
   await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
@@ -78,6 +79,14 @@ export async function setStartup() {}
 export async function quit() {}
 `);
 
+writeFileSync(controlMock, `
+export function available() { return false; }
+export function scope() { return ""; }
+export function subscribe(listener) { listener({ available: false, scope: "" }); return () => {}; }
+export function request() { throw new Error("Management API should not be used without a credential."); }
+export function openSettings() {}
+`);
+
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
 import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
@@ -91,6 +100,7 @@ const mockModules = {
   resolveId(source) {
     if (source.endsWith("/lib/companion/status.svelte.js")) return statusMock;
     if (source.endsWith("/lib/companion/client.js")) return clientMock;
+    if (source.endsWith("/lib/companion/control.js")) return controlMock;
     return null;
   },
 };
@@ -157,12 +167,12 @@ try {
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
     ["Editor", "Render", "Integrations", "Companion", "Backups", "Account"]);
 
-  // Render always shows three sections with global build options visible for all formats.
+  // Render always shows four sections with global build options visible for all formats.
   await until("the Quarto rows", () => present(["quarto-executable"]).then((found) => found.length === 1), 5000);
   assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "calepin-status", "calepin-executable", "calepin-arguments",
     "render-markdown-tool", "quarto-status", "quarto-executable", "quarto-arguments",
     "rendering-profile", "rendering-parameters"]);
-  assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  assert.deepEqual(await subheads(), ["Detected tools", "LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   assert.equal(await b.evaluate(`document.querySelector(".settings-group-title") === null`), true);
   await capture("render-connected");
   if (screenshotDir) {
@@ -179,16 +189,16 @@ try {
   await until("the Calepin rows", () => present(["calepin-executable"]).then((found) => found.length === 1), 5000);
   assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "calepin-status", "calepin-executable", "calepin-arguments",
     "render-markdown-tool", "quarto-status", "quarto-executable", "quarto-arguments", "rendering-profile", "rendering-parameters"]);
-  assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  assert.deepEqual(await subheads(), ["Detected tools", "LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
   await show("render", "latex", "Render");
   await until("the LaTeX rows", () => present(["render-latex-files"]).then((found) => found.length === 1), 5000);
   assert.deepEqual(await present(everything), ["render-local", "render-latex-engine", "render-latex-files", "calepin-status", "calepin-executable", "calepin-arguments",
     "render-markdown-tool", "quarto-status", "quarto-executable", "quarto-arguments", "rendering-profile", "rendering-parameters"]);
-  assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  assert.deepEqual(await subheads(), ["Detected tools", "LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
   await show("render", "html", "Render");
-  assert.deepEqual(await subheads(), ["LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
+  assert.deepEqual(await subheads(), ["Detected tools", "LaTeX", "Typst and Calepin", "Markdown and Quarto"]);
   assert.ok((await present(everything)).includes("render-latex-files"));
   // None of that looked for the companion: the Render page must not make the
   // browser ask for local network access just by opening.
@@ -237,7 +247,7 @@ try {
   await show("backups", "quarto", "Backups");
   await capture("backups-offline");
 
-  console.log("settings-pages-browser: Render shows three sections with global format options visible for all documents, Quarto settings remain editable offline, local integration controls disable without the companion, and Remote and Zotero explain their status");
+  console.log("settings-pages-browser: Render shows four sections with global format options visible for all documents, Quarto settings remain editable offline, local integration controls disable without the companion, and Remote and Zotero explain their status");
 } finally {
   if (b) await b.close();
   server.close();
