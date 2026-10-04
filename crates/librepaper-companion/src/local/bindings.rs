@@ -403,17 +403,20 @@ mod validation_tests {
         let revoker = BindingStore::new(state.path());
         let granter = BindingStore::new(state.path());
         let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let (revoke_finished_tx, revoke_finished_rx) = std::sync::mpsc::channel();
+        let (grant_finished_tx, grant_finished_rx) = std::sync::mpsc::channel();
         let transaction = transaction_lock();
         let revoke_started = started_tx.clone();
-        let revoke_finished = finished_tx.clone();
+        let revoke_finished = revoke_finished_tx;
         let revoke_thread = std::thread::spawn(move || {
             revoke_started.send(()).unwrap();
-            let result = revoker.revoke_origin("https://revoked.test");
+            let result = revoker
+                .revoke_origin("https://revoked.test")
+                .map(|_| ());
             revoke_finished.send(result).unwrap();
         });
         let grant_started = started_tx;
-        let grant_finished = finished_tx;
+        let grant_finished = grant_finished_tx;
         let root_path = root.path().to_path_buf();
         let grant_thread = std::thread::spawn(move || {
             grant_started.send(()).unwrap();
@@ -422,21 +425,21 @@ mod validation_tests {
                 "paper",
                 &root_path,
                 "paper.qmd",
-            );
+            ).map(|_| ());
             grant_finished.send(result).unwrap();
         });
 
         started_rx.recv().unwrap();
         started_rx.recv().unwrap();
         let timeout = std::time::Duration::from_millis(50);
-        assert!(finished_rx.recv_timeout(timeout).is_err());
-        assert!(finished_rx.recv_timeout(timeout).is_err());
+        assert!(revoke_finished_rx.recv_timeout(timeout).is_err());
+        assert!(grant_finished_rx.recv_timeout(timeout).is_err());
         drop(transaction);
 
-        let revoke_result = finished_rx.recv().unwrap();
-        assert!(revoke_result.is_ok());
-        let grant_result = finished_rx.recv().unwrap();
-        assert!(grant_result.is_ok());
+        let revoke_completion = revoke_finished_rx.recv().unwrap();
+        assert!(revoke_completion.is_ok());
+        let grant_completion = grant_finished_rx.recv().unwrap();
+        assert!(grant_completion.is_ok());
         revoke_thread.join().unwrap();
         grant_thread.join().unwrap();
 
