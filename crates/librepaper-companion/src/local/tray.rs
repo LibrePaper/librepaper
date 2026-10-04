@@ -16,28 +16,11 @@ pub fn session_available() -> bool {
 }
 
 fn app_icon() -> Result<Icon, String> {
-    // A tiny high-contrast LP mark, drawn as RGBA to avoid a platform image
-    // decoder dependency in the static Linux binary.
-    let mut rgba = vec![0u8; 24 * 24 * 4];
-    for y in 0..24usize {
-        for x in 0..24usize {
-            let inside = (4..20).contains(&x) && (4..20).contains(&y);
-            let letter = (x == 8 && (7..18).contains(&y))
-                || ((8..16).contains(&x) && y == 7)
-                || ((8..14).contains(&x) && y == 12)
-                || (x == 15 && (8..12).contains(&y))
-                || ((8..17).contains(&x) && y == 17);
-            let at = (y * 24 + x) * 4;
-            if inside {
-                rgba[at..at + 4].copy_from_slice(if letter {
-                    &[255, 255, 255, 255]
-                } else {
-                    &[35, 93, 143, 255]
-                });
-            }
-        }
-    }
-    Icon::from_rgba(rgba, 24, 24).map_err(|error| format!("could not create tray icon: {error}"))
+    // Offline-rasterized from assets/tray-outline.svg. Keeping raw RGBA here
+    // avoids a runtime image decoder, including native libraries in Linux
+    // builds, while the checked-in SVG remains the editable source of truth.
+    let rgba = include_bytes!("assets/tray-outline-64.rgba").to_vec();
+    Icon::from_rgba(rgba, 64, 64).map_err(|error| format!("could not create tray icon: {error}"))
 }
 
 struct MenuItems {
@@ -222,9 +205,12 @@ fn run_native(state_home: std::path::PathBuf) -> Result<(), String> {
             ControlFlow::WaitUntil(std::time::Instant::now() + Duration::from_millis(250));
         if matches!(event, Event::NewEvents(StartCause::Init)) && tray.is_none() {
             match app_icon().and_then(|icon| {
-                TrayIconBuilder::new()
-                    .with_tooltip("LibrePaper companion")
-                    .with_icon(icon)
+                let builder = TrayIconBuilder::new().with_tooltip("LibrePaper companion");
+                #[cfg(target_os = "macos")]
+                let builder = builder.with_icon_templated(icon);
+                #[cfg(windows)]
+                let builder = builder.with_icon(icon);
+                builder
                     .with_menu(Box::new(menu.take().expect("tray menu builds once")))
                     .build()
                     .map_err(|error| format!("could not create tray icon: {error}"))
