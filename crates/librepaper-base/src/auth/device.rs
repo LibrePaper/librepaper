@@ -4,13 +4,15 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use moka::future::Cache;
+use moka::Expiry;
 use rand::Rng;
 use sha2::{Digest, Sha256};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::Semaphore;
 
 use super::{normalized, now_unix, random_bytes, Identity, ProviderError};
 
@@ -18,10 +20,8 @@ use super::{normalized, now_unix, random_bytes, Identity, ProviderError};
 /// answers are cached longer than negative ones, so a token that is revoked or
 /// was never valid does not sit trusted for as long as one that is.
 pub struct TokenCache {
-    pub(super) entries: Mutex<HashMap<String, CachedToken>>,
-    pub(super) positive_ttl: Duration,
-    pub(super) negative_ttl: Duration,
-    in_flight: Mutex<HashMap<String, Arc<TokenFlight>>>,
+    entries: Cache<String, Option<Identity>>,
+    in_flight: Arc<AtomicUsize>,
     provider_slots: Arc<Semaphore>,
     provider_budget: governor::DefaultDirectRateLimiter,
     provider_cooldown: Mutex<Option<Instant>>,
@@ -36,15 +36,62 @@ fn provider_quota(limit: usize, window: Duration) -> governor::Quota {
         .allow_burst(std::num::NonZeroU32::new(burst).expect("burst is non-zero"))
 }
 
-pub(super) struct CachedToken {
-    pub(super) identity: Option<Identity>,
-    pub(super) expires: Instant,
+/// A verified identity lives for the positive lifetime, an invalid token for
+/// the negative one.
+struct AnswerExpiry {
+    positive_ttl: Duration,
+    negative_ttl: Duration,
 }
 
-struct TokenFlight {
-    result: Mutex<Option<Result<Option<Identity>, ProviderError>>>,
-    changed: Notify,
-    cancelled: AtomicBool,
+impl AnswerExpiry {
+    fn ttl(&self, answer: &Option<Identity>) -> Duration {
+        if answer.is_some() {
+            self.positive_ttl
+        } else {
+            self.negative_ttl
+        }
+    }
+}
+
+impl Expiry<String, Option<Identity>> for AnswerExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &Option<Identity>,
+        _created_at: Instant,
+    ) -> Option<Duration> {
+        Some(self.ttl(value))
+    }
+
+    fn expire_after_update(
+        &self,
+        _key: &String,
+        value: &Option<Identity>,
+        _updated_at: Instant,
+        _duration_until_expiry: Option<Duration>,
+    ) -> Option<Duration> {
+        Some(self.ttl(value))
+    }
+}
+
+/// One admitted provider check in the in-flight count; released when the
+/// check finishes or is cancelled.
+struct FlightSlot(Arc<AtomicUsize>);
+
+impl FlightSlot {
+    fn admit(count: &Arc<AtomicUsize>) -> Result<FlightSlot, ProviderError> {
+        if count.fetch_add(1, Ordering::AcqRel) >= TOKEN_IN_FLIGHT_CAP {
+            count.fetch_sub(1, Ordering::AcqRel);
+            return Err(ProviderError::Busy);
+        }
+        Ok(FlightSlot(Arc::clone(count)))
+    }
+}
+
+impl Drop for FlightSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Maximum time a verified identity is trusted without another provider
@@ -71,8 +118,8 @@ pub const TOKEN_CHECK_RATE_WINDOW: Duration = Duration::from_secs(60);
 pub const TOKEN_CHECK_COOLDOWN_FALLBACK: Duration = Duration::from_secs(60);
 pub const TOKEN_CHECK_COOLDOWN_MAX: Duration = Duration::from_secs(15 * 60);
 
-/// Distinct token checks admitted to the coalescing table. Calls beyond this
-/// fail immediately, without allocating another provider request or cache entry.
+/// Distinct token checks running at once. Calls beyond this fail
+/// immediately, without allocating another provider request or cache entry.
 pub const TOKEN_IN_FLIGHT_CAP: usize = 256;
 
 impl Default for TokenCache {
@@ -98,10 +145,14 @@ impl TokenCache {
         provider_window: Duration,
     ) -> TokenCache {
         TokenCache {
-            entries: Mutex::new(HashMap::new()),
-            positive_ttl,
-            negative_ttl,
-            in_flight: Mutex::new(HashMap::new()),
+            entries: Cache::builder()
+                .max_capacity(TOKEN_CACHE_CAP as u64)
+                .expire_after(AnswerExpiry {
+                    positive_ttl,
+                    negative_ttl,
+                })
+                .build(),
+            in_flight: Arc::new(AtomicUsize::new(0)),
             provider_slots: Arc::new(Semaphore::new(TOKEN_CHECK_CONCURRENCY)),
             provider_budget: governor::RateLimiter::direct(provider_quota(
                 provider_limit,
@@ -112,9 +163,9 @@ impl TokenCache {
     }
 
     /// A cache whose lifetimes are configurable, so a test can watch an entry
-    /// actually expire and get swept without waiting out the real ten-minute
-    /// and one-minute TTLs. Tests also use a large provider budget so a cache
-    /// capacity test does not have to wait for the production rate window.
+    /// actually expire without waiting out the real ten-minute and one-minute
+    /// TTLs. Tests also use a large provider budget so a cache capacity test
+    /// does not have to wait for the production rate window.
     #[cfg(test)]
     pub fn for_test(positive_ttl: Duration, negative_ttl: Duration) -> TokenCache {
         TokenCache::with_config(
@@ -128,19 +179,15 @@ impl TokenCache {
     /// How many token digests are currently held, for a test to check against
     /// the cap.
     #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.entries.lock().expect("token cache poisoned").len()
-    }
-
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    pub async fn len(&self) -> u64 {
+        self.entries.run_pending_tasks().await;
+        self.entries.entry_count()
     }
 
     /// Resolves a bearer token to an identity, caching only confirmed valid or
     /// invalid answers. Misses for the same token share one provider request;
     /// provider failures are returned to all waiters and are never cached as
-    /// invalid. Admission is fail-fast: a full coalescing table, provider
+    /// invalid. Admission is fail-fast: a full in-flight count, provider
     /// semaphore, or rate budget returns `ProviderError::Busy` rather than
     /// retaining an unbounded queue of request futures.
     pub async fn verify<F, Fut>(&self, check: F, token: &str) -> Result<Identity, ProviderError>
@@ -153,95 +200,18 @@ impl TokenCache {
         }
 
         let key = hex::encode(Sha256::digest(token.as_bytes()));
-        let mut check = Some(check);
-        loop {
-            if let Some(cached) = self.cached(&key) {
-                return Ok(cached.unwrap_or_default());
-            }
-
-            let (flight, leader) = {
-                // Recheck entries while holding the admission lock. A caller
-                // can have observed a miss just before a leader completed;
-                // this second check prevents that caller from starting a
-                // duplicate provider request after the flight is removed.
-                let mut in_flight = self.in_flight.lock().expect("token flights poisoned");
-                let entries = self.entries.lock().expect("token cache poisoned");
-                if let Some(entry) = entries.get(&key) {
-                    if Instant::now() < entry.expires {
-                        return Ok(entry.identity.clone().unwrap_or_default());
-                    }
-                }
-                drop(entries);
-                if let Some(flight) = in_flight.get(&key) {
-                    (Arc::clone(flight), false)
-                } else if in_flight.len() >= TOKEN_IN_FLIGHT_CAP {
-                    return Err(ProviderError::Busy);
-                } else {
-                    let flight = Arc::new(TokenFlight {
-                        result: Mutex::new(None),
-                        changed: Notify::new(),
-                        cancelled: AtomicBool::new(false),
-                    });
-                    in_flight.insert(key.clone(), Arc::clone(&flight));
-                    (flight, true)
-                }
-            };
-
-            if leader {
-                let mut owner = FlightOwner {
-                    cache: self,
-                    key: key.clone(),
-                    flight: Arc::clone(&flight),
-                    finished: false,
-                };
-                let result = self
-                    .check_once(
-                        check.take().expect("token check closure already consumed"),
-                        token,
-                    )
-                    .await;
-                // Keep the flight in the map while publishing a successful
-                // cache answer. New callers therefore see either the flight
-                // or the completed cache entry, never an uncovered gap.
-                let mut in_flight = self.in_flight.lock().expect("token flights poisoned");
-                if let Ok(identity) = &result {
-                    self.cache_answer(&key, identity.clone());
-                }
-                *flight.result.lock().expect("token flight poisoned") = Some(result.clone());
-                if in_flight
-                    .get(&key)
-                    .is_some_and(|current| Arc::ptr_eq(current, &flight))
-                {
-                    in_flight.remove(&key);
-                }
-                drop(in_flight);
-                flight.changed.notify_waiters();
-                owner.finished = true;
-                return result.map(|identity| identity.unwrap_or_default());
-            }
-
-            let notified = flight.changed.notified();
-            if let Some(result) = flight.result.lock().expect("token flight poisoned").clone() {
-                return result.map(|identity| identity.unwrap_or_default());
-            }
-            if flight.cancelled.load(Ordering::Acquire) {
-                continue;
-            }
-            notified.await;
-            let result = flight.result.lock().expect("token flight poisoned").clone();
-            if let Some(result) = result {
-                return result.map(|identity| identity.unwrap_or_default());
-            }
-            // A cancelled leader removes the flight without setting a result.
-            // Re-entering the loop lets this waiter become the new leader.
-        }
-    }
-
-    fn cached(&self, key: &str) -> Option<Option<Identity>> {
-        let entries = self.entries.lock().expect("token cache poisoned");
-        entries
-            .get(key)
-            .and_then(|entry| (Instant::now() < entry.expires).then(|| entry.identity.clone()))
+        // Only the caller that runs this future is a leader; the cache hands
+        // every other concurrent caller for the key the leader's answer, and
+        // lets one of them take over if the leader is cancelled.
+        let answer = self
+            .entries
+            .try_get_with(key, async {
+                let _slot = FlightSlot::admit(&self.in_flight)?;
+                self.check_once(check, token).await
+            })
+            .await
+            .map_err(|error| ProviderError::clone(&error))?;
+        Ok(answer.unwrap_or_default())
     }
 
     async fn check_once<F, Fut>(
@@ -304,62 +274,6 @@ impl TokenCache {
 
     fn try_reserve_provider_check(&self) -> bool {
         self.provider_budget.check().is_ok()
-    }
-
-    fn cache_answer(&self, key: &str, identity: Option<Identity>) {
-        let ttl = if identity.is_some() {
-            self.positive_ttl
-        } else {
-            self.negative_ttl
-        };
-        let mut entries = self.entries.lock().expect("token cache poisoned");
-        let now = Instant::now();
-        entries.retain(|_, cached| cached.expires > now);
-        while entries.len() >= TOKEN_CACHE_CAP {
-            let Some(soonest) = entries
-                .iter()
-                .min_by_key(|(_, cached)| cached.expires)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            entries.remove(&soonest);
-        }
-        entries.insert(
-            key.to_string(),
-            CachedToken {
-                identity,
-                expires: now + ttl,
-            },
-        );
-    }
-
-    fn remove_flight(&self, key: &str, flight: &Arc<TokenFlight>) {
-        let mut in_flight = self.in_flight.lock().expect("token flights poisoned");
-        if in_flight
-            .get(key)
-            .is_some_and(|current| Arc::ptr_eq(current, flight))
-        {
-            in_flight.remove(key);
-        }
-    }
-}
-
-struct FlightOwner<'a> {
-    cache: &'a TokenCache,
-    key: String,
-    flight: Arc<TokenFlight>,
-    finished: bool,
-}
-
-impl Drop for FlightOwner<'_> {
-    fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-        self.flight.cancelled.store(true, Ordering::Release);
-        self.cache.remove_flight(&self.key, &self.flight);
-        self.flight.changed.notify_waiters();
     }
 }
 
@@ -917,7 +831,7 @@ mod tests {
             )
             .await;
         assert_eq!(first, Err(ProviderError::Upstream { status: 503 }));
-        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.len().await, 0);
 
         let second = cache
             .verify(
@@ -927,7 +841,7 @@ mod tests {
             .await
             .expect("the next check should be admitted");
         assert!(!second.is_signed_in());
-        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.len().await, 1);
     }
 
     #[tokio::test]
