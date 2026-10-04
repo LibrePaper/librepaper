@@ -14,8 +14,6 @@ pub mod builders;
 pub mod cli;
 pub mod connections;
 pub mod credentials;
-#[cfg(target_os = "linux")]
-pub(crate) mod dialog;
 pub mod discovery;
 pub mod embedded;
 pub mod engine_adapter;
@@ -29,7 +27,10 @@ pub mod protocol;
 pub mod quarto;
 pub mod quarto_capture;
 pub mod service;
+pub mod settings;
 pub(crate) mod tools;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod tray;
 
 pub mod zotero;
 

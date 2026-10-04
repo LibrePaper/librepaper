@@ -35,6 +35,7 @@ pub struct Embedded {
 
 impl Embedded {
     pub async fn stop(&self) {
+        self.service.deny_pending_approvals().await;
         self.service.stop_previews().await;
     }
 }
@@ -80,6 +81,7 @@ pub async fn start(base: &Path, tool_path: Vec<PathBuf>) -> Result<Arc<Embedded>
         None,
         workspaces,
     );
+    service.enable_control_panel().await?;
     let router = service.router();
     if let Some(v6) = listener_v6 {
         let make_v6 = router

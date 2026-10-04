@@ -43,6 +43,19 @@ try {
   assert.equal((await state()).pid, first.pid, "repeated bare invocation reuses the running companion");
   await cli("start");
   assert.equal((await state()).pid, first.pid, "explicit start reuses the running companion");
+  const desktop = await cli("desktop");
+  let controlPanel;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      controlPanel = await readFile(opened, "utf8");
+      if (controlPanel) break;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(controlPanel, "desktop launches the configured browser opener");
+  assert.match(controlPanel, /^http:\/\/127\.0\.0\.1:\d+\/companion\/#token=[A-Za-z0-9_=-]+$/, "desktop opens the private local control panel");
+  assert.ok(!desktop.stdout.includes("#token="), "the control token is not printed by the CLI");
+  await rm(opened, { force: true });
   await cli("--at-login");
   const desktopEntry = await readFile(join(env.XDG_CONFIG_HOME, "autostart/librepaper-local.desktop"), "utf8");
   assert.match(desktopEntry, /^Exec=.* start$/m);
@@ -60,7 +73,10 @@ try {
   let approvalCode;
   let target;
   for (let attempt = 0; attempt < 100; attempt++) {
-    try { target = await readFile(opened, "utf8"); if (target) break; } catch {}
+    try {
+      const value = await readFile(opened, "utf8");
+      if (value.startsWith(returnUrl)) { target = value; break; }
+    } catch {}
     try {
       const output = await readFile(log, "utf8");
       approvalCode = output.match(/librepaper local approve (\d{6})/)?.[1];
@@ -71,7 +87,10 @@ try {
   if (approvalCode) {
     await legacy("approve", approvalCode);
     for (let attempt = 0; attempt < 30; attempt++) {
-      try { target = await readFile(opened, "utf8"); if (target) break; } catch {}
+      try {
+        const value = await readFile(opened, "utf8");
+        if (value.startsWith(returnUrl)) { target = value; break; }
+      } catch {}
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }

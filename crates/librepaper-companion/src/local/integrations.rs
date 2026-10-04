@@ -123,6 +123,7 @@ impl Custom {
 struct State {
     path: PathBuf,
     entries: BTreeMap<&'static str, Custom>,
+    tool_paths: Vec<PathBuf>,
 }
 
 static STATE: RwLock<Option<State>> = RwLock::new(None);
@@ -131,12 +132,30 @@ static STATE: RwLock<Option<State>> = RwLock::new(None);
 /// unreadable file, or an entry that no longer validates, reads as the
 /// default. Called when the service starts; a later call replaces the state.
 pub fn init(state_home: &Path) {
+    init_with_tool_paths(state_home, Vec::new());
+}
+
+pub(crate) fn init_with_tool_paths(state_home: &Path, tool_paths: Vec<PathBuf>) {
     let path = state_home
         .join("librepaper")
         .join("local")
         .join("integrations.json");
     let entries = load_or_default(&path);
-    *STATE.write().unwrap_or_else(|poison| poison.into_inner()) = Some(State { path, entries });
+    *STATE.write().unwrap_or_else(|poison| poison.into_inner()) = Some(State {
+        path,
+        entries,
+        tool_paths,
+    });
+}
+
+pub(crate) fn set_tool_paths(tool_paths: Vec<PathBuf>) {
+    if let Some(state) = STATE
+        .write()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .as_mut()
+    {
+        state.tool_paths = tool_paths;
+    }
 }
 
 /// The configuration for one integration; the default before [`init`].
@@ -160,16 +179,24 @@ pub fn all() -> BTreeMap<&'static str, Custom> {
 /// Validates `custom`, writes the store, then updates memory. An empty
 /// configuration removes the entry.
 pub fn set(which: Integration, custom: Custom) -> Result<(), String> {
-    custom.validate()?;
+    set_many(vec![(which, custom)])
+}
+
+pub(crate) fn set_many(updates: Vec<(Integration, Custom)>) -> Result<(), String> {
+    for (_, custom) in &updates {
+        custom.validate()?;
+    }
     let mut guard = STATE.write().unwrap_or_else(|poison| poison.into_inner());
     let state = guard
         .as_mut()
         .ok_or("integrations store is not initialised")?;
     let mut entries = state.entries.clone();
-    if custom == Custom::default() {
-        entries.remove(which.key());
-    } else {
-        entries.insert(which.key(), custom);
+    for (which, custom) in updates {
+        if custom == Custom::default() {
+            entries.remove(which.key());
+        } else {
+            entries.insert(which.key(), custom);
+        }
     }
     if let Some(parent) = state.path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -196,6 +223,21 @@ pub fn executable(which: Integration) -> Option<PathBuf> {
             path
         };
         return exe.is_file().then_some(exe);
+    }
+    let tool = crate::local::tools::exe_name(which.as_str());
+    if let Some(path) = STATE
+        .read()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .as_ref()
+        .and_then(|state| {
+            state
+                .tool_paths
+                .iter()
+                .map(|directory| directory.join(&tool))
+                .find(|path| path.is_file())
+        })
+    {
+        return Some(path);
     }
     crate::local::tools::find(which.override_var(), which.as_str())
 }
@@ -377,5 +419,23 @@ mod tests {
                 vec!["--verbose".to_string(), "--config=custom.toml".to_string()]
             );
         });
+    }
+
+    #[test]
+    fn configured_tool_paths_select_the_quarto_used_by_preview() {
+        let _turn = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let directory = tempfile::tempdir().unwrap();
+        let quarto = directory.path().join(if cfg!(windows) {
+            "quarto.exe"
+        } else {
+            "quarto"
+        });
+        std::fs::write(&quarto, b"fixture executable").unwrap();
+        let state_home = tempfile::tempdir().unwrap();
+        init_with_tool_paths(state_home.path(), vec![directory.path().to_path_buf()]);
+        assert_eq!(executable(Integration::Quarto), Some(quarto));
+        set_tool_paths(Vec::new());
     }
 }

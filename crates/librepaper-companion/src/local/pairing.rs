@@ -173,6 +173,30 @@ impl PairingStore {
         origins
     }
 
+    /// Local-control view of live site grants. The bearer hash is deliberately
+    /// omitted; callers receive only an opaque revocation id and display
+    /// metadata.
+    pub(crate) fn active_details(&self) -> Vec<(String, String, i64, i64, String)> {
+        let now = now_unix();
+        let mut entries: Vec<_> = self
+            .load()
+            .into_values()
+            .filter(|pairing| pairing.expires > now)
+            .map(|pairing| {
+                let id = hex::encode(&Sha256::digest(pairing.origin.as_bytes())[..16]);
+                (
+                    id,
+                    pairing.origin,
+                    pairing.created,
+                    pairing.expires,
+                    pairing.label,
+                )
+            })
+            .collect();
+        entries.sort_by(|left, right| left.1.cmp(&right.1));
+        entries
+    }
+
     /// Revokes the pairing for `origin` -- what `POST disconnect` does to the
     /// origin that authenticated it.
     pub fn revoke(&self, origin: &str) -> bool {
