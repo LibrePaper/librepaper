@@ -129,7 +129,9 @@ try {
   });
 
   let companionAddressForPage = "";
-  const page = () => `<!doctype html><html data-theme="librepaper"><head><meta charset="utf-8"><link rel="stylesheet" href="/check.css"><title>LibrePaper Settings</title></head><body><script>window.__companionAddress=${JSON.stringify(companionAddressForPage)}</script><script type="module" src="/check.js"></script></body></html>`;
+  const page = () => `<!doctype html>
+    <html data-theme="librepaper"><head><meta charset="utf-8"><link rel="stylesheet" href="/check.css"><title>LibrePaper Settings</title></head>
+    <body><script>window.__companionAddress=${JSON.stringify(companionAddressForPage)}</script><script type="module" src="/check.js"></script></body></html>`;
   server = createServer((request, response) => {
     if (request.url === "/check.js") {
       response.setHeader("content-type", "text/javascript");
@@ -186,7 +188,10 @@ try {
   assert.equal(await b.evaluate(`document.documentElement.innerHTML.includes(${JSON.stringify(credential.token)})`), false, "the token is not rendered into the page");
   assert.equal(await b.evaluate('document.querySelectorAll(".request-card").length'), 0, "approvals use existing SettingRow layout");
   assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
-  assert.equal(await b.evaluate('document.querySelectorAll(".settings-subsection").length >= 6'), true, "management is organized under Settings sections");
+  assert.equal(await b.evaluate(`[
+    "companion-lifecycle-heading", "companion-approvals-heading", "companion-sites-heading",
+    "companion-activity-heading", "companion-agents-heading"
+  ].every((id) => document.querySelector("#" + id))`), true, "management uses the existing Settings sections");
   assert.equal(await b.evaluate('document.body.innerText.includes("Tool search folders")'), false, "tool search folders are not configurable");
   assert.equal(await b.evaluate('document.querySelector("#companion-folders-heading") === null'), true, "empty project-folder grants have no heading");
 

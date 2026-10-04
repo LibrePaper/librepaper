@@ -60,6 +60,7 @@ assert.ok(!link.includes(claimBody.verifier));
 assert.ok(!link.includes("scoped-token"));
 assert.equal(attempts, 4);
 assert.equal(local.status().state, "connected");
+const workingPairStorage = new Map(storage);
 
 // The trusted app uses an in-app control session and requests explicit
 // approval in Settings; it does not issue a public pair request or URL link.
@@ -103,6 +104,7 @@ assert.equal(link, "");
 now = 0; link = ""; attempts = 0;
 local._testing.reset();
 inject(() => response(200, {}));
+storage = new Map(workingPairStorage);
 local.configure({ origin: "https://papers.example", project: "paper" });
 await local.connectApp({ timeoutMs: 10000 });
 assert.equal(link, "", "a working stored pairing needs no launch link");

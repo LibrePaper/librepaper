@@ -26,7 +26,8 @@ import { named } from "../latex/errors.js";
 import * as controlClient from "./control.js";
 
 /** @typedef {{ targetAddressSpace?: "loopback" } & RequestInit} LocalRequestInit */
-/** @typedef {{ fetch: (input: RequestInfo | URL, init?: LocalRequestInit) => Promise<Response>, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, localNetworkPermission: () => Promise<PermissionState | null>, replaceHash: (hash: string) => void, launchLink: (url: string) => void }} CompanionDeps */
+/** @typedef {{ connect: (address: string) => Promise<unknown>, request: (path: string, options?: { method?: string, body?: unknown }) => Promise<unknown>, showSettings: () => void }} CompanionControl */
+/** @typedef {{ fetch: (input: RequestInfo | URL, init?: LocalRequestInit) => Promise<Response>, control: CompanionControl, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, localNetworkPermission: () => Promise<PermissionState | null>, replaceHash: (hash: string) => void, launchLink: (url: string) => void }} CompanionDeps */
 /** @typedef {{ token: string }} Pairing */
 /** @typedef {{ entrypoint?: string, format?: string, profile?: string | null, parameters?: Record<string, string | number | boolean | null>, policy?: string, kind?: string, inputRevision?: string, inputDigest?: string, renderScope?: string, executionMode?: string, dataInputs?: string[], livePreview?: boolean, [key: string]: unknown }} RenderOptions */
 /** @typedef {{ entrypoint?: string, binding?: string, bindingId?: string, idempotencyKey?: string, id?: string, inputDigest?: string, inputRevision?: string, generation?: number, deadlineSeconds?: number, snapshot?: string, [key: string]: unknown }} CompanionJob */
@@ -607,7 +608,7 @@ async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
   let response;
   try {
     response = await deps.fetch(url, { method, mode: "cors", credentials: "omit", headers, body, signal });
-  } catch {
+  } catch (error) {
     if (signal?.aborted) {
       throw named("Canceled", "Canceled");
     }
@@ -841,22 +842,22 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
     asked = true;
   }
   if (!asked) {
-  try {
-    const response = await deps.fetch(`${address()}${LOCAL_BASE}pair/request`, {
-      method: "POST", mode: "cors", credentials: "omit",
-      headers: { "Content-Type": "application/json" },
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
-      body: JSON.stringify({ origin, request, challenge, return: returnUrl }),
-    });
-    asked = true;
-    if (response.status !== 202) {
-      const data = await response.json().catch(() => null);
-      throw named("Refused", data?.error || `The companion could not ask for permission (${response.status}).`);
+    try {
+      const response = await deps.fetch(`${address()}${LOCAL_BASE}pair/request`, {
+        method: "POST", mode: "cors", credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
+        body: JSON.stringify({ origin, request, challenge, return: returnUrl }),
+      });
+      asked = true;
+      if (response.status !== 202) {
+        const data = await response.json().catch(() => null);
+        throw named("Refused", data?.error || `The companion could not ask for permission (${response.status}).`);
+      }
+    } catch (error) {
+      if (asked) throw error;
+      // Unreachable after all: fall through to the link.
     }
-  } catch (error) {
-    if (asked) throw error;
-    // Unreachable after all: fall through to the link.
-  }
   }
   checkScope();
   if (!asked) {
