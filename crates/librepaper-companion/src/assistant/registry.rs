@@ -77,6 +77,17 @@ fn ensure_origin_owner(owner: Option<&str>, requester: &str) -> Result<(), Strin
     }
 }
 
+fn replace_agent_grant(
+    owner: Option<&str>,
+    requester: &str,
+    grant: &std::sync::RwLock<String>,
+    token: &str,
+) -> Result<(), String> {
+    ensure_origin_owner(owner, requester)?;
+    *grant.write().unwrap_or_else(|error| error.into_inner()) = token.to_string();
+    Ok(())
+}
+
 impl SessionRegistry {
     pub(crate) fn new(state_home: PathBuf) -> Self {
         Self {
@@ -172,8 +183,10 @@ impl SessionRegistry {
         if let Some((_, owner)) = &current {
             ensure_origin_owner(owner.as_deref(), &requester)?;
         }
-        let current_hash = current.as_ref().map(|(config_hash, _)| config_hash);
-        if current_hash.as_deref() != Some(wanted.as_str()) {
+        let current_hash = current
+            .as_ref()
+            .map(|(config_hash, _)| config_hash.as_str());
+        if current_hash != Some(wanted.as_str()) {
             if current_hash.is_some() {
                 self.stop(link, conversation)
                     .await
@@ -201,13 +214,14 @@ impl SessionRegistry {
                 move |status, stop| async move { runtime::run(&peer, config, status, stop).await },
             );
         } else {
-            self.renew_agent_token(link, conversation, agent_token)
-                .await?;
+            self.validate_agent_token(link, agent_token).await?;
             if !crate::local::pairing::PairingStore::new(&self.state_home, None)
                 .authenticate(origin, pairing_token)
             {
                 return Err("the local pairing is no longer valid; reconnect this site".into());
             }
+            let (owner, grant) = self.active_grant(&key)?;
+            replace_agent_grant(owner.as_deref(), &requester, &grant, agent_token)?;
         }
         drop(gate);
         self.wait_until_settled(&key).await
@@ -262,9 +276,48 @@ impl SessionRegistry {
     pub(crate) async fn renew_agent_token(
         &self,
         link: &DocumentLink,
+        origin: &str,
+        pairing_token: &str,
         conversation: &str,
         token: &str,
     ) -> Result<(), String> {
+        let _gate = self.start_gate.lock().await;
+        let pairing = crate::local::pairing::PairingStore::new(&self.state_home, None);
+        if !pairing.authenticate(origin, pairing_token) {
+            return Err("the local pairing is no longer valid; reconnect this site".into());
+        }
+        let requester = crate::local::pairing::normalize_origin(origin);
+        let key = lifecycle::session_key(link, conversation)?;
+        let (owner, _) = self.active_grant(&key)?;
+        ensure_origin_owner(owner.as_deref(), &requester)?;
+        self.validate_agent_token(link, token).await?;
+        if !pairing.authenticate(origin, pairing_token) {
+            return Err("the local pairing is no longer valid; reconnect this site".into());
+        }
+        let (owner, grant) = self.active_grant(&key)?;
+        replace_agent_grant(owner.as_deref(), &requester, &grant, token)
+    }
+
+    fn active_grant(
+        &self,
+        key: &str,
+    ) -> Result<(Option<String>, std::sync::Arc<std::sync::RwLock<String>>), String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(Entry::Running {
+            origin,
+            grant: Some(grant),
+            ..
+        }) = sessions.get(key)
+        else {
+            return Err("the assistant is not running; start it again from the document".into());
+        };
+        Ok((origin.clone(), grant.clone()))
+    }
+
+    async fn validate_agent_token(&self, link: &DocumentLink, token: &str) -> Result<(), String> {
         if !token.starts_with(librepaper_base::auth::AGENT_GRANT_PREFIX) {
             return Err("the renewed assistant authorization is invalid".into());
         }
@@ -272,18 +325,6 @@ impl SessionRegistry {
         // this rejects malformed, expired, revoked, wrong-document and wrong-
         // link credentials while preserving the active value on failure.
         AutomationPeer::open_scoped(link.clone(), token.to_string()).await?;
-        let key = lifecycle::session_key(link, conversation)?;
-        let sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(Entry::Running {
-            grant: Some(grant), ..
-        }) = sessions.get(&key)
-        else {
-            return Err("the assistant is not running; start it again from the document".into());
-        };
-        *grant.write().unwrap_or_else(|error| error.into_inner()) = token.to_string();
         Ok(())
     }
 
@@ -498,6 +539,28 @@ mod tests {
                 .unwrap_err(),
             "the assistant session is already owned by another paired site"
         );
+    }
+
+    #[test]
+    fn cross_origin_renewal_cannot_replace_the_running_agent_grant() {
+        let grant = std::sync::RwLock::new("original-grant".to_string());
+        assert!(replace_agent_grant(
+            Some("https://papers.example"),
+            "https://other.example",
+            &grant,
+            "attacker-grant"
+        )
+        .is_err());
+        assert_eq!(*grant.read().unwrap(), "original-grant");
+
+        replace_agent_grant(
+            Some("HTTPS://Papers.Example/"),
+            "https://papers.example",
+            &grant,
+            "renewed-grant",
+        )
+        .unwrap();
+        assert_eq!(*grant.read().unwrap(), "renewed-grant");
     }
 
     /// Two sessions started side by side are independent tasks: hard-stopping
