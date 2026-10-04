@@ -553,11 +553,9 @@ mod tests {
             let (released, ready) = &*self.release;
             let released = released.lock().unwrap_or_else(|error| error.into_inner());
             let _released = ready
-                .wait_timeout_while(
-                    released,
-                    std::time::Duration::from_secs(30),
-                    |released| !*released,
-                )
+                .wait_timeout_while(released, std::time::Duration::from_secs(30), |released| {
+                    !*released
+                })
                 .unwrap_or_else(|error| error.into_inner());
         }
     }
@@ -629,15 +627,12 @@ mod tests {
         for dashboard_stop in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let registry = std::sync::Arc::new(SessionRegistry::new(dir.path().to_path_buf()));
-            let link =
-                DocumentLink::parse("https://example.test/docs/paper#k=secret", "").unwrap();
+            let link = DocumentLink::parse("https://example.test/docs/paper#k=secret", "").unwrap();
             let conversation = "conversation-1";
             let key = lifecycle::session_key(&link, conversation).unwrap();
             let entered = std::sync::Arc::new(tokio::sync::Notify::new());
-            let release = std::sync::Arc::new((
-                std::sync::Mutex::new(false),
-                std::sync::Condvar::new(),
-            ));
+            let release =
+                std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
             let drop_guard = PauseInDrop {
                 entered: entered.clone(),
                 release: release.clone(),
@@ -681,17 +676,11 @@ mod tests {
             cancel.await.unwrap().unwrap();
             let gate_available_after_cleanup = registry.start_gate.try_lock().is_ok();
             let _gate = registry.start_gate.lock().await;
-            registry.spawn_running(
-                &key,
-                "new-config",
-                None,
-                None,
-                |status, _stop| async move {
-                    status.set(RunnerState::Ready, None, None);
-                    std::future::pending::<()>().await;
-                    Ok(())
-                },
-            );
+            registry.spawn_running(&key, "new-config", None, None, |status, _stop| async move {
+                status.set(RunnerState::Ready, None, None);
+                std::future::pending::<()>().await;
+                Ok(())
+            });
             drop(_gate);
             let replacement_registered = matches!(
                 registry
