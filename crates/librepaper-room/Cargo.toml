@@ -11,6 +11,7 @@ repository.workspace = true
 doctest = false
 
 [dependencies]
+str_indices.workspace = true
 html-escape.workspace = true
 tracing.workspace = true
 moka.workspace = true

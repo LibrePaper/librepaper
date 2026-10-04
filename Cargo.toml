@@ -134,6 +134,16 @@ governor = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
+# Wave 3 of librepaper#d3m7: the MCP tool schemas are validated by a real
+# JSON Schema implementation, metrics are encoded by the official client,
+# UTF-16 offsets are converted without re-encoding, the Quarto resource
+# scanner parses HTML and CSS, and digests use RFC 8785 canonical JSON.
+jsonschema = { version = "0.58", default-features = false }
+prometheus-client = "0.25"
+str_indices = "0.4"
+lol_html = "3"
+cssparser = "0.38"
+serde_jcs = "0.2"
 # PostgreSQL is the production catalogue. SQLx supplies the async pool and
 # compile-independent migrations; queries are exercised against PostgreSQL in
 # integration tests against the production database engine.

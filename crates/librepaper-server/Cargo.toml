@@ -12,6 +12,8 @@ build = "build.rs"
 doctest = false
 
 [dependencies]
+prometheus-client.workspace = true
+jsonschema.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 governor.workspace = true

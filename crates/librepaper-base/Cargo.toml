@@ -11,6 +11,7 @@ repository.workspace = true
 doctest = false
 
 [dependencies]
+serde_jcs.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 ipnet.workspace = true
