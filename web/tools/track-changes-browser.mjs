@@ -43,8 +43,7 @@ const databaseUrl = process.env.LIBREPAPER_DATABASE_URL
   : '"postgresql:///librepaper"';
 writeFileSync(serverConfig, [
   "[server]",
-  'bind = "0.0.0.0"',
-  `port = ${PORT}`,
+  `address = "0.0.0.0:${PORT}"`,
   "local_companion = true",
   "",
   "[storage]",

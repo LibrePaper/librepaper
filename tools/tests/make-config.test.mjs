@@ -128,21 +128,11 @@ for (const config of [undefined, "tools/dev-oauth.toml"]) {
   test("serve bootstraps " + (config || "the default dev config"), async () => {
     const fixture = await serveFixture();
     try {
-      const result = runServe(fixture, config, {
-        PORT: "6181",
-        DATA: "fixture-data",
-        SIMULATE_ACTIVITY: "13",
-      });
+      const result = runServe(fixture, config);
       assert.equal(result.status, 0, result.stderr || result.stdout);
       const values = parseLog(await readFile(fixture.binaryLog, "utf8"));
       assert.equal(values.args, "admin serve --config " + (config || "tools/dev.toml"));
-      assert.equal(values.db, "postgresql://dev:secret@127.0.0.1/librepaper");
-      assert.equal(values.port, "6181");
-      assert.equal(values.data, join(fixture.directory, "fixture-data"));
-      assert.equal(values.app, "http://localhost:6181");
-      assert.equal(values.site, "http://localhost:6181");
-      assert.equal(values.activity, "13");
-      assert.equal(await readFile(fixture.dbLog, "utf8"), "dev\nurl\n");
+      assert.equal(await readFile(fixture.dbLog, "utf8"), "dev\n");
       assert.equal(await readFile(fixture.dockerLog, "utf8"), "dev\n");
     } finally {
       await fixture.cleanup();

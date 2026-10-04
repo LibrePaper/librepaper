@@ -190,7 +190,7 @@ See equation~\eqref{eq:test}.
     const appBase = `http://localhost:${port}`;
     const configPath = join(appData, "config.toml");
     writeFileSync(configPath, [
-      "[server]", 'bind = "127.0.0.1"', `port = ${port}`, "local_companion = false", "",
+      "[server]", `address = "127.0.0.1:${port}"`, "local_companion = false", "",
       "[storage]", `directory = ${JSON.stringify(appData)}`, 'database_url = { env = "LIBREPAPER_DATABASE_URL" }', "fsync = false", 'object_store = "filesystem"', "",
       "[auth.github]", 'client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }', 'client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }', "",
       "[access]", 'publishers = ["any"]', 'commenters = ["anyone"]', "",
