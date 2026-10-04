@@ -299,6 +299,7 @@
       for (const input of $("integration-settings").querySelectorAll("input, textarea")) input.addEventListener("input", markSettingsDirty, { once: true });
     }
     const agents = list(settings.custom_agents || (lastState && lastState.custom_agents));
+    const customIds = new Set(agents.map((agent) => String(agent.id)));
     const agentCards = agents.map((agent) => {
       const card = node("article", "list-card");
       const body = node("div", "list-card-body");
@@ -312,6 +313,7 @@
       return card;
     });
     for (const agent of list(lastState && lastState.agents)) {
+      if (customIds.has(String(agent.id))) continue;
       const card = node("article", "list-card");
       const body = node("div", "list-card-body");
       body.append(node("h3", "", agent.label || agent.id || "Installed agent"));
