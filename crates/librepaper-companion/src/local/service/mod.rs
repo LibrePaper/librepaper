@@ -834,19 +834,11 @@ fn persist_quarto_job(entry: &JobEntry) -> Result<(), String> {
         finished_at: librepaper_base::util::now_unix(),
     };
     let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
-    use std::io::Write;
-    let mut temporary = tempfile::NamedTempFile::new_in(root).map_err(|error| error.to_string())?;
-    temporary
-        .write_all(&bytes)
-        .map_err(|error| error.to_string())?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(|error| error.to_string())?;
-    temporary
-        .persist(root.join(QUARTO_RECORD_FILE))
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    librepaper_base::private_files::publish(
+        &root.join(QUARTO_RECORD_FILE),
+        &bytes,
+        "Quarto job record",
+    )
 }
 
 async fn run_worker(inner: Arc<Inner>) {

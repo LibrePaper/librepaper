@@ -1022,17 +1022,13 @@ pub async fn run_job_with_bindings(
         }
     };
     let bundle_path = output.join("quarto-bundle.json");
-    let committed = (|| -> std::io::Result<()> {
-        use std::io::Write;
-        let mut temporary = tempfile::NamedTempFile::new_in(&output)?;
-        temporary.write_all(&bundle_bytes)?;
-        temporary.as_file().sync_all()?;
-        temporary
-            .persist(&bundle_path)
-            .map_err(|error| error.error)?;
-        Ok(())
-    })();
-    if committed.is_err() {
+    if librepaper_base::private_files::publish(
+        &bundle_path,
+        &bundle_bytes,
+        "Quarto result bundle",
+    )
+    .is_err()
+    {
         return failed(&request, &job_id, "could not commit Quarto result bundle");
     }
     let artifact_bytes = bundle
