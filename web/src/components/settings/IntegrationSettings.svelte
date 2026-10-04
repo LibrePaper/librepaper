@@ -2,6 +2,7 @@
   import SettingRow from "./SettingRow.svelte";
   import StatusPill from "./StatusPill.svelte";
   import * as localBridge from "../../lib/companion/client.js";
+  import * as control from "../../lib/companion/control.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
   let { name = "quarto" } = $props();
@@ -15,9 +16,32 @@
   let settingsLoaded = $state(false);
   let savedFeedback = $state(false);
   let loadId = 0;
+  let managedAvailable = $state(control.available());
+  let managedState = $state(null);
+  let managedScope = "";
+  let managedRequest = 0;
 
   const local = $derived(companion.status);
   $effect(() => companion.watch());
+
+  $effect(() => {
+    const unsubscribe = control.subscribe((access) => {
+      const nextScope = access?.scope || control.scope();
+      if (managedScope !== nextScope || managedAvailable !== Boolean(access?.available)) {
+        managedScope = nextScope;
+        managedAvailable = Boolean(access?.available);
+        managedState = null;
+        managedRequest++;
+        settingsLoaded = false;
+      }
+      if (managedAvailable && name !== "zotero") void loadManagedSettings(++managedRequest, name, nextScope);
+      else if (managedAvailable && name === "zotero") {
+        void loadManagedState(++managedRequest, nextScope);
+        settingsLoaded = true;
+      }
+    });
+    return unsubscribe;
+  });
 
   $effect(() => {
     const connected = local?.state === "connected";
@@ -30,6 +54,8 @@
     settingsError = "";
     savedFeedback = false;
     if (requestedName === "zotero") settingsLoaded = true;
+    else if (managedAvailable && requestedName !== "zotero") void loadManagedSettings(++managedRequest, requestedName, managedScope);
+    else if (managedAvailable) settingsLoaded = true;
     else if (connected) void loadSettings(requestId, requestedName, address, instance);
     else {
       savedPath = "";
@@ -98,6 +124,26 @@
     }
   }
 
+  async function loadManagedState(requestId, expectedScope) {
+    try {
+      const result = await control.request("/state");
+      if (requestId !== managedRequest || expectedScope !== control.scope() || !control.available()) return;
+      managedState = result;
+      settingsError = "";
+    } catch (error) {
+      if (requestId === managedRequest && expectedScope === control.scope()) settingsError = error?.message || "Could not load companion settings.";
+    }
+  }
+
+  async function loadManagedSettings(requestId, requestedName, expectedScope) {
+    await loadManagedState(requestId, expectedScope);
+    if (requestId !== managedRequest || requestedName !== name || expectedScope !== control.scope() || !control.available()) return;
+    const integration = managedState?.settings?.integrations?.[requestedName];
+    if (integration) show(integration);
+    settingsLoaded = Boolean(integration);
+    if (!integration) settingsError = "Integration settings are unavailable from the companion.";
+  }
+
   // What the companion holds, and the inputs reset to it.
   function show(integration) {
     savedPath = integration.path || "";
@@ -113,7 +159,15 @@
     savedFeedback = false;
     const requestId = loadId;
     try {
-      const integration = await localBridge.setIntegration(name, { path, args });
+      let integration;
+      if (managedAvailable) {
+        const scope = managedScope;
+        const managedId = managedRequest;
+        await control.request("/settings", { method: "PUT", body: { integrations: { [name]: { path, args } } } });
+        if (managedId !== managedRequest || scope !== control.scope() || !control.available()) return;
+        integration = { path, args };
+        managedState = { ...managedState, settings: { ...managedState?.settings, integrations: { ...managedState?.settings?.integrations, [name]: integration } } };
+      } else integration = await localBridge.setIntegration(name, { path, args });
       if (requestId === loadId && isConnected) {
         show(integration);
         settingsLoaded = true;
@@ -132,12 +186,12 @@
   }
 
   const capability = $derived.by(() => {
-    const capabilities = local?.capabilities;
+    const capabilities = managedAvailable ? managedState?.tools : local?.capabilities;
     if (name === "quarto") return capabilities?.tools?.quarto;
     return capabilities?.[name] ?? null;
   });
 
-  const isConnected = $derived(local?.state === "connected");
+  const isConnected = $derived(managedAvailable || local?.state === "connected");
   const canEdit = $derived(isConnected && settingsLoaded && !pendingDialogAction);
   const showFields = $derived(name !== "zotero");
   const unchanged = $derived(editingPath === savedPath && quoteAwareJoin(quoteAwareSplit(editingArgs)) === quoteAwareJoin(savedArgs));
@@ -174,7 +228,7 @@
       {#if savedFeedback}<span class="setting-feedback" role="status">Saved</span>{/if}
     </div>
     {#if pendingDialogAction}
-      <p class="setting-description">Approve the change in the dialog LibrePaper Companion opened on this computer.</p>
+      <p class="setting-description">Approve this request in Settings → Companion → Approvals.</p>
     {/if}
   {/if}
 {#if name === "zotero"}

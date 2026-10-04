@@ -7,6 +7,7 @@
   // page must not make the browser ask to reach other apps on this computer.
   // Connect is the gesture that may.
   import * as localBridge from "../../lib/companion/client.js";
+  import * as control from "../../lib/companion/control.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
   // `needs` names what depends on the companion here, such as "Zotero".
@@ -33,6 +34,11 @@
 
   let connecting = $state(false);
   let failure = $state("");
+  let managedAvailable = $state(control.available());
+  $effect(() => {
+    const unsubscribe = control.subscribe((access) => { managedAvailable = Boolean(access?.available); });
+    return unsubscribe;
+  });
   $effect(() => { if (connected) failure = ""; });
 
   async function connect() {
@@ -45,6 +51,12 @@
   }
 </script>
 
+{#if managedAvailable}
+  <div class="companion-block" data-tone="good" {id}>
+    <span class="companion-dot" aria-hidden="true"></span>
+    <div class="companion-words"><div class="companion-line"><span class="companion-name">Companion</span><span class="companion-state" role="status">Management access available</span></div><div class="companion-note">Connected sites and local tools are managed in Settings → Companion.</div></div>
+  </div>
+{:else}
 <div class="companion-block" data-tone={state.tone} {id}>
   <span class="companion-dot" aria-hidden="true"></span>
   <div class="companion-words">
@@ -62,6 +74,7 @@
     </div>
   {/if}
 </div>
+{/if}
 
 <style>
   .companion-block { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: calc(var(--spacing) * 2.5); min-height: calc(var(--spacing) * 11); margin-block: calc(var(--spacing) * 2) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 3); border: 1px solid var(--color-divider); border-radius: var(--radius-container); background: var(--color-subtle); }

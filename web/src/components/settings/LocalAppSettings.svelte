@@ -2,7 +2,9 @@
   import SettingRow from "./SettingRow.svelte";
   import StatusPill from "./StatusPill.svelte";
   import CompanionBlock from "./CompanionBlock.svelte";
+  import CompanionManagement from "./CompanionManagement.svelte";
   import * as localBridge from "../../lib/companion/client.js";
+  import * as control from "../../lib/companion/control.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
   const local = $derived(companion.status);
@@ -20,6 +22,12 @@
   let pendingDialogAction = $state("");
   let settingsRequest = 0;
   let doctorRequest = 0;
+  let managedAvailable = $state(control.available());
+
+  $effect(() => {
+    const unsubscribe = control.subscribe((access) => { managedAvailable = Boolean(access?.available); });
+    return unsubscribe;
+  });
 
   $effect(() => {
     const draft = addressDraft;
@@ -152,6 +160,11 @@
 
 <p class="setting-description local-intro">Connect apps and tools on this computer, including coding agents, Zotero, and Quarto.</p>
 
+{#if managedAvailable}
+  <SettingRow id="local-status" title="Computer management" description="Machine settings are available for this companion session.">
+    <StatusPill label="Access available" tone="good" />
+  </SettingRow>
+{:else}
 <CompanionBlock id="local-status" />
 
 <SettingRow id="local-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change only when using another port.` : "Change only when using another port."}>
@@ -162,17 +175,18 @@
     <button type="button" class="btn btn-sm lp-control-outline" disabled={!connected} onclick={() => void localBridge.disconnect()}>Disconnect</button>
   </div>
 </SettingRow>
+{/if}
 
 {#if settingsError}<p class="setting-description local-error" role="alert">{settingsError}</p>{/if}
 
-<SettingRow id="local-startup" title="Start at login" description={!connected ? "Connect to load this setting." : companionSettings?.standalone === false ? "Available in the standalone companion app." : companionSettings?.startup == null ? (companionSettings ? "Startup preference unavailable." : "Startup preference is unknown.") : "Open the companion when you log in."}>
+{#if !managedAvailable}<SettingRow id="local-startup" title="Start at login" description={!connected ? "Connect to load this setting." : companionSettings?.standalone === false ? "Available in the standalone companion app." : companionSettings?.startup == null ? (companionSettings ? "Startup preference unavailable." : "Startup preference is unknown.") : "Open the companion when you log in."}>
     {#if !companionSettings || companionSettings.startup == null}<StatusPill label={companionSettings ? "Unavailable" : "Unknown"} />{/if}
     <button type="button" role="switch" class="switch companion-startup-switch" aria-label="Start at login" aria-checked={companionSettings?.startup === true} aria-describedby={!companionSettings || companionSettings.startup == null ? "local-startup-state" : undefined} data-state={companionSettings?.startup == null ? "unknown" : companionSettings.startup ? "checked" : "unchecked"} disabled={!connected || !companionSettings?.standalone || companionSettings.startup == null || Boolean(pendingDialogAction)} onclick={() => void toggleStartup(!companionSettings.startup)}>
       <span class="switch-thumb" data-state={companionSettings?.startup == null ? "unknown" : companionSettings.startup ? "checked" : "unchecked"}></span>
     </button>
     {#if !companionSettings || companionSettings.startup == null}<span id="local-startup-state" class="sr-only">{companionSettings ? "Unavailable" : "Unknown"}</span>{/if}
     {#if pendingDialogAction === "startup"}
-      <p class="setting-description">Approve the request in the dialog LibrePaper Companion opened on this computer.</p>
+      <p class="setting-description">Approve this request in Settings → Companion → Approvals.</p>
     {/if}
   </SettingRow>
 
@@ -181,14 +195,17 @@
       {pendingDialogAction === "quit" ? "Confirm on this computer…" : "Quit companion"}
     </button>
     {#if pendingDialogAction === "quit"}
-      <p class="setting-description">Approve the request in the dialog LibrePaper Companion opened on this computer.</p>
+      <p class="setting-description">Approve this request in Settings → Companion → Approvals.</p>
     {/if}
   </SettingRow>
+{/if}
 
-<SettingRow title="Check local setup" description={!connected ? "Connect to rescan available tools." : "Rescan available tools and view the report."}>
+{#if !managedAvailable}<SettingRow title="Check local setup" description={!connected ? "Connect to rescan available tools." : "Rescan available tools and view the report."}>
   <button type="button" class="btn btn-sm lp-control-outline" id="local-doctor" disabled={!connected} onclick={() => void doctorReport()}>Check</button>
 </SettingRow>
-{#if doctor}<pre class="setting-log" role="status">{doctor}</pre>{/if}
+{#if doctor}<pre class="setting-log" role="status">{doctor}</pre>{/if}{/if}
+
+<CompanionManagement />
 
 <p class="setting-description local-help">Still stuck? <a href="https://github.com/LibrePaper/librepaper/issues" target="_blank" rel="noreferrer">Report a problem</a> with the setup report attached.</p>
 

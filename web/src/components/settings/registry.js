@@ -28,6 +28,7 @@ export const CATEGORIES = [
     id: "render", says: "Render", offered: build,
     entries: [
       { id: "render-local", says: "Companion", terms: "companion connect install running status local tools" },
+      { id: "companion-rescan-tools", says: "Detected tools", terms: "tools tool status version available missing rescan scan local computer" },
       { id: "render-latex-engine", says: "LaTeX engine", terms: "engine pdflatex xelatex automatic compiler" },
       { id: "render-latex-files", says: "Downloaded LaTeX files", terms: "latex compiler cache clear free space packages storage" },
       { id: "calepin-status", says: "Calepin status", terms: "calepin available version" },
@@ -57,6 +58,13 @@ export const CATEGORIES = [
       { id: "local-address", says: "Companion address", terms: "address port url localhost host version disconnect" },
       { id: "local-startup", says: "Start at login", terms: "startup login background standalone companion" },
       { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
+      { id: "companion-lifecycle-heading", says: "Companion lifecycle", terms: "running start login startup quit companion version" },
+      { id: "companion-approvals-heading", says: "Approvals", terms: "allow deny approval pending requests access" },
+      { id: "companion-sites-heading", says: "Connected sites", terms: "pairing revoke origin website site access" },
+      { id: "companion-folders-heading", says: "Authorized folders", terms: "bindings folder grant revoke directory project access" },
+      { id: "companion-activity-heading", says: "Activity", terms: "jobs previews sessions cancel stop output logs" },
+      { id: "companion-agents-heading", says: "Agents on this computer", terms: "custom agent add remove configured detected command" },
+      { id: "companion-tool-paths-heading", says: "Tool search folders", terms: "tool paths folders search PATH settings" },
     ],
   },
   {

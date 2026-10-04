@@ -17,6 +17,7 @@
   import AccountSettings from "./AccountSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
   import BackupsSettings from "./BackupsSettings.svelte";
+  import CompanionTools from "./CompanionTools.svelte";
 
   let {
     open = $bindable(false),
@@ -87,6 +88,11 @@
           <EditorSettings {keys} {onkeys} {commands} />
         {:else if shown.id === "render"}
           <CompanionBlock id="render-local" needs="Calepin, Pandoc and Quarto" />
+
+          <section class="settings-subsection">
+            <div class="settings-section-title"><h4 class="settings-subhead">Detected tools</h4><span class="settings-scope">This computer</span></div>
+            <CompanionTools />
+          </section>
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4><span class="settings-scope">This browser</span></div>
