@@ -21,6 +21,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const siteDir = resolve(here, "../../docs");
 const outDir = resolve(siteDir, ".build");
 const wasmPath = resolve(here, "../wasm/markdown.wasm");
+const productionConfigMarker = "<!-- include: tools/deploy-production.toml -->";
+const productionConfigPath = resolve(here, "../../tools/deploy-production.toml");
 
 /* -------------------------------------------------------------- the engine */
 
@@ -194,7 +196,23 @@ function template({ title, currentPath, toc, body, scriptSrc }) {
 
 async function buildPage(wasm, entry) {
   const source = await readFile(resolve(siteDir, `${entry.path}.md`), "utf8");
-  const { title, body: markdown } = splitFrontmatter(source);
+  const { title, body } = splitFrontmatter(source);
+  let markdown = body;
+  if (entry.path === "host") {
+    const occurrences = markdown.split(productionConfigMarker).length - 1;
+    if (occurrences !== 1) {
+      throw new Error(`host.md must contain exactly one ${productionConfigMarker} marker`);
+    }
+    let productionConfig;
+    try {
+      productionConfig = await readFile(productionConfigPath, "utf8");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      throw new Error("host.md includes tools/deploy-production.toml, but that source file is missing");
+    }
+    const tomlFence = `\`\`\`toml\n${productionConfig.trimEnd()}\n\`\`\``;
+    markdown = markdown.replace(productionConfigMarker, () => tomlFence);
+  }
   const rendered = call(wasm, "compile", markdown, title || entry.label);
   if (!rendered.ok) {
     throw new Error(`${entry.path}.md failed to render: ${JSON.stringify(rendered.diagnostics)}`);
