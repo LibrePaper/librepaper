@@ -867,3 +867,97 @@ async fn real_quarto_render_reports_success_and_retains_a_failure_log() {
         "a failed render must retain its log"
     );
 }
+
+fn closure_of(html: &str, files: &[&str]) -> Result<BTreeSet<String>, String> {
+    let dir = tempdir().expect("project");
+    let output = dir.path().join("output");
+    std::fs::create_dir_all(&output).expect("output directory");
+    for file in files {
+        let path = output.join(file);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("parent directory");
+        std::fs::write(path, b"body{}").expect("resource");
+    }
+    referenced_resource_closure(&output, None, None, "paper.html", html.as_bytes())
+}
+
+#[test]
+fn scanner_decodes_entities_in_attributes() {
+    let references = closure_of(
+        "<link rel=\"stylesheet\" href=\"a.css?x=1&amp;y=2\">",
+        &["a.css"],
+    )
+    .expect("entity-decoded query is stripped");
+    assert!(references.contains("a.css"));
+    let references = closure_of("<img src=\"a&amp;b.png\">", &["a&b.png"])
+        .expect("entity decodes to the file name");
+    assert!(references.contains("a&b.png"));
+}
+
+#[test]
+fn scanner_percent_decodes_paths() {
+    let references = closure_of("<img src=\"my%20fig.png\">", &["my fig.png"])
+        .expect("percent-encoded name resolves to the file");
+    assert!(references.contains("my fig.png"));
+}
+
+#[test]
+fn scanner_reads_srcset_poster_and_object_data() {
+    let references = closure_of(
+        "<img srcset=\"a.png 1x, b.png 2x\"><video poster=\"p.png\"></video><object data=\"o.svg\"></object>",
+        &["a.png", "b.png", "p.png", "o.svg"],
+    )
+    .expect("all present");
+    for name in ["a.png", "b.png", "p.png", "o.svg"] {
+        assert!(references.contains(name), "{name}");
+    }
+    let error = closure_of("<img srcset=\"a.png 1x, b.png 2x\">", &["a.png"]).unwrap_err();
+    assert!(error.contains("b.png"));
+}
+
+#[test]
+fn scanner_follows_css_import_and_url() {
+    let dir = tempdir().expect("project");
+    let output = dir.path().join("output");
+    std::fs::create_dir_all(output.join("sub")).expect("directory");
+    std::fs::write(
+        output.join("sub/main.css"),
+        b"@import \"extra.css\";\n@font-face{src:url('font.woff')}\nbody{background:url(bg.png)}",
+    )
+    .expect("css");
+    std::fs::write(output.join("sub/extra.css"), b"p{}").expect("css");
+    std::fs::write(output.join("sub/font.woff"), b"f").expect("font");
+    std::fs::write(output.join("sub/bg.png"), b"b").expect("image");
+    let references = referenced_resource_closure(
+        &output,
+        None,
+        None,
+        "paper.html",
+        b"<link rel=\"stylesheet\" href=\"sub/main.css\">",
+    )
+    .expect("all css references resolve");
+    for name in ["sub/extra.css", "sub/font.woff", "sub/bg.png"] {
+        assert!(references.contains(name), "{name}");
+    }
+}
+
+#[test]
+fn scanner_reads_url_inside_inline_style() {
+    let references = closure_of(
+        "<style>.a{background:url(bg.png)}</style>",
+        &["bg.png"],
+    )
+    .expect("present");
+    assert!(references.contains("bg.png"));
+    let error = closure_of("<style>.a{background:url(\"bg.png\")}</style>", &[]).unwrap_err();
+    assert!(error.contains("bg.png"));
+}
+
+#[test]
+fn scanner_ignores_src_text_inside_script() {
+    let references = closure_of(
+        "<script>var s = '<img src=\"ghost.png\">'; var t = \"src=other.js\";</script>",
+        &[],
+    )
+    .expect("script text is not a reference");
+    assert!(references.is_empty());
+}
