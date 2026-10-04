@@ -160,11 +160,7 @@
 
 <p class="setting-description local-intro">Connect apps and tools on this computer, including coding agents, Zotero, and Quarto.</p>
 
-{#if managedAvailable}
-  <SettingRow id="local-status" title="Computer management" description="Machine settings are available for this companion session.">
-    <StatusPill label="Access available" tone="good" />
-  </SettingRow>
-{:else}
+{#if !managedAvailable}
 <CompanionBlock id="local-status" />
 
 <SettingRow id="local-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change only when using another port.` : "Change only when using another port."}>

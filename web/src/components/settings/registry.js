@@ -58,7 +58,7 @@ export const CATEGORIES = [
       { id: "local-address", says: "Companion address", terms: "address port url localhost host version disconnect" },
       { id: "local-startup", says: "Start at login", terms: "startup login background standalone companion" },
       { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
-      { id: "companion-lifecycle-heading", says: "Companion lifecycle", terms: "running start login startup quit companion version" },
+      { id: "companion-lifecycle-heading", says: "General", terms: "running start login startup quit companion version" },
       { id: "companion-approvals-heading", says: "Approvals", terms: "allow deny approval pending requests access" },
       { id: "companion-sites-heading", says: "Connected sites", terms: "pairing revoke origin website site access" },
       { id: "companion-folders-heading", says: "Authorized folders", terms: "bindings folder grant revoke directory project access" },

@@ -20,6 +20,8 @@
   const list = (value) => Array.isArray(value) ? value : [];
   const active = (status) => !["done", "complete", "completed", "succeeded", "failed", "error", "cancelled", "canceled", "stopped", "interrupted", "expired", "denied"].includes(String(status || "").toLowerCase());
   const id = (value) => encodeURIComponent(String(value));
+  const customAgentIds = $derived(new Set(list(viewState?.custom_agents).map((agent) => String(agent.id))));
+  const detectedAgents = $derived(list(viewState?.agents).filter((agent) => !customAgentIds.has(String(agent.id))));
 
   async function load(expectedScope = scope, expectedEpoch = epoch) {
     if (!available) return;
@@ -112,8 +114,8 @@
   {#if notice}<p class="setting-description management-notice" role="status">{notice}</p>{/if}
   {#if !viewState && !error}<p class="setting-description">Loading settings for this computer…</p>{/if}
 
-  <section class="settings-subsection" aria-labelledby="companion-lifecycle-heading">
-    <div class="settings-section-title"><h4 class="settings-subhead" id="companion-lifecycle-heading">Companion</h4></div>
+  <section id="local-status" class="settings-subsection" aria-labelledby="companion-lifecycle-heading">
+    <div class="settings-section-title"><h4 class="settings-subhead" id="companion-lifecycle-heading">General</h4>{#if viewState?.version}<span class="setting-description">Version {viewState.version}</span>{/if}</div>
     <SettingRow id="local-startup" title="Start at login" description="Open the companion when you log in to this computer.">
       <button type="button" role="switch" class="switch" class:checked={viewState?.settings?.startup_enabled === true} data-state={viewState?.settings?.startup_enabled == null ? "unknown" : viewState.settings.startup_enabled ? "checked" : "unchecked"} aria-label="Start at login" aria-checked={viewState?.settings?.startup_enabled === true} disabled={!viewState || typeof viewState.settings?.startup_enabled !== "boolean" || Boolean(pending)} onclick={() => void act("startup", "Startup preference saved.", "/settings", { method: "PUT", body: { startup_enabled: !viewState.settings.startup_enabled } })}>
         <span class="switch-thumb" data-state={viewState?.settings?.startup_enabled == null ? "unknown" : viewState.settings.startup_enabled ? "checked" : "unchecked"}></span>
@@ -183,7 +185,7 @@
 
   <section class="settings-subsection" aria-labelledby="companion-agents-heading">
     <div class="settings-section-title"><h4 class="settings-subhead" id="companion-agents-heading">Agents on this computer</h4></div>
-    {#each list(viewState?.agents) as agent (agent.id)}
+    {#each detectedAgents as agent (agent.id)}
       <SettingRow title={agent.label || agent.id || "Detected agent"} description={agent.assistant_blocked || (agent.assistant ? "Available for assistant sessions." : "Detected on this computer.")}>
         {#if agent.assistant_blocked}<span class="setting-description management-error">{agent.assistant_blocked}</span>{/if}
       </SettingRow>
@@ -193,7 +195,7 @@
         <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(pending)} onclick={() => { if (confirm(`Remove ${agent.label || "this agent"}?`)) void act(`agent-${agent.id}`, "Agent removed.", `/agents/${id(agent.id)}`, { method: "DELETE" }); }}>Remove</button>
       </SettingRow>
     {/each}
-    {#if !list(viewState?.agents).length && !list(viewState?.custom_agents).length}<p class="setting-description">No agents are detected or configured.</p>{/if}
+    {#if !detectedAgents.length && !list(viewState?.custom_agents).length}<p class="setting-description">No agents are detected or configured.</p>{/if}
     <SettingRow title="Add an agent" description="Add a command that LibrePaper can run on this computer." stacked>
       <form class="management-agent-form" onsubmit={(event) => {
         event.preventDefault();
