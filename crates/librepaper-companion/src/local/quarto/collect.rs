@@ -526,10 +526,8 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
                     .get_attribute("srcset")
                     .map(|value| html_escape::decode_html_entities(&value).into_owned())
                 {
-                    for candidate in value.split(',') {
-                        if let Some(url) = candidate.split_whitespace().next() {
-                            elements.push((url.to_owned(), ReferenceKind::Resource));
-                        }
+                    for url in srcset_urls(&value) {
+                        elements.push((url, ReferenceKind::Resource));
                     }
                 }
                 if let Some(value) = element
@@ -558,6 +556,24 @@ fn html_references(html: &str, found: &mut Vec<(String, ReferenceKind)>) {
     for reference in css_references(&inline_css) {
         found.push((reference, ReferenceKind::Resource));
     }
+}
+
+/// The URLs of an HTML `srcset` value. A URL holds no whitespace, and a
+/// candidate ends at a comma that follows whitespace, so commas inside a URL
+/// (data URLs, odd file names) are kept.
+fn srcset_urls(value: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    let mut expect_url = true;
+    for token in value.split_ascii_whitespace() {
+        if expect_url {
+            let url = token.strip_suffix(',');
+            urls.push(url.unwrap_or(token).to_owned());
+            expect_url = url.is_some();
+        } else {
+            expect_url = token.ends_with(',');
+        }
+    }
+    urls
 }
 
 /// The `url(...)` and `@import` targets of a stylesheet or declaration list.
@@ -612,9 +628,14 @@ fn resolve_reference(current: &str, raw: &str) -> Option<String> {
     {
         return None;
     }
-    // Joining the current file onto the root keeps "a/b.html" as one path, so
-    // a sibling reference resolves beside it and never above the root.
-    let base = url::Url::parse("file:///root/").ok()?.join(current).ok()?;
+    let escaped: Vec<String> = current
+        .split('/')
+        .map(|component| {
+            percent_encoding::utf8_percent_encode(component, percent_encoding::NON_ALPHANUMERIC)
+                .to_string()
+        })
+        .collect();
+    let base = url::Url::parse(&format!("file:///root/{}", escaped.join("/"))).ok()?;
     let joined = base.join(raw).ok()?;
     let relative = joined.path().strip_prefix("/root/")?;
     let decoded = percent_encoding::percent_decode_str(relative).decode_utf8_lossy();

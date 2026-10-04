@@ -958,3 +958,45 @@ fn scanner_ignores_src_text_inside_script() {
     .expect("script text is not a reference");
     assert!(references.is_empty());
 }
+
+#[test]
+fn srcset_candidates_follow_html_syntax() {
+    let references = closure_of(
+        "<img srcset=\"a.png 1x, b.png 2x\">",
+        &["a.png", "b.png"],
+    )
+    .expect("both candidates");
+    assert!(references.contains("a.png") && references.contains("b.png"));
+
+    let references = closure_of(
+        "<img srcset=\"data:image/png;base64,iVBORw0KGgo= 1x, c.png 2x\">",
+        &["c.png"],
+    )
+    .expect("the data URL is not a local dependency");
+    assert_eq!(references.len(), 1);
+    assert!(references.contains("c.png"));
+
+    let references = closure_of("<img srcset=\"x,y.png 1x\">", &["x,y.png"])
+        .expect("a comma inside a file name is kept");
+    assert!(references.contains("x,y.png"));
+}
+
+#[test]
+fn css_resolves_beside_a_directory_with_url_special_characters() {
+    for directory in ["assets#old", "100%25"] {
+        let dir = tempdir().expect("project");
+        let output = dir.path().join("output");
+        std::fs::create_dir_all(output.join(directory)).expect("directory");
+        std::fs::write(output.join(directory).join("bg.png"), b"b").expect("image");
+        let sheet = format!("body{{background:url(bg.png)}}");
+        std::fs::write(output.join(directory).join("style.css"), sheet).expect("css");
+        let href = format!(
+            "<link rel=\"stylesheet\" href=\"{}/style.css\">",
+            directory.replace('%', "%25").replace('#', "%23")
+        );
+        let references =
+            referenced_resource_closure(&output, None, None, "paper.html", href.as_bytes())
+                .expect("sheet and image resolve");
+        assert!(references.contains(&format!("{directory}/bg.png")), "{directory}");
+    }
+}
