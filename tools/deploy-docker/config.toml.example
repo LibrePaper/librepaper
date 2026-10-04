@@ -30,7 +30,8 @@ object_store = "filesystem"
 [access]
 # Any signed-in account may publish; replace this with an allowlist if needed.
 publishers = ["any"]
-commenters = ["anyone"]
+# Any signed-in account may comment; anonymous comments require "anyone".
+commenters = ["any"]
 
 [limits]
 publisher_storage_mb = 50
