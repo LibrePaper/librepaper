@@ -4,8 +4,8 @@
   // puzzle pieces, the left in the site's pine and the right in its ink, and
   // the word beside it is the same two colours: "Libre" in pine, "Paper" in
   // ink. The word is set in Gotham HTF and outlined into paths in the file,
-  // so no brand font is served and nobody sees it fall back. Both files are
-  // exported from the sources at the root of the repository. Both carry a
+  // so no brand font is served and nobody sees it fall back. The word's
+  // editable source is in docs/dev/brand/. Both files carry a
   // width and height as well as a viewBox: an SVG with only a viewBox has no
   // intrinsic size in an <img>, and a browser sizing it from its container
   // alone falls back to 300px, or in Firefox to nothing at all.
