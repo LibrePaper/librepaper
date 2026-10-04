@@ -252,12 +252,12 @@ pub(crate) fn load(path:&Path)->Result<ResolvedConfig,String>{
     let mut config=Configuration::default();let l=raw.limits;
     let publisher_storage_mb = r.optional("limits.publisher_storage_mb", l.publisher_storage_mb)?;
     let deployment_storage_mb = r.optional("limits.deployment_storage_mb", l.deployment_storage_mb)?;
-    const MAX_STORAGE_MB: usize = ((i64::MAX as u64 / (1024 * 1024)).min(usize::MAX as u64)) as usize;
+    let max_storage_mb = ((i64::MAX as u128).min(usize::MAX as u128) / 1_048_576) as usize;
     for (key, value) in [
         ("limits.publisher_storage_mb", publisher_storage_mb),
         ("limits.deployment_storage_mb", deployment_storage_mb),
     ] {
-        if value.is_some_and(|mb| mb > MAX_STORAGE_MB) {
+        if value.is_some_and(|mb| mb > max_storage_mb) {
             return Err(format!("{key} must fit in the storage byte limit"));
         }
     }
@@ -429,8 +429,8 @@ mod tests{
  #[test]fn reference_requires_exactly_one_source(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[server]\norigin = { env = \"A\", file = \"B\" }").unwrap();let e=load(&p).unwrap_err();assert!(e.contains("exactly one"));}
  #[test]fn missing_file_reference_names_path_without_contents(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[auth.github]\nclient_id = \"id\"\nclient_secret = { file = \"missing-secret-file\" }").unwrap();let e=load(&p).unwrap_err();assert!(e.contains("missing-secret-file"));assert!(!e.contains("secret-value"));}
  #[test]fn storage_only_loader_skips_oauth_references(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[auth.github]\nclient_id = \"id\"\nclient_secret = { env = \"LIBREPAPER_MISSING_OAUTH_SECRET\" }").unwrap();assert!(load_storage_with_log_filter(&p).is_ok());}
- #[test]fn rejects_mb_values_that_overflow_storage_bytes(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[limits]\ndeployment_storage_mb = 1000000000000").unwrap();let e=load(&p).unwrap_err();assert!(e.contains("limits.deployment_storage_mb"));}
+ #[test]fn rejects_mb_values_that_overflow_storage_bytes(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[limits]\ndeployment_storage_mb = 10000000000000").unwrap();let e=load(&p).unwrap_err();assert!(e.contains("limits.deployment_storage_mb"));}
  #[test]fn relative_storage_directory_uses_config_directory(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[storage]\ndirectory = \"state/data\"").unwrap();let loaded=load_storage_with_log_filter(&p).unwrap();assert_eq!(loaded.0.dir,d.path().join("state/data"));}
- #[test]fn explicit_scratch_is_preserved_when_log_quota_changes(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[limits]\nlog_quota_mb = 64\npending_scratch_mb = 512\nmemory_budget_mb = 1024").unwrap();let loaded=load(&p).unwrap();assert_eq!(loaded.config.log_quota_bytes,64*1024*1024);assert_eq!(loaded.config.pending_scratch_bytes,512*1024*1024);}
+ #[test]fn explicit_scratch_is_preserved_when_log_quota_changes(){let old_default_mb=Configuration::default().pending_scratch_bytes>>20;let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");let text=format!("[limits]\nlog_quota_mb = 36\npending_scratch_mb = {old_default_mb}\nmemory_budget_mb = 1024");std::fs::write(&p,text).unwrap();let loaded=load(&p).unwrap();assert_eq!(loaded.config.log_quota_bytes,36*1024*1024);assert_eq!(loaded.config.pending_scratch_bytes,old_default_mb*1024*1024);}
  #[test]fn display_redacts_database_and_auth_and_is_toml(){let d=tempfile::tempdir().unwrap();let p=d.path().join("c.toml");std::fs::write(&p,"[storage]\ndatabase_url = \"postgres://user:DBSECRET@host/db\"\n[auth.google]\nclient_id = \"id\"\nclient_secret = \"OAUTHSECRET\"").unwrap();let loaded=load(&p).unwrap();let s=show_resolved(&loaded);assert!(!s.contains("DBSECRET"));assert!(!s.contains("OAUTHSECRET"));assert!(s.contains("<redacted>"));assert!(toml::from_str::<toml::Value>(&s).is_ok());assert!(s.contains("# source: default"));}
 }
