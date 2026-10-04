@@ -29,12 +29,12 @@ Calepin runs locally and its generated output is not uploaded automatically. The
 
 Calepin renders against a project folder on your disk bound to the document; see [the companion](../cli.html#the-companion). Choosing a folder does not upload its contents; the website receives an opaque binding identifier, not the folder's path. One preview per folder at a time.
 
-If `librepaper status` does not find Calepin, install it or add it to PATH; a custom executable and arguments can be set in the companion dashboard under the Calepin integration.
+If `librepaper status` does not find Calepin, install it or add it to PATH; a custom executable and arguments can be set in Settings under Integrations → Calepin.
 
 ## Trust
 
 - Calepin runs with your user account: your files, installed packages and the network. LibrePaper does not sandbox it.
-- Pairing asks once per site in the companion dashboard. Check the site and requested action before allowing it. Pairing alone runs nothing.
+- Pairing asks once per site in Companion Settings. Check the site and requested action before allowing it. Pairing alone runs nothing.
 - Every document starts on the browser preview. Calepin runs only after you choose View > Execute code locally and accept the warning, one document at a time.
 - Anyone with editor access can change that code at any time, so allow it only on documents whose owner and editors you trust.
 - The permission is remembered for that document in this browser until you turn it off or sign out.

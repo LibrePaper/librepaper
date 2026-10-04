@@ -21,6 +21,7 @@
   import IconButton from "./IconButton.svelte";
   import MenuIconButton from "./MenuIconButton.svelte";
   import Modal from "./Modal.svelte";
+  import SettingsDialog from "./settings/SettingsDialog.svelte";
   import Hero from "./Hero.svelte";
   import Toasts from "./Toasts.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
@@ -35,6 +36,14 @@
   import { FORMATS, formatNamed, fillTemplate, matchTemplates } from "../lib/starter.js";
   import { BUILT_IN, templateFiles } from "../lib/templates.js";
   import { preparedProjects } from "../lib/offline-projects.js";
+
+  let { initialSettings = "" } = $props();
+  let settingsOpen = $state(initialSettings === "local");
+  let settingsCategory = $state(initialSettings || "editor");
+  function openSettings(category = "editor") {
+    settingsCategory = category;
+    settingsOpen = true;
+  }
 
   /** @type {{can_publish?: boolean; name?: string; handle?: string; publishers?: string}} */
   let me = $state({});
@@ -902,6 +911,7 @@
     {#snippet tools()}
       <input class="input project-search" type="search" placeholder="Search projects"
              aria-label="Search projects by title or file" bind:value={search} />
+      <button type="button" class="btn btn-sm lp-control-outline" onclick={() => openSettings()}>Settings</button>
       {#if me.can_publish}
         <button type="button" class="btn btn-sm nav-new lp-control-brand" aria-label="New project" onclick={() => askName()}>
           <Icon name="file-plus" size={16} />
@@ -1184,7 +1194,11 @@
   </main>
 {:else}
   <!-- The other page: what this is, and a way in. -->
-  <Nav {me} />
+  <Nav {me}>
+    {#snippet tools()}
+      <button type="button" class="btn btn-sm lp-control-outline" onclick={() => openSettings()}>Settings</button>
+    {/snippet}
+  </Nav>
   <Page width="measure">
     <Stack gap={8}>
       <header>
@@ -1209,6 +1223,8 @@
     </Stack>
   </Page>
 {/if}
+
+<SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} account={me} />
 
 <!-- A name and a template, because a project is a directory and a main file
      and nothing here can guess either. More files come next, in the project. -->

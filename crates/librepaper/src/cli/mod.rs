@@ -28,8 +28,8 @@ pub use tokens::*;
 #[derive(Parser)]
 #[command(name = "librepaper", version = crate::VERSION, about = "launch the companion to connect local tools to documents; host HTML, markdown and typst documents", long_about = None, args_conflicts_with_subcommands = true)]
 #[command(
-    after_help = "Run `librepaper` or `librepaper start` to launch the companion, then connect it in Settings → Local app.
-On supported desktops, the companion also shows a tray icon whose menu opens the control panel. Run `librepaper install-desktop` to install a desktop launcher for starting the companion.
+    after_help = "Run `librepaper` or `librepaper start` to launch the companion, then connect it in Settings → Companion.
+On supported desktops, the companion also shows a tray icon. Choose Settings in its menu to open the Companion section in the main LibrePaper app. Run `librepaper install-desktop` to install a desktop launcher that starts the companion.
 
 To sign in from this terminal, set the deployment and run `librepaper login`:
 

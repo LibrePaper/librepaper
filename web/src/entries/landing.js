@@ -4,6 +4,7 @@ import { watchForUnhandled } from "../lib/crash.js";
 import "../styles/app.css";
 import Landing from "../components/Landing.svelte";
 import { registerOfflineShell } from "../lib/offline-shell.js";
+import { intake } from "../lib/companion/control.js";
 
 // Mounted into <body> rather than into a wrapper: the stylesheet addresses
 // the bar as `body > nav`, and an element in between would silently stop every
@@ -11,5 +12,6 @@ import { registerOfflineShell } from "../lib/offline-shell.js";
 // Started inside a boundary, so a throw anywhere below is a notice rather
 // than an empty page. See src/components/Boundary.svelte.
 watchForUnhandled();
-mount(Boundary, { target: document.body, props: { component: Landing, name: "the project list" } });
+const initialSettings = intake() ? "local" : "";
+mount(Boundary, { target: document.body, props: { component: Landing, props: { initialSettings }, name: "the project list" } });
 void registerOfflineShell();

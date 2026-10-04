@@ -4,6 +4,7 @@ import { watchForUnhandled } from "../lib/crash.js";
 import "../styles/app.css";
 import Reader from "../components/Reader.svelte";
 import { registerOfflineShell } from "../lib/offline-shell.js";
+import { intake } from "../lib/companion/control.js";
 
 // Mounted into <body> rather than into a wrapper: the stylesheet addresses
 // the bar as `body > nav`, and an element in between would silently stop every
@@ -17,5 +18,6 @@ watchForUnhandled();
 // the reader asks which formats it can render as it mounts.
 globalThis.LIBREPAPER_MODULES = JSON.parse(document.getElementById("librepaper-modules").textContent);
 
-mount(Boundary, { target: document.body, props: { component: Reader, name: "the reader" } });
+const initialSettings = intake() ? "local" : "";
+mount(Boundary, { target: document.body, props: { component: Reader, props: { initialSettings }, name: "the reader" } });
 void registerOfflineShell();

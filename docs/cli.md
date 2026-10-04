@@ -26,9 +26,9 @@ librepaper export c9k ./paper-copy --key URL    # read as share-link holder
 librepaper export c9k ./paper-copy --at "v1"    # historical version
 ```
 
-On supported desktops, starting the companion shows a tray icon. Choose **Open companion** from its menu to open the dashboard in a browser tab. The tray appears automatically; there is no tray preference to configure. Closing the tab leaves the companion running; use **Quit companion** or `librepaper stop` to stop it. Start-at-login is optional. Folder selection uses the operating system's native chooser.
+On supported desktops, starting the companion shows a tray icon. Choose **Settings** from its menu to open the Companion section in the main LibrePaper app. The tray appears automatically; there is no tray preference to configure. Closing the app page leaves the companion running; use **Quit companion** in Settings or `librepaper stop` to stop it. Start-at-login is optional. Folder selection uses the operating system's native chooser.
 
-On a machine with no display, check `companion.log` for the approval code and run `librepaper local approve <code>` within two minutes. This headless fallback does not require a browser dashboard.
+On a machine with no display, check `companion.log` for the approval code and run `librepaper local approve <code>` within two minutes. The CLI remains available for headless setup and control.
 
 For scheduled local backups, see [account backups](backups.html).
 

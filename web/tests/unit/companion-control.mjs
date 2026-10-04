@@ -1,0 +1,139 @@
+import assert from "node:assert/strict";
+import { createControlClient } from "../../src/lib/companion/control.js";
+
+const address = "http://127.0.0.1:8763/";
+const token = "0123456789abcdefghijklmnopqrstuvwxyz_ABCDEF";
+const instance = "0123456789abcdef";
+
+function harness(hash = "") {
+  const store = new Map();
+  const requests = [];
+  const replaced = [];
+  let currentFetch = async (url, init) => {
+    requests.push({ url, init });
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ ok: true }) };
+  };
+  const location = { origin: "https://app.example.test", href: `https://app.example.test/${hash ? `#${hash}` : ""}`, hash: hash ? `#${hash}` : "" };
+  const deps = {
+    location: () => location,
+    storage: () => ({
+      getItem: (key) => store.get(key) ?? null,
+      setItem: (key, value) => store.set(key, String(value)),
+      removeItem: (key) => store.delete(key),
+    }),
+    replaceUrl: (value) => {
+      replaced.push(value);
+      const next = new URL(value, location.origin);
+      location.href = next.href;
+      location.hash = next.hash;
+    },
+    fetch: (...args) => currentFetch(...args),
+    launchLink: (url) => requests.push({ launch: url }),
+  };
+  return { client: createControlClient(deps), location, store, requests, replaced, setFetch: (fn) => { currentFetch = fn; } };
+}
+
+// Intake removes all secret fields before rendering while retaining unrelated
+// document fragments used by the reader.
+{
+  const h = harness(`k=reader-key&settings=local&companion_address=${encodeURIComponent(address)}&companion_control=${token}&companion_instance=${instance}`);
+  const updates = [];
+  const unsubscribe = h.client.subscribe((value) => updates.push(value));
+  assert.equal(h.client.intake(), true);
+  assert.equal(h.location.hash, "#k=reader-key");
+  assert.equal(h.replaced.length, 1);
+  assert.equal(h.replaced[0], "/#k=reader-key");
+  assert.equal(h.client.available(), true);
+  assert.equal(h.client.scope(), `${address}|${instance}`);
+  assert.equal([...h.store.values()].some((value) => String(value).includes(token)), true);
+  assert.deepEqual(updates, [
+    { available: false, scope: "" },
+    { available: true, scope: `${address}|${instance}` },
+  ]);
+  unsubscribe();
+  assert.equal(h.client.intake(), false);
+}
+
+// Invalid and partial handoffs still lose their URL secrets. A non-loopback
+// address never produces an available client or a request carrying a bearer.
+{
+  const h = harness(`settings=local&companion_address=${encodeURIComponent("https://attacker.example/")}&companion_control=${token}&companion_instance=${instance}&keep=yes`);
+  assert.equal(h.client.intake(), true);
+  assert.equal(h.location.hash, "#keep=yes");
+  assert.equal(h.client.available(), false);
+  await assert.rejects(h.client.request("/state"), { name: "Unavailable" });
+  assert.equal(h.requests.length, 0);
+}
+
+// Requests are pinned to the loopback API, omit ambient credentials, and send
+// the control key only in the authorization header with no-store semantics.
+{
+  const h = harness(`settings=local&companion_address=${encodeURIComponent(address)}&companion_control=${token}&companion_instance=${instance}`);
+  h.client.intake();
+  assert.deepEqual(await h.client.request("/state"), { ok: true });
+  const [{ url, init }] = h.requests;
+  assert.equal(url, "http://127.0.0.1:8763/companion/api/state");
+  assert.equal(init.credentials, "omit");
+  assert.equal(init.cache, "no-store");
+  assert.equal(init.targetAddressSpace, "loopback");
+  assert.equal(init.headers.get("Authorization"), `Bearer ${token}`);
+  assert.equal(init.headers.has("Cookie"), false);
+}
+
+// An older in-flight rejection cannot clear a newer credential intake.
+{
+  const h = harness(`settings=local&companion_address=${encodeURIComponent(address)}&companion_control=${token}&companion_instance=${instance}`);
+  h.client.intake();
+  let finish;
+  h.setFetch(() => new Promise((resolve) => { finish = resolve; }));
+  const pending = h.client.request("/state");
+  // Replace the session using a new instance while the first request is live.
+  h.location.href = `https://app.example.test/#settings=local&companion_address=${encodeURIComponent(address)}&companion_control=${token}&companion_instance=abcdef0123456789`;
+  h.location.hash = new URL(h.location.href).hash;
+  h.client.intake();
+  assert.equal(h.client.scope(), `${address}|abcdef0123456789`);
+  finish({ ok: false, status: 401, headers: { get: () => "application/json" }, json: async () => ({ error: "expired" }) });
+  await assert.rejects(pending, { name: "Unauthorized" });
+  assert.equal(h.client.available(), true);
+  assert.equal(h.client.scope(), `${address}|abcdef0123456789`);
+}
+
+// Even a forged sessionStorage descriptor cannot cause a bearer to leave for
+// a public host; addresses are validated again when credentials are read.
+{
+  const h = harness();
+  const app = encodeURIComponent("https://app.example.test");
+  const publicAddress = "https://attacker.example/";
+  const key = `librepaper:companion-control:v1:${app}:${encodeURIComponent(publicAddress)}:${instance}`;
+  h.store.set(key, token);
+  h.store.set(`librepaper:companion-control:v1:active:https://app.example.test`, JSON.stringify({ address: publicAddress, instance }));
+  assert.equal(h.client.available(), false);
+  await assert.rejects(h.client.request("/state"), { name: "Unavailable" });
+  assert.equal(h.requests.length, 0);
+}
+
+{
+  const h = harness();
+  h.client.openSettings();
+  assert.deepEqual(h.requests, [{ launch: "librepaper://settings" }]);
+}
+
+// If the browser denies sessionStorage, the control token remains available
+// only in this page's memory and can still open Settings for this handoff.
+{
+  const location = {
+    origin: "https://app.example.test",
+    href: `https://app.example.test/#settings=local&companion_address=${encodeURIComponent(address)}&companion_control=${token}&companion_instance=${instance}`,
+    get hash() { return new URL(this.href).hash; },
+  };
+  const client = createControlClient({
+    location: () => location,
+    storage: () => { throw new Error("storage denied"); },
+    replaceUrl: (url) => { location.href = new URL(url, location.origin).href; },
+    fetch: async () => ({ ok: true, status: 204 }),
+  });
+  assert.equal(client.intake(), true);
+  assert.equal(client.available(), true);
+  assert.equal(client.scope(), `${address}|${instance}`);
+  await client.request("/state");
+}

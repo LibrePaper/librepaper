@@ -115,6 +115,8 @@
   // is kept under the slug and presented on every request for this document.
   const KEY = takeKeyFromFragment(SLUG);
 
+  let { initialSettings = "" } = $props();
+
   /* ------------------------------------------------------------ the document */
 
   /** @typedef {{title?: string; docs_origin?: string; document_id?: string; created_at?: string; role?: string; can_edit?: boolean; can_moderate?: boolean; can_see_sharing?: boolean; commenting_as?: string}} ReaderDocument */
@@ -2660,8 +2662,8 @@
 
   // Settings open as a dialog from the navbar menu or the sidebar. Every entry
   // point opens the same dialog on the category it is about.
-  let settingsOpen = $state(false);
-  let settingsCategory = $state("editor");
+  let settingsOpen = $state(initialSettings === "local");
+  let settingsCategory = $state(initialSettings || "editor");
   let projectFolderOpen = $state(false);
   let savingTemplate = $state(false);
   let templateModalOpen = $state(false);
