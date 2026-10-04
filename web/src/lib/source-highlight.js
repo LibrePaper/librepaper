@@ -6,7 +6,7 @@ import { tags } from "@lezer/highlight";
 export const sourceHighlighting = syntaxHighlighting(HighlightStyle.define([
   { tag: tags.keyword, color: "var(--source-highlight-keyword)", fontWeight: "600" },
   { tag: [tags.string, tags.special(tags.string)], color: "var(--source-highlight-string)" },
-  { tag: [tags.number, tags.bool, tags.null], color: "var(--source-highlight-number)" },
+  { tag: [tags.number, tags.bool, tags.null, tags.atom], color: "var(--source-highlight-number)" },
   { tag: tags.comment, color: "var(--source-highlight-comment)", fontStyle: "italic" },
   { tag: [tags.tagName, tags.angleBracket], color: "var(--source-highlight-tag)" },
   { tag: [tags.attributeName, tags.propertyName], color: "var(--source-highlight-property)" },
