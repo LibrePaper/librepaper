@@ -163,7 +163,9 @@ impl ApprovalBroker {
 
     pub(crate) fn list(&self) -> Vec<PendingView> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.pending.retain(|_, pending| !pending.answer.is_closed());
+        state
+            .pending
+            .retain(|_, pending| !pending.answer.is_closed());
         reap_expired(&mut state);
         let now = Instant::now();
         let mut pending: Vec<_> = state
@@ -304,13 +306,23 @@ mod tests {
             scope: None,
         };
         let task_broker = first.clone();
-        let task = tokio::spawn(async move { task_broker.ask(&request, Duration::from_secs(5)).await });
+        let task =
+            tokio::spawn(async move { task_broker.ask(&request, Duration::from_secs(5)).await });
         tokio::task::yield_now().await;
         let pending = first.list();
         assert_eq!(pending.len(), 1);
-        assert_eq!(second.decide(&pending[0].id, Decision::Allowed), DecisionResult::Unknown);
-        assert_eq!(first.decide(&pending[0].id, Decision::Allowed), DecisionResult::Applied);
-        assert_eq!(first.decide(&pending[0].id, Decision::Denied), DecisionResult::Unknown);
+        assert_eq!(
+            second.decide(&pending[0].id, Decision::Allowed),
+            DecisionResult::Unknown
+        );
+        assert_eq!(
+            first.decide(&pending[0].id, Decision::Allowed),
+            DecisionResult::Applied
+        );
+        assert_eq!(
+            first.decide(&pending[0].id, Decision::Denied),
+            DecisionResult::Unknown
+        );
         assert_eq!(task.await.unwrap(), Decision::Allowed);
     }
 
@@ -323,10 +335,14 @@ mod tests {
             allow_label: "Allow".into(),
             scope: None,
         };
-        assert_eq!(broker.ask(&request, Duration::from_millis(1)).await, Decision::Denied);
+        assert_eq!(
+            broker.ask(&request, Duration::from_millis(1)).await,
+            Decision::Denied
+        );
         assert!(broker.list().is_empty());
         let task_broker = broker.clone();
-        let task = tokio::spawn(async move { task_broker.ask(&request, Duration::from_secs(5)).await });
+        let task =
+            tokio::spawn(async move { task_broker.ask(&request, Duration::from_secs(5)).await });
         tokio::task::yield_now().await;
         assert_eq!(broker.list().len(), 1);
         task.abort();

@@ -134,11 +134,8 @@ pub async fn run(args: LocalArgs) {
                     die(error);
                 }
             }
-            let tool_path = crate::local::settings::tool_paths(
-                &state_home(),
-                args.tool_path,
-            )
-            .unwrap_or_else(|error| die(error));
+            let tool_path = crate::local::settings::tool_paths(&state_home(), args.tool_path)
+                .unwrap_or_else(|error| die(error));
             if args.foreground {
                 start_foreground(port, tool_path).await
             } else {
@@ -165,8 +162,8 @@ mod cache_path_tests {
 
     #[test]
     fn cache_home_uses_local_app_data_when_windows_has_no_home() {
-        let result = cache_home_from(None, None, Some(r"C:\Users\Ada\AppData\Local".into()))
-            .unwrap();
+        let result =
+            cache_home_from(None, None, Some(r"C:\Users\Ada\AppData\Local".into())).unwrap();
         assert_eq!(
             result,
             PathBuf::from(r"C:\Users\Ada\AppData\Local")
@@ -233,11 +230,9 @@ async fn desktop() {
     let state = crate::local::lifecycle::spawn_background(0, &[])
         .await
         .unwrap_or_else(|error| die(error));
-    if let Err(error) = crate::local::lifecycle::open_control_panel(
-        &state_home,
-        state.port,
-        &state.instance,
-    ) {
+    if let Err(error) =
+        crate::local::lifecycle::open_control_panel(&state_home, state.port, &state.instance)
+    {
         die(error);
     }
 }

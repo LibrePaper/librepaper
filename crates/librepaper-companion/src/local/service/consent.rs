@@ -280,10 +280,13 @@ pub(super) async fn handle_disconnect(
     }
     let origin = super::super::pairing::normalize_origin(origin.unwrap_or_default());
     inner.pairing.revoke(&origin);
-    let connections = super::super::connections::ConnectionStore::new(&inner.state_home)
-        .remove_origin(&origin);
+    let connections =
+        super::super::connections::ConnectionStore::new(&inner.state_home).remove_origin(&origin);
     inner.previews.lock().await.stop_origin(&origin).await;
-    write_json(200, &json!({"ok": true, "connections_removed": connections}))
+    write_json(
+        200,
+        &json!({"ok": true, "connections_removed": connections}),
+    )
 }
 
 pub(super) async fn revoke_origin(inner: &Inner, origin: &str) -> usize {

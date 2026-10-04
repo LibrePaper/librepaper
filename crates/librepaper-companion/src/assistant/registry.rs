@@ -156,9 +156,13 @@ impl SessionRegistry {
                 self.state_home.clone(),
                 agent_environment.to_vec(),
             )?;
-            self.spawn_running(&key, &wanted, Some(link.server().to_string()), grant, move |status, stop| async move {
-                runtime::run(&peer, config, status, stop).await
-            });
+            self.spawn_running(
+                &key,
+                &wanted,
+                Some(link.server().to_string()),
+                grant,
+                move |status, stop| async move { runtime::run(&peer, config, status, stop).await },
+            );
         } else {
             self.renew_agent_token(link, conversation, agent_token)
                 .await?;
@@ -296,7 +300,10 @@ impl SessionRegistry {
         for id in ids {
             self.reap(&id).await;
         }
-        let sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut rows: Vec<_> = sessions
             .iter()
             .map(|(id, entry)| {
@@ -313,13 +320,21 @@ impl SessionRegistry {
 
     pub(crate) async fn stop_dashboard_origin(&self, origin: &str) {
         let keys: Vec<_> = {
-            let sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             sessions
                 .iter()
                 .filter_map(|(id, entry)| match entry {
-                    Entry::Running { origin: Some(session_origin), .. }
-                        if crate::local::pairing::normalize_origin(session_origin)
-                            == crate::local::pairing::normalize_origin(origin) => Some(id.clone()),
+                    Entry::Running {
+                        origin: Some(session_origin),
+                        ..
+                    } if crate::local::pairing::normalize_origin(session_origin)
+                        == crate::local::pairing::normalize_origin(origin) =>
+                    {
+                        Some(id.clone())
+                    }
                     _ => None,
                 })
                 .collect()
@@ -333,7 +348,9 @@ impl SessionRegistry {
         if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("unknown assistant session".into());
         }
-        self.stop_by_key(id).await.map_err(|error| error.to_string())
+        self.stop_by_key(id)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     async fn status_by_key(&self, key: &str) -> Option<lifecycle::StatusSnapshot> {
@@ -457,9 +474,13 @@ mod tests {
     #[tokio::test]
     async fn a_panicking_session_reports_failed_and_the_registry_keeps_serving() {
         let registry = SessionRegistry::new(PathBuf::from("/tmp/registry-test"));
-        registry.spawn_running("panics", "hash-1", None, None, |_status, _stop| async move {
-            panic!("session task panicked")
-        });
+        registry.spawn_running(
+            "panics",
+            "hash-1",
+            None,
+            None,
+            |_status, _stop| async move { panic!("session task panicked") },
+        );
         for _ in 0..100 {
             if let Some(snapshot) = registry.status_by_key("panics").await {
                 if snapshot.state == Some(RunnerState::Failed) {
@@ -473,11 +494,17 @@ mod tests {
 
         // The registry itself is unharmed: a second, healthy session still
         // starts and reports normally.
-        registry.spawn_running("healthy", "hash-1", None, None, |status, _stop| async move {
-            status.set(RunnerState::Ready, None, None);
-            std::future::pending::<()>().await;
-            Ok(())
-        });
+        registry.spawn_running(
+            "healthy",
+            "hash-1",
+            None,
+            None,
+            |status, _stop| async move {
+                status.set(RunnerState::Ready, None, None);
+                std::future::pending::<()>().await;
+                Ok(())
+            },
+        );
         let mut healthy = None;
         for _ in 0..100 {
             healthy = registry

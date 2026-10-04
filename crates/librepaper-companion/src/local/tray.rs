@@ -14,8 +14,8 @@ use tray_icon::{Icon, TrayIconBuilder};
 pub fn session_available() -> bool {
     #[cfg(target_os = "linux")]
     {
-        let display = std::env::var_os("DISPLAY").is_some()
-            || std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let display =
+            std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
         let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
             || std::env::var_os("XDG_RUNTIME_DIR").is_some();
         display && bus
@@ -86,7 +86,15 @@ fn menu(state_home: &Path) -> Result<(Menu, MenuItems), String> {
         menu.append(item)
             .map_err(|error| format!("could not build tray menu: {error}"))?;
     }
-    Ok((menu, MenuItems { open, status, at_login, quit }))
+    Ok((
+        menu,
+        MenuItems {
+            open,
+            status,
+            at_login,
+            quit,
+        },
+    ))
 }
 
 fn lock_helper(state_home: &Path) -> Result<Option<std::fs::File>, String> {
@@ -131,11 +139,9 @@ fn handle_menu(state_home: &Path, ids: &MenuItems) -> bool {
     while let Ok(event) = MenuEvent::receiver().try_recv() {
         if &event.id == ids.open.id() {
             if let Some(state) = super::lifecycle::service_state(state_home) {
-                if let Err(error) = super::lifecycle::open_control_panel(
-                    state_home,
-                    state.port,
-                    &state.instance,
-                ) {
+                if let Err(error) =
+                    super::lifecycle::open_control_panel(state_home, state.port, &state.instance)
+                {
                     eprintln!("could not open the local control panel: {error}");
                 }
             }
@@ -144,15 +150,19 @@ fn handle_menu(state_home: &Path, ids: &MenuItems) -> bool {
             if let Err(error) = super::lifecycle::set_startup(enabled) {
                 eprintln!("could not change login startup: {error}");
             }
-            ids.at_login.set_checked(super::lifecycle::startup_enabled());
+            ids.at_login
+                .set_checked(super::lifecycle::startup_enabled());
         } else if &event.id == ids.quit.id() {
             let _ = super::lifecycle::request_stop(state_home);
             return true;
         }
     }
     let running = super::lifecycle::running_state(state_home);
-    ids.status
-        .set_text(if running { "Status: running" } else { "Status: stopped" });
+    ids.status.set_text(if running {
+        "Status: running"
+    } else {
+        "Status: stopped"
+    });
     ids.at_login
         .set_checked(super::lifecycle::startup_enabled());
     false
@@ -223,9 +233,8 @@ fn run_native(state_home: std::path::PathBuf) -> Result<(), String> {
     }
     let mut tray = None;
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::WaitUntil(
-            std::time::Instant::now() + Duration::from_millis(250),
-        );
+        *control_flow =
+            ControlFlow::WaitUntil(std::time::Instant::now() + Duration::from_millis(250));
         if matches!(event, Event::NewEvents(StartCause::Init)) && tray.is_none() {
             match app_icon().and_then(|icon| {
                 TrayIconBuilder::new()

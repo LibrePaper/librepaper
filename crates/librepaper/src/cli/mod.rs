@@ -842,7 +842,17 @@ mod socket_policy_tests {
             assert!(Cli::try_parse_from(args).is_err());
         }
         let help = Cli::command().render_help().to_string();
-        for command in ["start", "stop", "status", "desktop", "install-desktop", "agent", "login", "list", "admin"] {
+        for command in [
+            "start",
+            "stop",
+            "status",
+            "desktop",
+            "install-desktop",
+            "agent",
+            "login",
+            "list",
+            "admin",
+        ] {
             assert!(help.contains(command), "missing {command} in {help}");
         }
         assert!(!help.contains("local start"));

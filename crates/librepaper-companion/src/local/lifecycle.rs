@@ -215,7 +215,10 @@ pub fn control_panel_url(state_home: &Path, port: u16, instance: &str) -> Result
     }
     let path = state_home.join("librepaper/local/control-token.json");
     let metadata = std::fs::metadata(&path).map_err(|error| {
-        format!("could not read the private control-panel token {}: {error}", path.display())
+        format!(
+            "could not read the private control-panel token {}: {error}",
+            path.display()
+        )
     })?;
     if metadata.len() > 4096 {
         return Err("the private control-panel token file is too large".into());
@@ -247,7 +250,10 @@ pub fn control_panel_url(state_home: &Path, port: u16, instance: &str) -> Result
     {
         return Err("the control-panel token is invalid for this companion instance".into());
     }
-    Ok(format!("http://127.0.0.1:{port}/companion/#token={}", token.token))
+    Ok(format!(
+        "http://127.0.0.1:{port}/companion/#token={}",
+        token.token
+    ))
 }
 
 pub async fn stop(state_home: &Path) -> Result<(), String> {
@@ -562,8 +568,8 @@ pub fn startup_enabled() -> bool {
 pub fn tray_availability() -> &'static str {
     #[cfg(target_os = "linux")]
     {
-        let display = std::env::var_os("DISPLAY").is_some()
-            || std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let display =
+            std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
         let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
             || std::env::var_os("XDG_RUNTIME_DIR").is_some();
         if display && bus {
@@ -682,7 +688,9 @@ pub fn install_desktop_shortcut() -> Result<PathBuf, String> {
         let data = std::env::var_os("XDG_DATA_HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+            })
             .ok_or("Cannot locate user data directory.")?;
         let file = data.join("applications/librepaper.desktop");
         write_startup_file(
@@ -708,7 +716,10 @@ pub fn install_desktop_shortcut() -> Result<PathBuf, String> {
         let wrapper = macos.join("LibrePaper");
         write_startup_file(
             &wrapper,
-            format!("#!/bin/sh\nexec {} desktop \"$@\"\n", shell_quote(&executable)),
+            format!(
+                "#!/bin/sh\nexec {} desktop \"$@\"\n",
+                shell_quote(&executable)
+            ),
         )?;
         #[cfg(unix)]
         {
@@ -720,7 +731,8 @@ pub fn install_desktop_shortcut() -> Result<PathBuf, String> {
     }
     #[cfg(windows)]
     {
-        let appdata = std::env::var_os("APPDATA").ok_or("Cannot locate the Start Menu directory.")?;
+        let appdata =
+            std::env::var_os("APPDATA").ok_or("Cannot locate the Start Menu directory.")?;
         let programs = PathBuf::from(appdata).join("Microsoft/Windows/Start Menu/Programs");
         std::fs::create_dir_all(&programs).map_err(|error| error.to_string())?;
         let shortcut = programs.join("LibrePaper.lnk");
@@ -770,7 +782,9 @@ mod tests {
         let path = state.path().join("librepaper/local/control-token.json");
         librepaper_base::private_files::publish(
             &path,
-            &serde_json::json!({"instance": "live", "token": "a".repeat(64)}).to_string().into_bytes(),
+            &serde_json::json!({"instance": "live", "token": "a".repeat(64)})
+                .to_string()
+                .into_bytes(),
             "test control token",
         )
         .unwrap();

@@ -28,7 +28,10 @@ pub fn load(state_home: &Path) -> Result<LocalSettings, String> {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|error| format!("could not read local settings {}: {error}", path.display())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(LocalSettings::default()),
-        Err(error) => Err(format!("could not read local settings {}: {error}", path.display())),
+        Err(error) => Err(format!(
+            "could not read local settings {}: {error}",
+            path.display()
+        )),
     }
 }
 
@@ -61,7 +64,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut settings = load(temp.path()).unwrap();
         assert!(!settings.tray_enabled);
-        settings.extra.insert("future".into(), serde_json::json!({"x": 1}));
+        settings
+            .extra
+            .insert("future".into(), serde_json::json!({"x": 1}));
         save(temp.path(), &settings).unwrap();
         assert_eq!(load(temp.path()).unwrap().extra["future"]["x"], 1);
     }
