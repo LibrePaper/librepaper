@@ -2,6 +2,7 @@
 //! to execute code. Deep links open the loopback consent page, carrying only
 //! a public challenge; the browser retains its secret verifier.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -562,11 +563,7 @@ pub fn startup_enabled() -> bool {
 pub fn tray_availability() -> &'static str {
     #[cfg(target_os = "linux")]
     {
-        let display = std::env::var_os("DISPLAY").is_some()
-            || std::env::var_os("WAYLAND_DISPLAY").is_some();
-        let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
-            || std::env::var_os("XDG_RUNTIME_DIR").is_some();
-        if display && bus {
+        if tray_available() {
             "desktop session detected; a tray host is still required"
         } else {
             "no graphical desktop session detected"
@@ -579,6 +576,28 @@ pub fn tray_availability() -> &'static str {
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         "unsupported on this platform"
+    }
+}
+
+/// Best-effort desktop capability for settings APIs. Linux may report a
+/// session when no StatusNotifier host is installed, so helper startup is the
+/// final authority on whether an icon can actually be shown.
+pub fn tray_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let display = std::env::var_os("DISPLAY").is_some()
+            || std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
+            || std::env::var_os("XDG_RUNTIME_DIR").is_some();
+        display && bus
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        true
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        false
     }
 }
 
