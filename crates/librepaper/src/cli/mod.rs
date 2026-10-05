@@ -595,7 +595,7 @@ async fn migrate(
 ) {
     use librepaper_engine::storage::postgres::{PostgresCatalog, PostgresOptions};
 
-    let database = server_config::load_storage_with_env(&config, postgres_env)
+    let database = server_config::load_database_with_env(&config, postgres_env)
         .unwrap_or_else(|error| die(error));
     let mut postgres = PostgresOptions::new(database.database_url);
     postgres.max_connections = database.database_connections;

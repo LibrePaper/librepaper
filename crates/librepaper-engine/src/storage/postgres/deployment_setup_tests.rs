@@ -24,6 +24,14 @@ async fn clear_user_state(catalog: &PostgresCatalog) {
         .unwrap();
 }
 
+fn runtime_role_url(owner_url: &str, role: &str, password: &str) -> String {
+    let mut url = url::Url::parse(owner_url).expect("test database URL parses");
+    url.set_username(role).expect("test database URL accepts a username");
+    url.set_password(Some(password))
+        .expect("test database URL accepts a password");
+    url.to_string()
+}
+
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; destructive to its dedicated database"]
 async fn key_creation_distinguishes_fresh_schema_accounts_and_persisted_peer_state() {
@@ -69,7 +77,7 @@ async fn key_creation_distinguishes_fresh_schema_accounts_and_persisted_peer_sta
     assert!(!catalog.has_deployment_state().await.unwrap());
     catalog
         .set_runtime_state(
-            librepaper_engine::log::DEPLOYMENT_PEER_STATE,
+            crate::log::DEPLOYMENT_PEER_STATE,
             serde_json::json!({"key":"persisted-peer"}),
         )
         .await
@@ -80,6 +88,34 @@ async fn key_creation_distinguishes_fresh_schema_accounts_and_persisted_peer_sta
 
     clear_user_state(&catalog).await;
     catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; creates a temporary schema in its dedicated database"]
+async fn an_uninitialized_schema_has_no_deployment_state() {
+    let owner = owner_catalog().await;
+    let schema = format!("fresh_state_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(owner.pool())
+        .await
+        .unwrap();
+
+    let owner_url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").unwrap();
+    let mut url = url::Url::parse(&owner_url).unwrap();
+    url.query_pairs_mut()
+        .append_pair("options", &format!("-csearch_path={schema}"));
+    let fresh = PostgresCatalog::connect(PostgresOptions::new(url.to_string()))
+        .await
+        .unwrap();
+    let result = fresh.has_deployment_state().await;
+    fresh.close().await;
+
+    sqlx::query(&format!("DROP SCHEMA \"{schema}\""))
+        .execute(owner.pool())
+        .await
+        .unwrap();
+    owner.close().await;
+    assert!(!result.unwrap());
 }
 
 #[tokio::test]
@@ -96,6 +132,7 @@ async fn runtime_schema_validation_checks_the_baked_migration_checksum() {
     .await
     .unwrap();
     let version: i64 = row.try_get("version").unwrap();
+    let description: String = row.try_get("description").unwrap();
     let checksum: Vec<u8> = row.try_get("checksum").unwrap();
     sqlx::query("UPDATE _sqlx_migrations SET checksum=$1 WHERE version=$2")
         .bind(vec![0u8; checksum.len()])
@@ -115,36 +152,164 @@ async fn runtime_schema_validation_checks_the_baked_migration_checksum() {
             .unwrap_err()
             .contains(&format!("migration {version} does not match"))
     );
+
+    sqlx::query("UPDATE _sqlx_migrations SET success=false WHERE version=$1")
+        .bind(version)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    let result = catalog.validate_schema().await;
+    sqlx::query("UPDATE _sqlx_migrations SET success=true WHERE version=$1")
+        .bind(version)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    assert!(result.unwrap_err().contains("did not complete"));
+
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations(version, description, checksum, success, execution_time) \
+         VALUES($1, 'unexpected migration', $2, true, 0)",
+    )
+    .bind(i64::MAX)
+    .bind(vec![1u8; checksum.len()])
+    .execute(catalog.pool())
+    .await
+    .unwrap();
+    let result = catalog.validate_schema().await;
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version=$1")
+        .bind(i64::MAX)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    assert!(result.unwrap_err().contains("unknown migration version"));
+
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version=$1")
+        .bind(version)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    let result = catalog.validate_schema().await;
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations(version, description, checksum, success, execution_time) \
+         VALUES($1, $2, $3, true, 0)",
+    )
+    .bind(version)
+    .bind(description)
+    .bind(checksum)
+    .execute(catalog.pool())
+    .await
+    .unwrap();
+    assert!(result.unwrap_err().contains("missing migration version"));
     catalog.close().await;
 }
 
 #[tokio::test]
-#[ignore = "requires LIBREPAPER_TEST_APP_DATABASE_URL for a restricted runtime role"]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL for a disposable owner database"]
 async fn restricted_runtime_role_can_validate_schema_but_cannot_create_tables() {
     let owner = owner_catalog().await;
-    let app_url = std::env::var("LIBREPAPER_TEST_APP_DATABASE_URL")
-        .expect("set LIBREPAPER_TEST_APP_DATABASE_URL to the limited app-role URL");
-    let app = PostgresCatalog::connect(PostgresOptions::new(app_url))
+    clear_user_state(&owner).await;
+    let owner_url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").unwrap();
+    let role = format!("librepaper_runtime_test_{}", uuid::Uuid::new_v4().simple());
+    let restricted_schema = format!("runtime_test_{}", uuid::Uuid::new_v4().simple());
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    sqlx::query(&format!("CREATE SCHEMA \"{restricted_schema}\""))
+        .execute(owner.pool())
         .await
         .unwrap();
-    app.validate_schema().await.unwrap();
-    let writer = app.claim_writer().await.unwrap();
-    app.create_account(super::NewAccount {
-        kind: "registered".into(),
-        provider: Some("test".into()),
-        provider_subject: Some("limited-runtime-role-regression".into()),
-        handle: "limited-runtime-role-regression".into(),
-        display_name: "Limited runtime test".into(),
-        email: None,
-    })
+    sqlx::query(&format!("CREATE ROLE \"{role}\" LOGIN PASSWORD '{password}'"))
+        .execute(owner.pool())
+        .await
+        .unwrap();
+    sqlx::query(&format!("GRANT USAGE ON SCHEMA public TO \"{role}\""))
+        .execute(owner.pool())
+        .await
+        .unwrap();
+    sqlx::query(&format!(
+        "GRANT USAGE ON SCHEMA \"{restricted_schema}\" TO \"{role}\""
+    ))
+    .execute(owner.pool())
     .await
     .unwrap();
-    drop(writer);
-    let create = sqlx::query("CREATE TABLE deployment_runtime_ddl_must_fail(id integer)")
-        .execute(app.pool())
+    sqlx::query(&format!(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO \"{role}\""
+    ))
+    .execute(owner.pool())
+    .await
+    .unwrap();
+    sqlx::query(&format!(
+        "REVOKE INSERT, UPDATE, DELETE ON _sqlx_migrations FROM \"{role}\""
+    ))
+    .execute(owner.pool())
+    .await
+    .unwrap();
+    sqlx::query(&format!(
+        "REVOKE INSERT, DELETE ON deployment_writer FROM \"{role}\""
+    ))
+    .execute(owner.pool())
+    .await
+    .unwrap();
+    sqlx::query(&format!(
+        "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO \"{role}\""
+    ))
+    .execute(owner.pool())
+    .await
+    .unwrap();
+
+    let app_url = runtime_role_url(&owner_url, &role, &password);
+    let app_result = async {
+        let app = PostgresCatalog::connect(PostgresOptions::new(app_url))
+            .await
+            .map_err(|error| error.to_string())?;
+        let result = async {
+            app.validate_schema().await?;
+            let writer = app
+                .claim_writer()
+                .await
+                .map_err(|error| error.to_string())?;
+            app.create_account(super::NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some("limited-runtime-role-regression".into()),
+                handle: "limited-runtime-role-regression".into(),
+                display_name: "Limited runtime test".into(),
+                email: None,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+            drop(writer);
+            let error = sqlx::query(&format!(
+                "CREATE TABLE \"{restricted_schema}\".deployment_runtime_ddl_must_fail(id integer)"
+            ))
+            .execute(app.pool())
+            .await
+            .expect_err("the application role must not have DDL rights");
+            if error.as_database_error().and_then(|error| error.code()).as_deref()
+                != Some("42501")
+            {
+                return Err(format!("expected PostgreSQL insufficient_privilege (42501), got {error}"));
+            }
+            Ok::<(), String>(())
+        }
         .await;
-    assert!(create.is_err(), "the application role must not have DDL rights");
-    app.close().await;
+        app.close().await;
+        result
+    }
+    .await;
+
+    clear_user_state(&owner).await;
+    sqlx::query(&format!("DROP SCHEMA \"{restricted_schema}\""))
+        .execute(owner.pool())
+        .await
+        .unwrap();
+    sqlx::query(&format!("DROP OWNED BY \"{role}\""))
+        .execute(owner.pool())
+        .await
+        .unwrap();
+    sqlx::query(&format!("DROP ROLE \"{role}\""))
+        .execute(owner.pool())
+        .await
+        .unwrap();
     clear_user_state(&owner).await;
     owner.close().await;
+    app_result.unwrap();
 }

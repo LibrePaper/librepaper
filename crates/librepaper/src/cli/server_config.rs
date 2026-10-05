@@ -547,7 +547,7 @@ pub(crate) fn load_storage_with_log_filter_and_env(
 /// Resolve only database settings and their explicitly referenced secrets.
 /// One-shot migration commands do not need runtime auth, listener, or object
 /// storage credentials.
-pub(crate) fn load_storage_with_env(
+pub(crate) fn load_database_with_env(
     path: &Path,
     postgres_env: Option<&PostgresEnvSnapshot>,
 ) -> Result<DatabaseOptions, String> {
@@ -1431,7 +1431,7 @@ client_secret = { file = "missing-oauth-secret" }
         )
         .unwrap();
 
-        let database = load_storage_with_env(&p, None).unwrap();
+        let database = load_database_with_env(&p, None).unwrap();
         assert_eq!(database.database_url, "postgresql://localhost/librepaper");
         assert_eq!(database.database_connections, 20);
 
@@ -1440,7 +1440,7 @@ client_secret = { file = "missing-oauth-secret" }
             "[storage]\ndatabase_url = { file = \"missing-database-url\" }\n",
         )
         .unwrap();
-        let error = load_storage_with_env(&p, None).err().unwrap();
+        let error = load_database_with_env(&p, None).err().unwrap();
         assert!(error.contains("missing-database-url"), "{error}");
     }
     #[test]

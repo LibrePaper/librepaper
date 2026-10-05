@@ -224,3 +224,102 @@ fn admin_postgres_connection_uses_only_the_configured_uri() {
         "fake database unexpectedly authenticated"
     );
 }
+
+#[test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; destructive to its dedicated database"]
+fn admin_serve_refuses_to_replace_missing_key_for_existing_deployment() {
+    use std::time::Instant;
+
+    let database_url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database");
+    let directory = tempfile::tempdir().unwrap();
+    let database_secret = directory.path().join("database-url");
+    let deployment = directory.path().join("deployment");
+    let config = directory.path().join("config.toml");
+    fs::write(&database_secret, format!("{database_url}\n")).unwrap();
+    fs::write(
+        &config,
+        format!(
+            "[server]\naddress = \"127.0.0.1:0\"\nmigrate = false\n\
+             [storage]\ndatabase_url = {{ file = \"database-url\" }}\n\
+             directory = {:?}\n",
+            deployment
+        ),
+    )
+    .unwrap();
+
+    let migration = Command::new(CLI)
+        .args(["admin", "migrate", "--config", config.to_str().unwrap()])
+        .output()
+        .expect("migration CLI starts");
+    assert!(migration.status.success(), "{migration:?}");
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pool = runtime
+        .block_on(sqlx::PgPoolOptions::new().connect(&database_url))
+        .expect("connect to the disposable PostgreSQL database");
+    runtime.block_on(async {
+        sqlx::query("TRUNCATE accounts CASCADE")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM server_runtime_state")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO server_runtime_state(name, value) VALUES($1, $2)")
+            .bind(librepaper_engine::log::DEPLOYMENT_PEER_STATE)
+            .bind(serde_json::json!({ "key": "persisted-peer" }))
+            .execute(&pool)
+            .await
+            .unwrap();
+    });
+    runtime.block_on(pool.close());
+
+    let mut child = ChildGuard(Some(
+        Command::new(CLI)
+            .args(["admin", "serve", "--config", config.to_str().unwrap()])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("server CLI starts"),
+    ));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut timed_out = false;
+    loop {
+        if child.child_mut().try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            timed_out = true;
+            let _ = child.child_mut().kill();
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    let output = child.wait_with_output();
+
+    let pool = runtime
+        .block_on(sqlx::PgPoolOptions::new().connect(&database_url))
+        .expect("reconnect to the disposable PostgreSQL database");
+    runtime.block_on(async {
+        sqlx::query("DELETE FROM server_runtime_state WHERE name=$1")
+            .bind(librepaper_engine::log::DEPLOYMENT_PEER_STATE)
+            .execute(&pool)
+            .await
+            .unwrap();
+    });
+    runtime.block_on(pool.close());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!timed_out, "server kept running after missing-key startup: {output:?}");
+    assert!(!output.status.success(), "server accepted a missing key: {output:?}");
+    assert!(
+        stderr.contains("restore the matching secrets/session.key"),
+        "{stderr}"
+    );
+    assert!(
+        !deployment.join("secrets/session.key").exists(),
+        "startup must not replace a missing key for an existing deployment"
+    );
+}
