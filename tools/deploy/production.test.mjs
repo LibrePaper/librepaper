@@ -186,8 +186,17 @@ case "$command" in
     printf '%s' "$old_grafana" > "$REMOTE_ROOT/secrets/grafana_admin_password"
     printf 'COMPOSE_FILE=compose.yaml:compose.monitoring.yaml\nLIBREPAPER_VERSION=v0.0.21\n' > "$REMOTE_ROOT/.env"
     ;;
-  *'./setup status'*) printf 'state=ready database=local\n' ;;
-  *'./setup init'*) [ -f "$REMOTE_ROOT/librepaper.toml" ] || exit 98; printf '%s\n' "$command" >> "$SETUP_CALLS_FILE"; version=$(printf '%s' "$command" | sed -n 's/.*--version \\([^ ]*\\).*/\\1/p'); mkdir -p "$REMOTE_ROOT"; printf 'COMPOSE_FILE=compose.yaml\nLIBREPAPER_VERSION=%s\n' "$version" > "$REMOTE_ROOT/.env" ;;
+  *'./setup status'*'./setup init'*)
+    case "$SETUP_STATE" in ready|uninitialized) ;; *) exit 89 ;; esac
+    [ -f "$REMOTE_ROOT/librepaper.toml" ] || exit 98
+    printf '%s\n' "$command" >> "$SETUP_CALLS_FILE"
+    printf 'setup-init\n' >> "$ORDER_FILE"
+    version=$(printf '%s' "$command" | sed -n 's/.*--version \\([^ ]*\\).*/\\1/p')
+    mkdir -p "$REMOTE_ROOT"
+    printf 'COMPOSE_FILE=compose.yaml\nLIBREPAPER_VERSION=%s\n' "$version" > "$REMOTE_ROOT/.env"
+    ;;
+  *'./setup status'*) printf 'state=%s database=local\n' "$SETUP_STATE" ;;
+  *'./setup init'*) exit 88 ;;
   *'./setup check'*) printf 'setup-check\n' >> "$ORDER_FILE" ;;
   *'psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -q'*) cat > "$REMOTE_ROOT/metrics-role.sql" ;;
   *'sha256sum librepaper.candidate.tmp'*) sha256sum "$REMOTE_ROOT/librepaper.candidate.tmp" | cut -d ' ' -f1 ;;
@@ -210,6 +219,7 @@ case "$command" in
     printf 'app-recreate\\n' >> "$ORDER_FILE"
     ;;
   *'docker compose up -d --force-recreate --no-deps backup'*) printf 'backup-recreate\\n' >> "$ORDER_FILE" ;;
+  *'docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 prometheus'*) printf 'prometheus-recreate\\n' >> "$ORDER_FILE" ;;
   *'docker compose up -d --wait postgres'*) printf 'postgres-up\\n' >> "$ORDER_FILE" ;;
   *'docker compose stop librepaper backup'*) printf 'app-backup-stop\\n' >> "$ORDER_FILE" ;;
   *'docker compose run --rm --no-deps migrate admin migrate --help'*) printf 'migrate-help\\n' >> "$ORDER_FILE"; [ "$MIGRATE_HELP_FAILURE" = 0 ] ;;
@@ -463,9 +473,9 @@ for (const command of ['deploy', 'deploy-local']) {
       assert.equal(readFileSync(f.runningConfigFile, 'utf8'), installed);
       const imageAction = command === 'deploy-local' ? 'image-build' : 'image-pull';
       assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), [
-      imageAction, 'config-check', 'backup-check', 'migrate-help', 'caddy-validate', 'postgres-up',
+        'setup-init', imageAction, 'config-check', 'backup-check', 'migrate-help', 'caddy-validate', 'postgres-up',
         'app-backup-stop', 'config-install', 'migrate-run', 'app-recreate', 'backup-recreate',
-        'caddy-install', 'stack-up', 'caddy-reload',
+        'caddy-install', 'stack-up', 'caddy-reload', 'prometheus-recreate',
       ]);
       assert.equal(readFileSync(path.join(f.root, 'caddy-timeout'), 'utf8').trim(), '30');
     } finally {
