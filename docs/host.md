@@ -119,8 +119,9 @@ Server and admin commands use one TOML file. `admin serve` defaults to
 - Literals use TOML syntax.
 - `{ env = "NAME" }` and `{ file = "path" }` replace one whole value.
   Referenced strings are used as-is; numbers, booleans, and arrays use TOML
-  syntax.
-- File paths are config-relative; trailing CR/LF is stripped from references.
+  syntax in LibrePaper application tables. The `[resticprofile]` subtree uses
+  resticprofile's own configuration syntax.
+- LibrePaper file references are config-relative; trailing CR/LF is stripped.
 
 Missing or empty references, invalid keys/types, and old server-setting flags
 fail. There is no interpolation or automatic application-setting override.
@@ -187,7 +188,7 @@ Keep the original deployment intact until recovery is verified.
    networks:
      edge:
        ipam:
-         config:
+         config: !override
            - subnet: 172.31.0.0/16
    ```
 
