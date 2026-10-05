@@ -21,11 +21,13 @@ secret directory only in encrypted off-host recovery storage.
 | `database_owner_url` | one-shot `migrate` service | Schema migration and recovery owner |
 | `database_backup_url` | backup sidecar | Read-only consistent dump |
 | `database_metrics_url` | setup and metrics exporter | Setup derives the exporter URI, username, and password files |
+| `database_owner_password`, `database_app_password`, `database_backup_password`, `database_metrics_password` | local PostgreSQL setup | Passwords for the four scoped local roles; keep each aligned with its URL |
+| `database_metrics_uri`, `database_metrics_user` | metrics exporter | Derived from `database_metrics_url` by setup |
 | `postgres_bootstrap_password` | local PostgreSQL initialization | Initial role provisioning only |
 | `grafana_admin_password` | Grafana, optional | Seeds a fresh Grafana database volume |
 | `restic_password` | backup sidecar | Encrypts the Restic repository |
 | `storage_s3_access_key_id`, `storage_s3_secret_access_key` | app, optional | S3-compatible object storage |
-| `session.key` | app data volume | Signs sessions and share links; included in backups |
+| `session.key` | app data volume | Signs session cookies and encrypts saved share secrets; included in backups |
 
 For external PostgreSQL, provide each URL as a separate secret before running
 `./setup init --database external`. The helper's stdin interface avoids
@@ -45,13 +47,17 @@ used to provision local roles and should not be mounted into the app or backup
 service. See the [host guide](host.md) for the deployment and external database
 setup.
 
-Rotate a database credential by changing the PostgreSQL role password, writing
-the complete replacement URL to a temporary file in `secrets/`, setting mode
-0444, and atomically renaming it over the prior URL. Recreate the matching
-consumer: `librepaper` for the app URL, `backup` for the backup URL, or the
-exporter for the metrics URL. A new owner URL is needed only when running a
-migration. Revoke access with `ALTER ROLE <role> NOLOGIN`, terminate that role's
-existing sessions, and remove its URL file after its consumer has stopped.
+Rotate a local database credential by changing the role password in PostgreSQL
+and atomically updating both its `database_<role>_password` file and URL file.
+For an external database, update the role and URL; those local password files
+are unused. For the metrics role, also update `database_metrics_uri`,
+`database_metrics_user`, and `database_metrics_password` to match
+`database_metrics_url`; `./setup check` detects mismatches. Recreate the
+matching consumer: `librepaper` for the app URL, `backup` for the backup URL,
+or the exporter for the metrics URL. A new owner URL is needed only when
+running a migration. Revoke access with `ALTER ROLE <role> NOLOGIN`, terminate
+that role's existing sessions, and remove its URL and password files after its
+consumer has stopped.
 
 The production deployment helper reads only named OAuth and Grafana values
 from the SOPS-encrypted `tools/deploy/keys.yaml` and writes them to their
@@ -71,6 +77,6 @@ key is created in the app data volume, not under `deploy/secrets`; include it
 in the encrypted recovery copy and restore the matching file.
 
 Keep an encrypted recovery packet outside the VPS with the matching release,
-both configs, repository location and Restic password, remote storage
-credentials, a way to recreate database roles, and the session key. Restrict
-recovery access separately from routine host access.
+both configs, repository location and Restic password, remote storage and
+OAuth provider credentials, a way to recreate database roles, and the session
+key. Restrict recovery access separately from routine host access.
