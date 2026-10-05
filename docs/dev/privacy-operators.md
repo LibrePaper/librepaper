@@ -1,43 +1,55 @@
 # Privacy duties for operators
 
-**Publish a notice** naming yourself, contact address, expiry setting, providers and proxy log retention. Point to the [privacy page](https://librepaper.org/privacy.html).
+- Publish a notice with the operator's identity and contact, configured
+  document retention, storage and hosting providers, and proxy-log handling.
+- The app stores accounts and document data in plaintext. It does not log
+  visitor requests or persist visitor IP addresses; reverse proxies, CDNs, and
+  hosting providers may keep their own logs.
+- See the [public privacy notice](../privacy.md) for the application's data
+  flows.
 
-**IP addresses** are in your proxy logs (nginx, Caddy, CDNs), not the application.
-
-**Data requests:** `librepaper export` covers one document at a time. Query the database for complete answers:
+- For a data request, verify the requester and follow the obligations that
+  apply to your deployment.
+- `librepaper export ID DIR` exports one accessible project at a time; it is
+  not an account-wide export.
+- Database review may be needed for account fields, authored annotations and
+  replies, checkpoints, and grants. The read-only queries below are examples,
+  not a complete export; bind the account UUID as `$1` using your database
+  client.
 
 ```sql
--- Find the account
-SELECT id, provider, handle, display_name, email, created_at, last_seen_at
-FROM accounts WHERE handle = 'the-handle';
+-- Account record
+SELECT id, provider, provider_subject, handle, display_name, email,
+       created_at, last_seen_at
+FROM accounts WHERE id = $1;
 
--- Documents owned by account $1
-SELECT d.slug, d.title, d.created_at, d.updated_at
-FROM documents d WHERE d.owner_id = $1;
+-- Projects owned by the account
+SELECT slug, title, created_at, updated_at
+FROM documents WHERE owner_id = $1;
 
--- Annotations (comments, highlights, suggestions) by account $1
+-- Authored annotations and replies
 SELECT d.slug, a.kind, a.body, a.created_at
 FROM annotations a JOIN documents d ON d.id = a.document_id
 WHERE a.author_account_id = $1 ORDER BY a.created_at;
 
--- Replies to annotations by account $1
 SELECT d.slug, r.body, r.created_at
 FROM replies r JOIN annotations a ON a.id = r.annotation_id
 JOIN documents d ON d.id = a.document_id
 WHERE r.author_account_id = $1 ORDER BY r.created_at;
 
--- Checkpoints by account $1
-SELECT d.slug, v.created_at FROM document_labels v
-JOIN documents d ON d.id = v.document_id WHERE v.author_account_id = $1;
+-- Checkpoints and access grants
+SELECT d.slug, l.label, l.reason, l.created_at
+FROM document_labels l JOIN documents d ON d.id = l.document_id
+WHERE l.author_account_id = $1 ORDER BY l.created_at;
 
--- Document access grants for account $1
-SELECT document_id, role, created_at FROM grants WHERE account_id = $1;
+SELECT d.slug, g.role, g.created_at
+FROM grants g JOIN documents d ON d.id = g.document_id
+WHERE g.account_id = $1 ORDER BY g.created_at;
 ```
 
-Export owned documents with `librepaper export DOCUMENT DIR`.
-
-**Backup restore:** Re-run erasure requests. Keep notes (date and handle) and replay them.
-
-**GDPR:** answer data requests within one month; notify authorities of breaches within 72 hours where people are likely to be at risk.
-
-**Verify who is asking:** A signed-in request from the account itself is easiest proof. For other requests, require sufficient identity verification before answering.
+- The signed-in account starts erasure in **Settings → Account → Erase this
+  account**. Sessions are revoked immediately; owned projects are scheduled
+  for deletion after seven days.
+- A restore can reinstate data deleted after the backup was taken. Track
+  deletion requests outside the backup set and review them after a restore;
+  see [account-erasure details](../privacy.md#erasing-an-account).

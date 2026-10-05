@@ -1,13 +1,12 @@
 # LibrePaper brand artwork
 
-The served files live in `web/public/assets/`, where Vite copies them into the
-deployed application:
+The app serves artwork from [`web/public/assets/`](../../../web/public/assets/).
+Edit `librepaper-icon.svg` there directly; it is its own source. The served
+`librepaper-logo.svg` is the outlined wordmark. Its editable source is
+[`librepaper-logo-source.svg`](librepaper-logo-source.svg), with live Gotham
+HTF text.
 
-- `librepaper-icon.svg`: the icon, and its own source; edit it in place.
-- `librepaper-logo.svg`: the wordmark, outlined into paths.
-
-`librepaper-logo-source.svg` here is the wordmark's editable source, with the
-word kept as live Gotham HTF text. To update the served logo, export it with
-Inkscape's text-to-path and plain-SVG options, crop the view box with ten
-units of space around the drawing, and commit the result as
-`web/public/assets/librepaper-logo.svg`.
+To update the wordmark, export the source from Inkscape with text converted to
+paths and plain SVG enabled. Crop the view box with ten units of space around
+the drawing, then commit the result as
+[`web/public/assets/librepaper-logo.svg`](../../../web/public/assets/librepaper-logo.svg).

@@ -1,89 +1,94 @@
 # Browser asset mirrors
 
-Browsers fetch renderers and LaTeX files from one OVH S3 bucket (`bhs`). The binary embeds neither.
+The server binary embeds pins, not renderer binaries or LaTeX files. Browsers
+fetch all five pinned assets from the mirror in `[assets].mirror`; the default
+is [`DEFAULT_ASSET_MIRROR`](../../crates/librepaper-base/src/config/mod.rs).
+The official production config points to an OVH bucket in `bhs`.
 
-- `wasm/<sha256>/<name>.wasm`: markdown, bibliography, citations, typst
-- `latex/<sha256>/`: one LaTeX release; `<sha256>` hashes its `MANIFEST.json`
-  - `release.json`: format 2, paths relative to the directory, bundled releases only (no per-file TeX snapshot)
-  - `MANIFEST.json`: any JSON; its SHA-256 is the release id
-  - engine files: each listed in release.json's engine worker inventory with size and sha256
-  - `bundles/bundles.json`: the LaTeX package index, matching the sha256 pin in release.json; every bundle it names exists
-  - bundle tars: `bundles/b/<sha256>/<slug>.tar`, where `<sha256>` hashes the tar bytes
-- Base URL: `[assets].mirror` in the server TOML; when omitted, the server uses `DEFAULT_ASSET_MIRROR` from `crates/librepaper-base/src/config/mod.rs`
-- `assets.lock`: pins all five, compiled into the binary; browsers use the server's pin (`latexMirror` in `/api/config`)
-  - `*.wasm` rows: repository, tag, sha256 of the module
-  - `latex` row: `latex wasm-latex <tag> <sha256>`, set by `tools/assets/pins update latex`
-- `web/wasm/`: fetched modules, for tests and publishing only
+- `assets.lock` pins four WASM modules and one LaTeX release. Each WASM pin
+  names a GitHub repository, tag, and SHA-256. The LaTeX pin names a
+  `wasm-latex` release tag and the SHA-256 of its `MANIFEST.json`.
+- The published keys are `wasm/<sha256>/<module>.wasm` and
+  `latex/<sha256>/<release files>`. LaTeX `release.json` uses format 2; its
+  engine records and bundle index identify the files in that release.
+- `tools/assets/pins fetch` verifies pinned module and CodeMirror source bytes.
+  It writes WASM to `web/wasm/` and the binding to ignored build output under
+  `web/vendor/`.
 
-## Pins
+## Release order
 
-```sh
-tools/assets/pins fetch                             # fetch and verify the pinned modules
-tools/assets/pins update wasm wasm-markdown vX.Y.Z  # move a module pin
-```
+Update only the pins for assets that changed; an application release does not
+require new renderer and LaTeX releases.
+If `assets.lock` is unchanged, there is no mirror update to publish.
 
-## Updating the LaTeX engines
+1. For each changed renderer, publish its tagged release in the source
+   repository, then update that module's row. For example:
 
-In `../wasm-latex`:
+   ```sh
+   tools/assets/pins update wasm wasm-markdown vX.Y.Z
+   ```
 
-```sh
-make vendor                                # once: verified TeX Live tree (5 GB)
-make rebuild                               # build engines and data (~2 h)
-git add receipts/ && git commit -m "Record receipts"
-make release                               # tags engines-YYYY.MM.DD (-2, -3 if taken); TAG= overrides
-make mirror                                # prints the release hash
-```
+2. For a changed LaTeX distribution, build and tag the release in the
+   `wasm-latex` repository, then create its mirror directory. From this repo,
+   `tools/assets/mirror build` runs that repository's `make mirror` target.
+   Pin the single release directory:
 
-- `make release` refuses a dirty tree, an existing tag, or no `gh` login
-- Tags never move; the release hash (sha256 of `staged/MANIFEST.json`) is its identity
+   ```sh
+   tools/assets/pins update latex
+   ```
 
-Then here:
+   Both commands default to `../wasm-latex/mirror`. For another directory,
+   pass its path to `pins update latex` and set `MIRROR` for `mirror build`,
+   `check`, and `publish`.
+3. Fetch the pinned renderer modules and binding, then check the local LaTeX
+   mirror:
 
-```sh
-tools/assets/pins update latex                    # pin the one release in ../wasm-latex/mirror
-tools/assets/mirror publish                # check, smoke, probe, upload before committing
-git commit assets.lock -m "Pin engines-YYYY.MM.DD"
-```
+   ```sh
+   tools/assets/pins fetch
+   tools/assets/mirror check
+   ```
 
-## Publishing
+   `update latex` requires exactly one 64-character release directory whose
+   name matches the manifest digest.
+4. Run `tools/assets/mirror publish --dry-run`. It validates both local
+   mirrors, checks GitHub release visibility, and runs the Chromium tutorial
+   smoke without loading credentials or changing the bucket. Resolve failures,
+   then run `tools/assets/mirror publish` to upload.
+5. Commit the reviewed `assets.lock` pin changes and build/deploy a server
+   binary with those pins. Publish assets before deploying that binary.
 
-Publishing the mirror happens only from this repository.
+The publisher checks the pinned files and LaTeX release contents before any
+upload. It uploads WASM, then LaTeX; each LaTeX `release.json` is uploaded last
+so clients cannot discover a partial release. It creates the bucket if needed,
+sets CORS for `GET` and `HEAD`, probes public reads, checks uploaded object
+metadata, and confirms bucket listing is private. Uploads are public-read,
+content-addressed, immutable, and append-only; the publisher never deletes
+objects.
 
-```sh
-tools/assets/pins fetch && tools/assets/mirror build
-tools/assets/pins update latex
-tools/assets/mirror publish --dry-run    # stages 1-3 only; no credentials, no bucket
-tools/assets/mirror publish              # check, smoke, probe, upload
-```
+The dry run also fetches/checks public release URLs and builds the server and
+browser smoke, so it needs network access, Rust, Bun, Node.js, Chromium, and
+PostgreSQL. Set `LIBREPAPER_TEST_POSTGRES_URL` to use an existing test database;
+otherwise Docker starts a temporary PostgreSQL container. A real upload also
+needs SOPS and AWS CLI v2 (or Nix for the temporary CLI shell).
 
-- Needs Node.js, SOPS, AWS CLI v2 (falls back to `nix shell nixpkgs#awscli2`)
-- Keys: `tools/deploy/keys.yaml` (SOPS)
-  - `OVH_S3_ENDPOINT`, `OVH_S3_REGION`, `OVH_S3_USER`, `OVH_S3_SECRET`
-  - `OVH_S3_ARN` (`arn:aws:s3:::BUCKET`) names the bucket
-  - overridden by `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-  - set `S3_PUBLIC_BASE_URL` to the public HTTPS bucket URL when overriding `S3_ENDPOINT` or `S3_REGION`; publish probes use it for object and private-listing checks
-- One-time: create an S3 user in the OVH console, not the bucket; `publish` creates it so the user owns it (only the owner can set CORS)
-- `publish` does, in order:
-  1. check mirror: modules match their pins; LaTeX directory matches its manifest, nothing missing or extra
-  2. verify GitHub releases are public (not drafts)
-  3. smoke: compile the tutorial in Chromium
-  4. create bucket if needed, set CORS (GET, HEAD, any origin)
-  5. upload two small test files, verify public read with CORS
-  6. upload all assets (`aws s3 sync --size-only --acl public-read`, gzip level 6, never `--delete`), each `release.json` last so no release is visible half uploaded; verify public read with CORS, verify bucket listing is private
+SOPS keys come from `tools/deploy/keys.yaml`: `OVH_S3_ENDPOINT`,
+`OVH_S3_REGION`, `OVH_S3_USER`, `OVH_S3_SECRET`, and `OVH_S3_ARN`. Canonical
+overrides are `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`,
+`AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`. Set `S3_PUBLIC_BASE_URL` when
+overriding the endpoint or region.
 
-## Properties
+Use a dedicated OVH S3 user. The publisher creates the bucket with that
+identity and then sets CORS, which requires bucket-owner permissions.
 
-- Every key is content-addressed and cached immutable; nothing is rewritten
-- Append-only: old pins keep working; no pruning
-- Upload before shipping a binary with a new pin
+## Host a copy
 
-## Hosting your own copy
+Set the server config to a base HTTPS URL. The host must serve the pinned paths
+and allow browser CORS `GET` and `HEAD` requests.
 
 ```toml
 [assets]
-mirror = "https://host/"   # serve the pinned paths over HTTPS, CORS for GET and HEAD
+mirror = "https://host/"
 ```
 
-```sh
-tools/assets/mirror check https://host/latex/<sha256>/      # validate a LaTeX release
-```
+Check a hosted LaTeX release with `tools/assets/mirror check
+https://host/latex/<sha256>/`.
