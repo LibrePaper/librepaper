@@ -8,8 +8,8 @@
 # The database is reachable only through a Unix socket shared with the
 # application container, which is why it needs no password and no network.
 #
-# Monitoring starts with the rest of the stack and is reachable only through
-# the authenticated application proxy or on the private Compose network.
+# Monitoring starts with the rest of the stack. Grafana uses its own login
+# behind the HTTPS proxy; Prometheus and exporters use the private network.
 
 name: librepaper
 

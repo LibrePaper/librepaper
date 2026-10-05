@@ -52,5 +52,6 @@ trusted_networks = ["172.29.0.0/16"]
 # [server]
 # address = "0.0.0.0:8080"
 
+# Private listener for the bundled Prometheus; no host port is published.
 [metrics]
 address = "0.0.0.0:9091"
