@@ -1,0 +1,70 @@
+# Publish Docker image for a stable release.
+# The image is the release binary on Alpine, built from the same Dockerfile
+# the Compose kit uses, published after the Release workflow succeeds so the
+# download inside the build finds the archive.
+
+name: Publish Docker image
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Stable release tag to publish (for example v0.0.14)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    if: >
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == 'LibrePaper/librepaper'))
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Run helper scripts from the workflow revision, never from the
+          # release tag being inspected (which may predate those scripts).
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 1
+
+      - id: resolve
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        shell: bash
+        run: bash tools/release/resolve-stable-release.sh
+
+      - uses: docker/setup-qemu-action@v3
+        if: steps.resolve.outputs.proceed == 'true'
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.resolve.outputs.proceed == 'true'
+
+      - uses: docker/login-action@v3
+        if: steps.resolve.outputs.proceed == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        if: steps.resolve.outputs.proceed == 'true'
+        with:
+          context: tools/deploy/docker
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: LIBREPAPER_VERSION=${{ steps.resolve.outputs.tag }}
+          tags: |
+            ghcr.io/librepaper/librepaper:${{ steps.resolve.outputs.tag }}
+            ghcr.io/librepaper/librepaper:latest
+          provenance: false
