@@ -36,6 +36,7 @@
 
   const row = $derived(ROWS[format]);
   const scope = () => ({ origin: globalThis.location?.origin || "", user: userId });
+  /** @type {import("../../lib/reader/build-settings.svelte.js").BuildPreference} */
   let preference = $state(defaults());
   $effect.pre(() => { preference = read(scope(), format); });
 
