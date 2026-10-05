@@ -65,10 +65,10 @@ remove its URL and password files after its consumer has stopped.
 The base setup does not provision S3 object-store credentials or mount them
 into the app and backup containers. To use S3-compatible object storage,
 provide protected credential files and a Compose overlay that mounts the
-required read credentials into both services, then reference those mounted
-files in `[storage.s3]`. SFTP private keys likewise need an operator-defined
-secret file and Compose mount; `restic_known_hosts` alone does not provide a
-private key.
+app's required read/write credentials and the backup service's read-only
+credentials, then reference the mounted files in `[storage.s3]`. SFTP private
+keys likewise need an operator-defined secret file and Compose mount;
+`restic_known_hosts` alone does not provide a private key.
 
 `deploy/setup` manages `COMPOSE_FILE` and rewrites it when you change database,
 monitoring, production, or local-build selections. Keep custom Compose overlays

@@ -279,7 +279,10 @@ done
 printf '%s\t%s\t%s\n' "$url" "$connect_timeout" "$max_time" >> "$CURL_CALLS_FILE"
 if [ -n "$config" ]; then
   [ "$(stat -c %a "$config")" = 600 ]
-  grep -q 'user = "admin:admin-secret"' "$config"
+  expected_password=$(cat "$ADMIN_PASSWORD_FILE")
+  escaped_password=$(printf '%s' "$expected_password" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  grep -Fq -- "user = \"admin:$escaped_password\"" "$config"
+  unset expected_password escaped_password
 fi
 code=200 body='' location= provider=
 case "$url" in
