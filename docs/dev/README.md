@@ -1,7 +1,7 @@
 # Developer runbooks
 
-- [Production and release flow](production.md): checks, version tags, artifact
-  and package-channel publication, and the manual VPS deployment.
+- [Releasing](../releasing.md): version tags, artifacts and package channels.
+  The librepaper.org runbook is private: `tools/deploy/runbook`.
 - [Browser asset mirrors](asset-mirrors.md): pinning and publishing renderer
   and LaTeX assets before a release uses them.
 - [CodeMirror fork](loro-codemirror.md): update the verified binding pin.

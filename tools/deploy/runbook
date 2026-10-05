@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# The librepaper.org runbook, kept encrypted beside keys.yaml with the same
+# SOPS recipients. Generic hosting and release steps are public in docs/;
+# this file holds only what is true of the one official instance.
+#
+#   tools/deploy/runbook          # print it
+#   tools/deploy/runbook edit     # open it in $EDITOR, re-encrypt on save
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+FILE=tools/deploy/runbook.enc
+
+case "${1:-show}" in
+	show) sops --decrypt --input-type binary --output-type binary "$FILE" ;;
+	edit) sops --input-type binary --output-type binary "$FILE" ;;
+	*) echo "usage: tools/deploy/runbook [show|edit]" >&2; exit 2 ;;
+esac

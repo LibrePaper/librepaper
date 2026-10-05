@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploy the official instance at librepaper.org. Secrets come from
-# tools/deploy/keys.yaml (SOPS); runbook in docs/dev/production.md.
+# tools/deploy/keys.yaml (SOPS); runbook encrypted in tools/deploy/runbook.enc.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."

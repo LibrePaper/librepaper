@@ -1,7 +1,41 @@
-# Package release channels
+# Releasing
 
-See the [production and release checklist](dev/production.md) for versioning,
-checks, tagging, and the separate manual VPS deployment.
+Releasing a version publishes downloadable artifacts. It does not deploy
+librepaper.org; that is an operator command described in the private runbook
+(`tools/deploy/runbook`).
+
+## Release a version
+
+1. Set `[workspace.package].version` in `Cargo.toml` and update the workspace
+   package entries in `Cargo.lock`. The release tag must be
+   `v<version>` (for example, version `X.Y.Z` uses tag `vX.Y.Z`).
+2. Run the checks described in [Building and testing](architecture/building.md),
+   including `make check` and `tools/dev/db test`. If the release changes
+   browser assets, publish them first; see [asset mirrors](dev/asset-mirrors.md).
+   Commit and push the release commit, then confirm CI is green for it. The
+   Release workflow builds on tag pushes but does not wait for CI.
+3. From a clean checkout of that release commit, push the matching tag:
+
+   ```sh
+   VERSION="v$(sed -n 's/^version = \"\(.*\)\"/\1/p' Cargo.toml | head -n 1)"
+   git tag "$VERSION"
+   git push origin "$VERSION"
+   gh run list --workflow release.yml --limit 5
+   gh run watch RUN_ID --exit-status
+   ```
+
+   Select the Release run whose tag is `$VERSION`.
+
+4. The Release workflow uses cargo-dist to build platform archives, installers,
+   and SHA-256 files, then creates the GitHub Release. Confirm the Linux
+   x86_64 asset exists:
+
+   ```sh
+   gh release view "$VERSION" --json assets -q '.assets[].name'
+   ```
+
+5. After a successful stable release, the Homebrew, Scoop and Docker image
+   workflows run automatically; see below.
 
 ## Automated updates
 

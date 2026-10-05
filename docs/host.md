@@ -125,6 +125,11 @@ librepaper admin config show --config /etc/librepaper/config.toml
    that preserves `Host`, appends the actual client address to
    `X-Forwarded-For`, and trusts only the proxy network.
 
+4. For S3-compatible storage, set `object_store = "s3"` in `[storage]` and
+   add a `[storage.s3]` table with `endpoint`, `region`, `bucket`,
+   `access_key_id` and `secret_access_key`. Credentials come only from that
+   table; ambient AWS credentials are not used.
+
 ## Storage and backup
 
 Use the server config for backups. A restore config must identify the target
@@ -143,6 +148,27 @@ been restored is a guess.
 
 See [cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md)
 for resource defaults and backup limitations.
+
+## Moderation
+
+Moderation uses the server config. Database access is the operator
+authorization boundary. Every command needs an actor and reason; the
+`moderation_audit` table records actor, timestamp, action, target, and reason.
+
+| Command | Effect |
+| --- | --- |
+| `block-account` | Revokes sessions and denies access and writes. |
+| `hide-project` | Keeps data but blocks document, asset, source, history, export, and socket access. |
+
+Open sockets recheck authorization every two seconds; frames already in flight
+may still arrive.
+
+```sh
+librepaper admin moderate block-account github-handle --config /etc/librepaper/config.toml \
+  --actor "on-call@example.org" --reason "automated abuse investigation"
+librepaper admin moderate hide-project abusive-project --config /etc/librepaper/config.toml \
+  --actor "on-call@example.org" --reason "contains abusive material"
+```
 
 ## Privacy
 
