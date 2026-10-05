@@ -3,11 +3,11 @@
 #
 # [resticprofile]
 # repository = "s3:https://example.invalid/backups"
-# password-file = "/var/lib/librepaper/secrets/restic-password"
+# password-file = "/run/secrets/restic_password"
 #
 # Or set a password through the native resticprofile environment table:
 # [resticprofile.env]
-# RESTIC_PASSWORD = "replace-with-a-long-random-secret"
+# AWS_SHARED_CREDENTIALS_FILE = "/run/secrets/aws_credentials"
 #
-# Keep credentials in mounted secret files or environment variables. This file
+# Keep credentials in the per-service mounted secret files. This file
 # intentionally ships without a [resticprofile] table, so backups stay idle.

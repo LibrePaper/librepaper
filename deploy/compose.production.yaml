@@ -1,0 +1,5 @@
+# Production web host site generated beside deploy/secrets.
+services:
+  caddy:
+    volumes:
+      - ./site:/srv/site:ro

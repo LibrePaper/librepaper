@@ -1,0 +1,26 @@
+# Development override: build current checkout images instead of pulling tags.
+services:
+  librepaper:
+    image: librepaper:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: app
+      args:
+        SOURCE: checkout
+  migrate:
+    image: librepaper:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: app
+      args:
+        SOURCE: checkout
+  backup:
+    image: librepaper-backup:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: backup
+      args:
+        SOURCE: checkout

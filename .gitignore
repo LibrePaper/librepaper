@@ -4,6 +4,22 @@ docs/examples/*.html
 docs/examples/*_files/
 .envrc
 .env
+deploy/.env
+deploy/.setup-state.json
+deploy/secrets/
+deploy/secrets/**
+deploy/librepaper.toml.candidate*
+deploy/resticprofile.toml.candidate*
+deploy/compose.override.yaml*
+deploy/librepaper.candidate*
+deploy/site/
+tools/dev/demo/.env
+tools/dev/demo/.setup-state.json
+tools/dev/demo/secrets/
+tools/dev/demo/secrets/**
+tools/dev/demo/.*.env
+tools/dev/demo/.*.setup-state.json
+tools/dev/demo/*-secrets/
 
 # The reader shell is built from web/ by bun and vite, and the README is
 # copied in beside it: everything under web/dist is a build output that the

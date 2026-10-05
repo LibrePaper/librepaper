@@ -1,16 +1,5 @@
-# A whole small deployment: PostgreSQL, LibrePaper, and a proxy that obtains
-# certificates on-demand. The two origins come from librepaper.toml, and the proxy
-# learns them from the server (see caddy/Caddyfile). Set the Grafana admin
-# password in .env before starting; see docs/host.md.
-#
-#   docker compose up -d
-#
-# The database is reachable only through a Unix socket shared with the
-# application container, which is why it needs no password and no network.
-#
-# Monitoring starts with the rest of the stack. Grafana uses its own login
-# behind the HTTPS proxy; Prometheus and exporters use the private network.
-
+# Local deployment. Run `./setup init` once before starting services. External
+# database and monitoring configurations are explicit Compose overlays.
 name: librepaper
 
 x-bounded-logs: &bounded-logs
@@ -20,92 +9,109 @@ x-bounded-logs: &bounded-logs
     max-file: "3"
 
 services:
-  # Database hosted elsewhere: delete this service and postgres-exporter,
-  # remove the depends_on and pgsocket lines under librepaper, and put the
-  # full URL in librepaper.toml.
   postgres:
     image: postgres:17.11-alpine
     restart: unless-stopped
     logging: *bounded-logs
     environment:
       POSTGRES_DB: librepaper
-      POSTGRES_USER: librepaper
-      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_USER: librepaper_bootstrap
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_bootstrap_password
+      # The only Unix socket is private to this container; TCP is always SCRAM.
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust
+    secrets:
+      - source: postgres-bootstrap-password
+        target: postgres_bootstrap_password
+      - source: database-owner-password
+        target: database_owner_password
+      - source: database-app-password
+        target: database_app_password
+      - source: database-backup-password
+        target: database_backup_password
+      - source: database-metrics-password
+        target: database_metrics_password
     volumes:
       - postgres:/var/lib/postgresql/data
-      - pgsocket:/var/run/postgresql
-    configs:
-      # Runs once, when the cluster is created: a passwordless role the
-      # postgres-exporter reads statistics as. It can only connect over the
-      # trusted socket.
-      - source: metrics-role
-        target: /docker-entrypoint-initdb.d/20-metrics-role.sql
+      - ./postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-librepaper-roles.sh:ro
+      - ./postgres/roles.sql:/usr/local/share/librepaper/roles.sql:ro
+    command: ["postgres", "-c", "password_encryption=scram-sha-256"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U librepaper -d librepaper"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U librepaper_bootstrap -d librepaper"]
       interval: 5s
       timeout: 5s
       retries: 20
-    network_mode: none
+    networks: [database]
 
-  librepaper:
-    build:
-      context: .
-      target: app
-      args:
-        SOURCE: ${LIBREPAPER_SOURCE:-release}
-        # The release this kit runs. v0.0.21 is the first with the /api/tls/ask
-        # endpoint the Caddyfile relies on; upgrade by changing this tag.
-        LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:-v0.0.21}
-    restart: unless-stopped
-    stop_grace_period: 30s
+  migrate:
+    image: ghcr.io/librepaper/librepaper:${LIBREPAPER_VERSION:-v0.0.21}
+    restart: "no"
     logging: *bounded-logs
+    command: ["admin", "migrate", "--config", "/etc/librepaper/librepaper.toml"]
+    healthcheck:
+      disable: true
+    secrets:
+      - source: database-owner-url
+        target: database_url
+    volumes:
+      - ${LIBREPAPER_CONFIG_FILE:-./librepaper.toml}:/etc/librepaper/librepaper.toml:ro
     depends_on:
       postgres:
         condition: service_healthy
-    command:
-      - admin
-      - serve
-      - --config
-      - /etc/librepaper/librepaper.toml
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      LIBREPAPER_DATABASE_URL: postgresql:///librepaper?host=/var/run/postgresql&user=librepaper
+    networks: [database]
+
+  librepaper:
+    image: ghcr.io/librepaper/librepaper:${LIBREPAPER_VERSION:-v0.0.21}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: *bounded-logs
+    command: ["admin", "serve", "--config", "/etc/librepaper/librepaper.toml"]
+    secrets:
+      - source: database-app-url
+        target: database_url
+      - source: github-client-id
+        target: github_client_id
+      - source: github-client-secret
+        target: github_client_secret
+      - source: google-client-id
+        target: google_client_id
+      - source: google-client-secret
+        target: google_client_secret
     volumes:
       - data:/var/lib/librepaper
       - backups:/var/backups/librepaper
-      - pgsocket:/var/run/postgresql
-      - ./${LIBREPAPER_CONFIG_FILE:-librepaper.toml}:/etc/librepaper/librepaper.toml:ro
-    networks: [internal, edge]
+      - ${LIBREPAPER_CONFIG_FILE:-./librepaper.toml}:/etc/librepaper/librepaper.toml:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [edge, database, egress]
 
   backup:
-    build:
-      context: .
-      target: backup
-      args:
-        SOURCE: ${LIBREPAPER_SOURCE:-release}
-        LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:-v0.0.21}
+    image: ghcr.io/librepaper/librepaper-backup:${LIBREPAPER_VERSION:-v0.0.21}
     restart: unless-stopped
     logging: *bounded-logs
-    depends_on:
-      librepaper:
-        condition: service_healthy
-    env_file:
-      - path: .env
-        required: false
     environment:
-      LIBREPAPER_DATABASE_URL: postgresql:///librepaper?host=/var/run/postgresql&user=librepaper
+      AWS_SHARED_CREDENTIALS_FILE: /run/secrets/aws_credentials
+    secrets:
+      - source: database-backup-url
+        target: database_url
+      - source: restic-password
+        target: restic_password
+      - source: aws-credentials
+        target: aws_credentials
+      - source: restic-known-hosts
+        target: restic_known_hosts
     tmpfs:
       - /run/librepaper-backup:uid=10001,gid=65534,mode=0700
     volumes:
       - data:/var/lib/librepaper:rw
       - backups:/var/backups/librepaper
       - backup-metrics:/var/backups/librepaper/metrics
-      - pgsocket:/var/run/postgresql
-      - ./${LIBREPAPER_CONFIG_FILE:-librepaper.toml}:/etc/librepaper/librepaper.toml:ro
-      - ./${RESTICPROFILE_CONFIG_FILE:-resticprofile.toml}:/etc/resticprofile/resticprofile.toml:ro
-    networks: [edge]
+      - ${LIBREPAPER_CONFIG_FILE:-./librepaper.toml}:/etc/librepaper/librepaper.toml:ro
+      - ${LIBREPAPER_RESTICPROFILE_CONFIG_FILE:-./resticprofile.toml}:/etc/resticprofile/resticprofile.toml:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [database, egress]
 
   caddy:
     image: caddy:2.11.4-alpine
@@ -119,123 +125,56 @@ services:
       - ./caddy:/etc/caddy:ro
       - caddy-data:/data
       - caddy-config:/config
-    networks: [edge]
+    networks: [edge, egress]
 
-  prometheus:
-    image: prom/prometheus:v3.15.0
-    restart: unless-stopped
-    logging: *bounded-logs
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=30d
-      - --storage.tsdb.retention.size=8GB
-    volumes:
-      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
-      - prometheus:/prometheus
-    networks: [internal]
-    # No host port: only Grafana and the app can reach this service.
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
-      interval: 10s
-      timeout: 3s
-      start_period: 20s
-      retries: 3
-
-  grafana:
-    image: grafana/grafana:13.2.3
-    restart: unless-stopped
-    logging: *bounded-logs
-    depends_on:
-      prometheus:
-        condition: service_healthy
-    environment:
-      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/admin/monitoring/"
-      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/librepaper.json
-      GF_SECURITY_ADMIN_USER: admin
-      # Only seeds a fresh volume. Compose rejects an unset or empty value.
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in deploy/.env before starting Grafana}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_USERS_ALLOW_ORG_CREATE: "false"
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_ANALYTICS_REPORTING_ENABLED: "false"
-      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
-      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
-      GF_PLUGINS_PREINSTALL: ""
-      GF_PLUGINS_PREINSTALL_DISABLED: "true"
-      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
-      GF_SECURITY_DISABLE_GRAVATAR: "true"
-      GF_SECURITY_COOKIE_SECURE: "true"
-      GF_SECURITY_COOKIE_SAMESITE: strict
-      GF_LOG_MODE: console
-      GF_SERVER_ROUTER_LOGGING: "false"
-      GF_LOG_FILTERS: context:error
-    volumes:
-      - grafana:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana.json:/var/lib/grafana/dashboards/librepaper.json:ro
-    networks: [internal, edge]
-
-  node-exporter:
-    image: prom/node-exporter:v1.12.1
-    restart: unless-stopped
-    logging: *bounded-logs
-    command:
-      - --path.procfs=/host/proc
-      - --path.sysfs=/host/sys
-      - --path.rootfs=/host/root
-      - --collector.textfile.directory=/var/lib/librepaper-metrics
-      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)
-    pid: host
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop: [ALL]
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/host/root:ro,rslave
-      - backup-metrics:/var/lib/librepaper-metrics:ro
-    networks: [internal]
-
-  postgres-exporter:
-    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
-    restart: unless-stopped
-    logging: *bounded-logs
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATA_SOURCE_NAME: postgresql:///librepaper?host=/var/run/postgresql&user=librepaper_metrics&sslmode=disable
-    volumes:
-      - pgsocket:/var/run/postgresql
-    networks: [internal]
-
-configs:
-  metrics-role:
-    content: |
-      SELECT 'CREATE ROLE librepaper_metrics LOGIN'
-        WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'librepaper_metrics') \gexec
-      GRANT pg_monitor TO librepaper_metrics;
+secrets:
+  postgres-bootstrap-password:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/postgres_bootstrap_password
+  database-owner-password:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/database_owner_password
+  database-app-password:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/database_app_password
+  database-backup-password:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/database_backup_password
+  database-metrics-password:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/database_metrics_password
+  database-owner-url:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/database_owner_url
+  database-app-url:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/database_app_url
+  database-backup-url:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/database_backup_url
+  database-metrics-url:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/database_metrics_url
+  github-client-id:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/github_client_id
+  github-client-secret:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/github_client_secret
+  google-client-id:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/google_client_id
+  google-client-secret:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/google_client_secret
+  restic-password:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/restic_password
+  aws-credentials:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/aws_credentials
+  restic-known-hosts:
+    file: ${LIBREPAPER_SECRETS_DIR:-./secrets}/restic_known_hosts
 
 networks:
-  # Fixed subnet so librepaper.toml can name it as a trusted proxy.
+  # Only Caddy and the app share the address range trusted by the app config.
   edge:
     ipam:
       config:
         - subnet: 172.29.0.0/16
-  internal:
+  database:
     internal: true
+  egress:
 
 volumes:
   postgres:
-  pgsocket:
   data:
   backups:
   backup-metrics:
   caddy-data:
   caddy-config:
-  prometheus:
-  grafana:

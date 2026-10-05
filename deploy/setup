@@ -1,0 +1,862 @@
+#!/usr/bin/env python3
+"""Initialize and inspect the protected files used by the Compose deployment."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+
+DEPLOY = Path(__file__).resolve().parent
+DEFAULT_SECRETS = DEPLOY / "secrets"
+DEFAULT_STATE = DEPLOY / ".setup-state.json"
+DEFAULT_ENV = DEPLOY / ".env"
+SECRET_FILES = {
+    "postgres_bootstrap_password",
+    "database_owner_password",
+    "database_app_password",
+    "database_backup_password",
+    "database_metrics_password",
+    "database_owner_url",
+    "database_app_url",
+    "database_backup_url",
+    "database_metrics_url",
+    "database_metrics_uri",
+    "database_metrics_user",
+    "github_client_id",
+    "github_client_secret",
+    "google_client_id",
+    "google_client_secret",
+    "grafana_admin_password",
+    "restic_password",
+    "aws_credentials",
+    "restic_known_hosts",
+}
+LOCAL_DB_FILES = {
+    "postgres_bootstrap_password",
+    "database_owner_password",
+    "database_app_password",
+    "database_backup_password",
+    "database_metrics_password",
+    "database_owner_url",
+    "database_app_url",
+    "database_backup_url",
+    "database_metrics_url",
+    "database_metrics_uri",
+    "database_metrics_user",
+}
+ROLE_URLS = (
+    "database_owner_url",
+    "database_app_url",
+    "database_backup_url",
+    "database_metrics_url",
+)
+ENV_KEYS = {"COMPOSE_FILE", "COMPOSE_PROJECT_NAME", "COMPOSE_PROFILES", "LIBREPAPER_SECRETS_DIR", "LIBREPAPER_VERSION", "LIBREPAPER_CONFIG_FILE", "LIBREPAPER_RESTICPROFILE_CONFIG_FILE"}
+LEGACY_SECRET_KEYS = {
+    "LIBREPAPER_GITHUB_CLIENT_ID": "github_client_id",
+    "LIBREPAPER_GITHUB_CLIENT_SECRET": "github_client_secret",
+    "LIBREPAPER_GOOGLE_CLIENT_ID": "google_client_id",
+    "LIBREPAPER_GOOGLE_CLIENT_SECRET": "google_client_secret",
+    "GRAFANA_ADMIN_PASSWORD": "grafana_admin_password",
+}
+PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+VERSION_RE = re.compile(r"^(?:v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)|local-[0-9a-f]{12})$")
+
+
+class SetupError(Exception):
+    pass
+
+
+def _path(value: str | None, default: Path) -> Path:
+    if value is None:
+        return default.resolve()
+    path = Path(value).expanduser()
+    return path.resolve() if path.is_absolute() else (Path.cwd() / path).resolve()
+
+
+def _config_path_from_env(env_path: Path, *, allow_legacy: bool = False) -> Path:
+    value = _read_compose_env(env_path, allow_legacy=allow_legacy).get("LIBREPAPER_CONFIG_FILE", "./librepaper.toml")
+    path = Path(value)
+    return path.resolve() if path.is_absolute() else (DEPLOY / path).resolve()
+
+
+def _write_new(path: Path, value: str, mode: int = 0o444) -> bool:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(value)
+            if not value.endswith("\n"):
+                stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(path, mode)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return True
+
+
+def _atomic_write(path: Path, value: str, mode: int) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _read_state(path: Path) -> dict | None:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as error:
+        raise SetupError(f"setup state is unreadable: {path}") from error
+    if not isinstance(state, dict) or state.get("schema") != 1:
+        raise SetupError(f"setup state has an unsupported format: {path}")
+    return state
+
+
+def _docker(*args: str, cwd: Path = DEPLOY, capture: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess:
+    if shutil.which("docker") is None:
+        raise SetupError("Docker is required for deployment setup")
+    result = subprocess.run(
+        ["docker", *args], cwd=cwd, input=input_text, text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        check=False,
+    )
+    return result
+
+
+def _docker_ready() -> None:
+    result = _docker("info")
+    if result.returncode != 0:
+        raise SetupError("Docker daemon is unavailable; no deployment files were changed")
+
+
+def _volume_name(project: str) -> str:
+    return f"{project}_postgres"
+
+
+def _volume_exists(project: str) -> bool:
+    result = _docker("volume", "inspect", _volume_name(project))
+    if result.returncode == 0:
+        return True
+    diagnostic = (result.stderr or "").lower()
+    if "no such volume" in diagnostic or "not found" in diagnostic:
+        return False
+    raise SetupError("could not determine whether the local PostgreSQL volume already exists")
+
+
+def _read_compose_env(path: Path, *, allow_legacy: bool = False) -> dict[str, str]:
+    result: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return result
+    except OSError as error:
+        raise SetupError(f"cannot read Compose selection file {path}") from error
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in stripped:
+            raise SetupError(f"{path} contains a line that is not a Compose setting")
+        key, value = stripped.split("=", 1)
+        if allow_legacy and key in {"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB", "POSTGRES_EXPORTER_PASSWORD", *LEGACY_SECRET_KEYS}:
+            continue
+        if key not in ENV_KEYS:
+            raise SetupError(f"{path} contains non-selection setting {key}; move credentials to deploy/secrets first")
+        result[key] = value
+    return result
+
+
+def _compose_files(database: str, monitoring: bool, local_build: bool, production_overlay: bool = False) -> list[str]:
+    files = ["compose.yaml"]
+    if database == "external":
+        files.append("compose.external-db.yaml")
+    if monitoring:
+        files.append("compose.monitoring.yaml")
+    if local_build:
+        files.append("compose.local-binary.yaml" if production_overlay else "compose.local-build.yaml")
+    if production_overlay:
+        files.append("compose.production.yaml")
+    return files
+
+
+def _write_compose_env(path: Path, secrets_dir: Path, project: str, database: str, monitoring: bool, local_build: bool, production_overlay: bool = False, version_override: str | None = None, *, allow_legacy: bool = False) -> None:
+    old = _read_compose_env(path, allow_legacy=allow_legacy)
+    version = version_override if version_override is not None else old.get("LIBREPAPER_VERSION", "v0.0.21")
+    if not VERSION_RE.fullmatch(version):
+        raise SetupError("LIBREPAPER_VERSION must be a release tag such as v0.0.21 or local-<12 hex digits>")
+    for key, value in (("LIBREPAPER_SECRETS_DIR", str(secrets_dir)),
+                       ("LIBREPAPER_CONFIG_FILE", old.get("LIBREPAPER_CONFIG_FILE", "./librepaper.toml")),
+                       ("LIBREPAPER_RESTICPROFILE_CONFIG_FILE", old.get("LIBREPAPER_RESTICPROFILE_CONFIG_FILE", "./resticprofile.toml"))):
+        if "\n" in value or "$" in value or (key != "LIBREPAPER_SECRETS_DIR" and ":" in value):
+            raise SetupError(f"{key} contains unsupported characters for Compose interpolation")
+    fields = {
+        "COMPOSE_FILE": ":".join(_compose_files(database, monitoring, local_build, production_overlay)),
+        "COMPOSE_PROJECT_NAME": project,
+        "LIBREPAPER_SECRETS_DIR": str(secrets_dir),
+        "LIBREPAPER_VERSION": version,
+        "LIBREPAPER_CONFIG_FILE": old.get("LIBREPAPER_CONFIG_FILE", "./librepaper.toml"),
+        "LIBREPAPER_RESTICPROFILE_CONFIG_FILE": old.get("LIBREPAPER_RESTICPROFILE_CONFIG_FILE", "./resticprofile.toml"),
+    }
+    if monitoring:
+        fields["COMPOSE_PROFILES"] = "monitoring"
+    body = "# Generated by deploy/setup. This file contains no credentials.\n"
+    body += "".join(f"{key}={value}\n" for key, value in fields.items())
+    _atomic_write(path, body, 0o644)
+
+
+def _metrics_parts(url_text: str) -> tuple[str, str, str]:
+    value = url_text.strip()
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as error:
+        raise SetupError("database_metrics_url has invalid URL syntax") from error
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname or not parsed.path.strip("/"):
+        raise SetupError("database_metrics_url must be a PostgreSQL URL with host and database")
+    if not parsed.username or not unquote(parsed.username).strip() or parsed.password is None or not unquote(parsed.password).strip():
+        raise SetupError("database_metrics_url must include a metrics username and password")
+    query = parsed.query
+    params = dict(part.split("=", 1) if "=" in part else (part, "") for part in query.split("&") if part)
+    if params.get("sslmode") != "verify-full":
+        raise SetupError("external database URLs must set sslmode=verify-full")
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    if port:
+        host += f":{port}"
+    uri = f"{host}{parsed.path}?{parsed.query}"
+    return uri, unquote(parsed.username), unquote(parsed.password)
+
+
+def _validate_url(path: Path, name: str, require_tls: bool) -> str:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError as error:
+        raise SetupError(f"required secret file is missing: {name}") from error
+    try:
+        parsed = urlsplit(value)
+        parsed.port
+    except ValueError as error:
+        raise SetupError(f"{name} has invalid PostgreSQL URL syntax") from error
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname or not parsed.path.strip("/"):
+        raise SetupError(f"{name} is not a complete PostgreSQL URL")
+    if not parsed.username or not unquote(parsed.username).strip() or parsed.password is None or not unquote(parsed.password).strip():
+        raise SetupError(f"{name} must contain a username and password")
+    if require_tls and dict(part.split("=", 1) if "=" in part else (part, "") for part in parsed.query.split("&") if part).get("sslmode") != "verify-full":
+        raise SetupError(f"external {name} must use sslmode=verify-full")
+    return value
+
+
+def _ensure_file(secret_dir: Path, name: str, value: str | None = None, *, required: bool = False) -> None:
+    path = secret_dir / name
+    if value is not None:
+        if path.exists() and not path.read_text(encoding="utf-8").strip() and value.strip():
+            _atomic_write(path, value, 0o444)
+        else:
+            _write_new(path, value)
+    if not path.exists():
+        if required:
+            raise SetupError(f"required secret file is missing: {name}")
+        _write_new(path, "")
+    try:
+        os.chmod(path, 0o444)
+    except OSError as error:
+        raise SetupError(f"cannot make {name} readable to the container UID") from error
+
+
+def _secret_values() -> dict[str, str]:
+    passwords = {name: secrets.token_hex(32) for name in (
+        "postgres_bootstrap_password", "database_owner_password",
+        "database_app_password", "database_backup_password", "database_metrics_password",
+    )}
+    from urllib.parse import quote
+
+    urls = {
+        "database_owner_url": f"postgresql://librepaper_owner:{quote(passwords['database_owner_password'])}@postgres:5432/librepaper?sslmode=disable",
+        "database_app_url": f"postgresql://librepaper_app:{quote(passwords['database_app_password'])}@postgres:5432/librepaper?sslmode=disable",
+        "database_backup_url": f"postgresql://librepaper_backup:{quote(passwords['database_backup_password'])}@postgres:5432/librepaper?sslmode=disable",
+        "database_metrics_url": f"postgresql://librepaper_metrics:{quote(passwords['database_metrics_password'])}@postgres:5432/librepaper?sslmode=disable",
+    }
+    return {
+        **passwords,
+        **urls,
+        "database_metrics_uri": "postgres:5432/librepaper?sslmode=disable",
+        "database_metrics_user": "librepaper_metrics",
+        "restic_password": secrets.token_hex(32),
+    }
+
+
+def _create_fresh_secrets(secret_dir: Path, database: str, monitoring: bool) -> None:
+    secret_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(secret_dir, 0o700)
+    present = {path.name for path in secret_dir.iterdir() if path.is_file()}
+    database_present = present & LOCAL_DB_FILES
+    empty_local_credentials = {
+        name for name in database_present
+        if not (secret_dir / name).read_text(encoding="utf-8").strip()
+        and (database == "local" or name in {
+            "postgres_bootstrap_password", "database_owner_password",
+            "database_app_password", "database_backup_password",
+        })
+    }
+    if empty_local_credentials:
+        names = ", ".join(sorted(empty_local_credentials))
+        raise SetupError(f"existing database credential files are empty: {names}. Restore the saved credential files or reconcile the database before retrying; setup will not regenerate them")
+    restic_path = secret_dir / "restic_password"
+    if restic_path.is_file() and not restic_path.read_text(encoding="utf-8").strip():
+        raise SetupError("existing restic_password file is empty; restore the saved backup credential before retrying")
+    if database == "local" and database_present and database_present != LOCAL_DB_FILES:
+        missing = ", ".join(sorted(LOCAL_DB_FILES - database_present))
+        raise SetupError(f"partial database credentials found; missing {missing}. Refusing to regenerate credentials")
+    generated_passwords = {"postgres_bootstrap_password", "database_owner_password", "database_app_password", "database_backup_password", "database_metrics_password"}
+    if database == "external" and not monitoring:
+        generated_passwords.remove("database_metrics_password")
+    if database == "external" and (database_present & generated_passwords) not in (set(), generated_passwords):
+        raise SetupError("partial local database bootstrap credentials found; refusing to regenerate credentials")
+    if database == "external":
+        for name in ROLE_URLS[:3]:
+            _validate_url(secret_dir / name, name, require_tls=True)
+        if monitoring:
+            uri, username, password = _metrics_parts((secret_dir / "database_metrics_url").read_text(encoding="utf-8"))
+            _ensure_file(secret_dir, "database_metrics_uri", uri)
+            _ensure_file(secret_dir, "database_metrics_user", username)
+            _ensure_file(secret_dir, "database_metrics_password", password)
+        else:
+            _ensure_file(secret_dir, "database_metrics_url", "")
+            _ensure_file(secret_dir, "database_metrics_uri", "")
+            _ensure_file(secret_dir, "database_metrics_user", "")
+            _ensure_file(secret_dir, "database_metrics_password", "")
+        values = _secret_values()
+        for name in sorted(generated_passwords):
+            _ensure_file(secret_dir, name, values[name], required=True)
+    else:
+        values = _secret_values()
+        for name in sorted(LOCAL_DB_FILES):
+            _ensure_file(secret_dir, name, values[name], required=True)
+    for name in ("github_client_id", "github_client_secret", "google_client_id", "google_client_secret", "restic_password", "aws_credentials", "restic_known_hosts"):
+        _ensure_file(secret_dir, name, secrets.token_hex(32) if name == "restic_password" else "")
+    if monitoring:
+        supplied = os.environ.get("GRAFANA_ADMIN_PASSWORD", "")
+        grafana_file = secret_dir / "grafana_admin_password"
+        if not grafana_file.exists() and supplied:
+            _ensure_file(secret_dir, "grafana_admin_password", supplied)
+        if not grafana_file.exists():
+            raise SetupError("monitoring requires a supplied grafana_admin_password secret file or GRAFANA_ADMIN_PASSWORD environment value")
+        if not grafana_file.read_text(encoding="utf-8").strip():
+            raise SetupError("monitoring requires a nonempty Grafana admin password")
+        _ensure_file(secret_dir, "grafana_admin_password")
+
+
+def _migrate_legacy_secrets(env_path: Path, secret_dir: Path) -> None:
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return
+    values: dict[str, str] = {}
+    for line in lines:
+        key, separator, value = line.strip().partition("=")
+        if separator and key in LEGACY_SECRET_KEYS:
+            values[LEGACY_SECRET_KEYS[key]] = value
+    secret_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(secret_dir, 0o700)
+    for name, value in values.items():
+        if not value.strip():
+            continue
+        path = secret_dir / name
+        if path.exists():
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing and existing != value:
+                raise SetupError(f"legacy Compose setting for {name} differs from its secret file; reconcile the credential explicitly before upgrading")
+            if not existing:
+                _atomic_write(path, value, 0o444)
+        else:
+            _write_new(path, value, 0o444)
+            os.chmod(path, 0o444)
+
+
+def _legacy_key_present(env_path: Path, key: str) -> bool:
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        name, separator, value = line.strip().partition("=")
+        if separator and name == key:
+            return True
+    return False
+
+
+def _validate_secret_set(secret_dir: Path, database: str, monitoring: bool, config_path: Path | None = None) -> None:
+    if not secret_dir.is_dir():
+        raise SetupError(f"secrets directory does not exist: {secret_dir}")
+    if secret_dir.stat().st_mode & 0o777 != 0o700:
+        raise SetupError("secrets directory must have mode 0700")
+    names = set(LOCAL_DB_FILES) if database == "local" else set(LOCAL_DB_FILES - {"database_owner_url", "database_app_url", "database_backup_url", "database_metrics_url", "database_metrics_uri", "database_metrics_user"}) | set(ROLE_URLS[:3])
+    if database == "external" and monitoring:
+        names |= {"database_metrics_url", "database_metrics_uri", "database_metrics_user"}
+    names |= {"github_client_id", "github_client_secret", "google_client_id", "google_client_secret", "restic_password", "aws_credentials", "restic_known_hosts"}
+    if monitoring:
+        names.add("grafana_admin_password")
+    for name in sorted(names):
+        path = secret_dir / name
+        if not path.is_file():
+            raise SetupError(f"required secret file is missing: {name}")
+        optional_empty = {"github_client_id", "github_client_secret", "google_client_id", "google_client_secret", "aws_credentials", "restic_known_hosts", "database_metrics_url", "database_metrics_uri", "database_metrics_user"}
+        if database == "external" and not monitoring:
+            optional_empty.add("database_metrics_password")
+        if not path.read_text(encoding="utf-8").strip() and name not in optional_empty:
+            raise SetupError(f"required secret file is empty: {name}")
+        if path.stat().st_mode & 0o777 != 0o444:
+            raise SetupError(f"secret file {name} must be mode 0444 so its non-root container user can read it")
+    required_urls = ROLE_URLS if database == "local" or monitoring else ROLE_URLS[:3]
+    for name in required_urls:
+        _validate_url(secret_dir / name, name, require_tls=database == "external")
+    if database == "external" and monitoring:
+        metrics_uri, metrics_user, metrics_password = _metrics_parts((secret_dir / "database_metrics_url").read_text(encoding="utf-8"))
+        for name, expected in (("database_metrics_uri", metrics_uri), ("database_metrics_user", metrics_user), ("database_metrics_password", metrics_password)):
+            if (secret_dir / name).read_text(encoding="utf-8").strip() != expected:
+                raise SetupError(f"{name} does not match database_metrics_url; reconcile metrics credentials explicitly")
+    if monitoring and not (secret_dir / "grafana_admin_password").read_text(encoding="utf-8").strip():
+        raise SetupError("Grafana admin password must contain non-whitespace text")
+    selected_config = config_path or (DEPLOY / "librepaper.toml")
+    try:
+        config = tomllib.loads(selected_config.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise SetupError(f"application config file is missing: {selected_config}") from error
+    except tomllib.TOMLDecodeError as error:
+        raise SetupError(f"application config file is invalid TOML: {selected_config}") from error
+    storage = config.get("storage", {})
+    database_reference = storage.get("database_url") if isinstance(storage, dict) else None
+    if not isinstance(database_reference, dict) or database_reference.get("file") != "/run/secrets/database_url":
+        raise SetupError("application storage.database_url must use the per-service file reference /run/secrets/database_url")
+    server = config.get("server", {})
+    if not isinstance(server, dict) or server.get("migrate") is not False:
+        raise SetupError("application config must set [server] migrate = false; the one-shot migration service owns schema changes")
+    auth = config.get("auth", {})
+    if isinstance(auth, dict):
+        for provider, provider_config in auth.items():
+            if not isinstance(provider_config, dict):
+                continue
+            referenced_files: dict[str, Path] = {}
+            for key in ("client_id", "client_secret"):
+                reference = provider_config.get(key)
+                if isinstance(reference, dict) and isinstance(reference.get("file"), str):
+                    reference_path = Path(reference["file"])
+                    if reference_path.parent != Path("/run/secrets"):
+                        raise SetupError(f"application config {provider}.{key} must use a mounted /run/secrets file")
+                    file_name = reference_path.name
+                    if file_name not in SECRET_FILES:
+                        raise SetupError(f"application config {provider}.{key} names an unsupported secret file")
+                    secret_path = secret_dir / file_name
+                    referenced_files[key] = secret_path
+            for key, secret_path in referenced_files.items():
+                if not secret_path.is_file() or not secret_path.read_text(encoding="utf-8").strip():
+                    raise SetupError(f"application config {provider}.{key} requires a nonempty secret file: {secret_path.name}")
+
+
+def _save_state(path: Path, state: dict) -> None:
+    _atomic_write(path, json.dumps(state, sort_keys=True, indent=2) + "\n", 0o600)
+
+
+def _compose_upgrading_exec(project: str, command: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess:
+    return _docker(
+        "compose", "--project-directory", str(DEPLOY), "--project-name", project,
+        "-f", str(DEPLOY / "compose.yaml"), *command, cwd=DEPLOY, input_text=input_text,
+    )
+
+
+def _init(args: argparse.Namespace) -> None:
+    state_path = _path(args.state_file, DEFAULT_STATE)
+    env_path = _path(args.env_file, DEFAULT_ENV)
+    current = _read_state(state_path)
+    old_env = _read_compose_env(env_path)
+    selected_secret_dir = (current or {}).get("secrets_dir") or old_env.get("LIBREPAPER_SECRETS_DIR")
+    secret_dir = _path(args.secrets_dir or selected_secret_dir, DEFAULT_SECRETS)
+    if current and args.secrets_dir and secret_dir != _path(current.get("secrets_dir"), DEFAULT_SECRETS):
+        raise SetupError("setup is already initialized with a different secrets directory")
+    project = args.project or (current or {}).get("project") or old_env.get("COMPOSE_PROJECT_NAME") or "librepaper"
+    if not PROJECT_RE.fullmatch(project):
+        raise SetupError("project name must start with a lowercase letter or digit and contain only lowercase letters, digits, _ or -")
+    database = args.database or (current or {}).get("database") or "local"
+    monitoring = bool(args.monitoring if args.monitoring is not None else (current or {}).get("monitoring", False))
+    local_build = bool(args.local_build if args.local_build is not None else (current or {}).get("local_build", False))
+    production_overlay = bool(args.production_overlay if args.production_overlay is not None else (current or {}).get("production_overlay", False))
+    version = args.version
+    config_to_validate = _config_path_from_env(env_path)
+    if args.config_file:
+        candidate_config = Path(args.config_file).expanduser()
+        config_to_validate = candidate_config.resolve() if candidate_config.is_absolute() else (DEPLOY / candidate_config).resolve()
+    if database not in {"local", "external"}:
+        raise SetupError("database mode must be local or external")
+    if current:
+        for key, requested in (("database", database), ("monitoring", monitoring), ("project", project)):
+            old_value = current.get(key)
+            explicit = args.database is not None if key == "database" else args.monitoring if key == "monitoring" else args.project is not None
+            if explicit and old_value != requested and key != "monitoring":
+                raise SetupError(f"setup already initialized with {key}={old_value}; use an explicit database migration to change it")
+        if monitoring and database == "external":
+            metrics_url = _validate_url(secret_dir / "database_metrics_url", "database_metrics_url", require_tls=True)
+            uri, username, password = _metrics_parts(metrics_url)
+            _ensure_file(secret_dir, "database_metrics_uri", uri)
+            _ensure_file(secret_dir, "database_metrics_user", username)
+            _ensure_file(secret_dir, "database_metrics_password", password)
+        if monitoring and os.environ.get("GRAFANA_ADMIN_PASSWORD", "").strip():
+            _ensure_file(secret_dir, "grafana_admin_password", os.environ["GRAFANA_ADMIN_PASSWORD"])
+        _validate_secret_set(secret_dir, database, monitoring, config_to_validate)
+    else:
+        _docker_ready()
+        if database == "local" and _volume_exists(project):
+            raise SetupError(f"local PostgreSQL volume {_volume_name(project)} exists without setup credentials; use `deploy/setup upgrade` only for the old socket-trust deployment, otherwise restore its saved secrets")
+        _create_fresh_secrets(secret_dir, database, monitoring)
+        _validate_secret_set(secret_dir, database, monitoring, config_to_validate)
+
+    state = {
+        "schema": 1,
+        "database": database,
+        "monitoring": monitoring,
+        "local_build": local_build,
+        "production_overlay": production_overlay,
+        "project": project,
+        "secrets_dir": str(secret_dir),
+    }
+    _write_compose_env(env_path, secret_dir, project, database, monitoring, local_build, production_overlay, version)
+    _save_state(state_path, state)
+    print(f"initialized project {project}; database={database}; monitoring={'enabled' if monitoring else 'disabled'}; secrets remain under {secret_dir}")
+
+
+def _status(args: argparse.Namespace) -> None:
+    state_path = _path(args.state_file, DEFAULT_STATE)
+    env_path = _path(args.env_file, DEFAULT_ENV)
+    state = _read_state(state_path)
+    if state:
+        secret_dir = _path(args.secrets_dir or state.get("secrets_dir"), DEFAULT_SECRETS)
+        _validate_secret_set(secret_dir, state["database"], state["monitoring"], _config_path_from_env(env_path))
+        print(f"state=ready database={state['database']} monitoring={'enabled' if state['monitoring'] else 'disabled'} project={state['project']}")
+        return
+    project = args.project or _read_compose_env(env_path, allow_legacy=True).get("COMPOSE_PROJECT_NAME") or "librepaper"
+    _docker_ready()
+    if _volume_exists(project):
+        print(f"state=legacy database=local project={project}; credentials are not in setup state and explicit upgrade/recovery is required")
+    else:
+        print(f"state=uninitialized project={project}")
+
+
+def _check(args: argparse.Namespace) -> None:
+    state = _read_state(_path(args.state_file, DEFAULT_STATE))
+    if state is None:
+        project = args.project or _read_compose_env(_path(args.env_file, DEFAULT_ENV), allow_legacy=True).get("COMPOSE_PROJECT_NAME") or "librepaper"
+        _docker_ready()
+        if _volume_exists(project):
+            raise SetupError("legacy local PostgreSQL volume has no setup state; run `deploy/setup upgrade` only for the old socket-trust deployment")
+        raise SetupError("deployment has not been initialized; run `deploy/setup init`")
+    secret_dir = _path(args.secrets_dir or state.get("secrets_dir"), DEFAULT_SECRETS)
+    _validate_secret_set(secret_dir, state["database"], state["monitoring"], _config_path_from_env(_path(args.env_file, DEFAULT_ENV)))
+    env = _read_compose_env(_path(args.env_file, DEFAULT_ENV))
+    expected = ":".join(_compose_files(state["database"], state["monitoring"], state.get("local_build", False), state.get("production_overlay", False)))
+    if env.get("COMPOSE_FILE") != expected or env.get("COMPOSE_PROJECT_NAME") != state["project"] or env.get("LIBREPAPER_SECRETS_DIR") != str(secret_dir):
+        raise SetupError("Compose selection differs from setup state; rerun `deploy/setup init`")
+    print(f"deployment setup is ready ({state['database']} database, project {state['project']})")
+
+
+def _set_secret(args: argparse.Namespace) -> None:
+    if args.name not in SECRET_FILES:
+        raise SetupError(f"unknown secret name {args.name}")
+    state = _read_state(_path(args.state_file, DEFAULT_STATE))
+    env_path = _path(args.env_file, DEFAULT_ENV)
+    env_secret_dir = _read_compose_env(env_path).get("LIBREPAPER_SECRETS_DIR")
+    secret_dir = _path(args.secrets_dir or (state or {}).get("secrets_dir") or env_secret_dir, DEFAULT_SECRETS)
+    secret_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(secret_dir, 0o700)
+    value = sys.stdin.read()
+    if not value.strip():
+        raise SetupError("secret input must not be empty or whitespace")
+    if args.name in {"postgres_bootstrap_password", "database_owner_password", "database_app_password", "database_backup_password", "database_metrics_password"}:
+        raise SetupError("database credentials cannot be replaced by editing a secret file; update the database role and its URL together")
+    path = secret_dir / args.name
+    if path.exists():
+        if path.read_text(encoding="utf-8").strip():
+            raise SetupError(f"secret file already contains a value: {args.name}; refusing to overwrite it")
+        _atomic_write(path, value.rstrip("\n"), 0o444)
+    else:
+        _write_new(path, value.rstrip("\n"), 0o444)
+        os.chmod(path, 0o444)
+    print(f"wrote {args.name}; value was not displayed")
+
+
+def _run_compose(project: str, args: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess:
+    result = _docker(
+        "compose", "--project-directory", str(DEPLOY), "--project-name", project,
+        "-f", str(DEPLOY / "compose.yaml"), *args, cwd=DEPLOY, input_text=input_text,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() if result.stderr else "docker compose command failed"
+        raise SetupError(message)
+    return result
+
+
+def _legacy_upgrade_sql(secret_dir: Path) -> str:
+    passwords = {
+        role: (secret_dir / f"database_{role}_password").read_text(encoding="utf-8").strip()
+        for role in ("owner", "app", "backup", "metrics")
+    }
+    bootstrap = (secret_dir / "postgres_bootstrap_password").read_text(encoding="utf-8").strip()
+    for value in [*passwords.values(), bootstrap]:
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise SetupError("local database password secret is not a setup-generated value")
+    return f"""\\set ON_ERROR_STOP on
+SET password_encryption = 'scram-sha-256';
+DO $$ DECLARE role_name text; role_password text; BEGIN
+  FOR role_name, role_password IN SELECT * FROM (VALUES
+    ('librepaper_bootstrap', '{bootstrap}'),
+    ('librepaper_owner', '{passwords['owner']}'),
+    ('librepaper_app', '{passwords['app']}'),
+    ('librepaper_backup', '{passwords['backup']}'),
+    ('librepaper_metrics', '{passwords['metrics']}')
+  ) AS roles(role_name, role_password) LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+      EXECUTE format('ALTER ROLE %I LOGIN PASSWORD %L', role_name, role_password);
+    ELSE
+      EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', role_name, role_password);
+    END IF;
+  END LOOP;
+END $$;
+ALTER ROLE librepaper_bootstrap SUPERUSER CREATEDB CREATEROLE;
+ALTER ROLE librepaper_owner NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT;
+ALTER ROLE librepaper_app NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT;
+ALTER ROLE librepaper_backup NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT;
+ALTER ROLE librepaper_metrics NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;
+GRANT pg_monitor TO librepaper_metrics;
+ALTER DATABASE librepaper OWNER TO librepaper_owner;
+\\connect librepaper
+ALTER SCHEMA public OWNER TO librepaper_owner;
+DO $$ DECLARE obj record; BEGIN
+  FOR obj IN SELECT c.relkind, n.nspname, c.relname FROM pg_class c
+    JOIN pg_namespace n ON n.oid=c.relnamespace
+    JOIN pg_roles r ON r.oid=c.relowner
+    WHERE n.nspname='public' AND r.rolname='librepaper'
+      AND c.relkind IN ('r','p','v','m','f')
+  LOOP
+    CASE obj.relkind
+      WHEN 'v' THEN EXECUTE format('ALTER VIEW %I.%I OWNER TO librepaper_owner', obj.nspname, obj.relname);
+      WHEN 'm' THEN EXECUTE format('ALTER MATERIALIZED VIEW %I.%I OWNER TO librepaper_owner', obj.nspname, obj.relname);
+      WHEN 'f' THEN EXECUTE format('ALTER FOREIGN TABLE %I.%I OWNER TO librepaper_owner', obj.nspname, obj.relname);
+      ELSE EXECUTE format('ALTER TABLE %I.%I OWNER TO librepaper_owner', obj.nspname, obj.relname);
+    END CASE;
+  END LOOP;
+  FOR obj IN SELECT n.nspname, c.relname FROM pg_class c
+    JOIN pg_namespace n ON n.oid=c.relnamespace
+    JOIN pg_roles r ON r.oid=c.relowner
+    WHERE n.nspname='public' AND r.rolname='librepaper' AND c.relkind='S'
+  LOOP EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO librepaper_owner', obj.nspname, obj.relname); END LOOP;
+  FOR obj IN SELECT t.typname, n.nspname FROM pg_type t
+    JOIN pg_namespace n ON n.oid=t.typnamespace JOIN pg_roles r ON r.oid=t.typowner
+    WHERE n.nspname='public' AND r.rolname='librepaper' AND t.typtype IN ('d','e')
+  LOOP EXECUTE format('ALTER TYPE %I.%I OWNER TO librepaper_owner', obj.nspname, obj.typname); END LOOP;
+  FOR obj IN SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid) AS args,
+                    CASE p.prokind WHEN 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END AS kind
+    FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+    JOIN pg_roles r ON r.oid=p.proowner
+    WHERE n.nspname='public' AND r.rolname='librepaper' AND p.prokind IN ('f','p')
+  LOOP EXECUTE format('ALTER %s %I.%I(%s) OWNER TO librepaper_owner', obj.kind, obj.nspname, obj.proname, obj.args); END LOOP;
+END $$;
+REVOKE CONNECT ON DATABASE librepaper FROM PUBLIC;
+GRANT CONNECT ON DATABASE librepaper TO librepaper_app, librepaper_backup, librepaper_metrics;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO librepaper_app, librepaper_backup;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO librepaper_app;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO librepaper_app;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO librepaper_backup;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO librepaper_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE librepaper_owner IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO librepaper_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE librepaper_owner IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO librepaper_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE librepaper_owner IN SCHEMA public GRANT SELECT ON TABLES TO librepaper_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE librepaper_owner IN SCHEMA public GRANT SELECT ON SEQUENCES TO librepaper_backup;
+"""
+
+
+def _upgrade(args: argparse.Namespace) -> None:
+    state_path = _path(args.state_file, DEFAULT_STATE)
+    env_path = _path(args.env_file, DEFAULT_ENV)
+    old_env = _read_compose_env(env_path, allow_legacy=True)
+    secret_dir = _path(args.secrets_dir or old_env.get("LIBREPAPER_SECRETS_DIR"), DEFAULT_SECRETS)
+    existing = _read_state(state_path)
+    if existing:
+        raise SetupError("setup is already initialized; upgrade is only for a legacy socket-trust deployment")
+    project = args.project or old_env.get("COMPOSE_PROJECT_NAME") or "librepaper"
+    if not PROJECT_RE.fullmatch(project):
+        raise SetupError("invalid Compose project name")
+    prior_files = old_env.get("COMPOSE_FILE", "").split(":")
+    monitoring = bool(args.monitoring if args.monitoring is not None else ("compose.monitoring.yaml" in prior_files or _legacy_key_present(env_path, "GRAFANA_ADMIN_PASSWORD")))
+    legacy_override = DEPLOY / "compose.override.yaml"
+    try:
+        legacy_override_text = legacy_override.read_text(encoding="utf-8")
+    except OSError:
+        legacy_override_text = ""
+    local_build = bool(args.local_build if args.local_build is not None else (any(file in prior_files for file in ("compose.local-build.yaml", "compose.local-binary.yaml")) or "LIBREPAPER_BINARY: librepaper.candidate" in legacy_override_text))
+    production_overlay = bool(args.production_overlay if args.production_overlay is not None else ("compose.production.yaml" in prior_files or "compose.override.yaml" in prior_files))
+    config_to_validate = _config_path_from_env(env_path, allow_legacy=True)
+    if args.config_file:
+        candidate_config = Path(args.config_file).expanduser()
+        config_to_validate = candidate_config.resolve() if candidate_config.is_absolute() else (DEPLOY / candidate_config).resolve()
+    _docker_ready()
+    if not _volume_exists(project):
+        raise SetupError("legacy upgrade requires the existing named postgres volume")
+    _migrate_legacy_secrets(env_path, secret_dir)
+    _create_fresh_secrets(secret_dir, "local", monitoring)
+    _validate_secret_set(secret_dir, "local", monitoring, config_to_validate)
+    compose = ["compose", "--project-directory", str(DEPLOY), "--project-name", project, "-f", str(DEPLOY / "compose.yaml")]
+    running = _docker(*compose, "ps", "--status", "running", "--services")
+    if running.returncode != 0 or "postgres" not in (running.stdout or "").splitlines():
+        raise SetupError("legacy upgrade requires the old postgres service to be running; no service was stopped")
+    if sys.stdin.isatty() and not args.yes:
+        response = input(f"Stop app/backup and convert {project}_postgres from socket trust to SCRAM? Type {project} to continue: ")
+        if response != project:
+            raise SetupError("upgrade cancelled; no service was stopped")
+    elif not args.yes:
+        raise SetupError("non-interactive upgrade requires the explicit --yes flag")
+
+    # A migration that dies after role creation can be retried with the same
+    # secret files. Existing objects remain assigned to owner; no volume changes.
+    owner_bootstrap_sql = _legacy_upgrade_sql(secret_dir)
+    stop = _docker(*compose, "stop", "librepaper", "backup")
+    if stop.returncode != 0:
+        raise SetupError("could not stop the app and backup services; no database ownership changes were attempted")
+    sql = _docker(*compose, "exec", "-T", "postgres", "psql", "-U", "librepaper", "-d", "librepaper", "-v", "ON_ERROR_STOP=1", "-f", "-", input_text=owner_bootstrap_sql)
+    if sql.returncode != 0:
+        raise SetupError("database role migration failed; app and backup remain stopped. Preserve the postgres volume and inspect the database before retrying")
+
+    # Keep a copy of the old host-auth rules inside the persistent data volume
+    # before enabling SCRAM. PostgreSQL will run with this file on the new stack.
+    hba_script = """set -eu
+pgdata=${PGDATA:-/var/lib/postgresql/data}
+cp -n \"$pgdata/pg_hba.conf\" \"$pgdata/pg_hba.conf.before-librepaper-scram\"
+cat > \"$pgdata/pg_hba.conf.librepaper-new\" <<'LIBREPAPER_HBA'
+local all all trust
+host all all all scram-sha-256
+LIBREPAPER_HBA
+chown postgres:postgres \"$pgdata/pg_hba.conf.librepaper-new\"
+chmod 0600 \"$pgdata/pg_hba.conf.librepaper-new\"
+mv \"$pgdata/pg_hba.conf.librepaper-new\" \"$pgdata/pg_hba.conf\"
+"""
+    hba = _docker(*compose, "exec", "-T", "-u", "0", "postgres", "sh", "-s", input_text=hba_script)
+    if hba.returncode != 0:
+        raise SetupError("could not install SCRAM host-auth rules; app and backup remain stopped and old pg_hba.conf backup was retained")
+
+    reload_hba = _docker(*compose, "exec", "-T", "postgres", "psql", "-U", "librepaper", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", "SELECT pg_reload_conf()")
+    if reload_hba.returncode != 0:
+        raise SetupError("could not reload SCRAM host-auth rules; app and backup remain stopped and the previous pg_hba.conf was retained")
+
+    # Recreate only PostgreSQL to attach the private TCP network and individual
+    # secret mounts. Its named data volume is retained and never removed.
+    pg = _docker(*compose, "up", "-d", "--no-deps", "--wait", "postgres")
+    if pg.returncode != 0:
+        raise SetupError("PostgreSQL did not restart under the SCRAM configuration; app and backup remain stopped")
+    auth = _docker(*compose, "exec", "-T", "postgres", "sh", "-s", input_text="""set -eu
+export PGPASSWORD=$(cat /run/secrets/postgres_bootstrap_password)
+psql -h 127.0.0.1 -U librepaper_bootstrap -d librepaper -v ON_ERROR_STOP=1 -Atc 'SELECT 1' | grep -qx 1
+export PGPASSWORD=$(cat /run/secrets/database_app_password)
+psql -h 127.0.0.1 -U librepaper_app -d librepaper -v ON_ERROR_STOP=1 -Atc \\
+  \"SELECT has_table_privilege('librepaper_app','public._sqlx_migrations','SELECT') AND has_table_privilege('librepaper_app','public.deployment_writer','UPDATE')\" | grep -qx t
+export PGPASSWORD=$(cat /run/secrets/database_backup_password)
+pg_dump -h 127.0.0.1 -U librepaper_backup -d librepaper --schema-only --no-owner -f /dev/null
+export PGPASSWORD=$(cat /run/secrets/database_metrics_password)
+psql -h 127.0.0.1 -U librepaper_metrics -d librepaper -v ON_ERROR_STOP=1 -Atc 'SELECT count(*) >= 0 FROM pg_stat_activity' | grep -qx t
+""")
+    if auth.returncode != 0:
+        raise SetupError("new bootstrap/app/backup/metrics TCP credential check failed; old superuser remains enabled for recovery and app/backup remain stopped")
+    state = {"schema": 1, "database": "local", "monitoring": monitoring, "local_build": local_build, "production_overlay": production_overlay, "project": project, "secrets_dir": str(secret_dir)}
+    _validate_secret_set(secret_dir, "local", monitoring, config_to_validate)
+    _write_compose_env(env_path, secret_dir, project, "local", monitoring, local_build, production_overlay, args.version, allow_legacy=True)
+    _save_state(state_path, state)
+    disable = _docker(*compose, "exec", "-T", "postgres", "psql", "-U", "librepaper_bootstrap", "-d", "librepaper", "-v", "ON_ERROR_STOP=1", "-c", "ALTER ROLE librepaper NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE")
+    if disable.returncode != 0:
+        raise SetupError("new roles passed connection checks, but legacy librepaper superuser could not be disabled; app and backup remain stopped. Setup files are saved; finish this SQL recovery step manually")
+    print(f"legacy database upgraded for project {project}; app and backup remain stopped. Review status, then start the new Compose stack")
+
+
+def _add_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--secrets-dir", help="secret directory (default deploy/secrets)")
+    parser.add_argument("--state-file", help=argparse.SUPPRESS)
+    parser.add_argument("--env-file", help=argparse.SUPPRESS)
+    parser.add_argument("--project", help="Compose project name")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Initialize and inspect the protected Compose deployment files.")
+    commands = parser.add_subparsers(dest="command", required=True)
+    init = commands.add_parser("init", help="create unique non-overwriting service credentials and Compose selection")
+    _add_common(init)
+    init.add_argument("--database", choices=("local", "external"), help="database mode; external URLs must already be in deploy/secrets")
+    init.add_argument("--monitoring", action=argparse.BooleanOptionalAction, default=None, help="enable or disable the optional monitoring overlay")
+    init.add_argument("--local-build", action=argparse.BooleanOptionalAction, default=None, help="select or clear source-built images")
+    init.add_argument("--production-overlay", action=argparse.BooleanOptionalAction, default=None, help="mount or unmount the host-generated production site")
+    init.add_argument("--version", help="set the image tag (release vX.Y.Z or local-<12 hex digits>)")
+    init.add_argument("--config-file", help="validate a staged config such as librepaper.toml.candidate without changing the active config selection")
+    init.set_defaults(run=_init)
+    for name, function, help_text in (
+        ("check", _check, "validate setup state and required secret files without changing them"),
+        ("status", _status, "show setup state without revealing credentials"),
+    ):
+        command = commands.add_parser(name, help=help_text)
+        _add_common(command)
+        command.set_defaults(run=function)
+    secret = commands.add_parser("set-secret", help="write one new named secret from stdin without displaying it")
+    _add_common(secret)
+    secret.add_argument("name", choices=sorted(SECRET_FILES))
+    secret.set_defaults(run=_set_secret)
+    upgrade = commands.add_parser("upgrade", help="convert an old socket-trust PostgreSQL deployment to scoped SCRAM roles")
+    _add_common(upgrade)
+    upgrade.add_argument("--yes", action="store_true", help="confirm the explicit old-database upgrade in noninteractive use")
+    upgrade.add_argument("--monitoring", action=argparse.BooleanOptionalAction, default=None, help="enable or disable the optional monitoring overlay")
+    upgrade.add_argument("--local-build", action=argparse.BooleanOptionalAction, default=None, help="select or clear source-built images")
+    upgrade.add_argument("--production-overlay", action=argparse.BooleanOptionalAction, default=None, help="mount or unmount the host-generated production site")
+    upgrade.add_argument("--version", help="set the image tag for the upgraded deployment")
+    upgrade.add_argument("--config-file", help="validate a staged config without changing the active config selection")
+    upgrade.set_defaults(run=_upgrade)
+    args = parser.parse_args(argv)
+    try:
+        args.run(args)
+    except SetupError as error:
+        print(f"deploy/setup: {error}", file=sys.stderr)
+        return 2
+    except OSError as error:
+        print(f"deploy/setup: filesystem operation failed: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

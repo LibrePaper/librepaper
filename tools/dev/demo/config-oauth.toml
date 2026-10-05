@@ -2,6 +2,7 @@
 [server]
 address = "0.0.0.0:8080"
 local_companion = false
+migrate = false
 
 [origins]
 app = { env = "LIBREPAPER_DEMO_APP_ORIGIN" }
@@ -9,7 +10,7 @@ site = { env = "LIBREPAPER_DEMO_SITE_ORIGIN" }
 
 [storage]
 directory = "/var/lib/librepaper"
-database_url = { env = "LIBREPAPER_DATABASE_URL" }
+database_url = { file = "/run/secrets/database_url" }
 fsync = false
 object_store = "filesystem"
 

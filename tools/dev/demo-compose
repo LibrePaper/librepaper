@@ -3,8 +3,12 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PROJECT="${DEMO_PROJECT:-librepaper-demo}"
+DEMO_STATE_FILE="$ROOT/tools/dev/demo/.${PROJECT}.setup-state.json"
+DEMO_ENV_FILE="$ROOT/tools/dev/demo/.${PROJECT}.env"
+DEMO_SECRETS_DIR="$ROOT/tools/dev/demo/${PROJECT}-secrets"
 COMPOSE_FILES=(
   -f "$ROOT/deploy/compose.yaml"
+  -f "$ROOT/deploy/compose.monitoring.yaml"
   -f "$ROOT/tools/dev/demo/compose.yaml"
 )
 ACTION="${1:-run}"
@@ -47,18 +51,38 @@ compose() (
   export LIBREPAPER_DEMO_BACKUP_CONFIG="$BACKUP_CONFIG_PATH"
   export LIBREPAPER_DEMO_APP_ORIGIN="$APP_ORIGIN"
   export LIBREPAPER_DEMO_SITE_ORIGIN="http://localhost:$SITE_PORT"
-  # The shared deployment compose requires an explicit password; this is a
-  # local-only seed that can be overridden for the demo.
-  export GRAFANA_ADMIN_PASSWORD="${LIBREPAPER_DEMO_GRAFANA_PASSWORD:-librepaper-demo-only}"
+  export LIBREPAPER_SECRETS_DIR="$DEMO_SECRETS_DIR"
   export PORT SITE_PORT
+  if [[ -f "$DEMO_ENV_FILE" ]]; then
+    exec docker compose --env-file "$DEMO_ENV_FILE" --project-name "$PROJECT" --project-directory "$ROOT/deploy" "${COMPOSE_FILES[@]}" "$@"
+  fi
   exec docker compose --project-name "$PROJECT" --project-directory "$ROOT/deploy" "${COMPOSE_FILES[@]}" "$@"
 )
+
+prepare_setup() {
+  mkdir -p "$DEMO_SECRETS_DIR"
+  chmod 700 "$DEMO_SECRETS_DIR"
+  for name in github_client_id github_client_secret grafana_admin_password; do
+    if [[ ! -s "$DEMO_SECRETS_DIR/$name" ]]; then
+      value=demo-unused
+      [[ "$name" != grafana_admin_password ]] || value="${LIBREPAPER_DEMO_GRAFANA_PASSWORD:-librepaper-demo-only}"
+      printf '%s\n' "$value" | "$ROOT/deploy/setup" set-secret --secrets-dir "$DEMO_SECRETS_DIR" "$name" >/dev/null
+    fi
+  done
+  "$ROOT/deploy/setup" init --database local --local-build --monitoring \
+    --project "$PROJECT" --secrets-dir "$DEMO_SECRETS_DIR" \
+    --state-file "$DEMO_STATE_FILE" --env-file "$DEMO_ENV_FILE" || {
+      echo 'demo: setup failed; existing project volumes were preserved. If this is a disposable demo from an older setup, run make demo-wipe and retry.' >&2
+      return 1
+    }
+}
 
 case "$ACTION" in
   run)
     [[ -f "$CONFIG_PATH" ]] || die "config file does not exist: $CONFIG_PATH"
     [[ -f "$BACKUP_CONFIG_PATH" ]] || die "backup config file does not exist: $BACKUP_CONFIG_PATH"
     [[ -x "$BIN" ]] || die "host companion binary is not executable: $BIN"
+    prepare_setup
     compose_started=0
     companion_pid=''
     logs_pid=''
