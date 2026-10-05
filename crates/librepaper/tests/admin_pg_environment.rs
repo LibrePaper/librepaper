@@ -310,8 +310,14 @@ fn admin_serve_refuses_to_replace_missing_key_for_existing_deployment() {
     runtime.block_on(pool.close());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!timed_out, "server kept running after missing-key startup: {output:?}");
-    assert!(!output.status.success(), "server accepted a missing key: {output:?}");
+    assert!(
+        !timed_out,
+        "server kept running after missing-key startup: {output:?}"
+    );
+    assert!(
+        !output.status.success(),
+        "server accepted a missing key: {output:?}"
+    );
     assert!(
         stderr.contains("restore the matching secrets/session.key"),
         "{stderr}"

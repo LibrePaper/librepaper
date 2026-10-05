@@ -26,7 +26,8 @@ async fn clear_user_state(catalog: &PostgresCatalog) {
 
 fn runtime_role_url(owner_url: &str, role: &str, password: &str) -> String {
     let mut url = url::Url::parse(owner_url).expect("test database URL parses");
-    url.set_username(role).expect("test database URL accepts a username");
+    url.set_username(role)
+        .expect("test database URL accepts a username");
     url.set_password(Some(password))
         .expect("test database URL accepts a password");
     url.to_string()
@@ -69,7 +70,10 @@ async fn key_creation_distinguishes_fresh_schema_accounts_and_persisted_peer_sta
         .unwrap();
     assert!(catalog.has_deployment_state().await.unwrap());
     let error = librepaper_base::auth::session_key_file(&key_path, true).unwrap_err();
-    assert!(error.contains("restore the matching secrets/session.key"), "{error}");
+    assert!(
+        error.contains("restore the matching secrets/session.key"),
+        "{error}"
+    );
     assert!(error.contains("saved share-link secrets"), "{error}");
     assert!(!key_path.exists(), "missing keys must never be replaced");
 
@@ -84,7 +88,10 @@ async fn key_creation_distinguishes_fresh_schema_accounts_and_persisted_peer_sta
         .unwrap();
     assert!(catalog.has_deployment_state().await.unwrap());
     let error = librepaper_base::auth::session_key_file(&key_path, true).unwrap_err();
-    assert!(error.contains("restore the matching secrets/session.key"), "{error}");
+    assert!(
+        error.contains("restore the matching secrets/session.key"),
+        "{error}"
+    );
 
     clear_user_state(&catalog).await;
     catalog.close().await;
@@ -147,11 +154,9 @@ async fn runtime_schema_validation_checks_the_baked_migration_checksum() {
         .execute(catalog.pool())
         .await
         .unwrap();
-    assert!(
-        result
-            .unwrap_err()
-            .contains(&format!("migration {version} does not match"))
-    );
+    assert!(result
+        .unwrap_err()
+        .contains(&format!("migration {version} does not match")));
 
     sqlx::query("UPDATE _sqlx_migrations SET success=false WHERE version=$1")
         .bind(version)
@@ -216,10 +221,12 @@ async fn restricted_runtime_role_can_validate_schema_but_cannot_create_tables() 
         .execute(owner.pool())
         .await
         .unwrap();
-    sqlx::query(&format!("CREATE ROLE \"{role}\" LOGIN PASSWORD '{password}'"))
-        .execute(owner.pool())
-        .await
-        .unwrap();
+    sqlx::query(&format!(
+        "CREATE ROLE \"{role}\" LOGIN PASSWORD '{password}'"
+    ))
+    .execute(owner.pool())
+    .await
+    .unwrap();
     sqlx::query(&format!("GRANT USAGE ON SCHEMA public TO \"{role}\""))
         .execute(owner.pool())
         .await
@@ -283,10 +290,15 @@ async fn restricted_runtime_role_can_validate_schema_but_cannot_create_tables() 
             .execute(app.pool())
             .await
             .expect_err("the application role must not have DDL rights");
-            if error.as_database_error().and_then(|error| error.code()).as_deref()
+            if error
+                .as_database_error()
+                .and_then(|error| error.code())
+                .as_deref()
                 != Some("42501")
             {
-                return Err(format!("expected PostgreSQL insufficient_privilege (42501), got {error}"));
+                return Err(format!(
+                    "expected PostgreSQL insufficient_privilege (42501), got {error}"
+                ));
             }
             Ok::<(), String>(())
         }

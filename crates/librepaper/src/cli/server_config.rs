@@ -567,10 +567,7 @@ pub(crate) fn load_database_with_env(
         raw.storage.database_connections,
         20,
     )?;
-    librepaper_engine::storage::validate_database_options(
-        &database_url,
-        database_connections,
-    )?;
+    librepaper_engine::storage::validate_database_options(&database_url, database_connections)?;
     Ok(DatabaseOptions {
         database_url,
         database_connections,
@@ -1411,8 +1408,11 @@ mod tests {
     fn migration_loader_resolves_only_database_settings() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.toml");
-        std::fs::write(d.path().join("database-url"), "postgresql://localhost/librepaper\n")
-            .unwrap();
+        std::fs::write(
+            d.path().join("database-url"),
+            "postgresql://localhost/librepaper\n",
+        )
+        .unwrap();
         std::fs::write(
             &p,
             r#"

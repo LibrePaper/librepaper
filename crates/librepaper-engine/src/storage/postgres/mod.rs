@@ -230,10 +230,13 @@ impl PostgresCatalog {
     /// this binary knows how to use. This is read-only: runtime roles can
     /// refuse an outdated or incompatible schema without gaining DDL rights.
     pub async fn validate_schema(&self) -> std::result::Result<(), String> {
-        let table_exists: bool = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|error| format!("could not inspect PostgreSQL migration history: {error}"))?;
+        let table_exists: bool =
+            sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|error| {
+                    format!("could not inspect PostgreSQL migration history: {error}")
+                })?;
         if !table_exists {
             return Err(
                 "PostgreSQL schema is not initialized; run `librepaper admin migrate --config <PATH>` first"
@@ -264,10 +267,9 @@ impl PostgresCatalog {
             let success: bool = row
                 .try_get("success")
                 .map_err(|error| format!("invalid PostgreSQL migration history: {error}"))?;
-            let Some(expected) = MIGRATOR
-                .iter()
-                .find(|migration| migration.version == version && !migration.migration_type.is_down_migration())
-            else {
+            let Some(expected) = MIGRATOR.iter().find(|migration| {
+                migration.version == version && !migration.migration_type.is_down_migration()
+            }) else {
                 return Err(format!(
                     "PostgreSQL schema contains unknown migration version {version}; use a compatible LibrePaper release or restore a matching database backup"
                 ));

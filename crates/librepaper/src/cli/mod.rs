@@ -589,10 +589,7 @@ async fn moderate(
 /// Apply migrations with the storage credentials resolved from the selected
 /// config. This intentionally avoids resolving auth, origins, object storage,
 /// or listener settings: migration is a one-shot database operation.
-async fn migrate(
-    config: PathBuf,
-    postgres_env: Option<&server_config::PostgresEnvSnapshot>,
-) {
+async fn migrate(config: PathBuf, postgres_env: Option<&server_config::PostgresEnvSnapshot>) {
     use librepaper_engine::storage::postgres::{PostgresCatalog, PostgresOptions};
 
     let database = server_config::load_database_with_env(&config, postgres_env)

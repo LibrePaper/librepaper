@@ -146,20 +146,20 @@ pub fn validate_storage_options(options: &StorageOptions) -> Result<(), String> 
 
 /// Validate only database configuration, for one-shot migration processes
 /// that do not receive runtime object-store secrets.
-pub fn validate_database_options(database_url: &str, database_connections: u32) -> Result<(), String> {
+pub fn validate_database_options(
+    database_url: &str,
+    database_connections: u32,
+) -> Result<(), String> {
     if !(1..=200).contains(&database_connections) {
         return Err("storage.database_connections must be between 1 and 200".into());
     }
-    let scheme = database_url
-        .split_once("://")
-        .map(|(scheme, _)| scheme);
+    let scheme = database_url.split_once("://").map(|(scheme, _)| scheme);
     if !matches!(scheme, Some("postgres") | Some("postgresql")) {
         return Err("storage.database_url must use the postgres or postgresql URL scheme".into());
     }
     let parsed =
         tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
-            database_url
-                .parse::<sqlx::postgres::PgConnectOptions>()
+            database_url.parse::<sqlx::postgres::PgConnectOptions>()
         });
     let _: sqlx::postgres::PgConnectOptions = parsed
         .map_err(|_| "storage.database_url is not a valid PostgreSQL connection URL".to_string())?;
