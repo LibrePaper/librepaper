@@ -1,18 +1,14 @@
-# A whole small deployment: PostgreSQL, LibrePaper, and a proxy that holds the
-# certificates for both of its origins.
-# Monitoring is a second file; add it by listing both, e.g.
-# COMPOSE_FILE=compose.yaml:compose.monitoring.yaml in .env.
+# A whole small deployment: PostgreSQL, LibrePaper, and a proxy that obtains
+# certificates on-demand. The two origins come from config.toml, and the proxy
+# learns them from the server (see Caddyfile), so Compose itself needs no
+# settings except the config file.
 #
-#   cp .env.example .env   # and fill it in
+#   cp config.toml.example config.toml
+#   edit config.toml for the two origins
 #   docker compose up -d
 #
-# The two origins are the thing to get right. A published document is code, and
-# what keeps it out of a reader's session is that the browser sees the reader
-# and the documents as different sites. So DOMAIN and DOCS_DOMAIN (docs.DOMAIN
-# unless set) both need a DNS record pointing here, and the proxy holds a
-# certificate for each. The server answers on those two names and on loopback,
-# and refuses every other with 421 -- which is also why the proxy must pass
-# Host through unchanged.
+# The database is reachable only through a Unix socket shared with the
+# application container, which is why it needs no password and no network.
 
 name: librepaper
 
@@ -30,19 +26,15 @@ services:
     environment:
       POSTGRES_DB: librepaper
       POSTGRES_USER: librepaper
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      # Initialises the cluster with a real password rather than trust.
-      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
       - postgres:/var/lib/postgresql/data
-    # LibrePaper migrates the schema at start-up, so it must not start against
-    # a cluster that is still initialising.
+      - pgsocket:/var/run/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U librepaper -d librepaper"]
+      test: ["CMD-SHELL", "pg_isready -U librepaper -d librepaper"]
       interval: 5s
       timeout: 5s
       retries: 20
-    # Nothing outside this network ever talks to it.
     networks: [internal]
 
   librepaper:
@@ -50,7 +42,7 @@ services:
       context: .
       args:
         SOURCE: ${LIBREPAPER_SOURCE:-release}
-        LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:-}
+        LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:-v0.0.20}
     restart: unless-stopped
     logging: *bounded-logs
     depends_on:
@@ -61,17 +53,15 @@ services:
       - serve
       - --config
       - /etc/librepaper/config.toml
-    # Server settings come from TOML. Database and OAuth values are read only
-    # through explicit config references; other .env values configure Compose
-    # services and are not server-setting overrides.
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
-      # Blank deployment-only credentials inherited from env_file.
-      POSTGRES_PASSWORD: ""
-      LIBREPAPER_DATABASE_URL: postgresql://librepaper:${POSTGRES_PASSWORD}@postgres/librepaper
+      LIBREPAPER_DATABASE_URL: postgresql:///librepaper?host=/var/run/postgresql&user=librepaper
     volumes:
       - data:/var/lib/librepaper
       - backups:/var/backups/librepaper
+      - pgsocket:/var/run/postgresql
       - ./${LIBREPAPER_CONFIG_FILE:-config.toml}:/etc/librepaper/config.toml:ro
     networks: [internal, edge]
 
@@ -80,10 +70,6 @@ services:
     restart: unless-stopped
     logging: *bounded-logs
     depends_on: [librepaper]
-    environment:
-      DOMAIN: ${DOMAIN}
-      DOCS_DOMAIN: ${DOCS_DOMAIN:-docs.${DOMAIN}}
-      ACME_EMAIL: ${ACME_EMAIL:-}
     ports:
       - "80:80"
       - "443:443"
@@ -104,6 +90,7 @@ networks:
 
 volumes:
   postgres:
+  pgsocket:
   data:
   backups:
   caddy-data:

@@ -1,39 +1,32 @@
-# The reader and the documents, on the two names the deployment was configured
-# with. Caddy gets a certificate for each over HTTP-01, so both must already
-# resolve here; no wildcard is needed, since the second name is a concrete one.
-#
-# Host is passed through unchanged -- Caddy's default, and a requirement: the
-# server decides which of its two origins a request arrived on from that header
-# alone, and answers 421 to a name it does not serve.
+# Caddy obtains a certificate for a name the first time a client asks for it,
+# after the server confirms it is one of the two configured origins. Host
+# passes through unchanged; the server answers 421 to names it does not serve.
+# No ACME email is configured: Let's Encrypt does not need one.
 {
-	email {$ACME_EMAIL}
+	on_demand_tls {
+		ask http://librepaper:8080/api/tls/ask
+	}
 }
 
-{$DOMAIN} {
+https:// {
+	tls {
+		on_demand
+	}
 	encode zstd gzip
 	@monitoring_root path /admin/monitoring
 	redir @monitoring_root /admin/monitoring/ 308
-	# Answers 502 unless compose.monitoring.yaml is in use.
-	# Grafana enforces its own login and serves from this preserved subpath.
 	handle /admin/monitoring/* {
 		reverse_proxy grafana:3000
 	}
-	# Collaboration is a WebSocket; Caddy carries the upgrade itself.
 	handle {
 		reverse_proxy librepaper:8080
 	}
 }
 
-# The documents remain isolated on their own origin, with no monitoring UI.
-{$DOCS_DOMAIN} {
-	encode zstd gzip
-	reverse_proxy librepaper:8080
-}
-
-# Other names for the same deployment, such as www or a second domain, must
-# stop here: the server answers 421 to any host but DOMAIN and docs.DOMAIN.
-# Give each a DNS record and send it to the reader:
+# Extra names redirecting to the app origin, for example www:
 #
-# www.{$DOMAIN}, example.com, www.example.com {
-#	redir https://{$DOMAIN}{uri} permanent
+# www.paper.example {
+#	redir https://paper.example{uri} permanent
 # }
+#
+# The monitoring path is reachable on both origins; Grafana keeps its own login.
