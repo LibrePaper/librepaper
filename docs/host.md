@@ -103,7 +103,7 @@ for resource defaults and backup limitations.
 
 ## Containers and privacy
 
-[The Docker deployment guide](https://github.com/LibrePaper/librepaper/blob/main/tools/deploy/docker/README.md)
+[The Docker deployment guide](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/docker.md)
 covers Compose, PostgreSQL, HTTPS, and monitoring. Copy
 `config.toml.example` to `config.toml` and adapt it before starting. Compose
 uses `.env` for its own settings and passes values referenced explicitly by
