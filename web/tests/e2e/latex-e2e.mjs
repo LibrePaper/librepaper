@@ -15,7 +15,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browser, until } from "../helpers/browser-driver.mjs";
 import { ephemeralMirror } from "../helpers/ephemeral-mirror.mjs";
-import { deploymentBinary, startDeployment } from "../helpers/deployment.mjs";
+import { deploymentBinary, sessionCookie, startDeployment } from "../helpers/deployment.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const BINARY = resolve(process.argv[2] || deploymentBinary());
@@ -94,6 +94,12 @@ async function main() {
   console.log("origin baseline " + JSON.stringify(await (await fetch(`${BASE}/api/status`)).json()));
   const published = await publish(deployment.cookie, fixture);
   console.log(`published ${published.slug}; reader key only; mirror ${mirrorUrl}`);
+  const readerId = deployment.postgres.seedRegisteredAccount({
+    provider: "github", subject: "github:latex-reader", handle: "latex-reader", displayName: "LaTeX Reader",
+  });
+  const readerCookie = sessionCookie({
+    dataDirectory: deployment.data, accountId: readerId, handle: "latex-reader", name: "LaTeX Reader",
+  });
 
   const targetUrl = published.url;
   let localPairing = null;
@@ -148,8 +154,9 @@ async function main() {
   const tab = await browser(process.env.BROWSER || "chromium", join(scratch, "profile"), 9500 + Math.floor(Math.random() * 500));
   try {
     await tab.resize(1300, 900);
+    await tab.navigate(BASE);
+    await tab.setCookie("librepaper_session", readerCookie.slice(readerCookie.indexOf("=") + 1), BASE);
     if (localPairing) {
-      await tab.navigate(BASE);
       await tab.evaluate(`localStorage.setItem("librepaper-local-pairings", JSON.stringify({ [location.origin + "|" + ${JSON.stringify(published.slug)}]: ${JSON.stringify(localPairing)} }))`);
     }
     // A wait that, when it runs out, says what the reader was showing and

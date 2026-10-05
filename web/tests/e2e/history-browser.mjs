@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { browser, until } from "../helpers/browser-driver.mjs";
-import { deploymentBinary, startDeployment } from "../helpers/deployment.mjs";
+import { deploymentBinary, sessionCookie, startDeployment } from "../helpers/deployment.mjs";
 
 const binary = process.argv[2] || deploymentBinary();
 const deployment = await startDeployment({ label: "history_browser", binary });
@@ -55,13 +55,21 @@ async function main() {
   await until("editor", () => owner.evaluate('!!document.querySelector(".cm-content")'));
   await until("initial source", () => owner.evaluate('document.querySelector(".cm-content")?.textContent.includes("red fox")'));
   await owner.insert(revised, true);
-  await until("revised preview", async () => (await owner.text()).includes("blue fox"));
+  try {
+    await until("revised preview", async () => (await owner.text()).includes("blue fox"));
+  } catch (error) {
+    const [editorSource, frameUrl, frameBody, snapshot] = await Promise.all([
+      owner.evaluate('document.querySelector(".cm-content")?.textContent || ""').catch((cause) => `unavailable: ${cause.message}`),
+      owner.evaluate('document.querySelector("iframe[title=Document]")?.src || ""').catch((cause) => `unavailable: ${cause.message}`),
+      owner.frameEvaluate("document.body.innerText").catch((cause) => `unavailable: ${cause.message}`),
+      request(`/api/documents/${slug}/snapshot`).catch((cause) => `unavailable: ${cause.message}`),
+    ]);
+    const truncate = (value) => String(typeof value === "object" ? JSON.stringify(value) : value).slice(0, 1200);
+    throw new Error(`${error.message}; editor source: ${truncate(editorSource)}; iframe src: ${truncate(frameUrl)}; frame body: ${truncate(frameBody)}; source snapshot: ${truncate(snapshot)}`);
+  }
   await until("edited source reached the server", async () => {
     const snapshot = await request(`/api/documents/${slug}/snapshot`);
     return snapshot.texts?.[snapshot.main] === revised || snapshot.source === revised;
-  });
-  await request(`/api/documents/${slug}/comments`, "POST", {
-    type: "comment", exact: "blue fox", body: "Review the revision.",
   });
   const second = await request(`${historyPath}/current`, "PATCH", {
     label: "Revised draft", request_id: randomUUID(),
@@ -69,9 +77,16 @@ async function main() {
   assert.ok(second.sha);
   assert.notEqual(second.sha, first.sha);
 
-  // A clean browser profile exercises read-link access without the owner's
-  // session cookie. The history panel supplies the visible word comparison.
+  // The read link still needs a registered identity. This distinct account
+  // exercises its read-only role without inheriting the owner's edit session.
   reader = await browser("chromium", join(profileRoot, "reader"), port + 1);
+  const readerId = deployment.postgres.seedRegisteredAccount({
+    provider: "github", subject: "github:history-reader", handle: "history-reader", displayName: "History Reader",
+  });
+  const readerCookie = sessionCookie({
+    dataDirectory: deployment.data, accountId: readerId, handle: "history-reader", name: "History Reader",
+  });
+  await reader.setCookie("librepaper_session", readerCookie.slice(readerCookie.indexOf("=") + 1), deployment.base);
   await reader.resize(1400, 900);
   await reader.navigate(shareUrl.href);
   await until("reader preview", async () => (await reader.text()).includes("blue fox"));
