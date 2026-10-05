@@ -56,7 +56,7 @@ to `crates/librepaper/src/` unless stated otherwise.
   [privacy docs](../../privacy.md).
 - Images/fonts also expose requests. LaTeX compiler/packages use the configured
   mirror (default project mirror); digest checks give integrity, not privacy or
-  availability. See [hosting privacy notes](../../host.md#privacy).
+  availability. See [hosting privacy notes](../host.md#privacy).
 - **Limit:** Browser iframe sandboxing and render budgets reduce exposure and
   accidental resource use; they are not a hard CPU/memory boundary against a
   hostile browser document. Do not claim server-side resource limits protect a
