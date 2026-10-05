@@ -180,7 +180,7 @@ async function updateLatexPin(args) {
   const root = rootAt >= 0 ? rest.splice(rootAt, 2)[1] : ROOT;
   if ((rootAt >= 0 && (!root || root.startsWith("--"))) || rest.includes("--root") ||
       rest.some((arg) => arg.startsWith("--")) || rest.length > 1) throw new Error("usage: pins update latex [--root DIR] [mirror-dir]");
-  const mirrorDir = rest[0] || "../wasm-latex/mirror";
+  const mirrorDir = rest[0] || join(root, "../wasm-latex/mirror");
   const entries = await readdir(mirrorDir, { withFileTypes: true });
   const hexDirs = entries.filter((entry) => entry.isDirectory() && shaPattern.test(entry.name));
   if (hexDirs.length !== 1) throw new Error(`Mirror must contain exactly one release directory (64 hex chars), found ${hexDirs.length}`);
