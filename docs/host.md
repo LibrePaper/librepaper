@@ -71,26 +71,26 @@ backups keep 48 hours plus 14 daily and 11 weekly snapshots. Gaps can extend
 those ages; stopping backups stops pruning. Pruning runs after a successful
 backup, and no fixed deletion window is promised.
 
-Grafana reports status but does not deliver external alerts. For independent
-backup and check dead-man alerts, set their own `/start`, success and failure
-URLs with `send-before`, `send-after` and `send-after-fail` in each profile.
-External freshness limits are 36 hours for backup and 8 days for check; update
-them when changing schedules. Manual resticprofile commands use the same lock
-as scheduled jobs. Do not run restic directly while a job is active.
+Grafana reports status but does not deliver external alerts. Configure separate
+dead-man URLs for backup and check in each profile. This backup example uses
+Healthchecks.io-style ping URLs:
 
 ```toml
 [[resticprofile.backup.send-before]]
 method = "HEAD"
-url = "https://healthchecks.example/<backup-id>/start"
+url = "https://hc-ping.com/<backup-id>/start"
 [[resticprofile.backup.send-after]]
 method = "HEAD"
-url = "https://healthchecks.example/<backup-id>"
+url = "https://hc-ping.com/<backup-id>"
 [[resticprofile.backup.send-after-fail]]
 method = "HEAD"
-url = "https://healthchecks.example/<backup-id>/fail"
+url = "https://hc-ping.com/<backup-id>/fail"
 ```
 
-Repeat with a separate check ID under `resticprofile.check`.
+Repeat under `resticprofile.check` with a separate ID. Set external freshness
+limits to 36 hours for backup and 8 days for check; update them when schedules
+change. Manual resticprofile commands use the same lock as scheduled jobs. Do
+not run restic directly while a job is active.
 
 Restic supports local, SFTP, REST server and S3-compatible repositories. A
 local repository can live at `local:/var/backups/librepaper/repository`; it is

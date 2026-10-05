@@ -83,10 +83,7 @@ trusted_networks = ["172.29.0.0/16"]
 # [logging]
 # filter = "info"
 
-# Optional. Uncomment and configure to enable scheduled encrypted backups.
-# This file is deployed with mode 0644, so keep secrets in environment or file
-# references rather than literal values here.
+# Optional. The official template leaves scheduled backups disabled. Do not
+# put credentials in this tracked file.
 # [resticprofile]
 # repository = "s3:https://s3.example/bucket/librepaper"
-# Add credentials in [resticprofile.env] in a protected deployment config;
-# never commit them.
