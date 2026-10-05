@@ -718,7 +718,7 @@ test("dry run stages the wasm mirror, hashes both mirrors and skips SOPS, even w
     const output = execFileSync(process.execPath, ['tools/assets/mirror.mjs', 'publish'], { encoding: "utf8", env: { ...process.env,
       PATH: `${bin}:${process.env.PATH}`, MIRRORS_DRY_RUN: "1", WASM_DIR: paths.wasm, WASM_LOCK: paths.lock, MIRROR: paths.latex,
       SOPS_CALLED: join(root, "sops-called") } });
-    assert.match(output, /Validated wasm: 1 files/);
+    assert.match(output, /Validated wasm: 4 files/);
     assert.match(output, /Validated latex: 6 files/);
     await assert.rejects(readFile(join(root, "sops-called")));
   } finally { await rm(root, { recursive: true, force: true }); }
