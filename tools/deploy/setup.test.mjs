@@ -20,11 +20,61 @@ function fixture() {
   const secrets = path.join(root, 'secrets');
   const state = path.join(root, 'state.json');
   const envFile = path.join(root, 'compose.env');
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
-  const run = (args, moreEnv = {}, input, selectedSecrets = secrets) => spawnSync('python3', [setup, ...args, '--secrets-dir', selectedSecrets, '--state-file', state, '--env-file', envFile], {
+  const dockerLog = path.join(root, 'docker.log');
+  const composeConfig = path.join(root, 'compose-config.json');
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, MOCK_DOCKER_LOG: dockerLog, MOCK_COMPOSE_CONFIG: composeConfig };
+  const run = (args, moreEnv = {}, input, selectedSecrets = secrets, selectedState = state, selectedEnv = envFile) => spawnSync('python3', [setup, ...args, '--secrets-dir', selectedSecrets, '--state-file', selectedState, '--env-file', selectedEnv], {
     cwd: path.join(repo, 'deploy'), env: { ...env, ...moreEnv }, input, encoding: 'utf8',
   });
-  return { root, bin, docker, secrets, state, envFile, env, run };
+  return { root, bin, docker, secrets, state, envFile, dockerLog, composeConfig, env, run };
+}
+
+function resolvedComposeConfig(secretsDir, configPath, resticprofilePath, { wrongPostgresSecret = false } = {}) {
+  const secretFiles = {
+    'postgres-bootstrap-password': 'postgres_bootstrap_password',
+    'database-owner-password': 'database_owner_password',
+    'database-app-password': 'database_app_password',
+    'database-backup-password': 'database_backup_password',
+    'database-metrics-password': 'database_metrics_password',
+    'database-owner-url': 'database_owner_url',
+    'database-app-url': 'database_app_url',
+    'database-backup-url': 'database_backup_url',
+  };
+  const secrets = Object.fromEntries(Object.entries(secretFiles).map(([name, file]) => [
+    name, { file: path.join(wrongPostgresSecret && name === 'postgres-bootstrap-password' ? path.join(secretsDir, 'wrong') : secretsDir, file) },
+  ]));
+  const secretMounts = (names) => names.map((source) => ({ source, target: secretFiles[source] || source }));
+  const configMount = { type: 'bind', source: configPath, target: '/etc/librepaper/librepaper.toml' };
+  return {
+    secrets,
+    services: {
+      postgres: { secrets: secretMounts(Object.keys(secretFiles).slice(0, 5)) },
+      migrate: { secrets: [{ source: 'database-owner-url', target: 'database_url' }], volumes: [configMount] },
+      librepaper: { secrets: [{ source: 'database-app-url', target: 'database_url' }], volumes: [configMount] },
+      backup: {
+        secrets: [{ source: 'database-backup-url', target: 'database_url' }],
+        volumes: [configMount, { type: 'bind', source: resticprofilePath, target: '/etc/resticprofile/resticprofile.toml' }],
+      },
+    },
+  };
+}
+
+function installUpgradeDockerMock(f, config) {
+  writeFileSync(f.composeConfig, JSON.stringify(config));
+  writeFileSync(f.docker, [
+    '#!/bin/sh',
+    'set -eu',
+    'printf "ARGS=%s|COMPOSE_PROJECT_NAME=%s|COMPOSE_FILE=%s|SECRETS=%s|CONFIG=%s|RESTIC=%s|VERSION=%s\\n" "$*" "${COMPOSE_PROJECT_NAME:-}" "${COMPOSE_FILE:-}" "${LIBREPAPER_SECRETS_DIR:-}" "${LIBREPAPER_CONFIG_FILE:-}" "${LIBREPAPER_RESTICPROFILE_CONFIG_FILE:-}" "${LIBREPAPER_VERSION:-}" >> "$MOCK_DOCKER_LOG"',
+    'case "$*" in',
+    '  info) : ;;',
+    '  "volume inspect "*) : ;;',
+    '  *" config --format json"*) cat "$MOCK_COMPOSE_CONFIG" ;;',
+    '  *" ps --status running --services"*) printf "postgres\\n" ;;',
+    '  *) : ;;',
+    'esac',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  chmodSync(f.docker, 0o755);
 }
 
 function setSecret(f, name, value, secretsDir = f.secrets) {
@@ -135,13 +185,21 @@ test('external database setup does not require a metrics URL while monitoring is
 
 test('legacy upgrade moves old Compose credentials into files and removes them from the selection env', () => {
   const f = fixture();
+  const customSecrets = path.join(f.root, 'legacy-secrets');
+  const customEnv = path.join(f.root, 'legacy.env');
+  const activeConfig = path.join(f.root, 'active-legacy.toml');
+  const candidateConfig = path.join(f.root, 'candidate.toml');
+  const resticConfig = path.join(f.root, 'custom-resticprofile.toml');
   try {
-    writeFileSync(f.docker, '#!/bin/sh\ncase "$*" in *" ps --status running --services"*) printf "postgres\\n";; esac\nexit 0\n');
-    chmodSync(f.docker, 0o755);
-    writeFileSync(f.envFile, [
+    writeFileSync(activeConfig, '# legacy config mounted before deployment upgrade\n');
+    writeFileSync(resticConfig, '# selected restic profile\n');
+    writeFileSync(candidateConfig, '[server]\nmigrate = false\n[storage]\ndatabase_url = { file = "/run/secrets/database_url" }\n[auth.github]\nclient_id = { file = "/run/secrets/github_client_id" }\nclient_secret = { file = "/run/secrets/github_client_secret" }\n');
+    writeFileSync(customEnv, [
       'COMPOSE_FILE=compose.yaml:compose.override.yaml',
       'COMPOSE_PROJECT_NAME=legacy-test',
       'LIBREPAPER_VERSION=v0.0.21',
+      `LIBREPAPER_CONFIG_FILE=${activeConfig}`,
+      `LIBREPAPER_RESTICPROFILE_CONFIG_FILE=${resticConfig}`,
       'LIBREPAPER_GITHUB_CLIENT_ID=old-client-id',
       'LIBREPAPER_GITHUB_CLIENT_SECRET=old-client-secret',
       'LIBREPAPER_GOOGLE_CLIENT_ID=old-google-id',
@@ -151,17 +209,83 @@ test('legacy upgrade moves old Compose credentials into files and removes them f
       'POSTGRES_PASSWORD=old-bootstrap-password',
       '',
     ].join('\n'));
-    const result = f.run(['upgrade', '--yes', '--project', 'legacy-test', '--version', 'v0.0.21', '--production-overlay']);
+    installUpgradeDockerMock(f, resolvedComposeConfig(customSecrets, activeConfig, resticConfig));
+    const conflictingEnvironment = {
+      COMPOSE_PROJECT_NAME: 'wrong-project',
+      COMPOSE_FILE: 'wrong-compose.yaml',
+      LIBREPAPER_SECRETS_DIR: '/wrong/secrets',
+      LIBREPAPER_CONFIG_FILE: '/wrong/config.toml',
+      LIBREPAPER_RESTICPROFILE_CONFIG_FILE: '/wrong/restic.toml',
+      LIBREPAPER_VERSION: 'bad-inherited-version',
+    };
+    const result = f.run(['upgrade', '--yes', '--project', 'selected-project', '--version', 'v0.0.22', '--production-overlay', '--config-file', candidateConfig], conflictingEnvironment, undefined, customSecrets, f.state, customEnv);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /old-client|old-google|old-grafana|old-bootstrap/);
-    assert.equal(readFileSync(path.join(f.secrets, 'github_client_id'), 'utf8').trim(), 'old-client-id');
-    assert.equal(readFileSync(path.join(f.secrets, 'github_client_secret'), 'utf8').trim(), 'old-client-secret');
-    assert.equal(readFileSync(path.join(f.secrets, 'google_client_id'), 'utf8').trim(), 'old-google-id');
-    assert.equal(readFileSync(path.join(f.secrets, 'google_client_secret'), 'utf8').trim(), 'old-google-secret');
-    assert.equal(readFileSync(path.join(f.secrets, 'grafana_admin_password'), 'utf8').trim(), 'old-grafana-password');
-    const selection = readFileSync(f.envFile, 'utf8');
+    assert.equal(readFileSync(path.join(customSecrets, 'github_client_id'), 'utf8').trim(), 'old-client-id');
+    assert.equal(readFileSync(path.join(customSecrets, 'github_client_secret'), 'utf8').trim(), 'old-client-secret');
+    assert.equal(readFileSync(path.join(customSecrets, 'google_client_id'), 'utf8').trim(), 'old-google-id');
+    assert.equal(readFileSync(path.join(customSecrets, 'google_client_secret'), 'utf8').trim(), 'old-google-secret');
+    assert.equal(readFileSync(path.join(customSecrets, 'grafana_admin_password'), 'utf8').trim(), 'old-grafana-password');
+    const selection = readFileSync(customEnv, 'utf8');
     assert.match(selection, /COMPOSE_FILE=compose\.yaml:compose\.monitoring\.yaml:compose\.production\.yaml/);
+    assert.match(selection, /COMPOSE_PROJECT_NAME=selected-project/);
+    assert.match(selection, /LIBREPAPER_VERSION=v0\.0\.22/);
+    assert.match(selection, new RegExp(`LIBREPAPER_CONFIG_FILE=${activeConfig.replaceAll('/', '\\/')}`));
     assert.doesNotMatch(selection, /LIBREPAPER_GITHUB_CLIENT_SECRET|GRAFANA_ADMIN_PASSWORD|POSTGRES_PASSWORD/);
+    const composeCalls = readFileSync(f.dockerLog, 'utf8').split('\n').filter((line) => line.startsWith('ARGS=compose '));
+    assert.ok(composeCalls.length >= 7, 'preflight and every lifecycle operation invoke Compose');
+    for (const line of composeCalls) {
+      assert.match(line, new RegExp(`--env-file ${customEnv.replaceAll('/', '\\/')}`));
+      assert.match(line, /--project-name selected-project/);
+      assert.match(line, /COMPOSE_PROJECT_NAME=selected-project/);
+      assert.match(line, /COMPOSE_FILE=compose\.yaml:compose\.monitoring\.yaml:compose\.production\.yaml/);
+      assert.equal(line.includes(`SECRETS=${customSecrets}|`), true);
+      assert.equal(line.includes(`CONFIG=${activeConfig}|`), true);
+      assert.equal(line.includes(`RESTIC=${resticConfig}|`), true);
+      assert.match(line, /VERSION=v0\.0\.22/);
+    }
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('legacy upgrade rejects invalid version and interpolation values before invoking Docker', () => {
+  for (const [key, value, argument] of [
+    ['LIBREPAPER_VERSION', 'not-a-release', ['--version', 'not-a-release']],
+    ['LIBREPAPER_CONFIG_FILE', './candidate$unsafe.toml', []],
+  ]) {
+    const f = fixture();
+    try {
+      installUpgradeDockerMock(f, {});
+      writeFileSync(f.envFile, `${key}=${value}\n`);
+      const result = f.run(['upgrade', '--yes', ...argument]);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, key === 'LIBREPAPER_VERSION' ? /LIBREPAPER_VERSION/ : /Compose interpolation/);
+      assert.equal(existsSync(f.dockerLog), false, 'invalid setup values fail before any Docker operation');
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('legacy upgrade rejects wrong resolved credential mounts before stop or database exec', () => {
+  const f = fixture();
+  try {
+    writeFileSync(f.envFile, [
+      'COMPOSE_PROJECT_NAME=preflight-test',
+      'LIBREPAPER_GITHUB_CLIENT_ID=legacy-id',
+      'LIBREPAPER_GITHUB_CLIENT_SECRET=legacy-secret',
+      '',
+    ].join('\n'));
+    const selectionBefore = readFileSync(f.envFile, 'utf8');
+    installUpgradeDockerMock(f, resolvedComposeConfig(f.secrets, path.join(repo, 'deploy/librepaper.toml'), path.join(repo, 'deploy/resticprofile.toml'), { wrongPostgresSecret: true }));
+    const result = f.run(['upgrade', '--yes', '--project', 'preflight-test']);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /wrong or missing credential file/);
+    assert.equal(readFileSync(f.envFile, 'utf8'), selectionBefore, 'failed preflight leaves the legacy Compose env file untouched');
+    const calls = readFileSync(f.dockerLog, 'utf8');
+    assert.match(calls, / config --format json/);
+    assert.doesNotMatch(calls, / ps --status| stop | exec | up /);
   } finally {
     rmSync(f.root, { recursive: true, force: true });
   }
