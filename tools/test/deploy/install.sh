@@ -317,8 +317,12 @@ app_account=$(legacy_psql librepaper_app database_app_password -Atc \
 	exit 1
 }
 old_role_disabled=$(legacy_psql librepaper_bootstrap postgres_bootstrap_password -Atc \
-	"SELECT NOT rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole FROM pg_roles WHERE rolname='librepaper'")
+	"SELECT NOT r.rolcanlogin AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND (NOT r.rolsuper OR r.oid = 10) AND a.rolpassword IS NULL FROM pg_roles r JOIN pg_authid a USING (oid) WHERE r.rolname='librepaper'")
 [[ "$old_role_disabled" == t ]] || { echo 'legacy superuser role was not disabled' >&2; exit 1; }
+if legacy_psql librepaper_app database_app_password -c 'SET ROLE librepaper' >/dev/null 2>&1; then
+	echo 'app role can still impersonate the legacy PostgreSQL role' >&2
+	exit 1
+fi
 hba_scram=$(legacy_psql librepaper_bootstrap postgres_bootstrap_password -Atc \
 	"SELECT EXISTS (SELECT 1 FROM pg_hba_file_rules WHERE type = 'host' AND auth_method = 'scram-sha-256' AND ('all' = ANY(database) OR 'librepaper' = ANY(database)))")
 [[ "$hba_scram" == t ]] || { echo 'legacy PostgreSQL host authentication was not upgraded to SCRAM' >&2; exit 1; }
