@@ -66,14 +66,16 @@ cleanup_verify_tmp() {
 }
 
 # Setting COMPOSE_FILE disables the automatic override load, so the override is
-# listed explicitly.
+# listed explicitly. COMPOSE_PROFILES turns on the monitoring services, which are
+# a profile in compose.yaml.
 write_env() {
 	local version="$1" github_id="$2" github_secret="$3" google_id="$4" google_secret="$5" admin_password="$6"
 	# The values are written only to a mode-600 file on the VPS. The temporary
 	# file and rename make a failed transfer leave the previous environment intact.
 	# shellcheck disable=SC2087 # expand local credentials and send them over stdin
 	ssh "$HOST" 'umask 077; cat > librepaper/.env.tmp && chmod 600 librepaper/.env.tmp && mv -f librepaper/.env.tmp librepaper/.env' <<EOF
-COMPOSE_FILE=compose.yaml:compose.monitoring.yaml:compose.override.yaml
+COMPOSE_FILE=compose.yaml:compose.override.yaml
+COMPOSE_PROFILES=monitoring
 LIBREPAPER_VERSION=$version
 LIBREPAPER_GITHUB_CLIENT_ID=$github_id
 LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret

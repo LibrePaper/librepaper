@@ -353,7 +353,7 @@ test('deploy writes Google OAuth credentials to .env and keeps them out of outpu
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 7);
+    assert.equal(envFile.trimEnd().split('\n').length, 8);
     const productionConfig = readFileSync(path.join(f.remote, 'config.toml'), 'utf8');
     assert.match(productionConfig, /\[origins\]\napp = "https:\/\/app\.librepaper\.org"/);
     assert.match(productionConfig, /database_url = \{ env = "LIBREPAPER_DATABASE_URL" \}/);
@@ -375,7 +375,7 @@ test('deploy-local stages Google OAuth credentials and the candidate binary for 
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 7);
+    assert.equal(envFile.trimEnd().split('\n').length, 8);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
     assert.equal(existsSync(path.join(f.remote, 'librepaper.candidate')), true);
   } finally {
@@ -524,7 +524,8 @@ test('deploy-local verifies and retains the copied candidate binary and keeps se
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|github-secret/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /GRAFANA_ADMIN_PASSWORD=admin-secret/);
-    assert.match(envFile, /^COMPOSE_FILE=compose.yaml:compose.monitoring.yaml:compose.override.yaml$/m);
+    assert.match(envFile, /^COMPOSE_FILE=compose.yaml:compose.override.yaml$/m);
+    assert.match(envFile, /^COMPOSE_PROFILES=monitoring$/m);
     assert.doesNotMatch(envFile, /POSTGRES_EXPORTER_PASSWORD/);
     assert.equal(statSync(path.join(f.remote, '.env')).mode & 0o777, 0o600);
     const override = readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8');
