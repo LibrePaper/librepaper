@@ -86,9 +86,6 @@ function fixture({
   mockCommand(bin, 'sops', `
 for arg do
   case "$arg" in
-    *PRODUCTION_ACME_EMAIL*) printf 'admin@example.org\\n'; exit ;;
-    *PRODUCTION_POSTGRES_PASSWORD*) printf 'pg-secret\\n'; exit ;;
-    *PRODUCTION_POSTGRES_EXPORTER_PASSWORD*) cat "$EXPORTER_PASSWORD_FILE"; exit ;;
     *PRODUCTION_GITHUB_CLIENT_ID*) printf 'github-id\\n'; exit ;;
     *PRODUCTION_GITHUB_CLIENT_SECRET*) printf 'github-secret\\n'; exit ;;
     *PRODUCTION_GOOGLE_CLIENT_ID*)
@@ -136,7 +133,7 @@ esac`);
 mockCommand(bin, 'ssh', `
 set -eu
 command="$2"
-case "$*" in *admin-secret*|*exporter-secret*|*pg-secret*|*github-secret*|*google-id*|*google-secret*) exit 91 ;; esac
+case "$*" in *admin-secret*|*github-secret*|*google-id*|*google-secret*) exit 91 ;; esac
 case "$command" in
   *'.env.tmp'*)
     cat > "$REMOTE_ROOT/.env.tmp"
@@ -217,7 +214,7 @@ esac`);
 mockCommand(bin, 'curl', `
 set -eu
 out= headers= format= url= config= followed=no connect_timeout= max_time=
-for arg do case "$arg" in *admin-secret*|*exporter-secret*|*pg-secret*|*github-secret*|*google-id*|*google-secret*) exit 92 ;; esac; done
+for arg do case "$arg" in *admin-secret*|*github-secret*|*google-id*|*google-secret*) exit 92 ;; esac; done
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --config) config="$2"; shift 2 ;;
@@ -351,12 +348,12 @@ test('deploy writes Google OAuth credentials to .env and keeps them out of outpu
   try {
     const result = runProduction(f, 'deploy');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /8 keys decrypted/);
+    assert.match(result.stdout, /5 keys decrypted/);
     assert.match(result.stdout, /staged config.toml/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 12);
+    assert.equal(envFile.trimEnd().split('\n').length, 7);
     const productionConfig = readFileSync(path.join(f.remote, 'config.toml'), 'utf8');
     assert.match(productionConfig, /\[origins\]\napp = "https:\/\/app\.librepaper\.org"/);
     assert.match(productionConfig, /database_url = \{ env = "LIBREPAPER_DATABASE_URL" \}/);
@@ -373,12 +370,12 @@ test('deploy-local stages Google OAuth credentials and the candidate binary for 
   try {
     const result = runProduction(f, 'deploy-local');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /8 keys decrypted/);
+    assert.match(result.stdout, /5 keys decrypted/);
     assert.match(result.stdout, /staged config.toml/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 12);
+    assert.equal(envFile.trimEnd().split('\n').length, 7);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
     assert.equal(existsSync(path.join(f.remote, 'librepaper.candidate')), true);
   } finally {
@@ -524,11 +521,11 @@ test('deploy-local verifies and retains the copied candidate binary and keeps se
     const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /verified SHA-256/);
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|exporter-secret|pg-secret|github-secret/);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|github-secret/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /GRAFANA_ADMIN_PASSWORD=admin-secret/);
     assert.match(envFile, /^COMPOSE_FILE=compose.yaml:compose.monitoring.yaml:compose.override.yaml$/m);
-    assert.match(envFile, /POSTGRES_EXPORTER_PASSWORD=exporter-secret/);
+    assert.doesNotMatch(envFile, /POSTGRES_EXPORTER_PASSWORD/);
     assert.equal(statSync(path.join(f.remote, '.env')).mode & 0o777, 0o600);
     const override = readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8');
     assert.match(override, /SOURCE: local/);
@@ -547,27 +544,23 @@ test('deploy-local refuses to replace the existing binary when transfer checksum
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /remote binary checksum mismatch/);
     assert.equal(readFileSync(path.join(f.remote, 'librepaper'), 'utf8'), 'previous binary');
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|exporter-secret|pg-secret|github-secret/);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|github-secret/);
   } finally {
     f.cleanup();
   }
 });
 
 test('deploy-local rejects unsafe .env passwords before any remote write', () => {
-  for (const secrets of [
-    { adminPassword: 'unsafe$#secret' },
-    { exporterPassword: 'line one\nline two' },
-  ]) {
-    const f = fixture(secrets);
-    try {
-      const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
-      assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /production passwords must use only ASCII letters/);
-      assert.deepEqual(readdirSync(f.remote), []);
-      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /unsafe\$#secret|line one/);
-    } finally {
-      f.cleanup();
-    }
+  const secrets = { adminPassword: 'unsafe$#secret' };
+  const f = fixture(secrets);
+  try {
+    const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /production passwords must use only ASCII letters/);
+    assert.deepEqual(readdirSync(f.remote), []);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /unsafe\$#secret/);
+  } finally {
+    f.cleanup();
   }
 });
 
@@ -648,7 +641,7 @@ test('persistent Grafana API failures time out and remove credential files', {
     assert.match(result.stderr, /authenticated Grafana dashboard API returned HTTP 503/);
     assert.ok(elapsed >= 59 && elapsed <= 65, `expected ~60 seconds, got ${elapsed}`);
     assert.deepEqual(readdirSync(path.join(f.root, 'tmp')), []);
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|exporter-secret|pg-secret|github-secret/);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|github-secret/);
   } finally {
     f.cleanup();
   }
