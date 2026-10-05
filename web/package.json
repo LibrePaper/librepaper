@@ -35,6 +35,8 @@
     "check:responsive-browser": "node tests/browser/responsive-browser.mjs",
     "check:accessibility": "node tests/browser/accessibility-browser.mjs",
     "check:assistant-browser": "node tests/browser/agent-browser.mjs && node tests/browser/assistant-review-browser.mjs",
+    "check:e2e": "node tests/e2e/browser-smoke.mjs && node tests/e2e/history-browser.mjs && node tests/e2e/track-changes-browser.mjs",
+    "check:e2e:latex": "node tests/e2e/latex-e2e.mjs",
     "check:insert": "node tests/unit/insert.mjs && node tests/integration/insert-markdown-render.mjs && node tests/browser/insert-browser.mjs",
     "check:insert-renderers": "node tests/integration/insert-latex-render.mjs && node tests/integration/insert-typst-render.mjs && node tests/integration/insert-quarto-render.mjs"
   },

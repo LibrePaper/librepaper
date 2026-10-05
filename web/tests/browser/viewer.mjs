@@ -22,7 +22,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { dirname, join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { browser } from "../../tools/browser-driver.mjs";
+import { browser } from "../helpers/browser-driver.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));

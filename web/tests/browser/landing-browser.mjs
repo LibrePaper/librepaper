@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { browser, until } from "../../tools/browser-driver.mjs";
+import { browser, until } from "../helpers/browser-driver.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-landing-browser-"));

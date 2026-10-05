@@ -34,7 +34,7 @@ async function loadMarkdownEngine() {
     // and a bare ENOENT names a file nobody building the site for the first
     // time would recognise.
     throw new Error(
-      `${wasmPath} is missing. Run \`tools/assets/pins fetch\` from the repository root to fetch the pinned renderer, then build the site again.`,
+      `${wasmPath} is missing. Run \`node tools/assets/pins.mjs fetch\` from the repository root to fetch the pinned renderer, then build the site again.`,
     );
   }
   const { exports: wasm } = await WebAssembly.instantiate(await WebAssembly.compile(bytes), {});

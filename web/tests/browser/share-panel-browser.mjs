@@ -29,7 +29,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { browser, until, pause } from "../../tools/browser-driver.mjs";
+import { browser, until, pause } from "../helpers/browser-driver.mjs";
 
 process.env.TZ = "UTC";
 

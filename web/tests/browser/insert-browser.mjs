@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { join, extname } from "node:path";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { browser, until } from "../../tools/browser-driver.mjs";
+import { browser, until } from "../helpers/browser-driver.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));

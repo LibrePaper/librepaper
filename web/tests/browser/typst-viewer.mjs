@@ -9,7 +9,7 @@ import { dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { call, handOver } from "../../src/lib/renderer-wasm.js";
-import { browser } from "../../tools/browser-driver.mjs";
+import { browser } from "../helpers/browser-driver.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
@@ -22,7 +22,7 @@ if (!existsSync(join(SHELL, "viewer.html"))) {
   process.exit(0);
 }
 if (!existsSync(WASM)) {
-  console.log("typst-viewer: no pinned Typst WASM at web/wasm; skipping (run `tools/assets/pins fetch` from the repository root)");
+  console.log("typst-viewer: no pinned Typst WASM at web/wasm; skipping (run `node tools/assets/pins.mjs fetch` from the repository root)");
   process.exit(0);
 }
 

@@ -11,7 +11,7 @@
 // Run by `make test`, against the examples as they are actually published.
 import { existsSync, readFileSync } from "node:fs";
 import { documentPlaceFor, sourcePlaceFor, sourcePlaceInTree } from "../../src/lib/sync.js";
-import { renderCitations, renderHtml, renderTypst } from "../../tools/render.js";
+import { renderCitations, renderHtml, renderTypst } from "../helpers/render.js";
 
 // A caret every few characters is enough to catch a whole line going missing,
 // and keeps this a second rather than a minute.

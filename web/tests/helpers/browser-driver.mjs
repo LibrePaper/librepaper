@@ -8,13 +8,16 @@ export async function until(label, test, timeout = 60000) {
   const deadline = Date.now() + timeout;
   let last;
   while (Date.now() < deadline) {
-    try { if (await test()) return; } catch (error) { last = error; }
+    try {
+      const value = await test();
+      if (value) return value;
+    } catch (error) { last = error; }
     await pause(150);
   }
   throw new Error(`${label} timed out${last ? `: ${last.message}` : ""}`);
 }
 
-function protocol(socket) {
+export function createProtocol(socket) {
   let serial = 0;
   const pending = new Map();
   socket.addEventListener("message", ({ data }) => {
@@ -65,7 +68,7 @@ export async function browser(name, directory, port) {
       await new Promise((done, fail) => { socket.onopen = done; socket.onerror = fail; });
       return true;
     }, 20000);
-    const send = protocol(socket);
+    const send = createProtocol(socket);
     const close = async () => {
       socket.close();
       child.kill();

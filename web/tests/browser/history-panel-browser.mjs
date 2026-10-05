@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { readdirSync } from "node:fs";
-import { browser, until } from "../../tools/browser-driver.mjs";
+import { browser, until } from "../helpers/browser-driver.mjs";
 
 process.env.TZ = "UTC";
 

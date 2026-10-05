@@ -14,7 +14,7 @@ export async function ephemeralMirror(directory, releaseId) {
   const root = resolve(directory);
   if (!statSync(root).isDirectory()) throw new Error(`mirror is not a directory: ${directory}`);
   // The mirror may hold several releases; serve the one assets.lock pins.
-  releaseId ??= readFileSync(new URL("../../assets.lock", import.meta.url), "utf8")
+  releaseId ??= readFileSync(new URL("../../../assets.lock", import.meta.url), "utf8")
     .split("\n").find((line) => line.startsWith("latex "))?.split(/\s+/)[3];
   if (!/^[a-f0-9]{64}$/.test(releaseId)) throw new Error(`invalid releaseId: ${releaseId}`);
   const tls = mkdtempSync(join(tmpdir(), "librepaper-mirror-tls-"));

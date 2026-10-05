@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { accessSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { requireChromiumExecutable, resolveChromiumExecutable } from "../../tools/browser-executable.mjs";
+import { requireChromiumExecutable, resolveChromiumExecutable } from "../helpers/browser-executable.mjs";
 
 const directory = mkdtempSync(join(tmpdir(), "librepaper-browser-binary-"));
 function binary(name) {

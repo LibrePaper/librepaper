@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
-import { requireChromiumExecutable } from "../../tools/browser-executable.mjs";
+import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));

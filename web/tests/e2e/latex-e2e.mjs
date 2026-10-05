@@ -1,6 +1,6 @@
 // End-to-end browser check for the no-retained-renderings contract.
 //
-//   node web/tools/latex-e2e.mjs <binary> <mode> <fixture> [seconds] [mirror]
+//   node web/tests/e2e/latex-e2e.mjs <binary> <mode> <fixture> [seconds] [mirror]
 //
 // `mode` is `browser` (the reader's browser compiler) or `local` (the same
 // reader check, with an optional local companion available for fallback). A
@@ -9,30 +9,25 @@
 // session; no OAuth service is contacted.
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browser, until } from "./browser-driver.mjs";
-import { ephemeralMirror } from "./ephemeral-mirror.mjs";
-import { postgresTestDatabase } from "./postgres-test.mjs";
-import { sessionCookie } from "../tests/helpers/deployment.mjs";
+import { browser, until } from "../helpers/browser-driver.mjs";
+import { ephemeralMirror } from "../helpers/ephemeral-mirror.mjs";
+import { deploymentBinary, startDeployment } from "../helpers/deployment.mjs";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const BINARY = resolve(process.argv[2] || "target/debug/librepaper");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const BINARY = resolve(process.argv[2] || deploymentBinary());
 const MODE = process.argv[3] || "browser";
 const REQUESTED_FIXTURE = resolve(process.argv[4] || join(ROOT, "tools", "test", "latex", "corpus", "e2e", "biber"));
 const WAIT = Number(process.argv[5] || 300);
 const MIRROR_ARG = process.argv[6] || process.env.MIRROR || join(ROOT, "..", "wasm-latex", "mirror");
-const PORT = 8600 + Math.floor(Math.random() * 200);
-const BASE = `http://localhost:${PORT}`;
+let BASE;
 const scratch = mkdtempSync(join(tmpdir(), "librepaper-latex-e2e-"));
-const data = mkdtempSync(join(tmpdir(), "librepaper-latex-data-"));
-const config = mkdtempSync(join(tmpdir(), "librepaper-latex-config-"));
 let mirror = null;
-let server = null;
 let local = null;
-let postgres = null;
+let deployment = null;
 
 const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 const shellHeaders = { "x-librepaper-client": "shell" };
@@ -71,56 +66,33 @@ async function publish(cookie, fixture) {
 }
 
 async function main() {
-  postgres = postgresTestDatabase("latex_e2e");
   if (!(MODE === "browser" || MODE === "local")) throw new Error(`unknown mode ${MODE}; use browser or local`);
-  const fixture = existsSync(REQUESTED_FIXTURE)
+  const fixture = process.argv[4]
     ? REQUESTED_FIXTURE
-    : join(ROOT, "tools", "test", "latex", "corpus", "e2e", "native");
-  if (!statSync(fixture)) throw new Error(`fixture does not exist: ${fixture}`);
+    : existsSync(REQUESTED_FIXTURE)
+      ? REQUESTED_FIXTURE
+      : join(ROOT, "tools", "test", "latex", "corpus", "e2e", "native");
+  if (!existsSync(fixture) || !(statSync(fixture).isDirectory() || statSync(fixture).isFile())) {
+    throw new Error(`fixture file or directory does not exist: ${fixture}`);
+  }
 
   const mirrorUrl = /^https:\/\//i.test(MIRROR_ARG)
     ? MIRROR_ARG.replace(/\/?$/, "/")
     : (mirror = await ephemeralMirror(MIRROR_ARG)).latexUrl;
   // The server takes the asset mirror; the pinned release is beneath it at latex/<id>/.
   const assetMirror = new URL("../../", mirrorUrl).href;
-  const serverConfig = join(config, "server.toml");
-  writeFileSync(serverConfig, [
-    "[server]",
-    `address = "0.0.0.0:${PORT}"`,
-    "local_companion = true",
-    "",
-    "[storage]",
-    `directory = ${JSON.stringify(data)}`,
-    'database_url = { env = "LIBREPAPER_DATABASE_URL" }',
-    "",
-    "[auth.github]",
-    'client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }',
-    'client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }',
-    "",
-    "[access]",
-    'publishers = ["any"]',
-    'commenters = ["anyone"]',
-    "",
-    "[assets]",
-    `mirror = ${JSON.stringify(assetMirror)}`,
-    "",
-  ].join("\n"));
-  server = spawn(BINARY, ["admin", "serve", "--config", serverConfig], {
-    stdio: ["ignore", "ignore", "pipe"],
-    env: { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" },
+  deployment = await startDeployment({
+    label: "latex_e2e",
+    binary: BINARY,
+    localCompanion: true,
+    advanced: `[assets]\nmirror = ${JSON.stringify(assetMirror)}\n`,
   });
-  let serverLog = "";
-  server.stderr.on("data", (bytes) => { serverLog += String(bytes); });
-  await until("serve startup", async () => {
-    if (server.exitCode !== null) throw new Error(serverLog);
-    return (await fetch(`${BASE}/api/config`)).ok;
-  }, 30000);
+  if (!deployment || deployment.unavailable) {
+    throw new Error(deployment?.unavailable || `no librepaper binary at ${BINARY}; build it first`);
+  }
+  BASE = deployment.base;
   console.log("origin baseline " + JSON.stringify(await (await fetch(`${BASE}/api/status`)).json()));
-  // A real sign-in: the account row is seeded first, and the cookie names it by
-  // id, so the binary checks provider, account and session generation.
-  const accountId = postgres.seedRegisteredAccount({ provider: "github", subject: "github:browser-test", handle: "browser-test", displayName: "Browser Test" });
-  const cookie = sessionCookie({ dataDirectory: data, accountId, handle: "browser-test", name: "Browser Test" });
-  const published = await publish(cookie, fixture);
+  const published = await publish(deployment.cookie, fixture);
   console.log(`published ${published.slug}; reader key only; mirror ${mirrorUrl}`);
 
   const targetUrl = published.url;
@@ -128,7 +100,8 @@ async function main() {
   if (MODE === "local") {
     // No display: the companion asks on its terminal, and the approve
     // command answers as the person at this computer would.
-    const env = { ...process.env, XDG_CONFIG_HOME: config, XDG_CACHE_HOME: join(config, "cache") };
+    const localConfig = join(scratch, "companion-config");
+    const env = { ...process.env, XDG_CONFIG_HOME: localConfig, XDG_CACHE_HOME: join(localConfig, "cache") };
     delete env.DISPLAY;
     delete env.WAYLAND_DISPLAY;
     let log = "";
@@ -230,10 +203,9 @@ try {
   console.error(`E2E FAILED: ${error.message}`);
   process.exitCode = 1;
 } finally {
-  server?.kill();
+  await deployment?.stop();
   local?.kill("SIGINT");
-  postgres?.drop();
   mirror?.server.close();
   await wait(250);
-  for (const directory of [data, config, scratch, mirror?.tls].filter(Boolean)) rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
+  for (const directory of [scratch, mirror?.tls].filter(Boolean)) rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
 }

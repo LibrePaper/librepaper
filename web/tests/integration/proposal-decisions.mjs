@@ -22,7 +22,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { LoroDoc, decodeFrontiers, encodeFrontiers } from "loro-crdt";
-import { psqlCommand } from "../../tools/postgres-test.mjs";
+import { psqlCommand } from "../helpers/postgres-test.mjs";
 import { startDeployment } from "../helpers/deployment.mjs";
 
 const deployment = await startDeployment({ label: "proposal_decisions" });

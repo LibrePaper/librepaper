@@ -13,7 +13,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
-import { MissingPostgresConfigurationError, postgresTestDatabase } from "../../tools/postgres-test.mjs";
+import { MissingPostgresConfigurationError, postgresTestDatabase } from "./postgres-test.mjs";
 
 const repository = resolve(import.meta.dirname, "../../..");
 
@@ -53,7 +53,14 @@ async function until(what, predicate, timeout = 30000) {
 /// debug build; the browser smoke test passes the one it was handed.
 ///
 /// `advanced` contains TOML settings for a test-specific guardrail change.
-export async function startDeployment({ label, binary = deploymentBinary(), advanced = null, handle = "tester", name = "Tester" }) {
+export async function startDeployment({
+  label,
+  binary = deploymentBinary(),
+  advanced = null,
+  localCompanion = false,
+  handle = "tester",
+  name = "Tester",
+}) {
   if (!existsSync(binary)) return null;
   let postgres;
   try {
@@ -91,7 +98,7 @@ export async function startDeployment({ label, binary = deploymentBinary(), adva
   // session and never send a request to GitHub.
   const configPath = join(data, "config.toml");
   const config = [
-    "[server]", `address = "127.0.0.1:${port}"`, "local_companion = false", "",
+    "[server]", `address = "127.0.0.1:${port}"`, `local_companion = ${localCompanion}`, "",
     "[storage]", `directory = ${JSON.stringify(data)}`, 'database_url = { env = "LIBREPAPER_DATABASE_URL" }', "fsync = false", "object_store = \"filesystem\"", "",
     "[auth.github]", 'client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }', 'client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }', "",
     "[access]", 'publishers = ["any"]', 'commenters = ["anyone"]', "",

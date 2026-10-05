@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { requireChromiumExecutable } from "../../tools/browser-executable.mjs";
+import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-citations-check-"));

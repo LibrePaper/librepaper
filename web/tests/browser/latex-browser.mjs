@@ -25,7 +25,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browser, until } from "../../tools/browser-driver.mjs";
+import { browser, until } from "../helpers/browser-driver.mjs";
 
 // Usage: node web/tests/browser/latex-browser.mjs [firefox|chromium|both]
 

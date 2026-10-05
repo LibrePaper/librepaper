@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browser, until } from "../../tools/browser-driver.mjs";
+import { browser, until } from "../helpers/browser-driver.mjs";
 
 // The panel's bulk verbs act only on what the cards would let this caller do
 // one at a time: "Resolve all" skips suggestions (their verbs are accept and

@@ -8,9 +8,9 @@ import { createServer } from "node:http";
 import { existsSync, readFileSync, writeFileSync, readdirSync, symlinkSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
 import { tmpdir } from "node:os";
-import { browser, until } from "../../tools/browser-driver.mjs";
-import { ephemeralMirror } from "../../tools/ephemeral-mirror.mjs";
-import { postgresTestDatabase } from "../../tools/postgres-test.mjs";
+import { browser, until } from "../helpers/browser-driver.mjs";
+import { ephemeralMirror } from "../helpers/ephemeral-mirror.mjs";
+import { postgresTestDatabase } from "../helpers/postgres-test.mjs";
 
 const root = resolve(import.meta.dirname, "../../..");
 const engineRoot = resolve(process.env.LATEXML_DIST || join(root, "../wasm-latex/wasm-build/dist"));

@@ -29,8 +29,8 @@ import net from "node:net";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { browser } from "../../tools/browser-driver.mjs";
-import { psqlCommand } from "../../tools/postgres-test.mjs";
+import { browser } from "../helpers/browser-driver.mjs";
+import { psqlCommand } from "../helpers/postgres-test.mjs";
 import { startDeployment, until } from "../helpers/deployment.mjs";
 
 // The smallest pending ceilings the server will accept. `pending_mib` may not

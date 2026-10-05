@@ -17,10 +17,11 @@ import { spawn, execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import http from "node:http";
-import { startDeployment } from "../tests/helpers/deployment.mjs";
-import { requireChromiumExecutable } from "./browser-executable.mjs";
+import { deploymentBinary, startDeployment } from "../helpers/deployment.mjs";
+import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
+import { createProtocol } from "../helpers/browser-driver.mjs";
 
-const binary = process.argv[2] || "dist/librepaper";
+const binary = process.argv[2] || deploymentBinary();
 if (!existsSync(binary)) {
   console.error(`browser: no librepaper binary at ${binary}; run \`make build\` first`);
   process.exit(1);
@@ -85,11 +86,10 @@ async function connect(port) {
 
 /// One tab, with just enough of the DevTools protocol to drive a page.
 class Tab {
-  constructor(socket, sessionId) {
+  constructor(socket, send, sessionId) {
     this.socket = socket;
+    this.protocol = send;
     this.sessionId = sessionId;
-    this.next = 1;
-    this.pending = new Map();
     this.console = [];
     // Every URL this page asked the network for, so a check can say that
     // something was fetched once and not twice -- which is the only way to
@@ -98,12 +98,6 @@ class Tab {
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       if ((message.sessionId || null) !== (this.sessionId || null)) return;
-      if (message.id && this.pending.has(message.id)) {
-        const { resolve, reject } = this.pending.get(message.id);
-        this.pending.delete(message.id);
-        message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
-        return;
-      }
       if (message.method === "Network.requestWillBeSent") {
         this.requests.push(message.params?.request?.url || "");
       }
@@ -122,11 +116,7 @@ class Tab {
   }
 
   send(method, params = {}) {
-    const id = this.next++;
-    const payload = { id, method, params };
-    if (this.sessionId) payload.sessionId = this.sessionId;
-    this.socket.send(JSON.stringify(payload));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+    return this.protocol(method, params, this.sessionId);
   }
 
   /// Evaluates in the page and returns the value. `await` works.
@@ -156,7 +146,7 @@ class Tab {
       targetId: frame.targetId,
       flatten: true,
     });
-    const inner = new Tab(this.socket, sessionId);
+    const inner = new Tab(this.socket, this.protocol, sessionId);
     await inner.send("Runtime.enable");
     return inner.eval(expression);
   }
@@ -189,7 +179,7 @@ async function openTab(url, cookies = [], { ownProfile = false } = {}) {
     ...(context ? { browserContextId: context } : {}),
   });
   const { sessionId } = await root.send("Target.attachToTarget", { targetId, flatten: true });
-  const tab = new Tab(socket, sessionId);
+  const tab = new Tab(socket, root.protocol, sessionId);
   await tab.send("Page.enable");
   await tab.send("Runtime.enable");
   await tab.send("Log.enable");
@@ -301,7 +291,7 @@ async function run() {
     socket.addEventListener("open", resolve);
     socket.addEventListener("error", reject);
   });
-  root = new Tab(socket, null);
+  root = new Tab(socket, createProtocol(socket), null);
 
   /* --- 1. editing: the frame is painted from the source, in the browser --- */
 

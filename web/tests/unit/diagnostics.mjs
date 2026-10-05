@@ -5,7 +5,7 @@
 // alone paints at 400 ms -- four hundred from the keystroke, not from the
 // render that noticed it.
 
-import { diagnose } from "../../tools/render.js";
+import { diagnose } from "../helpers/render.js";
 import { painter, DIAGNOSTIC_DELAY } from "../../src/lib/diagnostics.js";
 
 let failures = 0;

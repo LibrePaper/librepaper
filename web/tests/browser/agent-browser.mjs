@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browser, until } from "../../tools/browser-driver.mjs";
+import { browser, until } from "../helpers/browser-driver.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-agent-browser-"));

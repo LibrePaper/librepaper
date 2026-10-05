@@ -8,7 +8,7 @@ import net from "node:net";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { browser } from "../../tools/browser-driver.mjs";
+import { browser } from "../helpers/browser-driver.mjs";
 import { startDeployment, until } from "../helpers/deployment.mjs";
 
 const PEER_QUEUE = 4;

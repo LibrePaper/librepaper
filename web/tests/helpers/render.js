@@ -9,34 +9,17 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { call, handOver, validateExports } from "../../src/lib/renderer-wasm.js";
 
 function load(name) {
-  const path = new URL(`../wasm/${name}.wasm`, import.meta.url);
+  const path = new URL(`../../wasm/${name}.wasm`, import.meta.url);
   try {
     const module = new WebAssembly.Module(readFileSync(path));
-    return new WebAssembly.Instance(module, {}).exports;
-  } catch {
-    return null; // not built; the caller says so rather than failing
+    return validateExports(new WebAssembly.Instance(module, {}).exports, `${name}.wasm`);
+  } catch (error) {
+    if (error.code === "ENOENT") return null; // not built; the caller says so rather than failing
+    throw error;
   }
-}
-
-function call(wasm, name, ...strings) {
-  const encoder = new TextEncoder();
-  const written = strings.map((value) => {
-    const bytes = typeof value === "string" ? encoder.encode(value) : value;
-    const pointer = wasm.alloc(bytes.length);
-    new Uint8Array(wasm.memory.buffer, pointer, bytes.length).set(bytes);
-    return { pointer, length: bytes.length };
-  });
-  let length;
-  try {
-    length = wasm[name](...written.flatMap(({ pointer, length }) => [pointer, length]));
-  } finally {
-    for (const { pointer, length } of written) wasm.dealloc(pointer, length);
-  }
-  const out = new Uint8Array(wasm.memory.buffer, wasm.output_ptr(), length).slice();
-  const kind = wasm.output_kind ? wasm.output_kind() : 1;
-  return { bytes: out, text: new TextDecoder().decode(out), kind, ok: wasm.ok() !== 0 };
 }
 
 // Typst's browser output is a PDF, so the sync check uses the same extracted
@@ -95,15 +78,10 @@ const render = (name) => (source, file) => {
   const wasm = load(name);
   if (!wasm) return null;
   const tree = treeOf(source, file);
-  if (wasm.clear_files) {
-    wasm.clear_files();
-    for (const [path, body] of Object.entries(tree.texts)) call(wasm, "add_file", path, body);
-    for (const [path, bytes] of Object.entries(tree.assets)) call(wasm, "add_file", path, bytes);
-    if (wasm.set_main) call(wasm, "set_main", tree.main || "");
-  }
+  handOver(wasm, tree);
   const result = call(wasm, "compile", tree.texts[tree.main] ?? "", tree.main);
   if (!result.ok) throw new Error(`${tree.main}: ${result.text}`);
-  return result.kind === 2 ? pdfText(result.bytes, tree.main) : visibleText(result.text);
+  return result.kind === "pdf" ? pdfText(result.bytes, tree.main) : visibleText(result.text);
 };
 
 export const renderMarkdown = render("markdown");
@@ -124,24 +102,7 @@ export function diagnose(name, source, file) {
   const wasm = load(name);
   if (!wasm) return null;
   const tree = treeOf(source, file);
-  if (wasm.clear_files) {
-    wasm.clear_files();
-    for (const [path, body] of Object.entries(tree.texts)) call(wasm, "add_file", path, body);
-    for (const [path, bytes] of Object.entries(tree.assets)) call(wasm, "add_file", path, bytes);
-    if (wasm.set_main) call(wasm, "set_main", tree.main || "");
-  }
-  const { ok } = call(wasm, "compile", tree.texts[tree.main] ?? "", tree.main);
-  let said = [];
-  if (wasm.diagnostics && wasm.diagnostics_ptr) {
-    const size = wasm.diagnostics();
-    if (size > 0) {
-      const raw = new Uint8Array(wasm.memory.buffer, wasm.diagnostics_ptr(), size);
-      try {
-        said = JSON.parse(new TextDecoder().decode(raw)) || [];
-      } catch {
-        said = [];
-      }
-    }
-  }
-  return { ok, diagnostics: said };
+  handOver(wasm, tree);
+  const { ok, diagnostics } = call(wasm, "compile", tree.texts[tree.main] ?? "", tree.main);
+  return { ok, diagnostics };
 }
