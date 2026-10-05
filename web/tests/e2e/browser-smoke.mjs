@@ -508,7 +508,21 @@ async function run() {
     `);
     return count === 1 && await editor.eval(`return !document.querySelector('[aria-label="Unconfirmed comments"]')`);
   });
-  check("retry stores one comment and clears the confirmed draft", confirmed);
+  const retryDetail = confirmed ? "" : await editor.eval(`
+    const response = await fetch("/api/documents/${slug}/comments");
+    const data = await response.json();
+    const matches = (data.comments || []).filter((comment) => comment.body === "A comment written offline.");
+    const pending = document.querySelector('[aria-label="Unconfirmed comments"]');
+    return JSON.stringify({
+      status: response.status,
+      error: data.error || "",
+      matches: matches.length,
+      comments: matches,
+      pending: pending?.outerHTML.slice(0, 900) || null,
+      messages: [...document.querySelectorAll('[role="status"], [role="alert"]')].map((node) => node.textContent.trim()).slice(-5),
+    });
+  `);
+  check("retry stores one comment and clears the confirmed draft", confirmed, retryDetail.slice(0, 1500));
 
   /* --- 5. a document that does not compile --------------------------------- */
 
@@ -539,6 +553,8 @@ async function run() {
         ? "told"
         : shell.includes("renderer") || shell.includes("read where")
           ? "no typst renderer built"
+          : shell.toLowerCase().includes("could not render") || shell.toLowerCase().includes("compiler produced no html preview")
+          ? "compiler failure shown"
           : null;
     },
     20000,
@@ -721,13 +737,8 @@ async function run() {
   await requiredUntil("the paper is open", async () =>
     (await author.eval(`return document.body.innerText`)).includes("A Modular Paper"),
   );
-  await requiredUntil("the Source control", () => author.eval(`return Boolean(document.querySelector('button[aria-label="Source"]'))`));
-  await author.eval(`
-    const open = document.querySelector('button[aria-label="Source"]');
-    if (!open) throw new Error("no source or edit control");
-    open.click();
-    return true;
-  `);
+  // The new document opens with its source pane mounted; do not toggle the
+  // Source view, which would hide the editor this scenario needs.
   await requiredUntil("the editor is mounted", async () =>
     Boolean(await author.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
@@ -883,13 +894,6 @@ async function run() {
   await requiredUntil("the illustrated paper opens", async () =>
     (await illustrator.eval(`return document.body.innerText`)).includes("A Paper With A Figure"),
   );
-  await requiredUntil("the Source control", () => illustrator.eval(`return Boolean(document.querySelector('button[aria-label="Source"]'))`));
-  await illustrator.eval(`
-    const open = document.querySelector('button[aria-label="Source"]');
-    if (!open) throw new Error("no source or edit control");
-    open.click();
-    return true;
-  `);
   await requiredUntil("the editor is mounted", async () =>
     Boolean(await illustrator.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
