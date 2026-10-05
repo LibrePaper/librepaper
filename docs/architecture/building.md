@@ -85,6 +85,32 @@ cargo test -p librepaper-companion --lib real_quarto_pdf_preview_publishes_compl
 and local-service integrations. The preview can return to CI after the
 termination cause is isolated and the test has a bounded, reliable CI run.
 
+### Web tests
+
+- `unit/` runs isolated production modules under Node without Chromium, a local service, or a built compiler artifact.
+- `integration/` crosses module boundaries or exercises a real WASM artifact, local companion, renderer, compiler adapter, or example document.
+- `browser/` drives the built Svelte application or a real browser page with Chromium.
+- `fixtures/` holds checked-in inputs shared by tests; the Typst corpus is used by both the PDF and viewer checks.
+
+Entry points are the Bun scripts in `web/package.json` and `tools/test/suite`.
+
+Browser selection:
+
+- Set `LIBREPAPER_CHROMIUM` to an executable path to select a specific browser; when unset, the resolver looks for `chromium`, `chromium-browser`, `google-chrome`, or `google-chrome-stable` on `PATH`.
+- Running `tools/test/suite browser` or `tools/test/suite smoke` without a usable browser fails the requested suite.
+- Browser-selecting fixtures are pinned to Chromium even when `BROWSER` is set.
+- The LaTeX browser fixture can be run directly with `firefox`, `chromium`, or `both` for standalone cross-browser coverage.
+
+`slow-subscriber-recovery` prerequisites:
+
+- Chromium on `PATH`
+- installed web dependencies
+- built `target/debug/librepaper` or `LIBREPAPER_TEST_BINARY`
+- `LIBREPAPER_TEST_POSTGRES_URL` pointing to an administrative PostgreSQL database; the role must be able to create and drop databases
+- `LIBREPAPER_TEST_PSQL` and `LIBREPAPER_TEST_PSQL_URL` when `psql` runs in a container
+
+Run with `cd web && bun run check:recovery`.
+
 ## The interface
 
 Pages use [Skeleton](https://skeleton.dev) on Tailwind 4. Skeleton provides buttons, cards, inputs, tables, dialogs, tooltips and toasts. `web/src/styles/theme.css` colours everything from four colours (palette written once). Three rules, enforced by `make test`:
