@@ -81,3 +81,102 @@ groups:
         annotations:
           summary: The PostgreSQL exporter cannot connect to the database
           description: Check PostgreSQL health and the dedicated librepaper_metrics role credentials.
+
+      - alert: BackupMetricsMissing
+        expr: up{job="node"} == 1 unless on (instance) librepaper_backup_enabled
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Backup sidecar status metrics are missing
+          description: The node exporter is reachable but has no backup enabled sentinel. Check sidecar startup and metrics volume permissions.
+
+      - alert: BackupTextfileCollectorError
+        expr: node_textfile_scrape_error{job="node"} == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Node exporter could not read a textfile metric
+          description: Check metrics file permissions and ensure status files are atomically replaced.
+
+      - alert: BackupConfigurationRejected
+        expr: librepaper_backup_config_error == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Backup configuration was rejected at startup
+          description: Inspect the backup sidecar logs and config.toml without exposing its credentials.
+
+      - alert: BackupStatusStateUnreadable
+        expr: librepaper_backup_state_error == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Persistent backup status state could not be read or updated
+          description: Check status-state file ownership and integrity; the last known job history remains in the metrics file.
+
+      - alert: BackupFirstRunOverdue
+        expr: librepaper_backup_enabled == 1 and on (instance) (librepaper_backup_job_last_success_timestamp_seconds{task="backup"} == 0 and on (instance) (time() - librepaper_backup_first_enabled_timestamp_seconds > 36 * 3600))
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: The first backup has not succeeded within 36 hours
+          description: Check the sidecar logs, repository credentials, and backup schedule.
+
+      - alert: BackupLastSuccessStale
+        expr: librepaper_backup_enabled == 1 and on (instance) (librepaper_backup_job_last_success_timestamp_seconds{task="backup"} > 0 and on (instance) (time() - librepaper_backup_job_last_success_timestamp_seconds{task="backup"} > 36 * 3600))
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: No successful backup in the last 36 hours
+          description: Check the backup sidecar logs and repository availability.
+
+      - alert: BackupBackupStatusMissing
+        expr: librepaper_backup_enabled == 1 unless on (instance) librepaper_backup_job_last_success_timestamp_seconds{task="backup"}
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: The backup status record is missing
+          description: Check persistent sidecar status state and its metrics file.
+
+      - alert: BackupCheckStatusMissing
+        expr: librepaper_backup_enabled == 1 unless on (instance) librepaper_backup_job_last_success_timestamp_seconds{task="check"}
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: The repository check status record is missing
+          description: Check persistent sidecar status state and its metrics file.
+
+      - alert: BackupCheckFirstRunOverdue
+        expr: librepaper_backup_enabled == 1 and on (instance) (librepaper_backup_job_last_success_timestamp_seconds{task="check"} == 0 and on (instance) (time() - librepaper_backup_first_enabled_timestamp_seconds > 8 * 24 * 3600))
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The first repository check has not succeeded within eight days
+          description: Check the scheduled repository check and sidecar logs.
+
+      - alert: BackupCheckLastSuccessStale
+        expr: librepaper_backup_enabled == 1 and on (instance) (librepaper_backup_job_last_success_timestamp_seconds{task="check"} > 0 and on (instance) (time() - librepaper_backup_job_last_success_timestamp_seconds{task="check"} > 8 * 24 * 3600))
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: No successful repository check in the last eight days
+          description: Check the scheduled repository check and sidecar logs.
+
+      - alert: BackupJobFailed
+        expr: librepaper_backup_job_last_result_success{task=~"backup|check"} == 0 and on (instance) librepaper_backup_enabled == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: A scheduled backup or repository check failed
+          description: Inspect sidecar logs for the job named by the task label.

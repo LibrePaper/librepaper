@@ -1,0 +1,42 @@
+# This file is owned by the image. Operator values come from the optional
+# [resticprofile] table in config.toml and take precedence where supported.
+includes = ["/etc/librepaper/config.toml"]
+
+[global]
+scheduler = "crontab:-:/run/librepaper-backup/crontab"
+
+[resticprofile]
+initialize = true
+lock = "/run/librepaper-backup/lock"
+status-file = "/var/backups/librepaper/status.json"
+prometheus-save-to-file = "/var/backups/librepaper/metrics/restic.prom"
+
+[resticprofile.backup]
+schedule = "daily"
+schedule-lock-wait = "2h"
+schedule-permission = "user"
+extended-status = true
+host = "librepaper"
+tag = ["librepaper"]
+source = ["/var/backups/librepaper/current", "/etc/librepaper/config.toml", "/var/lib/librepaper/secrets"]
+run-before = "set -eu; librepaper-backup-status start backup; rm -rf /var/backups/librepaper/current; librepaper admin backup --config /etc/librepaper/config.toml /var/backups/librepaper/current"
+run-after = "librepaper-backup-status success backup"
+run-after-fail = "librepaper-backup-status failure backup"
+run-finally = "rm -rf /var/backups/librepaper/current"
+
+[resticprofile.retention]
+after-backup = true
+keep-within = "48h"
+keep-daily = 14
+keep-weekly = 11
+prune = true
+max-unused = "0"
+
+[resticprofile.check]
+schedule = "Mon 06:00"
+schedule-lock-wait = "2h"
+schedule-permission = "user"
+read-data-subset = "10%"
+run-before = "librepaper-backup-status start check"
+run-after = "librepaper-backup-status success check"
+run-after-fail = "librepaper-backup-status failure check"
