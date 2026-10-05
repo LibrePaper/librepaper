@@ -63,7 +63,7 @@ fn historical_fork_checks_out_retained_versions_of_a_shallow_document() {
     text.insert(29, " and later history").unwrap();
     source.commit();
     let retained_frontier = source.oplog_frontiers();
-    text.insert(48, " at head").unwrap();
+    text.insert(text.len_unicode(), " at head").unwrap();
     source.commit();
     let head_text = "trimmed history retained base and later history at head";
     let shallow_bytes = source
