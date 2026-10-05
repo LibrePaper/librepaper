@@ -69,6 +69,12 @@ async function until(what, predicate, timeout = 15000) {
   return null;
 }
 
+async function requiredUntil(what, predicate, timeout = 15000) {
+  const found = await until(what, predicate, timeout);
+  if (!found) throw new Error(`timed out waiting for ${what}`);
+  return found;
+}
+
 /* ------------------------------------------------------------- the browser */
 
 let chrome = null;
@@ -270,7 +276,7 @@ async function vimKeys(tab, sequence) {
 const MARKDOWN = "# A Paper\n\nThe first paragraph.\n";
 
 async function run() {
-  await until("the server", async () => (await fetch(`${BASE}/api/config`)).ok);
+  await requiredUntil("the server", async () => (await fetch(`${BASE}/api/config`)).ok);
 
   chrome = spawn(
     chromium,
@@ -359,7 +365,7 @@ async function run() {
   const noSource = await readerTab.eval(`return !!document.querySelector(".cm-content")`);
   check("a reader is not given an editor", noSource === false);
 
-  await until("the owner's editor", async () =>
+  await requiredUntil("the owner's editor", async () =>
     ownerTab.eval(`return !!document.querySelector(".cm-content")`),
   );
   await appendText(ownerTab, "\n\nAdded while the reader watched.\n");
@@ -390,7 +396,7 @@ async function run() {
   const secondNotebook = await openTab(`${BASE}/docs/${notebook.slug}`, [
     SESSION,
   ]);
-  await until("the second tab", async () =>
+  await requiredUntil("the second tab", async () =>
     (await secondNotebook.evalInFrame("return document.body.innerText", notebook.slug))?.includes("original figure"),
   );
   await setText(notebookTab, page.replace("The original figure.", "The revised figure."));
@@ -441,9 +447,9 @@ async function run() {
     }, ${JSON.stringify(BASE)});
     return true;
   `, slug);
-  await until("the comment button", () => editor.eval(`return Boolean(document.querySelector('#selectionbar [aria-label="Comment"]'))`));
+  await requiredUntil("the comment button", () => editor.eval(`return Boolean(document.querySelector('#selectionbar [aria-label="Comment"]'))`));
   await editor.eval(`document.querySelector('#selectionbar [aria-label="Comment"]').click(); return true;`);
-  await until("the comment composer", () => editor.eval(`return Boolean(document.querySelector('#composer textarea[aria-label="Comment"]'))`));
+  await requiredUntil("the comment composer", () => editor.eval(`return Boolean(document.querySelector('#composer textarea[aria-label="Comment"]'))`));
   await editor.eval(`
     const input = document.querySelector('#composer textarea[aria-label="Comment"]');
     input.value = "A comment written offline.";
@@ -481,8 +487,11 @@ async function run() {
     return document.querySelector('[aria-label="Unconfirmed comments"] textarea')?.value === "A comment written offline.";
   `));
   check("an unconfirmed comment survives reload and the server snapshot", reloadedDraft);
-  const clickedRetry = await until("the retry control", () => editor.eval(`
+  const clickedRetry = await requiredUntil("the retry control", () => editor.eval(`
     const card = document.querySelector('[aria-label="Unconfirmed comments"]');
+    const details = card?.querySelector("details");
+    if (!details) return false;
+    details.open = true;
     const button = [...(card?.querySelectorAll("button") || [])].find((b) => b.textContent.trim() === "Retry");
     if (!button) return false;
     button.click();
@@ -612,9 +621,7 @@ async function run() {
   const secretPage =
     '<!doctype html><html><head><title>Private Draft</title></head><body>' +
     '<h1>Private Draft</h1><p id="p">the private text</p>' +
-    // A mark on the body rather than the title: the agent sets the frame's
-    // title from the page's own, so a title the script changed would be
-    // put back before anything here could read it.
+    // A mark on the body makes script execution directly observable.
     '<script>document.body.dataset.ran = "yes"<\/script></body></html>';
   const secret = await deployment.publish(
     { title: "Private Draft", source: secretPage, source_format: "html" },
@@ -685,15 +692,17 @@ async function run() {
   const author = await openTab(`${BASE}/docs/${paper.slug}`, [
     SESSION,
   ]);
-  await until("the paper is open", async () =>
+  await requiredUntil("the paper is open", async () =>
     (await author.eval(`return document.body.innerText`)).includes("A Modular Paper"),
   );
+  await requiredUntil("the Source control", () => author.eval(`return Boolean(document.querySelector('button[aria-label="Source"]'))`));
   await author.eval(`
-    const open = [...document.querySelectorAll("button")].find((b) => /source|edit/i.test(b.title || b.textContent));
-    open?.click();
+    const open = document.querySelector('button[aria-label="Source"]');
+    if (!open) throw new Error("no source or edit control");
+    open.click();
     return true;
   `);
-  await until("the editor is mounted", async () =>
+  await requiredUntil("the editor is mounted", async () =>
     Boolean(await author.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
 
@@ -712,11 +721,15 @@ async function run() {
 
   // Add a second file, and write a function in it.
   await author.eval(`
-    document.querySelector('button[aria-label="New file"]').click();
+    const button = document.querySelector('button[aria-label="New file"]');
+    if (!button) throw new Error("no New file control");
+    button.click();
     return true;
   `);
+  await requiredUntil("the new-file name field", () => author.eval(`return Boolean(document.querySelector("#new-project-entry"))`));
   await author.eval(`
     const field = document.querySelector("#new-project-entry");
+    if (!field) throw new Error("no new-file name field");
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
     setter.call(field, "lib.typ");
     field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -736,6 +749,7 @@ async function run() {
 
   // Import it from the main file. Choosing a name in the list is what opens
   // it, exactly as a person would.
+  await requiredUntil("the main file row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[title="main.typ"]'))`));
   await author.eval(`
     document.querySelector('.explorer-row[title="main.typ"]').click();
     return true;
@@ -752,6 +766,7 @@ async function run() {
 
   // An error in the imported file is an error in *that* file, and choosing it
   // opens the file it is in rather than pointing at a line of the main one.
+  await requiredUntil("the imported file row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[title="lib.typ"]'))`));
   await author.eval(`
     document.querySelector('.explorer-row[title="lib.typ"]').click();
     return true;
@@ -769,11 +784,14 @@ async function run() {
   // there is no per-row button any more, only a context menu and this.
   await author.eval(`
     const row = document.querySelector('.explorer-row[title="lib.typ"]');
+    if (!row) throw new Error("no lib.typ row to rename");
     row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     return true;
   `);
+  await requiredUntil("the rename field", () => author.eval(`return Boolean(document.querySelector('input.name[aria-label^="Rename"]'))`));
   await author.eval(`
     const field = document.querySelector('input.name[aria-label^="Rename"]');
+    if (!field) throw new Error("no rename field");
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
     setter.call(field, "helpers.typ");
     field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -836,20 +854,23 @@ async function run() {
   const illustrator = await openTab(`${BASE}/docs/${illustrated.slug}`, [
     SESSION,
   ]);
-  await until("the illustrated paper opens", async () =>
+  await requiredUntil("the illustrated paper opens", async () =>
     (await illustrator.eval(`return document.body.innerText`)).includes("A Paper With A Figure"),
   );
+  await requiredUntil("the Source control", () => illustrator.eval(`return Boolean(document.querySelector('button[aria-label="Source"]'))`));
   await illustrator.eval(`
-    const open = [...document.querySelectorAll("button")].find((b) => /source|edit/i.test(b.title || b.textContent));
-    open?.click();
+    const open = document.querySelector('button[aria-label="Source"]');
+    if (!open) throw new Error("no source or edit control");
+    open.click();
     return true;
   `);
-  await until("the editor is mounted", async () =>
+  await requiredUntil("the editor is mounted", async () =>
     Boolean(await illustrator.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
 
   // Hand the chooser a file, which is what a person does.
   await illustrator.send("DOM.enable");
+  await requiredUntil("the upload chooser", () => illustrator.eval(`return Boolean(document.querySelector(".filelist .chooser"))`));
   const { root: pageRoot } = await illustrator.send("DOM.getDocument");
   const { nodeId } = await illustrator.send("DOM.querySelector", {
     nodeId: pageRoot.nodeId,
@@ -885,7 +906,7 @@ async function run() {
   // a path containing "/assets/", and matching the loose one made this check
   // pass against a JavaScript chunk.
   const figureRoute = `/api/documents/${illustrated.slug}/assets/`;
-  const asked = await until("the figure is fetched", async () =>
+  const asked = await requiredUntil("the figure is fetched", async () =>
     illustrator.requests.find((url) => url.includes(figureRoute)),
   );
   const stored = await fetch(asked, {
@@ -955,12 +976,12 @@ async function run() {
   const vimTab = await openTab(`${BASE}/docs/${vimDoc.slug}`, [
     SESSION,
   ]);
-  await until("the vim document's editor is mounted", async () =>
+  await requiredUntil("the vim document's editor is mounted", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
   await vimTab.eval(`localStorage.setItem("librepaper-keymap", JSON.stringify("vim")); return true;`);
   await vimTab.send("Page.reload");
-  await until("Vim's status panel is drawn", async () =>
+  await requiredUntil("Vim's status panel is drawn", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-vim-panel"))`)),
   );
 
@@ -1002,15 +1023,17 @@ async function run() {
 
   // Back to editing, and Vim off: `j` is a letter again, not a motion.
   await vimTab.eval(`
-    document.querySelector('button[aria-label^="Layout"]').click();
+    const button = document.querySelector('button[aria-label^="Layout"]');
+    if (!button) throw new Error("no Layout control");
+    button.click();
     return true;
   `);
-  await until("the source pane reopens", async () =>
+  await requiredUntil("the source pane reopens", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
   await vimTab.eval(`localStorage.setItem("librepaper-keymap", JSON.stringify("default")); return true;`);
   await vimTab.send("Page.reload");
-  await until("the editor remounts with the keys turned off", async () =>
+  await requiredUntil("the editor remounts with the keys turned off", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
   // Give the freshly mounted editor a moment to finish wiring its listeners
