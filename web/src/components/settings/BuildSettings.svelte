@@ -3,9 +3,9 @@
   // choice is global: it is read for the format, not for the document open.
   import SettingRow from "./SettingRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
-  import { read, update } from "../../lib/build-preferences.js";
+  import { defaults, read, update } from "../../lib/build-preferences.js";
 
-  let { format, userId = "anonymous", onpreferences, ontools } = $props();
+  let { format, userId = "anonymous", onpreferences, ontools = undefined } = $props();
 
   const browser = (tool) => ({ selection: "tool", backend: "browser", tool });
   const local = (tool) => ({ selection: "tool", backend: "local", tool });
@@ -36,7 +36,7 @@
 
   const row = $derived(ROWS[format]);
   const scope = () => ({ origin: globalThis.location?.origin || "", user: userId });
-  let preference = $state({});
+  let preference = $state(defaults(format));
   $effect.pre(() => { preference = read(scope(), format); });
 
   function choose(value) {
@@ -55,4 +55,3 @@
   </select>
   {#if ontools && preference.backend === "local"}<button type="button" class="btn btn-sm btn-ghost" onclick={() => ontools()}>Check in Tools</button>{/if}
 </SettingRow>
-
