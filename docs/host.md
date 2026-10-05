@@ -7,7 +7,7 @@ title: "Self-hosting"
 
 ## Docker Compose
 
-The kit in `tools/deploy/docker/` runs PostgreSQL, LibrePaper and Caddy. You edit one file, `config.toml`.
+The kit in `tools/deploy/docker/` runs PostgreSQL, LibrePaper and Caddy. You edit one file, `config.toml`. Needs Docker Compose 2.24 or newer and ports 80 and 443 reachable from the internet.
 
 ```sh
 cd tools/deploy/docker
@@ -16,7 +16,8 @@ docker compose up -d
 ```
 
 Before the first start:
-- Both origin names need DNS records pointing here: Caddy gets a certificate for each on first request.
+- Both origin names need DNS records pointing here. Caddy gets a certificate for each on first request, after the server confirms the name; nothing else is configured.
+- PostgreSQL has no password: it is reachable only over a socket shared with the application container.
 - OAuth callback URLs: `https://<app-origin>/auth/callback` (GitHub), `https://<app-origin>/auth/callback/google` (Google).
 - `[access]`: `publishers` and `commenters` take `["any"]` or GitHub logins, verified Google addresses and `@domain` entries.
 - `[retention]` is off by default.
@@ -71,31 +72,10 @@ Server and admin commands use one TOML file. `admin serve` defaults to
 Missing or empty references, invalid keys/types, and old server-setting flags
 fail. There is no interpolation or automatic application-setting override.
 
-Example configuration:
-
-```toml
-[origins]
-app = "https://paper.example"
-docs = "https://docs.paper.example"
-
-[auth.github]
-client_id = "..."
-client_secret = "..."
-
-[storage]
-directory = "/var/lib/librepaper"
-database_url = { env = "LIBREPAPER_DATABASE_URL" }   # or a full URL
-
-[access]
-publishers = ["any"]
-commenters = ["any"]
-
-[proxy]
-trusted_networks = ["172.29.0.0/16"]
-```
-
-Secrets may be literals in a file with mode 600, or `{ env = "NAME" }` and
-`{ file = "path" }` references.
+The shipped `config.toml` is the reference: every table has a comment, and
+the commented-out tables (`[limits]`, `[retention]`, `[server]`, `[metrics]`)
+are optional. Secrets may be literals in a file with mode 600, or
+`{ env = "NAME" }` and `{ file = "path" }` references.
 
 Use these commands to check or inspect resolved settings. `check` has no
 startup side effects or database connection; `show` includes defaults and
@@ -115,8 +95,8 @@ librepaper admin config show --config /etc/librepaper/config.toml
    create database librepaper owner librepaper;
    ```
 
-2. Supply the complete database URL and the configured OAuth values through
-   environment or secret-file references. Keep secrets out of the TOML.
+2. Supply the complete database URL, as a literal in `config.toml` or
+   through a reference:
 
    ```sh
    export LIBREPAPER_DATABASE_URL='postgresql://librepaper:SECRET@127.0.0.1/librepaper'
