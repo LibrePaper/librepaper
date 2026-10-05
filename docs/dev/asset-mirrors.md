@@ -4,10 +4,11 @@ Browsers fetch renderers and LaTeX files from one OVH S3 bucket (`bhs`). The bin
 
 - `wasm/<sha256>/<name>.wasm`: markdown, bibliography, citations, typst
 - `latex/<sha256>/`: one LaTeX release; `<sha256>` hashes its `MANIFEST.json`
-  - `release.json` (format 2, paths relative to the directory)
-  - `MANIFEST.json`
-  - engine files
-  - `bundles/` and its index `bundles/bundles.json`
+  - `release.json`: format 2, paths relative to the directory, bundled releases only (no per-file TeX snapshot)
+  - `MANIFEST.json`: any JSON; its SHA-256 is the release id
+  - engine files: each listed in release.json's engine worker inventory with size and sha256
+  - `bundles/bundles.json`: the LaTeX package index, matching the sha256 pin in release.json; every bundle it names exists
+  - bundle tars: `bundles/b/<sha256>/<slug>.tar`, where `<sha256>` hashes the tar bytes
 - Base URL: `[assets].mirror` in the server TOML; when omitted, the server uses `DEFAULT_ASSET_MIRROR` from `crates/librepaper-base/src/config/mod.rs`
 - `assets.lock`: pins all five, compiled into the binary; browsers use the server's pin (`latexMirror` in `/api/config`)
   - `*.wasm` rows: repository, tag, sha256 of the module
@@ -45,6 +46,8 @@ git commit assets.lock -m "Pin engines-YYYY.MM.DD"
 ```
 
 ## Publishing
+
+Publishing the mirror happens only from this repository.
 
 ```sh
 tools/assets/pins fetch && tools/assets/mirror build
