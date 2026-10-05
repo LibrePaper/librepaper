@@ -141,6 +141,40 @@ docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml \
   -n resticprofile snapshots
 ```
 
+Grafana can show backup status, but it cannot reliably alert when the VPS,
+application, or backup scheduler is unavailable. Add two separate external
+dead-man checks, one for scheduled backups and one for repository checks. For
+example, create distinct Healthchecks-style ping URLs and put their tokens only
+in the private `resticprofile.toml` on the host and in the encrypted recovery
+packet. Do not commit these URLs or put them in `.env`.
+
+```toml
+[[resticprofile.backup.send-before]]
+method = "HEAD"
+url = "https://hc-ping.com/<backup-id>/start"
+[[resticprofile.backup.send-after]]
+method = "HEAD"
+url = "https://hc-ping.com/<backup-id>"
+[[resticprofile.backup.send-after-fail]]
+method = "HEAD"
+url = "https://hc-ping.com/<backup-id>/fail"
+
+[[resticprofile.check.send-before]]
+method = "HEAD"
+url = "https://hc-ping.com/<check-id>/start"
+[[resticprofile.check.send-after]]
+method = "HEAD"
+url = "https://hc-ping.com/<check-id>"
+[[resticprofile.check.send-after-fail]]
+method = "HEAD"
+url = "https://hc-ping.com/<check-id>/fail"
+```
+
+Set the external missed-success deadlines to 36 hours for backup and 8 days
+for repository checks, matching the shipped schedules. Change those deadlines
+when you change the schedules. These alerts still reach you when the app is
+healthy but backups or repository checks stop succeeding.
+
 The default profile schedules a daily backup and a Monday repository check.
 Each backup contains a consistent PostgreSQL dump, referenced objects, both
 configs, and the session key. Move the repository off-host. Keep an encrypted
