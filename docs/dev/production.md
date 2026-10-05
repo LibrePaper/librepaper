@@ -77,13 +77,11 @@ tools/deploy/production logs
 - GitHub OAuth callback:
   `https://app.librepaper.org/auth/callback`; Google OAuth callback:
   `https://app.librepaper.org/auth/callback/google`.
-- Required SOPS keys: `PRODUCTION_ACME_EMAIL`, `PRODUCTION_POSTGRES_PASSWORD`,
-  `PRODUCTION_POSTGRES_EXPORTER_PASSWORD`, `PRODUCTION_GITHUB_CLIENT_ID`,
+- Required SOPS keys: `PRODUCTION_GITHUB_CLIENT_ID`,
   `PRODUCTION_GITHUB_CLIENT_SECRET`, `PRODUCTION_GOOGLE_CLIENT_ID`,
   `PRODUCTION_GOOGLE_CLIENT_SECRET`, and `PRODUCTION_ADMIN_PASSWORD`.
-- Passwords written to `.env` may contain only ASCII letters, digits, `_`, and
-  `-`. The initial PostgreSQL password requires an explicit `ALTER ROLE` to
-  rotate; the exporter role password is reset during each deploy. Grafana reads
+- Grafana password in `.env` may contain only ASCII letters, digits, `_`, and
+  `-`. Generate it with `openssl rand -hex 32`. Grafana reads
   its password from `.env` only when its data volume is empty; rotate it in
   Grafana, then update SOPS.
 
@@ -97,10 +95,11 @@ tools/deploy/production logs
   TOML with the candidate binary. The Dockerfile checks the release archive
   against its published SHA-256 file.
 - Before candidate validation, the script syncs the deployment kit and built
-  site, writes `.env` and a candidate config on the VPS, and ensures the
-  monitoring database role exists. A failed candidate check leaves the running
-  app and active config in place, but these staged files and role setup may
-  already have changed.
+  site, writes `.env` (COMPOSE_FILE, LIBREPAPER_VERSION, OAuth pairs, Grafana
+  password) and a candidate config on the VPS, and ensures the monitoring
+  database role exists. A failed candidate check leaves the running app and
+  active config in place, but these staged files and role setup may already
+  have changed.
 - Before starting the app, the script checks applied SQLx migration versions
   and checksums against the local migration files. A mismatch stops deployment
   unless the tree contains one version-1 squashed migration; see the schema
@@ -151,30 +150,79 @@ needs to be collapsed. It is a coordinated release operation:
 
 ## Backups and monitoring
 
-- Backups are not scheduled or copied off the VPS by this deployment tooling.
-  Take and copy them regularly, and test restores; see [Storage and backup](../host.md#storage-and-backup).
-- For a manual production backup, run on the VPS:
+Backups are not scheduled or copied off the VPS by this deployment tooling.
+Take and copy them regularly, and test restores; see [Storage and backup](../host.md#storage-and-backup).
 
-  ```sh
-  cd ~/librepaper
-  docker compose exec -T librepaper librepaper admin backup \
-    --config /etc/librepaper/config.toml \
-    "/var/backups/librepaper/$(date +%F)"
-  ```
+For a manual production backup, run on the VPS:
 
-- Grafana is at `https://app.librepaper.org/admin/monitoring/`, user `admin`.
-  Its initial password comes from `PRODUCTION_ADMIN_PASSWORD`; Grafana reads
-  this only when its data volume is empty. Rotate an existing password in
-  Grafana, then update SOPS as described in [Self-hosting](../host.md#docker-compose).
-- `verify` checks authenticated Grafana access, private endpoints, all three
-  Prometheus targets, recent LibrePaper samples, a fresh metrics snapshot, and
-  PostgreSQL health.
+```sh
+cd ~/librepaper
+docker compose exec -T librepaper librepaper admin backup \
+  --config /etc/librepaper/config.toml \
+  "/var/backups/librepaper/$(date +%F)"
+```
 
-## Production configuration
+### Monitoring
 
-The authoritative application settings are in
-[`tools/deploy/production.toml`](../../tools/deploy/production.toml); Compose
-and proxy settings are in [`tools/deploy/docker/`](../../tools/deploy/docker/).
+Enable monitoring by exporting `COMPOSE_FILE`:
+
+```sh
+export COMPOSE_FILE=compose.yaml:compose.monitoring.yaml
+docker compose up -d
+docker compose exec -T postgres sh -s < monitoring-user.sh
+```
+
+Create the metrics role only on first setup; the script is idempotent.
+
+Grafana:
+- URL: `https://app.librepaper.org/admin/monitoring/`, user `admin`
+- Initial password from `PRODUCTION_ADMIN_PASSWORD` (only on empty volume)
+- Rotate in Grafana (Administration, Users and access, Users, admin), then update SOPS
+- Prometheus keeps 30 days, capped at 8 GB (not a filesystem quota; leave headroom)
+
+`verify` checks authenticated Grafana access, private endpoints, all three
+Prometheus targets, recent LibrePaper samples, a fresh metrics snapshot, and
+PostgreSQL health.
+
+## Configuration
+
+Server and admin commands use one TOML file. The authoritative production
+configuration is in [tools/deploy/production.toml](../../tools/deploy/production.toml).
+
+The configuration below is included directly. Adapt its domains, credentials,
+storage, and policies before use.
+
+<!-- include: tools/deploy/production.toml -->
+
+For S3-compatible storage, edit the existing `[storage]` table and enable
+the commented `[storage.s3]` example; do not create a duplicate table.
+Credentials come only from its references; ambient AWS credentials are
+not used.
+
+## Moderation
+
+Moderation uses the server config. Database access is the operator
+authorization boundary. Every command needs an actor and reason; the
+`moderation_audit` table records actor, timestamp, action, target, and reason.
+
+| Command | Effect |
+| --- | --- |
+| `block-account` | Revokes sessions and denies access and writes. |
+| `hide-project` | Keeps data but blocks document, asset, source, history, export, and socket access. |
+
+Open sockets recheck authorization every two seconds; frames already in flight
+may still arrive.
+
+```sh
+librepaper admin moderate block-account github-handle --config /etc/librepaper/config.toml \
+  --actor "on-call@example.org" --reason "automated abuse investigation"
+librepaper admin moderate hide-project abusive-project --config /etc/librepaper/config.toml \
+  --actor "on-call@example.org" --reason "contains abusive material"
+```
+
+## Deployment files
+
+Compose and proxy settings are in [`tools/deploy/docker/`](../../tools/deploy/docker/).
 The deploy script stages and validates the TOML before activating it. Update
-these files and this runbook together when the production topology or deploy
-sequence changes.
+the configuration files and this runbook together when the production topology
+or deploy sequence changes.
