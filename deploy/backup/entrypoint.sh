@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-CONFIG=${LIBREPAPER_CONFIG_FILE:-${LIBREPAPER_BACKUP_CONFIG:-/etc/librepaper/config.toml}}
+CONFIG=${LIBREPAPER_BACKUP_CONFIG:-/etc/librepaper/config.toml}
 PROFILE=${LIBREPAPER_BACKUP_PROFILE:-/etc/resticprofile/profiles.toml}
 CRONTAB=${LIBREPAPER_BACKUP_CRONTAB:-/run/librepaper-backup/crontab}
 validate_only=${LIBREPAPER_BACKUP_VALIDATE_ONLY:-0}

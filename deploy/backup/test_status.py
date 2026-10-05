@@ -101,7 +101,14 @@ class StatusStateTests(unittest.TestCase):
 
 
 class EntrypointTests(unittest.TestCase):
-    def _run_entrypoint(self, config: str, *, show_status: int = 0) -> tuple[subprocess.CompletedProcess[str], Path]:
+    def _run_entrypoint(
+        self,
+        config: str,
+        *,
+        validate_only: bool = False,
+        show_status: int = 0,
+        schedule_status: int = 0,
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
         temp = tempfile.TemporaryDirectory()
         root = Path(temp.name)
         bin_dir = root / "bin"
@@ -120,7 +127,7 @@ class EntrypointTests(unittest.TestCase):
         profile_command.write_text(
             f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{profile_log}"\n'
             f'if [ "$5" = schedule ]; then printf "* * * * * true\\n" > "{crontab}"; fi\n'
-            f'exit {show_status}\n',
+            f'if [ "$5" = schedule ]; then exit {schedule_status}; else exit {show_status}; fi\n',
             encoding="utf-8",
         )
         profile_command.chmod(0o755)
@@ -131,7 +138,7 @@ class EntrypointTests(unittest.TestCase):
                 "LIBREPAPER_BACKUP_CONFIG": str(config_path),
                 "LIBREPAPER_BACKUP_PROFILE": str(profile_path),
                 "LIBREPAPER_BACKUP_CRONTAB": str(crontab),
-                "LIBREPAPER_BACKUP_VALIDATE_ONLY": "1",
+                "LIBREPAPER_BACKUP_VALIDATE_ONLY": "1" if validate_only else "0",
             }
         )
         result = subprocess.run(["sh", str(ENTRYPOINT)], env=env, text=True, capture_output=True, check=False)
@@ -140,7 +147,7 @@ class EntrypointTests(unittest.TestCase):
         return result, root
 
     def test_validate_only_builds_schedule_without_starting_scheduler(self) -> None:
-        result, root = self._run_entrypoint('[resticprofile]\nrepository = "secret://redact-me"\n')
+        result, root = self._run_entrypoint('[resticprofile]\nrepository = "secret://redact-me"\n', validate_only=True)
         self.assertEqual(result.returncode, 0)
         self.assertTrue((root / "crontab").is_file())
         self.assertNotIn("redact-me", result.stdout + result.stderr)
@@ -160,6 +167,38 @@ class EntrypointTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("secret-value", result.stdout + result.stderr)
         self.assertEqual((root / "status.log").read_text(encoding="utf-8").strip().splitlines(), ["enabled", "config-error"])
+
+    def test_validation_only_does_not_mutate_status(self) -> None:
+        result, root = self._run_entrypoint('[resticprofile]\nrepository = "secret-value"\n', validate_only=True, schedule_status=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("secret-value", result.stdout + result.stderr)
+        self.assertFalse((root / "status.log").exists())
+
+    def test_scheduler_failure_is_recorded_during_real_startup(self) -> None:
+        result, root = self._run_entrypoint('[resticprofile]\nrepository = "secret-value"\n', schedule_status=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("secret-value", result.stdout + result.stderr)
+        self.assertEqual((root / "status.log").read_text(encoding="utf-8").strip().splitlines(), ["enabled", "config-error"])
+
+    def test_quoted_and_implicit_backup_tables_validate(self) -> None:
+        for config in ('["resticprofile"]\nrepository = "local:/backup"\n', '[resticprofile.backup]\nschedule = "daily"\n'):
+            with self.subTest(config=config):
+                result, root = self._run_entrypoint(config, validate_only=True)
+                self.assertEqual(result.returncode, 0)
+                self.assertNotIn("config-error", (root / "status.log").read_text(encoding="utf-8") if (root / "status.log").exists() else "")
+                self.assertIn("-n resticprofile schedule", (root / "profile.log").read_text(encoding="utf-8"))
+
+    def test_missing_backup_table_stays_idle_in_validation_mode(self) -> None:
+        result, root = self._run_entrypoint('[origins]\napp = "https://paper.example"\n', validate_only=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertFalse((root / "status.log").exists())
+        self.assertFalse((root / "profile.log").exists())
+
+    def test_wrong_type_is_rejected_and_recorded(self) -> None:
+        result, root = self._run_entrypoint('resticprofile = "secret-value"\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("secret-value", result.stdout + result.stderr)
+        self.assertEqual((root / "status.log").read_text(encoding="utf-8").strip(), "config-error")
 
 
 if __name__ == "__main__":
