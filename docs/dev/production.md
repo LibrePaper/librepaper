@@ -1,222 +1,181 @@
-# Production
+# Production and release flow
 
-The official instance at librepaper.org runs `tools/deploy/docker` on an OVHcloud VPS, with DNS at Hover.
+Production is a Docker Compose deployment on the OVHcloud VPS. Releasing a
+version publishes downloadable artifacts; it does **not** deploy the VPS. The
+VPS deploy and the landing-page-only update are operator-run commands.
 
-- Site (landing page and manual): `https://librepaper.org`, built by `make site` and served by Caddy as files
-- App: `https://app.librepaper.org`; documents: `https://docs.librepaper.org`
-- Redirected to the site: `www.librepaper.org`, `librepaper.com`, `www.librepaper.com`
-- Host: OVHcloud VPS, Ubuntu 24.04, BHS, user `ubuntu`, kit in `~/librepaper`
-- Shell: in zsh, run `setopt interactivecomments` first, or the `#` lines in these blocks fail as commands
-- Secrets: `tools/deploy/keys.yaml` (SOPS)
-  - `PRODUCTION_POSTGRES_PASSWORD`, `PRODUCTION_POSTGRES_EXPORTER_PASSWORD`, `PRODUCTION_ACME_EMAIL`
-  - `PRODUCTION_GITHUB_CLIENT_ID`, `PRODUCTION_GITHUB_CLIENT_SECRET`
-  - `PRODUCTION_GOOGLE_CLIENT_ID`, `PRODUCTION_GOOGLE_CLIENT_SECRET`, `PRODUCTION_ADMIN_PASSWORD`
+- Public site: `https://librepaper.org`; app: `https://app.librepaper.org`;
+  documents: `https://docs.librepaper.org`.
+- `www.librepaper.org`, `librepaper.com`, and `www.librepaper.com` redirect to
+  the public site. Caddy needs the app, documents, and site DNS names pointed
+  at the VPS before the first deployment.
 
-## Release
+## Release a version
 
-The Rust TLS clients share the AWS-LC provider. Direct Reqwest uses 0.13, matching the Reqwest generation used by object_store 0.14; Reqwest and object_store's AWS feature select AWS-LC. SQLx explicitly selects `runtime-tokio` with `tls-rustls-aws-lc-rs` rather than the `runtime-tokio-rustls` ring alias. `tokio-tungstenite` uses rustls without choosing a provider, so `tls.rs` installs AWS-LC before its WebSocket connection only when the process has no provider already, preserving an embedding caller's choice. The all-target dependency tree has no active ring path, and workspace all-target clippy passed for this feature selection.
+1. Set `[workspace.package].version` in `Cargo.toml` and update the workspace
+   package entries in `Cargo.lock`. The release tag must be
+   `v<version>` (for example, version `X.Y.Z` uses tag `vX.Y.Z`).
+2. Run the checks described in [Building and testing](../architecture/building.md),
+   including `make check` and `tools/dev/db test`. If the release changes
+   browser assets, publish them first; see [asset mirrors](asset-mirrors.md).
+   Commit and push the release commit, then confirm CI is green for it. The
+   Release workflow builds on tag pushes but does not wait for CI.
+3. From a clean checkout of that release commit, push the matching tag:
 
-```sh
-# Set this to the release tag matching the package version in Cargo.toml.
-VERSION=vX.Y.Z
-git tag "$VERSION" && git push origin "$VERSION"
-gh run watch                                     # the Release workflow
-gh release view "$VERSION" --json assets -q '.assets[].name' | grep linux-musl
-```
+   ```sh
+   VERSION="v$(sed -n 's/^version = \"\(.*\)\"/\1/p' Cargo.toml | head -n 1)"
+   git tag "$VERSION"
+   git push origin "$VERSION"
+   gh run list --workflow release.yml --limit 5
+   gh run watch RUN_ID --exit-status
+   ```
 
-- v0.0.8 does not include the metrics listener. Do not deploy it to the monitoring stack; v0.0.9 is the first release with the listener.
-- v0.0.1 to v0.0.3 are Komodoc archives, and v0.0.4 to v0.0.7 never released
-- Keep `/api/auth/config` and the hidden `local start`, `local stop`, `local status`, and `local agent` aliases until a removal cutoff is announced for supported external clients; no cutoff is scheduled. Preserve `local open` while installed `librepaper://` links use it.
+   Select the Release run whose tag is `$VERSION`.
 
-## VPS (OVHcloud)
+4. The Release workflow uses cargo-dist to build platform archives, installers,
+   and SHA-256 files, then creates the GitHub Release. Confirm the Linux
+   x86_64 asset exists before deploying:
 
-- Order: VPS, Ubuntu 24.04, region BHS; paste your SSH public key at checkout (otherwise the `ubuntu` password arrives by email)
-- IP: the main IPv4 is static (kept across reboots and reinstalls, lost only if the VPS is deleted), so no Additional IP is needed; that product only moves an address between servers
-- Find it: Control Panel, Bare Metal Cloud, Virtual private servers, the VPS, Home tab, IP section (also in the delivery email)
-- Firewall: nothing to open by default; if you enable `ufw` or OVHcloud's Edge Network Firewall, allow 22, 80 and 443 (Caddy needs 80 and 443 for Let's Encrypt)
+   ```sh
+   gh release view "$VERSION" --json assets -q '.assets[].name'
+   ```
 
-```sh
-# key not pasted at checkout: install it with the password from the delivery email
-ssh-copy-id ubuntu@VPS_IP
+5. After a successful stable release, the Homebrew and Scoop workflows update
+   their repositories automatically. They verify each downloaded archive
+   against its `.sha256` file before publishing. They can also be run manually
+   for a stable tag. See [package release details](../releasing.md).
 
-# on the VPS, once
-sudo apt update && sudo apt upgrade -y
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker ubuntu   # log out and back in
-```
+## Deploy the VPS
 
-## Harden (once)
-
-After `ssh-copy-id` works; keep the current session open until the key login is confirmed.
-
-```sh
-# on the VPS: keys only (00- sorts before cloud-init's 50- file, and sshd keeps the first value)
-printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' | sudo tee /etc/ssh/sshd_config.d/00-keys-only.conf
-sudo sshd -t && sudo systemctl restart ssh
-# from your machine: must still log in with the key
-ssh ubuntu@VPS_IP true
-# on the VPS: security updates, should be active (running)
-systemctl status unattended-upgrades --no-pager
-```
-
-## DNS (Hover)
-
-Once the VPS has its IP, for each of librepaper.org and librepaper.com.
-
-- Nameservers must stay `ns1.hover.com` and `ns2.hover.com`, otherwise the DNS tab has no effect
-- Leave Hover's domain forwarding off: it cannot serve HTTPS, so Caddy does the redirects
-- Sign in at hover.com, click the domain, open the DNS tab
-- Delete the parking records `A @` and `A *` (value `216.40.34.41`): tick them, Bulk edit, Delete; the wildcard swallows `docs`. Keep `MX` and `mail` if Hover email is in use
-- Add a record for each row below: Hover appends the domain to the hostname, and `@` is the bare domain; leave TTL at the default
-
-librepaper.org:
-
-| Type | Hostname | IP address | Name |
-|---|---|---|---|
-| A | `@` | `VPS_IP` | `librepaper.org` |
-| A | `app` | `VPS_IP` | `app.librepaper.org` |
-| A | `docs` | `VPS_IP` | `docs.librepaper.org` |
-| A | `www` | `VPS_IP` | `www.librepaper.org` |
-
-librepaper.com:
-
-| Type | Hostname | IP address | Name |
-|---|---|---|---|
-| A | `@` | `VPS_IP` | `librepaper.com` |
-| A | `www` | `VPS_IP` | `www.librepaper.com` |
-
-- No `AAAA` until `curl -6 https://example.com` works on the VPS (Let's Encrypt prefers IPv6)
-- New records usually resolve within minutes; Hover quotes up to 48 hours
+Deployment is manual and runs from the repository root. The operator needs SSH
+access to the VPS, Docker on the host, `sops` access to
+`tools/deploy/keys.yaml`, and the DNS names pointed at the host. The SOPS file
+contains the ACME email, database and exporter passwords, GitHub and Google
+OAuth credentials, and Grafana admin password. The deploy writes these to a
+mode-600 `.env` on the VPS; do not put plaintext secrets in the repository.
+Run it from a clean checkout of the deployed tag: the script takes migration
+files, production config, and site content from the local tree.
 
 ```sh
-# nameservers: ns1.hover.com and ns2.hover.com for both domains
-dig +short NS librepaper.org; dig +short NS librepaper.com
-# every name must answer with the VPS address before the first start
-for h in librepaper.org app.librepaper.org docs.librepaper.org www.librepaper.org librepaper.com www.librepaper.com; do
-  echo "$h $(dig +short "$h")"
-done
-```
-
-## GitHub OAuth app
-
-LibrePaper org, Settings, Developer settings, OAuth Apps.
-
-- Homepage URL: `https://librepaper.org`
-- Callback URL: `https://app.librepaper.org/auth/callback`, the only one
-- Wildcard matching: off (only that exact URL should ever receive a sign-in code)
-- Device flow: off (`librepaper login` uses the server's own device flow, not GitHub's)
-- Client ID and secret go in SOPS
-
-## Google OAuth client
-
-In Google Auth Platform, open **Clients**, create a **Web application** client, and add this exact Authorized redirect URI:
-
-`https://app.librepaper.org/auth/callback/google`
-
-Store the client ID and secret in SOPS as `PRODUCTION_GOOGLE_CLIENT_ID` and `PRODUCTION_GOOGLE_CLIENT_SECRET`. Both `deploy` and `deploy-local` map these to `LIBREPAPER_GOOGLE_CLIENT_ID` and `LIBREPAPER_GOOGLE_CLIENT_SECRET`; `verify` checks the authorization redirects for both Google and GitHub. See Google's [OAuth 2.0 guide for web server applications](https://developers.google.com/identity/protocols/oauth2/web-server).
-
-The official TOML file is [tools/deploy/production.toml](../../tools/deploy/production.toml).
-It records the three public origins, `/var/lib/librepaper`, PostgreSQL,
-filesystem objects, the current 50 MiB/30-per-hour admission limits, the
-internal metrics listener, and the trusted Docker edge subnet. Credentials are
-referenced by name from `.env`; the TOML file contains no secret values. The
-deployment stages this file and runs the candidate image's `admin config
-check` before replacing `config.toml` or restarting the application.
-
-## Secrets
-
-```sh
-# Generate each database, exporter, and Grafana password this way. Production
-# passwords must use letters, digits, underscores, or hyphens only for .env safety.
-openssl rand -hex 24          # without openssl: nix shell nixpkgs#openssl -c openssl rand -hex 24
-sops tools/deploy/keys.yaml   # add the eight PRODUCTION_* keys
-git add tools/deploy/keys.yaml && git commit -m "Add production secrets"   # values stay encrypted
-```
-
-- The Postgres password is fixed at first start; changing it later needs an `ALTER ROLE`
-- The exporter password is installed into the least-privilege `librepaper_metrics` role during deploy; the command is idempotent for existing database volumes
-- Grafana uses `PRODUCTION_ADMIN_PASSWORD` for its initial admin account. Grafana reads that setting only when its data volume is empty; later password changes must be made in Grafana and then saved back to SOPS
-
-## Deploy and upgrade
-
-Deploy the tagged release with the normal release flow. The local binary flow remains available for unreleased source builds or forks.
-
-```sh
-# deploy the tagged release
+# Deploy a published release. VERSION defaults to the Cargo.toml version.
 tools/deploy/production deploy "$VERSION"
-HOST=ubuntu@VPS_IP tools/deploy/production deploy "$VERSION"   # before DNS resolves
-tools/deploy/production site                                 # landing page and manual only: no release, no restart
-# optional: deploy a previously built static Linux musl executable
+
+# Override the SSH destination; production DNS validation still runs.
+HOST=ubuntu@VPS_IP tools/deploy/production deploy "$VERSION"
+
+# Check the live app and monitoring, site, document host, redirect, and logs.
+tools/deploy/production verify
+tools/deploy/production logs
+```
+
+### One-time host setup
+
+- Host: OVHcloud VPS, Ubuntu 24.04, SSH user `ubuntu`; deployment kit and
+  operator `.env` live in `~/librepaper`.
+- Point these six A records to the VPS IPv4: `librepaper.org`,
+  `app.librepaper.org`, `docs.librepaper.org`, `www.librepaper.org`,
+  `librepaper.com`, and `www.librepaper.com`. Keep Hover forwarding off; Caddy
+  serves HTTPS and redirects.
+- Allow inbound ports 22, 80, and 443. Caddy needs 80 and 443 for certificates.
+- GitHub OAuth callback:
+  `https://app.librepaper.org/auth/callback`; Google OAuth callback:
+  `https://app.librepaper.org/auth/callback/google`.
+- Required SOPS keys: `PRODUCTION_ACME_EMAIL`, `PRODUCTION_POSTGRES_PASSWORD`,
+  `PRODUCTION_POSTGRES_EXPORTER_PASSWORD`, `PRODUCTION_GITHUB_CLIENT_ID`,
+  `PRODUCTION_GITHUB_CLIENT_SECRET`, `PRODUCTION_GOOGLE_CLIENT_ID`,
+  `PRODUCTION_GOOGLE_CLIENT_SECRET`, and `PRODUCTION_ADMIN_PASSWORD`.
+- Passwords written to `.env` may contain only ASCII letters, digits, `_`, and
+  `-`. The initial PostgreSQL password requires an explicit `ALTER ROLE` to
+  rotate; the exporter role password is reset during each deploy. Grafana reads
+  its password from `.env` only when its data volume is empty; rotate it in
+  Grafana, then update SOPS.
+
+- `deploy` accepts canonical `vMAJOR.MINOR.PATCH` releases from `v0.0.9` onward.
+  The lower bound is retained because `v0.0.8` lacks the metrics listener
+  required by this deployment.
+- The script checks that the x86_64 Linux musl release asset exists, builds the
+  candidate Docker image from that release, and validates the staged production
+  TOML with the candidate binary. The Dockerfile checks the release archive
+  against its published SHA-256 file.
+- Before candidate validation, the script syncs the deployment kit and built
+  site, writes `.env` and a candidate config on the VPS, and ensures the
+  monitoring database role exists. A failed candidate check leaves the running
+  app and active config in place, but these staged files and role setup may
+  already have changed.
+- Before starting the app, the script checks applied SQLx migration versions
+  and checksums against the release. A mismatch stops deployment unless the
+  repository contains one version-1 squashed migration; that case is handled by
+  the schema comparison and re-pin procedure below.
+- After preflight, the script installs the checked config, recreates the app
+  container, starts/waits for the stack, recreates Prometheus to load its
+  current config, prunes replaced Docker images, then verifies the deployment.
+- Every app deploy also rebuilds `docs/_site` with `make site` and uploads it.
+  `tools/deploy/production site` rebuilds and uploads only the landing page and
+  manual; it does not build a release, restart containers, or deploy the app.
+
+### Unreleased local candidate
+
+Use `deploy-local` only for a previously built Linux musl executable, a fork,
+or a build that is not in a GitHub Release:
+
+```sh
 tools/deploy/production deploy-local target/x86_64-unknown-linux-musl/release/librepaper
 ```
 
-- `deploy VERSION` accepts only canonical `vMAJOR.MINOR.PATCH` tags at `v0.0.9` or later. It refuses `v0.0.8` before any remote write because that binary has no metrics endpoint. The default version comes from Cargo.toml and is subject to the same guard.
-- The candidate binary must include TOML configuration support. Older releases fail the remote `admin config check` preflight; the active config is left in place and the app is not restarted. Until a TOML-capable release is published, use `deploy-local` with a built binary that includes this CLI.
-- After validation, deploy replaces the active TOML file, recreates only the LibrePaper container so it opens the new file, then brings up the rest of the stack without force-recreating the database or other services.
-- `make site` needs bun; the site is served from `~/librepaper/site` through `compose.override.yaml`
-- `deploy-local BINARY` accepts a previously built Linux musl executable. It uploads the file to a temporary candidate, compares SHA-256 checksums, builds the kit's Dockerfile with `SOURCE=local`, and checks TOML support before migration work or application restart. The checked candidate remains in the kit as the Docker build input; a normal release deployment resets this local-build override. Supported targets are x86_64 and aarch64.
-- Domain and redirects are constants at the top of `tools/deploy/production`. The official config allows any signed-in GitHub or Google account to publish and comment. It sets a 50 MiB per-account storage quota and a limit of 30 project creations, forks or figure uploads per rolling hour; these limits apply to release and local-binary deployments.
-- The VPS keeps the kit and `.env` (mode 600) in `~/librepaper`
-- The VPS `.env` sets `COMPOSE_FILE` to list `compose.yaml`, `compose.monitoring.yaml` and `compose.override.yaml`
+The script uploads to a temporary path, compares local and remote SHA-256
+checksums, builds the local Docker candidate, checks TOML config support, and
+checks migrations before restarting the app. Supported image architectures
+are x86_64 and aarch64. A later normal `deploy` restores the release-image
+build configuration.
 
-## Squash migrations
+## Migration squash
 
-One deployment exists, so the files under `crates/librepaper-engine/migrations/postgres/` can be hand-merged into a single `0001_catalog.sql` whenever the history gets noisy. The server refuses to start when an applied version in `_sqlx_migrations` has no file or a different checksum, so production's table is re-pinned in the same deploy that ships the squashed file.
+Keep migrations additive while the deployment is in normal use. Squashing is
+only appropriate while there is one deployment to preserve and the history
+needs to be collapsed. It is a coordinated release operation:
 
-```sh
-# 1. deploy the release that holds every migration you are about to merge
-# 2. merge the files into 0001_catalog.sql, delete the others, commit, tag, release
-# 3. deploy: the preflight sees one local file against several applied rows,
-#    proves the file rebuilds production's schema (pg_dump of both, on the VPS),
-#    pins the table to version 1 with the file's SHA-384, logs the old versions
-#    to ~/librepaper/migrations-squash.log, takes a backup, then starts containers
-tools/deploy/production deploy "$VERSION"
-# the same step on its own; only right before a deploy, since a restart in between fails
-tools/deploy/production squash-migrations
-```
+1. Deploy a release that contains every migration to be combined.
+2. Combine the SQL into `crates/librepaper-engine/migrations/postgres/0001_catalog.sql`,
+   remove the superseded files, then commit and release that change.
+3. Deploy that release. The deploy script detects the single version-1 file,
+   runs it against a scratch database, and compares its schema with production.
+   If they match, it re-pins `_sqlx_migrations` to version 1, logs the previous
+   versions in `~/librepaper/migrations-squash.log`, attempts a fresh backup,
+   and continues the deploy.
 
-- The preflight runs on every deploy: matching rows pass, a fresh database passes, any other mismatch stops before containers are touched
-- A non-empty schema diff stops the deploy with nothing changed; fix the merged file and release again
-- Backups record the migration version and restore refuses a mismatch, so backups from before the squash no longer restore; the step takes a fresh one
-- Once a second deployment exists, stop squashing and go back to additive migrations
+- The re-pin changes migration metadata before the app restarts. Do not restart
+  or deploy another image between the re-pin and release deploy.
+- The backup attempt does not block deployment. If it fails, take a manual
+  backup as soon as possible and investigate the failure.
+- `squash-migrations` runs this preflight manually; normally `deploy` handles
+  it automatically. Keep migrations additive once a second deployment exists.
 
-## Monitoring
+## Backups and monitoring
 
-Grafana is at `https://app.librepaper.org/admin/monitoring/`, with username `admin` and the secret in SOPS. To copy the password to a Wayland clipboard without putting it in terminal output, shell history, or process arguments:
+- Backups are not scheduled or copied off the VPS by this deployment tooling.
+  Take and copy them regularly, and test restores; see [Storage and backup](../host.md#storage-and-backup).
+- For a manual production backup, run on the VPS:
 
-```sh
-sops --decrypt --extract '["PRODUCTION_ADMIN_PASSWORD"]' tools/deploy/keys.yaml | wl-copy
-```
+  ```sh
+  cd ~/librepaper
+  docker compose exec -T librepaper librepaper admin backup \
+    --config /etc/librepaper/config.toml \
+    "/var/backups/librepaper/$(date +%F)"
+  ```
 
-Paste it into Grafana's login form and clear the clipboard afterward. `wl-copy` receives the secret through a pipe; if unavailable, use an equivalent clipboard tool for your desktop. Access rules are in [Self-hosting](../host.md#docker-compose).
+- Grafana is at `https://app.librepaper.org/admin/monitoring/`, user `admin`.
+  Its initial password comes from `PRODUCTION_ADMIN_PASSWORD`; Grafana reads
+  this only when its data volume is empty. Rotate an existing password in
+  Grafana, then update SOPS as described in [Self-hosting](../host.md#docker-compose).
+- `verify` checks authenticated Grafana access, private endpoints, all three
+  Prometheus targets, recent LibrePaper samples, a fresh metrics snapshot, and
+  PostgreSQL health.
 
-The deploy command bootstraps or updates the `librepaper_metrics` PostgreSQL role before starting the monitoring containers. It can repair an existing database volume as well as prepare a new one. The role receives `pg_monitor` only, and its password is kept in `.env` with mode 600.
+## Production configuration
 
-To rotate the Grafana password, follow [Self-hosting](../host.md#docker-compose), with `PRODUCTION_ADMIN_PASSWORD` in SOPS as the `.env` value, then deploy.
-
-Compose waits for service health during deployment. The deploy then recreates only Prometheus so it reads the newly copied scrape and alert configuration, and the verifier retries temporary Prometheus and Grafana startup failures for up to a minute. It confirms Grafana credentials work and anonymous API access is denied, ensures `/metrics`, `/api/status`, and Prometheus APIs are not public, checks that exactly the LibrePaper, Node Exporter, and PostgreSQL exporter scrape targets are up, and waits for recent LibrePaper samples, a fresh successful snapshot, and `pg_up == 1`. It also validates that the provisioned dashboard has panels.
-
-The deployment script tests use mock SSH and HTTP commands. The persistent Grafana 503 case takes about one minute and is opt-in; run only that case with:
-
-```sh
-LIBREPAPER_TEST_SLOW_DEPLOY=1 node --test --test-name-pattern='persistent Grafana API failures' tools/deploy/production.test.mjs
-```
-
-## Verify
-
-```sh
-tools/deploy/production verify    # app and OAuth redirects, monitoring, the site, documents, redirects, logs
-tools/deploy/production logs      # follow
-LIBREPAPER_SERVER=https://app.librepaper.org librepaper login
-```
-
-## Backups
-
-```sh
-# on the VPS
-cd ~/librepaper && docker compose exec -T librepaper librepaper admin backup \
-  --config /etc/librepaper/config.toml /var/backups/librepaper/$(date +%F)
-```
-
-- Not scheduled yet, and no off-machine copy yet
-- Restore: `docs/host.md`, Storage
+The authoritative application settings are in
+[`tools/deploy/production.toml`](../../tools/deploy/production.toml); Compose
+and proxy settings are in [`tools/deploy/docker/`](../../tools/deploy/docker/).
+The deploy script stages and validates the TOML before activating it. Update
+these files and this runbook together when the production topology or deploy
+sequence changes.

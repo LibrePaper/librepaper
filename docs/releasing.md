@@ -1,10 +1,24 @@
-# Releasing packages
+# Package release channels
 
-LibrePaper updates the Homebrew formula and Scoop manifest after a successful
-stable release. The Homebrew formula uses the four prebuilt cargo-dist archives
-for Intel and ARM macOS and Linux. Scoop uses the prebuilt 64-bit Windows
-archive. These installers use the release binary, which already contains the
-built browser application.
+See the [production and release checklist](dev/production.md) for versioning,
+checks, tagging, and the separate manual VPS deployment.
+
+## Automated updates
+
+- A successful stable tag release triggers the Homebrew and Scoop update
+  workflows. Pull request runs, failed releases, prerelease tags, and releases
+  from other repositories are ignored.
+- Each updater runs the helper script from the workflow revision, then resolves
+  the stable tag and downloads that release's artifacts. A manual run accepts a
+  stable tag and uses the same artifact checks.
+- Before publishing, each updater checks the downloaded archive against the
+  release's cargo-dist `.sha256` file. A missing or invalid checksum stops the
+  update without changing the package repository.
+- Homebrew uses the Linux and macOS x86_64 and ARM64 archives. Scoop uses the
+  x86_64 Windows archive. Both install the released binary, which includes the
+  browser application.
+- User install commands live on the [install page](install.md). Update it when
+  a distribution channel changes.
 
 ## Repository secrets
 
@@ -12,32 +26,13 @@ Configure these Actions secrets in `LibrePaper/librepaper`:
 
 | Secret | Use | Required access |
 | --- | --- | --- |
-| `HOMEBREW_TAP_GITHUB_TOKEN` | Push `Formula/librepaper.rb` to `vincentarelbundock/homebrew-tap` | Contents write access to that repository |
-| `SCOOP_BUCKET_GITHUB_TOKEN` | Push `bucket/librepaper.json` to `vincentarelbundock/scoop-bucket` | Contents write access to that repository |
+| `HOMEBREW_TAP_GITHUB_TOKEN` | Push `Formula/librepaper.rb` to `vincentarelbundock/homebrew-tap` | Contents write |
+| `SCOOP_BUCKET_GITHUB_TOKEN` | Push `bucket/librepaper.json` to `vincentarelbundock/scoop-bucket` | Contents write |
 
-Keep the release workflow's repository `GITHUB_TOKEN` permissions limited to
-the release tasks it needs. The two tap tokens are used only by their matching
-update workflows. The update scripts pass them to Git through an HTTP
-authorization header kept in the process environment; credentials do not go
-in clone URLs or output.
+Each token is used only by its matching update workflow. Keep the Release
+workflow's `GITHUB_TOKEN` permissions limited to release tasks. Update scripts
+send channel tokens to Git through an HTTP authorization header; they do not
+place credentials in clone URLs or output.
 
-## Stable releases
-
-Push a stable tag in `vMAJOR.MINOR.PATCH` form, such as `v0.1.0`. The update
-workflows run only after the `Release` workflow succeeds for a tag push. They
-ignore pull request completions and prerelease tags. A manual run accepts a
-stable tag and checks out that tag before resolving and publishing its
-artifacts.
-
-Each channel updater downloads its release archives and cargo-dist `.sha256`
-files, checks that each digest is a 64-character SHA-256 value, and compares
-it with a fresh hash of the downloaded archive. A missing or mismatched
-checksum stops that updater without changing its package repository.
-
-## Install commands
-
-The user-facing commands for every channel live on the [install page](install.md) only. Update that page when a channel changes.
-
-LibrePaper is distributed under the MIT License. The package manifest and the
-generated Homebrew and Scoop definitions declare `MIT`; the license text is in
-the repository's root `LICENSE` file.
+LibrePaper is distributed under the MIT License. Package definitions declare
+`MIT`; the license text is in the repository root `LICENSE` file.
