@@ -1,5 +1,7 @@
-# The one file to edit: set the two origins and one [auth.*] table, then
-# docker compose up -d. Everything not listed here has a default; see docs/host.md.
+# Application settings for a standalone Compose deployment. Set the origins
+# and at least one [auth.*] table, then run docker compose up -d. Everything
+# not listed here has a default; see docs/host.md. Backup settings belong in
+# the separate resticprofile.toml file.
 
 # app is the application. docs serves published documents and must be a
 # different host, because a document is code and the browser is what keeps
@@ -55,13 +57,3 @@ trusted_networks = ["172.29.0.0/16"]
 # Private listener for the bundled Prometheus; no host port is published.
 [metrics]
 address = "0.0.0.0:9091"
-
-# Optional. Without this table, the backup sidecar stays idle. Configure the
-# resticprofile repository and backend settings here. This file
-# may contain secrets; restrict its permissions and keep an off-host copy.
-# [resticprofile]
-# repository = "s3:https://s3.example/bucket/librepaper"
-# [resticprofile.env]
-# RESTIC_PASSWORD = "replace-with-a-long-random-secret"
-# AWS_ACCESS_KEY_ID = "replace"
-# AWS_SECRET_ACCESS_KEY = "replace"
