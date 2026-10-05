@@ -19,6 +19,7 @@ const profile = mkdtempSync(join(tmpdir(), "librepaper-track-changes-browser-"))
 const port = 33000 + Math.floor(Math.random() * 20000);
 let editor;
 const cookie = deployment.cookie;
+const browserBase = deployment.browserBase;
 const source = "# A Paper\n\nThe first paragraph.\n\nA second paragraph.\n";
 const revised = "# A Paper\n\nThe opening paragraph.\n\nA second paragraph.\n";
 
@@ -37,8 +38,8 @@ async function request(path, method = "GET", body) {
 
 async function main() {
   editor = await browser("chromium", profile, port);
-  await editor.setCookie("librepaper_session", cookie.slice(cookie.indexOf("=") + 1), deployment.base);
-  await editor.navigate(deployment.base);
+  await editor.setCookie("librepaper_session", cookie.slice(cookie.indexOf("=") + 1), browserBase);
+  await editor.navigate(browserBase);
   await editor.resize(1400, 900);
 
   const document = await deployment.publish({ title: "Track changes acceptance", source_format: "markdown", source });
@@ -47,8 +48,19 @@ async function main() {
   const baseline = await request(`${historyPath}/current`, "PATCH", {
     label: "Before review", request_id: randomUUID(),
   });
-  await editor.navigate(new URL(`/docs/${slug}`, deployment.base).href);
-  await until("document frame", () => editor.frameEvaluate("document.body.innerText.includes('The first paragraph.')"));
+  await editor.navigate(new URL(`/docs/${slug}`, browserBase).href);
+  try {
+    await until("document frame", () => editor.frameEvaluate("document.body.innerText.includes('The first paragraph.')"));
+  } catch (error) {
+    const [frameUrl, frameBody, targets, frames] = await Promise.all([
+      editor.evaluate('document.querySelector("iframe[title=Document]")?.src || ""').catch((cause) => `unavailable: ${cause.message}`),
+      editor.frameEvaluate("document.body.innerText").catch((cause) => `unavailable: ${cause.message}`),
+      editor.command("Target.getTargets").catch((cause) => `unavailable: ${cause.message}`),
+      editor.command("Page.getFrameTree").catch((cause) => `unavailable: ${cause.message}`),
+    ]);
+    const targetsOnly = targets?.targetInfos?.filter((target) => target.type === "iframe" || target.url.includes(`/raw/${slug}/`)) || targets;
+    throw new Error(`${error.message}; iframe src: ${frameUrl}; frame body: ${frameBody}; matching CDP targets: ${JSON.stringify(targetsOnly)}; frame tree: ${JSON.stringify(frames)}`);
+  }
 
   const suggestionId = randomUUID();
   const note = `Suggestion ${suggestionId}`;

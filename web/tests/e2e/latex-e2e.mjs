@@ -90,7 +90,7 @@ async function main() {
   if (!deployment || deployment.unavailable) {
     throw new Error(deployment?.unavailable || `no librepaper binary at ${BINARY}; build it first`);
   }
-  BASE = deployment.base;
+  BASE = deployment.browserBase;
   console.log("origin baseline " + JSON.stringify(await (await fetch(`${BASE}/api/status`)).json()));
   const published = await publish(deployment.cookie, fixture);
   console.log(`published ${published.slug}; reader key only; mirror ${mirrorUrl}`);

@@ -22,6 +22,7 @@ let reader;
 const original = "# History acceptance\n\nThe red fox watches the quiet river.\n\nA paragraph to remove.\n";
 const revised = "# History acceptance\n\nThe blue fox watches the quiet river.\n\nA newly added paragraph.\n";
 const cookie = deployment.cookie;
+const browserBase = deployment.browserBase;
 
 async function request(path, method = "GET", body) {
   const response = await fetch(new URL(path, deployment.base), {
@@ -38,34 +39,37 @@ async function request(path, method = "GET", body) {
 
 async function main() {
   owner = await browser("chromium", join(profileRoot, "owner"), port);
-  await owner.setCookie("librepaper_session", cookie.slice(cookie.indexOf("=") + 1), deployment.base);
-  await owner.navigate(deployment.base);
+  await owner.setCookie("librepaper_session", cookie.slice(cookie.indexOf("=") + 1), browserBase);
+  await owner.navigate(browserBase);
   await owner.resize(1400, 900);
 
   const document = await deployment.publish({ title: "History acceptance", source_format: "markdown", source: original });
   const slug = document.slug;
-  const shareUrl = new URL(document.share_url, deployment.base);
+  const shareUrl = new URL(document.share_url, browserBase);
   const historyPath = `/api/documents/${slug}/history`;
   const first = await request(`${historyPath}/current`, "PATCH", {
     label: "Original draft", request_id: randomUUID(),
   });
   assert.ok(first.sha, "the original source receives a named label");
 
-  await owner.navigate(new URL(`/docs/${slug}`, deployment.base).href);
+  await owner.navigate(new URL(`/docs/${slug}`, browserBase).href);
   await until("editor", () => owner.evaluate('!!document.querySelector(".cm-content")'));
   await until("initial source", () => owner.evaluate('document.querySelector(".cm-content")?.textContent.includes("red fox")'));
   await owner.insert(revised, true);
   try {
     await until("revised preview", async () => (await owner.text()).includes("blue fox"));
   } catch (error) {
-    const [editorSource, frameUrl, frameBody, snapshot] = await Promise.all([
+    const [editorSource, frameUrl, frameBody, snapshot, targets, frames] = await Promise.all([
       owner.evaluate('document.querySelector(".cm-content")?.textContent || ""').catch((cause) => `unavailable: ${cause.message}`),
       owner.evaluate('document.querySelector("iframe[title=Document]")?.src || ""').catch((cause) => `unavailable: ${cause.message}`),
       owner.frameEvaluate("document.body.innerText").catch((cause) => `unavailable: ${cause.message}`),
       request(`/api/documents/${slug}/snapshot`).catch((cause) => `unavailable: ${cause.message}`),
+      owner.command("Target.getTargets").catch((cause) => `unavailable: ${cause.message}`),
+      owner.command("Page.getFrameTree").catch((cause) => `unavailable: ${cause.message}`),
     ]);
     const truncate = (value) => String(typeof value === "object" ? JSON.stringify(value) : value).slice(0, 1200);
-    throw new Error(`${error.message}; editor source: ${truncate(editorSource)}; iframe src: ${truncate(frameUrl)}; frame body: ${truncate(frameBody)}; source snapshot: ${truncate(snapshot)}`);
+    const framesOnly = targets?.targetInfos?.filter((target) => target.type === "iframe" || target.url.includes(`/raw/${slug}/`)) || targets;
+    throw new Error(`${error.message}; editor source: ${truncate(editorSource)}; iframe src: ${truncate(frameUrl)}; frame body: ${truncate(frameBody)}; source snapshot: ${truncate(snapshot)}; matching CDP targets: ${truncate(framesOnly)}; frame tree: ${truncate(frames)}`);
   }
   await until("edited source reached the server", async () => {
     const snapshot = await request(`/api/documents/${slug}/snapshot`);
@@ -86,7 +90,7 @@ async function main() {
   const readerCookie = sessionCookie({
     dataDirectory: deployment.data, accountId: readerId, handle: "history-reader", name: "History Reader",
   });
-  await reader.setCookie("librepaper_session", readerCookie.slice(readerCookie.indexOf("=") + 1), deployment.base);
+  await reader.setCookie("librepaper_session", readerCookie.slice(readerCookie.indexOf("=") + 1), browserBase);
   await reader.resize(1400, 900);
   await reader.navigate(shareUrl.href);
   await until("reader preview", async () => (await reader.text()).includes("blue fox"));
@@ -117,7 +121,7 @@ async function main() {
     "a reader has no restore control");
 
   // Restoring an earlier label creates a new event and updates the live source.
-  await owner.navigate(new URL(`/docs/${slug}`, deployment.base).href);
+  await owner.navigate(new URL(`/docs/${slug}`, browserBase).href);
   await owner.evaluate('document.querySelector(".sidebar-activity [aria-label=History]")?.click()');
   await until("owner history", () => owner.evaluate('document.body.innerText.includes("Original draft")'));
   await owner.evaluate(`document.querySelector('li[data-sha=${JSON.stringify(first.sha)}] .timeline-point')?.click()`);

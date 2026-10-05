@@ -200,6 +200,9 @@ export async function startDeployment({
 
   return {
     base,
+    // Browser documents live on docs.localhost; docs.127.0.0.1 does not
+    // resolve on every system even though the server itself listens on loopback.
+    browserBase: `http://localhost:${port}`,
     cookie,
     data,
     accountId,
