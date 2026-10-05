@@ -1250,7 +1250,10 @@ mod tests {
         ] {
             std::fs::write(&path, config).unwrap();
             let error = load(&path).unwrap_err();
-            assert!(error.contains("/etc/resticprofile/resticprofile.toml"), "{error}");
+            assert!(
+                error.contains("/etc/resticprofile/resticprofile.toml"),
+                "{error}"
+            );
             assert!(!error.contains("profile-secret"));
         }
 

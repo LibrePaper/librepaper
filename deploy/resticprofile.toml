@@ -7,7 +7,7 @@
 #
 # Or set a password through the native resticprofile environment table:
 # [resticprofile.env]
-# RESTIC_PASSWORD = "replace-with-a-secret-reference"
+# RESTIC_PASSWORD = "replace-with-a-long-random-secret"
 #
 # Keep credentials in mounted secret files or environment variables. This file
 # intentionally ships without a [resticprofile] table, so backups stay idle.
