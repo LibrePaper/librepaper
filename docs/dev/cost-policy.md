@@ -45,8 +45,9 @@
   objects, and backups add physical use beyond logical quotas.
 - `admin backup` dumps PostgreSQL and copies objects referenced by that
   snapshot. Each backup is another physical copy.
-- The Docker kit's optional `[resticprofile]` table enables encrypted scheduled
-  snapshots and retention. The staging volume needs room for one full export;
+- The Docker kit's separate `resticprofile.toml` enables encrypted scheduled
+  snapshots and retention when it contains a `[resticprofile]` table. The
+  staging volume needs room for one full export;
   the repository needs room for retained snapshots. Test recovery. Versioned
   object stores may retain old pack versions after pruning; set lifecycle
   expiry for noncurrent versions.

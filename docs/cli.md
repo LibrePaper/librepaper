@@ -60,20 +60,20 @@ librepaper list       # show ID, date, and title
 ## Self-host
 
 ```sh
-librepaper admin serve --config /etc/librepaper/config.toml
-librepaper admin config check --config /etc/librepaper/config.toml
-librepaper admin config show --config /etc/librepaper/config.toml
-librepaper admin backup --config /etc/librepaper/config.toml <dest>
+librepaper admin serve --config /etc/librepaper/librepaper.toml
+librepaper admin config check --config /etc/librepaper/librepaper.toml
+librepaper admin config show --config /etc/librepaper/librepaper.toml
+librepaper admin backup --config /etc/librepaper/librepaper.toml <dest>
 librepaper admin restore --config /etc/librepaper/restore.toml <src> <dest>
 curl http://127.0.0.1:8080/api/status      # check operational state
 ```
 
-The TOML file is the source for server and admin storage settings. `admin
-serve` defaults to `/etc/librepaper/config.toml`; other admin commands accept
-the same `--config PATH`. `config show` redacts credentials and database URLs,
-and reports backup configuration as present or absent. Restore uses a config
-that points at the target database and takes the new directory as its final
-argument. See the [hosting page](host.html) for scheduled backups and recovery.
+The application TOML file is the source for server and admin storage settings.
+`admin serve` defaults to `/etc/librepaper/librepaper.toml`; other admin
+commands accept the same `--config PATH`. `config show` redacts credentials and
+database URLs. Backup configuration lives separately in
+`/etc/resticprofile/resticprofile.toml`; see the [hosting page](host.html) for
+scheduled backups and recovery.
 
 ## Agents
 

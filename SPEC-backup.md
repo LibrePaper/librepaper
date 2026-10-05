@@ -8,10 +8,14 @@ tree `a7dc3b7a` and resticprofile `0.33.1`; pending review and merge.
 - Add a Docker `backup` sidecar for scheduled exports, snapshots, retention,
   pruning and repository checks. It uses resticprofile `0.33.1` for scheduling,
   locking and restic operations, plus a small Python helper for status metrics.
-- Keep one operator file: `config.toml`. An optional `[resticprofile]` profile
-  is merged into a kit-owned base profile. No table means backups stay disabled.
-- LibrePaper only needs to accept the optional table and report whether it is
-  present. It must never print its contents.
+- Keep independent operator files: `librepaper.toml` for the app and
+  `resticprofile.toml` for resticprofile. The named `[resticprofile]` table is
+  merged into a kit-owned base profile; a comments-only backup file disables
+  backups.
+- Keep `prometheus.yaml` and `grafana.json` at the root of `deploy/`; rules
+  and provisioning remain under `deploy/monitoring`.
+- The app parser does not understand backup settings or report their presence.
+  It rejects misplaced `[resticprofile]` and legacy `[backup]` tables safely.
 - No Docker socket, expiration policy or deletion ledger. If backups stop,
   snapshots remain until backups resume or an operator deletes them; alerts
   report the stoppage.
@@ -26,7 +30,8 @@ tree `a7dc3b7a` and resticprofile `0.33.1`; pending review and merge.
 - The kit lacks `pg_dump`; add PostgreSQL 17 client tools. Fix the current
   `fork_at on shallow docs` replay failure and pass `tools/test/suite backup`
   before release.
-- Back up `secrets/session.key`: without it, sessions are invalidated and the
+- Back up both operator configs, `secrets/session.key`, the current export and
+  referenced objects: without the session key, sessions are invalidated and the
   app cannot reveal existing share URLs; URLs already held still work.
 - Erasure revokes sessions immediately and purges owned documents after 7 days.
   Comments, replies and labels on others' documents remain as “Deleted user.”
@@ -42,22 +47,26 @@ tree `a7dc3b7a` and resticprofile `0.33.1`; pending review and merge.
 - Keep the app user/runtime unchanged. Run backup as UID 10001 with private
   writable paths and `HEALTHCHECK NONE` (no inherited HTTP check).
 - Compose builds explicit app and backup targets. Backup shares `pgsocket`,
-  read-write `data`, `backups`, read-only `config.toml`, and `backup-metrics`;
+  read-write `data`, `backups`, read-only app and backup configs, and
+  `backup-metrics`;
   it gets the app env and DB override and starts after app health. Mount private
   tmpfs at `/run/librepaper-backup` (`uid=10001,gid=65534,mode=0700`).
 - Node-exporter mounts metrics read-only with its textfile collector enabled;
   files are 0644 and the directory is traversable; private state may be 0600. Recreate backup after
   config changes because atomic replacement may leave the old mounted inode.
 - Production passes matching source/version/build args to both images, builds
-  and checks both, and recreates both. Stop backup for schema upgrades; restart
-  only after app health.
+  and checks both, and recreates both. Preserve an existing remote
+  `resticprofile.toml` with its credentials; install the empty template only
+  when that file is absent. Stop backup for schema upgrades; restart only after
+  app health.
 
 ## Startup, jobs and locks
 
-- Startup uses `set -eu`. Python `tomllib` parses the whole config and requires
-  `resticprofile` to be a table. Accept whitespace, quoted table syntax and
-  implicit parent tables. Reject malformed TOML, wrong types and legacy
-  `[backup]` tables without logging values.
+- Startup uses `set -eu`. Python `tomllib` parses the complete
+  `/etc/resticprofile/resticprofile.toml`; a named `[resticprofile]` table
+  enables backups, while comments-only default disables them. Accept
+  whitespace, quoted table syntax and implicit parent tables. Reject malformed
+  TOML and wrong types without logging values.
 - On absent table, write `enabled=0` and idle without a scheduler. On present
   table, persist an enabled sentinel before profile validation, so invalid
   enabled configuration remains alertable. Validate the selected profile
@@ -65,7 +74,7 @@ tree `a7dc3b7a` and resticprofile `0.33.1`; pending review and merge.
   credentials or backend connectivity.
 - Generate only the selected profile's crontab with
   `resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile schedule`,
-  then `exec supercronic /run/librepaper-backup/crontab` as UID 10001. Any
+  then `exec /usr/bin/supercronic /run/librepaper-backup/crontab` as UID 10001. Any
   parsing, validation or scheduling error exits nonzero.
 - A single sidecar owns the private tmpfs and local lock. It may clear a stale
   local lock at startup only under this invariant. Manual backup, check and
@@ -80,14 +89,15 @@ tree `a7dc3b7a` and resticprofile `0.33.1`; pending review and merge.
 
 ## Base profile and operator configuration
 
-- `deploy/backup/profiles.toml` includes `/etc/librepaper/config.toml`.
+- `/etc/resticprofile/profiles.toml` includes only
+  `/etc/resticprofile/resticprofile.toml`.
 - In resticprofile `0.33.1`, included properties override base properties;
   sections merge and lists replace as a whole.
 - The base owns export source, hooks, lock/status paths and fixed operations;
   docs prohibit overriding them.
 
 ```toml
-includes = ["/etc/librepaper/config.toml"]
+includes = ["/etc/resticprofile/resticprofile.toml"]
 
 [global]
 scheduler = "crontab:-:/run/librepaper-backup/crontab"
@@ -106,12 +116,12 @@ schedule-permission = "user"
 extended-status = true
 host = "librepaper"
 tag = ["librepaper"]
-source = ["/var/backups/librepaper/current", "/etc/librepaper/config.toml", "/var/lib/librepaper/secrets"]
+source = ["/var/backups/librepaper/current", "/etc/librepaper/librepaper.toml", "/etc/resticprofile/resticprofile.toml", "/var/lib/librepaper/secrets"]
 run-before = """
 set -eu
 rm -rf /var/backups/librepaper/current
 librepaper-backup-status start backup
-librepaper admin backup --config /etc/librepaper/config.toml /var/backups/librepaper/current
+librepaper admin backup --config /etc/librepaper/librepaper.toml /var/backups/librepaper/current
 """
 run-after = "librepaper-backup-status success backup"
 run-after-fail = "librepaper-backup-status failure backup"
@@ -140,9 +150,9 @@ run-after-fail = "librepaper-backup-status failure check"
   the retention operation. The optional `[resticprofile.prune]` is for manual
   prune settings, not this policy.
 - Operators may set repository, credentials, schedules, retention and
-  notifications. Secrets belong in restricted `config.toml` and an independent
-  off-host recovery copy. `admin config` reports only `present` or `none`.
-  `resticprofile show` may expose secrets; use only in the operator's terminal.
+  notifications in `resticprofile.toml`. Protect both config files and keep
+  independent off-host recovery copies. `resticprofile show` may expose
+  secrets; use only in the operator's terminal.
 - Local repositories need durable storage outside staging/container layers.
   SFTP needs mounted private key and `known_hosts` files. Document required
   mounts alongside supported backends.
@@ -182,8 +192,9 @@ run-after-fail = "librepaper-backup-status failure check"
    recovery database URL explicitly; remove or replace inherited
    `LIBREPAPER_DATABASE_URL` so it cannot point to production.
 3. Restore the selected snapshot to a temporary directory. Inspect its path
-   hierarchy and copy the backed-up config to a recovery config. Keep
-   `storage.directory = "/var/lib/librepaper"` and set the recovery DB URL.
+   hierarchy and copy both backed-up configs. Keep
+   `storage.directory = "/var/lib/librepaper"` in the app config, set the
+   recovery DB URL, and use the matching backup config to access snapshots.
 4. Run `admin restore` against the matching release, empty database and a
    nonexistent child path such as `/var/lib/librepaper/recovered` in the new
    volume. The volume root already exists. Install `recovered/objects` and
@@ -202,11 +213,13 @@ run-after-fail = "librepaper-backup-status failure check"
 - Image and runtime: `deploy/Dockerfile`; app/sidecar wiring:
   `deploy/compose.yaml`; matching production rollout and upgrade order:
   `tools/deploy/production`.
-- Config and status: `deploy/config.toml`, `tools/deploy/production.toml`,
+- Config and status: `deploy/librepaper.toml`, `deploy/resticprofile.toml`,
+  `deploy/prometheus.yaml`, `deploy/grafana.json`, `deploy/monitoring/`,
+  `tools/deploy/production.toml`,
   `deploy/backup/profiles.toml`, sidecar entrypoint and Python helper.
 - Parser: `crates/librepaper-base/src/config/mod.rs` and
-  `crates/librepaper/src/cli/server_config.rs`; remove `BackupPolicy`, accept
-  ignored `toml::Value`, report presence only, reject legacy `[backup]` at app startup.
+  `crates/librepaper/src/cli/server_config.rs`; remove `BackupPolicy`, reject
+  misplaced `[resticprofile]` and legacy `[backup]` at app startup.
 - Monitoring: `deploy/monitoring/alerts.yml` and Grafana dashboard.
 - Tests/docs: `tools/test/backup/`, `tools/test/suite`, `docs/host.md`,
   `docs/cli.md`, `docs/dev/cost-policy.md`, `docs/privacy.md` and
@@ -215,8 +228,10 @@ run-after-fail = "librepaper-backup-status failure check"
 
 ## Acceptance
 
-- Parser covers valid TOML variants, disabled state, malformed/wrong-type and
-  legacy `[backup]` rejection without secrets. Test shipped-version merge/show.
+- Sidecar configuration selection covers absent `[resticprofile]` (disabled),
+  valid TOML variants, malformed input and wrong types without logging values.
+  The app parser rejects misplaced `[resticprofile]` and legacy `[backup]`.
+  Test shipped-version merge/show.
 - Exercise actual after-backup retention/pruning with `max-unused = "0"`.
   Export, snapshot, retention, checks, hooks and independent dead-man results
   must report correctly; failed exports create no snapshots and failures never publish job success.

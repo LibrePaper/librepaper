@@ -120,7 +120,8 @@ Hosting, database and object-storage providers see what they store.
   current browser's cookie; it does not invalidate a copied credential. Account
   erasure revokes the account's sessions.
 - **Backups:** the Docker kit can encrypt and schedule database/object recovery
-  points when `[resticprofile]` is configured. Snapshots can retain erased data
+  points when `resticprofile.toml` contains a `[resticprofile]` table.
+  Snapshots can retain erased data
   until retention removes it; operators must review and reapply deletion requests
   after recovery. Session keys are included so restored sessions and share URLs
   remain valid. Backup access, repository credentials and off-host copies are

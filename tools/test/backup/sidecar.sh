@@ -60,18 +60,16 @@ chmod 0755 "$work"
 docker run --rm --user 0 -v "$work/source-data:/var/lib/librepaper" \
 	--entrypoint chown "$LIBREPAPER_BACKUP_IMAGE" -R 10001:65534 /var/lib/librepaper >/dev/null
 
-cat >"$work/disabled.toml" <<'TOML'
+cat >"$work/app.toml" <<'TOML'
 [storage]
 directory = "/var/lib/librepaper"
 database_url = { env = "LIBREPAPER_DATABASE_URL" }
 fsync = false
 TOML
-cat >"$work/enabled.toml" <<'TOML'
-[storage]
-directory = "/var/lib/librepaper"
-database_url = { env = "LIBREPAPER_DATABASE_URL" }
-fsync = false
-
+cat >"$work/disabled-backup.toml" <<'TOML'
+# Backups disabled: no [resticprofile] table.
+TOML
+cat >"$work/enabled-backup.toml" <<'TOML'
 [resticprofile]
 repository = "/var/backups/librepaper/repository"
 password-file = "/test/repository-password"
@@ -100,7 +98,8 @@ docker run -d --name "$sidecar" "${common[@]}" \
 	--tmpfs /run/librepaper-backup:uid=10001,gid=65534,mode=0700 \
 	-v "$work:/test:rw" -v "$work/source-data:/var/lib/librepaper:rw" \
 	-v "$work/repos:/var/backups/librepaper:rw" \
-	-v "$work/disabled.toml:/etc/librepaper/config.toml:ro" \
+	-v "$work/app.toml:/etc/librepaper/librepaper.toml:ro" \
+	-v "$work/disabled-backup.toml:/etc/resticprofile/resticprofile.toml:ro" \
 	-e LIBREPAPER_DATABASE_URL="$db_url" "$LIBREPAPER_BACKUP_IMAGE" >/dev/null
 sleep 2
 docker exec "$sidecar" sh -c 'test "$(cat /var/backups/librepaper/metrics/librepaper_backup.prom | sed -n "s/^librepaper_backup_enabled //p")" = 0'
@@ -112,7 +111,8 @@ launch_enabled() {
 		--tmpfs /run/librepaper-backup:uid=10001,gid=65534,mode=0700 \
 		-v "$work:/test:rw" -v "$work/source-data:/var/lib/librepaper:rw" \
 		-v "$work/repos:/var/backups/librepaper:rw" \
-		-v "$work/enabled.toml:/etc/librepaper/config.toml:ro" \
+		-v "$work/app.toml:/etc/librepaper/librepaper.toml:ro" \
+		-v "$work/enabled-backup.toml:/etc/resticprofile/resticprofile.toml:ro" \
 		-e LIBREPAPER_DATABASE_URL="$db_url" "$LIBREPAPER_BACKUP_IMAGE" >/dev/null
 	for _ in {1..30}; do
 		if docker exec "$sidecar" test -s /run/librepaper-backup/crontab 2>/dev/null; then return 0; fi
@@ -131,6 +131,8 @@ import fs from 'node:fs';
 const snapshots = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 assert.equal(snapshots.length, 1, 'successful export creates one repository snapshot');
 assert.ok(snapshots[0].paths.includes('/var/backups/librepaper/current'));
+assert.ok(snapshots[0].paths.includes('/etc/librepaper/librepaper.toml'), 'snapshot includes app config');
+assert.ok(snapshots[0].paths.includes('/etc/resticprofile/resticprofile.toml'), 'snapshot includes backup config');
 console.log('backup sidecar exported the verified application bundle and created a snapshot');
 JS
 
@@ -209,7 +211,8 @@ run_remote_profile() {
 		--tmpfs /run/librepaper-backup:uid=10001,gid=65534,mode=0700 \
 		-v "$work:/test:rw" -v "$work/source-data:/var/lib/librepaper:rw" \
 		-v "$work/repos:/var/backups/librepaper:rw" \
-		-v "$config:/etc/librepaper/config.toml:ro" \
+		-v "$work/app.toml:/etc/librepaper/librepaper.toml:ro" \
+		-v "$config:/etc/resticprofile/resticprofile.toml:ro" \
 		-e LIBREPAPER_DATABASE_URL="$db_url" "$LIBREPAPER_BACKUP_IMAGE" >/dev/null
 	for _ in {1..30}; do
 		if docker exec "$sidecar" test -s /run/librepaper-backup/crontab 2>/dev/null; then ready=1; break; fi
@@ -254,12 +257,7 @@ if [[ "${BACKUP_TEST_BACKENDS:-1}" != 0 ]]; then
 		"${BACKUP_TEST_SFTP_IMAGE:-atmoz/sftp:alpine}" \
 		fixture:fixture-password:1001:1001:upload >/dev/null
 	sftp_port=$(docker port "$name" 22/tcp | head -1 | sed 's/.*://')
-	cat >"$work/sftp.toml" <<TOML
-[storage]
-directory = "/var/lib/librepaper"
-database_url = { env = "LIBREPAPER_DATABASE_URL" }
-fsync = false
-
+cat >"$work/sftp.toml" <<TOML
 [resticprofile]
 repository = "sftp://fixture@127.0.0.1:$sftp_port/upload/repository"
 password-file = "/test/repository-password"
@@ -275,12 +273,7 @@ TOML
 		-e MINIO_ROOT_USER=fixture-access -e MINIO_ROOT_PASSWORD=fixture-secret-password \
 		"${BACKUP_TEST_MINIO_IMAGE:-quay.io/minio/minio:latest}" server /data --address :9000 >/dev/null
 	minio_port=$(docker port "$name" 9000/tcp | head -1 | sed 's/.*://')
-	cat >"$work/minio.toml" <<TOML
-[storage]
-directory = "/var/lib/librepaper"
-database_url = { env = "LIBREPAPER_DATABASE_URL" }
-fsync = false
-
+cat >"$work/minio.toml" <<TOML
 [resticprofile]
 repository = "s3:http://127.0.0.1:$minio_port/librepaper-fixture"
 password-file = "/test/repository-password"
@@ -309,12 +302,7 @@ TOML
 	# create_user so the authenticated REST acceptance uses the new test account.
 	docker restart "$name" >/dev/null
 	rest_port=$(docker port "$name" 8000/tcp | head -1 | sed 's/.*://')
-	cat >"$work/rest.toml" <<TOML
-[storage]
-directory = "/var/lib/librepaper"
-database_url = { env = "LIBREPAPER_DATABASE_URL" }
-fsync = false
-
+cat >"$work/rest.toml" <<TOML
 [resticprofile]
 repository = "rest:http://fixture:fixture-rest-password@127.0.0.1:$rest_port/fixture/repository"
 password-file = "/test/repository-password"

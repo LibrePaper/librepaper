@@ -7,11 +7,13 @@ title: "Self-hosting"
 
 ## Docker Compose
 
-The kit in `deploy/` runs PostgreSQL, LibrePaper and Caddy. You edit one file, `config.toml`. Needs Docker Compose 2.24 or newer and ports 80 and 443 reachable from the internet.
+The kit in `deploy/` runs PostgreSQL, LibrePaper and Caddy. Configure the app
+in `librepaper.toml`; scheduled backups use the separate `resticprofile.toml`.
+Needs Docker Compose 2.24 or newer and ports 80 and 443 reachable from the internet.
 
 ```sh
 cd deploy
-# edit config.toml: [origins] and one [auth.*] table
+# edit librepaper.toml: [origins] and one [auth.*] table
 docker compose up -d
 ```
 
@@ -24,7 +26,7 @@ Before the first start:
 
 ### Remote database
 
-Delete the `postgres` and `postgres-exporter` services in `compose.yaml`, remove the `depends_on` and `pgsocket` lines under `librepaper`, and remove the `postgres` scrape job from `monitoring/prometheus.yml`. Set `storage.database_url` in `config.toml` to the full URL. The exporter is configured for the bundled database role and socket. Add `?sslmode=verify-full` for a managed service.
+Delete the `postgres` and `postgres-exporter` services in `compose.yaml`, remove the `depends_on` and `pgsocket` lines under `librepaper`, and remove the `postgres` scrape job from `prometheus.yaml`. Set `storage.database_url` in `librepaper.toml` to the full URL. The exporter is configured for the bundled database role and socket. Add `?sslmode=verify-full` for a managed service.
 
 ### Volumes
 
@@ -41,6 +43,8 @@ Delete the `postgres` and `postgres-exporter` services in `compose.yaml`, remove
 - Prometheus and the exporters stay on the private Compose network. Grafana is
   available through the HTTPS proxy and uses its own login.
 - Prometheus keeps 30 days, capped at 8 GB.
+- `prometheus.yaml` and `grafana.json` live at the root of `deploy/`; alert
+  rules and Grafana provisioning stay under `deploy/monitoring/`.
 
 ### Upgrade
 
@@ -51,16 +55,17 @@ LIBREPAPER_VERSION=<tag> docker compose up -d --build
 ```
 
 The backup sidecar starts after the app is healthy. Recreate it after
-replacing `config.toml`, so its read-only bind mount sees the new file.
+replacing either configuration file, so its read-only bind mounts see the new files.
 
 ### Backups
 
-Backups stay disabled until `config.toml` has a `[resticprofile]` table. Put
-credentials in `[resticprofile.env]` or use resticprofile's `password-file`
-setting. These are resticprofile settings; LibrePaper's `{ env = ... }` and
-`{ file = ... }` references do not apply inside this table. Protect the config
-from other host users while keeping it readable by UID 10001, and keep an
-off-host recovery copy. Recreate the sidecar and check snapshots:
+Backups stay disabled until `resticprofile.toml` has a named `[resticprofile]`
+table. A comments-only file disables backups. Keep application settings in
+`librepaper.toml`; put restic credentials in `[resticprofile.env]` or use
+resticprofile's `password-file` setting. LibrePaper's `{ env = ... }` and
+`{ file = ... }` references do not apply in the resticprofile file. Protect
+both files from other host users while keeping them readable by UID 10001, and
+keep off-host recovery copies of both. Recreate the sidecar and check snapshots:
 
 ```sh
 docker compose up -d --force-recreate backup
@@ -72,6 +77,12 @@ runs daily backups and checks the repository Monday at 06:00. Successful
 backups keep 48 hours plus 14 daily and 11 weekly snapshots. Gaps can extend
 those ages; stopping backups stops pruning. Pruning runs after a successful
 backup, and no fixed deletion window is promised.
+
+To migrate an older combined `config.toml`, keep the application tables in
+`librepaper.toml` and move the complete `[resticprofile]` subtree, including
+its nested tables, to `resticprofile.toml`. Remove that subtree from the app
+file; the app now rejects it. Keep `resticprofile.toml` comments-only to leave
+backups disabled.
 
 Override repository, credentials, schedules, retention and notifications only.
 Keep the shipped sources, export hooks, lock and status paths. For versioned
@@ -97,7 +108,11 @@ Repeat under `resticprofile.check` with a separate ID. Set external freshness
 limits to 36 hours for backup and 8 days for check; update them when schedules
 change. The dashboard checks the same freshness limits. Manual resticprofile
 commands use the same lock as scheduled jobs. Do not run restic directly while
-a job is active.
+a job is active. The app reads `/etc/librepaper/librepaper.toml`; resticprofile
+reads `/etc/resticprofile/resticprofile.toml`, and its base profile includes
+only that backup file. `prometheus.yaml` and `grafana.json` remain at the root
+of `deploy/`; monitoring rules and provisioning remain under
+`deploy/monitoring/`.
 
 Restic supports local, SFTP, REST server and S3-compatible repositories. A
 local repository can live at `local:/var/backups/librepaper/repository`; it is
@@ -112,37 +127,42 @@ For a one-time verified export without a restic snapshot:
 
 ```sh
 docker compose exec librepaper librepaper admin backup \
-  --config /etc/librepaper/config.toml /var/backups/librepaper/manual
+  --config /etc/librepaper/librepaper.toml /var/backups/librepaper/manual
 ```
 
 ## Configuration
 
-Server and admin commands use one TOML file. `admin serve` defaults to
-`/etc/librepaper/config.toml`; use `--config PATH` to choose another file.
+Server and admin commands use `librepaper.toml`. `admin serve` defaults to
+`/etc/librepaper/librepaper.toml`; use `--config PATH` to choose another file.
 
-- Literals use TOML syntax.
-- `{ env = "NAME" }` and `{ file = "path" }` replace one whole value.
+- Application literals use TOML syntax. In `librepaper.toml`, `{ env = "NAME" }`
+  and `{ file = "path" }` replace one whole value.
   Referenced strings are used as-is; numbers, booleans, and arrays use TOML
-  syntax in LibrePaper application tables. The `[resticprofile]` subtree uses
-  resticprofile's own configuration syntax.
-- LibrePaper file references are config-relative; trailing CR/LF is stripped.
+  syntax in LibrePaper application tables. Backup settings belong in the
+  separate `resticprofile.toml` file and use resticprofile's own syntax. The
+  app rejects misplaced `[resticprofile]` and legacy `[backup]` tables.
+- LibrePaper file references in the application config are config-relative;
+  trailing CR/LF is stripped. Resticprofile uses its own configuration and
+  secret handling rules.
 
 Missing or empty references, invalid keys/types, and old server-setting flags
 fail. There is no interpolation or automatic application-setting override.
 
-The shipped `config.toml` is the reference: every table has a comment. The
-`[metrics]` table is enabled for the Docker monitoring stack; the commented-out
-`[limits]`, `[retention]`, `[resticprofile]` and `[server]` tables are optional.
-Secrets may be literals in a protected file readable by the container user, or
-`{ env = "NAME" }` and `{ file = "path" }` references.
+The shipped `librepaper.toml` is the application reference: every table has a
+comment. The `[metrics]` table is enabled for the Docker monitoring stack; the
+commented-out `[limits]`, `[retention]` and `[server]` tables are optional.
+The separate `resticprofile.toml` is comments-only by default, which disables
+the backup sidecar until a `[resticprofile]` table is added.
+Application secrets may be literals in a protected file readable by the
+container user, or `{ env = "NAME" }` and `{ file = "path" }` references.
 
 Use these commands to check or inspect resolved settings. `check` has no
 startup side effects or database connection; `show` includes defaults and
 provenance and redacts credentials and the database URL.
 
 ```sh
-librepaper admin config check --config /etc/librepaper/config.toml
-librepaper admin config show --config /etc/librepaper/config.toml
+librepaper admin config check --config /etc/librepaper/librepaper.toml
+librepaper admin config show --config /etc/librepaper/librepaper.toml
 ```
 
 ## Without Docker
@@ -154,12 +174,12 @@ librepaper admin config show --config /etc/librepaper/config.toml
    create database librepaper owner librepaper;
    ```
 
-2. Supply the complete database URL, as a literal in `config.toml` or
+2. Supply the complete database URL, as a literal in `librepaper.toml` or
    through a reference:
 
    ```sh
    export LIBREPAPER_DATABASE_URL='postgresql://librepaper:SECRET@127.0.0.1/librepaper'
-   librepaper admin serve --config /etc/librepaper/config.toml
+   librepaper admin serve --config /etc/librepaper/librepaper.toml
    ```
 
 3. Keep PostgreSQL and the data directory on durable storage. Run only one
@@ -181,7 +201,7 @@ Restore with the matching LibrePaper release, an empty database and new path.
 Keep the original deployment intact until recovery is verified.
 
 1. Stop the app and backup sidecar. Preserve the original database, data volume,
-   config and remote repository. Create `compose.recovery.yaml` in `deploy/`
+   both configs and remote repository. Create `compose.recovery.yaml` in `deploy/`
    with an unused subnet to avoid colliding with production:
 
    ```yaml
@@ -210,18 +230,21 @@ Keep the original deployment intact until recovery is verified.
      -c /etc/resticprofile/profiles.toml -n resticprofile restore <snapshot> --target /restore
    ```
 
-   Inspect the restored hierarchy and copy its config to the recovery project.
-3. Copy the included config to `config-recovery.toml`. Set
+   Inspect the restored hierarchy and copy both
+   `etc/librepaper/librepaper.toml` and
+   `etc/resticprofile/resticprofile.toml` to the recovery project.
+3. Copy the app config to `librepaper-recovery.toml`. Set
    `storage.directory = "/var/lib/librepaper"` and point the database URL at
-   the recovery DB; remove or replace inherited production URLs. Restore as
+   the recovery DB; remove or replace inherited production URLs. Keep the
+   matching backup config for access to the snapshot. Restore as
    root because the temporary directory is mode 700. Use the matching release,
    an empty DB and a nonexistent child path (the volume root exists):
 
    ```sh
    LIBREPAPER_VERSION=<snapshot-release> docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery build librepaper
-   LIBREPAPER_VERSION=<snapshot-release> LIBREPAPER_CONFIG_FILE=config-recovery.toml docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery run --rm --no-deps --user 0 \
+   LIBREPAPER_VERSION=<snapshot-release> LIBREPAPER_CONFIG_FILE=librepaper-recovery.toml docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery run --rm --no-deps --user 0 \
      -v /tmp/librepaper-restore:/restore:ro librepaper admin restore \
-     --config /etc/librepaper/config.toml /restore/var/backups/librepaper/current /var/lib/librepaper/recovered
+     --config /etc/librepaper/librepaper.toml /restore/var/backups/librepaper/current /var/lib/librepaper/recovered
    ```
 
 4. Install `recovered/objects` and restored `secrets/` at the new volume root
@@ -270,9 +293,9 @@ Open sockets recheck authorization every two seconds; frames already in flight
 may still arrive.
 
 ```sh
-librepaper admin moderate block-account github-handle --config /etc/librepaper/config.toml \
+librepaper admin moderate block-account github-handle --config /etc/librepaper/librepaper.toml \
   --actor "on-call@example.org" --reason "automated abuse investigation"
-librepaper admin moderate hide-project abusive-project --config /etc/librepaper/config.toml \
+librepaper admin moderate hide-project abusive-project --config /etc/librepaper/librepaper.toml \
   --actor "on-call@example.org" --reason "contains abusive material"
 ```
 
