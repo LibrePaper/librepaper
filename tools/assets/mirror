@@ -62,10 +62,10 @@ cmd_build() {
 
 cmd_check() {
   local target="${1:-$MIRROR}"
-  node tools/assets/check-mirror.mjs "$target"
+  node tools/assets/mirror.mjs check "$target"
   case "$target" in
     http://* | https://*) ;;
-    *) MIRRORS_DRY_RUN=1 MIRROR="$target" node tools/assets/push-mirrors.mjs ;;
+    *) MIRRORS_DRY_RUN=1 MIRROR="$target" node tools/assets/mirror.mjs publish ;;
   esac
 }
 
@@ -73,9 +73,9 @@ cmd_smoke() {
   local mirror_checked=0
   if [ "${1:-}" = --prechecked ]; then mirror_checked=1; fi
   make --no-print-directory dist/librepaper
-  node tools/assets/check-mirror.test.mjs
+  node --test tools/assets/mirror.test.mjs
   if [ "$mirror_checked" = 0 ]; then
-    node tools/assets/check-mirror.mjs "$MIRROR"
+    node tools/assets/mirror.mjs check "$MIRROR"
   fi
 
   # The smoke runs a real deployment, so it needs PostgreSQL, psql and openssl.
@@ -106,9 +106,9 @@ cmd_smoke() {
 # environment (set by cmd_publish) unless MIRRORS_DRY_RUN=1.
 push_mirrors() {
   if [ "${MIRRORS_DRY_RUN:-}" = 1 ] || command -v aws >/dev/null 2>&1; then
-    MIRROR="$MIRROR" node tools/assets/push-mirrors.mjs
+    MIRROR="$MIRROR" node tools/assets/mirror.mjs publish
   elif command -v nix >/dev/null 2>&1; then
-    MIRROR="$MIRROR" nix shell nixpkgs#awscli2 -c node tools/assets/push-mirrors.mjs
+    MIRROR="$MIRROR" nix shell nixpkgs#awscli2 -c node tools/assets/mirror.mjs publish
   else
     printf '%s\n' 'publish: AWS CLI v2 is required; install aws or install Nix to use the temporary nixpkgs fallback.' >&2
     exit 1
@@ -127,18 +127,7 @@ load_publish_credentials() {
       exit 1
     fi
   fi
-  if ! credentials_json=$(printf '%s' "$secrets_json" | node --input-type=module -e '
-import { readFileSync } from "node:fs";
-import { publisherEnvironment } from "./tools/assets/push-mirrors.mjs";
-import { publisherConfiguration } from "./tools/assets/publish-mirror.mjs";
-const secrets = JSON.parse(readFileSync(0, "utf8"));
-const config = await publisherEnvironment(process.env, async () => secrets);
-publisherConfiguration(config);
-const keys = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
-const values = keys.map((key) => config[key]);
-if (values.some((value) => typeof value !== "string" || !value || /[\x00-\x1f]/.test(value))) process.exit(1);
-process.stdout.write(values.join("\n"));
-' 2>/dev/null); then
+  if ! credentials_json=$(printf '%s' "$secrets_json" | node tools/assets/mirror.mjs credentials 2>/dev/null); then
     printf '%s\n' 'Error: could not resolve valid S3 publishing configuration' >&2
     exit 1
   fi

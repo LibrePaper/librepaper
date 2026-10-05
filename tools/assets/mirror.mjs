@@ -1,22 +1,202 @@
 #!/usr/bin/env node
 
-// Publish a prepared browser asset mirror to an S3-compatible bucket. AWS CLI
-// supplies SigV4 signing, so credentials stay in its environment and never in
-// command arguments or this tool's reports.
+// Consolidated browser asset mirror tool: build, check, and publish asset mirrors.
+// This module combines the functions of four separate tools:
+// - Release shape validation and path safety
+// - LaTeX mirror consumer-side validation
+// - S3 publisher with integrity checking
+// - Mirror staging and credential resolution
+
 import { execFile } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile, copyFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { Transform } from "node:stream";
 import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
-import { relativePathParts, validateReleaseShape } from "./release-shape.mjs";
+import { statSync } from "node:fs";
 
 const runFile = promisify(execFile);
+
+// === Release Shape Helpers ===
+
+export function relativePathParts(path, label, kind = "relative path") {
+  if (typeof path !== "string" || !path || path.trim() !== path || path.startsWith("/") || /[\\%?#:\0]/.test(path)) {
+    throw new Error(`${label} has an unsafe ${kind}`);
+  }
+  const parts = path.split("/");
+  if (parts.some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`${label} has an unsafe ${kind}`);
+  }
+  return parts;
+}
+
+export function validateReleaseShape(release) {
+  if (release?.format !== 2) throw new Error(`unsupported release format: ${release?.format}`);
+  if (!release.files || typeof release.files !== "object" || Array.isArray(release.files)) {
+    throw new Error("release has no files map");
+  }
+  if (!release.engines || typeof release.engines !== "object" || Array.isArray(release.engines) || !release.engines.pdftex) {
+    throw new Error("release has no pdfTeX worker specification");
+  }
+
+  for (const [name, spec] of Object.entries(release.engines)) {
+    const incomplete = () => name === "pdftex"
+      ? "pdfTeX engine has no valid worker inventory"
+      : `engine ${name} has no valid worker inventory`;
+    if (!spec || typeof spec !== "object" || typeof spec.worker !== "string" || !spec.worker.trim() ||
+        !Array.isArray(spec.files) || !spec.files.length || !spec.files.includes(spec.worker)) {
+      throw new Error(incomplete());
+    }
+    for (const file of spec.files) {
+      if (typeof file !== "string" || !file.trim() || !release.files[file]) {
+        throw new Error(`engine ${name} file is absent from release.json: ${file}`);
+      }
+    }
+    const worker = release.files[spec.worker];
+    if (!worker || !Number.isSafeInteger(worker.size) || worker.size <= 0 ||
+        typeof worker.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(worker.sha256) ||
+        typeof worker.url !== "string" || !worker.url.trim()) {
+      throw new Error(`${name} worker is missing or has no valid non-empty file record`);
+    }
+  }
+  if (!release.bundles) throw new Error(`release ${release.id} has no bundles; this mirror ships bundled releases only`);
+  return release;
+}
+
+// === LaTeX release checker ===
+
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const ID = /^[a-f0-9]{64}$/;
+
+const safeAssetPath = (url, what) => {
+  return relativePathParts(url, what).join("/");
+};
+
+/// One release directory on disk: MANIFEST.json hashes to the directory name,
+/// release.json is complete, and every engine file and bundle is present with
+/// matching size and digest.
+async function checkDirectory(directory) {
+  const { realpath } = await import("node:fs/promises");
+  const root = await realpath(resolve(directory));
+  const inside = async (path, what) => {
+    let actual;
+    try {
+      actual = await realpath(path);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      actual = resolve(path);
+    }
+    const rel = relative(root, actual);
+    if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      throw new Error(`${what} escapes the release directory`);
+    }
+    return actual;
+  };
+  const release = validateReleaseShape(JSON.parse(await readFile(resolve(root, "release.json"), "utf8")));
+  if (ID.test(basename(root))) {
+    let manifest;
+    try {
+      manifest = await readFile(resolve(root, "MANIFEST.json"));
+    } catch {
+      throw new Error("MANIFEST.json is missing");
+    }
+    if (sha256(manifest) !== basename(root)) throw new Error("release directory is not the SHA-256 of MANIFEST.json");
+    if (release.id !== basename(root)) throw new Error(`release.json id ${release.id} does not match its directory`);
+  }
+
+  // Every engine file present on disk with matching digest and size.
+  for (const [name, spec] of Object.entries(release.engines)) {
+    for (const file of spec.files || []) {
+      const info = release.files?.[file];
+      if (!info) throw new Error(`engine ${name}: file ${file} is absent from release.json`);
+      const url = safeAssetPath(info.url, `asset path ${info.url}`);
+      const bytes = await readFile(await inside(resolve(root, url), `asset path ${info.url}`));
+      if (bytes.length !== info.size || sha256(bytes) !== info.sha256) {
+        throw new Error(`engine ${name}: digest or size mismatch: ${info.url}`);
+      }
+    }
+  }
+
+  // SPEC-latex.md "The index": bundles.json's own digest must match what
+  // the release pins, and every bundle path it names must actually be on
+  // disk -- independent of `release.files`, which only proves the engine
+  // files landed intact, not that bundles.json still agrees with them.
+  const indexPath = safeAssetPath(release.bundles.index, "bundle index");
+  const indexBytes = await readFile(await inside(resolve(root, indexPath), "bundle index"));
+  if (sha256(indexBytes) !== release.bundles.sha256) {
+    throw new Error(`bundle index digest mismatch: ${release.bundles.index}`);
+  }
+  const index = JSON.parse(indexBytes.toString("utf8"));
+  const bundleDir = release.bundles.index.slice(0, release.bundles.index.lastIndexOf("/") + 1);
+  const bundleEntries = Object.entries(index.bundles || {});
+  if (bundleEntries.length !== release.bundles.count) {
+    throw new Error(`release.bundles.count is ${release.bundles.count} but the index names ${bundleEntries.length}`);
+  }
+  for (let i = 0; i < bundleEntries.length; i += 32) {
+    await Promise.all(bundleEntries.slice(i, i + 32).map(async ([name, bundle]) => {
+      const path = await inside(resolve(root, safeAssetPath(bundleDir + bundle.url, `bundle path ${bundle.url}`)), `bundle path ${bundle.url}`);
+      let bytes;
+      try {
+        bytes = await readFile(path);
+      } catch {
+        throw new Error(`bundle "${name}" (${bundle.url}) is missing from the mirror`);
+      }
+      if (bytes.length !== bundle.size || sha256(bytes) !== bundle.sha256) {
+        throw new Error(`bundle asset size or digest mismatch: ${bundle.url}`);
+      }
+    }));
+  }
+  for (const bundleName of new Set(Object.values(index.files || {}))) {
+    if (!index.bundles?.[bundleName]) throw new Error(`bundles.json names unknown bundle "${bundleName}" in its files map`);
+  }
+  return release;
+}
+
+export async function checkMirror(base) {
+  if (!base) throw new Error("usage: mirror check <mirror dir | release dir | release URL>");
+  if (/^https?:\/\//.test(base)) {
+    const releaseUrl = new URL(`${base.replace(/\/$/, "")}/release.json`);
+    const response = await fetch(releaseUrl, { signal: AbortSignal.timeout(30000), redirect: "manual" });
+    if (!response.ok) throw new Error(`release.json returned HTTP ${response.status}`);
+    const release = validateReleaseShape(await response.json());
+    const workerUrl = new URL(safeAssetPath(release.files[release.engines.pdftex.worker].url, "pdfTeX worker"), releaseUrl);
+    if (workerUrl.origin !== releaseUrl.origin || !workerUrl.pathname.startsWith(releaseUrl.pathname.slice(0, releaseUrl.pathname.lastIndexOf("/") + 1))) {
+      throw new Error("pdfTeX worker URL escapes the release directory");
+    }
+    const workerResponse = await fetch(workerUrl, { signal: AbortSignal.timeout(30000), redirect: "manual" });
+    if (!workerResponse.ok) throw new Error(`pdfTeX worker returned HTTP ${workerResponse.status}`);
+    const worker = Buffer.from(await workerResponse.arrayBuffer());
+    const workerRecord = release.files[release.engines.pdftex.worker];
+    if (worker.length !== workerRecord.size || sha256(worker) !== workerRecord.sha256) {
+      throw new Error("pdfTeX worker payload does not match release.json");
+    }
+    console.log(`LaTeX manifest and pdfTeX worker verified: ${base} (${release.id}, format ${release.format})`);
+  } else {
+    const root = resolve(base);
+    const single = await readFile(resolve(root, "release.json")).then(() => true, () => false);
+    const directories = single
+      ? [root]
+      : (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory() && ID.test(entry.name)).map((entry) => resolve(root, entry.name));
+    if (!directories.length) throw new Error("no release directories (<sha256>/) found");
+    for (const directory of directories) {
+      let release;
+      try {
+        release = await checkDirectory(directory);
+      } catch (error) {
+        throw new Error(`${basename(directory)}: ${error.message}`);
+      }
+      console.log(`LaTeX release ready: ${directory} (${release.id}, format ${release.format})`);
+    }
+  }
+}
+
+// === S3 publisher ===
+
 const HASH = /(?:^|[./_-])[a-f0-9]{64}(?=$|[./_-])/i;
 const COMPRESSIBLE = new Set([".css", ".data", ".fmt", ".html", ".js", ".json", ".mjs", ".svg", ".tar", ".txt", ".wasm", ".xml"]);
 const MIME = new Map([
@@ -60,24 +240,6 @@ export function awsFailureMessage(error, args) {
     return `AWS CLI operation failed${context}: SSL validation failed. Check the endpoint certificate and local trust configuration.`;
   }
   return `AWS CLI operation failed${context}`;
-}
-
-export function parseArgs(args) {
-  const options = { cors: false, dryRun: false };
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === "--dry-run") options.dryRun = true;
-    else if (arg === "--configure-cors") options.cors = true;
-    else if (["--dir", "--prefix"].includes(arg)) {
-      const value = args[++i];
-      if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
-      options[arg.slice(2)] = value;
-    } else throw new Error(`unknown option: ${arg}`);
-  }
-  if (!options.dir) throw new Error("--dir <mirror> is required");
-  if (!options.prefix) throw new Error("--prefix wasm|latex is required");
-  if (!/^(wasm|latex)$/.test(options.prefix)) throw new Error("prefix must be exactly wasm or latex");
-  return options;
 }
 
 function skipRelativePath(path) {
@@ -465,13 +627,208 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
   }
 }
 
-const invoked = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
-if (invoked) {
+// === Staging and credential resolution ===
+
+export async function stageWasmMirror(directory = join(fileURLToPath(new URL("../..", import.meta.url)), "web/wasm"), lockPath = join(fileURLToPath(new URL("../..", import.meta.url)), "assets.lock")) {
+  const rows = (await readFile(lockPath, "utf8"))
+    .split("\n")
+    .map((line) => line.replace(/#.*$/, "").trim())
+    .filter(Boolean)
+    .map((line) => line.split(/\s+/))
+    // The latex row pins a mirror release directory, not a wasm module.
+    .filter(([module]) => module !== "latex");
+  if (!rows.length) throw new Error("assets.lock has no modules");
+  const staged = await mkdtemp(join(tmpdir(), "librepaper-wasm-mirror-"));
   try {
-    const options = parseArgs(process.argv.slice(2));
-    await publish({ ...options, configureCors: options.cors });
+    for (const [module, , , sha256, ...extra] of rows) {
+      if (extra.length || !/^[a-f0-9]{64}$/.test(sha256 || "")) throw new Error(`${module || "lock entry"}: expected module repo tag sha256`);
+      let bytes;
+      try {
+        bytes = await readFile(join(directory, module));
+      } catch {
+        throw new Error(`${module} not found in ${directory}; run tools/assets/pins fetch first`);
+      }
+      if (createHash("sha256").update(bytes).digest("hex") !== sha256) {
+        throw new Error(`${module} in ${directory} does not match assets.lock; run tools/assets/pins fetch first`);
+      }
+      await mkdir(join(staged, sha256), { recursive: true });
+      await copyFile(join(directory, module), join(staged, sha256, module));
+    }
   } catch (error) {
-    console.error(`publish-mirror: ${error.message}`);
-    process.exitCode = 1;
+    await rm(staged, { recursive: true, force: true });
+    throw error;
   }
+  return staged;
+}
+
+export function mappedEnvironment(env) {
+  const bucketSource = env.S3_BUCKET || env.OVH_S3_BUCKET;
+  const bucket = bucketSource || bucketFromArn(env.OVH_S3_ARN);
+  const mapped = {
+    ...env,
+    S3_ENDPOINT: env.S3_ENDPOINT || env.OVH_S3_ENDPOINT,
+    S3_REGION: env.S3_REGION || env.OVH_S3_REGION,
+    S3_BUCKET: bucket,
+    AWS_ACCESS_KEY_ID: env.AWS_ACCESS_KEY_ID || env.OVH_S3_USER,
+    AWS_SECRET_ACCESS_KEY: env.AWS_SECRET_ACCESS_KEY || env.OVH_S3_SECRET,
+  };
+  for (const [key, value] of Object.entries({
+    S3_ENDPOINT: mapped.S3_ENDPOINT,
+    S3_REGION: mapped.S3_REGION,
+    S3_BUCKET: mapped.S3_BUCKET,
+    AWS_ACCESS_KEY_ID: mapped.AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: mapped.AWS_SECRET_ACCESS_KEY,
+  })) {
+    if (value !== undefined && value !== null && typeof value !== "string") throw new Error(`${key} must be a string`);
+  }
+  return mapped;
+}
+
+export function selectedOvhFields(secrets) {
+  const selected = {};
+  for (const key of ["OVH_S3_ENDPOINT", "OVH_S3_USER", "OVH_S3_SECRET", "OVH_S3_ARN", "OVH_S3_REGION", "OVH_S3_BUCKET"]) {
+    if (secrets[key] !== undefined && secrets[key] !== null) selected[key] = secrets[key];
+  }
+  return selected;
+}
+
+export function bucketFromArn(arn) {
+  if (!arn) return undefined;
+  const match = /^arn:aws:s3:::([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])$/.exec(arn);
+  if (!match) throw new Error("OVH_S3_ARN must be an exact bucket ARN (or set S3_BUCKET)");
+  return match[1];
+}
+
+const publisherEnvironmentKeys = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
+
+// Deploy-assets resolves these once before its S3 probes. Standalone pushes
+// still load SOPS when the caller has not supplied a complete canonical config.
+export async function publisherEnvironment(env, loadSecrets = loadSecretsFromSops) {
+  const complete = publisherEnvironmentKeys.every((key) => env[key]);
+  const candidate = complete ? env : { ...env, ...selectedOvhFields(await loadSecrets()) };
+  return mappedEnvironment(candidate);
+}
+
+async function loadSecretsFromSops(keysFile) {
+  try {
+    const { stdout } = await runFile("sops", ["--decrypt", "--output-type", "json", keysFile], {
+      maxBuffer: 1024 * 1024,
+    });
+    const secrets = JSON.parse(stdout);
+    if (!secrets || typeof secrets !== "object" || Array.isArray(secrets)) throw new Error("invalid key file");
+    return secrets;
+  } catch {
+    throw new Error("SOPS could not load deploy keys; check SOPS availability and deploy key configuration");
+  }
+}
+
+// === CLI Entry Point ===
+
+const invoked = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+
+if (invoked) {
+  const command = process.argv[2];
+
+  if (!command || command === "help" || command === "-h" || command === "--help") {
+    console.log("Usage: mirror <command> [args]\n");
+    console.log("Commands:");
+    console.log("  check <dir|url>    Validate LaTeX mirror directory or URL");
+    console.log("  publish            Check and publish wasm and LaTeX mirrors to S3");
+    console.log("  credentials        Resolve S3 credentials from SOPS secrets (stdin)");
+    process.exit(command ? 0 : 2);
+  }
+
+  (async () => {
+    try {
+      switch (command) {
+        case "check": {
+          const target = process.argv[3];
+          if (!target) throw new Error("usage: mirror check <dir | url>");
+          await checkMirror(target);
+          break;
+        }
+
+        case "publish": {
+          const keys = process.env.KEYS || "tools/deploy/keys.yaml";
+          const root = fileURLToPath(new URL("../..", import.meta.url));
+          const wasmDirectory = process.env.WASM_DIR || join(root, "web/wasm");
+          const wasmLock = process.env.WASM_LOCK || join(root, "assets.lock");
+          const mirrorPath = process.env.MIRROR || "../wasm-latex/mirror";
+
+          if (![undefined, "", "0", "1"].includes(process.env.MIRRORS_DRY_RUN)) {
+            throw new Error("MIRRORS_DRY_RUN must be 0 or 1");
+          }
+          const dryRun = process.env.MIRRORS_DRY_RUN === "1";
+
+          const staged = await stageWasmMirror(wasmDirectory, wasmLock);
+          try {
+            const mirrors = [
+              { dir: staged, prefix: "wasm" },
+              { dir: mirrorPath, prefix: "latex" },
+            ];
+
+            // Validate both trees before either publisher makes a remote call
+            let env = process.env;
+            if (!dryRun) {
+              env = await publisherEnvironment(process.env, () => loadSecretsFromSops(keys));
+            }
+
+            for (const mirror of mirrors) {
+              try {
+                statSync(mirror.dir);
+              } catch {
+                throw new Error(`${mirror.prefix} mirror not found at ${mirror.dir}; run tools/assets/mirror build first`);
+              }
+              console.log(`Checking ${mirror.prefix} mirror...`);
+              const result = await preflightMirror(mirror);
+              console.log(`Validated ${mirror.prefix}: ${result.count} files, ${result.bytes} bytes.`);
+            }
+
+            if (!dryRun) {
+              for (const mirror of mirrors) {
+                await publish({ ...mirror, dryRun: false, env });
+              }
+            } else {
+              console.log("Dry run complete; no credentials loaded or objects changed.");
+            }
+          } finally {
+            await rm(staged, { recursive: true, force: true });
+          }
+          break;
+        }
+
+        case "credentials": {
+          // Read secrets from stdin, resolve with publisherEnvironment and publisherConfiguration
+          let input = "";
+          process.stdin.setEncoding("utf8");
+          for await (const chunk of process.stdin) input += chunk;
+
+          const secrets = JSON.parse(input);
+          if (!secrets || typeof secrets !== "object" || Array.isArray(secrets)) {
+            throw new Error("invalid secrets JSON");
+          }
+
+          const env = await publisherEnvironment(process.env, async () => secrets);
+          publisherConfiguration(env);
+
+          const keys = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
+          const values = keys.map((key) => env[key]);
+
+          if (values.some((value) => typeof value !== "string" || !value || /[\x00-\x1f]/.test(value))) {
+            process.exit(1);
+          }
+
+          process.stdout.write(values.join("\n"));
+          break;
+        }
+
+        default:
+          console.error(`unknown command: ${command}`);
+          process.exit(2);
+      }
+    } catch (error) {
+      console.error(`mirror: ${error.message}`);
+      process.exitCode = 1;
+    }
+  })();
 }
