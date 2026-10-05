@@ -7,7 +7,7 @@ title: "Building from source"
 The binary embeds the web build. Browser renderers are fetched separately from the configured asset mirror.
 
 - `web/` (Svelte, Skeleton, CodeMirror 6, Loro): bun and vite
-- `crates/librepaper/` (server and CLI): cargo
+- `crates/` (server, CLI and companion, as internal sub-crates): cargo
 
 Renderer implementations live in `wasm-*` repositories. The browser uses pinned WebAssembly artifacts; the production server binary does not link native document renderers. Some renderer crates remain dev-dependencies for fixtures and tests. The web build writes to `web/dist`, which the binary embeds.
 
@@ -38,24 +38,18 @@ make test                                  # everything, before handing work bac
 
 ## Test suites
 
-`make test` runs the ordinary Rust and web checks; PostgreSQL-gated cases and
-benchmarks remain ignored so a local run never assumes it may alter a database.
-For a focused PostgreSQL case, point `LIBREPAPER_TEST_POSTGRES_URL` at a
-dedicated disposable database and select one test by name:
+`make test` runs the ordinary Rust and web checks, leaving out PostgreSQL-gated cases and benchmarks. Run `tools/dev/db test` to run the gated suite in a throwaway Docker container: this is the same command CI runs. For a focused single case, point `LIBREPAPER_TEST_POSTGRES_URL` at a dedicated disposable database and select one test by name:
 
 ```sh
 LIBREPAPER_TEST_POSTGRES_URL='postgresql://postgres:password@127.0.0.1:5432/librepaper_test' \
   cargo test -p librepaper-server --lib server::history_frontier_tests::delegated_agent_bearer_stops_working_after_session_revocation -- --ignored --test-threads=1 --exact
 ```
 
-The log and catalogue tests live in `librepaper-engine`, the room and server tests in `librepaper`: run the same command with `-p librepaper-engine` for the former.
+The log and catalogue tests live in `librepaper-engine`, the others in `librepaper-room` and `librepaper-server`; change `-p` to match.
 
 The selected case may clear tables, so do not use a shared or production
 database. Shared PostgreSQL fixtures fail when explicitly run without their
-required database setting. The PostgreSQL CI job runs its recovery and deployment gates serially
-against separate disposable databases; its explicit selection skips keep
-release/capacity benchmarks and the unstable Quarto preview out of that run.
-See the [PostgreSQL CI invocation](../../.github/workflows/ci.yml).
+required database setting.
 
 Keep benchmarks opt-in by selecting one ignored test by its function name;
 do not run all ignored library tests together. For example, the release

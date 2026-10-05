@@ -43,18 +43,10 @@ librepaper export DOCUMENT ./paper-copy
 An exported project is a snapshot copy. Editing it does not update the hosted
 document.
 
-Browsers fetch the WebAssembly renderers (`wasm/<sha256>/`) and the LaTeX
-engines from an asset mirror, an S3 bucket on OVH by default. `assets.lock`
-pins each wasm module by digest and the LaTeX release directory,
-`latex/<sha256>/`, by its id, and the binary carries the pins. Everything on
-the mirror is immutable and the mirror only grows, so older binaries keep
-working. Operators can host their own copy by setting `assets.mirror` in the server TOML.
-See [`docs/asset-mirrors.md`](docs/dev/asset-mirrors.md).
-
 - [What is LibrePaper](https://librepaper.org/what.html)
 - [Install](https://librepaper.org/install.html)
 - [Self-hosting](https://librepaper.org/host.html)
-- [Privacy and the LaTeX mirror](https://librepaper.org/host.html#privacy)
+- [Privacy](https://librepaper.org/privacy.html)
 - [Building from source](https://librepaper.org/architecture/building.html)
 
 ## Credits

@@ -87,7 +87,7 @@ Pseudonymous comments hide identity from other readers, not the operator.
 - **Sign-in:** GitHub or Google sees the request, returns identity. No documents sent.
 - **LaTeX mirror:** Compilers and packages come from the project mirror, which sees
   browser address and files requested (not source). Package choices are fingerprintable.
-  Operators can host their own mirror to avoid this. See [Privacy](./host.html#privacy).
+  Operators can avoid this by [hosting their own mirror](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md#hosting-your-own-copy).
 - **Local companion:** The writing assistant runs on your computer; the server relays
   messages. When you start an agent from an open document page, the browser silently
   renews a document- and link-scoped five-minute token; the headless CLI uses the
