@@ -123,7 +123,12 @@ EOF
 bootstrap_monitoring_role() {
 	step "PostgreSQL: ensure the monitoring exporter role exists with no password"
 	ssh "$HOST" 'cd librepaper && docker compose up -d --wait postgres'
-	ssh "$HOST" 'cd librepaper && docker compose exec -T postgres sh -s' < tools/deploy/docker/monitoring-user.sh
+	# The same SQL compose.yaml runs for a new cluster; production predates it.
+	ssh "$HOST" 'cd librepaper && docker compose exec -T postgres psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -q' <<'SQL'
+SELECT 'CREATE ROLE librepaper_metrics LOGIN'
+  WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'librepaper_metrics') \gexec
+GRANT pg_monitor TO librepaper_metrics;
+SQL
 	ok "ensured least-privilege librepaper_metrics role"
 }
 

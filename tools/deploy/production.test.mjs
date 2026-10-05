@@ -154,7 +154,7 @@ case "$command" in
     printf 'config-install\\n' >> "$ORDER_FILE"
     ;;
   *'Caddyfile'*) cat >> "$REMOTE_ROOT/Caddyfile" ;;
-  *'postgres sh -s'*) cat > "$REMOTE_ROOT/monitoring-user.sh" ;;
+  *'psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -q'*) cat > "$REMOTE_ROOT/metrics-role.sql" ;;
   *'sha256sum librepaper.candidate.tmp'*) sha256sum "$REMOTE_ROOT/librepaper.candidate.tmp" | cut -d ' ' -f1 ;;
   *'chmod 755 librepaper.candidate.tmp'*) chmod 755 "$REMOTE_ROOT/librepaper.candidate.tmp"; mv "$REMOTE_ROOT/librepaper.candidate.tmp" "$REMOTE_ROOT/librepaper.candidate" ;;
   *'mv -f librepaper.candidate librepaper'*) mv -f "$REMOTE_ROOT/librepaper.candidate" "$REMOTE_ROOT/librepaper" ;;

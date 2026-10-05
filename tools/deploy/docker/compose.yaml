@@ -33,8 +33,12 @@ services:
     volumes:
       - postgres:/var/lib/postgresql/data
       - pgsocket:/var/run/postgresql
-      # Creates a passwordless metrics role, used only when the monitoring profile runs.
-      - ./monitoring-user.sh:/docker-entrypoint-initdb.d/20-monitoring-user.sh:ro
+    configs:
+      # Runs once, when the cluster is created: a passwordless role the
+      # monitoring profile reads statistics as. It can only connect over the
+      # trusted socket.
+      - source: metrics-role
+        target: /docker-entrypoint-initdb.d/20-metrics-role.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U librepaper -d librepaper"]
       interval: 5s
@@ -179,6 +183,13 @@ services:
     volumes:
       - pgsocket:/var/run/postgresql
     networks: [internal]
+
+configs:
+  metrics-role:
+    content: |
+      SELECT 'CREATE ROLE librepaper_metrics LOGIN'
+        WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'librepaper_metrics') \gexec
+      GRANT pg_monitor TO librepaper_metrics;
 
 networks:
   # Fixed subnet so config.toml can name it as a trusted proxy.
