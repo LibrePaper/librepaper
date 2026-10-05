@@ -1,4 +1,4 @@
-//! Read-only application replay verification after tools/frugal-recovery/drill.sh.
+//! Read-only application replay verification after tools/backup-drill/drill.sh.
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
@@ -24,7 +24,7 @@ async fn replay(url: String, directory: PathBuf) -> BTreeMap<String, Value> {
         catalog.clone(),
         blobs,
         Arc::new(Configuration::default()),
-        "frugal-read-only-recovery-verifier".into(),
+        "backup-drill-verifier".into(),
     );
     let documents: Vec<(Uuid, String)> =
         sqlx::query_as("SELECT id,slug FROM documents WHERE status='active' ORDER BY slug")
@@ -82,13 +82,13 @@ async fn replay(url: String, directory: PathBuf) -> BTreeMap<String, Value> {
 async fn restored_heads_and_history_replay_identically() {
     let var = |name| std::env::var(name).unwrap_or_else(|_| panic!("set {name}"));
     let source = replay(
-        var("FRUGAL_SOURCE_DATABASE_URL"),
-        var("FRUGAL_SOURCE_DATA").into(),
+        var("BACKUP_DRILL_SOURCE_URL"),
+        var("BACKUP_DRILL_SOURCE_DATA").into(),
     )
     .await;
     let restored = replay(
-        var("FRUGAL_RESTORE_DATABASE_URL"),
-        var("FRUGAL_RESTORE_DATA").into(),
+        var("BACKUP_DRILL_RESTORE_URL"),
+        var("BACKUP_DRILL_RESTORE_DATA").into(),
     )
     .await;
     assert_eq!(

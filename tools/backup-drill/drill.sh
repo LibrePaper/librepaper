@@ -4,8 +4,8 @@ set -Eeuo pipefail
 # Intentionally bound to the dedicated local fixture databases made for this
 # drill. It refuses any other database names before writing anything.
 : "${LIBREPAPER_BIN:?set to the built librepaper executable}"
-: "${LIBREPAPER_SOURCE_URL:?set the disposable frugal_fixture URL}"
-: "${LIBREPAPER_RESTORE_URL:?set the disposable frugal_restored URL}"
+: "${LIBREPAPER_SOURCE_URL:?set the disposable drill_source URL}"
+: "${LIBREPAPER_RESTORE_URL:?set the disposable drill_restored URL}"
 : "${AGE_RECIPIENT:?set an age recipient; the matching identity remains operator-managed}"
 : "${AGE_IDENTITY:?set the path to the operator-managed age identity}"
 command -v age >/dev/null
@@ -19,21 +19,28 @@ test -r "$AGE_IDENTITY"
 
 source_db=$(psql "$LIBREPAPER_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 -c 'select current_database()')
 restore_db=$(psql "$LIBREPAPER_RESTORE_URL" -XAt -v ON_ERROR_STOP=1 -c 'select current_database()')
-[[ "$source_db" == frugal_fixture ]] || { echo "refusing source database: expected frugal_fixture, got $source_db" >&2; exit 2; }
-[[ "$restore_db" == frugal_restored ]] || { echo "refusing restore database: expected frugal_restored, got $restore_db" >&2; exit 2; }
+[[ "$source_db" == drill_source ]] || { echo "refusing source database: expected drill_source, got $source_db" >&2; exit 2; }
+[[ "$restore_db" == drill_restored ]] || { echo "refusing restore database: expected drill_restored, got $restore_db" >&2; exit 2; }
 [[ "$source_db" != "$restore_db" ]] || { echo 'source and restore databases must differ' >&2; exit 2; }
 source_tables=$(psql "$LIBREPAPER_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 -c \
   "SELECT count(*) FROM pg_tables WHERE schemaname='public'")
 [[ "$source_tables" == 0 ]] || { echo "refusing nonempty source database ($source_tables public tables)" >&2; exit 2; }
 
-work=$(mktemp -d /tmp/librepaper-frugal-recovery.XXXXXX)
-case "$work" in /tmp/librepaper-frugal-recovery.*) ;; *) echo 'unsafe temporary path' >&2; exit 2;; esac
+if [[ -n "${BACKUP_DRILL_DIR:-}" ]]; then
+  work="$BACKUP_DRILL_DIR"
+  case "$work" in /tmp/librepaper-backup-drill.*) ;; *) echo "BACKUP_DRILL_DIR must match /tmp/librepaper-backup-drill.* pattern" >&2; exit 2;; esac
+  [[ -d "$work" ]] && [[ -z "$(ls -A "$work")" ]] || { echo "BACKUP_DRILL_DIR must be an empty existing directory" >&2; exit 2; }
+else
+  work=$(mktemp -d /tmp/librepaper-backup-drill.XXXXXX)
+fi
+case "$work" in /tmp/librepaper-backup-drill.*) ;; *) echo 'unsafe temporary path' >&2; exit 2;; esac
 cleanup() {
   status=$?
   trap - EXIT
   case "$work" in
-    /tmp/librepaper-frugal-recovery.*)
-      if [[ "${FRUGAL_KEEP_DRILL:-0}" == 1 ]]; then
+    /tmp/librepaper-backup-drill.*)
+      # A caller-supplied directory belongs to the caller, like a kept one.
+      if [[ "${BACKUP_DRILL_KEEP:-0}" == 1 || -n "${BACKUP_DRILL_DIR:-}" ]]; then
         rm -rf -- "$work/backup" "$work/recovery.tar.gz" "$work/recovered.tar.gz" \
           "$work/source-signature" "$work/restored-signature"
         if (( status != 0 )); then
@@ -98,7 +105,7 @@ JSHISTORY
 
 "$LIBREPAPER_BIN" admin backup \
   --config "$work/source.toml" \
-  --id frugal-recovery-drill "$work/backup"
+  --id backup-drill "$work/backup"
 
 # The portable recovery point is encrypted with the operator's public age
 # recipient. The private identity is used only to decrypt into this 0700 temp
@@ -158,6 +165,6 @@ for(const ref of m.references){
 }
 console.log('restore verification passed: database history signatures and all object bytes match');
 JSVERIFY
-if [[ "${FRUGAL_KEEP_DRILL:-0}" == 1 ]]; then
+if [[ "${BACKUP_DRILL_KEEP:-0}" == 1 ]]; then
   echo "preserved synthetic fixture at $work (source-data=$work/source-data, restored-data=$work/restored-data)"
 fi

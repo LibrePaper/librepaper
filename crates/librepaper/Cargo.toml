@@ -59,8 +59,8 @@ name = "frugal_mixed_bench"
 path = "tests/frugal_mixed_bench.rs"
 
 [[test]]
-name = "frugal_restore_verify"
-path = "tests/frugal_restore_verify.rs"
+name = "backup_drill_verify"
+path = "tests/backup_drill_verify.rs"
 
 [[test]]
 name = "projection_fixtures"
