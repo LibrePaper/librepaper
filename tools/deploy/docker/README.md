@@ -105,17 +105,12 @@ Grafana volume protected: administrator credentials and alert state live there.
 
 ## Backups
 
-Both volumes, together, at one instant. `docker compose exec` the backup
-command rather than copying the volume out from under a running server:
-
 ```sh
 docker compose exec librepaper librepaper admin backup \
   --config /etc/librepaper/config.toml /var/backups/librepaper/$(date +%F)
 ```
 
-Copy the result off this machine, and test a restore into an empty database
-and a path that does not exist. A backup that has never been restored is a
-guess.
+Restore and the rest of backup policy: [Storage and backup](https://librepaper.org/host.html#storage-and-backup).
 
 ## Upgrading
 
@@ -137,21 +132,5 @@ docker compose up -d --build
 
 ## S3 instead of local objects
 
-The filesystem profile keeps objects in the `data` volume. To use a bucket,
-change the existing `[storage]` table in `config.toml`; add `[storage.s3]` and
-provide credentials through explicit references:
-
-```toml
-object_store = "s3"
-
-[storage.s3]
-bucket = "librepaper-production"
-region = "us-east-1"
-access_key_id = { env = "LIBREPAPER_S3_ACCESS_KEY_ID" }
-secret_access_key = { env = "LIBREPAPER_S3_SECRET_ACCESS_KEY" }
-```
-
-Set those names in `.env`. Ambient AWS credential discovery is not used.
-
-The data volume is still where the deployment's own secrets live, so it is
-still worth backing up.
+The filesystem profile keeps objects in the `data` volume, which still holds the deployment's secrets and is worth backing up.
+To use S3, see [Self-hosting](https://librepaper.org/host.html#production-setup); put its credentials in `.env`.
