@@ -15,6 +15,7 @@ usage: tools/test/suite <suite>
   backup      backup, encrypt, restore and replay-verify a synthetic deployment (needs docker, age, age-keygen)
   backup-sidecar exercise the backup sidecar against a synthetic deployment (needs Docker and prebuilt test images)
   deploy-roles exercise the shipped PostgreSQL SCRAM and scoped-role setup (needs Docker and OpenSSL)
+  deploy-install exercise fresh Compose setup and legacy PostgreSQL upgrade (needs Docker and librepaper-app-test:yb5p)
   browser     component tests in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   smoke       drive the reader in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   e2e         run browser smoke, history and track-changes deployment scenarios (needs docker and chromium)
@@ -193,10 +194,17 @@ suite_deploy_roles() {
 	tools/test/deploy/roles.sh
 }
 
+# Run fresh initialization and the destructive legacy-upgrade path against
+# unique disposable Compose projects and volumes.
+suite_deploy_install() {
+	tools/test/deploy/install.sh
+}
+
 case "${1:-help}" in
 	backup) suite_backup ;;
 	backup-sidecar) suite_backup_sidecar ;;
 	deploy-roles) suite_deploy_roles ;;
+	deploy-install) suite_deploy_install ;;
 	browser) suite_browser ;;
 	smoke) suite_smoke ;;
 	e2e) suite_e2e ;;
