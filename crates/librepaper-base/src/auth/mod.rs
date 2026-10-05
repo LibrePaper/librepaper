@@ -685,8 +685,9 @@ fn deployment_secret_key(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound && !catalog_nonempty => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(format!(
-                "the nonempty catalogue is missing its {purpose} key at {}",
-                path.display()
+                "the existing deployment is missing its {purpose} signing key at {}; restore the matching secrets/{} from its backup before starting the app. Refusing to generate a replacement because the lost key could invalidate existing credentials and prevent recovery of saved share-link secrets; share URLs already held by users remain usable",
+                path.display(),
+                path.file_name().and_then(|name| name.to_str()).unwrap_or("session.key")
             ));
         }
         Err(err) => return Err(format!("could not read {}: {err}", path.display())),

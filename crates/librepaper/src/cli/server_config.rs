@@ -59,6 +59,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) docs_origin: Option<String>,
     pub(crate) site_origin: Option<String>,
     pub(crate) local_companion: bool,
+    pub(crate) migrate: bool,
     pub(crate) storage: StorageOptions,
     pub(crate) github_client_id: Option<String>,
     pub(crate) github_client_secret: Option<String>,
@@ -77,6 +78,11 @@ pub(crate) struct ResolvedConfig {
     sources: BTreeMap<String, String>,
 }
 
+pub(crate) struct DatabaseOptions {
+    pub(crate) database_url: String,
+    pub(crate) database_connections: u32,
+}
+
 impl fmt::Debug for ResolvedConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -86,6 +92,7 @@ impl fmt::Debug for ResolvedConfig {
             .field("docs_origin", &self.docs_origin)
             .field("site_origin", &self.site_origin)
             .field("local_companion", &self.local_companion)
+            .field("migrate", &self.migrate)
             .field("storage", &"<redacted>")
             .field("github_client_id", &self.github_client_id)
             .field(
@@ -143,6 +150,7 @@ struct Raw {
 struct Server {
     address: Option<Input<SocketAddr>>,
     local_companion: Option<Input<bool>>,
+    migrate: Option<Input<bool>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -390,7 +398,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "logging",
         ],
     )?;
-    section(v, "server", &["address", "local_companion"])?;
+    section(v, "server", &["address", "local_companion", "migrate"])?;
     section(v, "origins", &["app", "docs", "site"])?;
     section(
         v,
@@ -535,6 +543,39 @@ pub(crate) fn load_storage_with_log_filter_and_env(
         .map_err(|_| "logging.filter is not a valid filter directive".to_owned())?;
     Ok((storage, filter))
 }
+
+/// Resolve only database settings and their explicitly referenced secrets.
+/// One-shot migration commands do not need runtime auth, listener, or object
+/// storage credentials.
+pub(crate) fn load_storage_with_env(
+    path: &Path,
+    postgres_env: Option<&PostgresEnvSnapshot>,
+) -> Result<DatabaseOptions, String> {
+    let (raw, base) = read_raw(path)?;
+    let mut resolver = Resolver {
+        base: &base,
+        sources: BTreeMap::new(),
+        postgres_env,
+    };
+    let database_url = resolver.value(
+        "storage.database_url",
+        raw.storage.database_url,
+        "postgresql:///librepaper".to_owned(),
+    )?;
+    let database_connections = resolver.value(
+        "storage.database_connections",
+        raw.storage.database_connections,
+        20,
+    )?;
+    librepaper_engine::storage::validate_database_options(
+        &database_url,
+        database_connections,
+    )?;
+    Ok(DatabaseOptions {
+        database_url,
+        database_connections,
+    })
+}
 #[cfg(test)]
 pub(crate) fn load(path: &Path) -> Result<ResolvedConfig, String> {
     load_with_postgres_env(path, None)
@@ -556,6 +597,7 @@ pub(crate) fn load_with_postgres_env(
         "0.0.0.0:8080".parse::<SocketAddr>().unwrap(),
     )?;
     let local_companion = r.value("server.local_companion", raw.server.local_companion, false)?;
+    let migrate = r.value("server.migrate", raw.server.migrate, true)?;
     let app_origin = r.optional("origins.app", raw.origins.app)?;
     let docs_origin = r.optional("origins.docs", raw.origins.docs)?;
     let site_origin = r.optional("origins.site", raw.origins.site)?;
@@ -699,6 +741,7 @@ pub(crate) fn load_with_postgres_env(
         docs_origin,
         site_origin,
         local_companion,
+        migrate,
         storage,
         github_client_id,
         github_client_secret,
@@ -784,6 +827,13 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "server.local_companion",
         "local_companion",
         &c.local_companion.to_string(),
+    );
+    value(
+        &mut out,
+        &c.sources,
+        "server.migrate",
+        "migrate",
+        &c.migrate.to_string(),
     );
 
     section(&mut out, "origins");
@@ -1356,6 +1406,42 @@ mod tests {
         let p = d.path().join("c.toml");
         std::fs::write(&p,"[auth.github]\nclient_id = \"id\"\nclient_secret = { env = \"LIBREPAPER_MISSING_OAUTH_SECRET\" }").unwrap();
         assert!(load_storage_with_log_filter(&p).is_ok());
+    }
+    #[test]
+    fn migration_loader_resolves_only_database_settings() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.toml");
+        std::fs::write(d.path().join("database-url"), "postgresql://localhost/librepaper\n")
+            .unwrap();
+        std::fs::write(
+            &p,
+            r#"
+[storage]
+database_url = { file = "database-url" }
+object_store = "s3"
+[storage.s3]
+region = { file = "missing-s3-region" }
+bucket = { file = "missing-s3-bucket" }
+access_key_id = { file = "missing-s3-access-key" }
+secret_access_key = { file = "missing-s3-secret-key" }
+[auth.github]
+client_id = "configured"
+client_secret = { file = "missing-oauth-secret" }
+"#,
+        )
+        .unwrap();
+
+        let database = load_storage_with_env(&p, None).unwrap();
+        assert_eq!(database.database_url, "postgresql://localhost/librepaper");
+        assert_eq!(database.database_connections, 20);
+
+        std::fs::write(
+            &p,
+            "[storage]\ndatabase_url = { file = \"missing-database-url\" }\n",
+        )
+        .unwrap();
+        let error = load_storage_with_env(&p, None).err().unwrap();
+        assert!(error.contains("missing-database-url"), "{error}");
     }
     #[test]
     fn rejects_mb_values_that_overflow_storage_bytes() {

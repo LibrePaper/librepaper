@@ -42,6 +42,9 @@ pub type StartLocal = Box<
 pub struct ServeOptions {
     pub address: std::net::SocketAddr,
     pub storage: StorageOptions,
+    /// Apply pending schema changes at startup. Deployments with a separate
+    /// migration job disable this and require a current schema instead.
+    pub migrate: bool,
     /// GitHub OAuth app credentials resolved from the TOML configuration.
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
@@ -435,9 +438,7 @@ pub async fn serve(options: ServeOptions) {
 
     let config = Arc::new(options.config);
     let shell = (options.load_shell)(&assets).unwrap_or_else(|err| die(err));
-    let secrets = &deployment_paths.secrets;
-    let key_path = secrets.join("session.key");
-    let key = session_key_file(&key_path, key_path.exists()).unwrap_or_else(|err| die(err));
+    let key_path = deployment_paths.secrets.join("session.key");
     let mut database =
         librepaper_engine::storage::postgres::PostgresOptions::new(&storage.database_url);
     database.max_connections = storage.database_connections;
@@ -447,10 +448,28 @@ pub async fn serve(options: ServeOptions) {
             .await
             .unwrap_or_else(|err| die(format!("could not connect to PostgreSQL: {err}"))),
     );
-    catalog
-        .migrate()
+    let catalog_nonempty = catalog
+        .has_deployment_state()
         .await
-        .unwrap_or_else(|error| die(format!("could not migrate PostgreSQL: {error}")));
+        .unwrap_or_else(|error| {
+            die(format!(
+                "could not inspect PostgreSQL deployment state before reading the session key: {error}"
+            ))
+        });
+    // Create a fresh key before schema work so a later migration or startup
+    // failure cannot leave a migrated database with a different key on retry.
+    let key = session_key_file(&key_path, catalog_nonempty).unwrap_or_else(|error| die(error));
+    if options.migrate {
+        catalog
+            .migrate()
+            .await
+            .unwrap_or_else(|error| die(format!("could not migrate PostgreSQL: {error}")));
+    } else {
+        catalog
+            .validate_schema()
+            .await
+            .unwrap_or_else(|error| die(format!("PostgreSQL schema is not ready: {error}")));
+    }
     let writer = catalog
         .claim_writer()
         .await

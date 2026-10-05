@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{ConnectOptions, PgPool, Postgres};
+use sqlx::{ConnectOptions, PgPool, Postgres, Row};
 
 mod access;
 pub mod annotations;
@@ -30,6 +30,10 @@ mod repository;
 #[cfg(test)]
 #[path = "schema_regression_tests.rs"]
 mod schema_regression_tests;
+
+#[cfg(test)]
+#[path = "deployment_setup_tests.rs"]
+mod deployment_setup_tests;
 
 pub use commit::Authority;
 pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCoverage};
@@ -196,6 +200,105 @@ impl PostgresCatalog {
             (Ok(()), Err(error)) => Err(error.into()),
             (Ok(()), Ok(_)) => Ok(()),
         }
+    }
+
+    /// Whether this catalogue has durable application state. Empty tables
+    /// installed by a migration-only first boot do not make it an existing
+    /// deployment; the first application start still needs to create its key.
+    /// The peer marker survives document and account cleanup, so it preserves
+    /// that decision even after all user data is gone.
+    pub async fn has_deployment_state(&self) -> Result<bool> {
+        for table in ["accounts", "documents", "server_runtime_state"] {
+            let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+                .bind(table)
+                .fetch_one(&self.pool)
+                .await?;
+            if exists {
+                let has_rows: bool =
+                    sqlx::query_scalar(&format!("SELECT EXISTS (SELECT 1 FROM {table})"))
+                        .fetch_one(&self.pool)
+                        .await?;
+                if has_rows {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Check that an application database has exactly the successful schema
+    /// this binary knows how to use. This is read-only: runtime roles can
+    /// refuse an outdated or incompatible schema without gaining DDL rights.
+    pub async fn validate_schema(&self) -> std::result::Result<(), String> {
+        let table_exists: bool = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| format!("could not inspect PostgreSQL migration history: {error}"))?;
+        if !table_exists {
+            return Err(
+                "PostgreSQL schema is not initialized; run `librepaper admin migrate --config <PATH>` first"
+                    .into(),
+            );
+        }
+        let applied = sqlx::query(
+            "SELECT version, description, checksum, success FROM _sqlx_migrations ORDER BY version",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| {
+            format!(
+                "could not read PostgreSQL migration history; grant SELECT on _sqlx_migrations to the runtime role: {error}"
+            )
+        })?;
+        let mut applied_versions = std::collections::HashSet::new();
+        for row in applied {
+            let version: i64 = row
+                .try_get("version")
+                .map_err(|error| format!("invalid PostgreSQL migration history: {error}"))?;
+            let description: String = row
+                .try_get("description")
+                .map_err(|error| format!("invalid PostgreSQL migration history: {error}"))?;
+            let checksum: Vec<u8> = row
+                .try_get("checksum")
+                .map_err(|error| format!("invalid PostgreSQL migration history: {error}"))?;
+            let success: bool = row
+                .try_get("success")
+                .map_err(|error| format!("invalid PostgreSQL migration history: {error}"))?;
+            let Some(expected) = MIGRATOR
+                .iter()
+                .find(|migration| migration.version == version && !migration.migration_type.is_down_migration())
+            else {
+                return Err(format!(
+                    "PostgreSQL schema contains unknown migration version {version}; use a compatible LibrePaper release or restore a matching database backup"
+                ));
+            };
+            if !success {
+                return Err(format!(
+                    "PostgreSQL migration {version} did not complete; run `librepaper admin migrate --config <PATH>` after resolving the migration error"
+                ));
+            }
+            if description != expected.description.as_ref()
+                || checksum.as_slice() != expected.checksum.as_ref()
+            {
+                return Err(format!(
+                    "PostgreSQL migration {version} does not match this LibrePaper binary; use the matching release or restore a matching backup"
+                ));
+            }
+            applied_versions.insert(version);
+        }
+        let missing = MIGRATOR
+            .iter()
+            .filter(|migration| !migration.migration_type.is_down_migration())
+            .filter(|migration| !applied_versions.contains(&migration.version))
+            .map(|migration| migration.version.to_string())
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(format!(
+                "PostgreSQL schema is missing migration version(s) {}; run `librepaper admin migrate --config <PATH>` before starting this binary",
+                missing.join(", ")
+            ));
+        }
+        Ok(())
     }
 
     pub async fn close(&self) {

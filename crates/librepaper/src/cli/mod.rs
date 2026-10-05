@@ -141,6 +141,11 @@ pub(crate) enum AdminCommand {
         #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
         config: PathBuf,
     },
+    /// Apply pending PostgreSQL schema migrations, then exit.
+    Migrate {
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
+    },
     /// Inspect or validate the effective deployment configuration.
     Config {
         #[command(subcommand)]
@@ -376,6 +381,7 @@ async fn run_admin(
             install_subscriber(Some(&resolved.log_filter));
             librepaper_server::server::serve::serve(serve_options(resolved)).await
         }
+        AdminCommand::Migrate { config } => migrate(config, postgres_env).await,
         AdminCommand::Config { command } => match command {
             ConfigCommand::Check { config } => {
                 let resolved = server_config::load_with_postgres_env(&config, postgres_env)
@@ -454,6 +460,7 @@ fn serve_options(
     librepaper_server::server::serve::ServeOptions {
         address: resolved.address,
         storage: resolved.storage,
+        migrate: resolved.migrate,
         github_client_id: resolved.github_client_id,
         github_client_secret: resolved.github_client_secret,
         google_client_id: resolved.google_client_id,
@@ -543,8 +550,8 @@ async fn moderate(
         Ok(catalog) => catalog,
         Err(error) => die(error.to_string()),
     };
-    if let Err(error) = catalog.migrate().await {
-        die(error.to_string());
+    if let Err(error) = catalog.validate_schema().await {
+        die(format!("PostgreSQL schema is not ready: {error}"));
     }
     let outcome = match action {
         ModerationAction::BlockAccount | ModerationAction::UnblockAccount => {
@@ -576,6 +583,34 @@ async fn moderate(
         Ok(message) => println!("{message}"),
         Err(error) => die(error.to_string()),
     }
+    catalog.close().await;
+}
+
+/// Apply migrations with the storage credentials resolved from the selected
+/// config. This intentionally avoids resolving auth, origins, object storage,
+/// or listener settings: migration is a one-shot database operation.
+async fn migrate(
+    config: PathBuf,
+    postgres_env: Option<&server_config::PostgresEnvSnapshot>,
+) {
+    use librepaper_engine::storage::postgres::{PostgresCatalog, PostgresOptions};
+
+    let database = server_config::load_storage_with_env(&config, postgres_env)
+        .unwrap_or_else(|error| die(error));
+    let mut postgres = PostgresOptions::new(database.database_url);
+    postgres.max_connections = database.database_connections;
+    let catalog = PostgresCatalog::connect(postgres)
+        .await
+        .unwrap_or_else(|error| die(format!("could not connect to PostgreSQL: {error}")));
+    catalog
+        .migrate()
+        .await
+        .unwrap_or_else(|error| die(format!("could not migrate PostgreSQL: {error}")));
+    catalog
+        .validate_schema()
+        .await
+        .unwrap_or_else(|error| die(format!("PostgreSQL schema validation failed: {error}")));
+    println!("PostgreSQL schema is current");
     catalog.close().await;
 }
 
