@@ -15,6 +15,7 @@ MONITORING=https://$APP/admin/monitoring/
 HTTP_CONNECT_TIMEOUT=5
 HTTP_REQUEST_TIMEOUT=15
 HEALTH_DEADLINE_SECONDS=120
+CADDY_RELOAD_TIMEOUT_SECONDS=30
 
 if [ -t 1 ]; then bold=$'\e[1m' green=$'\e[32m' red=$'\e[31m' dim=$'\e[2m' reset=$'\e[0m'; else bold='' green='' red='' dim='' reset=''; fi
 step() { printf '\n%s==> %s%s\n' "$bold" "$*" "$reset"; }
@@ -63,8 +64,7 @@ cleanup_verify_tmp() {
 }
 
 # Setting COMPOSE_FILE disables the automatic override load, so the override is
-# listed explicitly. COMPOSE_PROFILES turns on the monitoring services, which are
-# a profile in compose.yaml.
+# listed explicitly.
 write_env() {
 	local version="$1" github_id="$2" github_secret="$3" google_id="$4" google_secret="$5" admin_password="$6"
 	# The values are written only to a mode-600 file on the VPS. The temporary
@@ -72,7 +72,6 @@ write_env() {
 	# shellcheck disable=SC2087 # expand local credentials and send them over stdin
 	ssh "$HOST" 'umask 077; cat > librepaper/.env.tmp && chmod 600 librepaper/.env.tmp && mv -f librepaper/.env.tmp librepaper/.env' <<EOF
 COMPOSE_FILE=compose.yaml:compose.override.yaml
-COMPOSE_PROFILES=monitoring
 LIBREPAPER_VERSION=$version
 LIBREPAPER_GITHUB_CLIENT_ID=$github_id
 LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret
@@ -94,27 +93,20 @@ install_config() {
 }
 
 write_compose_override() {
-	local local_image="${1:-false}"
+	local local_image="${1:-false}" local_build=''
 	if [ "$local_image" = true ]; then
-		ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'EOF'
-# Written by tools/deploy/production. Keep Caddy serving the static site.
-services:
-  caddy:
-    volumes:
-      - ./site:/srv/site:ro
-  librepaper:
+		local_build='  librepaper:
     build:
-      args: {SOURCE: local, LIBREPAPER_BINARY: librepaper.candidate}
-EOF
-	else
-		ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'EOF'
+      args: {SOURCE: local, LIBREPAPER_BINARY: librepaper.candidate}'
+	fi
+	ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<EOF
 # Written by tools/deploy/production. Keep Caddy serving the static site.
 services:
   caddy:
     volumes:
       - ./site:/srv/site:ro
+$local_build
 EOF
-	fi
 }
 
 bootstrap_monitoring_role() {
@@ -185,7 +177,7 @@ prepare_deployment() {
 	site_sync
 
 	step "Caddy: the site, the redirects, and the site volume"
-	printf '\n%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE" | ssh "$HOST" 'cat >> librepaper/Caddyfile'
+	printf '\n%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE" | ssh "$HOST" 'cat >> librepaper/caddy/Caddyfile'
 	write_compose_override "$local_image"
 	ok "$SITE serves docs/_site; $REDIRECTS -> https://$SITE"
 
@@ -226,6 +218,9 @@ start_application() {
 	# any remaining services without force-recreating them.
 	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'
 	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --wait --wait-timeout 180'
+	if ! timeout "$CADDY_RELOAD_TIMEOUT_SECONDS" ssh "$HOST" 'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'; then
+		die "Caddy configuration reload failed"
+	fi
 	ok "running"
 }
 

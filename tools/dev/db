@@ -95,11 +95,6 @@ cmd_url() {
 cmd_sqlx_database() {
     validate_sqlx_database_name
 
-    if ! command -v docker >/dev/null; then
-        echo "error: docker is required" >&2
-        exit 1
-    fi
-
     # Ensure PostgreSQL is running.
     cmd_dev >/dev/null
 
@@ -125,11 +120,6 @@ cmd_sqlx_prepare() {
 
 # Drop and recreate the dev database.
 cmd_wipe() {
-    if ! command -v docker >/dev/null; then
-        echo "error: docker is required" >&2
-        exit 1
-    fi
-
     # Ensure PostgreSQL is running.
     cmd_dev >/dev/null
 

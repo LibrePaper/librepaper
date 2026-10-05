@@ -24,6 +24,7 @@ function fixture({
   grafanaAuthStatus = 200,
   pgUpHealthy = true,
   prometheusTransientFailures = 0,
+  caddyReloadFailure = false,
   realSleep = false,
   googleClientId = 'google-id',
   googleClientSecret = 'google-secret',
@@ -52,6 +53,10 @@ function fixture({
   const curlCallsFile = path.join(root, 'curl-calls');
   const composeUpFile = path.join(root, 'compose-up');
   const orderFile = path.join(root, 'order');
+  const caddyTimeoutFile = path.join(root, 'caddy-timeout');
+  const realTimeout = process.env.PATH.split(path.delimiter)
+    .map((directory) => path.join(directory, 'timeout'))
+    .find(existsSync);
   const kitSourceFile = path.join(root, 'kit-source');
   const localKitConfigFile = path.join(root, 'local-kit-config.toml');
   const runningConfigFile = path.join(root, 'running-config.toml');
@@ -133,7 +138,11 @@ case "$command" in
     mv -f "$REMOTE_ROOT/config.toml.candidate" "$REMOTE_ROOT/config.toml"
     printf 'config-install\\n' >> "$ORDER_FILE"
     ;;
-  *'Caddyfile'*) cat >> "$REMOTE_ROOT/Caddyfile" ;;
+  'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile')
+    printf 'caddy-reload\\n' >> "$ORDER_FILE"
+    [ "$CADDY_RELOAD_FAILURE" = 0 ]
+    ;;
+  'cat >> librepaper/caddy/Caddyfile') mkdir -p "$REMOTE_ROOT/caddy"; cat >> "$REMOTE_ROOT/caddy/Caddyfile" ;;
   *'psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -q'*) cat > "$REMOTE_ROOT/metrics-role.sql" ;;
   *'sha256sum librepaper.candidate.tmp'*) sha256sum "$REMOTE_ROOT/librepaper.candidate.tmp" | cut -d ' ' -f1 ;;
   *'chmod 755 librepaper.candidate.tmp'*) chmod 755 "$REMOTE_ROOT/librepaper.candidate.tmp"; mv "$REMOTE_ROOT/librepaper.candidate.tmp" "$REMOTE_ROOT/librepaper.candidate" ;;
@@ -150,13 +159,13 @@ case "$command" in
       '{"data":{"result":[{"values":[[1,"1"],[2,"1"]]}]}}' \\
       '${pgUpHealthy ? '{"data":{"result":[{"value":[3,"1"]}]}}' : '{"data":{"result":[]}}'}'
     ;;
-  *'docker compose up -d --wait --wait-timeout 180'*)
-    printf called >> "$COMPOSE_UP_FILE"
-    printf 'stack-up\\n' >> "$ORDER_FILE"
-    ;;
   *'docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'*)
     cp "$REMOTE_ROOT/config.toml" "$RUNNING_CONFIG_FILE"
     printf 'app-recreate\\n' >> "$ORDER_FILE"
+    ;;
+  *'docker compose up -d --wait --wait-timeout 180'*)
+    printf called >> "$COMPOSE_UP_FILE"
+    printf 'stack-up\\n' >> "$ORDER_FILE"
     ;;
   *'docker compose build librepaper'*) : ;;
   *'docker compose run --rm --no-deps librepaper admin config check'*)
@@ -165,6 +174,19 @@ case "$command" in
     ;;
   *) : ;;
 esac`);
+  mockCommand(bin, 'timeout', `
+set -eu
+duration="$1"
+shift
+case "$*" in
+  *'caddy reload'*)
+    [ "$duration" = 30 ] && [ "$#" -eq 3 ] && [ "$1" = ssh ] && [ "$2" = "$HOST" ] &&
+      [ "$3" = 'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile' ] || exit 97
+    printf '%s\\n' "$duration" > "$CADDY_TIMEOUT_FILE"
+    ;;
+esac
+exec "$REAL_TIMEOUT" "$duration" "$@"
+`);
 mockCommand(bin, 'curl', `
 set -eu
 out= headers= format= url= config= followed=no connect_timeout= max_time=
@@ -248,6 +270,9 @@ exit 0`);
       COMPOSE_UP_FILE: composeUpFile,
       KIT_SOURCE_FILE: kitSourceFile,
       ORDER_FILE: orderFile,
+      CADDY_TIMEOUT_FILE: caddyTimeoutFile,
+      REAL_TIMEOUT: realTimeout,
+      CADDY_RELOAD_FAILURE: caddyReloadFailure ? '1' : '0',
       LOCAL_KIT_CONFIG_FILE: localKitConfig ? localKitConfigFile : '',
       RUNNING_CONFIG_FILE: runningConfigFile,
       HOST: 'ubuntu@test-host',
@@ -301,8 +326,13 @@ test('deploy writes Google OAuth credentials to .env and keeps them out of outpu
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 8);
+    assert.equal(envFile.trimEnd().split('\n').length, 7);
     const productionConfig = readFileSync(path.join(f.remote, 'config.toml'), 'utf8');
+    const override = readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8');
+    assert.match(override, /\.\/site:\/srv\/site:ro/);
+    assert.doesNotMatch(override, /SOURCE: local|librepaper\.candidate/);
+    assert.match(readFileSync(path.join(f.remote, 'caddy', 'Caddyfile'), 'utf8'), /librepaper\.org/);
+    assert.equal(existsSync(path.join(f.remote, 'Caddyfile')), false);
     assert.match(productionConfig, /\[origins\]\napp = "https:\/\/app\.librepaper\.org"/);
     assert.match(productionConfig, /database_url = \{ env = "LIBREPAPER_DATABASE_URL" \}/);
     assert.ok(readFileSync(f.orderFile, 'utf8').indexOf('config-check') < readFileSync(f.orderFile, 'utf8').indexOf('config-install'));
@@ -323,9 +353,13 @@ test('deploy-local stages Google OAuth credentials and the candidate binary for 
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 8);
+    assert.equal(envFile.trimEnd().split('\n').length, 7);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
     assert.equal(existsSync(path.join(f.remote, 'librepaper.candidate')), true);
+    const override = readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8');
+    assert.match(override, /\.\/site:\/srv\/site:ro/);
+    assert.match(override, /SOURCE: local/);
+    assert.match(override, /librepaper\.candidate/);
   } finally {
     f.cleanup();
   }
@@ -345,8 +379,26 @@ for (const command of ['deploy', 'deploy-local']) {
       assert.doesNotMatch(installed, /operator-local config/);
       assert.equal(readFileSync(f.runningConfigFile, 'utf8'), installed);
       assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), [
-        'config-check', 'config-install', 'app-recreate', 'stack-up',
+        'config-check', 'config-install', 'app-recreate', 'stack-up', 'caddy-reload',
       ]);
+      assert.equal(readFileSync(path.join(f.root, 'caddy-timeout'), 'utf8').trim(), '30');
+    } finally {
+      f.cleanup();
+    }
+  });
+}
+
+for (const command of ['deploy', 'deploy-local']) {
+  test(`${command} reports Caddy reload failure after the stack starts`, () => {
+    const f = fixture({ caddyReloadFailure: true });
+    try {
+      const result = runProduction(f, command);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Caddy configuration reload failed/);
+      assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n').slice(-2), [
+        'stack-up', 'caddy-reload',
+      ]);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:/);
     } finally {
       f.cleanup();
     }
@@ -363,6 +415,7 @@ test('a binary without TOML config support leaves the installed config and runni
     assert.equal(readFileSync(path.join(f.remote, 'config.toml'), 'utf8'), 'previous production config\n');
     assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
     assert.equal(existsSync(f.composeUpFile), false);
+    assert.doesNotMatch(readFileSync(f.orderFile, 'utf8'), /caddy-reload/);
   } finally {
     f.cleanup();
   }
@@ -380,6 +433,7 @@ test('an incompatible local candidate leaves the installed executable untouched'
     assert.equal(readFileSync(path.join(f.remote, 'config.toml'), 'utf8'), 'previous production config\n');
     assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
     assert.equal(existsSync(f.composeUpFile), false);
+    assert.doesNotMatch(readFileSync(f.orderFile, 'utf8'), /caddy-reload/);
   } finally {
     f.cleanup();
   }
@@ -473,7 +527,7 @@ test('deploy-local verifies and retains the copied candidate binary and keeps se
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /GRAFANA_ADMIN_PASSWORD=admin-secret/);
     assert.match(envFile, /^COMPOSE_FILE=compose.yaml:compose.override.yaml$/m);
-    assert.match(envFile, /^COMPOSE_PROFILES=monitoring$/m);
+    assert.doesNotMatch(envFile, /^COMPOSE_PROFILES=/m);
     assert.doesNotMatch(envFile, /POSTGRES_EXPORTER_PASSWORD/);
     assert.equal(statSync(path.join(f.remote, '.env')).mode & 0o777, 0o600);
     const override = readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8');
