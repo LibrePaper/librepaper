@@ -24,6 +24,7 @@ async function makeFixture({ running = false, port = 8081, sitePort = 8082, comm
   await Promise.all([
     mkdir(join(directory, "tools", "assets"), { recursive: true }),
     mkdir(join(directory, "tools", "dev", "demo"), { recursive: true }),
+    mkdir(join(directory, "deploy"), { recursive: true }),
     ...["web/src", "web/public", "crates", "docs/examples"].map((path) =>
       mkdir(join(directory, path), { recursive: true })),
     mkdir(join(directory, "dist"), { recursive: true }),
@@ -33,6 +34,7 @@ async function makeFixture({ running = false, port = 8081, sitePort = 8082, comm
   await writeFile(join(directory, "tools", "dev", "demo-compose"),
     await readFile(join(root, "tools", "dev", "demo-compose")), { mode: 0o755 });
   await writeFile(join(directory, "tools", "dev", "demo", "config.toml"), "[server]\naddress = \"0.0.0.0:8080\"\n");
+  await writeFile(join(directory, "deploy", "resticprofile.toml"), "# empty backup config\n");
   if (config) await writeFile(join(directory, "custom.toml"), "[server]\naddress = \"0.0.0.0:8080\"\n");
 
   await writeFile(join(directory, "mock-make"),
@@ -47,7 +49,7 @@ async function makeFixture({ running = false, port = 8081, sitePort = 8082, comm
   await writeFile(join(mockBinDir, "docker"), [
     "#!/bin/sh",
     "set -eu",
-    "printf '%s|%s|%s|%s|%s\\n' \"$*\" \"${DEMO_PROJECT:-}\" \"${LIBREPAPER_DEMO_APP_ORIGIN:-}\" \"${LIBREPAPER_DEMO_SITE_ORIGIN:-}\" \"${LIBREPAPER_DEMO_CONFIG:-}\" >> \"$MOCK_DOCKER_LOG\"",
+    "printf '%s|%s|%s|%s|%s|%s\\n' \"$*\" \"${DEMO_PROJECT:-}\" \"${LIBREPAPER_DEMO_APP_ORIGIN:-}\" \"${LIBREPAPER_DEMO_SITE_ORIGIN:-}\" \"${LIBREPAPER_DEMO_CONFIG:-}\" \"${LIBREPAPER_DEMO_BACKUP_CONFIG:-}\" >> \"$MOCK_DOCKER_LOG\"",
     "case \"$*\" in",
     "  *'compose version --short'*) printf '2.24.4\\n' ;;",
     "  *' up --build --detach --wait --wait-timeout 180'*) [ \"$MOCK_DEMO_UP_FAILURE\" = 0 ] ;;",
@@ -225,7 +227,7 @@ for (const scenario of [
       const dockerLog = await readFile(fixture.dockerLog, "utf8");
       assert.match(dockerLog, new RegExp(`--project-name librepaper-demo-test-${process.pid}`));
       assert.match(dockerLog, new RegExp(`\\|${localServer}\\|http://localhost:${fixture.sitePort}\\|`));
-      assert.match(dockerLog, new RegExp(`\\|${fixture.directory}/tools/dev/demo/config\\.toml$`, "m"));
+      assert.match(dockerLog, new RegExp(`\\|${fixture.directory}/tools/dev/demo/config\\.toml\\|${fixture.directory}/deploy/resticprofile\\.toml$`, "m"));
     } finally {
       await rm(fixture.directory, { recursive: true, force: true });
     }

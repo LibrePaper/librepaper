@@ -1,6 +1,6 @@
 # Configuration for the official LibrePaper deployment. tools/deploy/production
-# installs it as librepaper/config.toml, mounted read-only at
-# /etc/librepaper/config.toml in the application container.
+# installs it as librepaper/librepaper.toml, mounted read-only at
+# /etc/librepaper/librepaper.toml in the application container.
 #
 # Every setting comes from this file. Secrets are read only through explicit
 # { env = "NAME" } references.
@@ -82,8 +82,3 @@ trusted_networks = ["172.29.0.0/16"]
 # Optional tracing filter for application logs.
 # [logging]
 # filter = "info"
-
-# Optional. The official template leaves scheduled backups disabled. Do not
-# put credentials in this tracked file.
-# [resticprofile]
-# repository = "s3:https://s3.example/bucket/librepaper"

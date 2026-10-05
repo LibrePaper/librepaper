@@ -36,6 +36,7 @@ function fixture({
   configCheckFailure = false,
   backupCheckFailure = false,
   localKitConfig = '',
+  backupConfig = '',
   runningConfig = 'previous container config\n',
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
@@ -59,11 +60,13 @@ function fixture({
     .map((directory) => path.join(directory, 'timeout'))
     .find(existsSync);
   const kitSourceFile = path.join(root, 'kit-source');
-  const localKitConfigFile = path.join(root, 'local-kit-config.toml');
-  const runningConfigFile = path.join(root, 'running-config.toml');
+  const localKitConfigFile = path.join(root, 'local-kit-librepaper.toml');
+  const runningConfigFile = path.join(root, 'running-librepaper.toml');
+  const backupConfigFile = path.join(remote, 'resticprofile.toml');
   writeFileSync(adminPasswordFile, adminPassword);
   writeFileSync(exporterPasswordFile, exporterPassword);
   if (localKitConfig) writeFileSync(localKitConfigFile, localKitConfig);
+  if (backupConfig) writeFileSync(backupConfigFile, backupConfig);
   writeFileSync(runningConfigFile, runningConfig);
 
   mockCommand(bin, 'make', 'printf called >> "$MAKE_CALLED_FILE"; exit 0');
@@ -96,8 +99,14 @@ for arg do previous="$last"; last="$arg"; done
 source="$previous"
 destination="$last"
 exclude_config=no
+exclude_backup_config=no
+ignore_existing=no
 for arg do
-  case "$arg" in --exclude=/config.toml) exclude_config=yes ;; esac
+  case "$arg" in
+    --exclude=/librepaper.toml) exclude_config=yes ;;
+    --exclude=/resticprofile.toml) exclude_backup_config=yes ;;
+    --ignore-existing) ignore_existing=yes ;;
+  esac
 done
 case "$destination" in
   *:librepaper/librepaper.candidate.tmp)
@@ -112,8 +121,13 @@ case "$destination" in
     mkdir -p "$REMOTE_ROOT"
     printf '%s' "$source" > "$KIT_SOURCE_FILE"
     if [ -n "$LOCAL_KIT_CONFIG_FILE" ] && [ -f "$LOCAL_KIT_CONFIG_FILE" ] && [ "$exclude_config" = no ]; then
-      cp "$LOCAL_KIT_CONFIG_FILE" "$REMOTE_ROOT/config.toml"
+      cp "$LOCAL_KIT_CONFIG_FILE" "$REMOTE_ROOT/librepaper.toml"
     fi
+    [ "$exclude_backup_config" = yes ] || exit 94
+    ;;
+  *:librepaper/resticprofile.toml)
+    [ "$ignore_existing" = yes ] || exit 95
+    [ -e "$REMOTE_ROOT/resticprofile.toml" ] || cp "$source" "$REMOTE_ROOT/resticprofile.toml"
     ;;
 esac`);
 mockCommand(bin, 'ssh', `
@@ -130,13 +144,13 @@ case "$command" in
     cat > "$REMOTE_ROOT/compose.override.yaml.tmp"
     mv "$REMOTE_ROOT/compose.override.yaml.tmp" "$REMOTE_ROOT/compose.override.yaml"
     ;;
-  *'config.toml.candidate.tmp'*)
-    cat > "$REMOTE_ROOT/config.toml.candidate.tmp"
-    chmod 644 "$REMOTE_ROOT/config.toml.candidate.tmp"
-    mv -f "$REMOTE_ROOT/config.toml.candidate.tmp" "$REMOTE_ROOT/config.toml.candidate"
+  *'librepaper.toml.candidate.tmp'*)
+    cat > "$REMOTE_ROOT/librepaper.toml.candidate.tmp"
+    chmod 644 "$REMOTE_ROOT/librepaper.toml.candidate.tmp"
+    mv -f "$REMOTE_ROOT/librepaper.toml.candidate.tmp" "$REMOTE_ROOT/librepaper.toml.candidate"
     ;;
-  *'mv -f config.toml.candidate config.toml'*)
-    mv -f "$REMOTE_ROOT/config.toml.candidate" "$REMOTE_ROOT/config.toml"
+  *'mv -f librepaper.toml.candidate librepaper.toml'*)
+    mv -f "$REMOTE_ROOT/librepaper.toml.candidate" "$REMOTE_ROOT/librepaper.toml"
     printf 'config-install\\n' >> "$ORDER_FILE"
     ;;
   'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile')
@@ -161,7 +175,7 @@ case "$command" in
       '${pgUpHealthy ? '{"data":{"result":[{"value":[3,"1"]}]}}' : '{"data":{"result":[]}}'}'
     ;;
   *'docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'*)
-    cp "$REMOTE_ROOT/config.toml" "$RUNNING_CONFIG_FILE"
+    cp "$REMOTE_ROOT/librepaper.toml" "$RUNNING_CONFIG_FILE"
     printf 'app-recreate\\n' >> "$ORDER_FILE"
     ;;
   *'docker compose stop backup'*) printf 'backup-stop\\n' >> "$ORDER_FILE" ;;
@@ -176,6 +190,8 @@ case "$command" in
     [ "$CONFIG_CHECK_FAILURE" = 0 ]
     ;;
   *'docker compose run --rm --no-deps -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 backup'*)
+    [ -f "$REMOTE_ROOT/resticprofile.toml" ] || exit 96
+    cp "$REMOTE_ROOT/resticprofile.toml" "$BACKUP_CONFIG_COPY_FILE"
     printf 'backup-check\\n' >> "$ORDER_FILE"
     [ "$BACKUP_CHECK_FAILURE" = 0 ]
     ;;
@@ -282,6 +298,7 @@ exit 0`);
       CADDY_RELOAD_FAILURE: caddyReloadFailure ? '1' : '0',
       LOCAL_KIT_CONFIG_FILE: localKitConfig ? localKitConfigFile : '',
       RUNNING_CONFIG_FILE: runningConfigFile,
+      BACKUP_CONFIG_COPY_FILE: path.join(root, 'backup-config-at-preflight'),
       HOST: 'ubuntu@test-host',
       TMPDIR: temp,
       NODE_EXECUTABLE: process.execPath,
@@ -313,6 +330,7 @@ exit 0`);
     kitSourceFile,
     orderFile,
     runningConfigFile,
+    backupConfigFile,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
@@ -329,13 +347,16 @@ test('deploy writes Google OAuth credentials to .env and keeps them out of outpu
     const result = runProduction(f, 'deploy');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /5 keys decrypted/);
-    assert.match(result.stdout, /staged config.toml/);
+    assert.match(result.stdout, /staged librepaper.toml/);
     assert.equal(readFileSync(f.kitSourceFile, 'utf8'), 'deploy/');
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
     assert.equal(envFile.trimEnd().split('\n').length, 7);
-    const productionConfig = readFileSync(path.join(f.remote, 'config.toml'), 'utf8');
+    const productionConfig = readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8');
+    const shippedBackupConfig = readFileSync(path.join(repo, 'deploy', 'resticprofile.toml'), 'utf8');
+    assert.equal(readFileSync(f.backupConfigFile, 'utf8'), shippedBackupConfig);
+    assert.equal(readFileSync(path.join(f.root, 'backup-config-at-preflight'), 'utf8'), shippedBackupConfig);
     const override = readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8');
     assert.match(override, /\.\/site:\/srv\/site:ro/);
     assert.doesNotMatch(override, /SOURCE: local|librepaper\.candidate/);
@@ -361,7 +382,7 @@ test('deploy-local stages Google OAuth credentials and the candidate binary for 
     const result = runProduction(f, 'deploy-local');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /5 keys decrypted/);
-    assert.match(result.stdout, /staged config.toml/);
+    assert.match(result.stdout, /staged librepaper.toml/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
@@ -381,13 +402,17 @@ for (const command of ['deploy', 'deploy-local']) {
   test(`${command} replaces the running app config even when the image is unchanged`, () => {
     const f = fixture({
       localKitConfig: 'operator-local config that must not be deployed\n',
+      backupConfig: '[global]\nscheduler = "operator scheduler"\n',
       runningConfig: 'previously mounted config\n',
     });
     try {
-      writeFileSync(path.join(f.remote, 'config.toml'), 'previously installed config\n');
+      writeFileSync(path.join(f.remote, 'librepaper.toml'), 'previously installed config\n');
       const result = runProduction(f, command);
       assert.equal(result.status, 0, result.stderr || result.stdout);
-      const installed = readFileSync(path.join(f.remote, 'config.toml'), 'utf8');
+      const installed = readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8');
+      const backupConfig = '[global]\nscheduler = "operator scheduler"\n';
+      assert.equal(readFileSync(f.backupConfigFile, 'utf8'), backupConfig);
+      assert.equal(readFileSync(path.join(f.root, 'backup-config-at-preflight'), 'utf8'), backupConfig);
       assert.doesNotMatch(installed, /operator-local config/);
       assert.equal(readFileSync(f.runningConfigFile, 'utf8'), installed);
       assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), [
@@ -421,11 +446,11 @@ for (const command of ['deploy', 'deploy-local']) {
 test('a binary without TOML config support leaves the installed config and running app in place', () => {
   const f = fixture({ configCheckFailure: true, localKitConfig: 'operator-local config\n' });
   try {
-    writeFileSync(path.join(f.remote, 'config.toml'), 'previous production config\n');
+    writeFileSync(path.join(f.remote, 'librepaper.toml'), 'previous production config\n');
     const result = runProduction(f, 'deploy');
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /candidate binary cannot load config\.toml/);
-    assert.equal(readFileSync(path.join(f.remote, 'config.toml'), 'utf8'), 'previous production config\n');
+    assert.match(result.stderr, /candidate binary cannot load librepaper\.toml/);
+    assert.equal(readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8'), 'previous production config\n');
     assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
     assert.equal(existsSync(f.composeUpFile), false);
     assert.doesNotMatch(readFileSync(f.orderFile, 'utf8'), /caddy-reload/);
@@ -437,11 +462,11 @@ test('a binary without TOML config support leaves the installed config and runni
 test('an invalid backup candidate leaves the installed config and running services in place', () => {
   const f = fixture({ backupCheckFailure: true, localKitConfig: 'operator-local config\n' });
   try {
-    writeFileSync(path.join(f.remote, 'config.toml'), 'previous production config\n');
+    writeFileSync(path.join(f.remote, 'librepaper.toml'), 'previous production config\n');
     const result = runProduction(f, 'deploy');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /candidate backup image cannot validate the configured profile/);
-    assert.equal(readFileSync(path.join(f.remote, 'config.toml'), 'utf8'), 'previous production config\n');
+    assert.equal(readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8'), 'previous production config\n');
     assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
     const order = readFileSync(f.orderFile, 'utf8');
     assert.match(order, /image-build[\s\S]*config-check[\s\S]*backup-check/);
@@ -455,12 +480,12 @@ test('an incompatible local candidate leaves the installed executable untouched'
   const f = fixture({ configCheckFailure: true, localKitConfig: 'operator-local config\n' });
   try {
     writeFileSync(path.join(f.remote, 'librepaper'), 'previous production executable\n');
-    writeFileSync(path.join(f.remote, 'config.toml'), 'previous production config\n');
+    writeFileSync(path.join(f.remote, 'librepaper.toml'), 'previous production config\n');
     const result = runProduction(f, 'deploy-local');
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /candidate binary cannot load config\.toml/);
+    assert.match(result.stderr, /candidate binary cannot load librepaper\.toml/);
     assert.equal(readFileSync(path.join(f.remote, 'librepaper'), 'utf8'), 'previous production executable\n');
-    assert.equal(readFileSync(path.join(f.remote, 'config.toml'), 'utf8'), 'previous production config\n');
+    assert.equal(readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8'), 'previous production config\n');
     assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
     assert.equal(existsSync(f.composeUpFile), false);
     assert.doesNotMatch(readFileSync(f.orderFile, 'utf8'), /caddy-reload/);

@@ -85,11 +85,11 @@ write_config() {
 	# This file contains only literals and names of explicit env references.
 	# Stage it separately so the candidate binary can validate it before the
 	# currently installed configuration is replaced.
-	ssh "$HOST" 'umask 022; cat > librepaper/config.toml.candidate.tmp && chmod 644 librepaper/config.toml.candidate.tmp && mv -f librepaper/config.toml.candidate.tmp librepaper/config.toml.candidate' < tools/deploy/production.toml
+	ssh "$HOST" 'umask 022; cat > librepaper/librepaper.toml.candidate.tmp && chmod 644 librepaper/librepaper.toml.candidate.tmp && mv -f librepaper/librepaper.toml.candidate.tmp librepaper/librepaper.toml.candidate' < tools/deploy/production.toml
 }
 
 install_config() {
-	ssh "$HOST" 'cd librepaper && mv -f config.toml.candidate config.toml'
+	ssh "$HOST" 'cd librepaper && mv -f librepaper.toml.candidate librepaper.toml'
 }
 
 write_compose_override() {
@@ -170,15 +170,19 @@ prepare_deployment() {
 	site_build
 	step "Kit: deploy/ -> $HOST:librepaper/"
 	# Keep operator state and the candidate config out of the public kit sync.
-	# config.toml is installed only after the candidate has accepted it.
+	# The application config is installed only after candidate validation.
 	rsync -a \
 		--exclude='/.env' --exclude='/.env.tmp' \
-		--exclude='/config.toml' --exclude='/config.toml.tmp' \
-		--exclude='/config.toml.candidate*' \
+		--exclude='/librepaper.toml' --exclude='/librepaper.toml.tmp' \
+		--exclude='/librepaper.toml.candidate*' \
+		--exclude='/resticprofile.toml' \
 		--exclude='/compose.override.yaml' --exclude='/compose.override.yaml.tmp' \
 		--exclude='/librepaper' --exclude='/librepaper.candidate*' \
 		--out-format='    %n' deploy/ "$HOST:librepaper/"
 	ok "synced"
+	# Seed a fresh host from the shipped empty config without replacing operator
+	# credentials already present on the VPS.
+	rsync -a --ignore-existing deploy/resticprofile.toml "$HOST:librepaper/resticprofile.toml"
 	site_sync
 
 	step "Caddy: the site, the redirects, and the site volume"
@@ -190,7 +194,7 @@ prepare_deployment() {
 	write_env "$version" "$DEPLOY_GITHUB_ID" "$DEPLOY_GITHUB_SECRET" "$DEPLOY_GOOGLE_ID" "$DEPLOY_GOOGLE_SECRET" "$DEPLOY_ADMIN_PASSWORD"
 	unset DEPLOY_GITHUB_ID DEPLOY_GITHUB_SECRET DEPLOY_GOOGLE_ID DEPLOY_GOOGLE_SECRET DEPLOY_ADMIN_PASSWORD
 	write_config
-	ok "wrote librepaper/.env atomically (mode 600) and staged config.toml"
+	ok "wrote librepaper/.env atomically (mode 600) and staged librepaper.toml"
 	bootstrap_monitoring_role
 }
 
@@ -203,10 +207,10 @@ check_application_config() {
 	fi
 	note "candidate image is checked before configuration changes"
 	ssh "$HOST" 'cd librepaper && docker compose build librepaper backup'
-	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml.candidate docker compose run --rm --no-deps librepaper admin config check --config /etc/librepaper/config.toml'; then
-		die "the candidate binary cannot load config.toml; the running application was not restarted. Use a TOML-config-capable release or local binary"
+	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate docker compose run --rm --no-deps librepaper admin config check --config /etc/librepaper/librepaper.toml'; then
+		die "the candidate binary cannot load librepaper.toml; move legacy [resticprofile] settings into resticprofile.toml, or use a TOML-config-capable release or local binary"
 	fi
-	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml.candidate docker compose run --rm --no-deps -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 backup'; then
+	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate RESTICPROFILE_CONFIG_FILE=resticprofile.toml docker compose run --rm --no-deps -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 backup'; then
 		die "the candidate backup image cannot validate the configured profile; the running deployment was not restarted"
 	fi
 }
@@ -223,11 +227,11 @@ start_application() {
 	# config changes its inode, so recreate both containers to remount it.
 	ssh "$HOST" 'cd librepaper && docker compose stop backup'
 	install_config
-	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'
 	# The app is healthy (and any migration is complete) before the scheduler
 	# starts against the new schema and config inode.
-	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --force-recreate --no-deps backup'
-	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --wait --wait-timeout 180'
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --force-recreate --no-deps backup'
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --wait --wait-timeout 180'
 	if ! timeout "$CADDY_RELOAD_TIMEOUT_SECONDS" ssh "$HOST" 'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'; then
 		die "Caddy configuration reload failed"
 	fi

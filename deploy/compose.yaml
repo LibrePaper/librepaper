@@ -1,5 +1,5 @@
 # A whole small deployment: PostgreSQL, LibrePaper, and a proxy that obtains
-# certificates on-demand. The two origins come from config.toml, and the proxy
+# certificates on-demand. The two origins come from librepaper.toml, and the proxy
 # learns them from the server (see caddy/Caddyfile), so Compose itself needs no
 # settings except the config file.
 #
@@ -22,7 +22,7 @@ x-bounded-logs: &bounded-logs
 services:
   # Database hosted elsewhere: delete this service and postgres-exporter,
   # remove the depends_on and pgsocket lines under librepaper, and put the
-  # full URL in config.toml.
+  # full URL in librepaper.toml.
   postgres:
     image: postgres:17.11-alpine
     restart: unless-stopped
@@ -65,7 +65,7 @@ services:
       - admin
       - serve
       - --config
-      - /etc/librepaper/config.toml
+      - /etc/librepaper/librepaper.toml
     env_file:
       - path: .env
         required: false
@@ -75,7 +75,7 @@ services:
       - data:/var/lib/librepaper
       - backups:/var/backups/librepaper
       - pgsocket:/var/run/postgresql
-      - ./${LIBREPAPER_CONFIG_FILE:-config.toml}:/etc/librepaper/config.toml:ro
+      - ./${LIBREPAPER_CONFIG_FILE:-librepaper.toml}:/etc/librepaper/librepaper.toml:ro
     networks: [internal, edge]
 
   backup:
@@ -102,7 +102,8 @@ services:
       - backups:/var/backups/librepaper
       - backup-metrics:/var/backups/librepaper/metrics
       - pgsocket:/var/run/postgresql
-      - ./${LIBREPAPER_CONFIG_FILE:-config.toml}:/etc/librepaper/config.toml:ro
+      - ./${LIBREPAPER_CONFIG_FILE:-librepaper.toml}:/etc/librepaper/librepaper.toml:ro
+      - ./${RESTICPROFILE_CONFIG_FILE:-resticprofile.toml}:/etc/resticprofile/resticprofile.toml:ro
     networks: [edge]
 
   caddy:
@@ -129,7 +130,7 @@ services:
       - --storage.tsdb.retention.time=30d
       - --storage.tsdb.retention.size=8GB
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus:/prometheus
     networks: [internal]
@@ -173,7 +174,7 @@ services:
     volumes:
       - grafana:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana.json:/var/lib/grafana/dashboards/librepaper.json:ro
     networks: [internal, edge]
 
   node-exporter:
@@ -219,7 +220,7 @@ configs:
       GRANT pg_monitor TO librepaper_metrics;
 
 networks:
-  # Fixed subnet so config.toml can name it as a trusted proxy.
+  # Fixed subnet so librepaper.toml can name it as a trusted proxy.
   edge:
     ipam:
       config:

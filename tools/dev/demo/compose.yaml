@@ -15,7 +15,7 @@ services:
     volumes:
       - type: bind
         source: ${LIBREPAPER_DEMO_CONFIG:?demo config path is required}
-        target: /etc/librepaper/config.toml
+        target: /etc/librepaper/librepaper.toml
         read_only: true
   backup:
     build:
@@ -33,7 +33,11 @@ services:
     volumes:
       - type: bind
         source: ${LIBREPAPER_DEMO_CONFIG:?demo config path is required}
-        target: /etc/librepaper/config.toml
+        target: /etc/librepaper/librepaper.toml
+        read_only: true
+      - type: bind
+        source: ${LIBREPAPER_DEMO_BACKUP_CONFIG:?demo backup config path is required}
+        target: /etc/resticprofile/resticprofile.toml
         read_only: true
   caddy:
     ports: !override

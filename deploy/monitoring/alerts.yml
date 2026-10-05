@@ -107,7 +107,7 @@ groups:
           severity: critical
         annotations:
           summary: Backup configuration was rejected at startup
-          description: Inspect the backup sidecar logs and config.toml without exposing its credentials.
+          description: Inspect the backup sidecar logs and resticprofile.toml without exposing its credentials.
 
       - alert: BackupStatusStateUnreadable
         expr: librepaper_backup_state_error == 1
