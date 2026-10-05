@@ -33,7 +33,12 @@ async function makeFixture({ running = false, port = 8081, sitePort = 8082, comm
 
   await writeFile(join(directory, "tools", "dev", "demo-compose"),
     await readFile(join(root, "tools", "dev", "demo-compose")), { mode: 0o755 });
-  await writeFile(join(directory, "tools", "dev", "demo", "config.toml"), "[server]\naddress = \"0.0.0.0:8080\"\n");
+  await writeFile(join(directory, "tools", "dev", "demo", "config.toml"),
+    await readFile(join(root, "tools", "dev", "demo", "config.toml")));
+  await writeFile(join(directory, "deploy", "setup"),
+    await readFile(join(root, "deploy", "setup")), { mode: 0o755 });
+  await writeFile(join(directory, "deploy", "librepaper.toml"),
+    await readFile(join(root, "deploy", "librepaper.toml")));
   await writeFile(join(directory, "deploy", "resticprofile.toml"), "# empty backup config\n");
   if (config) await writeFile(join(directory, "custom.toml"), "[server]\naddress = \"0.0.0.0:8080\"\n");
 
@@ -52,6 +57,8 @@ async function makeFixture({ running = false, port = 8081, sitePort = 8082, comm
     "printf '%s|%s|%s|%s|%s|%s\\n' \"$*\" \"${DEMO_PROJECT:-}\" \"${LIBREPAPER_DEMO_APP_ORIGIN:-}\" \"${LIBREPAPER_DEMO_SITE_ORIGIN:-}\" \"${LIBREPAPER_DEMO_CONFIG:-}\" \"${LIBREPAPER_DEMO_BACKUP_CONFIG:-}\" >> \"$MOCK_DOCKER_LOG\"",
     "case \"$*\" in",
     "  *'compose version --short'*) printf '2.24.4\\n' ;;",
+    "  info) : ;;",
+    "  'volume inspect '*) echo 'Error: no such volume' >&2; exit 1 ;;",
     "  *' up --build --detach --wait --wait-timeout 180'*) [ \"$MOCK_DEMO_UP_FAILURE\" = 0 ] ;;",
     "  *' logs --follow'*)",
     "    if [ \"$MOCK_COMPANION_RUNNING\" = 0 ]; then attempts=0; while ! grep -q '^start' \"$MOCK_COMPANION_LOG\" 2>/dev/null; do attempts=$((attempts + 1)); [ \"$attempts\" -lt 100 ] || break; sleep 0.05; done; fi",

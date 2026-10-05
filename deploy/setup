@@ -801,7 +801,10 @@ psql -h 127.0.0.1 -U librepaper_metrics -d librepaper -v ON_ERROR_STOP=1 -Atc 'S
     _validate_secret_set(secret_dir, "local", monitoring, config_to_validate)
     _write_compose_env(env_path, secret_dir, project, "local", monitoring, local_build, production_overlay, args.version, allow_legacy=True)
     _save_state(state_path, state)
-    disable = _docker(*compose, "exec", "-T", "postgres", "psql", "-U", "librepaper_bootstrap", "-d", "librepaper", "-v", "ON_ERROR_STOP=1", "-c", "ALTER ROLE librepaper NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE")
+    # PostgreSQL 16+ will not demote the initdb bootstrap role (OID 10). Keep
+    # that catalog role dormant by clearing its password and disabling login;
+    # the generated bootstrap role now owns administrative access.
+    disable = _docker(*compose, "exec", "-T", "postgres", "psql", "-U", "librepaper_bootstrap", "-d", "librepaper", "-v", "ON_ERROR_STOP=1", "-c", "ALTER ROLE librepaper NOLOGIN PASSWORD NULL NOCREATEDB NOCREATEROLE")
     if disable.returncode != 0:
         raise SetupError("new roles passed connection checks, but legacy librepaper superuser could not be disabled; app and backup remain stopped. Setup files are saved; finish this SQL recovery step manually")
     print(f"legacy database upgraded for project {project}; app and backup remain stopped. Review status, then start the new Compose stack")
