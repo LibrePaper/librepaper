@@ -58,6 +58,8 @@ librepaper admin config show --config /etc/librepaper/config.toml
 
 4. For S3-compatible storage, edit the existing `[storage]` table and enable
    the commented `[storage.s3]` example; do not create a duplicate table.
+   Credentials come only from its references; ambient AWS credentials are
+   not used.
 
 ## Moderation
 
@@ -92,6 +94,9 @@ librepaper admin backup --config /etc/librepaper/config.toml "$backup"
 librepaper admin restore --config /etc/librepaper/restore.toml \
   "$backup" /librepaper-restored
 ```
+
+Copy each backup off the machine, and test a restore: a backup that has never
+been restored is a guess.
 
 See [cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md)
 for resource defaults and backup limitations.
