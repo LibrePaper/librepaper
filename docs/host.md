@@ -264,7 +264,7 @@ Keep the original deployment intact until recovery is verified.
    original project), then verify it at `http://127.0.0.1:18080`:
 
    ```sh
-   LIBREPAPER_VERSION=<snapshot-release> LIBREPAPER_CONFIG_FILE=config-recovery.toml \
+   LIBREPAPER_VERSION=<snapshot-release> LIBREPAPER_CONFIG_FILE=librepaper-recovery.toml \
      docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery \
      up -d --no-deps --wait librepaper
    ```
