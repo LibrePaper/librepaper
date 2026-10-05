@@ -16,8 +16,7 @@ jobs:
 
       - name: Fetch pinned browser inputs
         run: |
-          bun web/tools/fetch-loro-codemirror.mjs
-          bun web/tools/fetch-modules.mjs
+          node tools/assets/pins.mjs fetch
 
       - name: Build embedded browser app
         working-directory: web

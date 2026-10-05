@@ -9,8 +9,7 @@
 - name: Fetch pinned CodeMirror and browser renderers
   shell: bash
   run: |
-    node web/tools/fetch-loro-codemirror.mjs
-    node web/tools/fetch-modules.mjs
+    node tools/assets/pins.mjs fetch
 - name: Build the embedded browser app
   shell: bash
   run: |

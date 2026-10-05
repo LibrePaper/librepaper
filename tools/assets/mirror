@@ -15,9 +15,9 @@ set -euo pipefail
 #    OVH_S3_SECRET and OVH_S3_ARN (arn:aws:s3:::<bucket>).
 #
 # Each publish:
-# 1. tools/assets/pins fetch && tools/assets/mirror build: fetch the pinned wasm modules into web/wasm and
+# 1. node tools/assets/pins.mjs fetch && tools/assets/mirror build: fetch the pinned wasm modules into web/wasm and
 #    build the LaTeX mirror (in ../wasm-latex, or MIRROR=).
-# 2. tools/assets/pins update latex: pin the one release in ../wasm-latex/mirror.
+# 2. node tools/assets/pins.mjs update latex: pin the one release in ../wasm-latex/mirror.
 # 3. tools/assets/mirror publish: checks, smokes in Chromium, probes the bucket with two small test
 #    files, then uploads everything and verifies public read with CORS. Stop at first failure.
 # Upload before shipping a binary that carries a new pin.
@@ -82,19 +82,12 @@ cmd_smoke() {
   # Without LIBREPAPER_TEST_POSTGRES_URL it starts a throwaway container and
   # stops it on exit; missing clients come from nixpkgs.
   if [ -z "${LIBREPAPER_TEST_POSTGRES_URL:-}" ]; then
-    local container="librepaper-assets-smoke-$$" port i
-    docker run -d --rm --name "$container" -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=librepaper \
-      -p 127.0.0.1::5432 postgres:17.11-alpine >/dev/null
-    trap "docker stop $container >/dev/null 2>&1 || true" EXIT
-    port=$(docker port "$container" 5432/tcp | head -1 | sed 's/.*://')
-    for i in $(seq 60); do
-      docker exec "$container" pg_isready -q -U postgres -h 127.0.0.1 && break
-      [ "$i" = 60 ] && { printf '%s\n' "smoke: PostgreSQL did not start" >&2; exit 1; }
-      sleep 1
-    done
-    export LIBREPAPER_TEST_POSTGRES_URL="postgres://postgres:smoke@127.0.0.1:$port/librepaper"
+    . "$REPO_ROOT/tools/test/postgres.sh"
+    trap postgres_stop_disposable EXIT
+    postgres_start_disposable "librepaper-assets-smoke-$$" smoke librepaper
+    export LIBREPAPER_TEST_POSTGRES_URL="postgres://postgres:smoke@127.0.0.1:$POSTGRES_PORT/librepaper"
   fi
-  local e2e=(node web/tools/latex-e2e.mjs dist/librepaper browser docs/examples/tutorial-latex/librepaper.tex 120 "$MIRROR")
+  local e2e=(node web/tests/e2e/latex-e2e.mjs dist/librepaper browser docs/examples/tutorial-latex/librepaper.tex 120 "$MIRROR")
   if command -v psql >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
     "${e2e[@]}"
   else
@@ -178,7 +171,7 @@ cmd_publish() {
   printf '%s\n' "publish: 1/6 check mirror"
   cmd_check "$MIRROR"
 
-  # Stage 2/6: every pin must name a public GitHub release. `tools/assets/pins fetch` downloads
+  # Stage 2/6: every pin must name a public GitHub release. `node tools/assets/pins.mjs fetch` downloads
   # the modules anonymously, and the LaTeX release's source link is its licence
   # obligation. A draft release answers 404 to anyone signed out. Cheap, so before the smoke.
   printf '%s\n' "publish: 2/6 check GitHub releases"

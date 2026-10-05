@@ -19,6 +19,7 @@ import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { statSync } from "node:fs";
+import { parseAssetsLockText } from "./pins-lock.mjs";
 
 const runFile = promisify(execFile);
 
@@ -82,79 +83,15 @@ const safeAssetPath = (url, what) => {
 /// matching size and digest.
 async function checkDirectory(directory) {
   const { realpath } = await import("node:fs/promises");
-  const root = await realpath(resolve(directory));
-  const inside = async (path, what) => {
-    let actual;
-    try {
-      actual = await realpath(path);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-      actual = resolve(path);
-    }
-    const rel = relative(root, actual);
-    if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-      throw new Error(`${what} escapes the release directory`);
-    }
-    return actual;
-  };
-  const release = validateReleaseShape(JSON.parse(await readFile(resolve(root, "release.json"), "utf8")));
-  if (ID.test(basename(root))) {
-    let manifest;
-    try {
-      manifest = await readFile(resolve(root, "MANIFEST.json"));
-    } catch {
-      throw new Error("MANIFEST.json is missing");
-    }
-    if (sha256(manifest) !== basename(root)) throw new Error("release directory is not the SHA-256 of MANIFEST.json");
-    if (release.id !== basename(root)) throw new Error(`release.json id ${release.id} does not match its directory`);
-  }
-
-  // Every engine file present on disk with matching digest and size.
-  for (const [name, spec] of Object.entries(release.engines)) {
-    for (const file of spec.files || []) {
-      const info = release.files?.[file];
-      if (!info) throw new Error(`engine ${name}: file ${file} is absent from release.json`);
-      const url = safeAssetPath(info.url, `asset path ${info.url}`);
-      const bytes = await readFile(await inside(resolve(root, url), `asset path ${info.url}`));
-      if (bytes.length !== info.size || sha256(bytes) !== info.sha256) {
-        throw new Error(`engine ${name}: digest or size mismatch: ${info.url}`);
-      }
-    }
-  }
-
-  // SPEC-latex.md "The index": bundles.json's own digest must match what
-  // the release pins, and every bundle path it names must actually be on
-  // disk -- independent of `release.files`, which only proves the engine
-  // files landed intact, not that bundles.json still agrees with them.
-  const indexPath = safeAssetPath(release.bundles.index, "bundle index");
-  const indexBytes = await readFile(await inside(resolve(root, indexPath), "bundle index"));
-  if (sha256(indexBytes) !== release.bundles.sha256) {
-    throw new Error(`bundle index digest mismatch: ${release.bundles.index}`);
-  }
-  const index = JSON.parse(indexBytes.toString("utf8"));
-  const bundleDir = release.bundles.index.slice(0, release.bundles.index.lastIndexOf("/") + 1);
-  const bundleEntries = Object.entries(index.bundles || {});
-  if (bundleEntries.length !== release.bundles.count) {
-    throw new Error(`release.bundles.count is ${release.bundles.count} but the index names ${bundleEntries.length}`);
-  }
-  for (let i = 0; i < bundleEntries.length; i += 32) {
-    await Promise.all(bundleEntries.slice(i, i + 32).map(async ([name, bundle]) => {
-      const path = await inside(resolve(root, safeAssetPath(bundleDir + bundle.url, `bundle path ${bundle.url}`)), `bundle path ${bundle.url}`);
-      let bytes;
-      try {
-        bytes = await readFile(path);
-      } catch {
-        throw new Error(`bundle "${name}" (${bundle.url}) is missing from the mirror`);
-      }
-      if (bytes.length !== bundle.size || sha256(bytes) !== bundle.sha256) {
-        throw new Error(`bundle asset size or digest mismatch: ${bundle.url}`);
-      }
-    }));
-  }
-  for (const bundleName of new Set(Object.values(index.files || {}))) {
-    if (!index.bundles?.[bundleName]) throw new Error(`bundles.json names unknown bundle "${bundleName}" in its files map`);
-  }
-  return release;
+  const directoryRoot = await realpath(resolve(directory));
+  const root = dirname(directoryRoot);
+  const id = basename(directoryRoot);
+  const inventory = await listFiles(directoryRoot);
+  const files = inventory.map((file) => ({ ...file, relative: `${id}/${file.relative}` }));
+  const expected = new Map();
+  for (const file of files) expected.set(file.relative, await digestFile(file.absolute));
+  await validateLatexReleases(root, files, expected);
+  return validateReleaseShape(JSON.parse(await readFile(join(directoryRoot, "release.json"), "utf8")));
 }
 
 export async function checkMirror(base) {
@@ -407,6 +344,9 @@ async function validateLatexReleases(root, files, expected) {
         Object.keys(index.bundles).length !== bundleMeta.count) {
       throw new Error(`${label} bundles index count does not match release.json`);
     }
+    for (const bundleName of new Set(Object.values(index.files || {}))) {
+      if (!index.bundles[bundleName]) throw new Error(`${label} bundles index names unknown bundle "${bundleName}" in its files map`);
+    }
     const indexDir = dirname(indexRel).split(sep).join("/");
     for (const [name, bundle] of Object.entries(index.bundles)) {
       const rel = safeRelativePath(releaseRoot, indexDir === "." ? "" : indexDir, bundle?.url, `${label} bundle ${name}`);
@@ -630,26 +570,18 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
 // === Staging and credential resolution ===
 
 export async function stageWasmMirror(directory = join(fileURLToPath(new URL("../..", import.meta.url)), "web/wasm"), lockPath = join(fileURLToPath(new URL("../..", import.meta.url)), "assets.lock")) {
-  const rows = (await readFile(lockPath, "utf8"))
-    .split("\n")
-    .map((line) => line.replace(/#.*$/, "").trim())
-    .filter(Boolean)
-    .map((line) => line.split(/\s+/))
-    // The latex row pins a mirror release directory, not a wasm module.
-    .filter(([module]) => module !== "latex");
-  if (!rows.length) throw new Error("assets.lock has no modules");
+  const { modules } = parseAssetsLockText(await readFile(lockPath, "utf8"));
   const staged = await mkdtemp(join(tmpdir(), "librepaper-wasm-mirror-"));
   try {
-    for (const [module, , , sha256, ...extra] of rows) {
-      if (extra.length || !/^[a-f0-9]{64}$/.test(sha256 || "")) throw new Error(`${module || "lock entry"}: expected module repo tag sha256`);
+    for (const { module, sha256 } of modules) {
       let bytes;
       try {
         bytes = await readFile(join(directory, module));
       } catch {
-        throw new Error(`${module} not found in ${directory}; run tools/assets/pins fetch first`);
+        throw new Error(`${module} not found in ${directory}; run node tools/assets/pins.mjs fetch first`);
       }
       if (createHash("sha256").update(bytes).digest("hex") !== sha256) {
-        throw new Error(`${module} in ${directory} does not match assets.lock; run tools/assets/pins fetch first`);
+        throw new Error(`${module} in ${directory} does not match assets.lock; run node tools/assets/pins.mjs fetch first`);
       }
       await mkdir(join(staged, sha256), { recursive: true });
       await copyFile(join(directory, module), join(staged, sha256, module));

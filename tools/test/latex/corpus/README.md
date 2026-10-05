@@ -46,7 +46,7 @@ with a `main.tex`; each has a distinct purpose:
   wasm-latex package recorder also compiles it so the named-font and
   `unicode-math` package requests reach the mirror.
 
-- **`e2e/`** holds fixtures for `web/tools/latex-e2e.mjs` and the LaTeX browser test.
+- **`e2e/`** holds fixtures for `web/tests/e2e/latex-e2e.mjs` and the LaTeX browser test.
   `biber/` is a biblatex document built with biber; `native/` uses pgfplots, which the
   mirror cannot draw, so it needs the local companion's TeX Live.
 

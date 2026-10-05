@@ -8,7 +8,7 @@
 
 The fork source is not committed here. [`web/loro-codemirror.lock`](../../web/loro-codemirror.lock)
 pins a full commit SHA and SHA-256 digests for each required source file.
-[`tools/assets/pins fetch`](../../tools/assets/pins) verifies those bytes and
+[`node tools/assets/pins.mjs fetch`](../../tools/assets/pins.mjs) verifies those bytes and
 writes them to ignored build output at `web/vendor/loro-codemirror/`, which the
 editor and tests import.
 
@@ -19,8 +19,8 @@ editor and tests import.
    SHA, then fetch the verified source:
 
    ```sh
-   tools/assets/pins update loro <full-40-character-commit-sha>
-   tools/assets/pins fetch
+   node tools/assets/pins.mjs update loro <full-40-character-commit-sha>
+   node tools/assets/pins.mjs fetch
    ```
 
 3. Review the `web/loro-codemirror.lock` diff, then run the focused binding

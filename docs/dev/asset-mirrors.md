@@ -11,7 +11,7 @@ The official production config points to an OVH bucket in `bhs`.
 - The published keys are `wasm/<sha256>/<module>.wasm` and
   `latex/<sha256>/<release files>`. LaTeX `release.json` uses format 2; its
   engine records and bundle index identify the files in that release.
-- `tools/assets/pins fetch` verifies pinned module and CodeMirror source bytes.
+- `node tools/assets/pins.mjs fetch` verifies pinned module and CodeMirror source bytes.
   It writes WASM to `web/wasm/` and the binding to ignored build output under
   `web/vendor/`.
 
@@ -25,7 +25,7 @@ If `assets.lock` is unchanged, there is no mirror update to publish.
    repository, then update that module's row. For example:
 
    ```sh
-   tools/assets/pins update wasm wasm-markdown vX.Y.Z
+   node tools/assets/pins.mjs update wasm --repo wasm-markdown --tag vX.Y.Z
    ```
 
 2. For a changed LaTeX distribution, build and tag the release in the
@@ -34,7 +34,7 @@ If `assets.lock` is unchanged, there is no mirror update to publish.
    Pin the single release directory:
 
    ```sh
-   tools/assets/pins update latex
+   node tools/assets/pins.mjs update latex
    ```
 
    Both commands default to `../wasm-latex/mirror`. For another directory,
@@ -44,7 +44,7 @@ If `assets.lock` is unchanged, there is no mirror update to publish.
    mirror:
 
    ```sh
-   tools/assets/pins fetch
+   node tools/assets/pins.mjs fetch
    tools/assets/mirror check
    ```
 

@@ -5,7 +5,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
-BIN=dist/librepaper
+BIN="${LIBREPAPER_TEST_BINARY:-dist/librepaper}"
 SHELL_OUT=web/dist/index.html
 
 usage() {
@@ -15,6 +15,7 @@ usage: tools/test/suite <suite>
   backup      backup, encrypt, restore and replay-verify a synthetic deployment (needs docker, age, age-keygen)
   browser     component tests in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   smoke       drive the reader in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
+  e2e         run browser smoke, history and track-changes deployment scenarios (needs docker and chromium)
   external    Quarto/R/Python and real local-service integration tests
   fuzz        every fuzz target for FUZZ_SECONDS (default 60) each
               (FUZZ_TARGETS overrides the target list; needs nightly and cargo-fuzz)
@@ -24,7 +25,7 @@ USAGE
 
 require_chromium() {
 	local executable
-	if ! executable="$(node web/tools/browser-executable.mjs --print)"; then
+	if ! executable="$(node web/tests/helpers/browser-executable.mjs --print)"; then
 		echo "the requested browser suite needs Chromium; install it or set LIBREPAPER_CHROMIUM to an executable path" >&2
 		return 1
 	fi
@@ -40,7 +41,7 @@ suite_browser() {
 	# can select Firefox for standalone runs; do not let inherited selectors
 	# override the browser prerequisite and resolver used here.
 	export BROWSER=chromium
-	tools/assets/pins fetch
+	node tools/assets/pins.mjs fetch
 	local failed="" test log
 	local -a test_args=()
 	for test in web/tests/browser/*.mjs; do
@@ -67,8 +68,27 @@ suite_browser() {
 # also needs LIBREPAPER_TEST_POSTGRES_URL.
 suite_smoke() {
 	require_chromium
-	make --no-print-directory "$BIN"
-	bun web/tools/browser-smoke.mjs "$BIN"
+	if [[ -z "${LIBREPAPER_TEST_BINARY:-}" ]]; then make --no-print-directory "$BIN"; fi
+	bun web/tests/e2e/browser-smoke.mjs "$BIN"
+}
+
+# Deployment-level browser scenarios share a disposable database. The helper
+# exposes PostgreSQL only on loopback and removes it on every exit path.
+suite_e2e() {
+	require_chromium
+	if [[ -z "${LIBREPAPER_TEST_BINARY:-}" ]]; then make --no-print-directory "$BIN"; fi
+	. "$root/tools/test/postgres.sh"
+	trap postgres_stop_disposable EXIT
+	postgres_start_disposable "librepaper-e2e-$$" e2e librepaper
+	local container="$POSTGRES_CONTAINER" port="$POSTGRES_PORT"
+	export LIBREPAPER_TEST_BINARY="$BIN"
+	export LIBREPAPER_TEST_POSTGRES_URL="postgresql://postgres:e2e@127.0.0.1:$port/librepaper"
+	export LIBREPAPER_DATABASE_URL="$LIBREPAPER_TEST_POSTGRES_URL"
+	export LIBREPAPER_TEST_PSQL="docker exec -i $container psql"
+	export LIBREPAPER_TEST_PSQL_URL="postgresql://postgres:e2e@127.0.0.1:5432/postgres"
+	node web/tests/e2e/browser-smoke.mjs "$BIN"
+	node web/tests/e2e/history-browser.mjs "$BIN"
+	node web/tests/e2e/track-changes-browser.mjs "$BIN"
 }
 
 suite_external() {
@@ -80,7 +100,7 @@ suite_external() {
 # libFuzzer over the functions that read what somebody else wrote. A finding is
 # left in tools/test/fuzz/artifacts/. No sanitizer: the code under test is safe Rust.
 suite_fuzz() {
-	tools/assets/pins fetch
+	node tools/assets/pins.mjs fetch
 	make --no-print-directory "$SHELL_OUT"
 	command -v cargo-fuzz >/dev/null || { echo "cargo-fuzz is not installed: cargo install cargo-fuzz"; return 1; }
 	local seconds="${FUZZ_SECONDS:-60}" targets target
@@ -103,25 +123,17 @@ suite_backup() {
 	command -v age-keygen >/dev/null || { echo 'age-keygen is required'; return 1; }
 	command -v node >/dev/null || { echo 'node is required'; return 1; }
 	command -v tar >/dev/null || { echo 'tar is required'; return 1; }
-	make --no-print-directory "$BIN"
-	local scratch work container port
+	if [[ -z "${LIBREPAPER_TEST_BINARY:-}" ]]; then make --no-print-directory "$BIN"; fi
+	local scratch work
+	local binary="$BIN"
+	[[ "$binary" = /* ]] || binary="$root/$binary"
 	scratch=$(mktemp -d "${TMPDIR:-/tmp}/librepaper-backup-suite.XXXXXX")
 	work=$(mktemp -d /tmp/librepaper-backup-drill.XXXXXX)
-	container="librepaper-backup-drill-$$"
-	port=$(node -e 'const s=require("net").createServer().listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
-	# Expanded now: the locals are gone by the time an EXIT trap runs.
-	# shellcheck disable=SC2064
-	trap "docker rm -f '$container' >/dev/null 2>&1 || true; rm -rf '$scratch' '$work'" EXIT
-	docker run -d --rm --name "$container" -e POSTGRES_PASSWORD=drill -p "127.0.0.1:$port:5432" postgres:17.11-alpine >/dev/null
-	local ready=0 i
-	for (( i=0; i<60; i++ )); do
-		if docker exec "$container" pg_isready -U postgres -q; then
-			ready=1
-			break
-		fi
-		sleep 1
-	done
-	[[ "$ready" == 1 ]] || { echo 'PostgreSQL failed to start'; return 1; }
+	. "$root/tools/test/postgres.sh"
+	BACKUP_SCRATCH="$scratch" BACKUP_WORK="$work"
+	trap 'postgres_stop_disposable; rm -rf "$BACKUP_SCRATCH" "$BACKUP_WORK"' EXIT
+	postgres_start_disposable "librepaper-backup-drill-$$" drill
+	local container="$POSTGRES_CONTAINER" port="$POSTGRES_PORT"
 	docker exec "$container" psql -U postgres -qc 'CREATE DATABASE drill_source' -c 'CREATE DATABASE drill_restored'
 	mkdir -p "$scratch/bin"
 	for tool in psql pg_dump pg_restore; do
@@ -131,7 +143,7 @@ suite_backup() {
 	age-keygen -o "$scratch/identity.txt" 2>/dev/null
 	local recipient
 	recipient=$(age-keygen -y "$scratch/identity.txt")
-	LIBREPAPER_BIN="$root/$BIN" \
+	LIBREPAPER_BIN="$binary" \
 	LIBREPAPER_SOURCE_URL="postgresql://postgres:drill@127.0.0.1:$port/drill_source" \
 	LIBREPAPER_RESTORE_URL="postgresql://postgres:drill@127.0.0.1:$port/drill_restored" \
 	AGE_RECIPIENT="$recipient" \
@@ -150,6 +162,7 @@ case "${1:-help}" in
 	backup) suite_backup ;;
 	browser) suite_browser ;;
 	smoke) suite_smoke ;;
+	e2e) suite_e2e ;;
 	external) suite_external ;;
 	fuzz) suite_fuzz ;;
 	help | -h | --help) usage ;;

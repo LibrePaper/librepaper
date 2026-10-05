@@ -5,13 +5,13 @@
 # so this build uses a fork carrying the fixes until a release contains them:
 # see docs/dev/loro-codemirror.md for what is changed and why.
 #
-# `tools/assets/pins fetch` fetches these files and refuses anything whose bytes
+# `node tools/assets/pins.mjs fetch` fetches these files and refuses anything whose bytes
 # do not hash to what is written here. They land in web/vendor/loro-codemirror,
 # which is build output and not in the repository -- the source lives in the
 # fork, so there is one copy of it rather than two to keep in step.
 #
 # To move the pin: push to the fork, then run
-# `tools/assets/pins update loro <full sha>` and review the diff.
+# `node tools/assets/pins.mjs update loro <full sha>` and review the diff.
 
 repository  vincentarelbundock/loro-codemirror
 commit      c0ed074271a52147fd739450a77c8c40b6bfe5de

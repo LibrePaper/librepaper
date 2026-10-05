@@ -6,9 +6,7 @@ set -euo pipefail
 
 REPO_ROOT=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
 cd "$REPO_ROOT" || exit 1
-
-# PostgreSQL image pinned to match production.
-POSTGRES_IMAGE="postgres:17.11-alpine"
+. "$REPO_ROOT/tools/test/postgres.sh"
 
 # Database configuration (from Makefile)
 DEV_POSTGRES_CONTAINER="${DEV_POSTGRES_CONTAINER:-librepaper-postgres}"
@@ -142,36 +140,9 @@ cmd_wipe() {
 
 # Run PostgreSQL-gated tests in a throwaway container.
 cmd_test() {
-    if ! command -v docker >/dev/null; then
-        echo "error: docker is required" >&2
-        exit 1
-    fi
-
-    local container="librepaper-test-pg-$$"
-    local port
-
-    # Start a throwaway PostgreSQL container.
-    docker run -d --rm --name "$container" -e POSTGRES_PASSWORD=test -p 127.0.0.1::5432 "$POSTGRES_IMAGE" >/dev/null
-    # Expanded now: the local is gone by the time the EXIT trap runs.
-    # shellcheck disable=SC2064
-    trap "docker rm -f '$container' >/dev/null 2>&1 || true" EXIT
-
-    # Get the mapped port.
-    port=$(docker port "$container" 5432/tcp | head -1 | sed 's/.*://')
-
-    # Wait for PostgreSQL to be ready (up to 60 seconds).
-    local ready=0
-    for _ in $(seq 1 60); do
-        if docker exec "$container" pg_isready -q -U postgres -h 127.0.0.1; then
-            ready=1
-            break
-        fi
-        sleep 1
-    done
-    if [ "$ready" != 1 ]; then
-        echo "error: PostgreSQL did not become ready" >&2
-        exit 1
-    fi
+    trap postgres_stop_disposable EXIT
+    postgres_start_disposable "librepaper-test-pg-$$" test
+    local port="$POSTGRES_PORT" container="$POSTGRES_CONTAINER"
 
     # One database per run below: each truncates the tables it uses.
     docker exec "$container" psql -U postgres -qc 'CREATE DATABASE lp_lib' -c 'CREATE DATABASE lp_gates'

@@ -301,26 +301,26 @@ try {
   buildCheckTest((entry) => { entry.files['worker.js'].size = 0; });
   checkRun(1, /non-empty file record/);
   buildCheckTest((entry) => { entry.files['worker.js'].url = '..%2foutside.js'; });
-  checkRun(1, /unsafe relative path/);
+  checkRun(1, /unsafe URL/);
   buildCheckTest((entry) => { entry.bundles = null; });
   checkRun(1, /has no bundles/);
   buildCheckTest();
   rmSync(join(release, 'worker.js'));
-  checkRun(1, /ENOENT/);
+  checkRun(1, /worker\.js references a file that will not be published/);
   buildCheckTest();
   writeFileSync(join(release, 'worker.js'), 'broken');
-  checkRun(1, /digest or size mismatch/);
+  checkRun(1, /integrity mismatch/);
   buildCheckTest();
   const outside = join(directory, 'outside-worker.js');
   writeFileSync(outside, 'worker');
   rmSync(join(release, 'worker.js'));
   symlinkSync(outside, join(release, 'worker.js'));
-  checkRun(1, /escapes the release directory/);
+  checkRun(1, /symbolic link/);
 
   // The directory name is the SHA-256 of MANIFEST.json.
   buildCheckTest();
   writeFileSync(join(release, 'MANIFEST.json'), 'changed');
-  checkRun(1, /not the SHA-256 of MANIFEST\.json/);
+  checkRun(1, /directory does not match the SHA-256 of MANIFEST\.json/);
   buildCheckTest();
   rmSync(join(release, 'MANIFEST.json'));
   checkRun(1, /MANIFEST\.json is missing/);
@@ -334,14 +334,28 @@ try {
   // agrees with them.
   buildCheckTest();
   writeFileSync(join(release, 'bundles', 'bundles.json'), 'tampered');
-  checkRun(1, /bundle index digest mismatch/);
+  checkRun(1, /bundles index SHA-256 mismatch/);
   buildCheckTest();
   const [coreName, coreBundle] = Object.entries(JSON.parse(readFileSync(join(release, 'bundles', 'bundles.json'), 'utf8')).bundles)[0];
   writeFileSync(join(release, 'bundles', coreBundle.url), 'corrupted bundle bytes');
-  checkRun(1, new RegExp(`bundle asset size or digest mismatch: ${coreBundle.url}`));
+  checkRun(1, new RegExp(`bundle ${coreName} integrity mismatch`));
   buildCheckTest();
   rmSync(join(release, 'bundles', coreBundle.url));
-  checkRun(1, new RegExp(`bundle "${coreName}".*is missing from the mirror`));
+  checkRun(1, new RegExp(`bundle ${coreName} references a file that will not be published`));
+
+  buildCheckTest();
+  const indexPath = join(release, 'bundles', 'bundles.json');
+  const releasePath = join(release, 'release.json');
+  const brokenIndex = JSON.parse(readFileSync(indexPath, 'utf8'));
+  brokenIndex.files['tex/latex/base/article.cls'] = 'missing-bundle';
+  const brokenIndexBytes = JSON.stringify(brokenIndex);
+  writeFileSync(indexPath, brokenIndexBytes);
+  const brokenRelease = JSON.parse(readFileSync(releasePath, 'utf8'));
+  brokenRelease.bundles.sha256 = digest(brokenIndexBytes);
+  brokenRelease.files['bundles.json'].size = Buffer.byteLength(brokenIndexBytes);
+  brokenRelease.files['bundles.json'].sha256 = digest(brokenIndexBytes);
+  writeFileSync(releasePath, JSON.stringify(brokenRelease));
+  checkRun(1, /names unknown bundle "missing-bundle"/);
 
   console.log('mirror preflight: release shape, worker payloads, path containment, missing assets, corruption, and bundle mismatches checked');
 } finally {
@@ -589,9 +603,14 @@ async function makeMirrors(root, wasmName = 'wasm dir', latexName = 'latex mirro
   const latex = join(root, latexName);
   const module = Buffer.from('valid markdown wasm');
   await mkdir(wasm, { recursive: true });
-  await writeFile(join(wasm, 'markdown.wasm'), module);
+  const modules = [
+    ['markdown.wasm', 'wasm-markdown'], ['bibliography.wasm', 'wasm-bibliography'],
+    ['citations.wasm', 'wasm-bibliography'], ['typst.wasm', 'wasm-typst'],
+  ];
+  for (const [name] of modules) await writeFile(join(wasm, name), module);
   const lock = join(root, 'assets.lock');
-  await writeFile(lock, `# test lock\nmarkdown.wasm wasm-markdown v0.1.1 ${sha256(module)}\nlatex wasm-latex v0.1.0 ${'a'.repeat(64)}\n`);
+  const moduleRows = modules.map(([name, repo]) => `${name} ${repo} v0.1.1 ${sha256(module)}`).join('\n');
+  await writeFile(lock, `# test lock\n${moduleRows}\nlatex wasm-latex v0.1.0 ${'a'.repeat(64)}\n`);
   // One release directory: <id>/ where id is the SHA-256 of MANIFEST.json.
   const manifest = Buffer.from('{"label":"push-mirrors"}\n');
   const id = sha256(manifest);
@@ -683,7 +702,7 @@ test('staging refuses a module whose bytes do not match assets.lock', async () =
     await writeFile(join(paths.wasm, 'markdown.wasm'), 'tampered');
     await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /does not match assets\.lock/);
     await rm(join(paths.wasm, 'markdown.wasm'));
-    await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /run tools\/assets\/pins fetch first/);
+    await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /run node tools\/assets\/pins\.mjs fetch first/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

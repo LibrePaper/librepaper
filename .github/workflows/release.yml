@@ -134,8 +134,7 @@ jobs:
         uses: "oven-sh/setup-bun@v2"
       - name: "Fetch pinned CodeMirror and browser renderers"
         run: |
-          node web/tools/fetch-loro-codemirror.mjs
-          node web/tools/fetch-modules.mjs
+          node tools/assets/pins.mjs fetch
         shell: "bash"
       - name: "Build the embedded browser app"
         run: |

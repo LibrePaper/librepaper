@@ -32,7 +32,7 @@ SHELL_OUT := web/dist/index.html
 LCM_DIR := web/vendor/loro-codemirror
 LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
            $(LCM_DIR)/awareness.ts $(LCM_DIR)/ephemeral.ts $(LCM_DIR)/utils.ts
-# Everything tools/assets/pins fetch writes; see the pinned inputs section below.
+# Everything tools/assets/pins.mjs fetch writes; see the pinned inputs section below.
 PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(LCM)
 # web/src/site is deliberately not in this list. The marketing page and the
 # docs chrome are built by vite.site.config.js into docs/_site, which the
@@ -252,13 +252,13 @@ $(SHELL_OUT): $(WEB) $(LCM)
 #
 # The browser wasm renderers (assets.lock) and the loro-codemirror binding
 # (web/loro-codemirror.lock) are fetched, not built or vendored, and verified
-# against their locks; tools/assets/pins owns fetching and moving them. Files already
+# against their locks; tools/assets/pins.mjs owns fetching and moving them. Files already
 # correct are left alone, so running it on every build is cheap. `pins` is the
 # internal step. The files themselves depend on it order-only: a clean checkout
 # resolves them as prerequisites, an already-fetched one does not re-run it.
 
 pins:
-	@tools/assets/pins fetch
+	@node tools/assets/pins.mjs fetch
 
 $(PINNED): | pins
 
