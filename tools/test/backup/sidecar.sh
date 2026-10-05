@@ -251,7 +251,7 @@ TOML
 	backend_containers+=("$name")
 	docker run -d --name "$name" -p 127.0.0.1::9000 \
 		-e MINIO_ROOT_USER=fixture-access -e MINIO_ROOT_PASSWORD=fixture-secret-password \
-		"${BACKUP_TEST_MINIO_IMAGE:-minio/minio:latest}" server /data --address :9000 >/dev/null
+		"${BACKUP_TEST_MINIO_IMAGE:-quay.io/minio/minio:latest}" server /data --address :9000 >/dev/null
 	minio_port=$(docker port "$name" 9000/tcp | head -1 | sed 's/.*://')
 	cat >"$work/minio.toml" <<TOML
 [storage]
