@@ -90,13 +90,28 @@ async function main() {
   const readerCookie = sessionCookie({
     dataDirectory: deployment.data, accountId: readerId, handle: "history-reader", name: "History Reader",
   });
+  const readerKey = new URLSearchParams(shareUrl.hash.slice(1)).get("k");
   await reader.setCookie("librepaper_session", readerCookie.slice(readerCookie.indexOf("=") + 1), browserBase);
   await reader.resize(1400, 900);
   await reader.navigate(shareUrl.href);
   await until("reader preview", async () => (await reader.text()).includes("blue fox"));
   assert.equal(await reader.evaluate('!!document.querySelector(".cm-content")'), false);
   await reader.evaluate('document.querySelector(".sidebar-activity [aria-label=History]")?.click()');
-  await until("reader history", () => reader.evaluate('document.body.innerText.includes("Original draft")'));
+  try {
+    await until("reader history", () => reader.evaluate('document.body.innerText.includes("Original draft")'));
+  } catch (error) {
+    const [body, buttons, history] = await Promise.all([
+      reader.evaluate('document.body.innerText').catch((cause) => `unavailable: ${cause.message}`),
+      reader.evaluate(`[...document.querySelectorAll('button, a')].map((item) => ({
+        label: item.getAttribute('aria-label'), title: item.title, text: item.textContent.trim(),
+      }))`).catch((cause) => `unavailable: ${cause.message}`),
+      fetch(new URL(historyPath, deployment.base), {
+        headers: { "x-librepaper-client": "1", cookie: readerCookie, "x-librepaper-key": readerKey || "" },
+      }).then(async (response) => ({ status: response.status, body: (await response.text()).slice(0, 1200) }))
+        .catch((cause) => `unavailable: ${cause.message}`),
+    ]);
+    throw new Error(`${error.message}; reader body: ${String(body).slice(0, 1200)}; reader buttons: ${JSON.stringify(buttons).slice(0, 1600)}; reader history API: ${JSON.stringify(history)}`);
+  }
   await reader.evaluate(`document.querySelector('li[data-sha=${JSON.stringify(first.sha)}] .timeline-point')?.click()`);
   await until("history source comparison", () => reader.evaluate(`(() => {
     const oldText = document.querySelector('.cm-merge-a .cm-content')?.textContent || '';
