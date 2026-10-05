@@ -1,10 +1,13 @@
 # Backup drill
 
 Proves that a backup taken by `admin backup`, encrypted with age and restored
-by `admin restore` into an empty database matches the source row for row and
-byte for byte, and replays to the same document heads and labeled versions.
-The source is synthetic: five tutorial projects, each compacted to a snapshot
-and then edited twice.
+by `admin restore` into an empty database recovers the PostgreSQL rows, object
+bytes, and the original `session.key`. The drill signs in against the source
+before backup, then starts the restored app with a restricted runtime role
+and confirms that the original session cookie still authenticates to the
+recovered account. It also replays to the same document heads and labeled
+versions. The source is synthetic: five tutorial projects, each compacted to
+a snapshot and then edited twice.
 
 ```sh
 tools/test/suite backup   # everything: database, key, drill, replay check
@@ -12,9 +15,12 @@ tools/test/suite backup   # everything: database, key, drill, replay check
 
 The sidecar integration suite uses the same synthetic five-project fixture,
 then starts the locally built backup image with disposable PostgreSQL and
-temporary repositories. It covers disabled/enabled startup, a real
-profile-merged backup and check, failed export metrics, after-backup retention,
-and restore into a fresh database. By default it also runs SFTP, MinIO
+temporary repositories. It connects to PostgreSQL with a generated SELECT-only
+backup role, covers disabled/enabled startup, a real profile-merged backup and
+check, failed export metrics, after-backup retention, and restore into a fresh
+database. The restore is run without the source backup role, then the test
+starts the restored app with a restricted DML role and verifies the original
+signed-in session. By default it also runs SFTP, MinIO
 S3-compatible, and authenticated REST backends using generated keys and
 synthetic credentials. Build the image first:
 

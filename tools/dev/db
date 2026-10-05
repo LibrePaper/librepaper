@@ -163,6 +163,9 @@ cmd_test() {
 
     export LIBREPAPER_TEST_POSTGRES_URL="postgresql://postgres:test@127.0.0.1:$port/lp_gates"
     cargo test -p librepaper --test deployment_gates -- --ignored --test-threads=1
+    # This process-level startup regression exercises the missing-session-key
+    # refusal against the same isolated gate database.
+    cargo test -p librepaper --test admin_pg_environment -- --ignored --test-threads=1
 }
 
 # Main dispatcher.

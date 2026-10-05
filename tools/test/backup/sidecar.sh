@@ -13,6 +13,7 @@ command -v ssh-keygen >/dev/null
 work=$(mktemp -d /tmp/librepaper-backup-sidecar.XXXXXX)
 prefix="lp-backup-${work##*.}"
 sidecar="${prefix}-sidecar"
+restore_url=""
 cleanup() {
 	local status=$?
 	trap - EXIT
@@ -27,6 +28,14 @@ cleanup() {
 	fi
 	docker rm -f -v "$sidecar" >/dev/null 2>&1 || true
 	for name in "${backend_containers[@]:-}"; do docker rm -f -v "$name" >/dev/null 2>&1 || true; done
+	if [[ -f "$work/secrets/database_url.role" ]]; then
+		"$(dirname "$0")/database-role.sh" drop \
+			"$LIBREPAPER_SOURCE_URL" backup_fixture "$work/secrets/database_url" || true
+	fi
+	if [[ -n "$restore_url" && -f "$work/restore-app-database-url.role" ]]; then
+		"$(dirname "$0")/database-role.sh" drop \
+			"$restore_url" backup_restored "$work/restore-app-database-url" || true
+	fi
 	if [[ "${BACKUP_SIDECAR_KEEP:-0}" == 1 || $status != 0 ]]; then
 		# Return test data ownership to the invoking user before preserving it.
 		docker run --rm --user 0 -v "$work:/test" --entrypoint chown \
@@ -44,7 +53,7 @@ cleanup() {
 }
 backend_containers=()
 trap cleanup EXIT
-mkdir -m 700 "$work/source-data" "$work/repos"
+mkdir -m 700 "$work/source-data" "$work/repos" "$work/secrets"
 
 source_db=$(psql "$LIBREPAPER_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 -c 'select current_database()')
 [[ "$source_db" == backup_fixture ]] || { echo "refusing source database: expected backup_fixture, got $source_db" >&2; exit 2; }
@@ -54,16 +63,33 @@ source_tables=$(psql "$LIBREPAPER_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 -c "SELECT
 # The existing drill fixture creates five projects with snapshots and revisions.
 LIBREPAPER_SOURCE_URL="$LIBREPAPER_SOURCE_URL" node tools/test/backup/fixture.mjs \
 	"$LIBREPAPER_BIN" "$LIBREPAPER_SOURCE_URL" "$work/source-data"
+cp -- "$work/source-data/secrets/session.key" "$work/source-session-key"
+chmod 0600 "$work/source-session-key"
+fixture_account_id=$(psql "$LIBREPAPER_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 -c \
+	"SELECT id::text FROM accounts WHERE provider_subject='github:fixture'")
+[[ -n "$fixture_account_id" ]] || { echo 'backup fixture account was not created' >&2; exit 1; }
+node tools/test/backup/save-session-cookie.mjs \
+	"$work/source-data" "$fixture_account_id" "$work/source-session-cookie"
 chmod -R a+rX "$work/source-data"
+chmod 0600 "$work/source-data/secrets/session.key"
 chmod 0777 "$work/repos"
 chmod 0755 "$work"
 docker run --rm --user 0 -v "$work/source-data:/var/lib/librepaper" \
 	--entrypoint chown "$LIBREPAPER_BACKUP_IMAGE" -R 10001:65534 /var/lib/librepaper >/dev/null
 
+backup_database_url="$work/secrets/database_url"
+tools/test/backup/database-role.sh backup \
+	"$LIBREPAPER_SOURCE_URL" backup_fixture "$backup_database_url"
+cp -- "$backup_database_url" "$work/backup-url-original"
+chmod 0444 "$work/backup-url-original"
+docker run --rm --user 0 -v "$work/secrets:/secrets" --entrypoint chown \
+	"$LIBREPAPER_BACKUP_IMAGE" 10001:65534 /secrets/database_url >/dev/null
+chmod 0755 "$work/secrets"
+
 cat >"$work/app.toml" <<'TOML'
 [storage]
 directory = "/var/lib/librepaper"
-database_url = { env = "LIBREPAPER_DATABASE_URL" }
+database_url = { file = "/run/secrets/database_url" }
 fsync = false
 TOML
 cat >"$work/disabled-backup.toml" <<'TOML'
@@ -96,11 +122,12 @@ fi
 
 docker run -d --name "$sidecar" "${common[@]}" \
 	--tmpfs /run/librepaper-backup:uid=10001,gid=65534,mode=0700 \
+	-v "$work/secrets:/run/secrets:rw" \
 	-v "$work:/test:rw" -v "$work/source-data:/var/lib/librepaper:rw" \
 	-v "$work/repos:/var/backups/librepaper:rw" \
 	-v "$work/app.toml:/etc/librepaper/librepaper.toml:ro" \
 	-v "$work/disabled-backup.toml:/etc/resticprofile/resticprofile.toml:ro" \
-	-e LIBREPAPER_DATABASE_URL="$db_url" "$LIBREPAPER_BACKUP_IMAGE" >/dev/null
+	"$LIBREPAPER_BACKUP_IMAGE" >/dev/null
 sleep 2
 docker exec "$sidecar" sh -c 'test "$(cat /var/backups/librepaper/metrics/librepaper_backup.prom | sed -n "s/^librepaper_backup_enabled //p")" = 0'
 docker rm -f -v "$sidecar" >/dev/null
@@ -109,11 +136,12 @@ launch_enabled() {
 	docker rm -f -v "$sidecar" >/dev/null 2>&1 || true
 	docker run -d --name "$sidecar" "${common[@]}" \
 		--tmpfs /run/librepaper-backup:uid=10001,gid=65534,mode=0700 \
+		-v "$work/secrets:/run/secrets:rw" \
 		-v "$work:/test:rw" -v "$work/source-data:/var/lib/librepaper:rw" \
 		-v "$work/repos:/var/backups/librepaper:rw" \
 		-v "$work/app.toml:/etc/librepaper/librepaper.toml:ro" \
 		-v "$work/enabled-backup.toml:/etc/resticprofile/resticprofile.toml:ro" \
-		-e LIBREPAPER_DATABASE_URL="$db_url" "$LIBREPAPER_BACKUP_IMAGE" >/dev/null
+		"$LIBREPAPER_BACKUP_IMAGE" >/dev/null
 	for _ in {1..30}; do
 		if docker exec "$sidecar" test -s /run/librepaper-backup/crontab 2>/dev/null; then return 0; fi
 		sleep 1
@@ -138,11 +166,15 @@ JS
 
 # A failed database connection must fail the export hook and leave snapshot
 # count and last-success metrics unchanged.
-if docker exec -e LIBREPAPER_DATABASE_URL=postgresql://invalid@127.0.0.1:1/missing \
-	"$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup; then
+
+printf '%s\n' 'postgresql://invalid@127.0.0.1:1/missing' >"$work/unreachable-url"
+chmod 0444 "$work/unreachable-url"
+docker exec -u 0 "$sidecar" cp /test/unreachable-url /run/secrets/database_url
+if docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup; then
 	echo 'expected backup to fail when its database is unreachable' >&2
 	exit 1
 fi
+docker exec -u 0 "$sidecar" cp /test/backup-url-original /run/secrets/database_url
 docker exec "$sidecar" restic -r /var/backups/librepaper/repository --password-file /test/repository-password snapshots --json >"$work/failed-snapshots.json"
 node --input-type=module - "$work/snapshots.json" "$work/failed-snapshots.json" <<'JS'
 import assert from 'node:assert/strict';
@@ -180,15 +212,61 @@ mkdir -m 0777 "$work/restic-restore"
 docker exec "$sidecar" restic -r /var/backups/librepaper/repository \
 	--password-file /test/repository-password restore latest --target /test/restic-restore
 docker exec -u 0 "$sidecar" chown -R "$(id -u):$(id -g)" /var/lib/librepaper /test/restic-restore
+restic_session_key="$work/restic-restore/var/lib/librepaper/secrets/session.key"
+test -s "$restic_session_key"
+cmp "$work/source-session-key" "$restic_session_key"
+
+# The backup role appears in ACLs in the database dump. Remove it before
+# restoring so pg_restore has to ignore source privileges/owners and leave
+# permissions to the target runtime role.
+tools/test/backup/database-role.sh drop \
+	"$LIBREPAPER_SOURCE_URL" backup_fixture "$backup_database_url"
+
+restore_url="postgresql://postgres:drill@127.0.0.1:${POSTGRES_PORT}/backup_restored"
+printf '%s\n' "$restore_url" >"$work/restore-owner-url"
+chmod 0600 "$work/restore-owner-url"
 cat >"$work/restore.toml" <<TOML
 [storage]
 directory = "$work/restore-data"
-database_url = { env = "LIBREPAPER_RESTORE_URL" }
+database_url = { file = "$work/restore-owner-url" }
 fsync = false
 TOML
-LIBREPAPER_RESTORE_URL="postgresql://postgres:drill@127.0.0.1:${POSTGRES_PORT}/backup_restored" \
-	"$LIBREPAPER_BIN" admin restore --config "$work/restore.toml" \
+
+"$LIBREPAPER_BIN" admin restore --config "$work/restore.toml" \
 	"$work/restic-restore/var/backups/librepaper/current" "$work/restore-data"
+mkdir -m 700 "$work/restore-data/secrets"
+cp -- "$restic_session_key" "$work/restore-data/secrets/session.key"
+chmod 0600 "$work/restore-data/secrets/session.key"
+cmp "$work/source-session-key" "$work/restore-data/secrets/session.key"
+
+tools/test/backup/database-role.sh app \
+	"$restore_url" backup_restored "$work/restore-app-database-url"
+cat >"$work/restore-app.toml" <<TOML
+[server]
+address = { env = "TEST_RESTORE_ADDRESS" }
+migrate = false
+
+[storage]
+directory = "$work/restore-data"
+database_url = { file = "$work/restore-app-database-url" }
+fsync = false
+
+[access]
+publishers = ["any"]
+commenters = ["anyone"]
+TOML
+node tools/test/backup/restore-access.mjs "$LIBREPAPER_BIN" \
+	"$work/restore-app.toml" "$fixture_account_id" "$work/source-session-cookie"
+tools/test/backup/database-role.sh drop \
+	"$restore_url" backup_restored "$work/restore-app-database-url"
+
+# Later SFTP/MinIO/REST profiles still exercise backup with a working limited
+# source role after the source-only role was absent during the restore.
+tools/test/backup/database-role.sh backup \
+	"$LIBREPAPER_SOURCE_URL" backup_fixture "$backup_database_url"
+docker run --rm --user 0 -v "$work/secrets:/secrets" --entrypoint chown \
+	"$LIBREPAPER_BACKUP_IMAGE" 10001:65534 /secrets/database_url >/dev/null
+
 BACKUP_DRILL_SOURCE_URL="$LIBREPAPER_SOURCE_URL" \
 BACKUP_DRILL_RESTORE_URL="postgresql://postgres:drill@127.0.0.1:${POSTGRES_PORT}/backup_restored" \
 BACKUP_DRILL_SOURCE_DATA="$work/source-data" \
@@ -209,11 +287,12 @@ run_remote_profile() {
 	docker rm -f -v "$sidecar" >/dev/null 2>&1 || true
 	docker run -d --name "$sidecar" "${common[@]}" \
 		--tmpfs /run/librepaper-backup:uid=10001,gid=65534,mode=0700 \
+		-v "$work/secrets:/run/secrets:rw" \
 		-v "$work:/test:rw" -v "$work/source-data:/var/lib/librepaper:rw" \
 		-v "$work/repos:/var/backups/librepaper:rw" \
 		-v "$work/app.toml:/etc/librepaper/librepaper.toml:ro" \
 		-v "$config:/etc/resticprofile/resticprofile.toml:ro" \
-		-e LIBREPAPER_DATABASE_URL="$db_url" "$LIBREPAPER_BACKUP_IMAGE" >/dev/null
+		"$LIBREPAPER_BACKUP_IMAGE" >/dev/null
 	for _ in {1..30}; do
 		if docker exec "$sidecar" test -s /run/librepaper-backup/crontab 2>/dev/null; then ready=1; break; fi
 		sleep 1

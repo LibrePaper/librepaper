@@ -37,12 +37,21 @@ case "$work" in /tmp/librepaper-backup-drill.*) ;; *) echo 'unsafe temporary pat
 cleanup() {
   status=$?
   trap - EXIT
+  if [[ -f "$work/backup-database-url.role" ]]; then
+    "$(dirname "$0")/database-role.sh" drop \
+      "$LIBREPAPER_SOURCE_URL" drill_source "$work/backup-database-url" || true
+  fi
+  if [[ -f "$work/restore-app-database-url.role" ]]; then
+    "$(dirname "$0")/database-role.sh" drop \
+      "$LIBREPAPER_RESTORE_URL" drill_restored "$work/restore-app-database-url" || true
+  fi
   case "$work" in
     /tmp/librepaper-backup-drill.*)
       # A caller-supplied directory belongs to the caller, like a kept one.
       if [[ "${BACKUP_DRILL_KEEP:-0}" == 1 || -n "${BACKUP_DRILL_DIR:-}" ]]; then
         rm -rf -- "$work/backup" "$work/recovery.tar.gz" "$work/recovered.tar.gz" \
-          "$work/source-signature" "$work/restored-signature"
+          "$work/recovery-secrets" "$work/source-signature" "$work/restored-signature"
+        rm -f -- "$work/source-session-cookie"
         if (( status != 0 )); then
           echo "preserved failed synthetic fixture at $work for inspection" >&2
         fi
@@ -55,10 +64,11 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -m 700 "$work/source-data" "$work/restored-data"
+backup_database_url="$work/backup-database-url"
 cat >"$work/source.toml" <<'TOML'
 [storage]
 directory = "source-data"
-database_url = { env = "LIBREPAPER_SOURCE_URL" }
+database_url = { file = "backup-database-url" }
 fsync = false
 TOML
 cat >"$work/restore.toml" <<'TOML'
@@ -76,6 +86,13 @@ node "$(dirname "$0")/fixture.mjs" \
   "$LIBREPAPER_BIN" \
   "$LIBREPAPER_SOURCE_URL" \
   "$work/source-data"
+"$(dirname "$0")/database-role.sh" backup \
+  "$LIBREPAPER_SOURCE_URL" drill_source "$backup_database_url"
+fixture_account_id=$(psql "$LIBREPAPER_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 -c \
+  "SELECT id::text FROM accounts WHERE provider_subject='github:fixture'")
+[[ -n "$fixture_account_id" ]] || { echo 'backup fixture account was not created' >&2; exit 1; }
+node "$(dirname "$0")/save-session-cookie.mjs" \
+  "$work/source-data" "$fixture_account_id" "$work/source-session-cookie"
 
 signature_sql="SELECT jsonb_build_object(
   'documents',(SELECT count(*) FROM documents),
@@ -107,10 +124,19 @@ JSHISTORY
   --config "$work/source.toml" \
   --id backup-drill "$work/backup"
 
+# The CLI bundle contains PostgreSQL and immutable objects. Carry the
+# deployment signing key beside it in the encrypted recovery archive.
+test -s "$work/source-data/secrets/session.key"
+mkdir -m 700 "$work/recovery-secrets"
+cp -- "$work/source-data/secrets/session.key" "$work/recovery-secrets/session.key"
+chmod 0600 "$work/recovery-secrets/session.key"
+"$(dirname "$0")/database-role.sh" drop \
+  "$LIBREPAPER_SOURCE_URL" drill_source "$backup_database_url"
+
 # The portable recovery point is encrypted with the operator's public age
 # recipient. The private identity is used only to decrypt into this 0700 temp
 # directory and is never copied into the bundle or restored data directory.
-tar -C "$work" -czf "$work/recovery.tar.gz" backup
+tar -C "$work" -czf "$work/recovery.tar.gz" backup recovery-secrets
 age -r "$AGE_RECIPIENT" -o "$work/recovery.tar.gz.age" "$work/recovery.tar.gz"
 node --input-type=module - "$work" <<'JSSIZES'
 import fs from 'node:fs';
@@ -119,10 +145,11 @@ const root=process.argv[2], size=p=>fs.statSync(path.join(root,p)).size;
 console.log(JSON.stringify({event:'backup_sizes',database_dump_bytes:size('backup/database.dump'),manifest_bytes:size('backup/manifest.json'),compressed_plaintext_bytes:size('recovery.tar.gz'),encrypted_bytes:size('recovery.tar.gz.age')}));
 JSSIZES
 rm -- "$work/recovery.tar.gz"
-rm -rf -- "$work/backup"
+rm -rf -- "$work/backup" "$work/recovery-secrets"
 age -d -i "$AGE_IDENTITY" -o "$work/recovered.tar.gz" "$work/recovery.tar.gz.age"
-tar -tzf "$work/recovered.tar.gz" | awk 'BEGIN{ok=1} $0 !~ /^backup(\/|$)/ {ok=0} END{exit !ok}'
+tar -tzf "$work/recovered.tar.gz" | awk 'BEGIN{ok=1} $0 !~ /^(backup|recovery-secrets)(\/|$)/ {ok=0} END{exit !ok}'
 tar -C "$work" -xzf "$work/recovered.tar.gz"
+test -s "$work/recovery-secrets/session.key"
 node --input-type=module - "$work/backup" <<'JSVERIFY'
 import fs from 'node:fs';
 import path from 'node:path';
@@ -151,6 +178,31 @@ rmdir "$work/restored-data"
 "$LIBREPAPER_BIN" admin restore \
   --config "$work/restore.toml" \
   "$work/backup" "$work/restored-data"
+mkdir -m 700 "$work/restored-data/secrets"
+cp -- "$work/recovery-secrets/session.key" "$work/restored-data/secrets/session.key"
+chmod 0600 "$work/restored-data/secrets/session.key"
+cmp "$work/source-data/secrets/session.key" "$work/restored-data/secrets/session.key"
+"$(dirname "$0")/database-role.sh" app \
+  "$LIBREPAPER_RESTORE_URL" drill_restored "$work/restore-app-database-url"
+
+cat >"$work/restored-app.toml" <<'TOML'
+[server]
+address = { env = "TEST_RESTORE_ADDRESS" }
+migrate = false
+
+[storage]
+directory = "restored-data"
+database_url = { file = "restore-app-database-url" }
+fsync = false
+
+[access]
+publishers = ["any"]
+commenters = ["anyone"]
+TOML
+node "$(dirname "$0")/restore-access.mjs" "$LIBREPAPER_BIN" \
+  "$work/restored-app.toml" "$fixture_account_id" "$work/source-session-cookie"
+"$(dirname "$0")/database-role.sh" drop \
+  "$LIBREPAPER_RESTORE_URL" drill_restored "$work/restore-app-database-url"
 
 psql "$LIBREPAPER_RESTORE_URL" -XAt -v ON_ERROR_STOP=1 -c "$signature_sql" >"$work/restored-signature"
 cmp "$work/source-signature" "$work/restored-signature"
