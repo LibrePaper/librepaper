@@ -7,8 +7,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 HOST="${HOST:-ubuntu@librepaper.org}"
 SITE=librepaper.org       # landing page and manual, from docs/_site (make site)
-APP=app.librepaper.org    # the application: DOMAIN in the kit
-DOCS=docs.librepaper.org  # published documents: DOCS_DOMAIN in the kit
+APP=app.librepaper.org    # the application: origin in tools/deploy/production.toml
+DOCS=docs.librepaper.org  # published documents: origin in tools/deploy/production.toml
 REDIRECTS='www.librepaper.org, librepaper.com, www.librepaper.com'
 ASSET=librepaper-x86_64-unknown-linux-musl.tar.xz
 MONITORING=https://$APP/admin/monitoring/
@@ -68,18 +68,13 @@ cleanup_verify_tmp() {
 # Setting COMPOSE_FILE disables the automatic override load, so the override is
 # listed explicitly.
 write_env() {
-	local version="$1" acme="$2" postgres="$3" exporter_password="$4" github_id="$5" github_secret="$6" google_id="$7" google_secret="$8" admin_password="$9"
+	local version="$1" github_id="$2" github_secret="$3" google_id="$4" google_secret="$5" admin_password="$6"
 	# The values are written only to a mode-600 file on the VPS. The temporary
 	# file and rename make a failed transfer leave the previous environment intact.
 	# shellcheck disable=SC2087 # expand local credentials and send them over stdin
 	ssh "$HOST" 'umask 077; cat > librepaper/.env.tmp && chmod 600 librepaper/.env.tmp && mv -f librepaper/.env.tmp librepaper/.env' <<EOF
 COMPOSE_FILE=compose.yaml:compose.monitoring.yaml:compose.override.yaml
 LIBREPAPER_VERSION=$version
-DOMAIN=$APP
-DOCS_DOMAIN=$DOCS
-ACME_EMAIL=$acme
-POSTGRES_PASSWORD=$postgres
-POSTGRES_EXPORTER_PASSWORD=$exporter_password
 LIBREPAPER_GITHUB_CLIENT_ID=$github_id
 LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret
 LIBREPAPER_GOOGLE_CLIENT_ID=$google_id
@@ -124,7 +119,7 @@ EOF
 }
 
 bootstrap_monitoring_role() {
-	step "PostgreSQL: ensure the monitoring exporter role exists"
+	step "PostgreSQL: ensure the monitoring exporter role exists with no password"
 	ssh "$HOST" 'cd librepaper && docker compose up -d --wait postgres'
 	ssh "$HOST" 'cd librepaper && docker compose exec -T postgres sh -s' < tools/deploy/docker/monitoring-user.sh
 	ok "ensured least-privilege librepaper_metrics role"
@@ -155,16 +150,13 @@ check_production_dns() {
 }
 
 load_deployment_secrets() {
-	DEPLOY_ACME=$(required_key PRODUCTION_ACME_EMAIL)
-	DEPLOY_POSTGRES=$(required_key PRODUCTION_POSTGRES_PASSWORD)
-	DEPLOY_EXPORTER_PASSWORD=$(required_key PRODUCTION_POSTGRES_EXPORTER_PASSWORD)
 	DEPLOY_GITHUB_ID=$(required_key PRODUCTION_GITHUB_CLIENT_ID)
 	DEPLOY_GITHUB_SECRET=$(required_key PRODUCTION_GITHUB_CLIENT_SECRET)
 	DEPLOY_GOOGLE_ID=$(required_key PRODUCTION_GOOGLE_CLIENT_ID)
 	DEPLOY_GOOGLE_SECRET=$(required_key PRODUCTION_GOOGLE_CLIENT_SECRET)
 	DEPLOY_ADMIN_PASSWORD=$(required_key PRODUCTION_ADMIN_PASSWORD)
-	validate_env_passwords "$DEPLOY_POSTGRES" "$DEPLOY_EXPORTER_PASSWORD" "$DEPLOY_ADMIN_PASSWORD"
-	ok "8 keys decrypted (values not shown)"
+	validate_env_passwords "$DEPLOY_ADMIN_PASSWORD"
+	ok "5 keys decrypted (values not shown)"
 }
 
 prepare_deployment() {
@@ -195,8 +187,8 @@ prepare_deployment() {
 	ok "$SITE serves docs/_site; $REDIRECTS -> https://$SITE"
 
 	step ".env on the VPS"
-	write_env "$version" "$DEPLOY_ACME" "$DEPLOY_POSTGRES" "$DEPLOY_EXPORTER_PASSWORD" "$DEPLOY_GITHUB_ID" "$DEPLOY_GITHUB_SECRET" "$DEPLOY_GOOGLE_ID" "$DEPLOY_GOOGLE_SECRET" "$DEPLOY_ADMIN_PASSWORD"
-	unset DEPLOY_ACME DEPLOY_POSTGRES DEPLOY_EXPORTER_PASSWORD DEPLOY_GITHUB_ID DEPLOY_GITHUB_SECRET DEPLOY_GOOGLE_ID DEPLOY_GOOGLE_SECRET DEPLOY_ADMIN_PASSWORD
+	write_env "$version" "$DEPLOY_GITHUB_ID" "$DEPLOY_GITHUB_SECRET" "$DEPLOY_GOOGLE_ID" "$DEPLOY_GOOGLE_SECRET" "$DEPLOY_ADMIN_PASSWORD"
+	unset DEPLOY_GITHUB_ID DEPLOY_GITHUB_SECRET DEPLOY_GOOGLE_ID DEPLOY_GOOGLE_SECRET DEPLOY_ADMIN_PASSWORD
 	write_config
 	ok "wrote librepaper/.env atomically (mode 600) and staged config.toml"
 	bootstrap_monitoring_role
