@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+PROJECT="${DEMO_PROJECT:-librepaper-demo}"
+COMPOSE_FILES=(
+  -f "$ROOT/deploy/compose.yaml"
+  -f "$ROOT/tools/dev/demo/compose.yaml"
+)
+ACTION="${1:-run}"
+CONFIG_PATH="${CONFIG:-tools/dev/demo/config.toml}"
+PORT="${PORT:-8081}"
+SITE_PORT="${SITE_PORT:-8082}"
+BIN="${BIN:-$ROOT/dist/librepaper}"
+APP_ORIGIN="http://localhost:$PORT"
+
+die() { printf 'demo: %s\n' "$*" >&2; exit 1; }
+
+if ! command -v docker >/dev/null 2>&1; then
+  die 'Docker is required'
+fi
+
+compose_version=$(docker compose version --short 2>/dev/null) || die 'Docker Compose 2.24.4 or later is required'
+compose_version=${compose_version#v}
+if [[ ! "$compose_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+  die "could not read Docker Compose version '$compose_version'"
+fi
+major=$((10#${BASH_REMATCH[1]}))
+minor=$((10#${BASH_REMATCH[2]}))
+patch=$((10#${BASH_REMATCH[3]}))
+if (( major < 2 || (major == 2 && minor < 24) || (major == 2 && minor == 24 && patch < 4) )); then
+  die "Docker Compose 2.24.4 or later is required; found $compose_version"
+fi
+
+if [[ "$CONFIG_PATH" != /* ]]; then
+  CONFIG_PATH="$ROOT/$CONFIG_PATH"
+fi
+[[ "$PROJECT" =~ ^librepaper-demo[a-z0-9_-]*$ ]] || die 'DEMO_PROJECT must start with librepaper-demo'
+
+compose() (
+  export LIBREPAPER_DEMO_ROOT="$ROOT"
+  export LIBREPAPER_DEMO_CONFIG="$CONFIG_PATH"
+  export LIBREPAPER_DEMO_APP_ORIGIN="$APP_ORIGIN"
+  export LIBREPAPER_DEMO_SITE_ORIGIN="http://localhost:$SITE_PORT"
+  export PORT SITE_PORT
+  exec docker compose --project-name "$PROJECT" --project-directory "$ROOT/deploy" "${COMPOSE_FILES[@]}" "$@"
+)
+
+case "$ACTION" in
+  run)
+    [[ -f "$CONFIG_PATH" ]] || die "config file does not exist: $CONFIG_PATH"
+    [[ -x "$BIN" ]] || die "host companion binary is not executable: $BIN"
+    compose_started=0
+    companion_pid=''
+    logs_pid=''
+    cleanup() {
+      local result=$?
+      trap - EXIT INT TERM
+      if [[ -n "$logs_pid" ]]; then
+        kill "$logs_pid" 2>/dev/null || true
+        wait "$logs_pid" 2>/dev/null || true
+      fi
+      if [[ -n "$companion_pid" ]]; then
+        kill "$companion_pid" 2>/dev/null || true
+        wait "$companion_pid" 2>/dev/null || true
+      fi
+      if (( compose_started )); then
+        if (( result != 0 )); then
+          echo 'demo: recent container logs before cleanup:' >&2
+          compose logs --tail=100 || true
+        fi
+        compose down --remove-orphans || true
+      fi
+      exit "$result"
+    }
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    compose_started=1
+    compose up --build --detach --wait --wait-timeout 180
+
+    if LIBREPAPER_SERVER="$APP_ORIGIN" "$BIN" status >/dev/null 2>&1; then
+      echo "local $(LIBREPAPER_SERVER="$APP_ORIGIN" "$BIN" status | sed -n 2p)  (already running; left alone)"
+    else
+      LIBREPAPER_SERVER="$APP_ORIGIN" "$BIN" start --foreground >/dev/null 2>&1 &
+      companion_pid=$!
+    fi
+
+    if [[ "${OPEN:-1}" = 1 ]] && command -v firefox >/dev/null 2>&1; then
+      (sleep 1; firefox "http://localhost:$SITE_PORT" >/dev/null 2>&1 &) || true
+    fi
+    printf 'app   %s\n' "$APP_ORIGIN"
+    printf 'site  http://localhost:%s\n' "$SITE_PORT"
+    printf 'Press Ctrl-C to stop the demo containers and any companion started here.\n'
+    compose logs --follow &
+    logs_pid=$!
+    wait "$logs_pid"
+    ;;
+  stop)
+    compose down --remove-orphans
+    ;;
+  wipe)
+    compose down --remove-orphans --volumes
+    ;;
+  *)
+    die 'usage: tools/dev/demo-compose {run|stop|wipe}'
+    ;;
+esac

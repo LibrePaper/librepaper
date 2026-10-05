@@ -1,0 +1,40 @@
+# Reuse the deployment services with a checkout image and loopback-only ports.
+services:
+  librepaper:
+    build:
+      context: ${LIBREPAPER_DEMO_ROOT:?demo root is required}
+      dockerfile: deploy/Dockerfile
+      args:
+        SOURCE: checkout
+    env_file: !override []
+    environment:
+      LIBREPAPER_DEMO_APP_ORIGIN: ${LIBREPAPER_DEMO_APP_ORIGIN:-http://localhost:8081}
+      LIBREPAPER_DEMO_SITE_ORIGIN: ${LIBREPAPER_DEMO_SITE_ORIGIN:-http://localhost:8082}
+      LIBREPAPER_GITHUB_CLIENT_ID: ${LIBREPAPER_GITHUB_CLIENT_ID:-}
+      LIBREPAPER_GITHUB_CLIENT_SECRET: ${LIBREPAPER_GITHUB_CLIENT_SECRET:-}
+    volumes:
+      - type: bind
+        source: ${LIBREPAPER_DEMO_CONFIG:?demo config path is required}
+        target: /etc/librepaper/config.toml
+        read_only: true
+  caddy:
+    ports: !override
+      - 127.0.0.1:${PORT:-8081}:80
+      - 127.0.0.1:${SITE_PORT:-8082}:8081
+    volumes: !override
+      - ${LIBREPAPER_DEMO_ROOT:?demo root is required}/tools/dev/demo/caddy:/etc/caddy:ro
+      - ${LIBREPAPER_DEMO_ROOT:?demo root is required}/docs/_site:/srv/site:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  grafana:
+    environment:
+      GF_SERVER_ROOT_URL: http://localhost:${PORT:-8081}/admin/monitoring/
+      GF_SECURITY_COOKIE_SECURE: "false"
+      GF_SECURITY_ADMIN_PASSWORD: ${LIBREPAPER_DEMO_GRAFANA_PASSWORD:-admin}
+
+networks:
+  edge:
+    ipam:
+      config: !override
+        - subnet: 172.30.0.0/16

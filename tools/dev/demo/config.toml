@@ -1,0 +1,27 @@
+# Container-ready configuration for make demo without OAuth.
+[server]
+address = "0.0.0.0:8080"
+local_companion = false
+
+[origins]
+app = { env = "LIBREPAPER_DEMO_APP_ORIGIN" }
+site = { env = "LIBREPAPER_DEMO_SITE_ORIGIN" }
+
+[storage]
+directory = "/var/lib/librepaper"
+database_url = { env = "LIBREPAPER_DATABASE_URL" }
+fsync = false
+object_store = "filesystem"
+
+[metrics]
+address = "0.0.0.0:9091"
+
+[proxy]
+trusted_networks = ["172.30.0.0/16"]
+
+[access]
+publishers = ["any"]
+commenters = ["anyone"]
+
+[demo]
+simulate_activity_days = 21

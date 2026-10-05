@@ -45,7 +45,7 @@ WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mj
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
-.PHONY: help build install test test-rust check fmt serve demo demo-run wipe kill clean snapshot web pins site site-serve
+.PHONY: help build install test test-rust check fmt serve demo demo-run demo-stop demo-wipe wipe kill clean snapshot web pins site site-serve
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -182,57 +182,40 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # number overrides the three weeks. It applies to the examples an account is
 # given at first sign-in, so changing it means `wipe` and signing in again.
 #
-# The whole product, locally: the marketing site on one port and the
-# application on the other, with the site built to point its Sign in button at
-# the application this target just started rather than at the published
-# deployment. Firefox opens the site, because that is where a stranger
-# arrives; `serve` is told not to open the application on top of it.
-#
-# The site server is a background process, so the recipe traps its own exit
-# and takes it down: a preview server left holding SITE_PORT would make the
-# next `make demo` fail on --strictPort.
-#
-# Publishing needs sign-in, so `demo` runs under the sops-encrypted deployment
-# keys when it can decrypt them: their GitHub app is registered for
-# http://localhost:$(PORT). Without sops or the key, the demo starts with no
-# sign-in, and reading and commenting still work.
+# The demo uses the deployment services with an image built from this checkout.
+# Its named volumes and Compose project are separate from the native dev server.
+# Publishing needs sign-in, so `demo` uses SOPS keys when available; otherwise
+# it starts without sign-in. CONFIG= may select an explicitly container-ready
+# TOML file.
 DEMO_KEYS ?= tools/deploy/keys.yaml
-demo:  ## Serve the site, the app, a local companion and simulated activity (21 days in tools/dev/dev-oauth.toml)
+demo:  ## Run a local Docker deployment and host companion (21 days of simulated activity)
 	@if [ "$(CONFIG_WAS_SUPPLIED)" = yes ]; then \
 		echo "demo: using CONFIG=$(CONFIG)"; \
 		exec $(MAKE) --no-print-directory demo-run CONFIG="$(CONFIG)"; \
 	elif [ -z "$$LIBREPAPER_GITHUB_CLIENT_ID" ] && command -v sops >/dev/null 2>&1 \
 		&& sops --decrypt --extract '["LIBREPAPER_GITHUB_CLIENT_ID"]' $(DEMO_KEYS) >/dev/null 2>&1; then \
 		echo "demo: GitHub sign-in from $(DEMO_KEYS)"; \
-		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run CONFIG=tools/dev/dev-oauth.toml'; \
+		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run CONFIG=tools/dev/demo/config-oauth.toml'; \
 	elif [ -n "$$LIBREPAPER_GITHUB_CLIENT_ID" ]; then \
 		echo "demo: GitHub sign-in from the environment"; \
-		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/dev-oauth.toml; \
+		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/demo/config-oauth.toml; \
 	else \
 		echo "demo: no sign-in (sops cannot decrypt $(DEMO_KEYS)); publishing is off"; \
-		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/dev.toml; \
+		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/demo/config.toml; \
 	fi
 
-# The companion setting is local to the demo, independent of the caller's
-# shell. Backend settings come from the selected TOML file and its references.
 demo-run: override LIBREPAPER_SERVER = http://localhost:$(PORT)
+demo-run: CONFIG := $(if $(CONFIG_WAS_SUPPLIED),$(CONFIG),tools/dev/demo/config.toml)
 demo-run: $(BIN)
 	@tools/assets/mirror check
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
-	@set -e; \
-	(cd web && bun run serve:site -- --port $(SITE_PORT) --strictPort >/dev/null 2>&1) & \
-	site_pid=$$!; companion_pid=; \
-	if $(BIN) status >/dev/null 2>&1; then \
-		echo "local $$($(BIN) status | sed -n 2p)  (already running; left alone)"; \
-	else \
-		LIBREPAPER_SERVER="http://localhost:$(PORT)" $(BIN) start --foreground >/dev/null 2>&1 & \
-		companion_pid=$$!; \
-	fi; \
-	trap "kill $$site_pid $$companion_pid 2>/dev/null || true" EXIT INT TERM; \
-	command -v firefox >/dev/null && (sleep 2; firefox http://localhost:$(SITE_PORT) >/dev/null 2>&1 &) || true; \
-	echo "site  http://localhost:$(SITE_PORT)"; \
-	echo "app   http://localhost:$(PORT)"; \
-	$(MAKE) serve OPEN=0 CONFIG="$(CONFIG)"
+	@CONFIG="$(CONFIG)" PORT="$(PORT)" SITE_PORT="$(SITE_PORT)" BIN="$(abspath $(BIN))" OPEN="$(OPEN)" tools/dev/demo-compose run
+
+demo-stop:  ## Stop the demo containers and retain their named volumes
+	@tools/dev/demo-compose stop
+
+demo-wipe:  ## Stop the demo and explicitly delete its named volumes
+	@tools/dev/demo-compose wipe
 
 # --- the web app -----------------------------------------------------------
 #
