@@ -41,6 +41,12 @@ use crate::log::sequencer::{
     ack_targets, max_update_bytes, FlushReason, Ingested, LogCatalog, Role, Sequencer,
     SequencerError, FLUSH_MAX_AGE, FLUSH_QUIET, FLUSH_TRIGGER_BYTES,
 };
+use crate::log::{frame, Budget};
+use crate::storage::blob::{BlobStore, FsStore};
+use crate::storage::outgoing::{Outgoing, Receiver, Sender};
+use crate::storage::postgres::{self, Authority, FlushRow};
+use crate::testing::Outbox;
+use librepaper_base::config::Configuration;
 
 #[test]
 fn historical_fork_checks_out_retained_versions_of_a_shallow_document() {
@@ -57,6 +63,9 @@ fn historical_fork_checks_out_retained_versions_of_a_shallow_document() {
     text.insert(29, " and later history").unwrap();
     source.commit();
     let retained_frontier = source.oplog_frontiers();
+    text.insert(48, " at head").unwrap();
+    source.commit();
+    let head_text = "trimmed history retained base and later history at head";
     let shallow_bytes = source
         .export(ExportMode::ShallowSnapshot(std::borrow::Cow::Owned(
             shallow_root.clone(),
@@ -76,17 +85,13 @@ fn historical_fork_checks_out_retained_versions_of_a_shallow_document() {
         retained.get_text("text").to_string(),
         "trimmed history retained base and later history"
     );
+    assert_eq!(shallow.get_text("text").to_string(), head_text);
     assert!(
         crate::log::sequencer::historical_fork_at(&shallow, &trimmed_frontier).is_err(),
         "history before the shallow root stays unavailable after trimming"
     );
+    assert_eq!(shallow.get_text("text").to_string(), head_text);
 }
-use crate::log::{frame, Budget};
-use crate::storage::blob::{BlobStore, FsStore};
-use crate::storage::outgoing::{Outgoing, Receiver, Sender};
-use crate::storage::postgres::{self, Authority, FlushRow};
-use crate::testing::Outbox;
-use librepaper_base::config::Configuration;
 
 // -- fixtures ------------------------------------------------------------
 
