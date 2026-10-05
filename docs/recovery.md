@@ -1,4 +1,6 @@
-# Isolated restore exercise
+---
+title: "Isolated restore exercise"
+---
 
 This procedure restores one remote Restic snapshot into a new Compose project,
 PostgreSQL volume, and app data volume. It never uses the production project.

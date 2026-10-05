@@ -1,4 +1,6 @@
-# Deployment credentials
+---
+title: "Deployment credentials"
+---
 
 LibrePaper's Compose deployment uses individual files under `deploy/secrets/`.
 The directory should be mode 0700 and secret files mode 0444: the directory
@@ -45,7 +47,7 @@ Use TLS with `sslmode=verify-full` and separate PostgreSQL roles. The app role
 does not need schema ownership; the backup role must not be able to modify
 data; the exporter should have `pg_monitor` only. The bootstrap credential is
 used to provision local roles and should not be mounted into the app or backup
-service. See the [host guide](host.md) for the deployment and external database
+service. See the [host guide](host.html) for deployment and external database
 setup.
 
 Rotate a local database credential by changing the role password in PostgreSQL

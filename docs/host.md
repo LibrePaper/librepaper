@@ -12,7 +12,7 @@ templates, and a setup helper. Install Docker Engine with Compose **2.24.4 or
 newer**, Python **3.11 or newer**, `openssl`, and `curl`. Open TCP ports 80 and
 443. `deploy/setup` validates config and writes non-secret Compose state; it
 does not start services or replace an existing database. Read the separate
-[credential guide](credentials.md) for the secret file inventory and rotation
+[credential guide](credentials.html) for the secret file inventory and rotation
 procedures.
 
 Set DNS for the app and docs origins to this host; the site origin is optional.
@@ -155,7 +155,7 @@ document, its objects, and the session key without replacing production data.
 Record release, snapshot age, elapsed time, and outcome; repeat after changing
 the backup format, storage backend, credentials, or a major release. A green
 backup status alone does not demonstrate that recovery works. Follow the
-[isolated recovery procedure](recovery.md) for the owner-role restore command,
+[isolated recovery procedure](recovery.html) for the owner-role restore command,
 volume ownership, port and subnet isolation, and post-restore checks.
 
 Losing the session key invalidates existing sessions and prevents the server
