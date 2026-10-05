@@ -200,11 +200,11 @@ test('legacy upgrade moves old Compose credentials into files and removes them f
       'LIBREPAPER_VERSION=v0.0.21',
       `LIBREPAPER_CONFIG_FILE=${activeConfig}`,
       `LIBREPAPER_RESTICPROFILE_CONFIG_FILE=${resticConfig}`,
-      'LIBREPAPER_GITHUB_CLIENT_ID=old-client-id',
+      'LIBREPAPER_GITHUB_CLIENT_ID=old#client-id',
       'LIBREPAPER_GITHUB_CLIENT_SECRET=old-client-secret',
       'LIBREPAPER_GOOGLE_CLIENT_ID=old-google-id',
       'LIBREPAPER_GOOGLE_CLIENT_SECRET=old-google-secret',
-      'GRAFANA_ADMIN_PASSWORD=old-grafana-password',
+      'GRAFANA_ADMIN_PASSWORD=old-grafana password',
       'POSTGRES_USER=librepaper',
       'POSTGRES_PASSWORD=old-bootstrap-password',
       '',
@@ -221,11 +221,11 @@ test('legacy upgrade moves old Compose credentials into files and removes them f
     const result = f.run(['upgrade', '--yes', '--project', 'selected-project', '--version', 'v0.0.22', '--production-overlay', '--config-file', candidateConfig], conflictingEnvironment, undefined, customSecrets, f.state, customEnv);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /old-client|old-google|old-grafana|old-bootstrap/);
-    assert.equal(readFileSync(path.join(customSecrets, 'github_client_id'), 'utf8').trim(), 'old-client-id');
+    assert.equal(readFileSync(path.join(customSecrets, 'github_client_id'), 'utf8').trim(), 'old#client-id');
     assert.equal(readFileSync(path.join(customSecrets, 'github_client_secret'), 'utf8').trim(), 'old-client-secret');
     assert.equal(readFileSync(path.join(customSecrets, 'google_client_id'), 'utf8').trim(), 'old-google-id');
     assert.equal(readFileSync(path.join(customSecrets, 'google_client_secret'), 'utf8').trim(), 'old-google-secret');
-    assert.equal(readFileSync(path.join(customSecrets, 'grafana_admin_password'), 'utf8').trim(), 'old-grafana-password');
+    assert.equal(readFileSync(path.join(customSecrets, 'grafana_admin_password'), 'utf8').trim(), 'old-grafana password');
     const selection = readFileSync(customEnv, 'utf8');
     assert.match(selection, /COMPOSE_FILE=compose\.yaml:compose\.monitoring\.yaml:compose\.production\.yaml/);
     assert.match(selection, /COMPOSE_PROJECT_NAME=selected-project/);
@@ -246,6 +246,38 @@ test('legacy upgrade moves old Compose credentials into files and removes them f
     }
   } finally {
     rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('legacy secret import rejects ambiguous dotenv syntax before writing or changing the old env file', () => {
+  for (const value of ['"quoted-secret"', 'escaped\\secret', 'plain-secret # inline comment', '${SECRET_VALUE}']) {
+    const f = fixture();
+    try {
+      const legacyEnv = [
+        'COMPOSE_PROJECT_NAME=legacy-syntax-test',
+        'LIBREPAPER_GITHUB_CLIENT_ID=plain#literal',
+        `LIBREPAPER_GITHUB_CLIENT_SECRET=${value}`,
+        '',
+      ].join('\n');
+      writeFileSync(f.envFile, legacyEnv);
+      installUpgradeDockerMock(f, {});
+      const result = f.run(['upgrade', '--yes', '--project', 'legacy-syntax-test']);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /LIBREPAPER_GITHUB_CLIENT_SECRET.*effective value/);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /quoted-secret|escaped\\secret|inline comment|SECRET_VALUE/);
+      assert.equal(readFileSync(f.envFile, 'utf8'), legacyEnv);
+      assert.equal(existsSync(f.secrets), false, 'a valid earlier key is not partially imported');
+      const calls = existsSync(f.dockerLog) ? readFileSync(f.dockerLog, 'utf8') : '';
+      assert.doesNotMatch(calls, / stop | exec | up /);
+      if (value === '"quoted-secret"') {
+        const repaired = setSecret(f, 'github_client_secret', 'effective-secret');
+        assert.equal(repaired.status, 0, repaired.stderr || repaired.stdout);
+        assert.equal(readFileSync(path.join(f.secrets, 'github_client_secret'), 'utf8').trim(), 'effective-secret');
+        assert.equal(readFileSync(f.envFile, 'utf8'), legacyEnv, 'explicit file secret repair leaves the legacy env intact');
+      }
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
   }
 });
 

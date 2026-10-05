@@ -403,11 +403,24 @@ def _migrate_legacy_secrets(env_path: Path, secret_dir: Path) -> None:
         return
     values: dict[str, str] = {}
     for line in lines:
-        key, separator, value = line.strip().partition("=")
-        if separator and key in LEGACY_SECRET_KEYS:
-            values[LEGACY_SECRET_KEYS[key]] = value
-    secret_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(secret_dir, 0o700)
+        key, separator, raw_value = line.partition("=")
+        key = key.strip()
+        if not separator or key not in LEGACY_SECRET_KEYS:
+            continue
+        value = raw_value.strip()
+        if not value.strip():
+            values[LEGACY_SECRET_KEYS[key]] = ""
+            continue
+        if any(character in value for character in "'\"\\$") or re.search(r"\s#", raw_value):
+            secret_name = LEGACY_SECRET_KEYS[key]
+            raise SetupError(
+                f"legacy setting {key} uses quoting, escaping, interpolation, or inline-comment syntax. "
+                f"Keep the old env file unchanged; use `deploy/setup set-secret {secret_name}` with its effective value, "
+                f"remove {key} from the env file, then retry. No value was imported"
+            )
+        values[LEGACY_SECRET_KEYS[key]] = value
+
+    planned_writes: list[tuple[str, str]] = []
     for name, value in values.items():
         if not value.strip():
             continue
@@ -417,7 +430,16 @@ def _migrate_legacy_secrets(env_path: Path, secret_dir: Path) -> None:
             if existing and existing != value:
                 raise SetupError(f"legacy Compose setting for {name} differs from its secret file; reconcile the credential explicitly before upgrading")
             if not existing:
-                _atomic_write(path, value, 0o444)
+                planned_writes.append((name, value))
+        else:
+            planned_writes.append((name, value))
+    if planned_writes:
+        secret_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(secret_dir, 0o700)
+    for name, value in planned_writes:
+        path = secret_dir / name
+        if path.exists():
+            _atomic_write(path, value, 0o444)
         else:
             _write_new(path, value, 0o444)
             os.chmod(path, 0o444)
@@ -605,7 +627,7 @@ def _set_secret(args: argparse.Namespace) -> None:
         raise SetupError(f"unknown secret name {args.name}")
     state = _read_state(_path(args.state_file, DEFAULT_STATE))
     env_path = _path(args.env_file, DEFAULT_ENV)
-    env_secret_dir = _read_compose_env(env_path).get("LIBREPAPER_SECRETS_DIR")
+    env_secret_dir = _read_compose_env(env_path, allow_legacy=True).get("LIBREPAPER_SECRETS_DIR")
     secret_dir = _path(args.secrets_dir or (state or {}).get("secrets_dir") or env_secret_dir, DEFAULT_SECRETS)
     secret_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(secret_dir, 0o700)
