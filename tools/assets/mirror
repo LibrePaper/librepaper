@@ -84,7 +84,7 @@ cmd_smoke() {
   if [ -z "${LIBREPAPER_TEST_POSTGRES_URL:-}" ]; then
     local container="librepaper-assets-smoke-$$" port i
     docker run -d --rm --name "$container" -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=librepaper \
-      -p 127.0.0.1::5432 postgres:16-alpine >/dev/null
+      -p 127.0.0.1::5432 postgres:17.11-alpine >/dev/null
     trap "docker stop $container >/dev/null 2>&1 || true" EXIT
     port=$(docker port "$container" 5432/tcp | head -1 | sed 's/.*://')
     for i in $(seq 60); do

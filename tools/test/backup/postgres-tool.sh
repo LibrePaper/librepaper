@@ -8,4 +8,4 @@ case "$tool" in
   *) echo 'invoke through a psql, pg_dump, or pg_restore symlink' >&2; exit 2 ;;
 esac
 exec docker run --rm -i --network host -v /tmp:/tmp \
-  -e PGDATABASE -e PGPASSWORD postgres:17-alpine "$tool" "$@"
+  -e PGDATABASE -e PGPASSWORD postgres:17.11-alpine "$tool" "$@"

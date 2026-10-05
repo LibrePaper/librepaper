@@ -89,8 +89,7 @@ test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@echo
 	@echo "test: passed -- NOT everything. Still to run:"
 	@echo "  tools/test/suite browser                  the components in a real chromium"
-	@echo "  LIBREPAPER_TEST_POSTGRES_URL=... \\"
-	@echo "    cargo test -p librepaper-engine -p librepaper-room -p librepaper-server --lib -- --ignored --test-threads=1"
+	@echo "  tools/dev/db test                         the PostgreSQL-gated cases, in a throwaway container"
 	@echo "  make check                                test + browser + reader smoke in one go"
 
 # Keep runner discovery separate from runner execution: a failing nextest run
@@ -104,8 +103,7 @@ test-rust:
 	fi
 
 # One command that means what a green `test` looks like it means. The Postgres
-# cases stay out even here: they want a database to point at and they TRUNCATE
-# it, which is not something a default target should assume it may do.
+# cases stay out: they need docker and take long. Run `tools/dev/db test`.
 check: test  ## Run the test suite, the browser components and the reader smoke test
 	@tools/test/suite browser
 	@tools/test/suite smoke
@@ -166,12 +164,7 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 	@if [ "$(CONFIG)" != tools/dev/dev.toml ]; then echo "wipe only supports CONFIG=tools/dev/dev.toml"; exit 1; fi
 	@case "$(DATA)" in ""|.|..|/|../*|*/..|*/../*|/*) echo "unsafe DATA path: $(DATA)"; exit 1;; esac
 	@$(MAKE) --no-print-directory kill >/dev/null
-	@tools/dev/db dev >/dev/null
-	@# FORCE, because a server that outlived `kill` still holds a connection
-	@# and DROP DATABASE waits for it otherwise.
-	@docker exec $${DEV_POSTGRES_CONTAINER:-librepaper-postgres} psql -U postgres -c \
-		'DROP DATABASE IF EXISTS librepaper WITH (FORCE)' >/dev/null
-	@docker exec $${DEV_POSTGRES_CONTAINER:-librepaper-postgres} psql -U postgres -c 'CREATE DATABASE librepaper' >/dev/null
+	@tools/dev/db wipe
 	@# The blobs and the session key. The schema comes back from the
 	@# migrations on the next start, and the directory with it.
 	@rm -rf "$(DATA)"

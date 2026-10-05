@@ -7,6 +7,9 @@ set -euo pipefail
 REPO_ROOT=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
 cd "$REPO_ROOT" || exit 1
 
+# PostgreSQL image pinned to match production.
+POSTGRES_IMAGE="postgres:17.11-alpine"
+
 # Database configuration (from Makefile)
 DEV_POSTGRES_CONTAINER="${DEV_POSTGRES_CONTAINER:-librepaper-postgres}"
 DEV_POSTGRES_PORT="${DEV_POSTGRES_PORT:-55432}"
@@ -26,6 +29,8 @@ Usage: tools/dev/db <command>
 Commands:
   dev                Start the persistent PostgreSQL used by local deploy
   url                Print the dev database URL
+  wipe               Drop and recreate the dev database
+  test               Run PostgreSQL-gated tests in a throwaway container
   sqlx-check         Fail if crates/librepaper-engine/.sqlx/ no longer matches the queries in the tree
   sqlx-prepare       Regenerate crates/librepaper-engine/.sqlx/ after changing any query or migration
   help               Show this help text
@@ -52,7 +57,7 @@ cmd_dev() {
             --name "$DEV_POSTGRES_CONTAINER" --restart unless-stopped \
             -p 127.0.0.1:"$DEV_POSTGRES_PORT":5432 \
             -e POSTGRES_PASSWORD="$DEV_POSTGRES_PASSWORD" -e POSTGRES_DB="$DEV_POSTGRES_DB" \
-            -v "$DEV_POSTGRES_VOLUME":/var/lib/postgresql/data postgres:17-alpine >/dev/null
+            -v "$DEV_POSTGRES_VOLUME":/var/lib/postgresql/data "$POSTGRES_IMAGE" >/dev/null
     fi
 
     # Start the container if not running.
@@ -120,6 +125,85 @@ cmd_sqlx_prepare() {
     SQLX_OFFLINE=false DATABASE_URL="$SQLX_DATABASE_URL" cargo sqlx prepare --workspace -- --all-targets
 }
 
+# Drop and recreate the dev database.
+cmd_wipe() {
+    if ! command -v docker >/dev/null; then
+        echo "error: docker is required" >&2
+        exit 1
+    fi
+
+    # Ensure PostgreSQL is running.
+    cmd_dev >/dev/null
+
+    # FORCE, because a server that outlived `make kill` still holds a connection.
+    docker exec "$DEV_POSTGRES_CONTAINER" psql -U postgres -c "DROP DATABASE IF EXISTS \"$DEV_POSTGRES_DB\" WITH (FORCE)" >/dev/null
+    docker exec "$DEV_POSTGRES_CONTAINER" psql -U postgres -c "CREATE DATABASE \"$DEV_POSTGRES_DB\"" >/dev/null
+}
+
+# Run PostgreSQL-gated tests in a throwaway container.
+cmd_test() {
+    if ! command -v docker >/dev/null; then
+        echo "error: docker is required" >&2
+        exit 1
+    fi
+
+    local container="librepaper-test-pg-$$"
+    local port
+
+    # Start a throwaway PostgreSQL container.
+    docker run -d --rm --name "$container" -e POSTGRES_PASSWORD=test -p 127.0.0.1::5432 "$POSTGRES_IMAGE" >/dev/null
+    # Expanded now: the local is gone by the time the EXIT trap runs.
+    # shellcheck disable=SC2064
+    trap "docker rm -f '$container' >/dev/null 2>&1 || true" EXIT
+
+    # Get the mapped port.
+    port=$(docker port "$container" 5432/tcp | head -1 | sed 's/.*://')
+
+    # Wait for PostgreSQL to be ready (up to 60 seconds).
+    local ready=0
+    for _ in $(seq 1 60); do
+        if docker exec "$container" pg_isready -q -U postgres -h 127.0.0.1; then
+            ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$ready" != 1 ]; then
+        echo "error: PostgreSQL did not become ready" >&2
+        exit 1
+    fi
+
+    # One database per run below: each truncates the tables it uses.
+    docker exec "$container" psql -U postgres -qc 'CREATE DATABASE lp_lib' -c 'CREATE DATABASE lp_gates'
+
+    # Run the PostgreSQL-gated tests. --test-threads=1 is mandatory: tests count every commit
+    # and TRUNCATE a shared database. The skips are long benchmarks/probes and the Quarto
+    # cases, which need toolchains.
+    export LIBREPAPER_TEST_POSTGRES_URL="postgresql://postgres:test@127.0.0.1:$port/lp_lib"
+
+    local -a skips=(
+        --skip typing_throughput_release_benchmark
+        --skip compaction_cost_release_benchmark
+        --skip concurrent_compaction_release_benchmark
+        --skip update_import_cost_probe
+        --skip batched_import_cost_probe
+        --skip active_document_capacity_benchmark
+        --skip mixed_traffic_capacity_benchmark
+        --skip reconnect_burst_capacity_benchmark
+        --skip maintenance_backlog_capacity_benchmark
+        --skip benchmark_shared_fanout
+        --skip real_quarto_pdf_preview_publishes_complete_pdf_bytes
+        --skip real_quarto_render_reports_success_and_retains_a_failure_log
+    )
+
+    cargo test -p librepaper-engine --lib -- --ignored --test-threads=1 "${skips[@]}"
+    cargo test -p librepaper-room --lib -- --ignored --test-threads=1 "${skips[@]}"
+    cargo test -p librepaper-server --lib -- --ignored --test-threads=1 "${skips[@]}"
+
+    export LIBREPAPER_TEST_POSTGRES_URL="postgresql://postgres:test@127.0.0.1:$port/lp_gates"
+    cargo test -p librepaper --test deployment_gates -- --ignored --test-threads=1
+}
+
 # Main dispatcher.
 main() {
     local cmd="${1:-help}"
@@ -130,6 +214,12 @@ main() {
             ;;
         url)
             cmd_url
+            ;;
+        wipe)
+            cmd_wipe
+            ;;
+        test)
+            cmd_test
             ;;
         sqlx-check)
             cmd_sqlx_check
