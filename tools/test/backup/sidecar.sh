@@ -16,6 +16,15 @@ sidecar="${prefix}-sidecar"
 cleanup() {
 	local status=$?
 	trap - EXIT
+	if (( status != 0 )); then
+		# Retain service diagnostics with the fixture before the owned containers
+		# are removed. The failure path preserves this directory for inspection.
+		docker logs "$sidecar" >"$work/$sidecar.log" 2>&1 || true
+		for name in "${backend_containers[@]:-}"; do
+			docker logs "$name" >"$work/$name.log" 2>&1 || true
+		done
+		echo "sidecar diagnostics preserved in $work" >&2
+	fi
 	docker rm -f -v "$sidecar" >/dev/null 2>&1 || true
 	for name in "${backend_containers[@]:-}"; do docker rm -f -v "$name" >/dev/null 2>&1 || true; done
 	if [[ "${BACKUP_SIDECAR_KEEP:-0}" == 1 || $status != 0 ]]; then
@@ -193,7 +202,8 @@ echo 'local backend acceptance passed'
 # read-only bind replacement behavior is avoided.
 run_remote_profile() {
 	local config="$1" port="$2"
-	local ready=0
+	local ready=0 profile_ready=0
+	local readiness_log="$work/$(basename "$config" .toml)-readiness.log"
 	docker rm -f -v "$sidecar" >/dev/null 2>&1 || true
 	docker run -d --name "$sidecar" "${common[@]}" \
 		--tmpfs /run/librepaper-backup:uid=10001,gid=65534,mode=0700 \
@@ -217,6 +227,18 @@ run_remote_profile() {
 		sleep 1
 	done
 	[[ "$ready" == 2 ]] || { echo "backend port $port did not become ready" >&2; return 1; }
+	# A listening socket may still reject the first SSH/HTTP request while the
+	# backend initializes. Probe the authenticated repository operation with a
+	# bounded retry; the actual backup and check below remain single attempts.
+	for _ in {1..30}; do
+		if docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml \
+			-n resticprofile snapshots >"$readiness_log" 2>&1; then
+			profile_ready=1
+			break
+		fi
+		sleep 2
+	done
+	[[ "$profile_ready" == 1 ]] || { cat "$readiness_log" >&2; return 1; }
 	docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup
 	docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile check
 }
