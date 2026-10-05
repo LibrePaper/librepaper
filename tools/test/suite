@@ -109,8 +109,9 @@ suite_backup() {
 	work=$(mktemp -d /tmp/librepaper-backup-drill.XXXXXX)
 	container="librepaper-backup-drill-$$"
 	port=$(node -e 'const s=require("net").createServer().listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
-	# The suite exits when this returns, so EXIT covers success and a failed step.
-	trap 'docker rm -f "$container" >/dev/null 2>&1 || true; rm -rf "$scratch" "$work"' EXIT
+	# Expanded now: the locals are gone by the time an EXIT trap runs.
+	# shellcheck disable=SC2064
+	trap "docker rm -f '$container' >/dev/null 2>&1 || true; rm -rf '$scratch' '$work'" EXIT
 	docker run -d --rm --name "$container" -e POSTGRES_PASSWORD=drill -p "127.0.0.1:$port:5432" postgres:17-alpine >/dev/null
 	local ready=0 i
 	for (( i=0; i<60; i++ )); do
