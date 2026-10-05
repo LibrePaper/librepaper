@@ -17,7 +17,7 @@ docker compose up -d
 ```
 
 Before the first start:
-- Both origin names need DNS records pointing here before the first start: Caddy gets a certificate for each on first request.
+- Both origin names need DNS records pointing here: Caddy gets a certificate for each on first request.
 - OAuth callback URLs: `https://<app-origin>/auth/callback` (GitHub), `https://<app-origin>/auth/callback/google` (Google).
 - `[access]`: `publishers` and `commenters` take `["any"]` or GitHub logins, verified Google addresses and `@domain` entries.
 - `[retention]` is off by default.
@@ -42,7 +42,7 @@ For a managed service, add `?sslmode=verify-full` to the URL.
 
 ```sh
 # Edit LIBREPAPER_VERSION in compose.yaml or export it
-LIBREPAPER_VERSION=v0.0.10 docker compose up -d --build
+LIBREPAPER_VERSION=<tag> docker compose up -d --build
 ```
 
 ### Backups
@@ -71,28 +71,28 @@ fail. There is no interpolation or automatic application-setting override.
 Example configuration:
 
 ```toml
-[server]
-address = "0.0.0.0:8080"
-local_companion = false
-
 [origins]
-app = "https://app.example.org"
-docs = "https://docs.example.org"
+app = "https://paper.example"
+docs = "https://docs.paper.example"
+
+[auth.github]
+client_id = "..."
+client_secret = "..."
 
 [storage]
 directory = "/var/lib/librepaper"
-database_url = { env = "LIBREPAPER_DATABASE_URL" }
-database_connections = 20
-fsync = true
-object_store = "filesystem"
+database_url = { env = "LIBREPAPER_DATABASE_URL" }   # or a full URL
 
-[auth.github]
-client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }
-client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }
+[access]
+publishers = ["any"]
+commenters = ["any"]
 
 [proxy]
 trusted_networks = ["172.29.0.0/16"]
 ```
+
+Secrets may be literals in a file with mode 600, or `{ env = "NAME" }` and
+`{ file = "path" }` references.
 
 Use these commands to check or inspect resolved settings. `check` has no
 startup side effects or database connection; `show` includes defaults and

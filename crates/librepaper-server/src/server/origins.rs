@@ -194,16 +194,13 @@ impl Origins {
     }
 
     /// Whether `host` is one of the two configured public names, as asked by a
-    /// reverse proxy deciding whether to obtain a certificate for it. Loopback
-    /// is deliberately excluded: a certificate is only ever for a public name.
+    /// reverse proxy deciding whether to obtain a certificate for it. Unlike
+    /// `resolve`, loopback is not accepted: a certificate is only ever for a
+    /// configured public name.
     pub fn ask(&self, host: &str) -> bool {
-        let Some(authority) = normalize(host) else { return false };
-        // Loopback names never get certificates.
-        let (name, _) = split_authority(&authority);
-        let bare = name.strip_prefix(DOCS_PREFIX).unwrap_or(name);
-        if is_loopback_name(bare) {
+        let Some(authority) = normalize(host) else {
             return false;
-        }
+        };
         match &self.configured {
             Some((reader, docs)) => reader.matches(&authority) || docs.matches(&authority),
             None => false,

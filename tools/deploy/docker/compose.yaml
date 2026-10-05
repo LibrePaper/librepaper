@@ -35,14 +35,16 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
-    networks: [internal]
+    network_mode: none
 
   librepaper:
     build:
       context: .
       args:
         SOURCE: ${LIBREPAPER_SOURCE:-release}
-        LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:-v0.0.20}
+        # The release this kit runs. v0.0.21 is the first with the /api/tls/ask
+        # endpoint the Caddyfile relies on; upgrade by changing this tag.
+        LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:-v0.0.21}
     restart: unless-stopped
     logging: *bounded-logs
     depends_on:

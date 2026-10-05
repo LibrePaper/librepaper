@@ -189,11 +189,6 @@ PostgreSQL health.
 Server and admin commands use one TOML file. The authoritative production
 configuration is in [tools/deploy/production.toml](../../tools/deploy/production.toml).
 
-The configuration below is included directly. Adapt its domains, credentials,
-storage, and policies before use.
-
-<!-- include: tools/deploy/production.toml -->
-
 For S3-compatible storage, edit the existing `[storage]` table and enable
 the commented `[storage.s3]` example; do not create a duplicate table.
 Credentials come only from its references; ambient AWS credentials are

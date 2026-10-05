@@ -211,10 +211,11 @@ async fn middleware_inner(
     // certificate for it. This must be answered before the host check, because
     // the proxy addresses it with a Host header we do not serve.
     if method == Method::GET && path == "/api/tls/ask" {
-        let domain = request.uri().query()
-            .and_then(|q| url::form_urlencoded::parse(q.as_bytes())
+        let domain = request.uri().query().and_then(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
                 .find(|(key, _)| key == "domain")
-                .map(|(_, value)| value.into_owned()));
+                .map(|(_, value)| value.into_owned())
+        });
         match domain {
             Some(domain) if !domain.is_empty() && server.origins.ask(&domain) => {
                 return plain(200, "served");
