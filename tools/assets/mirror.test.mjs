@@ -352,8 +352,6 @@ try {
   writeFileSync(indexPath, brokenIndexBytes);
   const brokenRelease = JSON.parse(readFileSync(releasePath, 'utf8'));
   brokenRelease.bundles.sha256 = digest(brokenIndexBytes);
-  brokenRelease.files['bundles.json'].size = Buffer.byteLength(brokenIndexBytes);
-  brokenRelease.files['bundles.json'].sha256 = digest(brokenIndexBytes);
   writeFileSync(releasePath, JSON.stringify(brokenRelease));
   checkRun(1, /names unknown bundle "missing-bundle"/);
 
