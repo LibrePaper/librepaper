@@ -213,9 +213,9 @@ test("demo defaults to OAuth config when SOPS keys decrypt", async () => {
     const result = runDemo(fixture);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const logs = await demoLogs(fixture);
-    assert.match(logs.make, /demo-run CONFIG=tools\/dev\/dev-oauth\.toml/);
+    assert.match(logs.make, /demo-run CONFIG=tools\/dev\/demo\/config-oauth\.toml/);
     assert.match(logs.sops, /--decrypt/);
-    assert.match(logs.sops, /exec-env .*CONFIG=tools\/dev\/dev-oauth\.toml/);
+    assert.match(logs.sops, /exec-env .*CONFIG=tools\/dev\/demo\/config-oauth\.toml/);
   } finally {
     await fixture.cleanup();
   }
@@ -227,7 +227,7 @@ test("demo defaults to no-OAuth config when SOPS keys are unavailable", async ()
     const result = runDemo(fixture);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const logs = await demoLogs(fixture);
-    assert.match(logs.make, /demo-run CONFIG=tools\/dev\/dev\.toml/);
+    assert.match(logs.make, /demo-run CONFIG=tools\/dev\/demo\/config\.toml/);
     assert.match(logs.sops, /--decrypt/);
     assert.doesNotMatch(logs.sops, /exec-env/);
   } finally {
@@ -241,7 +241,7 @@ test("demo chooses OAuth config when a GitHub client ID is inherited", async () 
     const result = runDemo(fixture);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const logs = await demoLogs(fixture);
-    assert.match(logs.make, /demo-run CONFIG=tools\/dev\/dev-oauth\.toml/);
+    assert.match(logs.make, /demo-run CONFIG=tools\/dev\/demo\/config-oauth\.toml/);
     assert.equal(logs.sops, "");
   } finally {
     await fixture.cleanup();

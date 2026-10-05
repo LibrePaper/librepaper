@@ -120,7 +120,7 @@ snapshot: pins $(SHELL_OUT)
 clean:  ## Remove build output
 	@rm -rf dist target/release/librepaper web/dist web/node_modules
 
-# These match tools/dev/dev.toml and tools/dev/dev-oauth.toml, which hold the server
+# These match the native development configs, which hold the server
 # settings; edit both together. The port is fixed because the GitHub OAuth
 # app's callback URL names it. The static site is a second server on a second
 # port: a directory of files with no application behind it, and the
@@ -177,10 +177,10 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # three weeks of drafting, so the history panel and the activity calendar have
 # something in them the first time they are opened. The operations are real
 # and every version opens; only the clock is invented (seed::activity).
-# The simulate_activity_days setting in tools/dev/dev-oauth.toml controls this:
+# The simulate_activity_days setting in tools/dev/demo/config-oauth.toml controls this:
 # 0 gives the honest history of a document published once, and any other
 # number overrides the three weeks. It applies to the examples an account is
-# given at first sign-in, so changing it means `wipe` and signing in again.
+# given at first sign-in, so changing it means `demo-wipe` and signing in again.
 #
 # The demo uses the deployment services with an image built from this checkout.
 # Its named volumes and Compose project are separate from the native dev server.
