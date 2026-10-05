@@ -260,7 +260,7 @@ test("demo-run passes an explicit container-ready CONFIG through to the launcher
     const result = runDemoRun(fixture);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const dockerLog = await readFile(fixture.dockerLog, "utf8");
-    assert.match(dockerLog, new RegExp(`\\|${fixture.directory}/custom\\.toml$`, "m"));
+    assert.match(dockerLog, new RegExp(`\\|${fixture.directory}/custom\\.toml\\|${fixture.directory}/deploy/resticprofile\\.toml$`, "m"));
   } finally {
     await rm(fixture.directory, { recursive: true, force: true });
   }
