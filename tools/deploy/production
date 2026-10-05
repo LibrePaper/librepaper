@@ -182,7 +182,7 @@ check_application_config() {
 	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate docker compose run --rm --no-deps librepaper admin config check --config /etc/librepaper/librepaper.toml'; then
 		die "the candidate binary cannot load librepaper.toml; move legacy [resticprofile] settings into resticprofile.toml, or use a TOML-config-capable release or local binary"
 	fi
-	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate RESTICPROFILE_CONFIG_FILE=resticprofile.toml docker compose run --rm --no-deps -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 backup'; then
+	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate LIBREPAPER_RESTICPROFILE_CONFIG_FILE=resticprofile.toml docker compose run --rm --no-deps -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 backup'; then
 		die "the candidate backup image cannot validate the configured profile; the running deployment was not restarted"
 	fi
 	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate docker compose run --rm --no-deps migrate admin migrate --help >/dev/null'; then
@@ -207,7 +207,7 @@ start_application() {
 	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose run --rm --no-deps migrate'
 	# File secrets and configs are bind-mounted individually. Recreate their
 	# consumers even when the image version is unchanged so they see new inodes.
-	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --force-recreate --wait --wait-timeout 180 librepaper'
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'
 	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --force-recreate --no-deps backup'
 	install_caddy_config
 	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --wait --wait-timeout 180'
@@ -478,7 +478,13 @@ deploy_local() {
 upgrade_database() {
 	step "PostgreSQL: explicit legacy role and trust upgrade"
 	sync_deployment_files
-	ssh "$HOST" 'cd librepaper && state=$(./setup status | sed -n "s/^state=\\([^ ]*\\).*/\\1/p") && [ "$state" = legacy ] || { echo "upgrade-database requires state=legacy" >&2; exit 1; } && ./setup upgrade --yes --monitoring --production-overlay --no-local-build --project librepaper --version v0.0.21 && ./setup check'
+	write_config
+	# setup upgrade imports existing OAuth/Grafana credentials from the legacy
+	# .env file before it rewrites Compose state. Keep that file and the active
+	# config untouched until database role conversion succeeds.
+	ssh "$HOST" 'cd librepaper && state=$(./setup status | sed -n "s/^state=\\([^ ]*\\).*/\\1/p") && [ "$state" = legacy ] || { echo "upgrade-database requires state=legacy" >&2; exit 1; } && ./setup upgrade --yes --monitoring --production-overlay --no-local-build --project librepaper --version v0.0.21 --config-file ./librepaper.toml.candidate'
+	install_config
+	ssh "$HOST" 'cd librepaper && ./setup check'
 	ok "scoped roles checked; database volume and session key remain in place"
 }
 

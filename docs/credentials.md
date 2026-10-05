@@ -23,10 +23,11 @@ secret directory only in encrypted off-host recovery storage.
 | `database_metrics_url` | setup and metrics exporter | Setup derives the exporter URI, username, and password files |
 | `database_owner_password`, `database_app_password`, `database_backup_password`, `database_metrics_password` | local PostgreSQL setup | Passwords for the four scoped local roles; keep each aligned with its URL |
 | `database_metrics_uri`, `database_metrics_user` | metrics exporter | Derived from `database_metrics_url` by setup |
-| `postgres_bootstrap_password` | local PostgreSQL initialization | Initial role provisioning only |
+| `postgres_bootstrap_password` | local PostgreSQL setup and recovery | Provisions local roles and supports emergency administration |
 | `grafana_admin_password` | Grafana, optional | Seeds a fresh Grafana database volume |
 | `restic_password` | backup sidecar | Encrypts the Restic repository |
-| `storage_s3_access_key_id`, `storage_s3_secret_access_key` | app, optional | S3-compatible object storage |
+| `aws_credentials` | backup sidecar, optional | AWS-compatible Restic repository credentials |
+| `restic_known_hosts` | backup sidecar, optional | Pinned SSH hosts for SFTP repositories |
 | `session.key` | app data volume | Signs session cookies and encrypts saved share secrets; included in backups |
 
 For external PostgreSQL, provide each URL as a separate secret before running
@@ -52,12 +53,29 @@ and atomically updating both its `database_<role>_password` file and URL file.
 For an external database, update the role and URL; those local password files
 are unused. For the metrics role, also update `database_metrics_uri`,
 `database_metrics_user`, and `database_metrics_password` to match
-`database_metrics_url`; `./setup check` detects mismatches. Recreate the
-matching consumer: `librepaper` for the app URL, `backup` for the backup URL,
-or the exporter for the metrics URL. A new owner URL is needed only when
-running a migration. Revoke access with `ALTER ROLE <role> NOLOGIN`, terminate
-that role's existing sessions, and remove its URL and password files after its
-consumer has stopped.
+`database_metrics_url`. For external PostgreSQL, `./setup check` detects
+mismatches between the URL and its derived exporter files. For local
+PostgreSQL, change the metrics role password and update all four files
+together. Recreate the matching consumer: `librepaper` for the app URL,
+`backup` for the backup URL, or the exporter for the metrics URL. A new owner
+URL is needed only when running a migration. Revoke access with
+`ALTER ROLE <role> NOLOGIN`, terminate that role's existing sessions, and
+remove its URL and password files after its consumer has stopped.
+
+The base setup does not provision S3 object-store credentials or mount them
+into the app and backup containers. To use S3-compatible object storage,
+provide protected credential files and a Compose overlay that mounts the
+required read credentials into both services, then reference those mounted
+files in `[storage.s3]`. SFTP private keys likewise need an operator-defined
+secret file and Compose mount; `restic_known_hosts` alone does not provide a
+private key.
+
+`deploy/setup` manages `COMPOSE_FILE` and rewrites it when you change database,
+monitoring, production, or local-build selections. Keep custom Compose overlays
+separate and include them explicitly, for example
+`docker compose -f compose.yaml -f compose.monitoring.yaml -f custom.yaml ...`;
+do not append them manually to `.env`, where a later `setup init` can replace
+that selection.
 
 The production deployment helper reads only named OAuth and Grafana values
 from the SOPS-encrypted `tools/deploy/keys.yaml` and writes them to their

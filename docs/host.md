@@ -185,11 +185,27 @@ snapshot. Do not start an older binary on a newer schema unless that release
 supports it.
 
 Older local installs that use PostgreSQL socket trust need an explicit role
-upgrade. Review the data-volume backup, then run
-`./setup upgrade --yes --version <compatible-release>` or
-`tools/deploy/production upgrade-database` for the official host.
-The helper stops the app and backup scheduler and preserves the database volume
-and session key. Routine deployment refuses legacy state.
+upgrade. First preserve an offline copy of the old `.env`, app config, database
+volume, data volume, and session key. Stage a config with
+`storage.database_url = { file = "/run/secrets/database_url" }` and
+`[server] migrate = false` as `librepaper.toml.candidate`. Then run:
+
+```sh
+./setup upgrade --yes --version <compatible-release> \
+  --config-file ./librepaper.toml.candidate
+mv librepaper.toml.candidate librepaper.toml
+./setup check
+docker compose pull librepaper migrate backup
+docker compose run --rm --no-deps migrate
+docker compose up -d --wait
+```
+
+The upgrade imports old `.env` credentials into individual files, so keep that
+file intact until `setup upgrade` succeeds. It stops the app and backup
+scheduler and preserves the database volume and session key. Install the new
+config only after role conversion succeeds. The official host can use
+`tools/deploy/production upgrade-database` to stage and activate that config
+around the same role conversion. Routine deployment refuses legacy state.
 
 ## Configuration
 

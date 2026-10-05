@@ -37,6 +37,8 @@ function fixture({
   backupCheckFailure = false,
   migrateHelpFailure = false,
   migrateFailure = false,
+  setupState = 'ready',
+  setupUpgradeFailure = false,
   caddyCheckFailure = false,
   localKitConfig = '',
   backupConfig = '',
@@ -172,9 +174,21 @@ case "$command" in
   *'secrets/.google_client_id.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.google_client_id.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.google_client_id.tmp"; mv "$REMOTE_ROOT/secrets/.google_client_id.tmp" "$REMOTE_ROOT/secrets/google_client_id" ;;
   *'secrets/.google_client_secret.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.google_client_secret.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.google_client_secret.tmp"; mv "$REMOTE_ROOT/secrets/.google_client_secret.tmp" "$REMOTE_ROOT/secrets/google_client_secret" ;;
   *'secrets/.grafana_admin_password.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.grafana_admin_password.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.grafana_admin_password.tmp"; mv "$REMOTE_ROOT/secrets/.grafana_admin_password.tmp" "$REMOTE_ROOT/secrets/grafana_admin_password" ;;
+  *'./setup upgrade'*)
+    [ "$SETUP_STATE" = legacy ] || exit 90
+    [ -f "$REMOTE_ROOT/librepaper.toml.candidate" ] || exit 97
+    old_grafana=$(sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' "$REMOTE_ROOT/.env")
+    [ "$old_grafana" = legacy-admin-password ] || exit 98
+    printf '%s\n' "$command" >> "$SETUP_CALLS_FILE"
+    printf 'setup-upgrade\n' >> "$ORDER_FILE"
+    [ "$SETUP_UPGRADE_FAILURE" = 0 ] || exit 1
+    mkdir -p "$REMOTE_ROOT/secrets"
+    printf '%s' "$old_grafana" > "$REMOTE_ROOT/secrets/grafana_admin_password"
+    printf 'COMPOSE_FILE=compose.yaml:compose.monitoring.yaml\nLIBREPAPER_VERSION=v0.0.21\n' > "$REMOTE_ROOT/.env"
+    ;;
   *'./setup status'*) printf 'state=ready database=local\n' ;;
   *'./setup init'*) [ -f "$REMOTE_ROOT/librepaper.toml" ] || exit 98; printf '%s\n' "$command" >> "$SETUP_CALLS_FILE"; version=$(printf '%s' "$command" | sed -n 's/.*--version \\([^ ]*\\).*/\\1/p'); mkdir -p "$REMOTE_ROOT"; printf 'COMPOSE_FILE=compose.yaml\nLIBREPAPER_VERSION=%s\n' "$version" > "$REMOTE_ROOT/.env" ;;
-  *'./setup check'*) : ;;
+  *'./setup check'*) printf 'setup-check\n' >> "$ORDER_FILE" ;;
   *'psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -q'*) cat > "$REMOTE_ROOT/metrics-role.sql" ;;
   *'sha256sum librepaper.candidate.tmp'*) sha256sum "$REMOTE_ROOT/librepaper.candidate.tmp" | cut -d ' ' -f1 ;;
   *'chmod 755 librepaper.candidate.tmp'*) chmod 755 "$REMOTE_ROOT/librepaper.candidate.tmp"; mv "$REMOTE_ROOT/librepaper.candidate.tmp" "$REMOTE_ROOT/librepaper.candidate" ;;
@@ -191,7 +205,7 @@ case "$command" in
       '{"data":{"result":[{"values":[[1,"1"],[2,"1"]]}]}}' \\
       '${pgUpHealthy ? '{"data":{"result":[{"value":[3,"1"]}]}}' : '{"data":{"result":[]}}'}'
     ;;
-  *'docker compose up -d --force-recreate --wait --wait-timeout 180 librepaper'*)
+  *'docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'*)
     cp "$REMOTE_ROOT/librepaper.toml" "$RUNNING_CONFIG_FILE"
     printf 'app-recreate\\n' >> "$ORDER_FILE"
     ;;
@@ -350,6 +364,8 @@ exit 0`);
       BACKUP_CHECK_FAILURE: backupCheckFailure ? '1' : '0',
       MIGRATE_HELP_FAILURE: migrateHelpFailure ? '1' : '0',
       MIGRATE_FAILURE: migrateFailure ? '1' : '0',
+      SETUP_STATE: setupState,
+      SETUP_UPGRADE_FAILURE: setupUpgradeFailure ? '1' : '0',
       CADDY_CHECK_FAILURE: caddyCheckFailure ? '1' : '0',
       SETUP_CALLS_FILE: setupCallsFile,
     },
@@ -747,6 +763,45 @@ test('deploy refuses a release below the read-only migration API floor before wr
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /requires v0.0.21 or later.*admin migrate/);
     assert.deepEqual(readdirSync(f.remote), []);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('legacy database upgrade validates staged file-based config and installs it only after role conversion', () => {
+  const f = fixture({ setupState: 'legacy' });
+  try {
+    writeFileSync(path.join(f.remote, '.env'), 'GRAFANA_ADMIN_PASSWORD=legacy-admin-password\n');
+    writeFileSync(path.join(f.remote, 'librepaper.toml'), 'legacy environment-based config\n');
+    const result = runProduction(f, 'upgrade-database');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const order = readFileSync(f.orderFile, 'utf8');
+    assert.match(order, /setup-upgrade[\s\S]*config-install[\s\S]*setup-check/);
+    const upgrade = readFileSync(f.setupCallsFile, 'utf8');
+    assert.match(upgrade, /--yes --monitoring --production-overlay --no-local-build --project librepaper --version v0\.0\.21 --config-file \.\/librepaper\.toml\.candidate/);
+    const installed = readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8');
+    assert.match(installed, /database_url = \{ file = "\/run\/secrets\/database_url" \}/);
+    assert.match(installed, /migrate = false/);
+    assert.doesNotMatch(readFileSync(path.join(f.remote, '.env'), 'utf8'), /legacy-admin-password/);
+    assert.equal(readFileSync(path.join(f.remote, 'secrets/grafana_admin_password'), 'utf8'), 'legacy-admin-password');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('failed legacy role conversion preserves the active config and skips setup check', () => {
+  const f = fixture({ setupState: 'legacy', setupUpgradeFailure: true });
+  try {
+    writeFileSync(path.join(f.remote, '.env'), 'GRAFANA_ADMIN_PASSWORD=legacy-admin-password\n');
+    writeFileSync(path.join(f.remote, 'librepaper.toml'), 'legacy environment-based config\n');
+    const result = runProduction(f, 'upgrade-database');
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8'), 'legacy environment-based config\n');
+    assert.equal(existsSync(path.join(f.remote, 'librepaper.toml.candidate')), true);
+    assert.equal(readFileSync(path.join(f.remote, '.env'), 'utf8'), 'GRAFANA_ADMIN_PASSWORD=legacy-admin-password\n');
+    const order = readFileSync(f.orderFile, 'utf8');
+    assert.match(order, /setup-upgrade/);
+    assert.doesNotMatch(order, /config-install|setup-check/);
   } finally {
     f.cleanup();
   }
