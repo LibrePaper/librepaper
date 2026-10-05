@@ -79,7 +79,7 @@ benchmark truncates its configured database. The socket benchmark instead
 uses `LIBREPAPER_BENCH_POSTGRES_URL`; the mixed workload and its PostgreSQL
 setup are documented in the `frugal_mixed_bench` test at `crates/librepaper/tests/frugal_mixed_bench.rs`.
 The isolated backup/restore recovery drill has its own disposable-database
-checks and exact prerequisites in [`tools/test/backup-drill/README.md`](../../tools/test/backup-drill/README.md);
+checks and exact prerequisites in [`tools/test/backup/README.md`](../../tools/test/backup/README.md);
 run `tools/test/suite backup` for the complete end-to-end test.
 
 The real Quarto PDF preview test is still unfinished CI coverage. Its current
