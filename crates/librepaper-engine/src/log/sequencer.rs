@@ -91,10 +91,7 @@ pub enum SnapshotMode {
 /// retained portion of a shallow document. Loro's `fork_at` exports a full
 /// historical snapshot and rejects every shallow document; checking out an
 /// independent fork preserves the shallow root and the post-trim history.
-pub(super) fn historical_fork_at(
-    doc: &LoroDoc,
-    frontier: &Frontiers,
-) -> loro::LoroResult<LoroDoc> {
+pub(super) fn historical_fork_at(doc: &LoroDoc, frontier: &Frontiers) -> loro::LoroResult<LoroDoc> {
     if doc.is_shallow() && !doc.is_detached() {
         let fork = doc.fork();
         fork.checkout(frontier)?;

@@ -16,14 +16,18 @@ temporary repositories. It covers disabled/enabled startup, a real
 profile-merged backup and check, failed export metrics, after-backup retention,
 and restore into a fresh database. By default it also runs SFTP, MinIO
 S3-compatible, and authenticated REST backends using generated keys and
-synthetic credentials. The supervisor builds the image first:
+synthetic credentials. Build the image first:
 
 ```sh
-BACKUP_TEST_IMAGE=librepaper-backup-test:75ew \
+make web
+docker build -f deploy/Dockerfile --build-arg SOURCE=checkout \
+  --target backup -t librepaper-backup-test:local .
+BACKUP_TEST_IMAGE=librepaper-backup-test:local \
 tools/test/suite backup-sidecar
 ```
 
-`BACKUP_TEST_IMAGE` defaults to `librepaper-backup-test:75ew`. Override helper images with `BACKUP_TEST_SFTP_IMAGE`,
+`BACKUP_TEST_IMAGE` defaults to `librepaper-backup-test:local`.
+Override helper images with `BACKUP_TEST_SFTP_IMAGE`,
 `BACKUP_TEST_MINIO_IMAGE`, and `BACKUP_TEST_REST_IMAGE`. Set
 `BACKUP_TEST_BACKENDS=0` for a local-only run. Docker containers and temporary
 data are run-scoped. Set `BACKUP_SIDECAR_KEEP=1` to retain the fixture for

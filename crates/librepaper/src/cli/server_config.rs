@@ -367,7 +367,10 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
         Ok(())
     }
     if v.get("backup").is_some() {
-        return Err("[backup] is no longer supported; configure the backup sidecar with [resticprofile]".into());
+        return Err(
+            "[backup] is no longer supported; configure the backup sidecar with [resticprofile]"
+                .into(),
+        );
     }
     if let Some(profile) = v.get("resticprofile") {
         if !profile.is_table() {
@@ -1068,7 +1071,11 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         &c.sources,
         "resticprofile",
         "configured",
-        &quote(if c.resticprofile_configured { "present" } else { "none" }),
+        &quote(if c.resticprofile_configured {
+            "present"
+        } else {
+            "none"
+        }),
     );
     section(&mut out, "demo");
     optional_num(

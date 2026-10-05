@@ -73,6 +73,10 @@ backups keep 48 hours plus 14 daily and 11 weekly snapshots. Gaps can extend
 those ages; stopping backups stops pruning. Pruning runs after a successful
 backup, and no fixed deletion window is promised.
 
+Override repository, credentials, schedules, retention and notifications only.
+Keep the shipped sources, export hooks, lock and status paths. For versioned
+object stores, expire noncurrent versions too; pruning cannot remove them.
+
 Grafana reports status but does not deliver external alerts. Configure separate
 dead-man URLs for backup and check in each profile. This backup example uses
 Healthchecks.io-style ping URLs:

@@ -1,8 +1,7 @@
 # Automated backup sidecar
 
-**Status:** Proposal, 2026-10-05. Reviewed against tree `a7dc3b7a` and
-resticprofile `0.33.1`. Nothing below is implemented. Retention and recovery
-claims depend on passing the acceptance drills.
+**Status:** Implemented and tested in the task worktree, 2026-10-05. Based on
+tree `a7dc3b7a` and resticprofile `0.33.1`; pending review and merge.
 
 ## Decisions
 
@@ -96,12 +95,14 @@ scheduler = "crontab:-:/run/librepaper-backup/crontab"
 [resticprofile]
 initialize = true
 lock = "/run/librepaper-backup/lock"
+cache-dir = "/var/backups/librepaper/cache"
 status-file = "/var/backups/librepaper/status.json"
 prometheus-save-to-file = "/var/backups/librepaper/metrics/restic.prom"
 
 [resticprofile.backup]
 schedule = "daily"
 schedule-lock-wait = "2h"
+schedule-permission = "user"
 extended-status = true
 host = "librepaper"
 tag = ["librepaper"]
@@ -127,6 +128,7 @@ max-unused = "0"
 [resticprofile.check]
 schedule = "Mon 06:00"
 schedule-lock-wait = "2h"
+schedule-permission = "user"
 read-data-subset = "10%"
 run-before = "librepaper-backup-status start check"
 run-after = "librepaper-backup-status success check"

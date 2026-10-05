@@ -236,7 +236,7 @@ docker exec "$container" test -s /run/librepaper-backup/crontab \
 docker exec -d "$container" python3 /tmp/librepaper-backup-test-receiver.py >/dev/null
 sleep 1
 
-docker exec "$container" resticprofile --version >"$workdir/version.txt" 2>&1
+docker exec "$container" resticprofile version >"$workdir/version.txt" 2>&1
 grep -F "0.33.1" "$workdir/version.txt" >/dev/null \
 	|| fail "image does not contain pinned resticprofile 0.33.1"
 docker exec "$container" resticprofile -c /etc/resticprofile/profiles.toml \
