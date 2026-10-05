@@ -527,9 +527,12 @@ test('deploy-local verifies and retains the copied candidate binary and keeps se
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|exporter-secret|pg-secret|github-secret/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /GRAFANA_ADMIN_PASSWORD=admin-secret/);
+    assert.match(envFile, /^COMPOSE_FILE=compose.yaml:compose.monitoring.yaml:compose.override.yaml$/m);
     assert.match(envFile, /POSTGRES_EXPORTER_PASSWORD=exporter-secret/);
     assert.equal(statSync(path.join(f.remote, '.env')).mode & 0o777, 0o600);
-    assert.match(readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8'), /Dockerfile.local/);
+    const override = readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8');
+    assert.match(override, /SOURCE: local/);
+    assert.match(override, /librepaper.candidate/);
     assert.equal(existsSync(path.join(f.remote, 'librepaper.candidate')), true);
   } finally {
     f.cleanup();

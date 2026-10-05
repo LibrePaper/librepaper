@@ -1,23 +1,34 @@
 # The image is the released binary and nothing else. LibrePaper is one static
 # musl executable with the pages, the renderers and the server compiled in, so
-# there is no toolchain to carry and nothing to assemble at start-up: the build
-# fetches a release archive, checks it against the release checksums, and stops
-# there. Building from a fork means building the archive first -- `make build`
-# -- and swapping the fetch below for a COPY.
+# there is no toolchain to carry and nothing to assemble at start-up. By default
+# the build fetches a release archive and checks it against the release
+# checksums. `--build-arg SOURCE=local` copies a static musl binary named
+# `librepaper` (or LIBREPAPER_BINARY) from this directory instead; BuildKit
+# skips the stage it does not use.
 #
 #   docker build --build-arg LIBREPAPER_VERSION=<compatible-tag> -t librepaper .
-# Build with a tagged release that includes metrics and TOML config support.
-FROM alpine:3.21
+#   docker build --build-arg SOURCE=local -t librepaper .
+ARG SOURCE=release
+
+FROM alpine:3.21 AS base
+
+# ca-certificates for the OAuth providers and the object store; wget is also
+# what the healthcheck uses.
+RUN apk add --no-cache ca-certificates wget
+
+# The deployment's own directory: immutable objects under the filesystem
+# profile, and the secrets that keep sessions and share links valid. That and
+# the place backups are written are the two paths in this image worth a volume.
+RUN adduser -S -D -H -u 10001 librepaper \
+	&& install -d -o librepaper -g nogroup /var/lib/librepaper /var/backups/librepaper
+
+FROM base AS release
 
 # The version to install. There is no default on purpose: an image that
 # silently tracked "latest" would change under a deployment that rebuilt it.
 ARG LIBREPAPER_VERSION
 # Supplied by buildkit; map it to the Cargo Dist target archive name.
 ARG TARGETARCH
-
-# ca-certificates for the OAuth providers and the object store; wget is also
-# what the healthcheck uses.
-RUN apk add --no-cache ca-certificates wget
 
 # The release's .sha256 file ends with a blank line, which BusyBox sha256sum
 # counts as a failed entry, so blank lines are dropped before the check.
@@ -35,14 +46,16 @@ RUN set -eu; \
 	wget -q "$base/$archive.sha256"; \
 	sed '/^$/d' "$archive.sha256" | sha256sum -c -; \
 	tar -xJf "$archive" -C /usr/local/bin --strip-components=1 "librepaper-$target/librepaper"; \
-	rm -f "$archive" "$archive.sha256"; \
-	librepaper --version
+	rm -f "$archive" "$archive.sha256"
 
-# The deployment's own directory: immutable objects under the filesystem
-# profile, and the secrets that keep sessions and share links valid. That and
-# the place backups are written are the two paths in this image worth a volume.
-RUN adduser -S -D -H -u 10001 librepaper \
-	&& install -d -o librepaper -g nogroup /var/lib/librepaper /var/backups/librepaper
+FROM base AS local
+ARG LIBREPAPER_BINARY=librepaper
+COPY ${LIBREPAPER_BINARY} /usr/local/bin/librepaper
+RUN chmod 0755 /usr/local/bin/librepaper
+
+FROM ${SOURCE}
+RUN librepaper --version
+
 # Declared here, not only in compose: a fresh named volume is initialised from
 # the image directory it covers and inherits its ownership, while a volume
 # Docker invents on its own belongs to root -- and the server does not run as
@@ -51,8 +64,9 @@ VOLUME /var/lib/librepaper
 VOLUME /var/backups/librepaper
 USER librepaper
 
-# Both origins arrive on this one port; the server routes them by Host.
-EXPOSE 8080
+# Both origins arrive on this one port; the server routes them by Host. 9091 is
+# the metrics listener.
+EXPOSE 8080 9091
 # Loopback health checks do not depend on the public origin in config.toml.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 	CMD wget -qO- http://127.0.0.1:8080/health >/dev/null || exit 1

@@ -65,12 +65,15 @@ cleanup_verify_tmp() {
 	if [ "${#VERIFY_TMP_FILES[@]}" -gt 0 ]; then rm -f -- "${VERIFY_TMP_FILES[@]}"; fi
 }
 
+# Setting COMPOSE_FILE disables the automatic override load, so the override is
+# listed explicitly.
 write_env() {
 	local version="$1" acme="$2" postgres="$3" exporter_password="$4" github_id="$5" github_secret="$6" google_id="$7" google_secret="$8" admin_password="$9"
 	# The values are written only to a mode-600 file on the VPS. The temporary
 	# file and rename make a failed transfer leave the previous environment intact.
 	# shellcheck disable=SC2087 # expand local credentials and send them over stdin
 	ssh "$HOST" 'umask 077; cat > librepaper/.env.tmp && chmod 600 librepaper/.env.tmp && mv -f librepaper/.env.tmp librepaper/.env' <<EOF
+COMPOSE_FILE=compose.yaml:compose.monitoring.yaml:compose.override.yaml
 LIBREPAPER_VERSION=$version
 DOMAIN=$APP
 DOCS_DOMAIN=$DOCS
@@ -107,9 +110,7 @@ services:
       - ./site:/srv/site:ro
   librepaper:
     build:
-      context: .
-      dockerfile: Dockerfile.local
-      args: {LIBREPAPER_BINARY: librepaper.candidate}
+      args: {SOURCE: local, LIBREPAPER_BINARY: librepaper.candidate}
 EOF
 	else
 		ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'EOF'

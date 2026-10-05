@@ -1,7 +1,7 @@
 # A deployment in containers
 
-The stack runs PostgreSQL, LibrePaper, Caddy, Prometheus, Grafana, and host and
-PostgreSQL exporters. Set `LIBREPAPER_VERSION` to a release that includes both
+The stack runs PostgreSQL, LibrePaper and Caddy; monitoring is optional (see below).
+Set `LIBREPAPER_VERSION` to a release that includes both
 the native metrics listener and TOML configuration support. The historical
 v0.0.8 binary does not include the metrics listener; releases from before the
 TOML configuration change cannot read `config.toml`.
@@ -11,7 +11,7 @@ cd tools/deploy/docker
 cp .env.example .env
 cp config.toml.example config.toml
 # Edit the public origins in config.toml, set LIBREPAPER_VERSION, DOMAIN,
-# ACME_EMAIL, all three passwords below, and an OAuth ID/secret pair.
+# ACME_EMAIL, POSTGRES_PASSWORD, and an OAuth ID/secret pair.
 docker compose up -d --build
 ```
 
@@ -55,89 +55,53 @@ database's health check rather than merely on its container.
 
 ## Monitoring
 
-Monitoring starts with the rest of the stack. Visit
-`https://$DOMAIN/admin/monitoring/` and sign in as `admin` with
-`GRAFANA_ADMIN_PASSWORD` from `.env`. Grafana opens the provisioned
-LibrePaper operations dashboard, which includes HTTP traffic, latency,
-resource refusals, active collaboration, app budgets, host load and memory,
-database activity, storage, scrape targets, and firing Prometheus alerts.
-Provisioned dashboards and alert rules are maintained in `monitoring/` and
-reload when their containers are recreated.
+Opt in by listing both files in `.env`, and set the two passwords:
 
-The application metrics listener binds to `0.0.0.0:9091` inside its container
-by default. Prometheus scrapes it every 15 seconds on the Compose `internal`
-network; no app, Prometheus, exporter, or Grafana port is published on the
-host. Caddy routes `/admin/monitoring/` on `DOMAIN` to Grafana and leaves the
-documents hostname pointed at LibrePaper only. Grafana login protects its UI,
-API, and data-source management. Anonymous access, signups, usage reporting,
-update checks, plugin installation, and external plugin key retrieval are
-disabled. Prometheus stores bounded aggregate metrics with low-cardinality
-route labels; the time series contain no document or user identifiers, request
-query strings, or SQL text. Container logs are separate from metric storage
-and are capped at 10 MiB per file with three files retained per container.
+```sh
+COMPOSE_FILE=compose.yaml:compose.monitoring.yaml
+POSTGRES_EXPORTER_PASSWORD=...   # openssl rand -hex 32
+GRAFANA_ADMIN_PASSWORD=...       # openssl rand -hex 32
+```
 
-Prometheus retains at most 30 days of samples and applies an 8 GB TSDB block
-size cap. Allow additional filesystem headroom for the active head block and
-write-ahead log; retention size is not a hard filesystem quota. Prometheus
-data is kept in its own volume and is separate from PostgreSQL backups. The
-host exporter mounts `/proc`, `/sys`, and the host root read-only, drops Linux
-capabilities, and runs without a writable filesystem. PostgreSQL monitoring
-uses the dedicated `librepaper_metrics` login with the `pg_monitor` role; it
-exports aggregate built-in statistics and not SQL text.
+Then `docker compose up -d`. Visit `https://$DOMAIN/admin/monitoring/` and sign
+in as `admin`. Grafana opens the provisioned LibrePaper operations dashboard:
+traffic, latency, refusals, collaboration, budgets, host load, database
+activity, storage, scrape targets and firing alerts. Dashboards and alert rules
+live in `monitoring/` and reload when their containers are recreated.
+
+- No app, Prometheus, exporter or Grafana port is published. Prometheus scrapes
+  the app's metrics listener (`0.0.0.0:9091` in the container) every 15 seconds
+  over the `internal` network.
+- Caddy routes `/admin/monitoring/` on `DOMAIN` to Grafana. The documents
+  hostname never reaches it.
+- Grafana disables anonymous access, signups, usage reporting, update checks and
+  plugin installation.
+- Metrics are aggregate with low-cardinality route labels: no document or user
+  identifiers, query strings or SQL text.
+- Container logs are capped at 10 MiB per file, three files per container.
+- Prometheus keeps 30 days and an 8 GB block cap in its own volume, outside the
+  document backups. The cap is not a filesystem quota; leave headroom.
+- The host exporter mounts `/proc`, `/sys` and `/` read-only, drops all
+  capabilities and has no writable filesystem.
+- PostgreSQL monitoring uses the `librepaper_metrics` login with `pg_monitor`.
 
 ### Passwords and upgrades
 
-Set all three `POSTGRES_PASSWORD`, `POSTGRES_EXPORTER_PASSWORD`, and
-`GRAFANA_ADMIN_PASSWORD` values in `.env` to independent random values
-(`openssl rand -hex 32` is suitable for each). The metrics role is
-created by the PostgreSQL initialization hook on a new volume. If PostgreSQL
-was already initialized before adding monitoring, run the included idempotent
-helper once against the running database:
+The metrics role is created by the PostgreSQL init hook on a new volume. To
+enable monitoring on an existing database, run the idempotent helper once:
 
 ```sh
 docker compose exec -T postgres sh -s < monitoring-user.sh
 ```
 
-The helper reads `POSTGRES_EXPORTER_PASSWORD` from the PostgreSQL container
-environment and does not put it on a process command line. To rotate this
-account, change the value in `.env`, recreate the PostgreSQL and exporter
-containers with `docker compose up -d postgres postgres-exporter`, then run
-the helper again. The Grafana
-admin password environment variable seeds a fresh Grafana volume only. For a
-rotation, change the admin password in Grafana under **Administration → Users
-and access → Users → admin**, then replace `GRAFANA_ADMIN_PASSWORD` in
-`.env` with that value so the next fresh volume uses it too. Updating only the
-environment value does not change the password already stored in Grafana's
-volume. Keep that volume protected as administrator credentials and alert
-state live there.
+It reads `POSTGRES_EXPORTER_PASSWORD` from the container environment, never a
+command line. To rotate that password, change `.env`, run
+`docker compose up -d postgres postgres-exporter`, then run the helper again.
 
-The Prometheus volume contains time-series history; keep it out of the
-application's document backup set unless monitoring history is needed for a
-recovery. Grafana dashboards and data-source configuration are provisioned
-from files in this directory, while Grafana's local state remains in its
-volume.
-
-### Building a locally built binary
-
-The normal `Dockerfile` downloads a tagged release and verifies its checksum.
-Set `LIBREPAPER_VERSION` to a release that includes TOML configuration and
-metrics support. The production deployment script checks `admin config check`
-on the candidate image before replacing the current config or restarting.
-For a locally built static musl binary, copy it to this directory as `librepaper`
-and use the alternate Dockerfile:
-
-```sh
-docker build -f Dockerfile.local -t librepaper:local .
-```
-
-Run that command from `tools/deploy/docker` with the executable in the same
-directory. The executable must target the same architecture as the Docker
-host; supported targets are `x86_64-unknown-linux-musl` and
-`aarch64-unknown-linux-musl`.
-
-For the full stack with the local binary, use
-`docker compose -f compose.yaml -f compose.local.yaml up -d --build` from this
-directory. The local binary path is optional for source builds and forks.
+`GRAFANA_ADMIN_PASSWORD` seeds a fresh Grafana volume only. To rotate it, change
+the password in Grafana under **Administration, Users and access, Users,
+admin**, then put the same value in `.env` for the next fresh volume. Keep the
+Grafana volume protected: administrator credentials and alert state live there.
 
 ## Backups
 
@@ -156,9 +120,20 @@ guess.
 ## Upgrading
 
 Set `LIBREPAPER_VERSION` to the exact compatible release tag and run
-`docker compose up -d --build`. The image is built from the
-tagged release archive and checked against its checksums. To run a fork, build
-a static musl binary and use `Dockerfile.local`.
+`docker compose up -d --build`. The image is built from the tagged release
+archive and checked against its checksums.
+
+To run a fork or an unreleased build, copy a static musl binary (same
+architecture as the host) here as `librepaper`, then:
+
+```sh
+# .env
+LIBREPAPER_SOURCE=local
+```
+
+```sh
+docker compose up -d --build
+```
 
 ## S3 instead of local objects
 
