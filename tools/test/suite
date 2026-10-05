@@ -112,7 +112,7 @@ suite_backup() {
 	# Expanded now: the locals are gone by the time an EXIT trap runs.
 	# shellcheck disable=SC2064
 	trap "docker rm -f '$container' >/dev/null 2>&1 || true; rm -rf '$scratch' '$work'" EXIT
-	docker run -d --rm --name "$container" -e POSTGRES_PASSWORD=drill -p "127.0.0.1:$port:5432" postgres:17-alpine >/dev/null
+	docker run -d --rm --name "$container" -e POSTGRES_PASSWORD=drill -p "127.0.0.1:$port:5432" postgres:17.11-alpine >/dev/null
 	local ready=0 i
 	for (( i=0; i<60; i++ )); do
 		if docker exec "$container" pg_isready -U postgres -q; then
