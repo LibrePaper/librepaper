@@ -108,6 +108,11 @@ async function main() {
   await editor.evaluate(`${changesTab}.click()`);
 
   await until("suggestion in Changes", () => editor.evaluate(`Boolean(document.querySelector('.change-row.suggestion .row-main'))`));
+  await editor.evaluate(`document.querySelector('.change-row.suggestion .row-main').click()`);
+  await until("expanded suggestion diff", () => editor.evaluate(`Boolean(
+    document.querySelector('.change-row.suggestion .deletion')
+      && document.querySelector('.change-row.suggestion .insertion')
+  )`));
   const row = await editor.evaluate(`(() => {
     const item = document.querySelector('.change-row.suggestion');
     return item ? {
@@ -132,8 +137,6 @@ async function main() {
   assert.equal(painted.inserted, "The opening paragraph.");
   assert.equal(painted.label, "Suggested insertion: The opening paragraph.");
   await until("proposal list ready", () => editor.evaluate(`Boolean(document.querySelector('.change-row.suggestion .row-action.accept:not(:disabled)'))`));
-  await editor.evaluate(`document.querySelector('.change-row.suggestion .row-main').click()`);
-  await until("accept action", () => editor.evaluate(`Boolean(document.querySelector('.change-row.suggestion .row-action.accept:not(:disabled)'))`));
   await editor.evaluate(`document.querySelector('.change-row.suggestion .row-action.accept').click()`);
   await until("accepted source painted in the document frame", () => editor.frameEvaluate("document.body.innerText.includes('The opening paragraph.')"));
 
