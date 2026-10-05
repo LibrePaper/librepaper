@@ -62,7 +62,7 @@ RUN chmod 0755 /usr/local/bin/librepaper
 FROM ${RUST_BUILDER_IMAGE} AS checkout-build
 ARG TARGETARCH
 WORKDIR /src
-RUN apk add --no-cache build-base musl-dev
+RUN apk add --no-cache build-base cmake musl-dev perl
 COPY Cargo.toml Cargo.lock README.md assets.lock ./
 COPY .cargo ./.cargo
 COPY crates ./crates

@@ -1,5 +1,13 @@
 .git
 **/.git
+.agents
+**/.agents
+.aws
+**/.aws
+.claude
+**/.claude
+.codex
+**/.codex
 target
 **/target
 node_modules
@@ -14,5 +22,7 @@ data/
 deploy/data/
 backups/
 deploy/backups/
+librepaper-data/dist/
+tools/deploy/keys.yaml
 docs/_site/
 **/docs/_site/
