@@ -45,8 +45,11 @@
   objects, and backups add physical use beyond logical quotas.
 - `admin backup` dumps PostgreSQL and copies objects referenced by that
   snapshot. Each backup is another physical copy.
-- Backup configuration records intent; it does not schedule, encrypt, or prune
-  backups. Set retention, keep recovery points off-host, and test restores.
+- The Docker kit's optional `[resticprofile]` table enables encrypted scheduled
+  snapshots and retention. The staging volume needs room for one full export;
+  the repository needs room for retained snapshots. Test recovery. Versioned
+  object stores may retain old pack versions after pruning; set lifecycle
+  expiry for noncurrent versions.
 - Production stores primary objects on the deployment's filesystem volume.
   Browser renderers and LaTeX assets use the separate public OVH mirror; see
   [asset mirrors](asset-mirrors.md).

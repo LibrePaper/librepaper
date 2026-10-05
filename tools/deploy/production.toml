@@ -83,12 +83,10 @@ trusted_networks = ["172.29.0.0/16"]
 # [logging]
 # filter = "info"
 
-# Optional backup intent, recorded as metadata only: nothing is scheduled,
-# encrypted or pruned. interval is a duration; warning_count is the number
-# of completed backups before the deployment warns.
-# [backup]
-# destination_class = "local"
-# interval = "1d"
-# retained_count = 7
-# encrypted = true
-# warning_count = 2
+# Optional. Uncomment and configure to enable scheduled encrypted backups.
+# This file is deployed with mode 0644, so keep secrets in environment or file
+# references rather than literal values here.
+# [resticprofile]
+# repository = "s3:https://s3.example/bucket/librepaper"
+# Add credentials in [resticprofile.env] in a protected deployment config;
+# never commit them.

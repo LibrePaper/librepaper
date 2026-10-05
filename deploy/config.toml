@@ -55,3 +55,13 @@ trusted_networks = ["172.29.0.0/16"]
 # Private listener for the bundled Prometheus; no host port is published.
 [metrics]
 address = "0.0.0.0:9091"
+
+# Optional. Without this table, the backup sidecar stays idle. Configure the
+# resticprofile repository and backend settings here. This file
+# may contain secrets; restrict its permissions and keep an off-host copy.
+# [resticprofile]
+# repository = "s3:https://s3.example/bucket/librepaper"
+# [resticprofile.env]
+# RESTIC_PASSWORD = "replace-with-a-long-random-secret"
+# AWS_ACCESS_KEY_ID = "replace"
+# AWS_SECRET_ACCESS_KEY = "replace"

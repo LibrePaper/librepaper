@@ -16,6 +16,16 @@
 ARG SOURCE=release
 ARG RUST_BUILDER_IMAGE=rust:1-alpine
 
+# The kit builds from deploy/; checkout and demo builds use the repository
+# root. Separate context stages let each build copy the right source tree.
+FROM scratch AS backup-assets-release
+COPY backup/ /
+FROM scratch AS backup-assets-local
+COPY backup/ /
+FROM scratch AS backup-assets-checkout
+COPY deploy/backup/ /
+FROM backup-assets-${SOURCE} AS backup-assets
+
 FROM alpine:3.21 AS base
 
 # ca-certificates for the OAuth providers and the object store; wget is also
@@ -87,8 +97,11 @@ FROM base AS checkout
 COPY --from=checkout-build /out/librepaper /usr/local/bin/librepaper
 RUN chmod 0755 /usr/local/bin/librepaper
 
-FROM ${SOURCE}
+FROM ${SOURCE} AS app-runtime
 RUN librepaper --version
+
+# The backup exporter uses pg_dump from the matching major PostgreSQL release.
+RUN apk add --no-cache postgresql17-client
 
 # Declared here, not only in compose: a fresh named volume is initialised from
 # the image directory it covers and inherits its ownership, while a volume
@@ -107,3 +120,26 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 
 ENTRYPOINT ["librepaper"]
 CMD ["admin", "serve", "--config", "/etc/librepaper/config.toml"]
+
+# A separate, unprivileged scheduler shares the app's runtime and volumes.
+FROM creativeprojects/resticprofile:0.33.1 AS resticprofile-binary
+
+FROM app-runtime AS backup
+USER root
+RUN set -eu; \
+	apk add --no-cache openssh-client python3 restic supercronic; \
+	install -d -o 10001 -g 65534 -m 0700 /run/librepaper-backup; \
+	install -d -o 10001 -g 65534 -m 0755 /var/backups/librepaper/metrics
+COPY --from=resticprofile-binary /usr/bin/resticprofile /usr/bin/resticprofile
+COPY --from=backup-assets /profiles.toml /etc/resticprofile/profiles.toml
+COPY --from=backup-assets /status.py /usr/local/bin/librepaper-backup-status
+COPY --from=backup-assets /entrypoint.sh /usr/local/bin/librepaper-backup-entrypoint
+RUN chmod 0644 /etc/resticprofile/profiles.toml \
+	&& chmod 0755 /usr/local/bin/librepaper-backup-status /usr/local/bin/librepaper-backup-entrypoint
+USER 10001:65534
+HEALTHCHECK NONE
+ENTRYPOINT ["/usr/local/bin/librepaper-backup-entrypoint"]
+CMD []
+
+# Keep plain `docker build` selecting the application image.
+FROM app-runtime AS app

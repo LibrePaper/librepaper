@@ -30,6 +30,8 @@ Delete the `postgres` and `postgres-exporter` services in `compose.yaml`, remove
 
 - `postgres`: the database (documents, update log, comments)
 - `data`: immutable objects and the secrets that keep sessions and share links valid. Back it up even with S3.
+- `backups`: temporary exports and the local restic repository state
+- `backup-metrics`: backup status files read by Node Exporter
 - `caddy-data`: certificates
 
 ### Monitoring
@@ -44,17 +46,60 @@ Delete the `postgres` and `postgres-exporter` services in `compose.yaml`, remove
 
 ```sh
 # Edit LIBREPAPER_VERSION in compose.yaml or export it
+docker compose stop backup
 LIBREPAPER_VERSION=<tag> docker compose up -d --build
 ```
 
+The backup sidecar starts after the app is healthy. Recreate it after
+replacing `config.toml`, so its read-only bind mount sees the new file.
+
 ### Backups
 
+Backups stay disabled until `config.toml` has a `[resticprofile]` table. Put
+credentials in `[resticprofile.env]`, or pass them through `.env`. Protect the
+config from other host users while keeping it readable by UID 10001, and keep
+an off-host recovery copy. Recreate the sidecar and check snapshots:
+
 ```sh
-docker compose exec librepaper librepaper admin backup \
-  --config /etc/librepaper/config.toml /var/backups/librepaper/$(date +%F)
+docker compose up -d --force-recreate backup
+docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile snapshots
 ```
 
-Restore: see [Storage and backup](#storage-and-backup).
+The sidecar exports with `admin backup`, snapshots, and prunes the export. It
+runs daily backups and checks the repository Monday at 06:00. Successful
+backups keep 48 hours plus 14 daily and 11 weekly snapshots. Gaps can extend
+those ages; stopping backups stops pruning. Pruning runs after a successful
+backup, and no fixed deletion window is promised.
+
+Grafana reports status but does not deliver external alerts. For independent
+backup and check dead-man alerts, set their own `/start`, success and failure
+URLs with `send-before`, `send-after` and `send-after-fail` in each profile.
+External freshness limits are 36 hours for backup and 8 days for check; update
+them when changing schedules. Manual resticprofile commands use the same lock
+as scheduled jobs. Do not run restic directly while a job is active.
+
+```toml
+[[resticprofile.backup.send-before]]
+method = "HEAD"
+url = "https://healthchecks.example/<backup-id>/start"
+[[resticprofile.backup.send-after]]
+method = "HEAD"
+url = "https://healthchecks.example/<backup-id>"
+[[resticprofile.backup.send-after-fail]]
+method = "HEAD"
+url = "https://healthchecks.example/<backup-id>/fail"
+```
+
+Repeat with a separate check ID under `resticprofile.check`.
+
+Restic supports local, SFTP, REST server and S3-compatible repositories. A
+local repository can live at `local:/var/backups/librepaper/repository`; it is
+only on the `backups` volume, so copy it off-host. Put `RESTIC_PASSWORD` and
+S3 credentials in a mode-600 `.env` if not using `[resticprofile.env]`. For
+SFTP, mount private key and `known_hosts` files read-only into `backup`, for
+example at `/run/secrets/restic_ssh_key` and
+`/run/secrets/restic_known_hosts`, and configure restic's SSH command to use
+those paths.
 
 ## Configuration
 
@@ -72,8 +117,8 @@ fail. There is no interpolation or automatic application-setting override.
 
 The shipped `config.toml` is the reference: every table has a comment. The
 `[metrics]` table is enabled for the Docker monitoring stack; the commented-out
-`[limits]`, `[retention]` and `[server]` tables are optional. Secrets may be
-literals in a file with mode 600, or
+`[limits]`, `[retention]`, `[resticprofile]` and `[server]` tables are optional.
+Secrets may be literals in a protected file readable by the container user, or
 `{ env = "NAME" }` and `{ file = "path" }` references.
 
 Use these commands to check or inspect resolved settings. `check` has no
@@ -114,19 +159,59 @@ librepaper admin config show --config /etc/librepaper/config.toml
 
 ## Storage and backup
 
-Use the server config for backups. A restore config must identify the target
-database; the database must be empty and the destination directory must not
-exist. The destination is positional:
+The backup contains a consistent PostgreSQL dump, referenced objects, server
+config and session key. Without the key, sessions are invalidated and the app
+cannot reveal old share URLs, though URLs users already hold still work.
+Restore with the matching LibrePaper release, an empty database and new path.
+Keep the original deployment intact until recovery is verified.
 
-```sh
-backup="/backups/librepaper-$(date +%F)"
-librepaper admin backup --config /etc/librepaper/config.toml "$backup"
-librepaper admin restore --config /etc/librepaper/restore.toml \
-  "$backup" /librepaper-restored
-```
+1. Stop the app and backup sidecar. Preserve the original database, data volume,
+   config and remote repository. From `deploy/`, start PostgreSQL in a separate
+   Compose project; its project name gives it a new database and data volume:
+   `docker compose -p librepaper-recovery up -d postgres`.
+2. Restore the snapshot into a temporary host directory. Override the entrypoint
+   to avoid starting the scheduler:
 
-Copy each backup off the machine, and test a restore: a backup that has never
-been restored is a guess.
+   ```sh
+   mkdir -m 700 /tmp/librepaper-restore
+   docker compose run --rm --no-deps \
+     -v /tmp/librepaper-restore:/restore \
+     --user 0 --entrypoint resticprofile backup \
+     -c /etc/resticprofile/profiles.toml -n resticprofile restore <snapshot> --target /restore
+   ```
+
+   Inspect the restored hierarchy and copy its config to the recovery project.
+3. Copy the included config to `config-recovery.toml`. Set
+   `storage.directory = "/var/lib/librepaper"` and point the database URL at
+   the recovery DB; remove or replace inherited production URLs. Restore into
+   a nonexistent child path (the volume root already exists):
+
+   ```sh
+   LIBREPAPER_CONFIG_FILE=config-recovery.toml docker compose -p librepaper-recovery run --rm --no-deps \
+     -v /tmp/librepaper-restore:/restore:ro librepaper admin restore \
+     --config /etc/librepaper/config.toml /restore/var/backups/librepaper/current /var/lib/librepaper/recovered
+   ```
+
+4. Install `recovered/objects` and restored `secrets/` at the new volume root
+   with UID 10001 ownership:
+
+   ```sh
+   docker compose -p librepaper-recovery run --rm --no-deps --user 0 \
+     --entrypoint sh librepaper -c \
+     'cp -a /var/lib/librepaper/recovered/objects /var/lib/librepaper/ && cp -a /var/lib/librepaper/recovered/secrets /var/lib/librepaper/ && chown -R 10001:65534 /var/lib/librepaper/objects /var/lib/librepaper/secrets'
+   ```
+
+   For S3, upload and verify each manifest object
+   under the same key in a new recovery bucket, preserving the original. Point
+   recovery at that bucket, or switch explicitly to filesystem storage and
+   remove the old S3 settings. Never start against an empty or unverified store.
+5. Start the matching LibrePaper release with `LIBREPAPER_VERSION` and
+   `LIBREPAPER_CONFIG_FILE=config-recovery.toml`; verify health and documents,
+   then reapply known deletions requested after the snapshot. Restore does not
+   replay a deletion ledger.
+
+Record the release, snapshot age, elapsed time and outcome in restore drills.
+Do not claim a recovery time until measured.
 
 See [cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md)
 for resource defaults and backup limitations.

@@ -97,6 +97,11 @@ write_compose_override() {
 	if [ "$local_image" = true ]; then
 		local_build='  librepaper:
     build:
+      target: app
+      args: {SOURCE: local, LIBREPAPER_BINARY: librepaper.candidate}
+  backup:
+    build:
+      target: backup
       args: {SOURCE: local, LIBREPAPER_BINARY: librepaper.candidate}'
 	fi
 	ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<EOF
@@ -197,9 +202,12 @@ check_application_config() {
 		step "Containers: build and check release config support"
 	fi
 	note "candidate image is checked before configuration changes"
-	ssh "$HOST" 'cd librepaper && docker compose build librepaper'
+	ssh "$HOST" 'cd librepaper && docker compose build librepaper backup'
 	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml.candidate docker compose run --rm --no-deps librepaper admin config check --config /etc/librepaper/config.toml'; then
 		die "the candidate binary cannot load config.toml; the running application was not restarted. Use a TOML-config-capable release or local binary"
+	fi
+	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml.candidate docker compose run --rm --no-deps -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 backup'; then
+		die "the candidate backup image cannot validate the configured profile; the running deployment was not restarted"
 	fi
 }
 
@@ -211,12 +219,14 @@ start_application() {
 	if [ "$mode" = local ]; then
 		note "kept the checked local binary available for future Docker rebuilds"
 	fi
+	# Stop scheduled work before the app can migrate the schema. Renaming the
+	# config changes its inode, so recreate both containers to remount it.
+	ssh "$HOST" 'cd librepaper && docker compose stop backup'
 	install_config
-	# Renaming config.toml changes its inode without changing the Compose model,
-	# so recreate only the app container to ensure it opens the validated file.
-	# PostgreSQL is already up from bootstrap; the following full-stack up starts
-	# any remaining services without force-recreating them.
 	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'
+	# The app is healthy (and any migration is complete) before the scheduler
+	# starts against the new schema and config inode.
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --force-recreate --no-deps backup'
 	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --wait --wait-timeout 180'
 	if ! timeout "$CADDY_RELOAD_TIMEOUT_SECONDS" ssh "$HOST" 'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'; then
 		die "Caddy configuration reload failed"

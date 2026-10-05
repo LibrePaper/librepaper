@@ -119,10 +119,12 @@ Hosting, database and object-storage providers see what they store.
 - **Sessions:** session credentials expire after 30 days. Signing out clears the
   current browser's cookie; it does not invalidate a copied credential. Account
   erasure revokes the account's sessions.
-- **Backups:** the application backup command creates a database/object-store
-  recovery point. It does not encrypt, schedule, prune, or expire backup copies.
-  Backup security and retention depend on the operator's separate storage and
-  retention controls; this notice makes no encryption or deletion-replay promise.
+- **Backups:** the Docker kit can encrypt and schedule database/object recovery
+  points when `[resticprofile]` is configured. Snapshots can retain erased data
+  until retention removes it; operators must review and reapply deletion requests
+  after recovery. Session keys are included so restored sessions and share URLs
+  remain valid. Backup access, repository credentials and off-host copies are
+  the operator's responsibility.
 
 Deleting a document deletes files, comments, replies, checkpoints and share links.
 
@@ -131,9 +133,9 @@ Deleting a document deletes files, comments, replies, checkpoints and share link
 **Settings > Account > Erase this account** (confirm with your handle):
 
 1. Account sessions are revoked; the account cannot sign in again. Erasure is irreversible from the browser
-2. Owned documents marked for deletion and removed after 7 days (configurable)
-3. Comments and checkpoints on others' documents stay, relabelled "Deleted user"
-4. Account record deleted once documents are gone
+2. Owned documents are marked for deletion and purged after seven days
+3. Comments, replies and labels on others' documents remain as "Deleted user"
+4. The account record is deleted after its owned documents are purged
 
 Account and document deletion affects the live service according to the
 retention periods above. Separate backup copies may still contain deleted data

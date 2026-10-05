@@ -17,6 +17,24 @@ services:
         source: ${LIBREPAPER_DEMO_CONFIG:?demo config path is required}
         target: /etc/librepaper/config.toml
         read_only: true
+  backup:
+    build:
+      context: ${LIBREPAPER_DEMO_ROOT:?demo root is required}
+      dockerfile: deploy/Dockerfile
+      target: backup
+      args:
+        SOURCE: checkout
+    env_file: !override []
+    environment:
+      LIBREPAPER_DEMO_APP_ORIGIN: ${LIBREPAPER_DEMO_APP_ORIGIN:-http://localhost:8081}
+      LIBREPAPER_DEMO_SITE_ORIGIN: ${LIBREPAPER_DEMO_SITE_ORIGIN:-http://localhost:8082}
+      LIBREPAPER_GITHUB_CLIENT_ID: ${LIBREPAPER_GITHUB_CLIENT_ID:-}
+      LIBREPAPER_GITHUB_CLIENT_SECRET: ${LIBREPAPER_GITHUB_CLIENT_SECRET:-}
+    volumes:
+      - type: bind
+        source: ${LIBREPAPER_DEMO_CONFIG:?demo config path is required}
+        target: /etc/librepaper/config.toml
+        read_only: true
   caddy:
     ports: !override
       - 127.0.0.1:${PORT:-8081}:80

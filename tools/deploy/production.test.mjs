@@ -34,6 +34,7 @@ function fixture({
   googleLocation = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
   sopsFailureKey = '',
   configCheckFailure = false,
+  backupCheckFailure = false,
   localKitConfig = '',
   runningConfig = 'previous container config\n',
 } = {}) {
@@ -163,14 +164,20 @@ case "$command" in
     cp "$REMOTE_ROOT/config.toml" "$RUNNING_CONFIG_FILE"
     printf 'app-recreate\\n' >> "$ORDER_FILE"
     ;;
+  *'docker compose stop backup'*) printf 'backup-stop\\n' >> "$ORDER_FILE" ;;
+  *'docker compose up -d --force-recreate --no-deps backup'*) printf 'backup-recreate\\n' >> "$ORDER_FILE" ;;
   *'docker compose up -d --wait --wait-timeout 180'*)
     printf called >> "$COMPOSE_UP_FILE"
     printf 'stack-up\\n' >> "$ORDER_FILE"
     ;;
-  *'docker compose build librepaper'*) : ;;
+  *'docker compose build librepaper backup'*) printf 'image-build\\n' >> "$ORDER_FILE" ;;
   *'docker compose run --rm --no-deps librepaper admin config check'*)
     printf 'config-check\\n' >> "$ORDER_FILE"
     [ "$CONFIG_CHECK_FAILURE" = 0 ]
+    ;;
+  *'docker compose run --rm --no-deps -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 backup'*)
+    printf 'backup-check\\n' >> "$ORDER_FILE"
+    [ "$BACKUP_CHECK_FAILURE" = 0 ]
     ;;
   *) : ;;
 esac`);
@@ -298,6 +305,7 @@ exit 0`);
       GOOGLE_LOCATION: googleLocation,
       SOPS_FAILURE_KEY: sopsFailureKey,
       CONFIG_CHECK_FAILURE: configCheckFailure ? '1' : '0',
+      BACKUP_CHECK_FAILURE: backupCheckFailure ? '1' : '0',
     },
     makeCalledFile,
     oauthCallsFile,
@@ -335,8 +343,12 @@ test('deploy writes Google OAuth credentials to .env and keeps them out of outpu
     assert.equal(existsSync(path.join(f.remote, 'Caddyfile')), false);
     assert.match(productionConfig, /\[origins\]\napp = "https:\/\/app\.librepaper\.org"/);
     assert.match(productionConfig, /database_url = \{ env = "LIBREPAPER_DATABASE_URL" \}/);
-    assert.ok(readFileSync(f.orderFile, 'utf8').indexOf('config-check') < readFileSync(f.orderFile, 'utf8').indexOf('config-install'));
-    assert.ok(readFileSync(f.orderFile, 'utf8').indexOf('config-install') < readFileSync(f.orderFile, 'utf8').indexOf('up'));
+    const order = readFileSync(f.orderFile, 'utf8');
+    assert.ok(order.indexOf('image-build') < order.indexOf('config-check'));
+    assert.ok(order.indexOf('config-check') < order.indexOf('backup-check'));
+    assert.ok(order.indexOf('backup-check') < order.indexOf('backup-stop'));
+    assert.ok(order.indexOf('backup-stop') < order.indexOf('config-install'));
+    assert.ok(order.indexOf('config-install') < order.indexOf('backup-recreate'));
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
   } finally {
     f.cleanup();
@@ -379,7 +391,8 @@ for (const command of ['deploy', 'deploy-local']) {
       assert.doesNotMatch(installed, /operator-local config/);
       assert.equal(readFileSync(f.runningConfigFile, 'utf8'), installed);
       assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), [
-        'config-check', 'config-install', 'app-recreate', 'stack-up', 'caddy-reload',
+        'image-build', 'config-check', 'backup-check', 'backup-stop', 'config-install',
+        'app-recreate', 'backup-recreate', 'stack-up', 'caddy-reload',
       ]);
       assert.equal(readFileSync(path.join(f.root, 'caddy-timeout'), 'utf8').trim(), '30');
     } finally {
@@ -416,6 +429,23 @@ test('a binary without TOML config support leaves the installed config and runni
     assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
     assert.equal(existsSync(f.composeUpFile), false);
     assert.doesNotMatch(readFileSync(f.orderFile, 'utf8'), /caddy-reload/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('an invalid backup candidate leaves the installed config and running services in place', () => {
+  const f = fixture({ backupCheckFailure: true, localKitConfig: 'operator-local config\n' });
+  try {
+    writeFileSync(path.join(f.remote, 'config.toml'), 'previous production config\n');
+    const result = runProduction(f, 'deploy');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /candidate backup image cannot validate the configured profile/);
+    assert.equal(readFileSync(path.join(f.remote, 'config.toml'), 'utf8'), 'previous production config\n');
+    assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
+    const order = readFileSync(f.orderFile, 'utf8');
+    assert.match(order, /image-build[\s\S]*config-check[\s\S]*backup-check/);
+    assert.doesNotMatch(order, /backup-stop|config-install|app-recreate|backup-recreate|stack-up/);
   } finally {
     f.cleanup();
   }

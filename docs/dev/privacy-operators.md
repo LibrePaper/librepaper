@@ -53,3 +53,6 @@ WHERE g.account_id = $1 ORDER BY g.created_at;
 - A restore can reinstate data deleted after the backup was taken. Track
   deletion requests outside the backup set and review them after a restore;
   see [account-erasure details](../privacy.md#erasing-an-account).
+- If Docker backups are enabled, include the session key and backup config in
+  recovery planning. Restrict repository credentials and keep an independent
+  off-host copy of the configuration needed to decrypt and locate snapshots.

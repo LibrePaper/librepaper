@@ -50,6 +50,7 @@ services:
   librepaper:
     build:
       context: .
+      target: app
       args:
         SOURCE: ${LIBREPAPER_SOURCE:-release}
         # The release this kit runs. v0.0.21 is the first with the /api/tls/ask
@@ -76,6 +77,33 @@ services:
       - pgsocket:/var/run/postgresql
       - ./${LIBREPAPER_CONFIG_FILE:-config.toml}:/etc/librepaper/config.toml:ro
     networks: [internal, edge]
+
+  backup:
+    build:
+      context: .
+      target: backup
+      args:
+        SOURCE: ${LIBREPAPER_SOURCE:-release}
+        LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:-v0.0.21}
+    restart: unless-stopped
+    logging: *bounded-logs
+    depends_on:
+      librepaper:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LIBREPAPER_DATABASE_URL: postgresql:///librepaper?host=/var/run/postgresql&user=librepaper
+    tmpfs:
+      - /run/librepaper-backup:uid=10001,gid=65534,mode=0700
+    volumes:
+      - data:/var/lib/librepaper:rw
+      - backups:/var/backups/librepaper
+      - backup-metrics:/var/backups/librepaper/metrics
+      - pgsocket:/var/run/postgresql
+      - ./${LIBREPAPER_CONFIG_FILE:-config.toml}:/etc/librepaper/config.toml:ro
+    networks: [edge]
 
   caddy:
     image: caddy:2.11.4-alpine
@@ -156,6 +184,7 @@ services:
       - --path.procfs=/host/proc
       - --path.sysfs=/host/sys
       - --path.rootfs=/host/root
+      - --collector.textfile.directory=/var/lib/librepaper-metrics
       - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)
     pid: host
     read_only: true
@@ -166,6 +195,7 @@ services:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/host/root:ro,rslave
+      - backup-metrics:/var/lib/librepaper-metrics:ro
     networks: [internal]
 
   postgres-exporter:
@@ -202,6 +232,7 @@ volumes:
   pgsocket:
   data:
   backups:
+  backup-metrics:
   caddy-data:
   caddy-config:
   prometheus:

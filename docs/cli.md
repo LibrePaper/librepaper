@@ -70,10 +70,10 @@ curl http://127.0.0.1:8080/api/status      # check operational state
 
 The TOML file is the source for server and admin storage settings. `admin
 serve` defaults to `/etc/librepaper/config.toml`; other admin commands accept
-the same `--config PATH`. `config show` redacts credentials and database URLs.
-Restore uses a config that points at the target database and takes the new
-directory as its final argument. See the [hosting page](host.html) for the
-configuration format and storage requirements.
+the same `--config PATH`. `config show` redacts credentials and database URLs,
+and reports backup configuration as present or absent. Restore uses a config
+that points at the target database and takes the new directory as its final
+argument. See the [hosting page](host.html) for scheduled backups and recovery.
 
 ## Agents
 
