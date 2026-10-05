@@ -241,6 +241,13 @@ config only after role conversion succeeds. The official host can use
 `tools/deploy/production upgrade-database` to stage and activate that config
 around the same role conversion. Routine deployment refuses legacy state.
 
+If the upgrade names an `.env` key with quoted, escaped, interpolated, or
+commented syntax, it refuses before writing secrets or stopping services.
+Keep the offline copy, determine the exact value the old Compose setup used,
+write it to the matching file with `./setup set-secret <name>` via stdin, then
+remove that key from `.env` and retry. Do not strip quotes or escapes by hand;
+see the [credential guide](credentials.html) for safe stdin handling.
+
 ## Configuration
 
 The app reads `/etc/librepaper/librepaper.toml`; the backup process reads
