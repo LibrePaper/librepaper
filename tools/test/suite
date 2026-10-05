@@ -165,20 +165,21 @@ suite_backup_sidecar() {
 	command -v docker >/dev/null || { echo 'docker is required'; return 1; }
 	command -v node >/dev/null || { echo 'node is required'; return 1; }
 	if [[ -z "${LIBREPAPER_TEST_BINARY:-}" ]]; then make --no-print-directory "$BIN"; fi
-	local scratch binary="$BIN"
+	local binary="$BIN"
 	[[ "$binary" = /* ]] || binary="$root/$binary"
 	BACKUP_TEST_IMAGE="${BACKUP_TEST_IMAGE:-librepaper-backup-test:75ew}"
-	scratch=$(mktemp -d "${TMPDIR:-/tmp}/librepaper-backup-sidecar-suite.XXXXXX")
+	BACKUP_SIDECAR_SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/librepaper-backup-sidecar-suite.XXXXXX")
 	. "$root/tools/test/postgres.sh"
-	trap 'postgres_stop_disposable; rm -rf "$scratch"' EXIT
+	trap 'postgres_stop_disposable; rm -rf "$BACKUP_SIDECAR_SCRATCH"' EXIT
 	postgres_start_disposable "librepaper-backup-sidecar-$$" drill
 	local container="$POSTGRES_CONTAINER" port="$POSTGRES_PORT"
+	export POSTGRES_CONTAINER POSTGRES_PORT
 	docker exec "$container" psql -U postgres -qc 'CREATE DATABASE backup_fixture'
-	mkdir -p "$scratch/bin"
+	mkdir -p "$BACKUP_SIDECAR_SCRATCH/bin"
 	for tool in psql pg_dump pg_restore; do
-		ln -sf "$root/tools/test/backup/postgres-tool.sh" "$scratch/bin/$tool"
+		ln -sf "$root/tools/test/backup/postgres-tool.sh" "$BACKUP_SIDECAR_SCRATCH/bin/$tool"
 	done
-	export PATH="$scratch/bin:$PATH"
+	export PATH="$BACKUP_SIDECAR_SCRATCH/bin:$PATH"
 	LIBREPAPER_BIN="$binary" \
 	LIBREPAPER_SOURCE_URL="postgresql://postgres:drill@127.0.0.1:$port/backup_fixture" \
 	LIBREPAPER_BACKUP_IMAGE="$BACKUP_TEST_IMAGE" \
