@@ -13,6 +13,7 @@ usage() {
 usage: tools/test/suite <suite>
 
   backup      backup, encrypt, restore and replay-verify a synthetic deployment (needs docker, age, age-keygen)
+  backup-sidecar exercise the backup sidecar against a synthetic deployment (needs Docker and prebuilt test images)
   browser     component tests in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   smoke       drive the reader in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   e2e         run browser smoke, history and track-changes deployment scenarios (needs docker and chromium)
@@ -158,8 +159,35 @@ suite_backup() {
 	cargo test --release -p librepaper --test backup_drill_verify -- --ignored --nocapture
 }
 
+# Exercise the real backup image around the existing synthetic app fixture.
+# The coordinator builds both checkout targets before invoking this suite.
+suite_backup_sidecar() {
+	command -v docker >/dev/null || { echo 'docker is required'; return 1; }
+	command -v node >/dev/null || { echo 'node is required'; return 1; }
+	if [[ -z "${LIBREPAPER_TEST_BINARY:-}" ]]; then make --no-print-directory "$BIN"; fi
+	local scratch binary="$BIN"
+	[[ "$binary" = /* ]] || binary="$root/$binary"
+	: "${BACKUP_TEST_IMAGE:?set BACKUP_TEST_IMAGE to the locally built backup target}"
+	scratch=$(mktemp -d "${TMPDIR:-/tmp}/librepaper-backup-sidecar-suite.XXXXXX")
+	. "$root/tools/test/postgres.sh"
+	trap 'postgres_stop_disposable; rm -rf "$scratch"' EXIT
+	postgres_start_disposable "librepaper-backup-sidecar-$$" drill
+	local container="$POSTGRES_CONTAINER" port="$POSTGRES_PORT"
+	docker exec "$container" psql -U postgres -qc 'CREATE DATABASE backup_fixture'
+	mkdir -p "$scratch/bin"
+	for tool in psql pg_dump pg_restore; do
+		ln -sf "$root/tools/test/backup/postgres-tool.sh" "$scratch/bin/$tool"
+	done
+	export PATH="$scratch/bin:$PATH"
+	LIBREPAPER_BIN="$binary" \
+	LIBREPAPER_SOURCE_URL="postgresql://postgres:drill@127.0.0.1:$port/backup_fixture" \
+	LIBREPAPER_BACKUP_IMAGE="$BACKUP_TEST_IMAGE" \
+	tools/test/backup/sidecar.sh
+}
+
 case "${1:-help}" in
 	backup) suite_backup ;;
+	backup-sidecar) suite_backup_sidecar ;;
 	browser) suite_browser ;;
 	smoke) suite_smoke ;;
 	e2e) suite_e2e ;;

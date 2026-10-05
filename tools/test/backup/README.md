@@ -10,6 +10,22 @@ and then edited twice.
 tools/test/suite backup   # everything: database, key, drill, replay check
 ```
 
+The sidecar integration suite uses the same synthetic five-project fixture,
+then starts the locally built backup image with disposable PostgreSQL and a
+temporary filesystem repository. It covers disabled/enabled startup, a real
+profile-merged backup and check, failed export metrics, after-backup retention,
+and restore into a fresh database. The supervisor builds the image first:
+
+```sh
+BACKUP_TEST_IMAGE=librepaper-backup-test:75ew \
+tools/test/suite backup-sidecar
+```
+
+`BACKUP_TEST_IMAGE` defaults to the coordinator's `librepaper-backup-test:75ew`
+when exported. Docker containers and temporary data are run-scoped. Set
+`BACKUP_SIDECAR_KEEP=1` to retain the fixture for inspection. This suite does
+not yet exercise SFTP, S3-compatible, or REST repositories.
+
 ## Running it by hand
 
 - `LIBREPAPER_BIN`: a release `librepaper`
