@@ -17,7 +17,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import http from "node:http";
-import { deploymentBinary, startDeployment } from "../helpers/deployment.mjs";
+import { deploymentBinary, sessionCookie, startDeployment } from "../helpers/deployment.mjs";
 import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
 import { createProtocol } from "../helpers/browser-driver.mjs";
 
@@ -450,18 +450,20 @@ async function run() {
   await requiredUntil("the comment button", () => editor.eval(`return Boolean(document.querySelector('#selectionbar [aria-label="Comment"]'))`));
   await editor.eval(`document.querySelector('#selectionbar [aria-label="Comment"]').click(); return true;`);
   await requiredUntil("the comment composer", () => editor.eval(`return Boolean(document.querySelector('#composer textarea[aria-label="Comment"]'))`));
-  await editor.eval(`
-    const input = document.querySelector('#composer textarea[aria-label="Comment"]');
-    input.value = "A comment written offline.";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    document.querySelector("#composer [data-send]").click();
-    return true;
-  `);
+  await editor.eval(`document.querySelector('#composer textarea[aria-label="Comment"]').focus(); return true;`);
+  await editor.send("Input.insertText", { text: "A comment written offline." });
+  await requiredUntil("the enabled Comment button", () => editor.eval(`return !document.querySelector("#composer [data-send]")?.disabled`));
+  await editor.eval(`document.querySelector("#composer [data-send]").click(); return true;`);
   const draftKept = await until("the failed comment is retained", () => editor.eval(`
     const pending = document.querySelector('[aria-label="Unconfirmed comments"]');
     return pending?.querySelector("textarea")?.value === "A comment written offline.";
   `));
-  check("an offline comment keeps its full text for retry", draftKept);
+  const offlineCommentState = draftKept ? "" : await editor.eval(`return JSON.stringify({
+    composer: document.querySelector('#composer textarea[aria-label="Comment"]')?.value ?? null,
+    pending: document.querySelector('[aria-label="Unconfirmed comments"]')?.outerHTML.slice(0, 700) ?? null,
+    status: [...document.querySelectorAll('[role="status"], [role="alert"]')].map((node) => node.textContent.trim()).slice(-4),
+  })`);
+  check("an offline comment keeps its full text for retry", draftKept, offlineCommentState.slice(0, 900));
 
   await editor.send("Network.emulateNetworkConditions", {
     offline: false,
@@ -541,7 +543,11 @@ async function run() {
     },
     20000,
   );
-  check("a document that does not compile says so rather than showing nothing", told, told || "");
+  const brokenState = told ? "" : JSON.stringify({
+    page: await brokenTab.eval(`return document.body.innerText.slice(-700)`),
+    console: brokenTab.console.slice(-4),
+  });
+  check("a document that does not compile says so rather than showing nothing", told, told || brokenState.slice(0, 1100));
 
   /* --- 6. sharing: the key's path through the browser ---------------------- */
 
@@ -563,8 +569,28 @@ async function run() {
   const mintedKey = minted.links?.commenter?.key;
   check("the share route mints a key", Boolean(mintedKey), JSON.stringify(minted).slice(0, 120));
 
-  // A reviewer's browser: no account, and the key in the fragment.
-  const reviewer = await openTab(`${BASE}/docs/${shared.slug}#k=${mintedKey}`, [], {
+  // A separately registered reviewer's browser, and the key in the fragment.
+  const reviewerHandle = "reviewer";
+  const reviewerName = "Reviewer";
+  const reviewerAccountId = deployment.postgres.seedRegisteredAccount({
+    provider: "github",
+    subject: `github:${reviewerHandle}`,
+    handle: reviewerHandle,
+    displayName: reviewerName,
+  });
+  const reviewerCookie = sessionCookie({
+    dataDirectory: deployment.data,
+    accountId: reviewerAccountId,
+    handle: reviewerHandle,
+    name: reviewerName,
+  });
+  const reviewerSession = {
+    name: "librepaper_session",
+    value: reviewerCookie.slice(reviewerCookie.indexOf("=") + 1),
+    domain: "localhost",
+    path: "/",
+  };
+  const reviewer = await openTab(`${BASE}/docs/${shared.slug}#k=${mintedKey}`, [reviewerSession], {
     ownProfile: true,
   });
   const kept = await until("the key is kept and the bar cleaned", async () => {
@@ -886,8 +912,8 @@ async function run() {
   );
   check("a figure chosen from a disk joins the directory", Boolean(inTheList), JSON.stringify(inTheList));
 
-  // It reaches the page as a blob in this browser, never as the route it came
-  // from: a rendered page must not carry a credential.
+  // It reaches the page as a data URL in this browser, never as the route it
+  // came from: a rendered page must not carry a credential.
   const drawn = await until("the figure reaches the rendered page", async () =>
     illustrator.evalInFrame(
       `const img = document.querySelector("img"); return img ? img.src : null`,
@@ -895,8 +921,8 @@ async function run() {
     ),
   );
   check(
-    "a markdown figure is rewritten to a blob in this browser",
-    typeof drawn === "string" && drawn.startsWith("blob:"),
+    "a markdown figure is rewritten to a data URL in this browser",
+    typeof drawn === "string" && drawn.startsWith("data:"),
     String(drawn).slice(0, 60),
   );
   // The bytes reached the store, under the digest of themselves: the URL the
