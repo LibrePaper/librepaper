@@ -742,6 +742,22 @@ async function run() {
   await requiredUntil("the editor is mounted", async () =>
     Boolean(await author.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
+  // The View menu now defaults Typst to flow HTML. Select its explicit PDF
+  // format before this scenario checks the paged frame and its rendered text.
+  await author.eval(`
+    const view = document.querySelector('button[data-menubar="view"]');
+    if (!view) throw new Error("no View menu");
+    view.click();
+    return true;
+  `);
+  await requiredUntil("the PDF format menu item", () => author.eval(`return [...document.querySelectorAll(".menuitem")].some((item) => item.textContent.trim().endsWith("PDF"))`));
+  await author.eval(`
+    const pdf = [...document.querySelectorAll(".menuitem")].find((item) => item.textContent.trim().endsWith("PDF"));
+    if (!pdf) throw new Error("no PDF format menu item");
+    pdf.click();
+    return true;
+  `);
+  await requiredUntil("the Typst PDF preview frame", () => author.eval(`return document.querySelector('iframe[title="Document"]')?.getAttribute("src")?.includes("/pdf/${paper.slug}/") || false`));
 
   // The file list is there, with the one file this document has.
   const listed = await until("the file list is drawn", async () =>
@@ -1009,8 +1025,10 @@ async function run() {
   await requiredUntil("the vim document's editor is mounted", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
+  const beforeVimReload = await vimTab.eval(`return performance.timeOrigin`);
   await vimTab.eval(`localStorage.setItem("librepaper-keymap", JSON.stringify("vim")); return true;`);
   await vimTab.send("Page.reload");
+  await requiredUntil("the Vim preference reload", () => vimTab.eval(`return performance.timeOrigin !== ${beforeVimReload}`));
   await requiredUntil("Vim's status panel is drawn", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-vim-panel"))`)),
   );
@@ -1061,8 +1079,10 @@ async function run() {
   await requiredUntil("the source pane reopens", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
+  const beforeDefaultReload = await vimTab.eval(`return performance.timeOrigin`);
   await vimTab.eval(`localStorage.setItem("librepaper-keymap", JSON.stringify("default")); return true;`);
   await vimTab.send("Page.reload");
+  await requiredUntil("the default keymap reload", () => vimTab.eval(`return performance.timeOrigin !== ${beforeDefaultReload}`));
   await requiredUntil("the editor remounts with the keys turned off", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
