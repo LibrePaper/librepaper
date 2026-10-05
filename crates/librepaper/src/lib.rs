@@ -1,7 +1,7 @@
 //! LibrePaper: host HTML, markdown and typst documents that readers can
 //! annotate. One binary: the server, and the command line that talks to it.
 //!
-//! A library only so that `tools/fuzz/` can reach the modules that read what
+//! A library only so that `tools/test/fuzz/` can reach the modules that read what
 //! somebody else wrote -- the shared document, the path rules, the
 //! configuration that holds those rules, the source archives a version's
 //! bytes travel in, the anchoring that places a reader's selection in the
@@ -47,7 +47,7 @@ pub use librepaper_companion::automation::peer;
 // so nothing outside has to move.
 
 /// The path rules, which decide what an uploaded name may be. A fuzz target
-/// (`tools/fuzz/fuzz_targets/paths.rs`) runs every one of these on whatever
+/// (`tools/test/fuzz/fuzz_targets/paths.rs`) runs every one of these on whatever
 /// libFuzzer produces.
 pub mod paths {
     pub use librepaper_document::document::paths::{
@@ -56,8 +56,8 @@ pub mod paths {
 }
 
 /// The shared document. Its bytes come from a browser, so what reads them
-/// is fuzzed (`tools/fuzz/fuzz_targets/document.rs`,
-/// `tools/fuzz/fuzz_targets/update.rs`).
+/// is fuzzed (`tools/test/fuzz/fuzz_targets/document.rs`,
+/// `tools/test/fuzz/fuzz_targets/update.rs`).
 pub mod session {
     pub use librepaper_document::document::session::{
         apply_edits_at, apply_update, decode_update, encode_diff, encode_state, encode_vector,
@@ -68,7 +68,7 @@ pub mod session {
 
 /// The projection: a document read as a directory. The fixture corpus
 /// (`tests/projection_fixtures.rs`) and a fuzz target
-/// (`tools/fuzz/fuzz_targets/document.rs`) hold it to its definition.
+/// (`tools/test/fuzz/fuzz_targets/document.rs`) hold it to its definition.
 pub mod projection {
     pub use librepaper_document::document::projection::{
         paths::MAX_SEGMENTS, project, Entry, Projected, Projection, ROOTS,
@@ -96,7 +96,7 @@ pub mod protocol {
 }
 
 /// What a version's bytes travel in, encoded and decoded by
-/// `tools/fuzz/fuzz_targets/archive.rs`.
+/// `tools/test/fuzz/fuzz_targets/archive.rs`.
 pub mod source_archive {
     pub use librepaper_engine::storage::source_archive::{
         decode, encode, ArchiveLimits, SourceArchive, SourceFile,

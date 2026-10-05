@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build, check and publish the browser assets: the wasm modules and the LaTeX
+# mirror that DEFAULT_ASSET_MIRROR names (an OVH S3 bucket by default).
+#
+# The bucket holds wasm/<sha256>/<module>.wasm and latex/<sha256>/ (the release
+# assets.lock pins). Nothing is ever deleted, so older binaries keep working.
+#
+# One-time setup:
+# 1. Public Cloud > Object Storage > Users: create an S3 user and generate its S3 credentials.
+# 2. Do NOT create the bucket in the console; `publish` creates it with that user, because
+#    OVH lets only the bucket owner set CORS.
+# 3. sops tools/deploy/keys.yaml: add OVH_S3_ENDPOINT, OVH_S3_REGION, OVH_S3_USER (access key),
+#    OVH_S3_SECRET and OVH_S3_ARN (arn:aws:s3:::<bucket>).
+#
+# Each publish:
+# 1. tools/assets/pins fetch && tools/assets/mirror build: fetch the pinned wasm modules into web/wasm and
+#    build the LaTeX mirror (in ../wasm-latex, or MIRROR=).
+# 2. tools/assets/pins update latex: pin the one release in ../wasm-latex/mirror.
+# 3. tools/assets/mirror publish: checks, smokes in Chromium, probes the bucket with two small test
+#    files, then uploads everything and verifies public read with CORS. Stop at first failure.
+# Upload before shipping a binary that carries a new pin.
+
+usage() {
+  cat <<'USAGE'
+Usage: tools/assets/mirror <command> [args]
+
+Commands:
+  build                     Build the LaTeX mirror (make -C <dir of MIRROR> mirror)
+  check [DIR|URL]           Validate the LaTeX mirror (a directory also gets the
+                            wasm publish dry-run); no credentials, no network for a directory
+  smoke                     Build dist/librepaper, then compile and display the LaTeX
+                            tutorial in Chromium against MIRROR
+  publish [--dry-run]       Check, smoke, probe bucket, then upload wasm modules and LaTeX
+                            mirror. Stop at first failure.
+                            --dry-run  validate without credentials or touching the bucket
+  help, -h, --help          Show this help
+
+Environment:
+  MIRROR=DIR      LaTeX mirror directory (default ../wasm-latex/mirror)
+  KEYS=FILE       sops-encrypted keys (default tools/deploy/keys.yaml)
+  S3_BUCKET=NAME  bucket name (default: derived from OVH_S3_ARN)
+  S3_PUBLIC_BASE_URL=URL  public HTTPS URL for bucket probes; required with custom S3_ENDPOINT or S3_REGION
+USAGE
+}
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
+
+MIRROR="${MIRROR:-../wasm-latex/mirror}"
+DEPLOY_ASSET_CONNECT_TIMEOUT=5
+DEPLOY_ASSET_REQUEST_TIMEOUT=20
+
+bounded_curl() {
+  curl --connect-timeout "$DEPLOY_ASSET_CONNECT_TIMEOUT" --max-time "$DEPLOY_ASSET_REQUEST_TIMEOUT" "$@"
+}
+
+cmd_build() {
+  make -C "$(dirname "$MIRROR")/" mirror
+}
+
+cmd_check() {
+  local target="${1:-$MIRROR}"
+  node tools/assets/check-mirror.mjs "$target"
+  case "$target" in
+    http://* | https://*) ;;
+    *) MIRRORS_DRY_RUN=1 MIRROR="$target" node tools/assets/push-mirrors.mjs ;;
+  esac
+}
+
+cmd_smoke() {
+  local mirror_checked=0
+  if [ "${1:-}" = --prechecked ]; then mirror_checked=1; fi
+  make --no-print-directory dist/librepaper
+  node tools/assets/check-mirror.test.mjs
+  if [ "$mirror_checked" = 0 ]; then
+    node tools/assets/check-mirror.mjs "$MIRROR"
+  fi
+
+  # The smoke runs a real deployment, so it needs PostgreSQL, psql and openssl.
+  # Without LIBREPAPER_TEST_POSTGRES_URL it starts a throwaway container and
+  # stops it on exit; missing clients come from nixpkgs.
+  if [ -z "${LIBREPAPER_TEST_POSTGRES_URL:-}" ]; then
+    local container="librepaper-assets-smoke-$$" port i
+    docker run -d --rm --name "$container" -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=librepaper \
+      -p 127.0.0.1::5432 postgres:16-alpine >/dev/null
+    trap "docker stop $container >/dev/null 2>&1 || true" EXIT
+    port=$(docker port "$container" 5432/tcp | head -1 | sed 's/.*://')
+    for i in $(seq 60); do
+      docker exec "$container" pg_isready -q -U postgres -h 127.0.0.1 && break
+      [ "$i" = 60 ] && { printf '%s\n' "smoke: PostgreSQL did not start" >&2; exit 1; }
+      sleep 1
+    done
+    export LIBREPAPER_TEST_POSTGRES_URL="postgres://postgres:smoke@127.0.0.1:$port/librepaper"
+  fi
+  local e2e=(node web/tools/latex-e2e.mjs dist/librepaper browser docs/examples/tutorial-latex/librepaper.tex 120 "$MIRROR")
+  if command -v psql >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
+    "${e2e[@]}"
+  else
+    nix shell nixpkgs#postgresql nixpkgs#openssl -c "${e2e[@]}"
+  fi
+}
+
+# Upload the wasm modules and the prepared LaTeX mirror. Needs AWS_* in the
+# environment (set by cmd_publish) unless MIRRORS_DRY_RUN=1.
+push_mirrors() {
+  if [ "${MIRRORS_DRY_RUN:-}" = 1 ] || command -v aws >/dev/null 2>&1; then
+    MIRROR="$MIRROR" node tools/assets/push-mirrors.mjs
+  elif command -v nix >/dev/null 2>&1; then
+    MIRROR="$MIRROR" nix shell nixpkgs#awscli2 -c node tools/assets/push-mirrors.mjs
+  else
+    printf '%s\n' 'publish: AWS CLI v2 is required; install aws or install Nix to use the temporary nixpkgs fallback.' >&2
+    exit 1
+  fi
+}
+
+# Read and validate the encrypted S3 settings once, then pass the same resolved
+# configuration to the bucket probes and the mirror publisher.
+load_publish_credentials() {
+  KEYS="${KEYS:-tools/deploy/keys.yaml}"
+  local secrets_json='{}' credentials_json
+  if [ -z "${S3_ENDPOINT:-}" ] || [ -z "${S3_REGION:-}" ] || [ -z "${S3_BUCKET:-}" ] || \
+      [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+    if ! secrets_json=$(sops --decrypt --output-type json "$KEYS" 2>/dev/null); then
+      printf '%s\n' 'Error: SOPS could not load deploy keys' >&2
+      exit 1
+    fi
+  fi
+  if ! credentials_json=$(printf '%s' "$secrets_json" | node --input-type=module -e '
+import { readFileSync } from "node:fs";
+import { publisherEnvironment } from "./tools/assets/push-mirrors.mjs";
+import { publisherConfiguration } from "./tools/assets/publish-mirror.mjs";
+const secrets = JSON.parse(readFileSync(0, "utf8"));
+const config = await publisherEnvironment(process.env, async () => secrets);
+publisherConfiguration(config);
+const keys = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
+const values = keys.map((key) => config[key]);
+if (values.some((value) => typeof value !== "string" || !value || /[\x00-\x1f]/.test(value))) process.exit(1);
+process.stdout.write(values.join("\n"));
+' 2>/dev/null); then
+    printf '%s\n' 'Error: could not resolve valid S3 publishing configuration' >&2
+    exit 1
+  fi
+  local -a resolved
+  mapfile -t resolved <<< "$credentials_json"
+  [ "${#resolved[@]}" -eq 5 ] || { printf '%s\n' 'Error: incomplete S3 publishing configuration' >&2; exit 1; }
+  S3_ENDPOINT="${resolved[0]}"
+  S3_REGION="${resolved[1]}"
+  S3_BUCKET="${resolved[2]}"
+  AWS_ACCESS_KEY_ID="${resolved[3]}"
+  AWS_SECRET_ACCESS_KEY="${resolved[4]}"
+  unset secrets_json credentials_json resolved
+}
+
+# Verify: fetch public URL with Origin header; expect 200 + access-control-allow-origin.
+verify_public() {
+  local KEY="$1"
+  local VERIFY_URL="${S3_PUBLIC_BASE_URL%/}/$KEY"
+  local PROBE_ORIGIN="https://example.com"
+  local RESPONSE HEADERS HTTP_CODE ALLOW_ORIGIN
+  RESPONSE=$(bounded_curl -sS -o /dev/null -D - -w $'\n%{http_code}' -H "Origin: $PROBE_ORIGIN" "$VERIFY_URL")
+  HTTP_CODE="${RESPONSE##*$'\n'}"
+  HEADERS="${RESPONSE%$'\n'*}"
+
+  if [ "$HTTP_CODE" != "200" ]; then
+    printf '%s\n' "Error: verification failed for $KEY (HTTP $HTTP_CODE)" >&2
+    exit 1
+  fi
+
+  ALLOW_ORIGIN=$(printf '%s\n' "$HEADERS" | tr -d '\r' | awk 'tolower($1)=="access-control-allow-origin:" {print $2}' | tail -n 1)
+  if [ "$ALLOW_ORIGIN" != '*' ] && [ "$ALLOW_ORIGIN" != "$PROBE_ORIGIN" ]; then
+    printf '%s\n' "Error: CORS origin for $KEY is '${ALLOW_ORIGIN:-missing}', expected '$PROBE_ORIGIN' or '*'" >&2
+    exit 1
+  fi
+}
+
+cmd_publish() {
+  local DRY_RUN=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) DRY_RUN=1 ;;
+      *) usage >&2; exit 1 ;;
+    esac
+    shift
+  done
+
+  # Stage 1/6: check mirror
+  printf '%s\n' "publish: 1/6 check mirror"
+  cmd_check "$MIRROR"
+
+  # Stage 2/6: every pin must name a public GitHub release. `tools/assets/pins fetch` downloads
+  # the modules anonymously, and the LaTeX release's source link is its licence
+  # obligation. A draft release answers 404 to anyone signed out. Cheap, so before the smoke.
+  printf '%s\n' "publish: 2/6 check GitHub releases"
+  public() { [ "$(bounded_curl -sSIL -o /dev/null -w '%{http_code}' "$1")" = 200 ] || { printf '%s\n' "Error: $2 is not publicly downloadable (a draft release?): $1" >&2; exit 1; }; }
+  local module repo tag _
+  while read -r module repo tag _; do
+    [ "$module" = latex ] && continue
+    public "https://github.com/LibrePaper/$repo/releases/download/$tag/$module" "$repo $tag"
+  done < <(grep -v '^#' assets.lock | grep .)
+  LATEX_ID=$(awk '$1 == "latex" { print $4 }' assets.lock)
+  LATEX_RELEASE="$MIRROR/$LATEX_ID/release.json"
+  [ -f "$LATEX_RELEASE" ] || { printf '%s\n' "Error: $LATEX_RELEASE missing; run tools/assets/mirror build" >&2; exit 1; }
+  public "$(node -p 'require(process.argv[1]).source.corresponding_source.url' "$(realpath "$LATEX_RELEASE")")" "wasm-latex source for $LATEX_ID"
+
+  # Stage 3/6: compile the LaTeX tutorial in Chromium against this mirror.
+  printf '%s\n' "publish: 3/6 smoke test"
+  cmd_smoke --prechecked
+
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '%s\n' "publish: dry-run complete"
+    return
+  fi
+
+  # Decrypt once and share the same credentials with the AWS probes and publisher.
+  local custom_s3_target=0
+  if [ -n "${S3_ENDPOINT:-}" ] || [ -n "${S3_REGION:-}" ]; then custom_s3_target=1; fi
+  load_publish_credentials
+
+  # Require a public URL when the S3 API target is overridden. S3 endpoint
+  # hostnames do not determine a provider's public object URL convention.
+  if [ -z "${S3_PUBLIC_BASE_URL:-}" ]; then
+    if [ "$custom_s3_target" = 1 ]; then
+      printf '%s\n' "Error: set S3_PUBLIC_BASE_URL when overriding S3_ENDPOINT or S3_REGION" >&2
+      exit 1
+    fi
+    S3_PUBLIC_BASE_URL="https://$S3_BUCKET.s3.$S3_REGION.io.cloud.ovh.net"
+  fi
+  case "$S3_PUBLIC_BASE_URL" in
+    https://*) ;;
+    *) printf '%s\n' 'Error: S3_PUBLIC_BASE_URL must be an HTTPS URL' >&2; exit 1 ;;
+  esac
+  case "$S3_PUBLIC_BASE_URL" in
+    *\?* | *\#*) printf '%s\n' 'Error: S3_PUBLIC_BASE_URL must not include a query or fragment' >&2; exit 1 ;;
+  esac
+  case "$S3_PUBLIC_BASE_URL" in
+    https://*@*) printf '%s\n' 'Error: S3_PUBLIC_BASE_URL must not include credentials' >&2; exit 1 ;;
+  esac
+
+  # Export AWS credentials (read-only here, not echoed), honoring overrides.
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+  export S3_ENDPOINT S3_REGION S3_BUCKET
+
+  # Choose aws command: prefer aws if available, else nix shell.
+  local aws_cmd
+  if command -v aws >/dev/null 2>&1; then
+    aws_cmd="aws"
+  else
+    aws_cmd="nix shell nixpkgs#awscli2 -c aws"
+  fi
+
+  # Stage 4/6: setup bucket and CORS
+  printf '%s\n' "publish: 4/6 bucket and CORS"
+  if ! $aws_cmd s3api head-bucket --endpoint-url "$S3_ENDPOINT" --region "$S3_REGION" --bucket "$S3_BUCKET" 2>/dev/null; then
+    $aws_cmd s3 mb "s3://$S3_BUCKET" --endpoint-url "$S3_ENDPOINT" --region "$S3_REGION"
+  fi
+
+  local CORS_CONFIG='{"CORSRules":[{"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"MaxAgeSeconds":3600}]}'
+  $aws_cmd s3api put-bucket-cors --endpoint-url "$S3_ENDPOINT" --region "$S3_REGION" --bucket "$S3_BUCKET" --cors-configuration "$CORS_CONFIG"
+
+  # Stage 5/6: probe bucket connectivity
+  printf '%s\n' "publish: 5/6 probe bucket"
+  $aws_cmd s3api put-object --endpoint-url "$S3_ENDPOINT" --region "$S3_REGION" \
+    --bucket "$S3_BUCKET" --key "test/markdown.wasm" --body "web/wasm/markdown.wasm" \
+    --content-type "application/wasm" --acl public-read
+  $aws_cmd s3api put-object --endpoint-url "$S3_ENDPOINT" --region "$S3_REGION" \
+    --bucket "$S3_BUCKET" --key "test/release.json" --body "$MIRROR/$LATEX_ID/release.json" \
+    --content-type "application/json" --acl public-read
+  verify_public "test/markdown.wasm"
+
+  # Stage 6/6: push and verify
+  printf '%s\n' "publish: 6/6 upload and verify"
+  push_mirrors
+  verify_public "latex/${LATEX_ID}/release.json"
+
+  # Verify that bucket root listing is not public.
+  local LIST_RESPONSE
+  LIST_RESPONSE=$(bounded_curl -sS -o /dev/null -w "%{http_code}" "${S3_PUBLIC_BASE_URL%/}/")
+  if [ "$LIST_RESPONSE" = "200" ]; then
+    printf '%s\n' "Error: bucket listing is public (should be private)" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "Success: assets published to s3://$S3_BUCKET/ with CORS enabled."
+}
+
+sub="${1:-help}"
+[ $# -gt 0 ] && shift
+case "$sub" in
+  build) cmd_build "$@" ;;
+  check) cmd_check "$@" ;;
+  smoke) cmd_smoke "$@" ;;
+  publish) cmd_publish "$@" ;;
+  help | -h | --help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

@@ -22,7 +22,7 @@ if (!existsSync(join(SHELL, "viewer.html"))) {
   process.exit(0);
 }
 if (!existsSync(WASM)) {
-  console.log("typst-viewer: no pinned Typst WASM at web/wasm; skipping (run `tools/pins fetch` from the repository root)");
+  console.log("typst-viewer: no pinned Typst WASM at web/wasm; skipping (run `tools/assets/pins fetch` from the repository root)");
   process.exit(0);
 }
 

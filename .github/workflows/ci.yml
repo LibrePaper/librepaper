@@ -53,11 +53,11 @@ jobs:
       - run: sudo apt-get install -y --no-install-recommends mold
       - run: make pins web/dist/index.html
       - run: cargo install sqlx-cli --locked --no-default-features --features postgres
-      # tools/db sqlx-check starts its own disposable PostgreSQL with
-      # `tools/db dev` (Docker is preinstalled on this runner) and fails if
+      # tools/dev/db sqlx-check starts its own disposable PostgreSQL with
+      # `tools/dev/db dev` (Docker is preinstalled on this runner) and fails if
       # `cargo sqlx prepare --check` finds a query the checked-in cache does
       # not cover.
-      - run: tools/db sqlx-check
+      - run: tools/dev/db sqlx-check
 
   # The published crate is generated from the workspace, so the generator and
   # its output are checked on every change: the lint keeps the rewrite
@@ -73,8 +73,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: sudo apt-get install -y --no-install-recommends mold
       - run: make pins web/dist/index.html
-      - run: tools/flatten/flatten lint
-      - run: tools/flatten/flatten build
+      - run: tools/release/flatten/flatten lint
+      - run: tools/release/flatten/flatten build
       - run: cargo check --all-targets --locked
         working-directory: target/flat
       - run: cargo test --lib --locked
@@ -168,7 +168,7 @@ jobs:
       - run: make pins web/dist/index.html
       - run: python -m pip install jupyter ipython nbformat
       # The PDF-preview test repeatedly terminates this runner (cause
-      # unconfirmed), so it remains in `tools/suite external`; see the open
+      # unconfirmed), so it remains in `tools/test/suite external`; see the open
       # coverage task in docs/architecture/building.md#test-suites. This runs
       # the separate render/failure-log integration test below.
       - run: >-
@@ -197,4 +197,4 @@ jobs:
       # Several of the tests read the built pages in web/dist, which the job
       # did not build.
       - run: make pins web/dist/index.html
-      - run: tools/suite browser
+      - run: tools/test/suite browser

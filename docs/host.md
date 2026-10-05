@@ -20,10 +20,10 @@ Missing or empty references, invalid keys/types, and old server-setting flags
 fail. There is no interpolation or automatic application-setting override.
 
 The configuration below is the `librepaper.org` production file, included
-directly from [tools/deploy-production.toml][production-config]. Adapt its
+directly from [tools/deploy/production.toml][production-config]. Adapt its
 domains, credentials, storage, and policies before use.
 
-<!-- include: tools/deploy-production.toml -->
+<!-- include: tools/deploy/production.toml -->
 
 Use these commands to check or inspect resolved settings. `check` has no
 startup side effects or database connection; `show` includes defaults and
@@ -98,7 +98,7 @@ for resource defaults and backup limitations.
 
 ## Containers and privacy
 
-[The Docker deployment guide](https://github.com/LibrePaper/librepaper/blob/main/tools/deploy-docker/README.md)
+[The Docker deployment guide](https://github.com/LibrePaper/librepaper/blob/main/tools/deploy/docker/README.md)
 covers Compose, PostgreSQL, HTTPS, and monitoring. Copy
 `config.toml.example` to `config.toml` and adapt it before starting. Compose
 uses `.env` for its own settings and passes values referenced explicitly by
@@ -107,4 +107,4 @@ the TOML.
 [Privacy duties for operators](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/privacy-operators.md)
 covers notices and data requests.
 
-[production-config]: https://github.com/LibrePaper/librepaper/blob/main/tools/deploy-production.toml
+[production-config]: https://github.com/LibrePaper/librepaper/blob/main/tools/deploy/production.toml

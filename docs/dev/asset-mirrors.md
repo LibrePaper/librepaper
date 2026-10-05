@@ -11,14 +11,14 @@ Browsers fetch renderers and LaTeX files from one OVH S3 bucket (`bhs`). The bin
 - Base URL: `[assets].mirror` in the server TOML; when omitted, the server uses `DEFAULT_ASSET_MIRROR` from `crates/librepaper-base/src/config/mod.rs`
 - `assets.lock`: pins all five, compiled into the binary; browsers use the server's pin (`latexMirror` in `/api/config`)
   - `*.wasm` rows: repository, tag, sha256 of the module
-  - `latex` row: `latex wasm-latex <tag> <sha256>`, set by `tools/pins update latex`
+  - `latex` row: `latex wasm-latex <tag> <sha256>`, set by `tools/assets/pins update latex`
 - `web/wasm/`: fetched modules, for tests and publishing only
 
 ## Pins
 
 ```sh
-tools/pins fetch                             # fetch and verify the pinned modules
-tools/pins update wasm wasm-markdown vX.Y.Z  # move a module pin
+tools/assets/pins fetch                             # fetch and verify the pinned modules
+tools/assets/pins update wasm wasm-markdown vX.Y.Z  # move a module pin
 ```
 
 ## Updating the LaTeX engines
@@ -39,22 +39,22 @@ make mirror                                # prints the release hash
 Then here:
 
 ```sh
-tools/pins update latex                    # pin the one release in ../wasm-latex/mirror
-tools/deploy-assets publish                # check, smoke, probe, upload before committing
+tools/assets/pins update latex                    # pin the one release in ../wasm-latex/mirror
+tools/assets/mirror publish                # check, smoke, probe, upload before committing
 git commit assets.lock -m "Pin engines-YYYY.MM.DD"
 ```
 
 ## Publishing
 
 ```sh
-tools/pins fetch && tools/deploy-assets build
-tools/pins update latex
-tools/deploy-assets publish --dry-run    # stages 1-3 only; no credentials, no bucket
-tools/deploy-assets publish              # check, smoke, probe, upload
+tools/assets/pins fetch && tools/assets/mirror build
+tools/assets/pins update latex
+tools/assets/mirror publish --dry-run    # stages 1-3 only; no credentials, no bucket
+tools/assets/mirror publish              # check, smoke, probe, upload
 ```
 
 - Needs Node.js, SOPS, AWS CLI v2 (falls back to `nix shell nixpkgs#awscli2`)
-- Keys: `tools/deploy-keys.yaml` (SOPS)
+- Keys: `tools/deploy/keys.yaml` (SOPS)
   - `OVH_S3_ENDPOINT`, `OVH_S3_REGION`, `OVH_S3_USER`, `OVH_S3_SECRET`
   - `OVH_S3_ARN` (`arn:aws:s3:::BUCKET`) names the bucket
   - overridden by `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
@@ -82,5 +82,5 @@ mirror = "https://host/"   # serve the pinned paths over HTTPS, CORS for GET and
 ```
 
 ```sh
-tools/deploy-assets check https://host/latex/<sha256>/      # validate a LaTeX release
+tools/assets/mirror check https://host/latex/<sha256>/      # validate a LaTeX release
 ```

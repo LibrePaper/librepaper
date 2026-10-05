@@ -37,12 +37,12 @@ test("hosting docs render the production TOML source and fail loudly when it is 
   try {
     await mkdir(join(root, "docs"), { recursive: true });
     await mkdir(join(root, "web/src/site"), { recursive: true });
-    await mkdir(join(root, "tools"), { recursive: true });
+    await mkdir(join(root, "tools", "deploy"), { recursive: true });
     await writeFile(join(root, "package.json"), '{"type":"module"}\n');
     await writeFile(join(root, "docs/nav.js"), 'export const nav = [{ path: "host", label: "Self-hosting" }];\n');
     await writeFile(
       join(root, "docs/host.md"),
-      '---\ntitle: "Self-hosting"\n---\n\n<!-- include: tools/deploy-production.toml -->\n',
+      '---\ntitle: "Self-hosting"\n---\n\n<!-- include: tools/deploy/production.toml -->\n',
     );
     await writeFile(join(root, "web/src/site/index.html"), "<!doctype html><title>Home</title>\n");
 
@@ -54,8 +54,8 @@ test("hosting docs render the production TOML source and fail loudly when it is 
       await copyIntoFixture(source, destination);
     }
 
-    const configPath = join(root, "tools/deploy-production.toml");
-    const sourceConfig = await readFile(join(here, "../../tools/deploy-production.toml"), "utf8");
+    const configPath = join(root, "tools/deploy/production.toml");
+    const sourceConfig = await readFile(join(here, "../../tools/deploy/production.toml"), "utf8");
     await writeFile(configPath, sourceConfig);
     buildSite(root);
     const pagePath = join(root, "docs/.build/host.html");
@@ -70,7 +70,7 @@ test("hosting docs render the production TOML source and fail loudly when it is 
 
     await rm(configPath);
     assert.throws(() => buildSite(root), (error) => {
-      assert.match(error.stderr?.toString() ?? "", /host\.md includes tools\/deploy-production\.toml, but that source file is missing/);
+      assert.match(error.stderr?.toString() ?? "", /host\.md includes tools\/deploy\/production\.toml, but that source file is missing/);
       return true;
     });
 

@@ -51,7 +51,7 @@ mod figures;
 pub(crate) mod label;
 #[cfg(test)]
 mod label_replay_tests;
-// Public so that `tools/fuzz/` can reach the anchoring path: everything a
+// Public so that `tools/test/fuzz/` can reach the anchoring path: everything a
 // reader selects crosses it. See the note in `lib.rs`.
 pub mod locate;
 #[cfg(test)]

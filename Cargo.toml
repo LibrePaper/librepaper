@@ -9,8 +9,8 @@
 resolver = "2"
 members = ["crates/librepaper", "crates/librepaper-shell", "crates/librepaper-base", "crates/librepaper-document", "crates/librepaper-engine", "crates/librepaper-room", "crates/librepaper-server", "crates/librepaper-companion"]
 # The fuzz targets need libFuzzer and a nightly compiler, so they build on
-# their own: `tools/suite fuzz`, or `cargo fuzz --fuzz-dir tools/fuzz run <target>`.
-exclude = ["tools/fuzz"]
+# their own: `tools/test/suite fuzz`, or `cargo fuzz --fuzz-dir tools/test/fuzz run <target>`.
+exclude = ["tools/test/fuzz"]
 
 # Release packaging is managed by cargo-dist for the sole `librepaper` crate.
 [workspace.metadata.dist]
@@ -102,7 +102,7 @@ rmcp = { version = "3.4.0", default-features = false, features = ["server", "tra
 # corpus test only.
 html-escape = "0.2"
 # The collaboration substrate (SPEC-loro.md). This version and `loro-crdt` in
-# web/package.json are one pin: see tools/tests/loro-pin.test.mjs.
+# web/package.json are one pin: see tools/dev/loro-pin.test.mjs.
 loro = "1.16.0"
 unicode-normalization = "0.1.25"
 # Source versions are deterministic tar streams stored as zstd blobs.

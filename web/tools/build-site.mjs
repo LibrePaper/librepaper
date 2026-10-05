@@ -21,8 +21,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const siteDir = resolve(here, "../../docs");
 const outDir = resolve(siteDir, ".build");
 const wasmPath = resolve(here, "../wasm/markdown.wasm");
-const productionConfigMarker = "<!-- include: tools/deploy-production.toml -->";
-const productionConfigPath = resolve(here, "../../tools/deploy-production.toml");
+const productionConfigMarker = "<!-- include: tools/deploy/production.toml -->";
+const productionConfigPath = resolve(here, "../../tools/deploy/production.toml");
 
 /* -------------------------------------------------------------- the engine */
 
@@ -36,7 +36,7 @@ async function loadMarkdownEngine() {
     // and a bare ENOENT names a file nobody building the site for the first
     // time would recognise.
     throw new Error(
-      `${wasmPath} is missing. Run \`tools/pins fetch\` from the repository root to fetch the pinned renderer, then build the site again.`,
+      `${wasmPath} is missing. Run \`tools/assets/pins fetch\` from the repository root to fetch the pinned renderer, then build the site again.`,
     );
   }
   const { exports: wasm } = await WebAssembly.instantiate(await WebAssembly.compile(bytes), {});
@@ -208,7 +208,7 @@ async function buildPage(wasm, entry) {
       productionConfig = await readFile(productionConfigPath, "utf8");
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
-      throw new Error("host.md includes tools/deploy-production.toml, but that source file is missing");
+      throw new Error("host.md includes tools/deploy/production.toml, but that source file is missing");
     }
     const tomlFence = `\`\`\`toml\n${productionConfig.trimEnd()}\n\`\`\``;
     markdown = markdown.replace(productionConfigMarker, () => tomlFence);

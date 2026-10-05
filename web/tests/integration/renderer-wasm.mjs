@@ -47,7 +47,7 @@ assert.throws(
 
 // When the build artifacts are present, exercise the actual engine export as
 // well as the mocked ABI above. This remains optional so the source-only check
-// can run before `tools/pins fetch`, while CI/build checks catch a missing export or a
+// can run before `tools/assets/pins fetch`, while CI/build checks catch a missing export or a
 // mismatch between UTF-16 offsets and JavaScript slices.
 try {
   const bytes = readFileSync(fileURLToPath(new URL("../../wasm/markdown.wasm", import.meta.url)));

@@ -1,13 +1,13 @@
 # Production
 
-The official instance at librepaper.org runs `tools/deploy-docker` on an OVHcloud VPS, with DNS at Hover.
+The official instance at librepaper.org runs `tools/deploy/docker` on an OVHcloud VPS, with DNS at Hover.
 
 - Site (landing page and manual): `https://librepaper.org`, built by `make site` and served by Caddy as files
 - App: `https://app.librepaper.org`; documents: `https://docs.librepaper.org`
 - Redirected to the site: `www.librepaper.org`, `librepaper.com`, `www.librepaper.com`
 - Host: OVHcloud VPS, Ubuntu 24.04, BHS, user `ubuntu`, kit in `~/librepaper`
 - Shell: in zsh, run `setopt interactivecomments` first, or the `#` lines in these blocks fail as commands
-- Secrets: `tools/deploy-keys.yaml` (SOPS)
+- Secrets: `tools/deploy/keys.yaml` (SOPS)
   - `PRODUCTION_POSTGRES_PASSWORD`, `PRODUCTION_POSTGRES_EXPORTER_PASSWORD`, `PRODUCTION_ACME_EMAIL`
   - `PRODUCTION_GITHUB_CLIENT_ID`, `PRODUCTION_GITHUB_CLIENT_SECRET`
   - `PRODUCTION_GOOGLE_CLIENT_ID`, `PRODUCTION_GOOGLE_CLIENT_SECRET`, `PRODUCTION_ADMIN_PASSWORD`
@@ -115,7 +115,7 @@ In Google Auth Platform, open **Clients**, create a **Web application** client, 
 
 Store the client ID and secret in SOPS as `PRODUCTION_GOOGLE_CLIENT_ID` and `PRODUCTION_GOOGLE_CLIENT_SECRET`. Both `deploy` and `deploy-local` map these to `LIBREPAPER_GOOGLE_CLIENT_ID` and `LIBREPAPER_GOOGLE_CLIENT_SECRET`; `verify` checks the authorization redirects for both Google and GitHub. See Google's [OAuth 2.0 guide for web server applications](https://developers.google.com/identity/protocols/oauth2/web-server).
 
-The official TOML file is [tools/deploy-production.toml](../../tools/deploy-production.toml).
+The official TOML file is [tools/deploy/production.toml](../../tools/deploy/production.toml).
 It records the three public origins, `/var/lib/librepaper`, PostgreSQL,
 filesystem objects, the current 50 MiB/30-per-hour admission limits, the
 internal metrics listener, and the trusted Docker edge subnet. Credentials are
@@ -129,8 +129,8 @@ check` before replacing `config.toml` or restarting the application.
 # Generate each database, exporter, and Grafana password this way. Production
 # passwords must use letters, digits, underscores, or hyphens only for .env safety.
 openssl rand -hex 24          # without openssl: nix shell nixpkgs#openssl -c openssl rand -hex 24
-sops tools/deploy-keys.yaml   # add the eight PRODUCTION_* keys
-git add tools/deploy-keys.yaml && git commit -m "Add production secrets"   # values stay encrypted
+sops tools/deploy/keys.yaml   # add the eight PRODUCTION_* keys
+git add tools/deploy/keys.yaml && git commit -m "Add production secrets"   # values stay encrypted
 ```
 
 - The Postgres password is fixed at first start; changing it later needs an `ALTER ROLE`
@@ -143,11 +143,11 @@ Deploy the tagged release with the normal release flow. The local binary flow re
 
 ```sh
 # deploy the tagged release
-tools/deploy-production deploy "$VERSION"
-HOST=ubuntu@VPS_IP tools/deploy-production deploy "$VERSION"   # before DNS resolves
-tools/deploy-production site                                 # landing page and manual only: no release, no restart
+tools/deploy/production deploy "$VERSION"
+HOST=ubuntu@VPS_IP tools/deploy/production deploy "$VERSION"   # before DNS resolves
+tools/deploy/production site                                 # landing page and manual only: no release, no restart
 # optional: deploy a previously built static Linux musl executable
-tools/deploy-production deploy-local target/x86_64-unknown-linux-musl/release/librepaper
+tools/deploy/production deploy-local target/x86_64-unknown-linux-musl/release/librepaper
 ```
 
 - `deploy VERSION` accepts only canonical `vMAJOR.MINOR.PATCH` tags at `v0.0.9` or later. It refuses `v0.0.8` before any remote write because that binary has no metrics endpoint. The default version comes from Cargo.toml and is subject to the same guard.
@@ -155,7 +155,7 @@ tools/deploy-production deploy-local target/x86_64-unknown-linux-musl/release/li
 - After validation, deploy replaces the active TOML file, recreates only the LibrePaper container so it opens the new file, then brings up the rest of the stack without force-recreating the database or other services.
 - `make site` needs bun; the site is served from `~/librepaper/site` through `compose.override.yaml`
 - `deploy-local BINARY` accepts a previously built Linux musl executable. It uploads the file to a temporary candidate, compares SHA-256 checksums, builds `Dockerfile.local`, and checks TOML support before migration work or application restart. The checked candidate remains in the kit as the Docker build input; a normal release deployment resets this local-build override. Supported targets are x86_64 and aarch64.
-- Domain and redirects are constants at the top of `tools/deploy-production`. The official config allows any signed-in GitHub or Google account to publish and comment. It sets a 50 MiB per-account storage quota and a limit of 30 project creations, forks or figure uploads per rolling hour; these limits apply to release and local-binary deployments.
+- Domain and redirects are constants at the top of `tools/deploy/production`. The official config allows any signed-in GitHub or Google account to publish and comment. It sets a 50 MiB per-account storage quota and a limit of 30 project creations, forks or figure uploads per rolling hour; these limits apply to release and local-binary deployments.
 - The VPS keeps the kit and `.env` (mode 600) in `~/librepaper`
 
 ## Squash migrations
@@ -169,9 +169,9 @@ One deployment exists, so the files under `crates/librepaper-engine/migrations/p
 #    proves the file rebuilds production's schema (pg_dump of both, on the VPS),
 #    pins the table to version 1 with the file's SHA-384, logs the old versions
 #    to ~/librepaper/migrations-squash.log, takes a backup, then starts containers
-tools/deploy-production deploy "$VERSION"
+tools/deploy/production deploy "$VERSION"
 # the same step on its own; only right before a deploy, since a restart in between fails
-tools/deploy-production squash-migrations
+tools/deploy/production squash-migrations
 ```
 
 - The preflight runs on every deploy: matching rows pass, a fresh database passes, any other mismatch stops before containers are touched
@@ -184,7 +184,7 @@ tools/deploy-production squash-migrations
 Grafana is at `https://app.librepaper.org/admin/monitoring/`, with username `admin` and the secret in SOPS. To copy the password to a Wayland clipboard without putting it in terminal output, shell history, or process arguments:
 
 ```sh
-sops --decrypt --extract '["PRODUCTION_ADMIN_PASSWORD"]' tools/deploy-keys.yaml | wl-copy
+sops --decrypt --extract '["PRODUCTION_ADMIN_PASSWORD"]' tools/deploy/keys.yaml | wl-copy
 ```
 
 Paste it into Grafana's login form and clear the clipboard afterward. `wl-copy` receives the secret through a pipe; if unavailable, use an equivalent clipboard tool for your desktop. The dashboard is protected by Grafana's built-in login and is routed only on the app hostname. Prometheus, PostgreSQL exporter, and Node Exporter ports stay on the Docker internal network.
@@ -198,14 +198,14 @@ Compose waits for service health during deployment. The deploy then recreates on
 The deployment script tests use mock SSH and HTTP commands. The persistent Grafana 503 case takes about one minute and is opt-in; run only that case with:
 
 ```sh
-LIBREPAPER_TEST_SLOW_DEPLOY=1 node --test --test-name-pattern='persistent Grafana API failures' tools/tests/deploy-production.test.mjs
+LIBREPAPER_TEST_SLOW_DEPLOY=1 node --test --test-name-pattern='persistent Grafana API failures' tools/deploy/production.test.mjs
 ```
 
 ## Verify
 
 ```sh
-tools/deploy-production verify    # app and OAuth redirects, monitoring, the site, documents, redirects, logs
-tools/deploy-production logs      # follow
+tools/deploy/production verify    # app and OAuth redirects, monitoring, the site, documents, redirects, logs
+tools/deploy/production logs      # follow
 LIBREPAPER_SERVER=https://app.librepaper.org librepaper login
 ```
 

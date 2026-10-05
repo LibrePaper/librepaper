@@ -1,0 +1,40 @@
+# Browser asset tools
+
+LibrePaper consumes a deployed LaTeX engine mirror -- engines and the TeX Live
+package bundles -- built and pushed from the **wasm-latex** repository
+(`make mirror`, `make push` there; layout documented in
+`wasm-latex/docs/release.md`). Nothing in this repository builds that mirror any
+more. A release is an immutable directory `latex/<id>/`, where `<id>` is the
+SHA-256 of `<id>/MANIFEST.json`, described by `<id>/release.json` (format 2,
+every path relative to the release directory, bundled releases only). The
+mirror is append-only; the release a build uses is pinned in `assets.lock`.
+What is still here:
+
+## Consumer-side check
+
+`tools/assets/check-mirror.mjs` rejects a release before a deployment uses it:
+
+```sh
+node tools/assets/check-mirror.mjs tools/test/latex/mirror                     # every <id>/ in a mirror directory
+node tools/assets/check-mirror.mjs tools/test/latex/mirror/<id>                # one release directory
+node tools/assets/check-mirror.mjs https://assets.example/latex/<id>/     # a release URL
+```
+
+It checks that `release.json` parses, `format === 2`, and the pdfTeX worker is
+named in the engine file list and has a non-empty integrity record. For a URL,
+it fetches the pdfTeX worker and verifies its size and SHA-256; the URL check
+does not download bundle payloads. Given a directory it also verifies that
+the directory name is the SHA-256 of `MANIFEST.json` and checks every declared
+engine file and bundle tar on disk against `release.json` and `bundles.json`'s
+digests, rejecting symlinks that escape the release root.
+`tools/assets/mirror check <url or dir>` runs it;
+`MIRROR=<dir> tools/assets/mirror smoke` (default `../wasm-latex/mirror`, where
+wasm-latex builds it) runs it and then compiles and displays the seeded LaTeX
+example in headless Chromium.
+
+## Reproduction status
+
+Build reproduction and source receipts belong to the wasm-latex repository.
+The mirror retains those receipts and the source URL from its staged
+release; `release.json` leaves `source.reproduced` false where wasm-latex has
+not independently rebuilt an engine from source yet.

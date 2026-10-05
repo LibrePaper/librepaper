@@ -15,7 +15,7 @@ PREFIX  ?= $(HOME)/.local
 BINDIR  ?= $(PREFIX)/bin
 DESTDIR ?=
 # The browser renderers, fetched into web/wasm (not embedded in the binary):
-# tests read them, and tools/deploy-assets publish sends them to the asset mirror.
+# tests read them, and tools/assets/mirror publish sends them to the asset mirror.
 WASM    := web/wasm/markdown.wasm
 BIB     := web/wasm/bibliography.wasm
 CITES   := web/wasm/citations.wasm
@@ -32,7 +32,7 @@ SHELL_OUT := web/dist/index.html
 LCM_DIR := web/vendor/loro-codemirror
 LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
            $(LCM_DIR)/awareness.ts $(LCM_DIR)/ephemeral.ts $(LCM_DIR)/utils.ts
-# Everything tools/pins fetch writes; see the pinned inputs section below.
+# Everything tools/assets/pins fetch writes; see the pinned inputs section below.
 PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(LCM)
 # web/src/site is deliberately not in this list. The marketing page and the
 # docs chrome are built by vite.site.config.js into docs/_site, which the
@@ -88,7 +88,7 @@ test: pins $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 # other check was green.
 	@echo
 	@echo "test: passed -- NOT everything. Still to run:"
-	@echo "  tools/suite browser                       the components in a real chromium"
+	@echo "  tools/test/suite browser                  the components in a real chromium"
 	@echo "  LIBREPAPER_TEST_POSTGRES_URL=... \\"
 	@echo "    cargo test -p librepaper-engine -p librepaper-room -p librepaper-server --lib -- --ignored --test-threads=1"
 	@echo "  make check                                test + browser + reader smoke in one go"
@@ -107,8 +107,8 @@ test-rust:
 # cases stay out even here: they want a database to point at and they TRUNCATE
 # it, which is not something a default target should assume it may do.
 check: test  ## Run the test suite, the browser components and the reader smoke test
-	@tools/suite browser
-	@tools/suite smoke
+	@tools/test/suite browser
+	@tools/test/suite smoke
 
 fmt:  ## Format every crate
 	@cargo fmt
@@ -122,7 +122,7 @@ snapshot: pins $(SHELL_OUT)
 clean:  ## Remove build output
 	@rm -rf dist target/release/librepaper web/dist web/node_modules
 
-# These match tools/dev.toml and tools/dev-oauth.toml, which hold the server
+# These match tools/dev/dev.toml and tools/dev/dev-oauth.toml, which hold the server
 # settings; edit both together. The port is fixed because the GitHub OAuth
 # app's callback URL names it. The static site is a second server on a second
 # port: a directory of files with no application behind it, and the
@@ -131,8 +131,8 @@ PORT       := 8081
 SITE_PORT  := 8082
 DATA       := librepaper-data
 CONFIG_ORIGIN := $(origin CONFIG)
-CONFIG     ?= tools/dev.toml
-DEV_CONFIGS := $(abspath tools/dev.toml tools/dev-oauth.toml)
+CONFIG     ?= tools/dev/dev.toml
+DEV_CONFIGS := $(abspath tools/dev/dev.toml tools/dev/dev-oauth.toml)
 CONFIG_IS_DEV := $(if $(filter $(DEV_CONFIGS),$(abspath $(CONFIG))),yes)
 CONFIG_WAS_SUPPLIED := $(if $(filter undefined,$(CONFIG_ORIGIN)),,yes)
 OPEN ?= 1
@@ -140,12 +140,12 @@ OPEN ?= 1
 # Only the shipped development configs use this Makefile's Docker database and
 # loopback settings. A custom config owns its settings and inherits the caller's
 # environment unchanged.
-serve: $(BIN)  ## Run the server and open it in Firefox (CONFIG=tools/dev.toml)
+serve: $(BIN)  ## Run the server and open it in Firefox (CONFIG=tools/dev/dev.toml)
 	@if [ "$(CONFIG_IS_DEV)" = yes ] && [ "$(OPEN)" = 1 ] && command -v firefox >/dev/null; then \
 		sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 & \
 	fi
 	@if [ "$(CONFIG_IS_DEV)" = yes ]; then \
-		tools/db dev >/dev/null || exit 1; \
+		tools/dev/db dev >/dev/null || exit 1; \
 	fi
 	@$(BIN) admin serve --config "$(CONFIG)"
 
@@ -161,12 +161,12 @@ kill:  ## Stop a server started with make serve
 # swap are encoded for the engine that was replaced, and the reader says so
 # ("Invalid magic bytes") instead of opening them.
 #
-# Dev configs always use the Docker deployment tools/db owns.
+# Dev configs always use the Docker deployment tools/dev/db owns.
 wipe:  ## Delete the local deployment -- database and data directory -- and start over
-	@if [ "$(CONFIG)" != tools/dev.toml ]; then echo "wipe only supports CONFIG=tools/dev.toml"; exit 1; fi
+	@if [ "$(CONFIG)" != tools/dev/dev.toml ]; then echo "wipe only supports CONFIG=tools/dev/dev.toml"; exit 1; fi
 	@case "$(DATA)" in ""|.|..|/|../*|*/..|*/../*|/*) echo "unsafe DATA path: $(DATA)"; exit 1;; esac
 	@$(MAKE) --no-print-directory kill >/dev/null
-	@tools/db dev >/dev/null
+	@tools/dev/db dev >/dev/null
 	@# FORCE, because a server that outlived `kill` still holds a connection
 	@# and DROP DATABASE waits for it otherwise.
 	@docker exec $${DEV_POSTGRES_CONTAINER:-librepaper-postgres} psql -U postgres -c \
@@ -184,7 +184,7 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # three weeks of drafting, so the history panel and the activity calendar have
 # something in them the first time they are opened. The operations are real
 # and every version opens; only the clock is invented (seed::activity).
-# The simulate_activity_days setting in tools/dev-oauth.toml controls this:
+# The simulate_activity_days setting in tools/dev/dev-oauth.toml controls this:
 # 0 gives the honest history of a document published once, and any other
 # number overrides the three weeks. It applies to the examples an account is
 # given at first sign-in, so changing it means `wipe` and signing in again.
@@ -203,28 +203,28 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # keys when it can decrypt them: their GitHub app is registered for
 # http://localhost:$(PORT). Without sops or the key, the demo starts with no
 # sign-in, and reading and commenting still work.
-DEMO_KEYS ?= tools/deploy-keys.yaml
-demo:  ## Serve the site, the app, a local companion and simulated activity (21 days in tools/dev-oauth.toml)
+DEMO_KEYS ?= tools/deploy/keys.yaml
+demo:  ## Serve the site, the app, a local companion and simulated activity (21 days in tools/dev/dev-oauth.toml)
 	@if [ "$(CONFIG_WAS_SUPPLIED)" = yes ]; then \
 		echo "demo: using CONFIG=$(CONFIG)"; \
 		exec $(MAKE) --no-print-directory demo-run CONFIG="$(CONFIG)"; \
 	elif [ -z "$$LIBREPAPER_GITHUB_CLIENT_ID" ] && command -v sops >/dev/null 2>&1 \
 		&& sops --decrypt --extract '["LIBREPAPER_GITHUB_CLIENT_ID"]' $(DEMO_KEYS) >/dev/null 2>&1; then \
 		echo "demo: GitHub sign-in from $(DEMO_KEYS)"; \
-		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run CONFIG=tools/dev-oauth.toml'; \
+		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run CONFIG=tools/dev/dev-oauth.toml'; \
 	elif [ -n "$$LIBREPAPER_GITHUB_CLIENT_ID" ]; then \
 		echo "demo: GitHub sign-in from the environment"; \
-		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev-oauth.toml; \
+		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/dev-oauth.toml; \
 	else \
 		echo "demo: no sign-in (sops cannot decrypt $(DEMO_KEYS)); publishing is off"; \
-		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev.toml; \
+		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/dev.toml; \
 	fi
 
 # The companion setting is local to the demo, independent of the caller's
 # shell. Backend settings come from the selected TOML file and its references.
 demo-run: override LIBREPAPER_SERVER = http://localhost:$(PORT)
 demo-run: $(BIN)
-	@tools/deploy-assets check
+	@tools/assets/mirror check
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
 	@set -e; \
 	(cd web && bun run serve:site -- --port $(SITE_PORT) --strictPort >/dev/null 2>&1) & \
@@ -259,13 +259,13 @@ $(SHELL_OUT): $(WEB) $(LCM)
 #
 # The browser wasm renderers (assets.lock) and the loro-codemirror binding
 # (web/loro-codemirror.lock) are fetched, not built or vendored, and verified
-# against their locks; tools/pins owns fetching and moving them. Files already
+# against their locks; tools/assets/pins owns fetching and moving them. Files already
 # correct are left alone, so running it on every build is cheap. `pins` is the
 # internal step. The files themselves depend on it order-only: a clean checkout
 # resolves them as prerequisites, an already-fetched one does not re-run it.
 
 pins:
-	@tools/pins fetch
+	@tools/assets/pins fetch
 
 $(PINNED): | pins
 
@@ -275,7 +275,7 @@ $(PINNED): | pins
 # the same markdown engine the application embeds (web/tools/build-site.mjs),
 # wrapped in the sidebar from docs/nav.js, beside the landing page authored in
 # web/src/site/. Built by vite.site.config.js into docs/_site, a separate
-# static output that `tools/deploy-production` publishes and `make site-serve`
+# static output that `tools/deploy/production` publishes and `make site-serve`
 # previews locally.
 site: pins
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }

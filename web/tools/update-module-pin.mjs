@@ -57,4 +57,4 @@ const changedLock = lock.replace(new RegExp(`^(\\s*)(\\S+)(\\s+${repo}\\s+)\\S+(
 // All checks happen before writing anything.
 await writeFile(lockPath, changedLock);
 console.log(`${repo}: updated assets.lock to ${tag}`);
-console.log("Run `tools/pins fetch` before committing.");
+console.log("Run `tools/assets/pins fetch` before committing.");

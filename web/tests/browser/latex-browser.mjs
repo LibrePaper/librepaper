@@ -4,14 +4,14 @@
 // browser check separate from the Node ones, and why it is not in `bun run
 // check`: it needs a mirror on disk and, if one is not there yet, a network.
 //
-// It reuses `tools/latex/tools/serve.mjs` (package A) rather than reimplementing a
+// It reuses `tools/test/latex/serve.mjs` (package A) rather than reimplementing a
 // mirror server: that file already answers every mirror route (the engine
 // name-lookup route, the digest-shaped static route, `/mirror/<id>/release.json`).
 // If the mirror has no release directory yet (wasm-latex still
 // building it), this file polls for up to 20 minutes before giving up and
 // reporting that the check could not run.
 //
-// The page it drives is `tools/latex/harness/index.html`, already on the mirror's
+// The page it drives is `tools/test/latex/harness/index.html`, already on the mirror's
 // own origin (a same-origin requirement `driver.js`'s header note explains:
 // a nested engine Worker must be same-origin with the document that creates
 // it). That page imports `latex.js` for its own reasons (a different check's
@@ -32,7 +32,7 @@ import { browser, until } from "../../tools/browser-driver.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(dirname(dirname(HERE)));
 const MIRROR = process.env.MIRROR || join(ROOT, "..", "wasm-latex", "mirror");
-const CORPUS = join(ROOT, "tools", "latex", "corpus");
+const CORPUS = join(ROOT, "tools", "test", "latex", "corpus");
 const PAGES = JSON.parse(readFileSync(join(CORPUS, "pages.json"), "utf8"));
 if (!/^https?:\/\//i.test(MIRROR) && !existsSync(MIRROR)) {
   console.log(`latex-browser: no LaTeX mirror at ${MIRROR}; skipping (build wasm-latex next to this checkout, or set MIRROR to a release URL)`);
@@ -286,7 +286,7 @@ async function main(browserName) {
   log(browserName, `mirror ready: release=${release.id}`);
 
   const scratch = mkdtempSync(join(tmpdir(), "librepaper-latex-browser-"));
-  const server = spawn(process.execPath, [join(ROOT, "tools", "latex", "tools", "serve.mjs"), "--port", String(PORT), "--mirror", MIRROR], {
+  const server = spawn(process.execPath, [join(ROOT, "tools", "test", "latex", "serve.mjs"), "--port", String(PORT), "--mirror", MIRROR], {
     stdio: ["ignore", "pipe", "pipe"],
     cwd: ROOT,
   });
@@ -409,7 +409,7 @@ async function main(browserName) {
       // `\LibrePaperUndefined` alone is not fatal: an undefined control
       // sequence is TeX's most ordinary recoverable error in nonstopmode
       // (verified against the real engine -- pdfTeX skips the token, status
-      // 1, and still writes a PDF). `tools/latex/corpus/broken/main.tex`'s own
+      // 1, and still writes a PDF). `tools/test/latex/corpus/broken/main.tex`'s own
       // comment says what actually is: "\input{a file that does not exist}
       // ... TeX stops dead on it: an input it cannot find is an emergency
       // stop" -- so that is the fatal construct used here, injected right

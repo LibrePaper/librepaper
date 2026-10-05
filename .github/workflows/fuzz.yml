@@ -18,6 +18,6 @@ jobs:
             fuzz
       - uses: oven-sh/setup-bun@v2
       - run: cargo install cargo-fuzz --locked
-      - run: tools/suite fuzz
+      - run: tools/test/suite fuzz
         env:
           FUZZ_SECONDS: "20"

@@ -1,0 +1,687 @@
+#!/usr/bin/env bash
+# Deploy the official instance at librepaper.org. Secrets come from
+# tools/deploy/keys.yaml (SOPS); runbook in docs/dev/production.md.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+
+HOST="${HOST:-ubuntu@librepaper.org}"
+SITE=librepaper.org       # landing page and manual, from docs/_site (make site)
+APP=app.librepaper.org    # the application: DOMAIN in the kit
+DOCS=docs.librepaper.org  # published documents: DOCS_DOMAIN in the kit
+REDIRECTS='www.librepaper.org, librepaper.com, www.librepaper.com'
+ASSET=librepaper-x86_64-unknown-linux-musl.tar.xz
+MONITORING=https://$APP/admin/monitoring/
+HTTP_CONNECT_TIMEOUT=5
+HTTP_REQUEST_TIMEOUT=15
+HEALTH_DEADLINE_SECONDS=120
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-crates/librepaper-engine/migrations/postgres}"
+POSTGRES_EXEC='cd librepaper && docker compose exec -T postgres'
+SQUASH_DB=librepaper_squash
+
+if [ -t 1 ]; then bold=$'\e[1m' green=$'\e[32m' red=$'\e[31m' dim=$'\e[2m' reset=$'\e[0m'; else bold='' green='' red='' dim='' reset=''; fi
+step() { printf '\n%s==> %s%s\n' "$bold" "$*" "$reset"; }
+ok() { printf '    %s%s%s\n' "$green" "$*" "$reset"; }
+note() { printf '    %s%s%s\n' "$dim" "$*" "$reset"; }
+
+die() { printf '%sdeploy-production: %s%s\n' "$red" "$*" "$reset" >&2; exit 1; }
+http_request() {
+	curl --connect-timeout "$HTTP_CONNECT_TIMEOUT" --max-time "$HTTP_REQUEST_TIMEOUT" "$@"
+}
+key() { sops --decrypt --extract "[\"$1\"]" tools/deploy/keys.yaml; }
+required_key() {
+	local name="$1" value
+	if ! value=$(key "$name" 2>/dev/null); then
+		die "could not decrypt required key $name in tools/deploy/keys.yaml"
+	fi
+	if [[ ! "$value" =~ [^[:space:]] ]] || [[ "${value,,}" =~ ^[[:space:]]*(null|~)[[:space:]]*$ ]]; then
+		die "required key $name in tools/deploy/keys.yaml is empty or null"
+	fi
+	printf '%s' "$value"
+}
+
+validate_env_passwords() {
+	local secret
+	for secret in "$@"; do
+		[[ "$secret" =~ ^[A-Za-z0-9_-]+$ ]] || die "production passwords must use only ASCII letters, digits, underscore, or hyphen"
+	done
+}
+
+validate_release_version() {
+	local version="$1" major minor patch
+	if [[ ! "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+		die "release version must be a canonical tag such as v0.0.9"
+	fi
+	major="${BASH_REMATCH[1]}"
+	minor="${BASH_REMATCH[2]}"
+	patch="${BASH_REMATCH[3]}"
+	if (( major == 0 && minor == 0 && patch < 9 )); then
+		die "production metrics require v0.0.9 or later; v0.0.8 lacks metrics. Use deploy-local with a built Linux musl binary until an instrumented release is published"
+	fi
+}
+
+VERIFY_TMP_FILES=()
+cleanup_verify_tmp() {
+	if [ "${#VERIFY_TMP_FILES[@]}" -gt 0 ]; then rm -f -- "${VERIFY_TMP_FILES[@]}"; fi
+}
+
+write_env() {
+	local version="$1" acme="$2" postgres="$3" exporter_password="$4" github_id="$5" github_secret="$6" google_id="$7" google_secret="$8" admin_password="$9"
+	# The values are written only to a mode-600 file on the VPS. The temporary
+	# file and rename make a failed transfer leave the previous environment intact.
+	# shellcheck disable=SC2087 # expand local credentials and send them over stdin
+	ssh "$HOST" 'umask 077; cat > librepaper/.env.tmp && chmod 600 librepaper/.env.tmp && mv -f librepaper/.env.tmp librepaper/.env' <<EOF
+LIBREPAPER_VERSION=$version
+DOMAIN=$APP
+DOCS_DOMAIN=$DOCS
+ACME_EMAIL=$acme
+POSTGRES_PASSWORD=$postgres
+POSTGRES_EXPORTER_PASSWORD=$exporter_password
+LIBREPAPER_GITHUB_CLIENT_ID=$github_id
+LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret
+LIBREPAPER_GOOGLE_CLIENT_ID=$google_id
+LIBREPAPER_GOOGLE_CLIENT_SECRET=$google_secret
+GRAFANA_ADMIN_PASSWORD=$admin_password
+EOF
+}
+
+write_config() {
+	# This file contains only literals and names of explicit env references.
+	# Stage it separately so the candidate binary can validate it before the
+	# currently installed configuration is replaced.
+	ssh "$HOST" 'umask 022; cat > librepaper/config.toml.candidate.tmp && chmod 644 librepaper/config.toml.candidate.tmp && mv -f librepaper/config.toml.candidate.tmp librepaper/config.toml.candidate' < tools/deploy/production.toml
+}
+
+install_config() {
+	ssh "$HOST" 'cd librepaper && mv -f config.toml.candidate config.toml'
+}
+
+write_compose_override() {
+	local local_image="${1:-false}"
+	if [ "$local_image" = true ]; then
+		ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'EOF'
+# Written by tools/deploy/production. Keep Caddy serving the static site.
+services:
+  caddy:
+    volumes:
+      - ./site:/srv/site:ro
+  librepaper:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      args: {LIBREPAPER_BINARY: librepaper.candidate}
+EOF
+	else
+		ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'EOF'
+# Written by tools/deploy/production. Keep Caddy serving the static site.
+services:
+  caddy:
+    volumes:
+      - ./site:/srv/site:ro
+EOF
+	fi
+}
+
+bootstrap_monitoring_role() {
+	step "PostgreSQL: ensure the monitoring exporter role exists"
+	ssh "$HOST" 'cd librepaper && docker compose up -d --wait postgres'
+	ssh "$HOST" 'cd librepaper && docker compose exec -T postgres sh -s' < tools/deploy/docker/monitoring-user.sh
+	ok "ensured least-privilege librepaper_metrics role"
+}
+
+site_build() {
+	step "Site: make site (app links point at https://$APP)"
+	LIBREPAPER_APP_ORIGIN="https://$APP" make site
+	ok "built docs/_site"
+}
+
+site_sync() {
+	step "Site: docs/_site/ -> $HOST:librepaper/site/"
+	rsync -a --delete --out-format='    %n' docs/_site/ "$HOST:librepaper/site/"
+	ok "synced"
+}
+
+check_production_dns() {
+	step "DNS: every name -> the address of $SITE"
+	local ip name names=0
+	ip=$(dig +short "$SITE" | tail -n 1)
+	[ -n "$ip" ] || die "$SITE does not resolve"
+	for name in "$SITE" "$APP" "$DOCS" ${REDIRECTS//,/}; do
+		[ "$(dig +short "$name" | tail -n 1)" = "$ip" ] || die "$name does not resolve to $ip yet: add its A record at Hover"
+		names=$((names + 1))
+	done
+	ok "$names names -> $ip"
+}
+
+load_deployment_secrets() {
+	DEPLOY_ACME=$(required_key PRODUCTION_ACME_EMAIL)
+	DEPLOY_POSTGRES=$(required_key PRODUCTION_POSTGRES_PASSWORD)
+	DEPLOY_EXPORTER_PASSWORD=$(required_key PRODUCTION_POSTGRES_EXPORTER_PASSWORD)
+	DEPLOY_GITHUB_ID=$(required_key PRODUCTION_GITHUB_CLIENT_ID)
+	DEPLOY_GITHUB_SECRET=$(required_key PRODUCTION_GITHUB_CLIENT_SECRET)
+	DEPLOY_GOOGLE_ID=$(required_key PRODUCTION_GOOGLE_CLIENT_ID)
+	DEPLOY_GOOGLE_SECRET=$(required_key PRODUCTION_GOOGLE_CLIENT_SECRET)
+	DEPLOY_ADMIN_PASSWORD=$(required_key PRODUCTION_ADMIN_PASSWORD)
+	validate_env_passwords "$DEPLOY_POSTGRES" "$DEPLOY_EXPORTER_PASSWORD" "$DEPLOY_ADMIN_PASSWORD"
+	ok "8 keys decrypted (values not shown)"
+}
+
+prepare_deployment() {
+	local version="$1" local_image="$2"
+	check_production_dns
+
+	step "Secrets from tools/deploy/keys.yaml"
+	load_deployment_secrets
+
+	site_build
+	step "Kit: tools/deploy/docker/ -> $HOST:librepaper/"
+	# A deployment kit may live beside operator-local state. Never sync active
+	# credentials, config, overrides, or locally staged binaries from that tree;
+	# config.toml is installed only after the candidate has accepted it.
+	rsync -a \
+		--exclude='/.env' --exclude='/.env.tmp' \
+		--exclude='/config.toml' --exclude='/config.toml.tmp' \
+		--exclude='/config.toml.candidate*' \
+		--exclude='/compose.override.yaml' --exclude='/compose.override.yaml.tmp' \
+		--exclude='/librepaper' --exclude='/librepaper.candidate*' \
+		--out-format='    %n' tools/deploy/docker/ "$HOST:librepaper/"
+	ok "synced"
+	site_sync
+
+	step "Caddy: the site, the redirects, and the site volume"
+	printf '\n%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE" | ssh "$HOST" 'cat >> librepaper/Caddyfile'
+	write_compose_override "$local_image"
+	ok "$SITE serves docs/_site; $REDIRECTS -> https://$SITE"
+
+	step ".env on the VPS"
+	write_env "$version" "$DEPLOY_ACME" "$DEPLOY_POSTGRES" "$DEPLOY_EXPORTER_PASSWORD" "$DEPLOY_GITHUB_ID" "$DEPLOY_GITHUB_SECRET" "$DEPLOY_GOOGLE_ID" "$DEPLOY_GOOGLE_SECRET" "$DEPLOY_ADMIN_PASSWORD"
+	unset DEPLOY_ACME DEPLOY_POSTGRES DEPLOY_EXPORTER_PASSWORD DEPLOY_GITHUB_ID DEPLOY_GITHUB_SECRET DEPLOY_GOOGLE_ID DEPLOY_GOOGLE_SECRET DEPLOY_ADMIN_PASSWORD
+	write_config
+	ok "wrote librepaper/.env atomically (mode 600) and staged config.toml"
+	bootstrap_monitoring_role
+}
+
+# One line per migration file: version, SHA-384 hex, description, path. This is
+# how sqlx records a migration: the checksum covers the file's raw bytes.
+local_migrations() {
+	local file base digits version description sum
+	for file in "$MIGRATIONS_DIR"/*.sql; do
+		[ -e "$file" ] || continue
+		base=$(basename "$file" .sql)
+		digits=${base%%[!0-9]*}
+		version=$((10#$digits))
+		description=${base#*_}
+		description=${description//_/ }
+		sum=$(sha384sum "$file")
+		printf '%s\t%s\t%s\t%s\n' "$version" "${sum%% *}" "$description" "$file"
+	done | sort -n -t $'\t' -k1,1
+}
+
+# "absent" when production has no _sqlx_migrations table, otherwise one
+# "version<TAB>checksum hex" line per successfully applied migration.
+remote_migrations() {
+	ssh "$HOST" "$POSTGRES_EXEC psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -At" <<'SQL'
+SELECT to_regclass('public._sqlx_migrations') IS NOT NULL AS present \gset
+\if :present
+SELECT version || E'\t' || encode(checksum, 'hex') FROM _sqlx_migrations WHERE success ORDER BY version;
+\else
+SELECT 'absent';
+\endif
+SQL
+}
+
+normalize_schema_dump() {
+	grep -Ev '^(--|SET |SELECT pg_catalog|\\restrict|\\unrestrict)|^$' || true
+}
+
+remote_schema() {
+	local database="$1"
+	ssh "$HOST" "$POSTGRES_EXEC pg_dump -U librepaper -d $database --schema-only --no-owner --no-privileges" | normalize_schema_dump
+}
+
+remote_admin_sql() {
+	local database="$1"
+	ssh "$HOST" "$POSTGRES_EXEC psql -U librepaper -d $database -v ON_ERROR_STOP=1 -q"
+}
+
+SQUASH_TMP_FILES=()
+cleanup_squash() {
+	remote_admin_sql postgres <<< "DROP DATABASE IF EXISTS $SQUASH_DB;" >/dev/null 2>&1 || true
+	if [ "${#SQUASH_TMP_FILES[@]}" -gt 0 ]; then rm -f -- "${SQUASH_TMP_FILES[@]}"; fi
+	SQUASH_TMP_FILES=()
+}
+
+# Sets SQUASH_VERSION, SQUASH_SUM, SQUASH_DESCRIPTION, SQUASH_FILE from the
+# single migration file in the tree, or dies.
+require_single_migration() {
+	local rows
+	rows=$(local_migrations)
+	if [ -z "$rows" ] || [ "$(printf '%s\n' "$rows" | wc -l)" -ne 1 ]; then
+		die "squash-migrations needs a single migration file in $MIGRATIONS_DIR"
+	fi
+	IFS=$'\t' read -r SQUASH_VERSION SQUASH_SUM SQUASH_DESCRIPTION SQUASH_FILE <<< "$rows"
+	[ "$SQUASH_VERSION" = 1 ] || die "squash-migrations needs the single migration file to be version 1, found version $SQUASH_VERSION"
+}
+
+squash_migrations() {
+	require_single_migration
+	local prod_dump squash_dump diff_output old_versions description_sql
+
+	step "Migrations: prove the squashed file reproduces production's schema"
+	prod_dump=$(mktemp)
+	squash_dump=$(mktemp)
+	SQUASH_TMP_FILES=("$prod_dump" "$squash_dump")
+	trap cleanup_squash EXIT
+	remote_schema librepaper > "$prod_dump"
+	remote_admin_sql postgres <<< "DROP DATABASE IF EXISTS $SQUASH_DB;"
+	remote_admin_sql postgres <<< "CREATE DATABASE $SQUASH_DB;"
+	ssh "$HOST" "$POSTGRES_EXEC psql -U librepaper -d $SQUASH_DB -v ON_ERROR_STOP=1 --single-transaction -q" < "$SQUASH_FILE"
+	remote_schema "$SQUASH_DB" > "$squash_dump"
+	if ! diff_output=$(diff -u --label production --label squashed "$prod_dump" "$squash_dump"); then
+		printf '%s\n' "$diff_output"
+		die "the squashed migration does not reproduce production's schema; nothing was changed"
+	fi
+	cleanup_squash
+	trap - EXIT
+	ok "the squashed file builds the same schema as production"
+
+	step "Migrations: pin _sqlx_migrations to version 1"
+	old_versions=$(remote_migrations | cut -f1 | paste -sd, -)
+	note "old versions: $old_versions"
+	description_sql=${SQUASH_DESCRIPTION//\'/\'\'}
+	# shellcheck disable=SC2087 # the checksum and description are local values
+	ssh "$HOST" "$POSTGRES_EXEC psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -At" <<SQL
+BEGIN;
+DELETE FROM _sqlx_migrations;
+INSERT INTO _sqlx_migrations(version, description, installed_on, success, checksum, execution_time)
+VALUES (1, '$description_sql', now(), true, decode('$SQUASH_SUM', 'hex'), 0);
+COMMIT;
+SQL
+	printf '%s squashed versions %s -> 1 %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$old_versions" "$SQUASH_SUM" | ssh "$HOST" 'cat >> librepaper/migrations-squash.log'
+	ok "pinned version 1 ($SQUASH_DESCRIPTION, sha384 ${SQUASH_SUM:0:12}...)"
+
+	step "Backup: after the pin, because older backups record the old migration version"
+	local backup_name
+	backup_name="$(date +%F)-squash"
+	if ssh "$HOST" "cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml.candidate docker compose run --rm --no-deps librepaper admin backup --config /etc/librepaper/config.toml /var/backups/librepaper/$backup_name"; then
+		ok "backup $backup_name written"
+	else
+		note "the backup failed but the pin is done: take a backup by hand with the checked candidate image before starting the application"
+	fi
+}
+
+squash_command() {
+	require_single_migration
+	local remote
+	remote=$(remote_migrations)
+	if [ "$remote" = absent ] || [ -z "$remote" ]; then
+		die "production has no applied migrations to re-pin; nothing to do"
+	fi
+	if [ "$remote" = "$(printf '1\t%s' "$SQUASH_SUM")" ]; then
+		die "production already matches $SQUASH_FILE; nothing to do"
+	fi
+	write_config
+	check_application_config release
+	squash_migrations
+}
+
+# Runs before the containers start: a release whose tree disagrees with the
+# applied history dies at startup, so refuse here, or re-pin when the tree has
+# been squashed into one file.
+check_migrations() {
+	step "Migrations: applied history against the tree"
+	local remote local_rows line version sum local_sum count=0 problem=''
+	remote=$(remote_migrations)
+	if [ "$remote" = absent ] || [ -z "$remote" ]; then
+		ok "fresh database: the release applies every migration"
+		return
+	fi
+	local_rows=$(local_migrations)
+	while IFS=$'\t' read -r version sum; do
+		local_sum=$(awk -F'\t' -v v="$version" '$1 == v {print $2}' <<< "$local_rows")
+		if [ -z "$local_sum" ]; then
+			problem="applied migration version $version has no file in $MIGRATIONS_DIR"
+			break
+		elif [ "$local_sum" != "$sum" ]; then
+			problem="applied migration version $version has a different checksum from its file in $MIGRATIONS_DIR"
+			break
+		fi
+		count=$((count + 1))
+	done <<< "$remote"
+	if [ -z "$problem" ]; then
+		ok "$count applied migrations match the tree"
+		return
+	fi
+	line=$(printf '%s' "$local_rows" | head -n 1)
+	if [ -n "$local_rows" ] && [ "$(printf '%s\n' "$local_rows" | wc -l)" -eq 1 ] && [ "${line%%$'\t'*}" = 1 ]; then
+		note "$problem; the tree holds one squashed file, so production is re-pinned to it"
+		squash_migrations
+		return
+	fi
+	die "$problem; the release would fail at startup, so nothing was changed"
+}
+
+check_application_config() {
+	local mode="$1"
+	if [ "$mode" = local ]; then
+		step "Containers: build and check local binary config support"
+	else
+		step "Containers: build and check release config support"
+	fi
+	note "candidate image is checked before migration or configuration changes"
+	ssh "$HOST" 'cd librepaper && docker compose build librepaper'
+	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml.candidate docker compose run --rm --no-deps librepaper admin config check --config /etc/librepaper/config.toml'; then
+		die "the candidate binary cannot load config.toml; the running application was not restarted. Use a TOML-config-capable release or local binary"
+	fi
+}
+
+start_application() {
+	local mode="$1"
+	step "Containers: install checked config and start $mode image"
+	if [ "$mode" = local ]; then
+		note "kept the checked local binary available for future Docker rebuilds"
+	fi
+	install_config
+	# Renaming config.toml changes its inode without changing the Compose model,
+	# so recreate only the app container to ensure it opens the validated file.
+	# PostgreSQL is already up from bootstrap; the following full-stack up starts
+	# any remaining services without force-recreating them.
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=config.toml docker compose up -d --wait --wait-timeout 180'
+	ok "running"
+}
+
+usage() {
+	cat <<'USAGE'
+usage: tools/deploy/production <command>
+
+  deploy [VERSION]   deploy a published instrumented release (canonical vMAJOR.MINOR.PATCH, v0.0.9+)
+                     (VERSION defaults to v + the version in Cargo.toml)
+  deploy-local BINARY deploy a previously-built Linux musl executable instead of a release image
+  squash-migrations   re-pin production's _sqlx_migrations to the single squashed file after proving it reproduces the live schema (deploy runs this itself when needed)
+  site               rebuild and upload the landing page and manual only (no release, no restart)
+  verify             app, monitoring, site, documents, redirect, and logs
+  logs               follow the container logs
+  help, -h, --help   show this message
+
+Environment:
+  HOST=ubuntu@librepaper.org   ssh target (use the IP before DNS resolves)
+USAGE
+}
+
+monitoring_verify() {
+	step "Monitoring: authenticated Grafana dashboard $MONITORING"
+	local password config body headers api_code uid
+	password=$(required_key PRODUCTION_ADMIN_PASSWORD)
+	config=$(mktemp)
+	body=$(mktemp)
+	headers=$(mktemp)
+	VERIFY_TMP_FILES=("$config" "$body" "$headers")
+	trap cleanup_verify_tmp EXIT
+	chmod 600 "$config" "$body"
+	# Curl config keeps the credential out of argv and shell history. Escape
+	# characters with meaning in curl's quoted config syntax.
+	local escaped_password
+	escaped_password=$(printf '%s' "$password" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	printf 'user = "admin:%s"\n' "$escaped_password" > "$config"
+	unset password escaped_password
+	local api_deadline=$((SECONDS + 60)) api_remaining waiting_note=false
+	while :; do
+		api_remaining=$((api_deadline - SECONDS))
+		[ "$api_remaining" -gt 0 ] || break
+		api_code=$(curl --connect-timeout "$api_remaining" --max-time "$api_remaining" --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
+		[ "$api_code" = 200 ] && break
+		case "$api_code" in
+			000|502|503)
+				if [ "$waiting_note" = false ]; then
+					note "waiting for Grafana to finish starting (up to 60 seconds)"
+					waiting_note=true
+				fi
+				;;
+			*) die "authenticated Grafana dashboard API returned HTTP $api_code" ;;
+		esac
+		api_remaining=$((api_deadline - SECONDS))
+		if [ "$api_remaining" -gt 0 ]; then sleep "$((api_remaining < 2 ? api_remaining : 2))"; fi
+	done
+	[ "$api_code" = 200 ] || die "authenticated Grafana dashboard API returned HTTP $api_code"
+	DASHBOARDS_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARDS_JSON);process.exit(d.some(x=>x.type==="dash-db"&&x.uid)?0:1)' || die "Grafana has no provisioned dashboard"
+	uid=$(DASHBOARDS_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARDS_JSON);process.stdout.write(d.find(x=>x.type==="dash-db").uid)')
+	ok "configured credentials can read the provisioned dashboard"
+
+	local anonymous_code anonymous_location
+	anonymous_code=$(http_request -sS -D "$headers" -o /dev/null -w '%{http_code}' "${MONITORING}d/$uid" || true)
+	[ "$anonymous_code" = 302 ] || [ "$anonymous_code" = 303 ] || die "unauthenticated Grafana dashboard returned HTTP $anonymous_code, expected a login redirect"
+	anonymous_location=$(tr -d '\r' < "$headers" | awk 'tolower($1)=="location:" {print $2}')
+	case "$anonymous_location" in *login*) ;; *) die "Grafana unauthenticated redirect did not lead to login" ;; esac
+	api_code=$(http_request -sS -o /dev/null -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
+	[ "$api_code" = 401 ] || [ "$api_code" = 403 ] || die "unauthenticated Grafana API returned HTTP $api_code"
+	ok "unauthenticated dashboard redirects to login and API access is denied"
+
+	step "Monitoring: private endpoints and Prometheus history"
+	for path in /metrics /api/status /api/v1/status/config /api/v1/targets; do
+		local private_code
+		private_code=$(http_request -sS -o /dev/null -w '%{http_code}' "https://$APP$path" || true)
+		if [ "$path" = /api/status ]; then
+			[ "$private_code" = 403 ] || die "https://$APP$path returned HTTP $private_code, expected 403"
+		else
+			case "$private_code" in 404|421) ;; *) die "https://$APP$path is public (HTTP $private_code)" ;; esac
+		fi
+	done
+	local targets history snapshot now start prom_deadline=$((SECONDS + 60)) prom_remaining prom_attempts=0
+	local prometheus_ok=false
+	local prom_waiting_note=false
+	while [ "$prom_attempts" -lt 30 ]; do
+		prom_remaining=$((prom_deadline - SECONDS))
+		[ "$prom_remaining" -gt 0 ] || break
+		now=$(date +%s)
+		start=$((now - 90))
+		# Prometheus is internal-only. Run its API from inside the container and
+		# return only JSON metadata to the local Node parser.
+		local response
+		response=$(timeout "$prom_remaining" ssh "$HOST" 'cd librepaper && docker compose exec -T prometheus sh -s' 2>/dev/null <<PROMETHEUS_API_EOF
+targets=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/targets?state=active') || exit 1
+history=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query_range?query=up%7Bjob%3D%22librepaper%22%7D&start=$start&end=$now&step=15s') || exit 1
+snapshot=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=(librepaper_metrics_snapshot_success%3D%3D1%20and%20time%28%29-librepaper_metrics_snapshot_timestamp_seconds%3C60)%20and%20on%28%29%20(pg_up%3D%3D1)') || exit 1
+printf '%s\n---LIBREPAPER-METRICS---\n%s\n---LIBREPAPER-METRICS---\n%s\n' "\$targets" "\$history" "\$snapshot"
+PROMETHEUS_API_EOF
+		) || response=''
+		if [ -n "$response" ]; then
+		targets=${response%%$'\n---LIBREPAPER-METRICS---\n'*}
+		remainder=${response#*$'\n---LIBREPAPER-METRICS---\n'}
+		history=${remainder%%$'\n---LIBREPAPER-METRICS---\n'*}
+		snapshot=${remainder#*$'\n---LIBREPAPER-METRICS---\n'}
+		if TARGETS_JSON="$targets" HISTORY_JSON="$history" SNAPSHOT_JSON="$snapshot" node -e 'const t=JSON.parse(process.env.TARGETS_JSON).data.activeTargets;const h=JSON.parse(process.env.HISTORY_JSON).data.result;const s=JSON.parse(process.env.SNAPSHOT_JSON).data.result;const expected=["librepaper","node","postgres"];const jobs=t.map(x=>x.labels&&x.labels.job);const healthy=t.length===expected.length&&t.every(x=>x.health==="up"&&expected.includes(x.labels&&x.labels.job))&&expected.every(x=>jobs.includes(x));const samples=h.some(x=>{const v=x.values||[];return v.length>=2&&v.slice(-2).every(y=>y[1]==="1")});const pgup=s.some(x=>x.value&&x.value[1]==="1");process.exit(healthy&&samples&&pgup?0:1)' 2>/dev/null; then
+			prometheus_ok=true
+			break
+		fi
+		fi
+		if [ "$prom_waiting_note" = false ]; then
+			note "waiting for Prometheus APIs, all scrape targets, recent samples, and a fresh snapshot (up to 60 seconds)"
+			prom_waiting_note=true
+		fi
+		prom_attempts=$((prom_attempts + 1))
+		prom_remaining=$((prom_deadline - SECONDS))
+		if [ "$prom_remaining" -gt 0 ]; then sleep "$((prom_remaining < 2 ? prom_remaining : 2))"; fi
+	done
+	[ "$prometheus_ok" = true ] || die "Prometheus APIs, targets, LibrePaper sample history, snapshot, or pg_up are unhealthy"
+	ok "all Prometheus targets are up; LibrePaper has two good samples, a fresh snapshot, and pg_up=1"
+
+	step "Monitoring: provisioned dashboard $uid and panels"
+	api_code=$(http_request --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/dashboards/uid/$uid" || true)
+	[ "$api_code" = 200 ] || die "Grafana dashboard API returned HTTP $api_code for $uid"
+	DASHBOARD_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARD_JSON).dashboard;const p=d.panels||[];function valid(xs){return xs.every(x=>x.type&&x.title&&(!x.panels||valid(x.panels)))}process.exit(p.length&&valid(p)?0:1)' || die "provisioned Grafana dashboard has missing or invalid panels"
+	ok "provisioned dashboard and panels are valid"
+	cleanup_verify_tmp
+	VERIFY_TMP_FILES=()
+	trap - EXIT
+}
+
+reload_prometheus() {
+	step "Prometheus: apply the current mounted configuration"
+	ssh "$HOST" 'cd librepaper && docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 prometheus'
+	ok "recreated Prometheus to load current scrape and alert rules"
+}
+
+verify() {
+	step "App: https://$APP/health"
+	local health_deadline=$((SECONDS + HEALTH_DEADLINE_SECONDS))
+	local health_remaining connect_timeout
+	local health_ok=false
+	local first_fail=true
+
+	while :; do
+		health_remaining=$((health_deadline - SECONDS))
+		[ "$health_remaining" -gt 0 ] || break
+		connect_timeout="$HTTP_CONNECT_TIMEOUT"
+		[ "$connect_timeout" -le "$health_remaining" ] || connect_timeout="$health_remaining"
+		if curl --connect-timeout "$connect_timeout" --max-time "$health_remaining" -fs -o /dev/null "https://$APP/health"; then
+			health_ok=true
+			break
+		fi
+		if [ "$first_fail" = true ]; then
+			note "waiting for the server and its certificate (up to 2 minutes)"
+			printf '    '
+			first_fail=false
+		fi
+		printf .
+		health_remaining=$((health_deadline - SECONDS))
+		if [ "$health_remaining" -gt 0 ]; then sleep "$((health_remaining < 2 ? health_remaining : 2))"; fi
+	done
+
+	if [ "$health_ok" = false ]; then
+		printf '\n'
+		die "https://$APP/health did not answer"
+	fi
+	if [ "$first_fail" = false ]; then
+		printf '\n'
+	fi
+	ok "answers"
+	verify_oauth_redirect github 'https://github.com/login/oauth/authorize?'
+	verify_oauth_redirect google 'https://accounts.google.com/o/oauth2/v2/auth?'
+	monitoring_verify
+
+	step "Site: https://$SITE"
+	http_request -fs -o /dev/null "https://$SITE/what.html" || die "https://$SITE/what.html did not answer: is the site uploaded?"
+	ok "landing page and manual answer"
+
+	step "Documents: https://$DOCS"
+	local code
+	code=$(http_request -s -o /dev/null -w '%{http_code}' "https://$DOCS/")
+	if [ "$code" = "000" ]; then
+		die "https://$DOCS did not answer"
+	elif [ "$code" = "421" ]; then
+		die "the server does not take $DOCS as its documents host (421)"
+	else
+		ok "answers (HTTP $code; it has no page at its root)"
+	fi
+
+	step "Redirect: https://librepaper.com"
+	local location
+	location=$(http_request -sI https://librepaper.com | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}')
+	if [ "$location" = "https://$SITE/" ]; then
+		ok "-> $location"
+	else
+		die "librepaper.com redirects to '${location}', expected https://$SITE/"
+	fi
+
+	step "Last 50 log lines"
+	ssh "$HOST" 'cd librepaper && docker compose logs --tail 50'
+}
+
+verify_oauth_redirect() {
+	local provider="$1" expected="$2" result code location
+	if ! result=$(http_request -s -o /dev/null -w '%{http_code}\t%{redirect_url}' "https://$APP/auth/login/$provider"); then
+		die "could not check the $provider OAuth redirect at https://$APP/auth/login/$provider"
+	fi
+	IFS=$'\t' read -r code location <<< "$result"
+	if [ "$code" != "302" ] || [[ "$location" != "$expected"* ]]; then
+		die "$provider OAuth route did not redirect to its expected authorization endpoint (HTTP $code)"
+	fi
+	ok "$provider OAuth redirect answers"
+}
+
+deploy() {
+	local version="${1:-v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)}"
+	validate_release_version "$version"
+
+	printf '%sDeploying %s to %s%s\n' "$bold" "$version" "$HOST" "$reset"
+
+	step "Release $version"
+	http_request -fsIL -o /dev/null "https://github.com/LibrePaper/librepaper/releases/download/$version/$ASSET" || die "release $version has no $ASSET"
+	ok "found $ASSET"
+
+	prepare_deployment "$version" false
+	check_application_config release
+	check_migrations
+
+	start_application release
+	reload_prometheus
+
+	step "Cleanup"
+	ssh "$HOST" 'docker image prune -f'
+	ok "removed replaced images"
+
+	verify
+
+	printf '\n%sDone: %s is live. Site https://%s, app https://%s (%ss)%s\n' "$green$bold" "$version" "$SITE" "$APP" "$SECONDS" "$reset"
+}
+
+deploy_local() {
+	local binary="$1"
+	[ -n "$binary" ] || die "usage: tools/deploy/production deploy-local BINARY"
+	[ -f "$binary" ] && [ -x "$binary" ] || die "BINARY must be an existing executable file"
+	local checksum remote_checksum version
+	checksum=$(sha256sum "$binary" | awk '{print $1}')
+	version="local-${checksum:0:12}"
+	printf '%sDeploying local binary %s to %s%s\n' "$bold" "$checksum" "$HOST" "$reset"
+
+	prepare_deployment "$version" true
+
+	step "Binary: transfer and verify SHA-256 before candidate preflight"
+	rsync -a --chmod=F755 --out-format='    %n' "$binary" "$HOST:librepaper/librepaper.candidate.tmp"
+	remote_checksum=$(ssh "$HOST" 'cd librepaper && sha256sum librepaper.candidate.tmp | cut -d " " -f1')
+	[ "$remote_checksum" = "$checksum" ] || die "remote binary checksum mismatch; existing executable was kept"
+	ssh "$HOST" 'cd librepaper && chmod 755 librepaper.candidate.tmp && mv -f librepaper.candidate.tmp librepaper.candidate'
+	ok "verified SHA-256 $checksum and staged the candidate executable"
+
+	check_application_config local
+	check_migrations
+	start_application local
+	reload_prometheus
+	verify
+	printf '\n%sDone: local binary %s is live at https://%s (%ss)%s\n' "$green$bold" "$checksum" "$APP" "$SECONDS" "$reset"
+}
+
+case "${1:-help}" in
+	deploy)
+		deploy "${2:-}"
+		;;
+	deploy-local)
+		deploy_local "${2:-}"
+		;;
+	squash-migrations)
+		squash_command
+		;;
+	site)
+		site_build
+		site_sync
+		step "Site: https://$SITE"
+		http_request -fs -o /dev/null "https://$SITE/what.html" || die "https://$SITE/what.html did not answer: is the site uploaded?"
+		ok "landing page and manual answer"
+		printf '\n%sDone: site updated at https://%s (%ss)%s\n' "$green$bold" "$SITE" "$SECONDS" "$reset"
+		;;
+	verify)
+		verify
+		;;
+	logs)
+		step "Following logs on $HOST (Ctrl-C to stop)"
+		ssh -t "$HOST" 'cd librepaper && docker compose logs -f --tail 100'
+		;;
+	help | -h | --help)
+		usage
+		;;
+	*)
+		usage >&2
+		exit 2
+		;;
+esac

@@ -1,0 +1,80 @@
+# The fuzz targets: libFuzzer driving the functions that read what somebody
+# else wrote -- a peer on the socket, a reader's selection, an author's files,
+# bytes off object storage. Outside the workspace because they need a nightly compiler and the
+# sanitizer runtime, and nothing that builds the binary should. `tools/test/suite fuzz`
+# runs every target for a minute; `cargo fuzz --fuzz-dir . run <name>` from this directory
+# runs one until it finds something.
+#
+# Each target states an invariant and asserts it: a failure is a panic, and
+# libFuzzer writes the input that caused it to artifacts/<target>/. Reproduce
+# with `cargo fuzz run <target> artifacts/<target>/<file>`, then turn it into
+# a test in the crate the bug is in.
+[package]
+name = "librepaper-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+librepaper = { path = "../../../crates/librepaper" }
+# Pinned to what the binary uses, so a peer's raw write into the shared
+# document is made with the same encoder the room decodes.
+loro = "1.16"
+# The archive target builds asset ids with the version the binary uses.
+uuid = "1"
+# The protocol target builds request bodies the way a browser would.
+serde_json = "1"
+
+# The path rules a peer's file names go through.
+[[bin]]
+name = "paths"
+path = "fuzz_targets/paths.rs"
+test = false
+doc = false
+bench = false
+
+# A shared document built by a peer who may write any key, then projected.
+# §4.4 claims the projection is total over every LoroDoc; this attacks that.
+[[bin]]
+name = "document"
+path = "fuzz_targets/document.rs"
+test = false
+doc = false
+bench = false
+
+# A v1 update off the socket, valid or damaged, against the admission ceilings.
+[[bin]]
+name = "update"
+path = "fuzz_targets/update.rs"
+test = false
+doc = false
+bench = false
+
+# A catalog v3 source archive off object storage, honest or damaged.
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+
+# A reader's selection placed in a source file the author uploaded.
+[[bin]]
+name = "locate"
+path = "fuzz_targets/locate.rs"
+test = false
+doc = false
+bench = false
+
+# What a page in the browser may say to the loopback build service.
+[[bin]]
+name = "protocol"
+path = "fuzz_targets/protocol.rs"
+test = false
+doc = false
+bench = false

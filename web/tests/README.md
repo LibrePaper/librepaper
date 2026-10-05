@@ -11,7 +11,7 @@ The checks are grouped by how they execute, not by product feature:
 - `fixtures/` contains checked-in inputs shared by tests. The Typst corpus is
   used by both the PDF and viewer checks.
 
-The Bun scripts in `web/package.json` and the repository-level `tools/suite`
+The Bun scripts in `web/package.json` and the repository-level `tools/test/suite`
 command are the authoritative entry points. The unit and integration lists
 below give representative examples, not a complete file inventory. The browser list is complete for
 `web/tests/browser/`; files may also be run directly with Node when a script
@@ -20,8 +20,8 @@ documents its own prerequisites.
 Browser launchers share `web/tools/browser-executable.mjs`. Set
 `LIBREPAPER_CHROMIUM` to an executable path to select a specific browser; when
 unset, the resolver looks for `chromium`, `chromium-browser`, `google-chrome`,
-then `google-chrome-stable` on `PATH`. Running `tools/suite browser` or
-`tools/suite smoke` without a usable browser fails the requested suite rather
+then `google-chrome-stable` on `PATH`. Running `tools/test/suite browser` or
+`tools/test/suite smoke` without a usable browser fails the requested suite rather
 than reporting a successful skip. Individual checks that explicitly skip when
 their built shell or fixture artifact is absent keep that optional behavior.
 The suite pins browser-selecting fixtures to Chromium even when `BROWSER` is

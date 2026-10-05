@@ -30,21 +30,21 @@ node_modules/
 
 # The LaTeX distribution mirror is built and published by the wasm-latex
 # repository; local release payloads can be hundreds of megabytes.
-tools/latex/mirror/
+tools/test/latex/mirror/
 
-# What a TeX run leaves beside a document in tools/latex/corpus. The corpus keeps
+# What a TeX run leaves beside a document in tools/test/latex/corpus. The corpus keeps
 # its sources and the logs the engines produced; everything else is remade by
-# `node tools/latex/tools/texlive.mjs`.
-tools/latex/corpus/*/main.aux
-tools/latex/corpus/*/main.bbl
-tools/latex/corpus/*/main.blg
-tools/latex/corpus/*/main.log
-tools/latex/corpus/*/main.pdf
-tools/latex/corpus/*/main.synctex.gz
-tools/latex/corpus/*/chapters/*.aux
-tools/latex/corpus/article/article.bib
+# `node tools/test/latex/texlive.mjs`.
+tools/test/latex/corpus/*/main.aux
+tools/test/latex/corpus/*/main.bbl
+tools/test/latex/corpus/*/main.blg
+tools/test/latex/corpus/*/main.log
+tools/test/latex/corpus/*/main.pdf
+tools/test/latex/corpus/*/main.synctex.gz
+tools/test/latex/corpus/*/chapters/*.aux
+tools/test/latex/corpus/article/article.bib
 
-# The CodeMirror binding is fetched from its fork by `tools/pins fetch`
+# The CodeMirror binding is fetched from its fork by `tools/assets/pins fetch`
 # and verified against web/loro-codemirror.lock. The source lives in the fork, so
 # there is one copy of it rather than two to keep in step.
 web/vendor/loro-codemirror/

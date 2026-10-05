@@ -7,7 +7,7 @@
 //
 // Two kinds of case. The first is a table of small hand-written logs, one per
 // rule, so that a rule that stops working says which rule. The second is the
-// corpus: for every `tools/latex/corpus/<doc>/logs/<engine>.log`, the parser must
+// corpus: for every `tools/test/latex/corpus/<doc>/logs/<engine>.log`, the parser must
 // produce what `expected.json` says if there is one, and in every case must
 // not invent an error out of a log whose document compiled.
 
@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { parse, rerun, needsBibtex } from "../../src/lib/latex/log.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CORPUS = join(dirname(dirname(dirname(HERE))), "tools", "latex", "corpus");
+const CORPUS = join(dirname(dirname(dirname(HERE))), "tools", "test", "latex", "corpus");
 
 let failures = 0;
 function check(what, condition, detail = "") {

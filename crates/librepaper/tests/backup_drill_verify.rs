@@ -1,4 +1,4 @@
-//! Read-only application replay verification after tools/backup-drill/drill.sh.
+//! Read-only application replay verification after tools/test/backup-drill/drill.sh.
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 

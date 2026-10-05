@@ -1,0 +1,19 @@
+# Local application configuration for `make serve`. This is the full config;
+# to change a value, edit this file or copy it and pass CONFIG=path/to/config.toml.
+[server]
+address = "127.0.0.1:8081"
+local_companion = true
+
+[origins]
+app = "http://localhost:8081"
+site = "http://localhost:8082"
+
+[storage]
+directory = "../../librepaper-data"
+database_url = "postgresql://postgres:librepaper-local@127.0.0.1:55432/librepaper"
+fsync = false
+object_store = "filesystem"
+
+[access]
+publishers = ["any"]
+commenters = ["anyone"]

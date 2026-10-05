@@ -26,7 +26,7 @@ in clone URLs or output.
 ## Publishing to crates.io
 
 The repository is a workspace of internal sub-crates. crates.io gets one
-package, `librepaper`, generated from the workspace by `tools/flatten/flatten`.
+package, `librepaper`, generated from the workspace by `tools/release/flatten/flatten`.
 
 - Version: `[workspace.package]` in the root `Cargo.toml`; the tag check reads it.
 - Output: `target/flat/`, never committed.
@@ -34,15 +34,15 @@ package, `librepaper`, generated from the workspace by `tools/flatten/flatten`.
 - Prepare the browser assets first (the executable embeds them):
 
 ```sh
-tools/pins fetch                  # pinned renderers and loro-codemirror
+tools/assets/pins fetch                  # pinned renderers and loro-codemirror
 (cd web && bun install --frozen-lockfile && bun run build)
 ```
 
 Dry run:
 
 ```sh
-tools/flatten/flatten lint        # rules the sub-crates follow
-tools/flatten/flatten build       # generate target/flat/
+tools/release/flatten/flatten lint        # rules the sub-crates follow
+tools/release/flatten/flatten build       # generate target/flat/
 (cd target/flat && cargo publish --dry-run --locked --allow-dirty)
 ```
 

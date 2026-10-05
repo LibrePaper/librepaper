@@ -18,7 +18,7 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 #
 # `force = false` lets the environment win, so re-checking against a live
 # server is `SQLX_OFFLINE=false DATABASE_URL=... cargo check`. After changing
-# any query or migration, regenerate the cache with `tools/db sqlx-prepare`; CI
-# fails on a stale one (`tools/db sqlx-check`).
+# any query or migration, regenerate the cache with `tools/dev/db sqlx-prepare`; CI
+# fails on a stale one (`tools/dev/db sqlx-check`).
 [env]
 SQLX_OFFLINE = { value = "true", force = false }

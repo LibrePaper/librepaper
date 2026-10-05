@@ -57,7 +57,7 @@ jobs:
       # One `librepaper` package is generated from the workspace and
       # published from there; see docs/releasing.md.
       - name: Generate the single crate
-        run: tools/flatten/flatten build
+        run: tools/release/flatten/flatten build
 
       - name: Publish librepaper
         working-directory: target/flat

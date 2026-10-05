@@ -12,7 +12,7 @@
 //
 // It needs a PDF, which needs a TeX Live. Without one it skips with a message
 // rather than failing, the way the mirror checks do:
-// `node tools/latex/tools/texlive.mjs --pdf` is what makes it run.
+// `node tools/test/latex/texlive.mjs --pdf` is what makes it run.
 //
 // Headless Chromium over the DevTools protocol, the same way
 // `browser-smoke.mjs` and `latex-check.mjs` do it.
@@ -27,7 +27,7 @@ import { browser } from "../../tools/browser-driver.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
 const SHELL = join(REPO, "web", "dist");
-const CORPUS = join(REPO, "tools", "latex", "corpus");
+const CORPUS = join(REPO, "tools", "test", "latex", "corpus");
 
 const ARTICLE = join(CORPUS, "article", "main.pdf");
 const PAPER = join(CORPUS, "paper", "main.pdf");
@@ -37,7 +37,7 @@ if (!existsSync(join(SHELL, "viewer.html"))) {
   process.exit(0);
 }
 if (!existsSync(ARTICLE) || !existsSync(PAPER)) {
-  console.log("viewer: no corpus PDFs; skipping (run `node tools/latex/tools/texlive.mjs --pdf`)");
+  console.log("viewer: no corpus PDFs; skipping (run `node tools/test/latex/texlive.mjs --pdf`)");
   process.exit(0);
 }
 

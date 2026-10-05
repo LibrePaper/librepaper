@@ -13,18 +13,18 @@ Renderer implementations live in `wasm-*` repositories. The browser uses pinned 
 
 ```sh
 make web                # pages from web/
-tools/pins fetch        # pinned browser renderers
+tools/assets/pins fetch        # pinned browser renderers
 make build              # dist/librepaper with embedded pages
 make install            # to ~/.local/bin (override PREFIX= or BINDIR=)
 make test               # rustfmt, clippy and test suite
-tools/suite external    # Quarto/R/Python and local-service integrations
+tools/test/suite external    # Quarto/R/Python and local-service integrations
 ```
 
-Build needs [bun](https://bun.sh) and Node.js. Rust builds for `x86_64-unknown-linux-gnu` also require `mold`, configured in `.cargo/config.toml`. Browser renderers are fetched from exact tags and SHA256 digests in `assets.lock`. To update a renderer: `tools/pins update wasm wasm-markdown v0.2.0`, then review the lockfile diff.
+Build needs [bun](https://bun.sh) and Node.js. Rust builds for `x86_64-unknown-linux-gnu` also require `mold`, configured in `.cargo/config.toml`. Browser renderers are fetched from exact tags and SHA256 digests in `assets.lock`. To update a renderer: `tools/assets/pins update wasm wasm-markdown v0.2.0`, then review the lockfile diff.
 
-The four browser modules (markdown, bibliography, citations, typst) are not embedded. `tools/pins fetch` fetches them to `web/wasm/` (ignored). `tools/deploy-assets publish` publishes to the asset mirror at `wasm/<sha256>/<module>` (SHA256 from `assets.lock`). The same lock pins LaTeX at `latex/<sha256>/`. The server passes these URLs to browsers using `[assets].mirror` from TOML, or the built-in project mirror when omitted. See [asset mirrors](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md).
+The four browser modules (markdown, bibliography, citations, typst) are not embedded. `tools/assets/pins fetch` fetches them to `web/wasm/` (ignored). `tools/assets/mirror publish` publishes to the asset mirror at `wasm/<sha256>/<module>` (SHA256 from `assets.lock`). The same lock pins LaTeX at `latex/<sha256>/`. The server passes these URLs to browsers using `[assets].mirror` from TOML, or the built-in project mirror when omitted. See [asset mirrors](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md).
 
-`make demo` runs the site, application, local companion and simulated activity. It runs `tools/deploy-assets check` on the LaTeX mirror at `MIRROR=` (default `../wasm-latex/mirror`), then Docker PostgreSQL from `tools/db dev`. GitHub sign-in comes from `tools/deploy-keys.yaml` when `sops` can decrypt it; otherwise the demo uses a config without OAuth. The server settings are in `tools/dev.toml` and `tools/dev-oauth.toml`; access is declared there. The demo pins the local companion's `LIBREPAPER_SERVER` to `http://localhost:$(PORT)` so tray Settings and approvals return to this local app. A companion already running before the demo starts is left alone.
+`make demo` runs the site, application, local companion and simulated activity. It runs `tools/assets/mirror check` on the LaTeX mirror at `MIRROR=` (default `../wasm-latex/mirror`), then Docker PostgreSQL from `tools/dev/db dev`. GitHub sign-in comes from `tools/deploy/keys.yaml` when `sops` can decrypt it; otherwise the demo uses a config without OAuth. The server settings are in `tools/dev/dev.toml` and `tools/dev/dev-oauth.toml`; access is declared there. The demo pins the local companion's `LIBREPAPER_SERVER` to `http://localhost:$(PORT)` so tray Settings and approvals return to this local app. A companion already running before the demo starts is left alone.
 
 ## Workspace
 
@@ -36,9 +36,9 @@ cargo nextest run -p librepaper-engine     # its tests
 make test                                  # everything, before handing work back
 ```
 
-- The published `librepaper` crate is generated, not checked in: `tools/flatten/flatten build` writes `target/flat/`.
-- `tools/flatten/flatten lint` checks the rules the generator relies on; CI runs both, then tests the flat crate.
-- `tools/flatten/build.rs` is the flat crate's build script. Every sub-crate `build.rs` needs its counterpart there.
+- The published `librepaper` crate is generated, not checked in: `tools/release/flatten/flatten build` writes `target/flat/`.
+- `tools/release/flatten/flatten lint` checks the rules the generator relies on; CI runs both, then tests the flat crate.
+- `tools/release/flatten/build.rs` is the flat crate's build script. Every sub-crate `build.rs` needs its counterpart there.
 
 ## Test suites
 
@@ -79,8 +79,8 @@ benchmark truncates its configured database. The socket benchmark instead
 uses `LIBREPAPER_BENCH_POSTGRES_URL`; the mixed workload and its PostgreSQL
 setup are documented in the `frugal_mixed_bench` test at `crates/librepaper/tests/frugal_mixed_bench.rs`.
 The isolated backup/restore recovery drill has its own disposable-database
-checks and exact prerequisites in [`tools/backup-drill/README.md`](../../tools/backup-drill/README.md);
-run `tools/suite backup` for the complete end-to-end test.
+checks and exact prerequisites in [`tools/test/backup-drill/README.md`](../../tools/test/backup-drill/README.md);
+run `tools/test/suite backup` for the complete end-to-end test.
 
 The real Quarto PDF preview test is still unfinished CI coverage. Its current
 symptom is repeated CI runner termination; the cause is unconfirmed. To
@@ -91,7 +91,7 @@ test:
 cargo test -p librepaper-companion --lib real_quarto_pdf_preview_publishes_complete_pdf_bytes -- --ignored --test-threads=1
 ```
 
-`tools/suite external` is the current manual coverage path for Quarto/R/Python
+`tools/test/suite external` is the current manual coverage path for Quarto/R/Python
 and local-service integrations. The preview can return to CI after the
 termination cause is isolated and the test has a bounded, reliable CI run.
 
