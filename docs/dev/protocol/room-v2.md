@@ -75,8 +75,8 @@ on `/ws/{slug}`. The response includes `sha`, `request_id`, `durable: true`,
 frontier, and tree digest; it does not change source. A new label request
 always records a row, even if the tree is unchanged. When `request_id` is a
 UUID, it is the replay key: retrying it returns the previously recorded row.
-`noop` reports whether that row has the same tree digest as the preceding
-label. The browser may debounce its own label requests; automation requests
+`noop` compares the returned digest with the latest label read before the
+request. The browser may debounce its own label requests; automation requests
 are processed immediately. Authorization or storage failures return an
 explicit error.
 

@@ -1,12 +1,10 @@
 # The pinned loro-codemirror fork
 
-LibrePaper uses the MIT-licensed [upstream package](https://github.com/loro-dev/loro-codemirror)
-through its [fork](https://github.com/vincentarelbundock/loro-codemirror). The
-fork fixes sync and undo handling for Loro documents with multiple containers,
-processes mixed CodeMirror transactions in order, refreshes presence names with
-cursor updates, guards unresolved cursor positions, and marks initialization
-transactions so the first edit is not dropped. LibrePaper's undo/redo commands
-are implemented locally in [`loro-undo.js`](../../web/src/lib/loro-undo.js).
+- Origin: MIT-licensed [upstream](https://github.com/loro-dev/loro-codemirror),
+  consumed through [our fork](https://github.com/vincentarelbundock/loro-codemirror).
+- Fork fixes: multi-container sync/undo, mixed transaction ordering, presence
+  refresh, unresolved cursors, and initialization dropping the first edit.
+- Local undo/redo commands live in [`loro-undo.js`](../../web/src/lib/loro-undo.js).
 
 The fork source is not committed here. [`web/loro-codemirror.lock`](../../web/loro-codemirror.lock)
 pins a full commit SHA and SHA-256 digests for each required source file.

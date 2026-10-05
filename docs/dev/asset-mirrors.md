@@ -57,28 +57,26 @@ If `assets.lock` is unchanged, there is no mirror update to publish.
 5. Commit the reviewed `assets.lock` pin changes and build/deploy a server
    binary with those pins. Publish assets before deploying that binary.
 
-The publisher checks the pinned files and LaTeX release contents before any
-upload. It uploads WASM, then LaTeX; each LaTeX `release.json` is uploaded last
-so clients cannot discover a partial release. It creates the bucket if needed,
-sets CORS for `GET` and `HEAD`, probes public reads, checks uploaded object
-metadata, and confirms bucket listing is private. Uploads are public-read,
-content-addressed, immutable, and append-only; the publisher never deletes
-objects.
+## Publishing requirements
 
-The dry run also fetches/checks public release URLs and builds the server and
-browser smoke, so it needs network access, Rust, Bun, Node.js, Chromium, and
-PostgreSQL. Set `LIBREPAPER_TEST_POSTGRES_URL` to use an existing test database;
-otherwise Docker starts a temporary PostgreSQL container. A real upload also
-needs SOPS and AWS CLI v2 (or Nix for the temporary CLI shell).
+- The publisher validates files before upload, configures bucket CORS, probes
+  public reads, uploads WASM then LaTeX, and checks object metadata and private
+  bucket listing. Each LaTeX `release.json` is uploaded last.
+- Objects are public-read, content-addressed, cached immutable, and append-only;
+  the publisher never deletes them.
+- Even a dry run needs network access, Rust, Bun, Node.js, Chromium, and
+  PostgreSQL: it checks release URLs and builds/runs the tutorial smoke test.
+- Set `LIBREPAPER_TEST_POSTGRES_URL` for an existing test database; otherwise
+  Docker starts a temporary PostgreSQL container.
+- Real uploads need AWS CLI v2 (or Nix) and credentials from the environment
+  or SOPS.
 
-SOPS keys come from `tools/deploy/keys.yaml`: `OVH_S3_ENDPOINT`,
-`OVH_S3_REGION`, `OVH_S3_USER`, `OVH_S3_SECRET`, and `OVH_S3_ARN`. Canonical
-overrides are `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`,
-`AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`. Set `S3_PUBLIC_BASE_URL` when
-overriding the endpoint or region.
-
-Use a dedicated OVH S3 user. The publisher creates the bucket with that
-identity and then sets CORS, which requires bucket-owner permissions.
+- SOPS file: `tools/deploy/keys.yaml`. Keys: `OVH_S3_ENDPOINT`, `OVH_S3_REGION`,
+  `OVH_S3_USER`, `OVH_S3_SECRET`, `OVH_S3_ARN`.
+- Overrides: `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY`. Set `S3_PUBLIC_BASE_URL` for a custom endpoint or region.
+- Use a dedicated OVH S3 user; let the publisher create the bucket under that
+  identity so it has the ownership required to set CORS.
 
 ## Host a copy
 

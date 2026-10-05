@@ -14,7 +14,7 @@
 - **Whole deployment:** 5 GiB logical storage.
 - **Per document:** 32 MiB document log.
 - **In-flight source:** 64 MiB deployment-wide; write scratch is derived from
-  the log limit (about 168 MiB at the default).
+  the log limit (about 160 MiB at the default).
 - **Memory budget:** 512 MiB; startup rejects a budget too small for the log
   limit.
 - **PostgreSQL connections:** 20.

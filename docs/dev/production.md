@@ -47,14 +47,11 @@ VPS deploy and the landing-page-only update are operator-run commands.
 
 ## Deploy the VPS
 
-Deployment is manual and runs from the repository root. The operator needs SSH
-access to the VPS, Docker on the host, `sops` access to
-`tools/deploy/keys.yaml`, and the DNS names pointed at the host. The SOPS file
-contains the ACME email, database and exporter passwords, GitHub and Google
-OAuth credentials, and Grafana admin password. The deploy writes these to a
-mode-600 `.env` on the VPS; do not put plaintext secrets in the repository.
-Run it from a clean checkout of the deployed tag: the script takes migration
-files, production config, and site content from the local tree.
+- Run from the repository root in a clean checkout of the selected tag.
+  Migration files, production config, and site content come from the local tree.
+- Needs SSH access, Docker on the VPS, local Bun/Node.js for `make site`,
+  `sops` access to `tools/deploy/keys.yaml`, and working production DNS.
+- The script writes secrets to a mode-600 `.env` on the VPS.
 
 ```sh
 # Deploy a published release. VERSION defaults to the Cargo.toml version.
@@ -90,6 +87,8 @@ tools/deploy/production logs
   its password from `.env` only when its data volume is empty; rotate it in
   Grafana, then update SOPS.
 
+### Deployment sequence
+
 - `deploy` accepts canonical `vMAJOR.MINOR.PATCH` releases from `v0.0.9` onward.
   The lower bound is retained because `v0.0.8` lacks the metrics listener
   required by this deployment.
@@ -103,9 +102,9 @@ tools/deploy/production logs
   app and active config in place, but these staged files and role setup may
   already have changed.
 - Before starting the app, the script checks applied SQLx migration versions
-  and checksums against the release. A mismatch stops deployment unless the
-  repository contains one version-1 squashed migration; that case is handled by
-  the schema comparison and re-pin procedure below.
+  and checksums against the local migration files. A mismatch stops deployment
+  unless the tree contains one version-1 squashed migration; see the schema
+  comparison and re-pin procedure below.
 - After preflight, the script installs the checked config, recreates the app
   container, starts/waits for the stack, recreates Prometheus to load its
   current config, prunes replaced Docker images, then verifies the deployment.
@@ -122,11 +121,11 @@ or a build that is not in a GitHub Release:
 tools/deploy/production deploy-local target/x86_64-unknown-linux-musl/release/librepaper
 ```
 
-The script uploads to a temporary path, compares local and remote SHA-256
-checksums, builds the local Docker candidate, checks TOML config support, and
-checks migrations before restarting the app. Supported image architectures
-are x86_64 and aarch64. A later normal `deploy` restores the release-image
-build configuration.
+- Uses a previously built musl binary for the host architecture: x86_64 or aarch64.
+- Verifies the uploaded SHA-256, builds the Docker candidate, checks TOML
+  support and migrations, then restarts the app.
+- Keeps the checked binary for future Docker rebuilds. A normal `deploy`
+  restores the release-image build configuration.
 
 ## Migration squash
 
