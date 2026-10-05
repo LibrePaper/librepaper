@@ -376,7 +376,7 @@ def _create_fresh_secrets(secret_dir: Path, database: str, monitoring: bool) -> 
         if not grafana_file.exists():
             raise SetupError("monitoring requires a supplied grafana_admin_password secret file or GRAFANA_ADMIN_PASSWORD environment value")
         if not grafana_file.read_text(encoding="utf-8").strip():
-            raise SetupError("monitoring requires a nonempty Grafana admin password")
+            raise SetupError("monitoring requires a nonempty grafana_admin_password secret file")
         _ensure_file(secret_dir, "grafana_admin_password")
 
 

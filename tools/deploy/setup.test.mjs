@@ -53,7 +53,7 @@ test('setup supports init, filling empty OAuth placeholders, and stable reruns',
     assert.equal(setSecret(f, 'github_client_secret', 'demo-client-secret').status, 0);
     const partial = f.run(['init', '--database', 'local', '--project', 'setup-test']);
     assert.notEqual(partial.status, 0);
-    assert.match(partial.stderr, /existing database credential files are empty.*restore.*reconcile/);
+    assert.match(partial.stderr, /existing database credential files are empty.*restore.*reconcile/i);
     assert.equal(readFileSync(appPasswordPath, 'utf8'), '');
     assert.equal(readFileSync(ownerPasswordPath, 'utf8'), ownerPassword);
     chmodSync(appPasswordPath, 0o644);
@@ -136,7 +136,7 @@ test('external database setup does not require a metrics URL while monitoring is
 test('legacy upgrade moves old Compose credentials into files and removes them from the selection env', () => {
   const f = fixture();
   try {
-    writeFileSync(f.docker, '#!/bin/sh\ncase "$*" in *" ps --status running --services "*) printf "postgres\\n";; esac\nexit 0\n');
+    writeFileSync(f.docker, '#!/bin/sh\ncase "$*" in *" ps --status running --services"*) printf "postgres\\n";; esac\nexit 0\n');
     chmodSync(f.docker, 0o755);
     writeFileSync(f.envFile, [
       'COMPOSE_FILE=compose.yaml:compose.override.yaml',
