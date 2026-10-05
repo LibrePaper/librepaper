@@ -126,26 +126,28 @@ function demoRunArguments(fixture) {
 }
 
 function demoRunEnvironment(fixture) {
-  return {
-      ...process.env,
-      PATH: `${join(fixture.directory, "mock-bin")}:${process.env.PATH}`,
-      MAKEFLAGS: "",
-      MFLAGS: "",
-      MAKELEVEL: "",
-      LIBREPAPER_SERVER: inheritedProductionServer,
-      LIBREPAPER_APP_ORIGIN: "",
-      MOCK_RECURSIVE_MAKE_LOG: fixture.recursiveMakeLog,
-      MOCK_COMPANION_LOG: fixture.companionLog,
-      MOCK_BUN_LOG: fixture.bunLog,
-      MOCK_TOOLS_LOG: fixture.toolsLog,
-      MOCK_DOCKER_LOG: fixture.dockerLog,
-      MOCK_FIREFOX_LOG: join(fixture.directory, "firefox.log"),
-      MOCK_COMPANION_RUNNING: fixture.running ? "1" : "0",
-      MOCK_DEMO_UP_FAILURE: fixture.upFailure ? "1" : "0",
-      MOCK_DEMO_LOGS_FAILURE: fixture.logsFailure ? "1" : "0",
-      MOCK_DEMO_LOGS_WAIT: fixture.waitForLogs ? "1" : "0",
-      DEMO_PROJECT: `librepaper-demo-test-${process.pid}`,
+  const environment = {
+    ...process.env,
+    PATH: `${join(fixture.directory, "mock-bin")}:${process.env.PATH}`,
+    MAKEFLAGS: "",
+    MFLAGS: "",
+    MAKELEVEL: "",
+    LIBREPAPER_SERVER: inheritedProductionServer,
+    LIBREPAPER_APP_ORIGIN: "",
+    MOCK_RECURSIVE_MAKE_LOG: fixture.recursiveMakeLog,
+    MOCK_COMPANION_LOG: fixture.companionLog,
+    MOCK_BUN_LOG: fixture.bunLog,
+    MOCK_TOOLS_LOG: fixture.toolsLog,
+    MOCK_DOCKER_LOG: fixture.dockerLog,
+    MOCK_FIREFOX_LOG: join(fixture.directory, "firefox.log"),
+    MOCK_COMPANION_RUNNING: fixture.running ? "1" : "0",
+    MOCK_DEMO_UP_FAILURE: fixture.upFailure ? "1" : "0",
+    MOCK_DEMO_LOGS_FAILURE: fixture.logsFailure ? "1" : "0",
+    MOCK_DEMO_LOGS_WAIT: fixture.waitForLogs ? "1" : "0",
+    DEMO_PROJECT: `librepaper-demo-test-${process.pid}`,
   };
+  delete environment.CONFIG;
+  return environment;
 }
 
 function runDemoRun(fixture) {
