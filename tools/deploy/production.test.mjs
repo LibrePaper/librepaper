@@ -356,7 +356,7 @@ test('deploy writes Google OAuth credentials to .env and keeps them out of outpu
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 11);
+    assert.equal(envFile.trimEnd().split('\n').length, 12);
     const productionConfig = readFileSync(path.join(f.remote, 'config.toml'), 'utf8');
     assert.match(productionConfig, /\[origins\]\napp = "https:\/\/app\.librepaper\.org"/);
     assert.match(productionConfig, /database_url = \{ env = "LIBREPAPER_DATABASE_URL" \}/);
@@ -378,7 +378,7 @@ test('deploy-local stages Google OAuth credentials and the candidate binary for 
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
     assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 11);
+    assert.equal(envFile.trimEnd().split('\n').length, 12);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
     assert.equal(existsSync(path.join(f.remote, 'librepaper.candidate')), true);
   } finally {
