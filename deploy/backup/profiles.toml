@@ -8,6 +8,7 @@ scheduler = "crontab:-:/run/librepaper-backup/crontab"
 [resticprofile]
 initialize = true
 lock = "/run/librepaper-backup/lock"
+cache-dir = "/var/backups/librepaper/cache"
 status-file = "/var/backups/librepaper/status.json"
 prometheus-save-to-file = "/var/backups/librepaper/metrics/restic.prom"
 
