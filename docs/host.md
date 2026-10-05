@@ -24,7 +24,7 @@ Before the first start:
 
 ### Remote database
 
-Delete the `postgres` and `postgres-exporter` services in `compose.yaml`, with the `depends_on` and `pgsocket` lines under `librepaper`, and set `storage.database_url` in `config.toml` to the full URL. The exporter is configured for the bundled database role and socket. Add `?sslmode=verify-full` for a managed service.
+Delete the `postgres` and `postgres-exporter` services in `compose.yaml`, remove the `depends_on` and `pgsocket` lines under `librepaper`, and remove the `postgres` scrape job from `monitoring/prometheus.yml`. Set `storage.database_url` in `config.toml` to the full URL. The exporter is configured for the bundled database role and socket. Add `?sslmode=verify-full` for a managed service.
 
 ### Volumes
 
@@ -37,7 +37,7 @@ Delete the `postgres` and `postgres-exporter` services in `compose.yaml`, with t
 - Grafana at `https://<app-origin>/admin/monitoring/`, user `admin`, password `admin` until changed at first login.
 - Prometheus, Grafana and exporters start with `docker compose up -d`.
 - Prometheus and the exporters stay on the private Compose network. Grafana is
-  available through the authenticated app proxy at the path below.
+  available through the HTTPS proxy and uses its own login.
 - Prometheus keeps 30 days, capped at 8 GB.
 
 ### Upgrade
@@ -70,9 +70,10 @@ Server and admin commands use one TOML file. `admin serve` defaults to
 Missing or empty references, invalid keys/types, and old server-setting flags
 fail. There is no interpolation or automatic application-setting override.
 
-The shipped `config.toml` is the reference: every table has a comment, and
-the commented-out tables (`[limits]`, `[retention]`, `[server]`, `[metrics]`)
-are optional. Secrets may be literals in a file with mode 600, or
+The shipped `config.toml` is the reference: every table has a comment. The
+`[metrics]` table is enabled for the Docker monitoring stack; the commented-out
+`[limits]`, `[retention]` and `[server]` tables are optional. Secrets may be
+literals in a file with mode 600, or
 `{ env = "NAME" }` and `{ file = "path" }` references.
 
 Use these commands to check or inspect resolved settings. `check` has no

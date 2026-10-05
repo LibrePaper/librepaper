@@ -20,8 +20,9 @@ x-bounded-logs: &bounded-logs
     max-file: "3"
 
 services:
-  # Database hosted elsewhere: delete this service and the depends_on and
-  # pgsocket lines under librepaper, and put the full URL in config.toml.
+  # Database hosted elsewhere: delete this service and postgres-exporter,
+  # remove the depends_on and pgsocket lines under librepaper, and put the
+  # full URL in config.toml.
   postgres:
     image: postgres:17.11-alpine
     restart: unless-stopped
@@ -35,7 +36,7 @@ services:
       - pgsocket:/var/run/postgresql
     configs:
       # Runs once, when the cluster is created: a passwordless role the
-      # monitoring profile reads statistics as. It can only connect over the
+      # postgres-exporter reads statistics as. It can only connect over the
       # trusted socket.
       - source: metrics-role
         target: /docker-entrypoint-initdb.d/20-metrics-role.sql

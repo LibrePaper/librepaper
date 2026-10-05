@@ -20,8 +20,8 @@ client_secret = "replace"
 # client_secret = "replace"
 
 # The bundled database, over the socket compose.yaml shares with it. For a
-# database elsewhere, delete the postgres service in compose.yaml and write the
-# full URL here, with ?sslmode=verify-full for a managed service:
+# database elsewhere, delete postgres and postgres-exporter in compose.yaml
+# and write the full URL here, with ?sslmode=verify-full for a managed service:
 # database_url = "postgresql://user:password@db.example/librepaper?sslmode=verify-full"
 [storage]
 directory = "/var/lib/librepaper"
