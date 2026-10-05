@@ -1238,15 +1238,21 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn backup_settings_are_rejected_from_application_config() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
 
-        std::fs::write(&path, "[resticprofile]\nrepository = \"profile-secret\"\n").unwrap();
-        let error = load(&path).unwrap_err();
-        assert!(error.contains("/etc/resticprofile/resticprofile.toml"), "{error}");
-        assert!(!error.contains("profile-secret"));
+        for config in [
+            "[resticprofile]\nrepository = \"profile-secret\"\n",
+            "[ \"resticprofile\" ]\nrepository = \"profile-secret\"\n",
+            "[resticprofile.backup]\nschedule = \"daily\"\n",
+            "resticprofile = \"profile-secret\"\n",
+        ] {
+            std::fs::write(&path, config).unwrap();
+            let error = load(&path).unwrap_err();
+            assert!(error.contains("/etc/resticprofile/resticprofile.toml"), "{error}");
+            assert!(!error.contains("profile-secret"));
+        }
 
         std::fs::write(&path, "[backup]\nwarning_count = 2\n").unwrap();
         let error = load(&path).unwrap_err();
