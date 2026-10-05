@@ -75,6 +75,14 @@ async function requiredUntil(what, predicate, timeout = 15000) {
   return found;
 }
 
+async function reloadPage(tab, what) {
+  const previousOrigin = await tab.eval(`return performance.timeOrigin`);
+  await tab.send("Page.reload");
+  await requiredUntil(`${what} reload`, () =>
+    tab.eval(`return performance.timeOrigin !== ${JSON.stringify(previousOrigin)}`),
+  );
+}
+
 /* ------------------------------------------------------------- the browser */
 
 let chrome = null;
@@ -198,6 +206,19 @@ async function openTab(url, cookies = [], { ownProfile = false } = {}) {
   for (const cookie of cookies) await tab.send("Network.setCookie", cookie);
   await tab.send("Page.navigate", { url });
   return tab;
+}
+
+async function selectPdf(tab, slug) {
+  await requiredUntil("the View menu", () => tab.eval(`return Boolean(document.querySelector('button[data-menubar="view"]'))`));
+  await tab.eval(`document.querySelector('button[data-menubar="view"]').click(); return true;`);
+  await requiredUntil("the PDF format menu item", () => tab.eval(`return [...document.querySelectorAll(".menuitem")].some((item) => item.textContent.trim().endsWith("PDF"))`));
+  await tab.eval(`
+    const pdf = [...document.querySelectorAll(".menuitem")].find((item) => item.textContent.trim().endsWith("PDF"));
+    if (!pdf) throw new Error("no PDF format menu item");
+    pdf.click();
+    return true;
+  `);
+  await requiredUntil("the PDF preview frame", () => tab.eval(`return document.querySelector('iframe[title="Document"]')?.getAttribute("src")?.includes("/pdf/${slug}/") || false`));
 }
 
 let root = null;
@@ -484,22 +505,39 @@ async function run() {
   );
   check("what was typed offline reaches the server when the socket returns", recovered);
 
-  await editor.send("Page.reload");
+  await reloadPage(editor, "offline draft");
+  await requiredUntil("the remote connection after reload", () => editor.eval(`
+    return Boolean(document.querySelector('button[aria-label^="Remote server connected"]'));
+  `), 20000);
   const reloadedDraft = await until("the draft survives reload and hello", () => editor.eval(`
     return document.querySelector('[aria-label="Unconfirmed comments"] textarea')?.value === "A comment written offline.";
   `));
-  check("an unconfirmed comment survives reload and the server snapshot", reloadedDraft);
-  const clickedRetry = await requiredUntil("the retry control", () => editor.eval(`
+  const reloadedState = reloadedDraft ? "" : await editor.eval(`return JSON.stringify({
+    page: document.body.innerText.slice(-600),
+    pending: document.querySelector('[aria-label="Unconfirmed comments"]')?.outerHTML.slice(0, 900) ?? null,
+    saved: localStorage.getItem("librepaper-submissions-${slug}"),
+  })`);
+  check("an unconfirmed comment survives reload and the server snapshot", reloadedDraft, reloadedState.slice(0, 1300));
+  const retryReady = reloadedDraft && await until("the retry control", () => editor.eval(`
     const card = document.querySelector('[aria-label="Unconfirmed comments"]');
     const details = card?.querySelector("details");
     if (!details) return false;
     details.open = true;
-    const button = [...(card?.querySelectorAll("button") || [])].find((b) => b.textContent.trim() === "Retry");
-    if (!button) return false;
+    const button = [...card.querySelectorAll("button")].find((b) => b.textContent.trim() === "Retry");
+    return Boolean(button && !button.disabled);
+  `));
+  const retryControlDetail = retryReady ? "" : await editor.eval(`return JSON.stringify({
+    remote: document.querySelector('button[aria-label^="Remote server"]')?.getAttribute("aria-label") ?? null,
+    pending: document.querySelector('[aria-label="Unconfirmed comments"]')?.outerHTML.slice(0, 900) ?? null,
+    saved: localStorage.getItem("librepaper-submissions-${slug}"),
+  })`);
+  if (retryReady) await editor.eval(`
+    const button = [...document.querySelectorAll('[aria-label="Unconfirmed comments"] button')].find((b) => b.textContent.trim() === "Retry");
+    if (!button) throw new Error("Retry control disappeared before click");
     button.click();
     return true;
-  `));
-  check("the retry control is reachable after reload", Boolean(clickedRetry));
+  `);
+  check("the retry control is reachable after reload", Boolean(retryReady), retryControlDetail.slice(0, 1300));
   const confirmed = await until("the retried comment is confirmed", async () => {
     const count = await editor.eval(`
       const response = await fetch("/api/documents/${slug}/comments");
@@ -537,33 +575,21 @@ async function run() {
   const brokenTab = await openTab(`${BASE}/docs/${broken.slug}`, [
     SESSION,
   ]);
-  const told = await until(
-    "the failure is shown",
-    async () => {
-      // A typst document is paged: its frame is a PDF viewer at
-      // `/pdf/<slug>/`, not the `/raw/<slug>/` HTML frame `evalInFrame`
-      // looks for, and a PDF.js canvas carries no error text of its own --
-      // so what to check is the shell's own error count badge
-      // (`.activity-count.errors`, from `errorCount` in Reader.svelte),
-      // or its fallback message when this checkout has no typst renderer
-      // built at all.
-      const errorBadge = await brokenTab.eval(`return document.querySelector(".activity-count.errors")?.textContent || ""`);
-      const shell = await brokenTab.eval(`return document.body.innerText`);
-      return errorBadge
-        ? "told"
-        : shell.includes("renderer") || shell.includes("read where")
-          ? "no typst renderer built"
-          : shell.toLowerCase().includes("could not render") || shell.toLowerCase().includes("compiler produced no html preview")
-          ? "compiler failure shown"
-          : null;
-    },
-    20000,
-  );
+  await selectPdf(brokenTab, broken.slug);
+  await requiredUntil("the Typst compiler diagnostic badge", () => brokenTab.eval(`return Boolean(document.querySelector('button[aria-label^="Diagnostics:"]'))`), 20000);
+  await brokenTab.eval(`document.querySelector('button[aria-label^="Diagnostics:"]').click(); return true;`);
+  const brokenDiagnostic = await until("the Typst source error at line 3", () => brokenTab.eval(`
+    const panel = document.querySelector('[aria-label="Warnings and errors"]');
+    const text = panel?.innerText || "";
+    return text.includes("main.typ:3") ? text : null;
+  `), 20000);
+  const told = Boolean(brokenDiagnostic && /Errors?\s*\(/.test(brokenDiagnostic));
   const brokenState = told ? "" : JSON.stringify({
+    diagnostic: brokenDiagnostic,
     page: await brokenTab.eval(`return document.body.innerText.slice(-700)`),
     console: brokenTab.console.slice(-4),
   });
-  check("a document that does not compile says so rather than showing nothing", told, told || brokenState.slice(0, 1100));
+  check("a document that does not compile reports its line 3 source diagnostic", told, brokenState.slice(0, 1100));
 
   /* --- 6. sharing: the key's path through the browser ---------------------- */
 
@@ -742,22 +768,9 @@ async function run() {
   await requiredUntil("the editor is mounted", async () =>
     Boolean(await author.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
-  // The View menu now defaults Typst to flow HTML. Select its explicit PDF
-  // format before this scenario checks the paged frame and its rendered text.
-  await author.eval(`
-    const view = document.querySelector('button[data-menubar="view"]');
-    if (!view) throw new Error("no View menu");
-    view.click();
-    return true;
-  `);
-  await requiredUntil("the PDF format menu item", () => author.eval(`return [...document.querySelectorAll(".menuitem")].some((item) => item.textContent.trim().endsWith("PDF"))`));
-  await author.eval(`
-    const pdf = [...document.querySelectorAll(".menuitem")].find((item) => item.textContent.trim().endsWith("PDF"));
-    if (!pdf) throw new Error("no PDF format menu item");
-    pdf.click();
-    return true;
-  `);
-  await requiredUntil("the Typst PDF preview frame", () => author.eval(`return document.querySelector('iframe[title="Document"]')?.getAttribute("src")?.includes("/pdf/${paper.slug}/") || false`));
+  // The View menu defaults Typst to flow HTML; select PDF before checking the
+  // paged frame and its rendered text.
+  await selectPdf(author, paper.slug);
 
   // The file list is there, with the one file this document has.
   const listed = await until("the file list is drawn", async () =>
@@ -1025,10 +1038,8 @@ async function run() {
   await requiredUntil("the vim document's editor is mounted", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
-  const beforeVimReload = await vimTab.eval(`return performance.timeOrigin`);
   await vimTab.eval(`localStorage.setItem("librepaper-keymap", JSON.stringify("vim")); return true;`);
-  await vimTab.send("Page.reload");
-  await requiredUntil("the Vim preference reload", () => vimTab.eval(`return performance.timeOrigin !== ${beforeVimReload}`));
+  await reloadPage(vimTab, "Vim preference");
   await requiredUntil("Vim's status panel is drawn", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-vim-panel"))`)),
   );
@@ -1079,10 +1090,8 @@ async function run() {
   await requiredUntil("the source pane reopens", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
-  const beforeDefaultReload = await vimTab.eval(`return performance.timeOrigin`);
   await vimTab.eval(`localStorage.setItem("librepaper-keymap", JSON.stringify("default")); return true;`);
-  await vimTab.send("Page.reload");
-  await requiredUntil("the default keymap reload", () => vimTab.eval(`return performance.timeOrigin !== ${beforeDefaultReload}`));
+  await reloadPage(vimTab, "default keymap");
   await requiredUntil("the editor remounts with the keys turned off", async () =>
     Boolean(await vimTab.eval(`return Boolean(document.querySelector(".cm-content"))`)),
   );
