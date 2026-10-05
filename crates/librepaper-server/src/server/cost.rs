@@ -207,6 +207,23 @@ async fn middleware_inner(
 ) -> Reply {
     let path = request.uri().path().to_string();
     let method = request.method().clone();
+    // The reverse proxy asks whether we serve a hostname before obtaining a
+    // certificate for it. This must be answered before the host check, because
+    // the proxy addresses it with a Host header we do not serve.
+    if method == Method::GET && path == "/api/tls/ask" {
+        let domain = request.uri().query()
+            .and_then(|q| url::form_urlencoded::parse(q.as_bytes())
+                .find(|(key, _)| key == "domain")
+                .map(|(_, value)| value.into_owned()));
+        match domain {
+            Some(domain) if !domain.is_empty() && server.origins.ask(&domain) => {
+                return plain(200, "served");
+            }
+            _ => {
+                return plain(404, "not served");
+            }
+        }
+    }
     // Before anything is reserved or read: this deployment answers on the two
     // origins it was configured with and on loopback, and on nothing else. A
     // request addressed elsewhere is a proxy rewriting `Host`, a stray DNS

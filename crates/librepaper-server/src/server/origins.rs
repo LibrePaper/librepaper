@@ -193,6 +193,23 @@ impl Origins {
         self.loopback(&authority)
     }
 
+    /// Whether `host` is one of the two configured public names, as asked by a
+    /// reverse proxy deciding whether to obtain a certificate for it. Loopback
+    /// is deliberately excluded: a certificate is only ever for a public name.
+    pub fn ask(&self, host: &str) -> bool {
+        let Some(authority) = normalize(host) else { return false };
+        // Loopback names never get certificates.
+        let (name, _) = split_authority(&authority);
+        let bare = name.strip_prefix(DOCS_PREFIX).unwrap_or(name);
+        if is_loopback_name(bare) {
+            return false;
+        }
+        match &self.configured {
+            Some((reader, docs)) => reader.matches(&authority) || docs.matches(&authority),
+            None => false,
+        }
+    }
+
     /// A loopback request stands on its own origin pair, derived from the name
     /// it arrived on, so the reader that answers it agrees with the address in
     /// the browser's bar rather than with a public name it cannot reach.
@@ -590,5 +607,22 @@ mod tests {
         // Browserless callers do not always send Origin; preserve that
         // compatibility while refusing a browser handshake from docs.
         assert!(!ws_origin_refused(&HeaderMap::new(), &reader));
+    }
+
+    #[test]
+    fn ask_tells_whether_a_domain_gets_a_certificate() {
+        let origins = configured();
+        // Both reader and docs origins should be served.
+        assert!(origins.ask("paper.example"));
+        assert!(origins.ask("docs.paper.example"));
+        // Other domains are not served.
+        assert!(!origins.ask("other.example"));
+        // Loopback names never get certificates.
+        assert!(!origins.ask("127.0.0.1"));
+        assert!(!origins.ask("localhost"));
+        // Empty domain is not served.
+        assert!(!origins.ask(""));
+        // Loopback deployments serve nothing publicly.
+        assert!(!Origins::loopback_only().ask("paper.example"));
     }
 }
