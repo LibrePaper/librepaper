@@ -60,7 +60,7 @@ jobs:
       - uses: docker/build-push-action@v6
         if: steps.resolve.outputs.proceed == 'true'
         with:
-          context: tools/deploy/docker
+          context: deploy
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: LIBREPAPER_VERSION=${{ steps.resolve.outputs.tag }}
