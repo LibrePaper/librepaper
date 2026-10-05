@@ -1,40 +1,26 @@
 # Browser asset tools
 
-LibrePaper consumes a deployed LaTeX engine mirror -- engines and the TeX Live
-package bundles -- built and pushed from the **wasm-latex** repository
-(`make mirror`, `make push` there; layout documented in
-`wasm-latex/docs/release.md`). Nothing in this repository builds that mirror any
-more. A release is an immutable directory `latex/<id>/`, where `<id>` is the
-SHA-256 of `<id>/MANIFEST.json`, described by `<id>/release.json` (format 2,
-every path relative to the release directory, bundled releases only). The
-mirror is append-only; the release a build uses is pinned in `assets.lock`.
-What is still here:
+The LaTeX mirror is built in the **wasm-latex** repository (`make mirror` there; layout in `wasm-latex/docs/release.md`) and published from here. A release is `latex/<id>/` where `<id>` is SHA-256 of `MANIFEST.json`, immutable and append-only, described by `release.json` (format 2, bundled releases only). The release a build uses is pinned in `assets.lock`.
 
-## Consumer-side check
+## Commands
 
-`tools/assets/check-mirror.mjs` rejects a release before a deployment uses it:
+`tools/assets/pins`: fetch wasm modules and update assets.lock
 
-```sh
-node tools/assets/check-mirror.mjs tools/test/latex/mirror                     # every <id>/ in a mirror directory
-node tools/assets/check-mirror.mjs tools/test/latex/mirror/<id>                # one release directory
-node tools/assets/check-mirror.mjs https://assets.example/latex/<id>/     # a release URL
-```
+`tools/assets/mirror build`: build LaTeX mirror (`make -C <MIRROR dir>`)
 
-It checks that `release.json` parses, `format === 2`, and the pdfTeX worker is
-named in the engine file list and has a non-empty integrity record. For a URL,
-it fetches the pdfTeX worker and verifies its size and SHA-256; the URL check
-does not download bundle payloads. Given a directory it also verifies that
-the directory name is the SHA-256 of `MANIFEST.json` and checks every declared
-engine file and bundle tar on disk against `release.json` and `bundles.json`'s
-digests, rejecting symlinks that escape the release root.
-`tools/assets/mirror check <url or dir>` runs it;
-`MIRROR=<dir> tools/assets/mirror smoke` (default `../wasm-latex/mirror`, where
-wasm-latex builds it) runs it and then compiles and displays the seeded LaTeX
-example in headless Chromium.
+`tools/assets/mirror check <url|dir>`: validate LaTeX mirror (directory also gets wasm dry-run); no credentials, no network for a directory
 
-## Reproduction status
+`tools/assets/mirror smoke`: compile LaTeX tutorial in Chromium against MIRROR
 
-Build reproduction and source receipts belong to the wasm-latex repository.
-The mirror retains those receipts and the source URL from its staged
-release; `release.json` leaves `source.reproduced` false where wasm-latex has
-not independently rebuilt an engine from source yet.
+`tools/assets/mirror publish`: check, smoke, probe bucket, upload everything; or `--dry-run`
+
+Publishing the mirror happens only from this repository with `tools/assets/mirror publish`.
+
+## LaTeX release format
+
+A release directory `<id>/` must contain:
+- `MANIFEST.json`: arbitrary JSON; id = SHA-256 of this file
+- `release.json`: format 2, every path relative to the directory, bundled releases only (no per-file TeX snapshot)
+- Engine files: each listed in a release.json engine worker inventory with size and sha256
+- `bundles/bundles.json`: the LaTeX package index, must match sha256 pin in release.json; every bundle path in it must exist on disk
+- Bundle tars: `bundles/b/<sha256>/<slug>.tar` where sha256 matches the tar bytes

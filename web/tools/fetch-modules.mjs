@@ -7,7 +7,7 @@
 // pinned would be worse than a build that failed.
 //
 // They land in web/wasm/, which is not embedded in the binary: the modules are
-// published to the asset mirror (see tools/assets/push-mirrors.mjs) and browsers load
+// published to the asset mirror (see tools/assets/mirror publish) and browsers load
 // them from there. Tests and tools read them from this directory.
 //
 // Already-correct files are left alone, so this is cheap to run on every build
