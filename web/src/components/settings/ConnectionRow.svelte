@@ -26,6 +26,7 @@
   const state = $derived(STATES[local?.state] || STATES.unknown);
   const connected = $derived(local?.state === "connected");
   const says = $derived(connected && local?.version ? `${state.says} · ${local.version}` : state.says);
+  let managedAvailable = $state(control.available());
   const description = $derived(
     managedAvailable || connected
       ? "Runs local programs for LibrePaper on this computer."
@@ -34,7 +35,6 @@
 
   let connecting = $state(false);
   let failure = $state("");
-  let managedAvailable = $state(control.available());
   $effect(() => {
     const unsubscribe = control.subscribe((access) => { managedAvailable = Boolean(access?.available); });
     return unsubscribe;
