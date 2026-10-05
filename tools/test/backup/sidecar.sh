@@ -16,8 +16,8 @@ sidecar="${prefix}-sidecar"
 cleanup() {
 	local status=$?
 	trap - EXIT
-	docker rm -f "$sidecar" >/dev/null 2>&1 || true
-	for name in "${backend_containers[@]:-}"; do docker rm -f "$name" >/dev/null 2>&1 || true; done
+	docker rm -f -v "$sidecar" >/dev/null 2>&1 || true
+	for name in "${backend_containers[@]:-}"; do docker rm -f -v "$name" >/dev/null 2>&1 || true; done
 	if [[ "${BACKUP_SIDECAR_KEEP:-0}" == 1 || $status != 0 ]]; then
 		# Return test data ownership to the invoking user before preserving it.
 		docker run --rm --user 0 -v "$work:/test" --entrypoint chown \
@@ -68,7 +68,7 @@ repository = "/var/backups/librepaper/repository"
 password-file = "/test/repository-password"
 
 [resticprofile.retention]
-keep-within = "1s"
+keep-within = "0h"
 keep-hourly = 0
 keep-daily = 0
 keep-weekly = 0
@@ -95,10 +95,10 @@ docker run -d --name "$sidecar" "${common[@]}" \
 	-e LIBREPAPER_DATABASE_URL="$db_url" "$LIBREPAPER_BACKUP_IMAGE" >/dev/null
 sleep 2
 docker exec "$sidecar" sh -c 'test "$(cat /var/backups/librepaper/metrics/librepaper_backup.prom | sed -n "s/^librepaper_backup_enabled //p")" = 0'
-docker rm -f "$sidecar" >/dev/null
+docker rm -f -v "$sidecar" >/dev/null
 
 launch_enabled() {
-	docker rm -f "$sidecar" >/dev/null 2>&1 || true
+	docker rm -f -v "$sidecar" >/dev/null 2>&1 || true
 	docker run -d --name "$sidecar" "${common[@]}" \
 		--tmpfs /run/librepaper-backup:uid=10001,gid=65534,mode=0700 \
 		-v "$work:/test:rw" -v "$work/source-data:/var/lib/librepaper:rw" \
@@ -145,8 +145,6 @@ docker exec "$sidecar" sh -c 'grep -q "librepaper_backup_job_last_result_success
 # A later good run must recover and apply after-backup forget/prune. The
 # fixture's keep-last=1 policy makes this assertion deterministic.
 sleep 2
-psql "$LIBREPAPER_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 -c \
-	"UPDATE accounts SET display_name='Fixture retention revision' WHERE handle='fixture'"
 docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup
 docker exec "$sidecar" restic -r /var/backups/librepaper/repository --password-file /test/repository-password snapshots --json >"$work/retained-snapshots.json"
 node --input-type=module - "$work/retained-snapshots.json" <<'JS'
@@ -158,10 +156,10 @@ JS
 
 # Run backup and check concurrently. Both commands use the same profile lock;
 # both must finish successfully without an overlapping repository operation.
-docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup \
+docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup --lock-wait 30s \
 	>"$work/concurrent-backup.log" 2>&1 &
 backup_pid=$!
-docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile check
+docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile check --lock-wait 30s
 wait "$backup_pid"
 docker exec "$sidecar" sh -c 'grep -q "librepaper_backup_job_last_result_success{task=\"check\"} 1" /var/backups/librepaper/metrics/librepaper_backup.prom'
 
@@ -170,6 +168,7 @@ docker exec "${POSTGRES_CONTAINER:?}" createdb -U postgres backup_restored
 mkdir -m 0777 "$work/restic-restore"
 docker exec "$sidecar" restic -r /var/backups/librepaper/repository \
 	--password-file /test/repository-password restore latest --target /test/restic-restore
+docker exec -u 0 "$sidecar" chown -R "$(id -u):$(id -g)" /var/lib/librepaper /test/restic-restore
 cat >"$work/restore.toml" <<TOML
 [storage]
 directory = "$work/restore-data"
@@ -184,6 +183,7 @@ BACKUP_DRILL_RESTORE_URL="postgresql://postgres:drill@127.0.0.1:${POSTGRES_PORT}
 BACKUP_DRILL_SOURCE_DATA="$work/source-data" \
 BACKUP_DRILL_RESTORE_DATA="$work/restore-data" \
 	cargo test --release -p librepaper --test backup_drill_verify -- --ignored --nocapture
+docker exec -u 0 "$sidecar" chown -R 10001:65534 /var/lib/librepaper
 
 echo 'local backend acceptance passed'
 
@@ -194,7 +194,7 @@ echo 'local backend acceptance passed'
 run_remote_profile() {
 	local config="$1" port="$2"
 	local ready=0
-	docker rm -f "$sidecar" >/dev/null 2>&1 || true
+	docker rm -f -v "$sidecar" >/dev/null 2>&1 || true
 	docker run -d --name "$sidecar" "${common[@]}" \
 		--tmpfs /run/librepaper-backup:uid=10001,gid=65534,mode=0700 \
 		-v "$work:/test:rw" -v "$work/source-data:/var/lib/librepaper:rw" \
