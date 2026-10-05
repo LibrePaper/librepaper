@@ -1,15 +1,20 @@
+# syntax=docker/dockerfile:1.7
 # The image is the released binary and nothing else. LibrePaper is one static
 # musl executable with its pages and server compiled in. Browser renderer assets
 # are fetched separately from sources pinned by the embedded lock. There is no
 # toolchain to carry and nothing to assemble at start-up. By default
 # the build fetches a release archive and checks it against the release
 # checksums. `--build-arg SOURCE=local` copies a static musl binary named
-# `librepaper` (or LIBREPAPER_BINARY) from this directory instead; BuildKit
-# skips the stage it does not use.
+# `librepaper` (or LIBREPAPER_BINARY) from this directory instead. For
+# `SOURCE=checkout`, use the repository root as the build context and run
+# `make web` first so `web/dist` is ready to embed; BuildKit skips unused stages.
 #
 #   docker build --build-arg LIBREPAPER_VERSION=<compatible-tag> -t librepaper .
 #   docker build --build-arg SOURCE=local -t librepaper .
+#   make web  # from the repository root
+#   docker build -f deploy/Dockerfile --build-arg SOURCE=checkout -t librepaper .  # root context
 ARG SOURCE=release
+ARG RUST_BUILDER_IMAGE=rust:1-alpine
 
 FROM alpine:3.21 AS base
 
@@ -52,6 +57,34 @@ RUN set -eu; \
 FROM base AS local
 ARG LIBREPAPER_BINARY=librepaper
 COPY ${LIBREPAPER_BINARY} /usr/local/bin/librepaper
+RUN chmod 0755 /usr/local/bin/librepaper
+
+FROM ${RUST_BUILDER_IMAGE} AS checkout-build
+ARG TARGETARCH
+WORKDIR /src
+RUN apk add --no-cache build-base musl-dev
+COPY Cargo.toml Cargo.lock README.md assets.lock ./
+COPY .cargo ./.cargo
+COPY crates ./crates
+COPY docs/examples ./docs/examples
+COPY docs/dev/protocol ./docs/dev/protocol
+COPY web/dist ./web/dist
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+	--mount=type=cache,target=/usr/local/cargo/git \
+	--mount=type=cache,target=/src/target \
+	set -eu; \
+	case "$TARGETARCH" in \
+		amd64) target="x86_64-unknown-linux-musl" ;; \
+		arm64) target="aarch64-unknown-linux-musl" ;; \
+		*) echo "build: checkout source does not support $TARGETARCH" >&2; exit 1 ;; \
+	esac; \
+	rustup target add "$target"; \
+	cargo build --locked --release --target "$target" -p librepaper --bin librepaper; \
+	mkdir -p /out; \
+	cp "/src/target/$target/release/librepaper" /out/librepaper
+
+FROM base AS checkout
+COPY --from=checkout-build /out/librepaper /usr/local/bin/librepaper
 RUN chmod 0755 /usr/local/bin/librepaper
 
 FROM ${SOURCE}
