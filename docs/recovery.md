@@ -145,3 +145,36 @@ link works with the matching key. Check that a new login uses only recovery
 OAuth credentials. Keep the production deployment untouched until these
 checks pass. Record the snapshot ID, release, elapsed time, and result; apply
 known post-snapshot deletions before making recovered data public.
+
+## External backup alerts
+
+Grafana cannot alert when the VPS or backup scheduler is unavailable. Configure
+separate external dead-man checks for backup and repository-check jobs. Keep
+the private ping URLs in `resticprofile.toml` and the encrypted recovery packet,
+not in Git or `.env`. For Healthchecks-style URLs, use different IDs for the
+two jobs:
+
+```toml
+[[resticprofile.backup.send-before]]
+method = "HEAD"
+url = "https://hc-ping.com/<backup-id>/start"
+[[resticprofile.backup.send-after]]
+method = "HEAD"
+url = "https://hc-ping.com/<backup-id>"
+[[resticprofile.backup.send-after-fail]]
+method = "HEAD"
+url = "https://hc-ping.com/<backup-id>/fail"
+
+[[resticprofile.check.send-before]]
+method = "HEAD"
+url = "https://hc-ping.com/<check-id>/start"
+[[resticprofile.check.send-after]]
+method = "HEAD"
+url = "https://hc-ping.com/<check-id>"
+[[resticprofile.check.send-after-fail]]
+method = "HEAD"
+url = "https://hc-ping.com/<check-id>/fail"
+```
+
+Set missed-success deadlines to 36 hours for backups and 8 days for repository
+checks. Adjust them if you change the schedules.

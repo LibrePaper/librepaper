@@ -43,6 +43,12 @@ printf '%s' "$DATABASE_BACKUP_URL" | ./setup set-secret database_backup_url
 printf '%s' "$DATABASE_METRICS_URL" | ./setup set-secret database_metrics_url
 ```
 
+During a legacy socket-trust upgrade, setup may refuse `.env` values with
+quoting, escaping, interpolation, or comment syntax before changing files or
+stopping services. Keep an offline copy of the old file. Determine the exact
+value Compose used, send it to `./setup set-secret <name>` on stdin, remove
+that key from `.env`, then retry. Do not strip quotes or escapes by hand.
+
 Use TLS with `sslmode=verify-full` and separate PostgreSQL roles. The app role
 does not need schema ownership; the backup role must not be able to modify
 data; the exporter should have `pg_monitor` only. The bootstrap credential is
