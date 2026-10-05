@@ -1,6 +1,7 @@
 # The image is the released binary and nothing else. LibrePaper is one static
-# musl executable with the pages, the renderers and the server compiled in, so
-# there is no toolchain to carry and nothing to assemble at start-up. By default
+# musl executable with its pages and server compiled in. Browser renderer assets
+# are fetched separately from sources pinned by the embedded lock. There is no
+# toolchain to carry and nothing to assemble at start-up. By default
 # the build fetches a release archive and checks it against the release
 # checksums. `--build-arg SOURCE=local` copies a static musl binary named
 # `librepaper` (or LIBREPAPER_BINARY) from this directory instead; BuildKit
