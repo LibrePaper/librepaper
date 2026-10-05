@@ -283,6 +283,9 @@ TOML
 		sleep 1
 	done
 	[[ "$user_ready" == 1 ]] || { docker logs "$name" >&2; exit 1; }
+	# The server can cache the initially empty password file. Restart after
+	# create_user so the authenticated REST acceptance uses the new test account.
+	docker restart "$name" >/dev/null
 	rest_port=$(docker port "$name" 8000/tcp | head -1 | sed 's/.*://')
 	cat >"$work/rest.toml" <<TOML
 [storage]
