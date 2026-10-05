@@ -52,6 +52,7 @@ function fixture({
   mkdirSync(remote);
   mkdirSync(temp);
   const adminPasswordFile = path.join(root, 'admin-password');
+  const expectedAuthFile = path.join(root, 'expected-curl-auth');
   const exporterPasswordFile = path.join(root, 'exporter-password');
   const grafanaCountFile = path.join(root, 'grafana-count');
   const prometheusCountFile = path.join(root, 'prometheus-count');
@@ -70,6 +71,8 @@ function fixture({
   const runningConfigFile = path.join(root, 'running-librepaper.toml');
   const backupConfigFile = path.join(remote, 'resticprofile.toml');
   writeFileSync(adminPasswordFile, adminPassword);
+  const escapedAdminPassword = adminPassword.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  writeFileSync(expectedAuthFile, `user = "admin:${escapedAdminPassword}"\n`, { mode: 0o600 });
   writeFileSync(exporterPasswordFile, exporterPassword);
   if (localKitConfig) writeFileSync(localKitConfigFile, localKitConfig);
   if (backupConfig) writeFileSync(backupConfigFile, backupConfig);
@@ -279,10 +282,7 @@ done
 printf '%s\t%s\t%s\n' "$url" "$connect_timeout" "$max_time" >> "$CURL_CALLS_FILE"
 if [ -n "$config" ]; then
   [ "$(stat -c %a "$config")" = 600 ]
-  expected_password=$(cat "$ADMIN_PASSWORD_FILE")
-  escaped_password=$(printf '%s' "$expected_password" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  grep -Fq -- "user = \"admin:$escaped_password\"" "$config"
-  unset expected_password escaped_password
+  grep -Fxq -f "$EXPECTED_AUTH_FILE" "$config"
 fi
 code=200 body='' location= provider=
 case "$url" in
@@ -356,6 +356,7 @@ exit 0`);
       NODE_EXECUTABLE: process.execPath,
       REAL_SLEEP: realSleep ? '1' : '0',
       ADMIN_PASSWORD_FILE: adminPasswordFile,
+      EXPECTED_AUTH_FILE: expectedAuthFile,
       EXPORTER_PASSWORD_FILE: exporterPasswordFile,
       GRAFANA_COUNT_FILE: grafanaCountFile,
       PROMETHEUS_COUNT_FILE: prometheusCountFile,
