@@ -103,7 +103,7 @@ async fn an_uninitialized_schema_has_no_deployment_state() {
     let owner_url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").unwrap();
     let mut url = url::Url::parse(&owner_url).unwrap();
     url.query_pairs_mut()
-        .append_pair("options", &format!("-csearch_path={schema}"));
+        .append_pair("options", &format!("-c search_path={schema}"));
     let fresh = PostgresCatalog::connect(PostgresOptions::new(url.to_string()))
         .await
         .unwrap();
