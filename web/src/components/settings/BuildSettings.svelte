@@ -36,7 +36,7 @@
 
   const row = $derived(ROWS[format]);
   const scope = () => ({ origin: globalThis.location?.origin || "", user: userId });
-  let preference = $state(defaults(format));
+  let preference = $state(defaults());
   $effect.pre(() => { preference = read(scope(), format); });
 
   function choose(value) {
