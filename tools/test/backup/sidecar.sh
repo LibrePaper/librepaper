@@ -156,10 +156,10 @@ JS
 
 # Run backup and check concurrently. Both commands use the same profile lock;
 # both must finish successfully without an overlapping repository operation.
-docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup --lock-wait 30s \
+docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile --lock-wait 30s backup \
 	>"$work/concurrent-backup.log" 2>&1 &
 backup_pid=$!
-docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile check --lock-wait 30s
+docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile --lock-wait 30s check
 wait "$backup_pid"
 docker exec "$sidecar" sh -c 'grep -q "librepaper_backup_job_last_result_success{task=\"check\"} 1" /var/backups/librepaper/metrics/librepaper_backup.prom'
 
