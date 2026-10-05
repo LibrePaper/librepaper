@@ -52,6 +52,5 @@ trusted_networks = ["172.29.0.0/16"]
 # [server]
 # address = "0.0.0.0:8080"
 
-# Optional. Used only when the monitoring profile is enabled.
-# [metrics]
-# address = "0.0.0.0:9091"
+[metrics]
+address = "0.0.0.0:9091"

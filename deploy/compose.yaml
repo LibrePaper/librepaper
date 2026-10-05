@@ -1,6 +1,6 @@
 # A whole small deployment: PostgreSQL, LibrePaper, and a proxy that obtains
 # certificates on-demand. The two origins come from config.toml, and the proxy
-# learns them from the server (see Caddyfile), so Compose itself needs no
+# learns them from the server (see caddy/Caddyfile), so Compose itself needs no
 # settings except the config file.
 #
 #   docker compose up -d
@@ -8,8 +8,8 @@
 # The database is reachable only through a Unix socket shared with the
 # application container, which is why it needs no password and no network.
 #
-# Monitoring is optional: enable with docker compose --profile monitoring up -d,
-# or export COMPOSE_PROFILES=monitoring or add it to an optional .env.
+# Monitoring starts with the rest of the stack and is reachable only through
+# the authenticated application proxy or on the private Compose network.
 
 name: librepaper
 
@@ -85,13 +85,12 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy:/etc/caddy:ro
       - caddy-data:/data
       - caddy-config:/config
     networks: [edge]
 
   prometheus:
-    profiles: [monitoring]
     image: prom/prometheus:v3.15.0
     restart: unless-stopped
     logging: *bounded-logs
@@ -114,7 +113,6 @@ services:
       retries: 3
 
   grafana:
-    profiles: [monitoring]
     image: grafana/grafana:13.2.3
     restart: unless-stopped
     logging: *bounded-logs
@@ -150,7 +148,6 @@ services:
     networks: [internal, edge]
 
   node-exporter:
-    profiles: [monitoring]
     image: prom/node-exporter:v1.12.1
     restart: unless-stopped
     logging: *bounded-logs
@@ -171,7 +168,6 @@ services:
     networks: [internal]
 
   postgres-exporter:
-    profiles: [monitoring]
     image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
     restart: unless-stopped
     logging: *bounded-logs

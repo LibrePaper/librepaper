@@ -24,7 +24,7 @@ Before the first start:
 
 ### Remote database
 
-Delete the `postgres` service in `compose.yaml`, with the `depends_on` and `pgsocket` lines under `librepaper`, and set `storage.database_url` in `config.toml` to the full URL. Add `?sslmode=verify-full` for a managed service.
+Delete the `postgres` and `postgres-exporter` services in `compose.yaml`, with the `depends_on` and `pgsocket` lines under `librepaper`, and set `storage.database_url` in `config.toml` to the full URL. The exporter is configured for the bundled database role and socket. Add `?sslmode=verify-full` for a managed service.
 
 ### Volumes
 
@@ -34,12 +34,10 @@ Delete the `postgres` service in `compose.yaml`, with the `depends_on` and `pgso
 
 ### Monitoring
 
-```sh
-docker compose --profile monitoring up -d   # Prometheus, Grafana, exporters
-```
-
 - Grafana at `https://<app-origin>/admin/monitoring/`, user `admin`, password `admin` until changed at first login.
-- `COMPOSE_PROFILES=monitoring` in the shell or an optional `.env` makes the profile the default.
+- Prometheus, Grafana and exporters start with `docker compose up -d`.
+- Prometheus and the exporters stay on the private Compose network. Grafana is
+  available through the authenticated app proxy at the path below.
 - Prometheus keeps 30 days, capped at 8 GB.
 
 ### Upgrade
