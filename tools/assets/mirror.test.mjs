@@ -323,7 +323,7 @@ try {
   checkRun(1, /directory does not match the SHA-256 of MANIFEST\.json/);
   buildCheckTest();
   rmSync(join(release, 'MANIFEST.json'));
-  checkRun(1, /MANIFEST\.json is missing/);
+  checkRun(1, /is missing MANIFEST\.json/);
   mirrorTest = mkdtempSync(join(directory, 'empty-'));
   checkRun(1, /no release directories/);
 
