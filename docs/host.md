@@ -7,12 +7,11 @@ title: "Self-hosting"
 
 ## Docker Compose
 
-The kit in `tools/deploy/docker/` runs PostgreSQL, LibrePaper and Caddy; you write one file.
+The kit in `tools/deploy/docker/` runs PostgreSQL, LibrePaper and Caddy. You edit one file, `config.toml`.
 
 ```sh
 cd tools/deploy/docker
-cp config.toml.example config.toml
-# edit [origins] and one [auth.*] table
+# edit config.toml: [origins] and one [auth.*] table
 docker compose up -d
 ```
 
@@ -24,19 +23,23 @@ Before the first start:
 
 ### Remote database
 
-Set `storage.database_url` in `config.toml` to the full database URL and use the remote compose file:
-
-```sh
-docker compose -f compose.remote.yaml up -d
-```
-
-For a managed service, add `?sslmode=verify-full` to the URL.
+Delete the `postgres` service in `compose.yaml`, with the `depends_on` and `pgsocket` lines under `librepaper`, and set `storage.database_url` in `config.toml` to the full URL. Add `?sslmode=verify-full` for a managed service.
 
 ### Volumes
 
 - `postgres`: the database (documents, update log, comments)
 - `data`: immutable objects and the secrets that keep sessions and share links valid. Back it up even with S3.
 - `caddy-data`: certificates
+
+### Monitoring
+
+```sh
+docker compose --profile monitoring up -d   # Prometheus, Grafana, exporters
+```
+
+- Grafana at `https://<app-origin>/admin/monitoring/`, user `admin`, password `admin` until changed at first login.
+- `COMPOSE_PROFILES=monitoring` in the shell or an optional `.env` makes the profile the default.
+- Prometheus keeps 30 days, capped at 8 GB.
 
 ### Upgrade
 
