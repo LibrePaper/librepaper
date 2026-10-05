@@ -7,22 +7,30 @@ title: "Self-hosting"
 
 ## Docker Compose
 
-The kit in `tools/deploy/docker/` runs PostgreSQL, LibrePaper and Caddy; monitoring is optional.
-
-### Start
+The kit in `tools/deploy/docker/` runs PostgreSQL, LibrePaper and Caddy; you write one file.
 
 ```sh
 cd tools/deploy/docker
-cp .env.example .env               # LIBREPAPER_VERSION, DOMAIN, ACME_EMAIL, POSTGRES_PASSWORD, OAuth pair
-cp config.toml.example config.toml # public origins, [auth.*], [access], [limits], [retention]
-docker compose up -d --build
+cp config.toml.example config.toml
+# edit [origins] and one [auth.*] table
+docker compose up -d
 ```
 
 Before the first start:
-- `DOMAIN` and `DOCS_DOMAIN` (default `docs.DOMAIN`) both need DNS records pointing here first: Caddy gets a certificate for each over HTTP-01. Keep them separate sites: published documents are code. Any other `Host` gets 421.
-- Sign-in needs at least one `[auth.github]` or `[auth.google]` table, with both values in `.env`. Callbacks: `https://$DOMAIN/auth/callback` (GitHub), `https://$DOMAIN/auth/callback/google` (Google).
+- Both origin names need DNS records pointing here before the first start: Caddy gets a certificate for each on first request.
+- OAuth callback URLs: `https://<app-origin>/auth/callback` (GitHub), `https://<app-origin>/auth/callback/google` (Google).
 - `[access]`: `publishers` and `commenters` take `["any"]` or GitHub logins, verified Google addresses and `@domain` entries.
-- `[retention]`: expiration is off by default; set a lifetime if strangers can publish.
+- `[retention]` is off by default.
+
+### Remote database
+
+Set `storage.database_url` in `config.toml` to the full database URL and use the remote compose file:
+
+```sh
+docker compose -f compose.remote.yaml up -d
+```
+
+For a managed service, add `?sslmode=verify-full` to the URL.
 
 ### Volumes
 
@@ -30,24 +38,12 @@ Before the first start:
 - `data`: immutable objects and the secrets that keep sessions and share links valid. Back it up even with S3.
 - `caddy-data`: certificates
 
-### Monitoring
+### Upgrade
 
 ```sh
-# .env
-COMPOSE_FILE=compose.yaml:compose.monitoring.yaml
-POSTGRES_EXPORTER_PASSWORD=...   # openssl rand -hex 32
-GRAFANA_ADMIN_PASSWORD=...       # openssl rand -hex 32
+# Edit LIBREPAPER_VERSION in compose.yaml or export it
+LIBREPAPER_VERSION=v0.0.10 docker compose up -d --build
 ```
-
-```sh
-docker compose up -d
-docker compose exec -T postgres sh -s < monitoring-user.sh   # existing database only: create the metrics role
-```
-
-- Grafana: `https://$DOMAIN/admin/monitoring/`, user `admin`. No other monitoring port is published.
-- Rotate the exporter password: change `.env`, `docker compose up -d postgres postgres-exporter`, rerun `monitoring-user.sh`.
-- Rotate the Grafana password in Grafana (Administration, Users and access, Users, admin), then copy it to `.env`: the variable only seeds a fresh volume.
-- Prometheus keeps 30 days, capped at 8 GB (not a filesystem quota; leave headroom).
 
 ### Backups
 
@@ -57,14 +53,6 @@ docker compose exec librepaper librepaper admin backup \
 ```
 
 Restore: see [Storage and backup](#storage-and-backup).
-
-### Upgrade
-
-```sh
-# .env: LIBREPAPER_VERSION=<tag>   (downloaded and checksum-verified)
-# or, for a fork: copy a static musl binary here as ./librepaper and set LIBREPAPER_SOURCE=local
-docker compose up -d --build
-```
 
 ## Configuration
 
@@ -80,11 +68,31 @@ Server and admin commands use one TOML file. `admin serve` defaults to
 Missing or empty references, invalid keys/types, and old server-setting flags
 fail. There is no interpolation or automatic application-setting override.
 
-The configuration below is the `librepaper.org` production file, included
-directly from [tools/deploy/production.toml][production-config]. Adapt its
-domains, credentials, storage, and policies before use.
+Example configuration:
 
-<!-- include: tools/deploy/production.toml -->
+```toml
+[server]
+address = "0.0.0.0:8080"
+local_companion = false
+
+[origins]
+app = "https://app.example.org"
+docs = "https://docs.example.org"
+
+[storage]
+directory = "/var/lib/librepaper"
+database_url = { env = "LIBREPAPER_DATABASE_URL" }
+database_connections = 20
+fsync = true
+object_store = "filesystem"
+
+[auth.github]
+client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }
+client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }
+
+[proxy]
+trusted_networks = ["172.29.0.0/16"]
+```
 
 Use these commands to check or inspect resolved settings. `check` has no
 startup side effects or database connection; `show` includes defaults and
@@ -117,11 +125,6 @@ librepaper admin config show --config /etc/librepaper/config.toml
    that preserves `Host`, appends the actual client address to
    `X-Forwarded-For`, and trusts only the proxy network.
 
-4. For S3-compatible storage, edit the existing `[storage]` table and enable
-   the commented `[storage.s3]` example; do not create a duplicate table.
-   Credentials come only from its references; ambient AWS credentials are
-   not used.
-
 ## Storage and backup
 
 Use the server config for backups. A restore config must identify the target
@@ -141,30 +144,7 @@ been restored is a guess.
 See [cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md)
 for resource defaults and backup limitations.
 
-## Moderation
-
-Moderation uses the server config. Database access is the operator
-authorization boundary. Every command needs an actor and reason; the
-`moderation_audit` table records actor, timestamp, action, target, and reason.
-
-| Command | Effect |
-| --- | --- |
-| `block-account` | Revokes sessions and denies access and writes. |
-| `hide-project` | Keeps data but blocks document, asset, source, history, export, and socket access. |
-
-Open sockets recheck authorization every two seconds; frames already in flight
-may still arrive.
-
-```sh
-librepaper admin moderate block-account github-handle --config /etc/librepaper/config.toml \
-  --actor "on-call@example.org" --reason "automated abuse investigation"
-librepaper admin moderate hide-project abusive-project --config /etc/librepaper/config.toml \
-  --actor "on-call@example.org" --reason "contains abusive material"
-```
-
 ## Privacy
 
 [Privacy duties for operators](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/privacy-operators.md)
 covers notices and data requests.
-
-[production-config]: https://github.com/LibrePaper/librepaper/blob/main/tools/deploy/production.toml
