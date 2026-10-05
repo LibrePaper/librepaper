@@ -21,6 +21,7 @@ docker image inspect "$app_image" >/dev/null 2>&1 || {
 work=$(mktemp -d /tmp/librepaper-deploy-install.XXXXXX)
 case "$work" in /tmp/librepaper-deploy-install.*) ;; *) echo 'unsafe temporary path' >&2; exit 2;; esac
 suffix="${work##*.}"
+suffix="${suffix,,}"
 fresh_project="lp-install-fresh-$suffix"
 legacy_project="lp-install-legacy-$suffix"
 fresh_env="$work/fresh.env"
@@ -114,7 +115,7 @@ migrate = false
 publishers = ["any"]
 commenters = ["any"]
 TOML
-	chmod 0600 "$path"
+	chmod 0444 "$path"
 }
 
 write_app_override() {
@@ -234,7 +235,7 @@ services:
     volumes:
       - postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -q -U librepaper -d librepaper"]
+      test: ["CMD-SHELL", "pg_isready -q -h 127.0.0.1 -U librepaper -d librepaper"]
       interval: 2s
       timeout: 2s
       retries: 30

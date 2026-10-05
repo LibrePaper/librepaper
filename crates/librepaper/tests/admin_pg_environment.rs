@@ -240,7 +240,8 @@ fn admin_serve_refuses_to_replace_missing_key_for_existing_deployment() {
         format!(
             "[server]\naddress = \"127.0.0.1:0\"\nmigrate = false\n\
              [storage]\ndatabase_url = {{ file = \"database-url\" }}\n\
-             directory = {:?}\n",
+             directory = {:?}\n\
+             [access]\npublishers = [\"any\"]\ncommenters = [\"anyone\"]\n",
             deployment
         ),
     )
