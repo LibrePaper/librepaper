@@ -146,6 +146,11 @@ method = "HEAD"
 url = "http://127.0.0.1:8765/check/failure"
 TOML
 
+cat >"$workdir/librepaper.toml" <<'TOML'
+[origins]
+app = "https://paper.example"
+TOML
+
 cat >"$workdir/malformed.toml" <<'TOML'
 token = "synthetic-secret-must-not-be-logged"
 [resticprofile
@@ -193,7 +198,7 @@ PY
 # independently visible config-error sentinel.
 if docker run --rm \
 	--mount "type=volume,source=$backup_volume,target=/var/backups/librepaper" \
-	--mount "type=bind,source=$workdir/malformed.toml,target=/etc/librepaper/config.toml,readonly" \
+	--mount "type=bind,source=$workdir/malformed.toml,target=/etc/resticprofile/resticprofile.toml,readonly" \
 	--entrypoint /usr/local/bin/librepaper-backup-entrypoint \
 	"$BACKUP_TEST_IMAGE" >"$workdir/malformed.log" 2>&1; then
 	fail "malformed config unexpectedly started"
@@ -213,7 +218,8 @@ health="$(docker image inspect --format '{{if or (not .Config.Healthcheck) (eq (
 docker run -d --name "$container" \
 	--mount "type=volume,source=$backup_volume,target=/var/backups/librepaper" \
 	--mount "type=volume,source=$repo_volume,target=/var/backups/restic-repository" \
-	--mount "type=bind,source=$workdir/config.toml,target=/etc/librepaper/config.toml,readonly" \
+	--mount "type=bind,source=$workdir/config.toml,target=/etc/resticprofile/resticprofile.toml,readonly" \
+	--mount "type=bind,source=$workdir/librepaper.toml,target=/etc/librepaper/librepaper.toml,readonly" \
 	--mount "type=bind,source=$workdir/restic-wrapper,target=/tmp/librepaper-backup-test-restic,readonly" \
 	--mount "type=bind,source=$workdir/receiver.py,target=/tmp/librepaper-backup-test-receiver.py,readonly" \
 	--tmpfs /run/librepaper-backup:rw,uid=10001,gid=65534,mode=0700 \
@@ -246,7 +252,8 @@ grep -F "/var/backups/librepaper/current" "$workdir/merged-profile.txt" >/dev/nu
 	|| fail "operator source list was not merged"
 grep -F "max-unused" "$workdir/merged-profile.txt" >/dev/null \
 	|| fail "base retention policy was not included"
-if grep -F "/etc/librepaper/config.toml" "$workdir/merged-profile.txt" >/dev/null \
+if grep -F "/etc/librepaper/librepaper.toml" "$workdir/merged-profile.txt" >/dev/null \
+	|| grep -F "/etc/resticprofile/resticprofile.toml" "$workdir/merged-profile.txt" >/dev/null \
 	|| grep -F "/var/lib/librepaper/secrets" "$workdir/merged-profile.txt" >/dev/null; then
 	fail "operator source list did not replace the base source list"
 fi

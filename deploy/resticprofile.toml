@@ -1,0 +1,8 @@
+# Optional operator configuration for the backup sidecar.
+# Add native resticprofile tables here to enable scheduled backups, for example:
+#
+# [resticprofile]
+# repository = "s3:https://example.invalid/backups"
+#
+# Keep credentials in mounted secret files or environment variables. This file
+# intentionally ships without a [resticprofile] table, so backups stay idle.

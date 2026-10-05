@@ -1,6 +1,6 @@
-# This file is owned by the image. Operator values come from the optional
-# [resticprofile] table in config.toml and take precedence where supported.
-includes = ["/etc/librepaper/config.toml"]
+# This file is owned by the image. Operator backup settings live in the
+# separately mounted resticprofile.toml.
+includes = ["/etc/resticprofile/resticprofile.toml"]
 
 [global]
 scheduler = "crontab:-:/run/librepaper-backup/crontab"
@@ -19,8 +19,8 @@ schedule-permission = "user"
 extended-status = true
 host = "librepaper"
 tag = ["librepaper"]
-source = ["/var/backups/librepaper/current", "/etc/librepaper/config.toml", "/var/lib/librepaper/secrets"]
-run-before = "set -eu; librepaper-backup-status start backup; rm -rf /var/backups/librepaper/current; librepaper admin backup --config /etc/librepaper/config.toml /var/backups/librepaper/current"
+source = ["/var/backups/librepaper/current", "/etc/librepaper/librepaper.toml", "/etc/resticprofile/resticprofile.toml", "/var/lib/librepaper/secrets"]
+run-before = "set -eu; librepaper-backup-status start backup; rm -rf /var/backups/librepaper/current; librepaper admin backup --config /etc/librepaper/librepaper.toml /var/backups/librepaper/current"
 run-after = "librepaper-backup-status success backup"
 run-after-fail = "librepaper-backup-status failure backup"
 run-finally = "rm -rf /var/backups/librepaper/current"

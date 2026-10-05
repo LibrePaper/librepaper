@@ -210,7 +210,7 @@ pub(crate) enum ConfigCommand {
     },
 }
 
-const DEFAULT_SERVER_CONFIG: &str = "/etc/librepaper/config.toml";
+const DEFAULT_SERVER_CONFIG: &str = "/etc/librepaper/librepaper.toml";
 
 #[derive(Subcommand, Clone, Debug)]
 pub(crate) enum ModerationCommand {

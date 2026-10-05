@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-CONFIG=${LIBREPAPER_BACKUP_CONFIG:-/etc/librepaper/config.toml}
+CONFIG=${LIBREPAPER_BACKUP_CONFIG:-/etc/resticprofile/resticprofile.toml}
 PROFILE=${LIBREPAPER_BACKUP_PROFILE:-/etc/resticprofile/profiles.toml}
 CRONTAB=${LIBREPAPER_BACKUP_CRONTAB:-/run/librepaper-backup/crontab}
 validate_only=${LIBREPAPER_BACKUP_VALIDATE_ONLY:-0}
@@ -49,7 +49,7 @@ enabled)
 		;;
 	legacy)
 		[ "$validate_only" = 1 ] || librepaper-backup-status config-error || true
-		echo "backup startup: legacy [backup] configuration is unsupported" >&2
+		echo "backup startup: legacy [backup] configuration is unsupported; configure resticprofile.toml" >&2
 		exit 1
 		;;
 	wrong-type)

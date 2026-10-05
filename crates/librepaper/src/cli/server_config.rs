@@ -72,7 +72,6 @@ pub(crate) struct ResolvedConfig {
     pub(crate) asset_mirror: String,
     pub(crate) typst_fonts: Option<String>,
     pub(crate) metrics_address: Option<SocketAddr>,
-    pub(crate) resticprofile_configured: bool,
     pub(crate) log_filter: String,
     pub(crate) config: Configuration,
     sources: BTreeMap<String, String>,
@@ -106,7 +105,6 @@ impl fmt::Debug for ResolvedConfig {
             .field("asset_mirror", &self.asset_mirror)
             .field("typst_fonts", &self.typst_fonts)
             .field("metrics_address", &self.metrics_address)
-            .field("resticprofile_configured", &self.resticprofile_configured)
             .field("log_filter", &self.log_filter)
             .field("config", &self.config)
             .finish()
@@ -137,7 +135,6 @@ struct Raw {
     assets: Assets,
     metrics: Metrics,
     proxy: Proxy,
-    resticprofile: Option<toml::Value>,
     demo: Demo,
     logging: Logging,
 }
@@ -368,14 +365,12 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
     }
     if v.get("backup").is_some() {
         return Err(
-            "[backup] is no longer supported; configure the backup sidecar with [resticprofile]"
+            "[backup] is no longer supported; configure backup settings in /etc/resticprofile/resticprofile.toml"
                 .into(),
         );
     }
-    if let Some(profile) = v.get("resticprofile") {
-        if !profile.is_table() {
-            return Err("configuration section resticprofile must be a table".into());
-        }
+    if v.get("resticprofile").is_some() {
+        return Err("[resticprofile] belongs in /etc/resticprofile/resticprofile.toml; move backup settings out of the application configuration".into());
     }
     table(
         v,
@@ -391,7 +386,6 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "assets",
             "metrics",
             "proxy",
-            "resticprofile",
             "demo",
             "logging",
         ],
@@ -551,7 +545,6 @@ pub(crate) fn load_with_postgres_env(
     postgres_env: Option<&PostgresEnvSnapshot>,
 ) -> Result<ResolvedConfig, String> {
     let (raw, base) = read_raw(path)?;
-    let resticprofile_configured = raw.resticprofile.is_some();
     let mut r = Resolver {
         base: &base,
         sources: BTreeMap::new(),
@@ -719,7 +712,6 @@ pub(crate) fn load_with_postgres_env(
         asset_mirror,
         typst_fonts,
         metrics_address,
-        resticprofile_configured,
         log_filter,
         config,
         sources: r.sources,
@@ -1065,18 +1057,6 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "trusted_networks",
         &array(&proxies),
     );
-    section(&mut out, "resticprofile");
-    value(
-        &mut out,
-        &c.sources,
-        "resticprofile",
-        "configured",
-        &quote(if c.resticprofile_configured {
-            "present"
-        } else {
-            "none"
-        }),
-    );
     section(&mut out, "demo");
     optional_num(
         &mut out,
@@ -1258,36 +1238,14 @@ mod tests {
     }
 
     #[test]
-    fn resticprofile_accepts_quoted_and_implicit_tables_but_show_redacts_contents() {
-        for table in [
-            "[ \"resticprofile\" ]\nrepository = \"s3:https://secret.example/bucket\"\npassword = \"profile-secret\"\n",
-            "[resticprofile.backup]\nschedule = \"daily\"\npassword = \"profile-secret\"\n",
-        ] {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("config.toml");
-            std::fs::write(&path, table).unwrap();
-
-            let config = load(&path).unwrap();
-            assert!(config.resticprofile_configured);
-            let shown = show_resolved(&config);
-            let debug = format!("{config:?}");
-            assert!(shown.contains("configured = \"present\""), "{shown}");
-            assert!(!shown.contains("secret.example"));
-            assert!(!shown.contains("profile-secret"));
-            assert!(!debug.contains("secret.example"));
-            assert!(!debug.contains("profile-secret"));
-            assert!(toml::from_str::<toml::Value>(&shown).is_ok());
-        }
-    }
-
     #[test]
-    fn resticprofile_requires_a_table_and_legacy_backup_is_rejected() {
+    fn backup_settings_are_rejected_from_application_config() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
 
-        std::fs::write(&path, "resticprofile = \"profile-secret\"\n").unwrap();
+        std::fs::write(&path, "[resticprofile]\nrepository = \"profile-secret\"\n").unwrap();
         let error = load(&path).unwrap_err();
-        assert!(error.contains("resticprofile must be a table"), "{error}");
+        assert!(error.contains("/etc/resticprofile/resticprofile.toml"), "{error}");
         assert!(!error.contains("profile-secret"));
 
         std::fs::write(&path, "[backup]\nwarning_count = 2\n").unwrap();
@@ -1317,8 +1275,6 @@ mod tests {
         let loaded = load(&p).unwrap();
         assert_eq!(loaded.address.port(), 8080);
         assert_eq!(loaded.storage.database_url, "postgresql:///librepaper");
-        assert!(!loaded.resticprofile_configured);
-        assert!(show_resolved(&loaded).contains("configured = \"none\""));
         let scratch_mb = Configuration::default()
             .pending_scratch_bytes
             .div_ceil(1024 * 1024);
