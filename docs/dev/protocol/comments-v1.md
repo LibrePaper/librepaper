@@ -1,250 +1,85 @@
 # Bounded comment transport (`librepaper.comments.v1`)
 
-How a comment collection of any size is read, over HTTP, over the room
-socket, by an agent and by `librepaper export`, without any consumer ever
-assembling the whole thing.
+Comments and replies use bounded HTTP pages plus a room socket for the first
+page and live events. There is no endpoint or frame that returns the whole
+collection. `librepaper export` exports project source and assets; it does not
+export comments.
 
-This replaces the whole-snapshot protocol: the `hello` frame that carried
-every comment, the `{"type":"comments"}` broadcast that restated every
-comment, `Room::comments()`, `Room::snapshot_for()`,
-`room::comments::load()` and the 16 MiB `COMMENT_SNAPSHOT_BYTES_MAX` read
-guard that refused a collection larger than one process wanted to hold.
-None of those exist any more. There is no compatibility path: this is an
-unreleased protocol change and every consumer in the tree was moved.
+## HTTP pages
 
-This is a transport change only. There is no admission limit on comments or
-replies today; whether to add one is a separate product decision.
+- `GET /api/documents/{slug}/comments?cursor=&limit=` reads annotations.
+- `GET /api/documents/{slug}/comments/{comment_id}/replies?cursor=&limit=`
+  reads one thread's replies.
+- Both responses include `version: 1`, `protocol: "librepaper.comments.v1"`,
+  `complete`, `next_cursor`, and `oversize`. Annotation pages also include
+  authoritative `state` counts (`total`, `open`, `replies`) plus a `revision`;
+  reply pages include `comment_id`, `replies`, and the thread `total`.
+- An annotation page includes at most ten replies per comment by default.
+  Each comment has `reply_total` and `reply_cursor` when more replies exist.
+  Thread pages default to 50 replies.
+- `complete` is determined by a bounded sizing query, not by whether a page is
+  short. `next_cursor` is null only when the traversal is complete.
 
-## 1. Pages and cursors
+| Limit | Value |
+|---|---:|
+| Annotation page default / maximum | 50 / 200 rows |
+| Replies previewed per annotation | 10 |
+| Thread page default / maximum | 50 / 200 rows |
+| Encoded page content budget | 512 KiB |
 
-Two independently bounded traversals.
+If the first row alone exceeds the byte budget, the server returns that row
+and sets `oversize: true`; this keeps the rest of the traversal reachable.
+The limit is on transport page size, not on how many comments or replies a
+document may store. Widths are sized before full rows are fetched; only rows
+that fit are loaded, except for the one-row oversize case.
 
-**Annotations** are ordered by `(created_at, id)` ascending, which is the
-`annotations_timeline` index and is stable: neither column is ever
-rewritten. `id` is the deterministic tie-breaker, and it is load-bearing:
-several comments written in one transaction share `now()` to the
-microsecond.
+## Cursors and consistency
 
-**Replies** of one thread are ordered by `(created_at, id)` over
-`replies_timeline`, cursored per thread. A thread with a hundred thousand
-replies costs one reply page, not one annotation page: the annotation page
-carries at most `REPLY_PREVIEW` replies per comment and a per-thread
-cursor for the rest.
+- Annotation and reply order is `(created_at, id)` ascending. The stable ID
+  tie-breaker handles rows with equal timestamps.
+- A cursor is base64url JSON containing protocol version, document ID,
+  optional thread ID, viewer option key, timestamp in microseconds, and row
+  ID. It binds a position to its document, thread, and suggestion visibility.
+- Authorization is checked on every request before the cursor is decoded. A
+  cursor grants no access by itself.
+- Each page's sizing and row reads share a short repeatable-read transaction.
+  No transaction or snapshot is held across page requests; this is a bounded
+  traversal, not a point-in-time snapshot.
+- Rows do not move in the ordering, so keyset continuation does not repeat a
+  returned row. Concurrent creates, deletes, edits, and resolution changes
+  can affect later pages. `state.revision` lets clients detect collection
+  changes between reads; it does not freeze the traversal.
 
-A cursor is base64url of
+## Room socket
 
-```json
-{"v":1,"d":"<document uuid>","t":"<thread uuid>"|null,"o":"<options hash>",
- "at":<microseconds since the epoch>,"id":"<row uuid>"}
-```
+- After registering a socket as a subscriber, the server sends
+  `{"type":"hello","comments":[...first page...],"state":{...}}`.
+- Individual mutations are sent as bounded `comment`, `reply`, `resolve`,
+  `delete`, `refine`, `accept`, or `reject` events. Events carry viewer
+  specific state counts.
+- `comments-changed` carries updated state counts but no comment rows. Clients
+  re-read pages when an event describes a batch or other change that cannot
+  be represented by a single row event.
+- `attachments` events re-anchor comments for editors and are split into
+  batches of at most 200 entries.
 
-and is refused unless every one of `v`, `d`, `t` and `o` matches the
-request it is presented with. `o` is a hash of the query options that
-change which rows are eligible -- today just `suggestions`, whether the
-caller may see `kind='suggestion'` rows. A cursor is a position, not a
-capability: authorization runs in full on every page request, before the
-cursor is even decoded, so a cursor lifted from another session, another
-document or another thread buys nothing.
+The browser initially holds the first page and fetches more only on request.
+It keeps counts from `state`, deduplicates overlapping live events by comment
+ID, and can refresh the pages already loaded after `comments-changed` or a
+new `hello`. Refresh is capped at eight pages; beyond that, the loaded list
+remains partial. A failed page request leaves loaded comments visible and
+offers retry.
 
-## 2. Row and byte bounds
+## Agent reads
 
-| Bound | Value | Where |
-|---|---|---|
-| `COMMENT_PAGE_DEFAULT` | 50 comments | `room/comments.rs` |
-| `COMMENT_PAGE_MAX` | 200 comments | requested `limit` is clamped |
-| `REPLY_PREVIEW` | 10 replies per comment in an annotation page | |
-| `THREAD_PAGE_DEFAULT` / `THREAD_PAGE_MAX` | 50 / 200 replies | thread route |
-| `PAGE_BYTES_MAX` | 512 KiB of encoded content per page | both |
+`document_read` stores an immutable source view. Comment operations read the
+live catalogue and retain their own optimistic-concurrency checks. An agent
+`thread` query returns a bounded page with `complete` and `next_cursor`; the
+result envelope carries `comment_revision`. Continuation cursors bind to that
+revision, so a changed collection requires a fresh query. `comment_version`
+is based on the annotation row, total reply count, and newest reply timestamp;
+it does not depend on the number of replies in a page.
 
-Rows are not fetched and then measured. A page is chosen in two steps:
-
-1. a *sizing* query reads `(created_at, id, octet_length-sum)` for up to
-   `limit` candidate rows. That result is bounded by construction,
-   200 rows of three fixed-width values -- whatever the rows contain.
-2. the byte budget is spent over that prefix, and only the rows that fit
-   are read in full.
-
-So a page never materializes a row it is going to discard. The existing
-field sizes this accounts for are the ones with no server-side ceiling on
-already-stored data: `body`, `exact`, `prefix`, `suffix` and the three
-`rendered_*` columns.
-
-**One row always comes back.** A single stored comment can exceed 512 KiB
-on its own -- nothing ever refused one -- and a page that returned nothing
-would make the rest of the collection unreachable. So a page that cannot
-fit even its first row returns exactly that row and sets `"oversize":
-true`. Peak per-page memory is therefore `PAGE_BYTES_MAX` plus one row,
-not `PAGE_BYTES_MAX`.
-
-## 3. Consistency during concurrent change
-
-**The contract: a bounded keyset traversal, not a point-in-time
-snapshot.** No transaction, connection or Postgres snapshot is held across
-a page boundary. Each page sizes and fetches rows in a short repeatable-read
-transaction, so concurrent edits or deletions cannot invalidate its memory
-estimate. The connection is returned before the response is written.
-
-What that guarantees, over the whole traversal:
-
-- a row that existed when the traversal began and still exists when it
-  ends is returned **exactly once**;
-- no row is ever returned twice, at a page boundary or anywhere else,
-  because the cursor is a strict `>` on an ordering no row ever moves
-  within;
-- a row **created** during the traversal can be returned if it becomes
-  visible ahead of the cursor before the final page is read. Creation time
-  is a transaction timestamp, not a commit-order guarantee; concurrent
-  creations are not guaranteed to appear in this traversal;
-- a row **deleted** during the traversal simply stops appearing;
-- a row **edited** or **resolved** during the traversal is returned in
-  whatever state the page that reaches it read. `created_at` does not
-  change, so the edit cannot move the row across a boundary.
-
-That is weaker than a snapshot and the protocol says so out loud rather
-than pretending otherwise: every page carries a `state` block with the
-authoritative `total`, `open`, `replies` counts and a `revision` token
-over them plus `max(updated_at)` of the document's annotations and
-replies. A client that sees `revision` change between pages knows the
-collection moved under it; what it does about that is in §5.
-
-`complete` is explicit and is never inferred from a short page: it is
-true exactly when the sizing query proved there is no further row.
-
-## 4. Live events and the page traversal
-
-The room socket is the invalidation channel; it is not a second copy of
-the collection.
-
-- `hello` carries the **first page** plus `state`, and is sent *after*
-  the socket is registered as a subscriber. Every mutation committed from
-  that instant on is relayed as its own bounded event, so the handover
-  from "loading pages" to "live" cannot drop one: a create that races page
-  1 arrives either in a later page or as a `comment` event, and the client
-  keys on comment id, so the overlap is a no-op rather than a duplicate.
-- the per-mutation events (`comment`, `reply`, `resolve`, `delete`,
-  `refine`, `accept`, `reject`) name one comment or one reply and carry
-  viewer-specific authoritative `state` counts, including mutations outside
-  the browser's loaded prefix.
-- the old `{"type":"comments", "comments":[...everything...]}` restatement,
-  which an agent's multi-item suggestion batch sent, is now
-  `{"type":"comments-changed","state":{...}}`. It says the collection moved
-  and how large it is; it carries no rows.
-- `{"type":"attachments"}` re-anchoring frames are chunked at
-  `ATTACHMENT_FRAME_MAX` (200) entries.
-
-## 5. What the browser keeps
-
-The reader holds a **prefix** of the collection: page 1 from `hello`, and
-whatever further pages the reader asked for by pressing *Load more*.
-Nothing drains pages automatically, and a thread's replies past the
-preview are fetched by *Show more replies* on that card.
-
-- counts come from `state`, never from `list.length`, so the panel header
-  says `7 open · 412 total · 50 loaded` without having loaded 412 rows.
-- a failed page request changes nothing on screen: the already-visible
-  comments stay, and an inline error with a *Retry* action appears under
-  the list.
-- the four states are distinguished: `loading` (nothing yet),
-  `empty` (`total == 0`), `partial` (`complete == false`) and
-  `complete`.
-- every request carries a monotonic generation and the slug it was issued
-  for. A response whose generation is stale, or whose slug is not the one
-  currently open, is dropped rather than applied. (Document switch is a
-  page reload in this client, but the guard is cheap and the reload is
-  asynchronous.)
-- on `comments-changed`, or on a reconnect that delivers a fresh `hello`,
-  the client re-reads from page 1 forward over as many pages as it
-  currently holds, capped at `REFRESH_PAGES_MAX` (8). Beyond the cap it
-  truncates and shows itself as partial rather than silently claiming to
-  hold the rest.
-
-## 6. Consumers and export
-
-The companion's `librepaper export DOCUMENT DIRECTORY` command exports a project
-snapshot (source and assets); it does not traverse or export comments. The
-HTTP comment pages and room events described above are the current transport
-for clients that need to read annotations. A client can traverse those pages
-using the cursor and consistency rules in §§1–5, but there is no built-in
-Markdown, JSON-LD, or response-to-reviewers exporter.
-
-## 7. Agents
-
-`document_read` captures an immutable **source** view -- tree, texts,
-digest -- and that is unchanged: `view_id` and `range_id` safety, and
-`document_propose` / `document_apply`, all depend on the source capture
-and on nothing else. What the view no longer holds is the comment
-collection; it never needed to, because every edit-safety check
-(`expected_version` on comment, reply, resolve, delete, refine, reject,
-and accept's `comment_version` comparison) already read the comment live
-from the catalogue rather than from the view.
-
-So a `thread` query resolves a bounded page from the catalogue at request
-time and the result says which: `complete`, `next_cursor`, and the
-`comment_state` revision the page was read at. Continuation cursors bind
-to that revision exactly as they bound to the old `comment_digest`, so an
-agent that keeps paging across a change is told the cursor no longer
-matches instead of quietly interleaving two different collections.
-
-`comment_version`, the optimistic-concurrency token, is computed from the
-annotation row plus its reply count and newest reply stamp -- never from
-however many replies a particular page happened to carry -- so it does not
-depend on page size.
-
-## 8. Server memory, end to end
-
-| Where | Bound |
-|---|---|
-| database result buffering | one sizing page (≤200 fixed rows) plus ≤512 KiB of content, +1 oversize row |
-| per-room cache | no comment list. An attachment cache of at most `ATTACHMENT_CACHE_MAX` (1024) entries and `ATTACHMENT_CACHE_BYTES` (4 MiB), oldest evicted first, per room |
-| concurrent page requests | `cost.work_concurrency` (64) HTTP work slots x one page each |
-| snapshot clones / serialization | one page per response; no room-held list to clone |
-| reply expansion | `REPLY_PREVIEW` per comment in a page; `THREAD_PAGE_MAX` per thread request |
-| anchor reattachment | the attachment cache only; re-resolution is bounded by its size, not by the document's comment count |
-| websocket payloads | `hello` = one page; every other comment frame names one row; attachment frames chunked at 200 |
-| comment transport buffering | one page in the server and one requested page in a client |
-| agent capture storage | source only; no comments stored in a view |
-
-Remaining limitations, stated honestly:
-
-- the attachment cache is per room and there is no deployment-wide cap
-  across rooms: N resident rooms can hold N x 4 MiB of cached anchors.
-  Rooms are dropped when nothing holds them (`Rooms::housekeep`), so this
-  is bounded by concurrent activity rather than by the catalogue.
-- an evicted attachment costs a fork at the comment's frontier the next
-  time that comment is paged in. This is the same cost a cold process
-  already paid; eviction just makes it possible more than once.
-- `state` counts every annotation and reply of the document. On a
-  document with very many replies that is an index scan per page, `hello`,
-  mutation event and invalidation. It is not performed for source-update frames.
-- a page whose single first row exceeds the byte budget is served anyway
-  (§2). There is no upper bound on one stored row's size, because nothing
-  ever refused one.
-
-## 9. Measured
-
-Structure is an argument; these are the numbers. From
-`room::comment_paging_tests::page_cost_does_not_grow_with_the_collection`,
-which walks the same traversal over three collections of identical 4 KiB
-comments and reports the *peak* cost of any one page:
-
-```text
-comment traversal: 50 comments   -> 1 page(s),  peak  50 rows, peak 218600 encoded bytes per page
-comment traversal: 400 comments  -> 4 page(s),  peak 101 rows, peak 441572 encoded bytes per page
-comment traversal: 3200 comments -> 32 page(s), peak 101 rows, peak 441572 encoded bytes per page
-room attachment cache after a 3,200-comment traversal: 1024 entries
-```
-
-An eightfold larger collection costs the same page, to the byte: 101 rows
-and 441,572 bytes both times. The 50-comment run is one short page and its
-peak is the size of that document rather than the size of a page, which is
-why the test compares the two multi-page runs and not that one. The cache
-line is the other half: walking 3,200 comments leaves the room holding
-`ATTACHMENT_CACHE_MAX` anchors, not 3,200.
-
-Two more tests carry the rest of the claim rather than restating it:
-`a_collection_past_the_old_snapshot_budget_is_still_readable` walks 40 MiB
-of bodies -- well past what the old whole-snapshot guard refused outright --
-and checks each page against the budget; and
-`the_room_cache_stays_bounded_while_a_large_document_is_paged` pages a
-document larger than the cache and checks the cache did not grow to match
-it.
+Implementation: [room/comments.rs](../../../crates/librepaper-room/src/room/comments.rs),
+[documents.rs](../../../crates/librepaper-server/src/server/documents.rs),
+[annotations.svelte.js](../../../web/src/lib/reader/annotations.svelte.js).
