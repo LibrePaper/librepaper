@@ -23,11 +23,17 @@ async function makeFixture({ running = false, port = 8081, sitePort = 8082, comm
 
   await Promise.all([
     mkdir(join(directory, "tools", "assets"), { recursive: true }),
+    mkdir(join(directory, "tools", "dev", "demo"), { recursive: true }),
     ...["web/src", "web/public", "crates", "docs/examples"].map((path) =>
       mkdir(join(directory, path), { recursive: true })),
     mkdir(join(directory, "dist"), { recursive: true }),
     mkdir(mockBinDir, { recursive: true }),
   ]);
+
+  await writeFile(join(directory, "tools", "dev", "demo-compose"),
+    await readFile(join(root, "tools", "dev", "demo-compose")), { mode: 0o755 });
+  await writeFile(join(directory, "tools", "dev", "demo", "config.toml"), "[server]\naddress = \"0.0.0.0:8080\"\n");
+  if (config) await writeFile(join(directory, "custom.toml"), "[server]\naddress = \"0.0.0.0:8080\"\n");
 
   await writeFile(join(directory, "mock-make"),
     '#!/bin/sh\ncase " $* " in *" site "*) target=site;; *" serve "*) target=serve;; *) target=unknown;; esac\nprintf "%s\\targs=%s\\tserver=%s\\tapp=%s\\n" "$target" "$*" "${LIBREPAPER_SERVER:-}" "${LIBREPAPER_APP_ORIGIN:-}" >> "$MOCK_RECURSIVE_MAKE_LOG"\nif [ "$target" = serve ] && [ "${MOCK_COMPANION_RUNNING:-0}" != 1 ]; then attempts=0; while ! grep -q \'^start\' "$MOCK_COMPANION_LOG" 2>/dev/null; do attempts=$((attempts + 1)); [ "$attempts" -lt 50 ] || break; sleep 0.1; done; fi\n',
@@ -152,10 +158,17 @@ function runDemoRun(fixture) {
 }
 
 function startDemoRun(fixture) {
-  return spawn(make, demoRunArguments(fixture), {
+  const environment = {
+    ...demoRunEnvironment(fixture),
+    CONFIG: fixture.config || "tools/dev/demo/config.toml",
+    BIN: fixture.binPath,
+    PORT: String(fixture.port),
+    SITE_PORT: String(fixture.sitePort),
+    OPEN: "0",
+  };
+  return spawn(join(fixture.directory, "tools", "dev", "demo-compose"), ["run"], {
     cwd: fixture.directory,
-    stdio: "ignore",
-    env: demoRunEnvironment(fixture),
+    stdio: "ignore", env: environment,
   });
 }
 
@@ -210,6 +223,7 @@ for (const scenario of [
       const dockerLog = await readFile(fixture.dockerLog, "utf8");
       assert.match(dockerLog, new RegExp(`--project-name librepaper-demo-test-${process.pid}`));
       assert.match(dockerLog, new RegExp(`\\|${localServer}\\|http://localhost:${fixture.sitePort}\\|`));
+      assert.match(dockerLog, new RegExp(`\\|${fixture.directory}/tools/dev/demo/config\\.toml$`, "m"));
     } finally {
       await rm(fixture.directory, { recursive: true, force: true });
     }
@@ -236,6 +250,18 @@ test("demo-run leaves an already running companion untouched", async () => {
   }
 });
 
+test("demo-run passes an explicit container-ready CONFIG through to the launcher", async () => {
+  const fixture = await makeFixture({ config: "custom.toml" });
+  try {
+    const result = runDemoRun(fixture);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const dockerLog = await readFile(fixture.dockerLog, "utf8");
+    assert.match(dockerLog, new RegExp(`\\|${fixture.directory}/custom\\.toml$`, "m"));
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
 test("demo startup failure shows logs and removes only demo containers", async () => {
   const fixture = await makeFixture({ upFailure: true });
   try {
@@ -245,7 +271,7 @@ test("demo startup failure shows logs and removes only demo containers", async (
     assert.match(dockerLog, / up --build --detach --wait --wait-timeout 180/);
     assert.match(dockerLog, / logs --tail=100/);
     assert.match(dockerLog, / down --remove-orphans/);
-    assert.equal((await readFile(fixture.companionLog, "utf8")).includes("start\t"), false);
+    assert.equal((await readFile(fixture.companionLog, "utf8").catch(() => "")).includes("start\t"), false);
   } finally {
     await rm(fixture.directory, { recursive: true, force: true });
   }
@@ -275,10 +301,12 @@ test("SIGTERM stops the log follower, owned companion and demo containers", asyn
     child = startDemoRun(fixture);
     await waitForDockerLog(fixture, / logs --follow/);
     child.kill("SIGTERM");
-    const exitCode = await new Promise((resolveExit, reject) => {
+    let timeout;
+    const exitCode = await Promise.race([new Promise((resolveExit, reject) => {
       child.once("error", reject);
       child.once("exit", (code, signal) => resolveExit(code ?? signal));
-    });
+    }), new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("launcher did not exit after SIGTERM")), 5000); })]);
+    clearTimeout(timeout);
     assert.notEqual(exitCode, 0, "the signaled launcher exits without reporting success");
     const dockerLog = await readFile(fixture.dockerLog, "utf8");
     assert.match(dockerLog, / down --remove-orphans/);
