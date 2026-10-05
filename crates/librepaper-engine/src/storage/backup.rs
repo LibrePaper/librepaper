@@ -242,7 +242,12 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
         }
     }
     let status = postgres_tool("pg_restore", &database_url)?
-        .args(["--no-owner", "--exit-on-error"])
+        .args([
+            "--no-owner",
+            "--no-privileges",
+            "--single-transaction",
+            "--exit-on-error",
+        ])
         .arg(dump)
         .status()
         .await
