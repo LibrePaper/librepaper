@@ -77,4 +77,4 @@ if ! resticprofile -c "$PROFILE" -n resticprofile schedule >/dev/null 2>&1; then
 fi
 [ -s "$CRONTAB" ] || { [ "$validate_only" = 1 ] || librepaper-backup-status config-error || true; echo "backup startup: schedule file is empty" >&2; exit 1; }
 [ "$validate_only" = 1 ] && exit 0
-exec supercronic "$CRONTAB"
+exec /usr/bin/supercronic "$CRONTAB"

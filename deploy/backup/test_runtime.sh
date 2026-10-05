@@ -20,6 +20,7 @@ workdir="$(mktemp -d "${TMPDIR:-/tmp}/librepaper-backup-accept.XXXXXX")"
 backup_volume_created=0
 repo_volume_created=0
 container_created=0
+preserve_logs=1
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -27,8 +28,11 @@ fail() {
 }
 
 cleanup() {
+	if [ "$preserve_logs" -eq 1 ] && [ "$container_created" -eq 1 ]; then
+		docker logs "$container" >"$workdir/container.log" 2>&1 || true
+	fi
 	if [ "$container_created" -eq 1 ]; then
-		docker rm -f "$container" >/dev/null 2>&1 || true
+		docker rm -f -v "$container" >/dev/null 2>&1 || true
 	fi
 	if [ "$backup_volume_created" -eq 1 ]; then
 		docker volume rm "$backup_volume" >/dev/null 2>&1 || true
@@ -36,7 +40,13 @@ cleanup() {
 	if [ "$repo_volume_created" -eq 1 ]; then
 		docker volume rm "$repo_volume" >/dev/null 2>&1 || true
 	fi
-	rm -rf "$workdir"
+	if [ "$preserve_logs" -eq 1 ]; then
+		failure_dir="${TMPDIR:-/tmp}/librepaper-backup-accept-failed-$suffix"
+		mv "$workdir" "$failure_dir"
+		echo "Failure artifacts preserved at $failure_dir" >&2
+	else
+		rm -rf "$workdir"
+	fi
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -145,8 +155,14 @@ cat >"$workdir/restic-wrapper" <<'SH'
 #!/bin/sh
 set -eu
 case "${BACKUP_TEST_RESTIC_FAIL:-}" in
-	forget) [ "${1:-}" != forget ] || exit 81 ;;
-	check) [ "${1:-}" != check ] || exit 82 ;;
+	forget|check)
+		for argument in "$@"; do
+			if [ "$argument" = "${BACKUP_TEST_RESTIC_FAIL}" ]; then
+				[ "$argument" != forget ] || exit 81
+				exit 82
+			fi
+		done
+		;;
 esac
 real_restic="$(command -v restic)"
 exec "$real_restic" "$@"
@@ -191,7 +207,7 @@ docker run --rm \
 	-c 'grep -F "librepaper_backup_config_error 1" /var/backups/librepaper/metrics/librepaper_backup.prom >/dev/null' \
 	|| fail "malformed config did not publish the config-error metric"
 
-health="$(docker image inspect --format '{{if .Config.Healthcheck}}present{{else}}none{{end}}' "$BACKUP_TEST_IMAGE")"
+health="$(docker image inspect --format '{{if or (not .Config.Healthcheck) (eq (index .Config.Healthcheck.Test 0) "NONE")}}none{{else}}present{{end}}' "$BACKUP_TEST_IMAGE")"
 [ "$health" = none ] || fail "backup image inherited a healthcheck"
 
 docker run -d --name "$container" \
@@ -220,7 +236,7 @@ docker exec "$container" test -s /run/librepaper-backup/crontab \
 docker exec -d "$container" python3 /tmp/librepaper-backup-test-receiver.py >/dev/null
 sleep 1
 
-docker exec "$container" resticprofile version >"$workdir/version.txt" 2>&1
+docker exec "$container" resticprofile --version >"$workdir/version.txt" 2>&1
 grep -F "0.33.1" "$workdir/version.txt" >/dev/null \
 	|| fail "image does not contain pinned resticprofile 0.33.1"
 docker exec "$container" resticprofile -c /etc/resticprofile/profiles.toml \
@@ -305,6 +321,8 @@ wait_for_file /var/backups/librepaper/current/payload
 docker kill --signal KILL "$container" >/dev/null
 docker start "$container" >/dev/null
 wait_for_file /run/librepaper-backup/crontab
+docker exec -d "$container" python3 /tmp/librepaper-backup-test-receiver.py >/dev/null
+sleep 1
 [ "$(metric librepaper_backup_job_last_success_timestamp_seconds backup)" = "$backup_success" ] \
 	|| fail "abrupt job termination erased successful backup history"
 docker exec "$container" test -f /var/backups/librepaper/current/payload \
@@ -315,4 +333,5 @@ docker exec "$container" resticprofile -c /etc/resticprofile/profiles.toml \
 docker exec "$container" test ! -e /var/backups/librepaper/current/payload \
 	|| fail "recovery did not remove stale staged export data"
 
+preserve_logs=0
 echo "PASS: backup image startup, scheduler, status hooks, locks, retention/check failures, and recovery"
