@@ -1,5 +1,5 @@
-# The one file to edit. Copy to config.toml, set the two origins, start.
-# Everything not listed here has a default; see docs/host.md.
+# The one file to edit: set the two origins and one [auth.*] table, then
+# docker compose up -d. Everything not listed here has a default; see docs/host.md.
 
 # app is the application. docs serves published documents and must be a
 # different host, because a document is code and the browser is what keeps
@@ -20,8 +20,8 @@ client_secret = "replace"
 # client_secret = "replace"
 
 # The bundled database, over the socket compose.yaml shares with it. For a
-# database elsewhere (compose.remote.yaml) write the full URL instead, with
-# ?sslmode=verify-full for a managed service:
+# database elsewhere, delete the postgres service in compose.yaml and write the
+# full URL here, with ?sslmode=verify-full for a managed service:
 # database_url = "postgresql://user:password@db.example/librepaper?sslmode=verify-full"
 [storage]
 directory = "/var/lib/librepaper"
@@ -52,6 +52,6 @@ trusted_networks = ["172.29.0.0/16"]
 # [server]
 # address = "0.0.0.0:8080"
 
-# Optional. Used only with compose.monitoring.yaml.
+# Optional. Used only when the monitoring profile is enabled.
 # [metrics]
 # address = "0.0.0.0:9091"

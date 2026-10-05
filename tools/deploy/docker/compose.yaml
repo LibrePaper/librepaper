@@ -3,12 +3,13 @@
 # learns them from the server (see Caddyfile), so Compose itself needs no
 # settings except the config file.
 #
-#   cp config.toml.example config.toml
-#   edit config.toml for the two origins
 #   docker compose up -d
 #
 # The database is reachable only through a Unix socket shared with the
 # application container, which is why it needs no password and no network.
+#
+# Monitoring is optional: enable with docker compose --profile monitoring up -d,
+# or export COMPOSE_PROFILES=monitoring or add it to an optional .env.
 
 name: librepaper
 
@@ -19,6 +20,8 @@ x-bounded-logs: &bounded-logs
     max-file: "3"
 
 services:
+  # Database hosted elsewhere: delete this service and the depends_on and
+  # pgsocket lines under librepaper, and put the full URL in config.toml.
   postgres:
     image: postgres:17.11-alpine
     restart: unless-stopped
@@ -30,6 +33,8 @@ services:
     volumes:
       - postgres:/var/lib/postgresql/data
       - pgsocket:/var/run/postgresql
+      # Creates a passwordless metrics role, used only when the monitoring profile runs.
+      - ./monitoring-user.sh:/docker-entrypoint-initdb.d/20-monitoring-user.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U librepaper -d librepaper"]
       interval: 5s
@@ -81,6 +86,100 @@ services:
       - caddy-config:/config
     networks: [edge]
 
+  prometheus:
+    profiles: [monitoring]
+    image: prom/prometheus:v3.15.0
+    restart: unless-stopped
+    logging: *bounded-logs
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=8GB
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus:/prometheus
+    networks: [internal]
+    # No host port: only Grafana and the app can reach this service.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
+
+  grafana:
+    profiles: [monitoring]
+    image: grafana/grafana:13.2.3
+    restart: unless-stopped
+    logging: *bounded-logs
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/admin/monitoring/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/librepaper.json
+      GF_SECURITY_ADMIN_USER: admin
+      # Forced to change at first login; only seeds a fresh volume.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_ALLOW_ORG_CREATE: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL: ""
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_SECURITY_COOKIE_SECURE: "true"
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_LOG_MODE: console
+      GF_SERVER_ROUTER_LOGGING: "false"
+      GF_LOG_FILTERS: context:error
+    volumes:
+      - grafana:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks: [internal, edge]
+
+  node-exporter:
+    profiles: [monitoring]
+    image: prom/node-exporter:v1.12.1
+    restart: unless-stopped
+    logging: *bounded-logs
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)
+    pid: host
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+    networks: [internal]
+
+  postgres-exporter:
+    profiles: [monitoring]
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+    restart: unless-stopped
+    logging: *bounded-logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_NAME: postgresql:///librepaper?host=/var/run/postgresql&user=librepaper_metrics&sslmode=disable
+    volumes:
+      - pgsocket:/var/run/postgresql
+    networks: [internal]
+
 networks:
   # Fixed subnet so config.toml can name it as a trusted proxy.
   edge:
@@ -97,3 +196,5 @@ volumes:
   backups:
   caddy-data:
   caddy-config:
+  prometheus:
+  grafana:
