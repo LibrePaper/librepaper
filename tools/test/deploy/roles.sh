@@ -36,7 +36,7 @@ mkdir -m 700 "$secret_dir"
 for secret in postgres_bootstrap_password database_owner_password database_app_password \
 	database_backup_password database_metrics_password; do
 	openssl rand -hex 32 >"$secret_dir/$secret"
-	chmod 0600 "$secret_dir/$secret"
+	chmod 0444 "$secret_dir/$secret"
 done
 
 # Mount the exact init files installed by deploy/compose.yaml and provide the
@@ -77,7 +77,7 @@ psql_as() {
 		shift
 		exec "$@"
 	' sh "/run/secrets/$secret" \
-		psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$role" -d librepaper "$@"
+		psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$role" -d librepaper "$@"
 }
 
 expect_sqlstate_denied() {
