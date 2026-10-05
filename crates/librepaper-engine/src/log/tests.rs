@@ -32,7 +32,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use futures_util::future::BoxFuture;
-use loro::{Frontiers, LoroDoc, VersionVector};
+use loro::{ExportMode, Frontiers, LoroDoc, VersionVector};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
@@ -41,6 +41,46 @@ use crate::log::sequencer::{
     ack_targets, max_update_bytes, FlushReason, Ingested, LogCatalog, Role, Sequencer,
     SequencerError, FLUSH_MAX_AGE, FLUSH_QUIET, FLUSH_TRIGGER_BYTES,
 };
+
+#[test]
+fn historical_fork_checks_out_retained_versions_of_a_shallow_document() {
+    let source = LoroDoc::new();
+    source.set_peer_id(91).unwrap();
+    let text = source.get_text("text");
+    text.insert(0, "trimmed history").unwrap();
+    source.commit();
+    let trimmed_frontier = source.oplog_frontiers();
+    text.insert(15, " retained base").unwrap();
+    source.commit();
+    let shallow_root = source.oplog_frontiers();
+
+    text.insert(29, " and later history").unwrap();
+    source.commit();
+    let retained_frontier = source.oplog_frontiers();
+    let shallow_bytes = source
+        .export(ExportMode::ShallowSnapshot(std::borrow::Cow::Owned(
+            shallow_root.clone(),
+        )))
+        .unwrap();
+    let shallow = LoroDoc::new();
+    shallow.import(&shallow_bytes).unwrap();
+
+    assert!(shallow.is_shallow());
+    assert!(
+        shallow.fork_at(&retained_frontier).is_err(),
+        "Loro fork_at cannot export a historical snapshot from a shallow log"
+    );
+    let retained = crate::log::sequencer::historical_fork_at(&shallow, &retained_frontier)
+        .expect("a retained post-trim frontier remains readable");
+    assert_eq!(
+        retained.get_text("text").to_string(),
+        "trimmed history retained base and later history"
+    );
+    assert!(
+        crate::log::sequencer::historical_fork_at(&shallow, &trimmed_frontier).is_err(),
+        "history before the shallow root stays unavailable after trimming"
+    );
+}
 use crate::log::{frame, Budget};
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::outgoing::{Outgoing, Receiver, Sender};

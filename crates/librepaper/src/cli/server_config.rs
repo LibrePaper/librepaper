@@ -2,9 +2,7 @@
 //! permitted only when a leaf explicitly names an env reference.
 use librepaper_base::{
     auth::Policy,
-    config::{
-        BackupPolicyOverrides, Configuration, DEFAULT_LOG_QUOTA_BYTES, DEFAULT_PENDING_BYTES,
-    },
+    config::{Configuration, DEFAULT_LOG_QUOTA_BYTES, DEFAULT_PENDING_BYTES},
 };
 use librepaper_engine::storage::StorageOptions;
 use serde::{de::DeserializeOwned, Deserialize};
@@ -74,6 +72,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) asset_mirror: String,
     pub(crate) typst_fonts: Option<String>,
     pub(crate) metrics_address: Option<SocketAddr>,
+    pub(crate) resticprofile_configured: bool,
     pub(crate) log_filter: String,
     pub(crate) config: Configuration,
     sources: BTreeMap<String, String>,
@@ -107,6 +106,7 @@ impl fmt::Debug for ResolvedConfig {
             .field("asset_mirror", &self.asset_mirror)
             .field("typst_fonts", &self.typst_fonts)
             .field("metrics_address", &self.metrics_address)
+            .field("resticprofile_configured", &self.resticprofile_configured)
             .field("log_filter", &self.log_filter)
             .field("config", &self.config)
             .finish()
@@ -137,7 +137,7 @@ struct Raw {
     assets: Assets,
     metrics: Metrics,
     proxy: Proxy,
-    backup: RawBackup,
+    resticprofile: Option<toml::Value>,
     demo: Demo,
     logging: Logging,
 }
@@ -237,16 +237,6 @@ struct Demo {
 struct Logging {
     filter: Option<Input<String>>,
 }
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct RawBackup {
-    destination_class: Option<Input<String>>,
-    interval: Option<Input<String>>,
-    retained_count: Option<Input<usize>>,
-    encrypted: Option<Input<bool>>,
-    warning_count: Option<Input<usize>>,
-}
-
 struct Resolver<'a> {
     base: &'a Path,
     sources: BTreeMap<String, String>,
@@ -376,6 +366,14 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
         }
         Ok(())
     }
+    if v.get("backup").is_some() {
+        return Err("[backup] is no longer supported; configure the backup sidecar with [resticprofile]".into());
+    }
+    if let Some(profile) = v.get("resticprofile") {
+        if !profile.is_table() {
+            return Err("configuration section resticprofile must be a table".into());
+        }
+    }
     table(
         v,
         "",
@@ -390,7 +388,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "assets",
             "metrics",
             "proxy",
-            "backup",
+            "resticprofile",
             "demo",
             "logging",
         ],
@@ -451,17 +449,6 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
     section(v, "assets", &["mirror", "typst_fonts"])?;
     section(v, "metrics", &["address"])?;
     section(v, "proxy", &["trusted_networks"])?;
-    section(
-        v,
-        "backup",
-        &[
-            "destination_class",
-            "interval",
-            "retained_count",
-            "encrypted",
-            "warning_count",
-        ],
-    )?;
     section(v, "demo", &["simulate_activity_days"])?;
     section(v, "logging", &["filter"])?;
     Ok(())
@@ -561,6 +548,7 @@ pub(crate) fn load_with_postgres_env(
     postgres_env: Option<&PostgresEnvSnapshot>,
 ) -> Result<ResolvedConfig, String> {
     let (raw, base) = read_raw(path)?;
+    let resticprofile_configured = raw.resticprofile.is_some();
     let mut r = Resolver {
         base: &base,
         sources: BTreeMap::new(),
@@ -679,22 +667,6 @@ pub(crate) fn load_with_postgres_env(
         .map(|x| librepaper_base::config::parse_trusted_proxy(x))
         .collect::<Result<_, _>>()?;
     config.cost.validate()?;
-    let b = raw.backup;
-    let backup_interval_seconds =
-        if let Some(interval_str) = r.optional("backup.interval", b.interval)? {
-            let seconds = librepaper_document::document::retention::parse_retention(&interval_str)
-                .map_err(|_| "backup.interval must be a duration such as 1d or 24h".to_string())?;
-            Some(seconds as u64)
-        } else {
-            None
-        };
-    config.apply_backup_overrides(BackupPolicyOverrides {
-        destination_class: r.optional("backup.destination_class", b.destination_class)?,
-        frequency: backup_interval_seconds,
-        retained_count: r.optional("backup.retained_count", b.retained_count)?,
-        encrypted: r.optional("backup.encrypted", b.encrypted)?,
-        warning_count: r.optional("backup.warning_count", b.warning_count)?,
-    })?;
     if github_client_id.is_some() != github_client_secret.is_some() {
         return Err("auth.github.client_id and client_secret must be configured together".into());
     }
@@ -744,6 +716,7 @@ pub(crate) fn load_with_postgres_env(
         asset_mirror,
         typst_fonts,
         metrics_address,
+        resticprofile_configured,
         log_filter,
         config,
         sources: r.sources,
@@ -1089,45 +1062,13 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "trusted_networks",
         &array(&proxies),
     );
-    section(&mut out, "backup");
-    optional(
-        &mut out,
-        &c.sources,
-        "backup.destination_class",
-        "destination_class",
-        c.config.backup.destination_class.as_deref(),
-    );
-    optional(
-        &mut out,
-        &c.sources,
-        "backup.interval",
-        "interval",
-        c.config
-            .backup
-            .frequency
-            .map(|seconds| format!("{seconds}s"))
-            .as_deref(),
-    );
-    optional_num(
-        &mut out,
-        &c.sources,
-        "backup.retained_count",
-        "retained_count",
-        c.config.backup.retained_count,
-    );
-    optional_num(
-        &mut out,
-        &c.sources,
-        "backup.encrypted",
-        "encrypted",
-        c.config.backup.encrypted,
-    );
+    section(&mut out, "resticprofile");
     value(
         &mut out,
         &c.sources,
-        "backup.warning_count",
-        "warning_count",
-        &c.config.backup.warning_count.to_string(),
+        "resticprofile",
+        "configured",
+        &quote(if c.resticprofile_configured { "present" } else { "none" }),
     );
     section(&mut out, "demo");
     optional_num(
@@ -1308,6 +1249,44 @@ mod tests {
         assert!(e.contains("auth.github.wat"));
         assert!(!e.contains("SECRET-INPUT"));
     }
+
+    #[test]
+    fn resticprofile_accepts_quoted_and_implicit_tables_but_show_redacts_contents() {
+        for table in [
+            "[ \"resticprofile\" ]\nrepository = \"s3:https://secret.example/bucket\"\npassword = \"profile-secret\"\n",
+            "[resticprofile.backup]\nschedule = \"daily\"\npassword = \"profile-secret\"\n",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("config.toml");
+            std::fs::write(&path, table).unwrap();
+
+            let config = load(&path).unwrap();
+            assert!(config.resticprofile_configured);
+            let shown = show_resolved(&config);
+            let debug = format!("{config:?}");
+            assert!(shown.contains("configured = \"present\""), "{shown}");
+            assert!(!shown.contains("secret.example"));
+            assert!(!shown.contains("profile-secret"));
+            assert!(!debug.contains("secret.example"));
+            assert!(!debug.contains("profile-secret"));
+            assert!(toml::from_str::<toml::Value>(&shown).is_ok());
+        }
+    }
+
+    #[test]
+    fn resticprofile_requires_a_table_and_legacy_backup_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+
+        std::fs::write(&path, "resticprofile = \"profile-secret\"\n").unwrap();
+        let error = load(&path).unwrap_err();
+        assert!(error.contains("resticprofile must be a table"), "{error}");
+        assert!(!error.contains("profile-secret"));
+
+        std::fs::write(&path, "[backup]\nwarning_count = 2\n").unwrap();
+        let error = load(&path).unwrap_err();
+        assert!(error.contains("[backup] is no longer supported"), "{error}");
+    }
     #[test]
     fn file_refs_are_relative_and_trim_crlf() {
         let d = tempfile::tempdir().unwrap();
@@ -1331,6 +1310,8 @@ mod tests {
         let loaded = load(&p).unwrap();
         assert_eq!(loaded.address.port(), 8080);
         assert_eq!(loaded.storage.database_url, "postgresql:///librepaper");
+        assert!(!loaded.resticprofile_configured);
+        assert!(show_resolved(&loaded).contains("configured = \"none\""));
         let scratch_mb = Configuration::default()
             .pending_scratch_bytes
             .div_ceil(1024 * 1024);

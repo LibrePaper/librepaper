@@ -87,6 +87,23 @@ pub enum SnapshotMode {
     Shallow,
 }
 
+/// Reconstructs a historical document version, including versions in the
+/// retained portion of a shallow document. Loro's `fork_at` exports a full
+/// historical snapshot and rejects every shallow document; checking out an
+/// independent fork preserves the shallow root and the post-trim history.
+pub(super) fn historical_fork_at(
+    doc: &LoroDoc,
+    frontier: &Frontiers,
+) -> loro::LoroResult<LoroDoc> {
+    if doc.is_shallow() && !doc.is_detached() {
+        let fork = doc.fork();
+        fork.checkout(frontier)?;
+        Ok(fork)
+    } else {
+        doc.fork_at(frontier)
+    }
+}
+
 struct Subscriber {
     tx: Sender,
     role: Role,
@@ -2165,9 +2182,7 @@ impl Sequencer {
             .await
             .map_err(|Busy| SequencerError::Busy)?;
         let cache = inner.cache.as_ref().expect("a cache was just built");
-        let fork = cache
-            .doc
-            .fork_at(frontier)
+        let fork = historical_fork_at(&cache.doc, frontier)
             .map_err(|error| SequencerError::Loro(error.to_string()))?;
         Ok(read(&fork))
     }

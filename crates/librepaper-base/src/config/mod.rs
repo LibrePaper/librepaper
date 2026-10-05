@@ -109,8 +109,6 @@ pub struct Configuration {
     pub cost: CostPolicy,
     #[serde(skip)]
     pub sockets: crate::config::socket_budget::SocketPolicy,
-    /// Optional reporting metadata for operator-managed backups.
-    pub backup: BackupPolicy,
 
     /// The only file types the reader can frame and anchor comments into. The
     /// upload page checks them before sending, and the server checks them
@@ -162,91 +160,6 @@ pub struct StorageLimit {
     pub total: i64,
     pub per_owner: i64,
     pub uploads_per_hour: usize,
-}
-
-/// Optional operator-declared backup policy.  LibrePaper currently creates
-/// complete local copies; these values describe the operator's intended
-/// destination and retention so status can report it without managing the
-/// destination.  `None` means the operator made no declaration.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BackupPolicy {
-    pub destination_class: Option<String>,
-    /// Declared backup frequency in seconds.
-    pub frequency: Option<u64>,
-    pub retained_count: Option<usize>,
-    pub encrypted: Option<bool>,
-    /// Warn after this many completed backups for the deployment.
-    pub warning_count: usize,
-}
-
-impl Default for BackupPolicy {
-    fn default() -> Self {
-        Self {
-            destination_class: None,
-            frequency: None,
-            retained_count: None,
-            encrypted: None,
-            warning_count: 10,
-        }
-    }
-}
-
-/// Optional values accepted from the advanced YAML file.
-#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct BackupPolicyOverrides {
-    pub destination_class: Option<String>,
-    pub frequency: Option<u64>,
-    pub retained_count: Option<usize>,
-    pub encrypted: Option<bool>,
-    pub warning_count: Option<usize>,
-}
-
-const MAX_BACKUP_POLICY_STRING: usize = 64;
-const MAX_BACKUP_POLICY_FREQUENCY_SECONDS: u64 = 10 * 365 * 24 * 60 * 60;
-const MAX_BACKUP_POLICY_COUNT: usize = 1_000_000;
-
-impl BackupPolicy {
-    pub fn apply(&mut self, overrides: BackupPolicyOverrides) -> Result<(), String> {
-        if let Some(value) = overrides.destination_class {
-            let value = value.trim().to_owned();
-            if value.is_empty()
-                || value.len() > MAX_BACKUP_POLICY_STRING
-                || !value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"._- /".contains(&byte))
-            {
-                return Err(
-                    "backup.destination_class must be 1-64 ASCII letters, digits, spaces, or ._- /"
-                        .into(),
-                );
-            }
-            self.destination_class = Some(value);
-        }
-        if let Some(value) = overrides.frequency {
-            if !(1..=MAX_BACKUP_POLICY_FREQUENCY_SECONDS).contains(&value) {
-                return Err("backup.interval must be between 1 second and 10 years".into());
-            }
-            self.frequency = Some(value);
-        }
-        if let Some(value) = overrides.retained_count {
-            if value == 0 || value > MAX_BACKUP_POLICY_COUNT {
-                return Err("backup.retained_count must be between 1 and 1000000".into());
-            }
-            self.retained_count = Some(value);
-        }
-        if let Some(value) = overrides.encrypted {
-            self.encrypted = Some(value);
-        }
-        if let Some(value) = overrides.warning_count {
-            if value > MAX_BACKUP_POLICY_COUNT {
-                return Err("backup.warning_count must be at most 1000000".into());
-            }
-            self.warning_count = value;
-        }
-        Ok(())
-    }
 }
 
 /// Deployment cost policy. Values are deliberately expressed in bytes,
@@ -457,7 +370,6 @@ impl Default for Configuration {
             },
             cost: CostPolicy::default(),
             sockets: crate::config::socket_budget::SocketPolicy::default(),
-            backup: BackupPolicy::default(),
             // What the upload form takes. Every one of these is a source
             // format `document_format` names and `storable_source` allows, so
             // the list a person is shown and the list the publish route
@@ -517,14 +429,6 @@ impl Configuration {
     /// separate question, answered by `renderers`.
     pub fn storable_source(&self, format: &str) -> bool {
         self.source_formats.iter().any(|known| known == format)
-    }
-
-    /// Apply the optional operator-declared backup policy.
-    pub fn apply_backup_overrides(
-        &mut self,
-        overrides: BackupPolicyOverrides,
-    ) -> Result<(), String> {
-        self.backup.apply(overrides)
     }
 
     /// Overrides the storage ceilings, in megabytes: how much one publisher may
@@ -851,17 +755,6 @@ mod tests {
         let explicit_scratch = config2.pending_scratch_bytes;
         assert!(config2.set_log_quota(Some(128)).is_ok());
         assert_eq!(config2.pending_scratch_bytes, explicit_scratch);
-    }
-
-    #[test]
-    fn backup_policy_overrides_are_bounded_and_reported() {
-        let overrides: BackupPolicyOverrides = serde_yaml::from_str(
-            "destination_class: object-store\nfrequency: 86400\nretained_count: 30\nencrypted: true\nwarning_count: 20\n",
-        )
-        .unwrap();
-        let mut config = Configuration::default();
-        config.apply_backup_overrides(overrides).unwrap();
-        assert_eq!(config.backup.warning_count, 20);
     }
 
     /// The megabyte setters an operator reaches through the advanced
