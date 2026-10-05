@@ -368,7 +368,7 @@ async function run() {
   );
   check("a reader sees an edit arrive without reloading", live);
 
-  /* --- 3. an HTML document's scripts run, and it is still live ------------- */
+  /* --- 3. an HTML document renders without running its scripts ------------- */
 
   const page = `<!doctype html><html><head><title>Notebook</title></head><body>
     <p id="prose">The original figure.</p>
@@ -379,10 +379,12 @@ async function run() {
   const notebookTab = await openTab(`${BASE}/docs/${notebook.slug}`, [
     SESSION,
   ]);
-  const ran = await until("the notebook's script runs", async () =>
-    (await notebookTab.evalInFrame("return document.body.dataset.ran", notebook.slug)) === "yes",
+  const notebookShown = await until("the notebook's content renders", async () =>
+    (await notebookTab.evalInFrame("return document.body.innerText", notebook.slug))?.includes("original figure"),
   );
-  check("an HTML document's own scripts run in the frame", ran);
+  check("an HTML document renders its authored content", notebookShown);
+  const ran = await notebookTab.evalInFrame("return document.body.dataset.ran", notebook.slug);
+  check("an HTML document's own scripts stay disabled", ran !== "yes", ran || "not run");
 
   // And an edit to it reaches a reader, which is what the reload is for.
   const secondNotebook = await openTab(`${BASE}/docs/${notebook.slug}`, [
@@ -400,7 +402,7 @@ async function run() {
   );
   check("a reader of an HTML document sees an edit arrive", notebookLive);
   const stillRan = await secondNotebook.evalInFrame("return document.body.dataset.ran", notebook.slug);
-  check("the reloaded HTML document still runs its scripts", stillRan === "yes");
+  check("HTML live updates do not enable authored scripts", stillRan !== "yes", stillRan || "not run");
 
   /* --- 4. persistence badge, and offline recovery -------------------------- */
 
@@ -439,14 +441,14 @@ async function run() {
     }, ${JSON.stringify(BASE)});
     return true;
   `, slug);
-  await until("the comment button", () => editor.eval(`return Boolean(document.querySelector("#selectionbar"))`));
-  await editor.eval(`document.querySelector("#selectionbar").click(); return true;`);
-  await until("the comment form", () => editor.eval(`return Boolean(document.querySelector("#commentForm textarea"))`));
+  await until("the comment button", () => editor.eval(`return Boolean(document.querySelector('#selectionbar [aria-label="Comment"]'))`));
+  await editor.eval(`document.querySelector('#selectionbar [aria-label="Comment"]').click(); return true;`);
+  await until("the comment composer", () => editor.eval(`return Boolean(document.querySelector('#composer textarea[aria-label="Comment"]'))`));
   await editor.eval(`
-    const input = document.querySelector("#commentForm textarea");
+    const input = document.querySelector('#composer textarea[aria-label="Comment"]');
     input.value = "A comment written offline.";
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    document.querySelector("#commentForm").requestSubmit();
+    document.querySelector("#composer [data-send]").click();
     return true;
   `);
   const draftKept = await until("the failed comment is retained", () => editor.eval(`
@@ -605,8 +607,8 @@ async function run() {
   // sign-in, no link key. It serves a document's bytes only to a frame whose
   // URL carries the short-lived token the reader fetched over the channel
   // that does carry an identity. So a bare fetch gets the empty shell, and
-  // the owner's frame gets the page as itself, scripts and all -- which is
-  // what the title check below pins.
+  // the owner's frame gets the page content while authored scripts stay
+  // disabled.
   const secretPage =
     '<!doctype html><html><head><title>Private Draft</title></head><body>' +
     '<h1>Private Draft</h1><p id="p">the private text</p>' +
@@ -655,7 +657,7 @@ async function run() {
     shown ? "" : `console: ${ownerOfSecret.console.slice(-3).join(" | ")}`,
   );
   const scripted = await ownerOfSecret.evalInFrame("return document.body.dataset.ran", secret.slug);
-  check("the served document's own scripts run", scripted === "yes", scripted || "");
+  check("the served document's own scripts stay disabled", scripted !== "yes", scripted || "not run");
 
   // A stranger gets what a deleted document gets, and is told the one useful
   // thing: that signing in might help.
