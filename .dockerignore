@@ -22,7 +22,8 @@ data/
 deploy/data/
 backups/
 deploy/backups/
-librepaper-data/dist/
+librepaper-data/
+dist/
 tools/deploy/keys.yaml
 docs/_site/
 **/docs/_site/
