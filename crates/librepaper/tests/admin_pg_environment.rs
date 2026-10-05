@@ -228,8 +228,6 @@ fn admin_postgres_connection_uses_only_the_configured_uri() {
 #[test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; destructive to its dedicated database"]
 fn admin_serve_refuses_to_replace_missing_key_for_existing_deployment() {
-    use std::time::Instant;
-
     let database_url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
         .expect("set LIBREPAPER_TEST_POSTGRES_URL to a disposable PostgreSQL database");
     let directory = tempfile::tempdir().unwrap();
@@ -256,7 +254,7 @@ fn admin_serve_refuses_to_replace_missing_key_for_existing_deployment() {
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let pool = runtime
-        .block_on(sqlx::PgPoolOptions::new().connect(&database_url))
+        .block_on(sqlx::postgres::PgPoolOptions::new().connect(&database_url))
         .expect("connect to the disposable PostgreSQL database");
     runtime.block_on(async {
         sqlx::query("TRUNCATE accounts CASCADE")
@@ -300,7 +298,7 @@ fn admin_serve_refuses_to_replace_missing_key_for_existing_deployment() {
     let output = child.wait_with_output();
 
     let pool = runtime
-        .block_on(sqlx::PgPoolOptions::new().connect(&database_url))
+        .block_on(sqlx::postgres::PgPoolOptions::new().connect(&database_url))
         .expect("reconnect to the disposable PostgreSQL database");
     runtime.block_on(async {
         sqlx::query("DELETE FROM server_runtime_state WHERE name=$1")
