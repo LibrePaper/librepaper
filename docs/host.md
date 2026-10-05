@@ -56,9 +56,11 @@ replacing `config.toml`, so its read-only bind mount sees the new file.
 ### Backups
 
 Backups stay disabled until `config.toml` has a `[resticprofile]` table. Put
-credentials in `[resticprofile.env]`, or pass them through `.env`. Protect the
-config from other host users while keeping it readable by UID 10001, and keep
-an off-host recovery copy. Recreate the sidecar and check snapshots:
+credentials in `[resticprofile.env]` or use resticprofile's `password-file`
+setting. These are resticprofile settings; LibrePaper's `{ env = ... }` and
+`{ file = ... }` references do not apply inside this table. Protect the config
+from other host users while keeping it readable by UID 10001, and keep an
+off-host recovery copy. Recreate the sidecar and check snapshots:
 
 ```sh
 docker compose up -d --force-recreate backup
@@ -89,8 +91,9 @@ url = "https://hc-ping.com/<backup-id>/fail"
 
 Repeat under `resticprofile.check` with a separate ID. Set external freshness
 limits to 36 hours for backup and 8 days for check; update them when schedules
-change. Manual resticprofile commands use the same lock as scheduled jobs. Do
-not run restic directly while a job is active.
+change. The dashboard checks the same freshness limits. Manual resticprofile
+commands use the same lock as scheduled jobs. Do not run restic directly while
+a job is active.
 
 Restic supports local, SFTP, REST server and S3-compatible repositories. A
 local repository can live at `local:/var/backups/librepaper/repository`; it is
@@ -100,6 +103,13 @@ SFTP, mount private key and `known_hosts` files read-only into `backup`, for
 example at `/run/secrets/restic_ssh_key` and
 `/run/secrets/restic_known_hosts`, and configure restic's SSH command to use
 those paths.
+
+For a one-time verified export without a restic snapshot:
+
+```sh
+docker compose exec librepaper librepaper admin backup \
+  --config /etc/librepaper/config.toml /var/backups/librepaper/manual
+```
 
 ## Configuration
 
@@ -166,9 +176,24 @@ Restore with the matching LibrePaper release, an empty database and new path.
 Keep the original deployment intact until recovery is verified.
 
 1. Stop the app and backup sidecar. Preserve the original database, data volume,
-   config and remote repository. From `deploy/`, start PostgreSQL in a separate
-   Compose project; its project name gives it a new database and data volume:
-   `docker compose -p librepaper-recovery up -d postgres`.
+   config and remote repository. Create `compose.recovery.yaml` in `deploy/`
+   with an unused subnet to avoid colliding with production:
+
+   ```yaml
+   services:
+     librepaper:
+       ports:
+         - 127.0.0.1:18080:8080
+   networks:
+     edge:
+       ipam:
+         config:
+           - subnet: 172.31.0.0/16
+   ```
+
+   Update the recovery config's `proxy.trusted_networks` to that subnet. Start
+   PostgreSQL in a separate project for a new database and data volume:
+   `docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery up -d postgres`.
 2. Restore the snapshot into a temporary host directory. Override the entrypoint
    to avoid starting the scheduler:
 
@@ -183,11 +208,13 @@ Keep the original deployment intact until recovery is verified.
    Inspect the restored hierarchy and copy its config to the recovery project.
 3. Copy the included config to `config-recovery.toml`. Set
    `storage.directory = "/var/lib/librepaper"` and point the database URL at
-   the recovery DB; remove or replace inherited production URLs. Restore into
-   a nonexistent child path (the volume root already exists):
+   the recovery DB; remove or replace inherited production URLs. Restore as
+   root because the temporary directory is mode 700. Use the matching release,
+   an empty DB and a nonexistent child path (the volume root exists):
 
    ```sh
-   LIBREPAPER_CONFIG_FILE=config-recovery.toml docker compose -p librepaper-recovery run --rm --no-deps \
+   LIBREPAPER_VERSION=<snapshot-release> docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery build librepaper
+   LIBREPAPER_VERSION=<snapshot-release> LIBREPAPER_CONFIG_FILE=config-recovery.toml docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery run --rm --no-deps --user 0 \
      -v /tmp/librepaper-restore:/restore:ro librepaper admin restore \
      --config /etc/librepaper/config.toml /restore/var/backups/librepaper/current /var/lib/librepaper/recovered
    ```
@@ -196,19 +223,26 @@ Keep the original deployment intact until recovery is verified.
    with UID 10001 ownership:
 
    ```sh
-   docker compose -p librepaper-recovery run --rm --no-deps --user 0 \
-     --entrypoint sh librepaper -c \
-     'cp -a /var/lib/librepaper/recovered/objects /var/lib/librepaper/ && cp -a /var/lib/librepaper/recovered/secrets /var/lib/librepaper/ && chown -R 10001:65534 /var/lib/librepaper/objects /var/lib/librepaper/secrets'
+   docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery run --rm --no-deps --user 0 \
+     -v /tmp/librepaper-restore:/restore:ro --entrypoint sh librepaper -c \
+     'cp -a /var/lib/librepaper/recovered/objects /var/lib/librepaper/ && cp -a /restore/var/lib/librepaper/secrets /var/lib/librepaper/ && chown -R 10001:65534 /var/lib/librepaper/objects /var/lib/librepaper/secrets'
    ```
 
    For S3, upload and verify each manifest object
    under the same key in a new recovery bucket, preserving the original. Point
    recovery at that bucket, or switch explicitly to filesystem storage and
    remove the old S3 settings. Never start against an empty or unverified store.
-5. Start the matching LibrePaper release with `LIBREPAPER_VERSION` and
-   `LIBREPAPER_CONFIG_FILE=config-recovery.toml`; verify health and documents,
-   then reapply known deletions requested after the snapshot. Restore does not
-   replay a deletion ledger.
+5. Start only the recovery app (not Caddy, whose public ports belong to the
+   original project), then verify it at `http://127.0.0.1:18080`:
+
+   ```sh
+   LIBREPAPER_VERSION=<snapshot-release> LIBREPAPER_CONFIG_FILE=config-recovery.toml \
+     docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery \
+     up -d --no-deps --wait librepaper
+   ```
+
+   Reapply known deletions requested after the snapshot; restore does not replay
+   a deletion ledger.
 
 Record the release, snapshot age, elapsed time and outcome in restore drills.
 Do not claim a recovery time until measured.
