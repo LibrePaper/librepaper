@@ -11,7 +11,7 @@ command -v node >/dev/null
 command -v ssh-keygen >/dev/null
 
 work=$(mktemp -d /tmp/librepaper-backup-sidecar.XXXXXX)
-prefix="lp-backup-$(basename "$work" | tr -cd 'a-zA-Z0-9' | cut -c1-20)"
+prefix="lp-backup-${work##*.}"
 sidecar="${prefix}-sidecar"
 cleanup() {
 	local status=$?
@@ -19,9 +19,17 @@ cleanup() {
 	docker rm -f "$sidecar" >/dev/null 2>&1 || true
 	for name in "${backend_containers[@]:-}"; do docker rm -f "$name" >/dev/null 2>&1 || true; done
 	if [[ "${BACKUP_SIDECAR_KEEP:-0}" == 1 || $status != 0 ]]; then
+		# Return test data ownership to the invoking user before preserving it.
+		docker run --rm --user 0 -v "$work:/test" --entrypoint chown \
+			"$LIBREPAPER_BACKUP_IMAGE" -R "$(id -u):$(id -g)" /test >/dev/null 2>&1 || true
 		echo "synthetic sidecar fixture preserved at $work" >&2
 	else
-		rm -rf -- "$work"
+		# The container wrote UID 10001 files in repositories and restore trees.
+		# Remove them with root inside the dedicated bind mount, then remove its
+		# now-empty top-level temporary directory as the caller.
+		docker run --rm --user 0 -v "$work:/test" --entrypoint /bin/sh \
+			"$LIBREPAPER_BACKUP_IMAGE" -c 'rm -rf /test/* /test/.[!.]* /test/..?*' >/dev/null 2>&1 || true
+		rmdir -- "$work" >/dev/null 2>&1 || true
 	fi
 	exit "$status"
 }
@@ -39,6 +47,9 @@ LIBREPAPER_SOURCE_URL="$LIBREPAPER_SOURCE_URL" node tools/test/backup/fixture.mj
 	"$LIBREPAPER_BIN" "$LIBREPAPER_SOURCE_URL" "$work/source-data"
 chmod -R a+rX "$work/source-data"
 chmod 0777 "$work/repos"
+chmod 0755 "$work"
+docker run --rm --user 0 -v "$work/source-data:/var/lib/librepaper" \
+	--entrypoint chown "$LIBREPAPER_BACKUP_IMAGE" -R 10001:65534 /var/lib/librepaper >/dev/null
 
 cat >"$work/disabled.toml" <<'TOML'
 [storage]
@@ -57,6 +68,12 @@ repository = "/var/backups/librepaper/repository"
 password-file = "/test/repository-password"
 
 [resticprofile.retention]
+keep-within = "1s"
+keep-hourly = 0
+keep-daily = 0
+keep-weekly = 0
+keep-monthly = 0
+keep-yearly = 0
 keep-last = 1
 prune = true
 max-unused = "0"
@@ -127,6 +144,9 @@ docker exec "$sidecar" sh -c 'grep -q "librepaper_backup_job_last_result_success
 
 # A later good run must recover and apply after-backup forget/prune. The
 # fixture's keep-last=1 policy makes this assertion deterministic.
+sleep 2
+psql "$LIBREPAPER_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 -c \
+	"UPDATE accounts SET display_name='Fixture retention revision' WHERE handle='fixture'"
 docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup
 docker exec "$sidecar" restic -r /var/backups/librepaper/repository --password-file /test/repository-password snapshots --json >"$work/retained-snapshots.json"
 node --input-type=module - "$work/retained-snapshots.json" <<'JS'
@@ -136,12 +156,18 @@ const snapshots = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 assert.equal(snapshots.length, 1, 'after-backup retention keeps only the configured latest snapshot');
 JS
 
-# A real repository check also exercises the profile hooks and shared lock.
+# Run backup and check concurrently. Both commands use the same profile lock;
+# both must finish successfully without an overlapping repository operation.
+docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup \
+	>"$work/concurrent-backup.log" 2>&1 &
+backup_pid=$!
 docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile check
+wait "$backup_pid"
 docker exec "$sidecar" sh -c 'grep -q "librepaper_backup_job_last_result_success{task=\"check\"} 1" /var/backups/librepaper/metrics/librepaper_backup.prom'
 
 # Restore the actual sidecar snapshot into a fresh database and directory.
 docker exec "${POSTGRES_CONTAINER:?}" createdb -U postgres backup_restored
+mkdir -m 0777 "$work/restic-restore"
 docker exec "$sidecar" restic -r /var/backups/librepaper/repository \
 	--password-file /test/repository-password restore latest --target /test/restic-restore
 cat >"$work/restore.toml" <<TOML
@@ -153,6 +179,11 @@ TOML
 LIBREPAPER_RESTORE_URL="postgresql://postgres:drill@127.0.0.1:${POSTGRES_PORT}/backup_restored" \
 	"$LIBREPAPER_BIN" admin restore --config "$work/restore.toml" \
 	"$work/restic-restore/var/backups/librepaper/current" "$work/restore-data"
+BACKUP_DRILL_SOURCE_URL="$LIBREPAPER_SOURCE_URL" \
+BACKUP_DRILL_RESTORE_URL="postgresql://postgres:drill@127.0.0.1:${POSTGRES_PORT}/backup_restored" \
+BACKUP_DRILL_SOURCE_DATA="$work/source-data" \
+BACKUP_DRILL_RESTORE_DATA="$work/restore-data" \
+	cargo test --release -p librepaper --test backup_drill_verify -- --ignored --nocapture
 
 echo 'local backend acceptance passed'
 
@@ -161,7 +192,8 @@ echo 'local backend acceptance passed'
 # contacted. Each profile is mounted as a separate file so Compose-style
 # read-only bind replacement behavior is avoided.
 run_remote_profile() {
-	local config="$1"
+	local config="$1" port="$2"
+	local ready=0
 	docker rm -f "$sidecar" >/dev/null 2>&1 || true
 	docker run -d --name "$sidecar" "${common[@]}" \
 		--tmpfs /run/librepaper-backup:uid=10001,gid=65534,mode=0700 \
@@ -170,9 +202,21 @@ run_remote_profile() {
 		-v "$config:/etc/librepaper/config.toml:ro" \
 		-e LIBREPAPER_DATABASE_URL="$db_url" "$LIBREPAPER_BACKUP_IMAGE" >/dev/null
 	for _ in {1..30}; do
-		if docker exec "$sidecar" test -s /run/librepaper-backup/crontab 2>/dev/null; then break; fi
+		if docker exec "$sidecar" test -s /run/librepaper-backup/crontab 2>/dev/null; then ready=1; break; fi
 		sleep 1
 	done
+	[[ "$ready" == 1 ]] || { docker logs "$sidecar" >&2; return 1; }
+	if [[ -f "$work/id_ed25519" ]]; then
+		docker cp "$work/id_ed25519" "$sidecar:/tmp/id_ed25519" >/dev/null
+		docker exec -u 0 "$sidecar" chown 10001:65534 /tmp/id_ed25519
+		docker exec -u 0 "$sidecar" chmod 0600 /tmp/id_ed25519
+	fi
+	for _ in {1..30}; do
+		if docker exec "$sidecar" python3 -c \
+			'import socket,sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), 1).close()' "$port" 2>/dev/null; then ready=2; break; fi
+		sleep 1
+	done
+	[[ "$ready" == 2 ]] || { echo "backend port $port did not become ready" >&2; return 1; }
 	docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup
 	docker exec "$sidecar" resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile check
 }
@@ -197,9 +241,9 @@ fsync = false
 [resticprofile]
 repository = "sftp://fixture@127.0.0.1:$sftp_port/upload/repository"
 password-file = "/test/repository-password"
-option = ["sftp.args=-i /test/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"]
+option = ["sftp.args=-i /tmp/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"]
 TOML
-	run_remote_profile "$work/sftp.toml"
+	run_remote_profile "$work/sftp.toml" "$sftp_port"
 	echo 'SFTP backend acceptance passed'
 
 	# MinIO receives disposable credentials and its own repository namespace.
@@ -225,7 +269,7 @@ AWS_ACCESS_KEY_ID = "fixture-access"
 AWS_SECRET_ACCESS_KEY = "fixture-secret-password"
 AWS_DEFAULT_REGION = "us-east-1"
 TOML
-	run_remote_profile "$work/minio.toml"
+	run_remote_profile "$work/minio.toml" "$minio_port"
 	echo 'S3-compatible MinIO backend acceptance passed'
 
 	# REST server uses a synthetic Basic Auth account and private-repo namespace.
@@ -233,7 +277,12 @@ TOML
 	backend_containers+=("$name")
 	docker run -d --name "$name" -p 127.0.0.1::8000 \
 		-e OPTIONS=--private-repos "${BACKUP_TEST_REST_IMAGE:-restic/rest-server:0.14.0}" >/dev/null
-	docker exec "$name" create_user fixture fixture-rest-password >/dev/null
+	user_ready=0
+	for _ in {1..30}; do
+		if docker exec "$name" create_user fixture fixture-rest-password >/dev/null 2>&1; then user_ready=1; break; fi
+		sleep 1
+	done
+	[[ "$user_ready" == 1 ]] || { docker logs "$name" >&2; exit 1; }
 	rest_port=$(docker port "$name" 8000/tcp | head -1 | sed 's/.*://')
 	cat >"$work/rest.toml" <<TOML
 [storage]
@@ -245,6 +294,6 @@ fsync = false
 repository = "rest:http://fixture:fixture-rest-password@127.0.0.1:$rest_port/fixture/repository"
 password-file = "/test/repository-password"
 TOML
-	run_remote_profile "$work/rest.toml"
+	run_remote_profile "$work/rest.toml" "$rest_port"
 	echo 'REST backend acceptance passed'
 fi

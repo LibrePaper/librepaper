@@ -167,7 +167,7 @@ suite_backup_sidecar() {
 	if [[ -z "${LIBREPAPER_TEST_BINARY:-}" ]]; then make --no-print-directory "$BIN"; fi
 	local scratch binary="$BIN"
 	[[ "$binary" = /* ]] || binary="$root/$binary"
-	: "${BACKUP_TEST_IMAGE:?set BACKUP_TEST_IMAGE to the locally built backup target}"
+	BACKUP_TEST_IMAGE="${BACKUP_TEST_IMAGE:-librepaper-backup-test:75ew}"
 	scratch=$(mktemp -d "${TMPDIR:-/tmp}/librepaper-backup-sidecar-suite.XXXXXX")
 	. "$root/tools/test/postgres.sh"
 	trap 'postgres_stop_disposable; rm -rf "$scratch"' EXIT
