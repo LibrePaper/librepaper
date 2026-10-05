@@ -126,7 +126,7 @@ async fn runtime_schema_validation_checks_the_baked_migration_checksum() {
     catalog.validate_schema().await.unwrap();
 
     let row = sqlx::query(
-        "SELECT version, checksum FROM _sqlx_migrations ORDER BY version LIMIT 1",
+        "SELECT version, description, checksum FROM _sqlx_migrations ORDER BY version LIMIT 1",
     )
     .fetch_one(catalog.pool())
     .await
@@ -142,7 +142,7 @@ async fn runtime_schema_validation_checks_the_baked_migration_checksum() {
         .unwrap();
     let result = catalog.validate_schema().await;
     sqlx::query("UPDATE _sqlx_migrations SET checksum=$1 WHERE version=$2")
-        .bind(checksum)
+        .bind(checksum.clone())
         .bind(version)
         .execute(catalog.pool())
         .await
