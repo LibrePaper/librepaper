@@ -148,8 +148,8 @@ pub use librepaper_room::room::{Room, Rooms};
 pub use librepaper_server::server::Server;
 pub use librepaper_shell::ShellFile;
 
-/// The release version, stamped in at build time for release artifacts and
-/// derived from the package version for crates.io installs.
+/// The release version, stamped in at build time for release artifacts, or
+/// the package version otherwise.
 pub const VERSION: &str = match option_env!("LIBREPAPER_VERSION") {
     Some(version) => version,
     None => concat!("v", env!("CARGO_PKG_VERSION")),

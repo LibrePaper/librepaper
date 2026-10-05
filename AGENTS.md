@@ -27,13 +27,3 @@ The Rust code is a workspace of internal sub-crates under `crates/`.
 
 - While editing, run `cargo check -p <crate>` and `cargo nextest run -p <crate>` for the crate you changed.
 - Run the full workspace commands (`make test`) only before handing work back.
-- Sub-crates must pass `tools/release/flatten/flatten lint`, which keeps the published single crate generatable:
-  - siblings only as full `librepaper_<x>::path` paths, never `use librepaper_<x>;`, `as` or `extern crate`
-  - no inner attributes (`#![...]`) in a sub-crate `lib.rs` except `//!` docs
-  - no `$crate` in `macro_rules!`
-  - no `CARGO_PKG_NAME`, `CARGO_PKG_VERSION` or `CARGO_CRATE_NAME`
-  - top-level inputs (entries beside `src/`) are unique across crates and the facade
-  - a crate's short name is not a module of the facade, nor `testing`
-  - no `crate::` inside a string literal
-  - every `cargo:rustc-env=` in a sub-crate `build.rs` is also emitted by `tools/release/flatten/build.rs`
-  - no file-relative `include_str!("../...")` or `include_bytes!` that leaves `src/`; use `concat!(env!("CARGO_MANIFEST_DIR"), "/...")`

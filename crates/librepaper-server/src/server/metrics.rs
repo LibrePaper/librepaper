@@ -141,7 +141,7 @@ impl Default for Metrics {
         let build_info: Family<BuildLabels, Gauge> = Family::default();
         build_info
             .get_or_create(&BuildLabels {
-                version: env!("LIBREPAPER_PKG_VERSION"),
+                version: env!("CARGO_PKG_VERSION"),
             })
             .set(1);
         registry.register(
@@ -1050,7 +1050,7 @@ mod tests {
         }
         assert!(text.contains(&format!(
             "librepaper_build_info{{version=\"{}\"}} 1\n",
-            env!("LIBREPAPER_PKG_VERSION")
+            env!("CARGO_PKG_VERSION")
         )));
         assert!(text.contains(
             "# HELP librepaper_http_requests Completed HTTP requests by bounded route, method, and response class.\n"

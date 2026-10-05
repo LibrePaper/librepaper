@@ -11,17 +11,6 @@ description = "A local-first collaborative paper editor and document server"
 readme = "../../README.md"
 keywords = ["document", "collaboration", "editor"]
 categories = ["command-line-utilities", "web-programming"]
-# Cargo packages only files under this directory, so the root-level inputs
-# (README.md, LICENSE, assets.lock, web/dist, docs, tools) cannot be listed
-# here. How the packaged inputs are gathered is resolved by the
-# flattener in Stage 7 of docs/dev/specs/SPEC-split-crates.md, so `cargo package`
-# is not expected to work between Stage 0 and Stage 7.
-include = [
-    "Cargo.toml",
-    "build.rs",
-    "src/**",
-    "tests/**",
-]
 autotests = false
 
 [package.metadata.dist]

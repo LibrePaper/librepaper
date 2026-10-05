@@ -37,13 +37,6 @@ scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-
 scoop install librepaper
 ```
 
-## Cargo
-
-```sh
-# Any platform with a Rust toolchain; builds from source
-cargo install librepaper
-```
-
 ## Start the companion
 
 ```sh

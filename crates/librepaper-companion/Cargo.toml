@@ -7,7 +7,6 @@ edition.workspace = true
 publish = false
 license.workspace = true
 repository.workspace = true
-build = "build.rs"
 
 [lib]
 doctest = false

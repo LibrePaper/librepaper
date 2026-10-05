@@ -1,6 +1,5 @@
 // The protocol docs and tutorials are compiled in with include_str!. They
-// live outside this crate, so the path comes from here; the flat crate's
-// build.rs sets the same variable to its own docs/. rustc tracks the
+// live outside this crate, so the path comes from here. rustc tracks the
 // included files itself.
 
 use std::path::Path;
@@ -11,9 +10,4 @@ fn main() {
         .canonicalize()
         .expect("docs/ is at the repository root");
     println!("cargo:rustc-env=LIBREPAPER_DOCS={}", docs.display());
-    // The bare package version for the metrics build_info label. A sub-crate
-    // may not read CARGO_PKG_VERSION itself (flatten lint rule 4); its build
-    // script may, and the flat build.rs emits the same variable.
-    let version = std::env::var("CARGO_PKG_VERSION").expect("cargo sets CARGO_PKG_VERSION");
-    println!("cargo:rustc-env=LIBREPAPER_PKG_VERSION={version}");
 }

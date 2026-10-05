@@ -20,7 +20,7 @@ released.
 
 ## Install
 
-Follow the [install page](https://librepaper.org/install.html): installer scripts, Homebrew, Scoop and Cargo.
+Follow the [install page](https://librepaper.org/install.html): installer scripts, Homebrew and Scoop.
 
 ## Documentation
 

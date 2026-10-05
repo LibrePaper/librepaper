@@ -36,10 +36,6 @@ cargo nextest run -p librepaper-engine     # its tests
 make test                                  # everything, before handing work back
 ```
 
-- The published `librepaper` crate is generated, not checked in: `tools/release/flatten/flatten build` writes `target/flat/`.
-- `tools/release/flatten/flatten lint` checks the rules the generator relies on; CI runs both, then tests the flat crate.
-- `tools/release/flatten/build.rs` is the flat crate's build script. Every sub-crate `build.rs` needs its counterpart there.
-
 ## Test suites
 
 `make test` runs the ordinary Rust and web checks; PostgreSQL-gated cases and
