@@ -294,8 +294,10 @@ legacy_volume_created_before=$(docker volume inspect -f '{{.CreatedAt}}' "$legac
 
 # upgrade must preserve the mounted database and data volumes while converting
 # credentials/HBA, transferring schema ownership and disabling the old login.
-COMPOSE_PROJECT_NAME="$legacy_project" COMPOSE_FILE=compose.yaml \
-LIBREPAPER_SECRETS_DIR="$legacy_secret_dir" LIBREPAPER_CONFIG_FILE="$legacy_config" \
+COMPOSE_PROJECT_NAME="conflicting-$legacy_project" \
+COMPOSE_FILE="$work/conflicting-compose.yaml" \
+LIBREPAPER_SECRETS_DIR="$work/conflicting-secrets" \
+LIBREPAPER_CONFIG_FILE="$work/conflicting-config.toml" \
 	"$deploy/setup" upgrade --yes --project "$legacy_project" \
 	--secrets-dir "$legacy_secret_dir" --state-file "$work/legacy-state.json" \
 	--env-file "$legacy_env" --config-file "$legacy_config"
