@@ -21,7 +21,7 @@ tools/test/suite backup   # everything: database, key, drill, replay check
 - `BACKUP_DRILL_KEEP=1` (optional): keep the source and restored data directories
 
 ```sh
-tools/test/backup-drill/drill.sh
+tools/test/backup/drill.sh
 # then, with the data directories it printed:
 BACKUP_DRILL_SOURCE_URL=... BACKUP_DRILL_RESTORE_URL=... \
 BACKUP_DRILL_SOURCE_DATA=.../source-data BACKUP_DRILL_RESTORE_DATA=.../restored-data \

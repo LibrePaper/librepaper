@@ -125,7 +125,7 @@ suite_backup() {
 	docker exec "$container" psql -U postgres -qc 'CREATE DATABASE drill_source' -c 'CREATE DATABASE drill_restored'
 	mkdir -p "$scratch/bin"
 	for tool in psql pg_dump pg_restore; do
-		ln -sf "$root/tools/test/backup-drill/postgres-tool.sh" "$scratch/bin/$tool"
+		ln -sf "$root/tools/test/backup/postgres-tool.sh" "$scratch/bin/$tool"
 	done
 	export PATH="$scratch/bin:$PATH"
 	age-keygen -o "$scratch/identity.txt" 2>/dev/null
@@ -138,7 +138,7 @@ suite_backup() {
 	AGE_IDENTITY="$scratch/identity.txt" \
 	BACKUP_DRILL_DIR="$work" \
 	BACKUP_DRILL_KEEP=1 \
-	tools/test/backup-drill/drill.sh
+	tools/test/backup/drill.sh
 	BACKUP_DRILL_SOURCE_URL="postgresql://postgres:drill@127.0.0.1:$port/drill_source" \
 	BACKUP_DRILL_RESTORE_URL="postgresql://postgres:drill@127.0.0.1:$port/drill_restored" \
 	BACKUP_DRILL_SOURCE_DATA="$work/source-data" \
