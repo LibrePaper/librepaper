@@ -64,11 +64,12 @@ async function main() {
 
   const suggestionId = randomUUID();
   const note = `Suggestion ${suggestionId}`;
-  const rendered = await editor.frameEvaluate("document.body.innerText");
-  const passageAt = rendered.indexOf("The first paragraph.");
-  assert.notEqual(passageAt, -1, "the rendered passage is available for the suggestion anchor");
-  const prefix = rendered.slice(Math.max(0, passageAt - 64), passageAt);
-  const suffix = rendered.slice(passageAt + "The first paragraph.".length, passageAt + "The first paragraph.".length + 64);
+  const sourcePayload = await request(`/api/documents/${slug}/source`);
+  const currentSource = sourcePayload.source;
+  const passageAt = currentSource.indexOf("The first paragraph.");
+  assert.notEqual(passageAt, -1, "the exact suggestion passage is in the current source");
+  const prefix = currentSource.slice(Math.max(0, passageAt - 24), passageAt);
+  const suffix = currentSource.slice(passageAt + "The first paragraph.".length, passageAt + "The first paragraph.".length + 24);
   const posted = await editor.evaluate(`(async () => await new Promise((resolve, reject) => {
     const address = new URL(${JSON.stringify(`/ws/${slug}`)}, location.href);
     address.protocol = address.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -87,7 +88,6 @@ async function main() {
         sent = true;
         ws.send(JSON.stringify({
           type: 'comment', exact: 'The first paragraph.', prefix: ${JSON.stringify(prefix)}, suffix: ${JSON.stringify(suffix)},
-          position: ${passageAt},
           motivation: 'editing', body: ${JSON.stringify(note)}, proposed: 'The opening paragraph.',
           render_digest: '', temp_id: ${JSON.stringify(suggestionId)},
         }));
@@ -108,19 +108,26 @@ async function main() {
   await editor.evaluate(`${changesTab}.click()`);
 
   await until("suggestion in Changes", () => editor.evaluate(`Boolean(document.querySelector('.change-row.suggestion .row-main'))`));
-  await editor.evaluate(`document.querySelector('.change-row.suggestion .row-main').click()`);
-  await until("expanded suggestion diff", () => editor.evaluate(`Boolean(
-    document.querySelector('.change-row.suggestion .deletion')
-      && document.querySelector('.change-row.suggestion .insertion')
-  )`));
-  const row = await editor.evaluate(`(() => {
-    const item = document.querySelector('.change-row.suggestion');
-    return item ? {
-      before: item.querySelector('.deletion')?.textContent.trim(),
-      after: item.querySelector('.insertion')?.textContent.trim(),
-    } : null;
-  })()`);
-  assert.equal(row.before, "− The first paragraph.");
+  let row;
+  try {
+    await until("suggestion diff", () => editor.evaluate(`Boolean(
+      document.querySelector('.change-row.suggestion .insertion')
+    )`));
+    row = await editor.evaluate(`(() => {
+      const item = document.querySelector('.change-row.suggestion');
+      return item ? {
+        before: item.querySelector('.deletion')?.textContent.trim(),
+        after: item.querySelector('.insertion')?.textContent.trim(),
+      } : null;
+    })()`);
+  } catch (error) {
+    const [html, comments] = await Promise.all([
+      editor.evaluate('document.querySelector(".change-row.suggestion")?.outerHTML || "no suggestion row"')
+        .catch((cause) => `unavailable: ${cause.message}`),
+      request(`/api/documents/${slug}/comments`).catch((cause) => `unavailable: ${cause.message}`),
+    ]);
+    throw new Error(`${error.message}; posted suggestion: ${JSON.stringify(posted)}; row: ${String(html).slice(0, 3000)}; comments: ${JSON.stringify(comments).slice(0, 3000)}`);
+  }
   assert.equal(row.after, "+ The opening paragraph.");
   const painted = await until("suggestion painted in the document frame", () => editor.frameEvaluate(`(() => {
     const mark = [...document.querySelectorAll('mark[data-librepaper]')]
@@ -136,14 +143,21 @@ async function main() {
   assert.ok(painted.strike.includes("line-through"));
   assert.equal(painted.inserted, "The opening paragraph.");
   assert.equal(painted.label, "Suggested insertion: The opening paragraph.");
+  await editor.evaluate(`document.querySelector('.change-row.suggestion .row-main').click()`);
   await until("proposal list ready", () => editor.evaluate(`Boolean(document.querySelector('.change-row.suggestion .row-action.accept:not(:disabled)'))`));
   await editor.evaluate(`document.querySelector('.change-row.suggestion .row-action.accept').click()`);
   await until("accepted source painted in the document frame", () => editor.frameEvaluate("document.body.innerText.includes('The opening paragraph.')"));
 
-  await until("accepted source durable", async () => {
+  try {
+    await until("accepted source durable", async () => {
+      const snapshot = await request(`/api/documents/${slug}/snapshot`);
+      return snapshot.texts?.[snapshot.main] === revised || snapshot.source === revised;
+    });
+  } catch (error) {
     const snapshot = await request(`/api/documents/${slug}/snapshot`);
-    return snapshot.texts?.[snapshot.main] === revised || snapshot.source === revised;
-  });
+    const page = await editor.evaluate('document.body.innerText');
+    throw new Error(`${error.message}; snapshot: ${JSON.stringify(snapshot).slice(0, 2000)}; page: ${page.slice(-3000)}`);
+  }
   const labels = (await request(historyPath)).labels;
   const accepted = labels.find((label) => label.reason === "accept");
   assert.ok(accepted, "acceptance records a history label");
@@ -158,6 +172,9 @@ async function main() {
     const newText = document.querySelector('.cm-merge-b .cm-content')?.textContent || '';
     return oldText.includes('The first paragraph.') && newText.includes('The opening paragraph.');
   })()`));
+  // Check the original side after exercising acceptance too, so a missing
+  // deletion in the queue does not hide failures in the rest of the workflow.
+  assert.equal(row.before, "− The first paragraph.", "the suggestion queue shows the original passage");
   console.log("track changes e2e: suggestion paint, accept, durable source, and history comparison passed");
 }
 

@@ -1,4 +1,5 @@
-// Real-server acceptance for editor history, shared reader comparisons, and restore.
+// Real-server acceptance for owner history comparisons and restore, plus the
+// read-link role's lack of a history workspace.
 // Run with `npm run check:e2e`; requires the built binary, Chromium, and a
 // disposable PostgreSQL connection in LIBREPAPER_TEST_POSTGRES_URL.
 import assert from "node:assert/strict";
@@ -18,6 +19,7 @@ if (!deployment || deployment.unavailable) {
 const profileRoot = mkdtempSync(join(tmpdir(), "librepaper-history-browser-"));
 const port = 31000 + Math.floor(Math.random() * 20000);
 let owner;
+let comparisonOwner;
 let reader;
 const original = "# History acceptance\n\nThe red fox watches the quiet river.\n\nA paragraph to remove.\n";
 const revised = "# History acceptance\n\nThe blue fox watches the quiet river.\n\nA newly added paragraph.\n";
@@ -90,60 +92,53 @@ async function main() {
   const readerCookie = sessionCookie({
     dataDirectory: deployment.data, accountId: readerId, handle: "history-reader", name: "History Reader",
   });
-  const readerKey = new URLSearchParams(shareUrl.hash.slice(1)).get("k");
   await reader.setCookie("librepaper_session", readerCookie.slice(readerCookie.indexOf("=") + 1), browserBase);
   await reader.resize(1400, 900);
   await reader.navigate(shareUrl.href);
   await until("reader preview", async () => (await reader.text()).includes("blue fox"));
   assert.equal(await reader.evaluate('!!document.querySelector(".cm-content")'), false);
-  await reader.evaluate('document.querySelector(".sidebar-activity [aria-label=History]")?.click()');
-  try {
-    await until("reader history", () => reader.evaluate('document.body.innerText.includes("Original draft")'));
-  } catch (error) {
-    const [body, buttons, history] = await Promise.all([
-      reader.evaluate('document.body.innerText').catch((cause) => `unavailable: ${cause.message}`),
-      reader.evaluate(`[...document.querySelectorAll('button, a')].map((item) => ({
-        label: item.getAttribute('aria-label'), title: item.title, text: item.textContent.trim(),
-      }))`).catch((cause) => `unavailable: ${cause.message}`),
-      fetch(new URL(historyPath, deployment.base), {
-        headers: { "x-librepaper-client": "1", cookie: readerCookie, "x-librepaper-key": readerKey || "" },
-      }).then(async (response) => ({ status: response.status, body: (await response.text()).slice(0, 1200) }))
-        .catch((cause) => `unavailable: ${cause.message}`),
-    ]);
-    throw new Error(`${error.message}; reader body: ${String(body).slice(0, 1200)}; reader buttons: ${JSON.stringify(buttons).slice(0, 1600)}; reader history API: ${JSON.stringify(history)}`);
-  }
-  await reader.evaluate(`document.querySelector('li[data-sha=${JSON.stringify(first.sha)}] .timeline-point')?.click()`);
-  await until("history source comparison", () => reader.evaluate(`(() => {
+  assert.equal(await reader.evaluate(`Boolean([...document.querySelectorAll('button, a')].some((item) =>
+    [item.getAttribute('aria-label'), item.title, item.textContent.trim()].includes('History')))`), false,
+    "a read-link reader has no History workspace");
+  assert.equal(await reader.evaluate('!!document.querySelector(".history-workspace")'), false);
+  assert.equal(await reader.evaluate(`[...document.querySelectorAll('button')]
+    .some((button) => button.textContent.trim() === 'Restore this version')`), false,
+    "a read-link reader has no restore control");
+
+  // History is an owner workspace. Keep its captured current side open in a
+  // second owner tab while the first tab makes a newer edit.
+  comparisonOwner = await browser("chromium", join(profileRoot, "comparison-owner"), port + 2);
+  await comparisonOwner.setCookie("librepaper_session", cookie.slice(cookie.indexOf("=") + 1), browserBase);
+  await comparisonOwner.resize(1400, 900);
+  await comparisonOwner.navigate(new URL(`/docs/${slug}`, browserBase).href);
+  await until("comparison owner editor", () => comparisonOwner.evaluate('!!document.querySelector(".cm-content")'));
+  await comparisonOwner.evaluate('document.querySelector(".sidebar-activity [aria-label=History]")?.click()');
+  await until("owner history", () => comparisonOwner.evaluate('document.body.innerText.includes("Original draft")'));
+  await comparisonOwner.evaluate(`document.querySelector('li[data-sha=${JSON.stringify(first.sha)}] .timeline-point')?.click()`);
+  await until("history source comparison", () => comparisonOwner.evaluate(`(() => {
     const oldText = document.querySelector('.cm-merge-a .cm-content')?.textContent || '';
     const newText = document.querySelector('.cm-merge-b .cm-content')?.textContent || '';
     return oldText.includes('red fox') && newText.includes('blue fox');
   })()`));
-  assert.match(await reader.evaluate(`document.querySelector('[aria-label="History file"]')?.selectedOptions[0]?.textContent || ""`), /main\.md · changed/);
+  assert.match(await comparisonOwner.evaluate(`document.querySelector('[aria-label="History file"]')?.selectedOptions[0]?.textContent || ""`), /main\.md · changed/);
   await owner.insert(revised.replace("blue fox", "green fox"), true);
   await until("newer edit is durable", async () => {
     const snapshot = await request(`/api/documents/${slug}/snapshot`);
     return snapshot.texts?.[snapshot.main] === revised.replace("blue fox", "green fox");
   });
-  assert.ok(await reader.evaluate(`document.querySelector('.cm-merge-b .cm-content')?.textContent.includes('blue fox')`),
+  await until("newer edit reached the comparison tab", async () => (await comparisonOwner.text()).includes("green fox"));
+  assert.ok(await comparisonOwner.evaluate(`document.querySelector('.cm-merge-b .cm-content')?.textContent.includes('blue fox')`),
     "the selected comparison keeps its captured current source until refreshed");
-  await reader.evaluate(`([...document.querySelectorAll('.history-source-actions button')]
+  await comparisonOwner.evaluate(`([...document.querySelectorAll('.history-source-actions button')]
     .find((button) => button.textContent.trim() === 'Refresh comparison')?.click())`);
-  await until("refreshed history comparison", () => reader.evaluate(`(() => {
+  await until("refreshed history comparison", () => comparisonOwner.evaluate(`(() => {
     const newText = document.querySelector('.cm-merge-b .cm-content')?.textContent || '';
     return newText.includes('green fox') && !newText.includes('blue fox');
   })()`));
-  assert.equal(await reader.evaluate(`[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Restore this version')`), false,
-    "a reader has no restore control");
-
   // Restoring an earlier label creates a new event and updates the live source.
-  await owner.navigate(new URL(`/docs/${slug}`, browserBase).href);
-  await owner.evaluate('document.querySelector(".sidebar-activity [aria-label=History]")?.click()');
-  await until("owner history", () => owner.evaluate('document.body.innerText.includes("Original draft")'));
-  await owner.evaluate(`document.querySelector('li[data-sha=${JSON.stringify(first.sha)}] .timeline-point')?.click()`);
-  await until("restore control", () => owner.evaluate(`([...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Restore this version'))`));
-  await owner.evaluate(`([...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Restore this version')).click()`);
-  await until("restore confirmation", () => owner.evaluate('document.body.innerText.includes("Restore this version?")'));
-  await owner.evaluate(`([...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Restore version')).click()`);
+  await comparisonOwner.evaluate(`([...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Restore this version')?.click())`);
+  await until("restore confirmation", () => comparisonOwner.evaluate('document.body.innerText.includes("Restore this version?")'));
+  await comparisonOwner.evaluate(`([...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Restore version')?.click())`);
   await until("restore label", async () => (await request(historyPath)).labels?.some((label) => label.reason === "restore"));
   const restored = (await request(historyPath)).labels.find((label) => label.reason === "restore");
   assert.ok(restored);
@@ -152,13 +147,14 @@ async function main() {
   assert.equal(restoredTree.texts[restoredTree.main], original);
   const live = await request(`/api/documents/${slug}/snapshot`);
   assert.equal(live.texts[live.main], original, "the live document holds the restored source");
-  console.log("history e2e: read-link comparison, owner restore, and durable source passed");
+  console.log("history e2e: reader role, owner comparison refresh, restore, and durable source passed");
 }
 
 try {
   await main();
 } finally {
   await owner?.close();
+  await comparisonOwner?.close();
   await reader?.close();
   await deployment.stop();
   rmSync(profileRoot, { recursive: true, force: true });

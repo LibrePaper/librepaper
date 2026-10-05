@@ -208,7 +208,7 @@ async function openTab(url, cookies = [], { ownProfile = false } = {}) {
   return tab;
 }
 
-async function selectPdf(tab, slug) {
+async function selectPdf(tab, slug, { waitFrame = true } = {}) {
   await requiredUntil("the View menu", () => tab.eval(`return Boolean(document.querySelector('button[data-menubar="view"]'))`));
   await tab.eval(`document.querySelector('button[data-menubar="view"]').click(); return true;`);
   await requiredUntil("the PDF format menu item", () => tab.eval(`return [...document.querySelectorAll(".menuitem")].some((item) => item.textContent.trim().endsWith("PDF"))`));
@@ -218,7 +218,7 @@ async function selectPdf(tab, slug) {
     pdf.click();
     return true;
   `);
-  await requiredUntil("the PDF preview frame", () => tab.eval(`return document.querySelector('iframe[title="Document"]')?.getAttribute("src")?.includes("/pdf/${slug}/") || false`));
+  if (waitFrame) await requiredUntil("the PDF preview frame", () => tab.eval(`return document.querySelector('iframe[title="Document"]')?.getAttribute("src")?.includes("/pdf/${slug}/") || false`));
 }
 
 let root = null;
@@ -509,17 +509,23 @@ async function run() {
   await requiredUntil("the remote connection after reload", () => editor.eval(`
     return Boolean(document.querySelector('button[aria-label^="Remote server connected"]'));
   `), 20000);
-  const reloadedDraft = await until("the draft survives reload and hello", () => editor.eval(`
-    return document.querySelector('[aria-label="Unconfirmed comments"] textarea')?.value === "A comment written offline.";
+  // Reconnection can confirm the submission before reload. A confirmed
+  // comment must not be submitted a second time through Retry.
+  const reloadedDraft = await until("the comment survives reload and hello", () => editor.eval(`
+    const response = await fetch("/api/documents/${slug}/comments");
+    const data = await response.json();
+    return data.comments.filter((comment) => comment.body === "A comment written offline.").length === 1
+      || document.querySelector('[aria-label="Unconfirmed comments"] textarea')?.value === "A comment written offline.";
   `));
   const reloadedState = reloadedDraft ? "" : await editor.eval(`return JSON.stringify({
     page: document.body.innerText.slice(-600),
     pending: document.querySelector('[aria-label="Unconfirmed comments"]')?.outerHTML.slice(0, 900) ?? null,
     saved: localStorage.getItem("librepaper-submissions-${slug}"),
   })`);
-  check("an unconfirmed comment survives reload and the server snapshot", reloadedDraft, reloadedState.slice(0, 1300));
+  check("the offline comment survives reload and the server snapshot", reloadedDraft, reloadedState.slice(0, 1300));
   const retryReady = reloadedDraft && await until("the retry control", () => editor.eval(`
     const card = document.querySelector('[aria-label="Unconfirmed comments"]');
+    if (!card) return true;
     const details = card?.querySelector("details");
     if (!details) return false;
     details.open = true;
@@ -532,19 +538,20 @@ async function run() {
     saved: localStorage.getItem("librepaper-submissions-${slug}"),
   })`);
   if (retryReady) await editor.eval(`
+    if (!document.querySelector('[aria-label="Unconfirmed comments"]')) return true;
     const button = [...document.querySelectorAll('[aria-label="Unconfirmed comments"] button')].find((b) => b.textContent.trim() === "Retry");
     if (!button) throw new Error("Retry control disappeared before click");
     button.click();
     return true;
   `);
-  check("the retry control is reachable after reload", Boolean(retryReady), retryControlDetail.slice(0, 1300));
-  const confirmed = await until("the retried comment is confirmed", async () => {
+  check("the comment is confirmed or can be retried after reload", Boolean(retryReady), retryControlDetail.slice(0, 1300));
+  const confirmed = await until("the recovered comment is confirmed", async () => {
     const count = await editor.eval(`
       const response = await fetch("/api/documents/${slug}/comments");
       const data = await response.json();
       return data.comments.filter((comment) => comment.body === "A comment written offline.").length;
     `);
-    return count === 1 && await editor.eval(`return !document.querySelector('[aria-label="Unconfirmed comments"]')`);
+    return count === 1 && await editor.eval(`return !document.querySelector('[aria-label="Unconfirmed comments"]') && JSON.parse(localStorage.getItem("librepaper-submissions-${slug}") || "[]").length === 0`);
   });
   const retryDetail = confirmed ? "" : await editor.eval(`
     const response = await fetch("/api/documents/${slug}/comments");
@@ -560,7 +567,7 @@ async function run() {
       messages: [...document.querySelectorAll('[role="status"], [role="alert"]')].map((node) => node.textContent.trim()).slice(-5),
     });
   `);
-  check("retry stores one comment and clears the confirmed draft", confirmed, retryDetail.slice(0, 1500));
+  check("recovery stores exactly one comment and clears the confirmed draft", confirmed, retryDetail.slice(0, 1500));
 
   /* --- 5. a document that does not compile --------------------------------- */
 
@@ -575,7 +582,7 @@ async function run() {
   const brokenTab = await openTab(`${BASE}/docs/${broken.slug}`, [
     SESSION,
   ]);
-  await selectPdf(brokenTab, broken.slug);
+  await selectPdf(brokenTab, broken.slug, { waitFrame: false });
   await requiredUntil("the Typst compiler diagnostic badge", () => brokenTab.eval(`return Boolean(document.querySelector('button[aria-label^="Diagnostics:"]'))`), 20000);
   await brokenTab.eval(`document.querySelector('button[aria-label^="Diagnostics:"]').click(); return true;`);
   const brokenDiagnostic = await until("the Typst source error at line 3", () => brokenTab.eval(`
