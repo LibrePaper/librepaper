@@ -192,7 +192,7 @@ Paste it into Grafana's login form and clear the clipboard afterward. `wl-copy` 
 
 The deploy command bootstraps or updates the `librepaper_metrics` PostgreSQL role before starting the monitoring containers. It can repair an existing database volume as well as prepare a new one. The role receives `pg_monitor` only, and its password is kept in `.env` with mode 600.
 
-To rotate the Grafana password, follow [the kit README](../../tools/deploy/docker/README.md#passwords-and-upgrades), with `PRODUCTION_ADMIN_PASSWORD` in SOPS as the `.env` value, then deploy.
+To rotate the Grafana password, follow [the kit README](../../tools/deploy/docker/README.md#monitoring), with `PRODUCTION_ADMIN_PASSWORD` in SOPS as the `.env` value, then deploy.
 
 Compose waits for service health during deployment. The deploy then recreates only Prometheus so it reads the newly copied scrape and alert configuration, and the verifier retries temporary Prometheus and Grafana startup failures for up to a minute. It confirms Grafana credentials work and anonymous API access is denied, ensures `/metrics`, `/api/status`, and Prometheus APIs are not public, checks that exactly the LibrePaper, Node Exporter, and PostgreSQL exporter scrape targets are up, and waits for recent LibrePaper samples, a fresh successful snapshot, and `pg_up == 1`. It also validates that the provisioned dashboard has panels.
 
