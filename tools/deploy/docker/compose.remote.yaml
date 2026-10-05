@@ -1,0 +1,64 @@
+# Remote database deployment: LibrePaper and proxy, no PostgreSQL. Used with
+# docker compose -f compose.remote.yaml up -d
+#
+# config.toml must set storage.database_url to the full URL, with
+# ?sslmode=verify-full for a managed database.
+
+name: librepaper
+
+x-bounded-logs: &bounded-logs
+  driver: local
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  librepaper:
+    build:
+      context: .
+      args:
+        SOURCE: ${LIBREPAPER_SOURCE:-release}
+        LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:-v0.0.20}
+    restart: unless-stopped
+    logging: *bounded-logs
+    command:
+      - admin
+      - serve
+      - --config
+      - /etc/librepaper/config.toml
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - data:/var/lib/librepaper
+      - backups:/var/backups/librepaper
+      - ./${LIBREPAPER_CONFIG_FILE:-config.toml}:/etc/librepaper/config.toml:ro
+    networks: [internal, edge]
+
+  caddy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    logging: *bounded-logs
+    depends_on: [librepaper]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge]
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
+  internal:
+    internal: true
+
+volumes:
+  data:
+  backups:
+  caddy-data:
+  caddy-config:

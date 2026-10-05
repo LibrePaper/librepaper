@@ -1,47 +1,57 @@
-# Copy to config.toml and edit the public origins before starting Compose.
-# Configuration is explicit: environment variables are read only where a
-# value below contains an { env = "NAME" } reference.
+# The one file to edit. Copy to config.toml, set the two origins, start.
+# Everything not listed here has a default; see docs/host.md.
 
-[server]
-address = "0.0.0.0:8080"
-local_companion = false
-
+# app is the application. docs serves published documents and must be a
+# different host, because a document is code and the browser is what keeps
+# it out of a reader's session. Both names need a DNS record pointing here.
 [origins]
 app = "https://paper.example"
 docs = "https://docs.paper.example"
 
+# Sign-in needs at least one provider. Callback URLs:
+# GitHub  https://paper.example/auth/callback
+# Google  https://paper.example/auth/callback/google
+[auth.github]
+client_id = "replace"
+client_secret = "replace"
+
+# [auth.google]
+# client_id = "replace"
+# client_secret = "replace"
+
+# The bundled database, over the socket compose.yaml shares with it. For a
+# database elsewhere (compose.remote.yaml) write the full URL instead, with
+# ?sslmode=verify-full for a managed service:
+# database_url = "postgresql://user:password@db.example/librepaper?sslmode=verify-full"
 [storage]
 directory = "/var/lib/librepaper"
 database_url = { env = "LIBREPAPER_DATABASE_URL" }
-database_connections = 20
-fsync = true
-object_store = "filesystem"
 
-# Enable a provider only after placing both values in .env. A reference to a
-# missing or empty variable is a configuration error, so neither credential
-# is silently treated as configured.
-# [auth.github]
-# client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }
-# client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }
-#
-# [auth.google]
-# client_id = { env = "LIBREPAPER_GOOGLE_CLIENT_ID" }
-# client_secret = { env = "LIBREPAPER_GOOGLE_CLIENT_SECRET" }
-
+# Who may publish and comment: "any" signed-in account, a GitHub login, a
+# verified Google address, or "@example.org". "anyone" also allows
+# anonymous comments.
 [access]
-# Any signed-in account may publish; replace this with an allowlist if needed.
 publishers = ["any"]
-# Any signed-in account may comment; anonymous comments require "anyone".
 commenters = ["any"]
 
-[limits]
-publisher_storage_mib = 50
-deployment_storage_mib = 5120
-publisher_uploads_per_hour = 30
-
-[metrics]
-address = "0.0.0.0:9091"
-
+# Matches the edge network in compose.yaml; do not widen.
 [proxy]
-# Matches the fixed edge network in compose.yaml. Do not trust a wider range.
 trusted_networks = ["172.29.0.0/16"]
+
+# Optional. Per-publisher storage in MiB and uploads per rolling hour.
+# [limits]
+# publisher_storage_mib = 50
+# publisher_uploads_per_hour = 30
+
+# Optional. Without it, documents stay until deleted.
+# [retention]
+# expire_after = "30d"
+# expire_from = "created"
+
+# Optional. Uncomment to override port 8080 or enable on localhost only.
+# [server]
+# address = "0.0.0.0:8080"
+
+# Optional. Used only with compose.monitoring.yaml.
+# [metrics]
+# address = "0.0.0.0:9091"

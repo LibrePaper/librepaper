@@ -1,7 +1,6 @@
 # Monitoring: Prometheus, Grafana and the host and PostgreSQL exporters, added
-# to compose.yaml. Compose interpolates every ${VAR:?} in a file even for
-# inactive profiles, so this is a separate file rather than a profile. Enable it
-# with COMPOSE_FILE=compose.yaml:compose.monitoring.yaml in .env.
+# to compose.yaml. Enable with COMPOSE_FILE=compose.yaml:compose.monitoring.yaml
+# exported in the shell or in an optional .env.
 
 name: librepaper
 
@@ -13,16 +12,8 @@ x-bounded-logs: &bounded-logs
 
 services:
   postgres:
-    environment:
-      POSTGRES_EXPORTER_PASSWORD: ${POSTGRES_EXPORTER_PASSWORD:?set POSTGRES_EXPORTER_PASSWORD in .env}
     volumes:
       - ./monitoring-user.sh:/docker-entrypoint-initdb.d/20-monitoring-user.sh:ro
-
-  librepaper:
-    environment:
-      # Blank monitoring secrets inherited from env_file.
-      POSTGRES_EXPORTER_PASSWORD: ""
-      GRAFANA_ADMIN_PASSWORD: ""
 
   prometheus:
     image: prom/prometheus:v3.15.0
@@ -54,11 +45,11 @@ services:
       prometheus:
         condition: service_healthy
     environment:
-      GF_SERVER_ROOT_URL: https://${DOMAIN}/admin/monitoring/
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/librepaper.json
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      # Forced to change at first login; only seeds a fresh volume.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_USERS_ALLOW_ORG_CREATE: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
@@ -79,7 +70,6 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     networks: [internal, edge]
-    # The UI and its authenticated API are reachable through Caddy only.
 
   node-exporter:
     image: prom/node-exporter:v1.12.1
@@ -109,12 +99,10 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATA_SOURCE_URI: postgres:5432/librepaper?sslmode=disable
-      DATA_SOURCE_USER: librepaper_metrics
-      DATA_SOURCE_PASS: ${POSTGRES_EXPORTER_PASSWORD:?set POSTGRES_EXPORTER_PASSWORD in .env}
+      DATA_SOURCE_NAME: postgresql:///librepaper?host=/var/run/postgresql&user=librepaper_metrics&sslmode=disable
+    volumes:
+      - pgsocket:/var/run/postgresql
     networks: [internal]
-    # The exporter uses built-in aggregate PostgreSQL statistics only. It does
-    # not collect statement text or publish database connection credentials.
 
 volumes:
   prometheus:
