@@ -214,6 +214,8 @@ check_application_config() {
 start_application() {
 	local mode="$1"
 	step "Containers: install checked config and start $mode image"
+	# The candidate carries its own SQLx migrations and applies them at startup;
+	# source-checkout migration files do not gate this release or local-binary path.
 	if [ "$mode" = local ]; then
 		note "kept the checked local binary available for future Docker rebuilds"
 	fi

@@ -7,7 +7,7 @@ title: "Self-hosting"
 
 ## Docker Compose
 
-The kit in [`deploy/`](../deploy/) runs PostgreSQL, LibrePaper and Caddy. You edit one file, `config.toml`. Needs Docker Compose 2.24 or newer and ports 80 and 443 reachable from the internet.
+The kit in `deploy/` runs PostgreSQL, LibrePaper and Caddy. You edit one file, `config.toml`. Needs Docker Compose 2.24 or newer and ports 80 and 443 reachable from the internet.
 
 ```sh
 cd deploy
