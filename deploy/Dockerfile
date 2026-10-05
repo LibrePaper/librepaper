@@ -114,9 +114,9 @@ USER librepaper
 # Both origins arrive on this one port; the server routes them by Host. 9091 is
 # the metrics listener.
 EXPOSE 8080 9091
-# Loopback health checks do not depend on the public origin in librepaper.toml.
+# Bounded readiness checks do not depend on the public origin in the config.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-	CMD wget -qO- http://127.0.0.1:8080/health >/dev/null || exit 1
+	CMD wget -qO- http://127.0.0.1:8080/ready >/dev/null || exit 1
 
 ENTRYPOINT ["librepaper"]
 CMD ["admin", "serve", "--config", "/etc/librepaper/librepaper.toml"]

@@ -14,6 +14,10 @@ Needs Docker Compose 2.24 or newer and ports 80 and 443 reachable from the inter
 ```sh
 cd deploy
 # edit librepaper.toml: [origins] and one [auth.*] table
+# First start only: append a private Grafana admin password to .env.
+umask 077
+printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 32)" >> .env
+chmod 600 .env
 docker compose up -d
 ```
 
@@ -23,6 +27,11 @@ Before the first start:
 - OAuth callback URLs: `https://<app-origin>/auth/callback` (GitHub), `https://<app-origin>/auth/callback/google` (Google).
 - `[access]`: `publishers` and `commenters` take `["any"]` or GitHub logins, verified Google addresses and `@domain` entries.
 - `[retention]` is off by default.
+- Compose requires a nonempty `GRAFANA_ADMIN_PASSWORD` from `.env` or the
+  environment before it starts. Keep `.env` private and preserve this value:
+  Grafana uses it to initialize a new volume, while an existing Grafana volume
+  keeps its current password. The production deployment helper continues to
+  write this setting atomically with mode 600.
 
 ### Remote database
 
@@ -38,10 +47,22 @@ Delete the `postgres` and `postgres-exporter` services in `compose.yaml`, remove
 
 ### Monitoring
 
-- Grafana at `https://<app-origin>/admin/monitoring/`, user `admin`, password `admin` until changed at first login.
+- Grafana at `https://<app-origin>/admin/monitoring/`, user `admin`, with the
+  password set in `.env` above. Changing `.env` later does not rotate a password
+  in an existing Grafana volume; rotate it in Grafana and update `.env` to keep
+  fresh-volume recovery consistent.
 - Prometheus, Grafana and exporters start with `docker compose up -d`.
 - Prometheus and the exporters stay on the private Compose network. Grafana is
-  available through the HTTPS proxy and uses its own login.
+  available through the HTTPS proxy only on the configured app origin. Caddy
+  checks the incoming Host with LibrePaper before its monitoring redirect or
+  Grafana proxy; Grafana also requires its own login.
+- Public Grafana access depends on LibrePaper and its host-check endpoint being
+  reachable. Use external uptime monitoring too: the monitoring stack on this
+  VPS cannot report an outage when the VPS itself is unreachable.
+- Docker marks LibrePaper ready only while its configured database and writer
+  are usable. `/health` remains a liveness endpoint. The container allows
+  30 seconds for graceful shutdown. Losing the writer session or timing out its
+  database probe makes the app exit; Docker then restarts it to reclaim ownership.
 - Prometheus keeps 30 days, capped at 8 GB.
 - `prometheus.yaml` and `grafana.json` live at the root of `deploy/`; alert
   rules and Grafana provisioning stay under `deploy/monitoring/`.

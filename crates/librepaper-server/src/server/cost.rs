@@ -2,6 +2,24 @@
 
 use super::*;
 use axum::body::HttpBody;
+
+fn host_check_response(origins: &origins::Origins, method: &Method, host: &str) -> Reply {
+    if method != Method::GET {
+        let mut response = plain(405, "method not allowed");
+        set(&mut response, "cache-control", "no-store");
+        return response;
+    }
+    if !origins.is_app_authority(host) {
+        let mut response = plain(421, "this host is not the application host");
+        set(&mut response, "cache-control", "no-store");
+        return response;
+    }
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::NO_CONTENT;
+    set(&mut response, "cache-control", "no-store");
+    response
+}
+
 pub struct CostMeter {
     requests: Option<governor::DefaultKeyedRateLimiter<String>>,
     pub transfers: Arc<tokio::sync::Semaphore>,
@@ -207,6 +225,13 @@ async fn middleware_inner(
 ) -> Reply {
     let path = request.uri().path().to_string();
     let method = request.method().clone();
+    // Caddy's forward_auth probe deliberately preserves the public Host. It
+    // answers only for the configured application authority, before ordinary
+    // origin admission, authentication, or request-budget consumption.
+    if path == "/api/monitoring/host-check" {
+        let host = origins::header(request.headers(), "host").unwrap_or_default();
+        return host_check_response(&server.origins, &method, &host);
+    }
     // The reverse proxy asks whether we serve a hostname before obtaining a
     // certificate for it. This must be answered before the host check, because
     // the proxy addresses it with a Host header we do not serve.
@@ -234,6 +259,30 @@ async fn middleware_inner(
     let Some(arrival) = server.origins.resolve(&host) else {
         return plain(421, "this host is not served by this deployment");
     };
+    // Liveness stays independent of database and writer health. Readiness is
+    // a bounded probe of the dedicated lease session and is intentionally not
+    // charged to the ordinary request budget.
+    if path == "/health" {
+        return write_json(200, &json!({"ok":true}));
+    }
+    if path == "/ready" {
+        if method != Method::GET {
+            return plain(405, "method not allowed");
+        }
+        let mut response = if server.check_ready().await {
+            plain(200, "ready")
+        } else {
+            plain(503, "not ready")
+        };
+        set(&mut response, "cache-control", "no-store");
+        return response;
+    }
+    // The lease verifier consumes a failed session. Once that happens this
+    // process must stop admitting work and let its supervisor start a clean
+    // process with a newly claimed lease.
+    if server.writer_is_lost() {
+        return plain(503, "writer ownership lost");
+    }
     // Mutations must declare their length, because without one the only bound
     // would be a ceiling, and there is no ceiling any more. Four times the
     // declared length is reserved from the memory budget -- the same budget
@@ -335,8 +384,6 @@ async fn middleware_inner(
         } else {
             write_json(200, &server.cost_snapshot().await)
         }
-    } else if path == "/health" {
-        write_json(200, &json!({"ok":true}))
     } else {
         next.run(request).await
     };
@@ -547,5 +594,168 @@ mod agent_scope_tests {
         assert_eq!(agent_document_slug("/api/account/erase"), None);
         assert_eq!(agent_document_slug("/api/documents"), None);
         assert_eq!(agent_document_slug("/api/documents/"), None);
+    }
+}
+
+#[cfg(test)]
+mod monitoring_host_check_tests {
+    use super::host_check_response;
+    use crate::server::origins::Origins;
+    use axum::http::Method;
+
+    #[test]
+    fn host_check_accepts_only_the_configured_app_authority() {
+        let origins = Origins::configure("https://paper.example", None).unwrap();
+        for host in ["paper.example", "paper.example:443"] {
+            let response = host_check_response(&origins, &Method::GET, host);
+            assert_eq!(response.status(), 204, "{host:?}");
+            assert_eq!(response.headers()["cache-control"], "no-store");
+        }
+        for host in [
+            "docs.paper.example",
+            "sandbox.example",
+            "evil.example",
+            "localhost:8080",
+            "127.0.0.1:8080",
+            "",
+        ] {
+            assert_eq!(
+                host_check_response(&origins, &Method::GET, host).status(),
+                421,
+                "{host:?} must be rejected"
+            );
+        }
+        let custom_docs =
+            Origins::configure("https://paper.example", Some("https://sandbox.example")).unwrap();
+        assert_eq!(
+            host_check_response(&custom_docs, &Method::GET, "sandbox.example").status(),
+            421
+        );
+        assert_eq!(
+            host_check_response(&origins, &Method::POST, "paper.example").status(),
+            405
+        );
+    }
+}
+
+#[cfg(test)]
+mod writer_readiness_tests {
+    use super::*;
+    use crate::server::http_test_support::deployment;
+    use librepaper_engine::storage::store::DocumentInput;
+    use std::net::SocketAddr;
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_lost_writer_makes_readiness_fail_and_notifies_the_serving_task() {
+        let Some(deployment) = deployment(
+            DocumentInput {
+                slug: "writer-readiness-loss".into(),
+                title: "Writer readiness".into(),
+                source: "# Writer readiness\n".into(),
+                source_format: "markdown".into(),
+                main: "paper.md".into(),
+            },
+            vec![],
+            "owner",
+            "",
+        )
+        .await
+        else {
+            return;
+        };
+        let catalog = deployment.catalog.clone();
+        let mut server = deployment.server;
+        server.install_writer(deployment._writer);
+        let server = Arc::new(server);
+        let lost_signal = server.clone();
+        let serving_loss = tokio::spawn(async move { lost_signal.writer_loss().await });
+
+        let writer = server.writer.as_ref().unwrap();
+        let writer_guard = writer.lock().await;
+        assert!(!server.check_ready().await);
+        assert!(
+            !server.writer_is_lost(),
+            "mutex contention is not evidence of lease loss"
+        );
+        drop(writer_guard);
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = server
+            .clone()
+            .router()
+            .into_make_service_with_connect_info::<SocketAddr>();
+        let serving = tokio::spawn(async move { axum::serve(listener, app).await });
+        let client = reqwest::Client::new();
+        let base = format!("http://{address}");
+
+        assert_eq!(
+            client
+                .get(format!("{base}/ready"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+
+        // The deployment's session-scoped advisory lock identifies exactly
+        // the installed writer connection. Terminating it models the
+        // irreversible session loss that PostgreSQL reports to the process.
+        let lock_key = 0x4c_50_44_4f_43_4f_57_4e_u64 as i64;
+        let backend: i32 = sqlx::query_scalar(
+            "SELECT pid FROM pg_locks WHERE locktype='advisory' AND mode='ExclusiveLock' \
+             AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) \
+             AND granted AND classid::bigint=((($1::bigint >> 32) & 4294967295)) \
+             AND objid::bigint=($1::bigint & 4294967295)",
+        )
+        .bind(lock_key)
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        let terminated: bool = sqlx::query_scalar("SELECT pg_terminate_backend($1)")
+            .bind(backend)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert!(terminated, "terminate the installed writer session");
+
+        assert_eq!(
+            client
+                .get(format!("{base}/ready"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            503
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(1), serving_loss)
+            .await
+            .expect("lease loss must wake the serving task")
+            .expect("lease loss waiter must finish");
+        assert_eq!(
+            client
+                .get(format!("{base}/health"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200,
+            "liveness remains independent of database readiness"
+        );
+        assert_eq!(
+            client
+                .get(format!("{base}/api/config"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            503,
+            "ordinary requests stop being admitted after lease loss"
+        );
+        serving.abort();
     }
 }

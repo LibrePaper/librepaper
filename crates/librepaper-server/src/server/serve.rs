@@ -1,7 +1,7 @@
 //! `librepaper admin serve`: the whole service in this process.
 
 use std::collections::HashMap;
-use std::future::Future;
+use std::future::{Future, IntoFuture};
 use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -635,13 +635,27 @@ pub async fn serve(options: ServeOptions) {
     };
 
     let closing_catalog = instance.store.catalog.clone();
-    let router = instance.router();
-    let serve_result = axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown)
-    .await;
+    let router = instance.clone().router();
+    let mut serving = Box::pin(
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown)
+        .into_future(),
+    );
+    let serve_result = tokio::select! {
+        result = &mut serving => result,
+        _ = instance.writer_loss() => {
+            // The room cache may contain unacknowledged edits whose flush
+            // requires the lease that was just lost. Do not enter graceful
+            // shutdown and flush through stale ownership; let the process
+            // supervisor restart us after PostgreSQL releases the session.
+            die("deployment writer ownership was lost; exiting for supervisor recovery");
+        }
+    };
+    drop(serving);
+    drop(instance);
     if let Some(local) = local {
         (local.stop)().await;
     }

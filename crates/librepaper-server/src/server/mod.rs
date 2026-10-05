@@ -193,6 +193,8 @@ pub struct Server {
     /// the router becomes reachable; test servers that never accept durable
     /// source writes may leave it absent.
     writer: Option<tokio::sync::Mutex<librepaper_engine::storage::postgres::WriterLease>>,
+    writer_lost: std::sync::atomic::AtomicBool,
+    writer_lost_notify: tokio::sync::Notify,
     pub shell: HashMap<String, ShellFile>,
     pub app: GithubApp,
     /// The other way in. Configured from the environment alone, and set after
@@ -848,6 +850,8 @@ impl Server {
         Server {
             documents,
             writer: None,
+            writer_lost: std::sync::atomic::AtomicBool::new(false),
+            writer_lost_notify: tokio::sync::Notify::new(),
             shell,
             app,
             google: GoogleApp::default(),
@@ -884,12 +888,82 @@ impl Server {
     }
 
     pub async fn verify_writer(&self) -> Result<i64, librepaper_engine::storage::postgres::Error> {
+        if self.writer_lost.load(Ordering::Acquire) {
+            return Err(librepaper_engine::storage::postgres::Error::Ownership(
+                "writer ownership was lost".into(),
+            ));
+        }
         let writer = self.writer.as_ref().ok_or_else(|| {
             librepaper_engine::storage::postgres::Error::Ownership("writer is not ready".into())
         })?;
         let mut writer = writer.lock().await;
-        writer.verify().await?;
-        Ok(writer.epoch())
+        self.verify_writer_locked(&mut writer).await
+    }
+
+    async fn verify_writer_locked(
+        &self,
+        writer: &mut librepaper_engine::storage::postgres::WriterLease,
+    ) -> Result<i64, librepaper_engine::storage::postgres::Error> {
+        if self.writer_lost.load(Ordering::Acquire) {
+            return Err(librepaper_engine::storage::postgres::Error::Ownership(
+                "writer ownership was lost".into(),
+            ));
+        }
+        match tokio::time::timeout(Duration::from_secs(2), writer.verify()).await {
+            Ok(Ok(())) => Ok(writer.epoch()),
+            Ok(Err(error)) => {
+                self.trip_writer_loss();
+                Err(error)
+            }
+            Err(_) => {
+                self.trip_writer_loss();
+                Err(librepaper_engine::storage::postgres::Error::Ownership(
+                    "writer ownership verification timed out".into(),
+                ))
+            }
+        }
+    }
+
+    fn trip_writer_loss(&self) {
+        if !self.writer_lost.swap(true, Ordering::AcqRel) {
+            self.writer_lost_notify.notify_one();
+        }
+    }
+
+    pub(crate) fn writer_is_lost(&self) -> bool {
+        self.writer_lost.load(Ordering::Acquire)
+    }
+
+    /// Wait for irreversible writer loss. `notify_one` stores a permit, and
+    /// the atomic check makes a loss that predates this waiter observable.
+    pub(crate) async fn writer_loss(&self) {
+        loop {
+            if self.writer_is_lost() {
+                return;
+            }
+            self.writer_lost_notify.notified().await;
+        }
+    }
+
+    /// Readiness intentionally probes the dedicated ownership session rather
+    /// than merely checking whether the HTTP process is alive. A stalled
+    /// probe is also terminal: the supervisor must restart a process whose
+    /// write ownership can no longer be established.
+    pub(crate) async fn check_ready(&self) -> bool {
+        if self.writer_is_lost() || self.writer.is_none() {
+            return false;
+        }
+        // Do not queue health probes behind another probe. Contention means
+        // this instance is temporarily unready; it says nothing about lease
+        // ownership and must not trigger a supervisor restart.
+        let Some(mut writer) = self
+            .writer
+            .as_ref()
+            .and_then(|writer| writer.try_lock().ok())
+        else {
+            return false;
+        };
+        self.verify_writer_locked(&mut writer).await.is_ok()
     }
 
     pub fn router(self: Arc<Server>) -> Router {

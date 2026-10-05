@@ -1,7 +1,7 @@
 # A whole small deployment: PostgreSQL, LibrePaper, and a proxy that obtains
 # certificates on-demand. The two origins come from librepaper.toml, and the proxy
-# learns them from the server (see caddy/Caddyfile), so Compose itself needs no
-# settings except the config file.
+# learns them from the server (see caddy/Caddyfile). Set the Grafana admin
+# password in .env before starting; see docs/host.md.
 #
 #   docker compose up -d
 #
@@ -57,6 +57,7 @@ services:
         # endpoint the Caddyfile relies on; upgrade by changing this tag.
         LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:-v0.0.21}
     restart: unless-stopped
+    stop_grace_period: 30s
     logging: *bounded-logs
     depends_on:
       postgres:
@@ -154,8 +155,8 @@ services:
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/librepaper.json
       GF_SECURITY_ADMIN_USER: admin
-      # Forced to change at first login; only seeds a fresh volume.
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Only seeds a fresh volume. Compose rejects an unset or empty value.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in deploy/.env before starting Grafana}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_USERS_ALLOW_ORG_CREATE: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"

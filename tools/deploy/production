@@ -369,7 +369,7 @@ reload_prometheus() {
 }
 
 verify() {
-	step "App: https://$APP/health"
+	step "App readiness: https://$APP/ready"
 	local health_deadline=$((SECONDS + HEALTH_DEADLINE_SECONDS))
 	local health_remaining connect_timeout
 	local health_ok=false
@@ -380,7 +380,7 @@ verify() {
 		[ "$health_remaining" -gt 0 ] || break
 		connect_timeout="$HTTP_CONNECT_TIMEOUT"
 		[ "$connect_timeout" -le "$health_remaining" ] || connect_timeout="$health_remaining"
-		if curl --connect-timeout "$connect_timeout" --max-time "$health_remaining" -fs -o /dev/null "https://$APP/health"; then
+		if curl --connect-timeout "$connect_timeout" --max-time "$health_remaining" -fs -o /dev/null "https://$APP/ready"; then
 			health_ok=true
 			break
 		fi
@@ -396,7 +396,7 @@ verify() {
 
 	if [ "$health_ok" = false ]; then
 		printf '\n'
-		die "https://$APP/health did not answer"
+		die "https://$APP/ready did not answer"
 	fi
 	if [ "$first_fail" = false ]; then
 		printf '\n'

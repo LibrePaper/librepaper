@@ -484,8 +484,10 @@ fn method_index(method: &str) -> usize {
 pub fn route_class(path: &str) -> &'static str {
     if path == "/" {
         "root"
-    } else if path == "/health" {
+    } else if path == "/health" || path == "/ready" {
         "health"
+    } else if path == "/api/monitoring/host-check" {
+        "api_monitoring"
     } else if path == "/api/status" {
         "api_status"
     } else if path == "/api/config" {

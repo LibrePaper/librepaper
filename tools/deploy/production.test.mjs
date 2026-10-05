@@ -533,7 +533,7 @@ test('verify checks both OAuth providers with unfollowed matching authorization 
   }
 });
 
-test('verify bounds every HTTP request and passes the health probe its remaining deadline', () => {
+test('verify bounds every HTTP request and passes the readiness probe its remaining deadline', () => {
   const f = fixture();
   try {
     const result = spawnSync(deploy, ['verify'], { cwd: repo, env: f.env, encoding: 'utf8' });
@@ -545,10 +545,10 @@ test('verify bounds every HTTP request and passes the health probe its remaining
       assert.ok(Number(connectTimeout) > 0, `${url} is missing a connect timeout`);
       assert.ok(Number(maxTime) > 0, `${url} is missing a total timeout`);
     }
-    const health = requests.find(([url]) => url === 'https://app.librepaper.org/health');
-    assert.ok(health, 'health probe was not recorded');
-    assert.ok(Number(health[1]) > 0 && Number(health[1]) <= 5, `unexpected health connect timeout ${health[1]}`);
-    assert.ok(Number(health[2]) > 0 && Number(health[2]) <= 120, `unexpected health total timeout ${health[2]}`);
+    const readiness = requests.find(([url]) => url === 'https://app.librepaper.org/ready');
+    assert.ok(readiness, 'readiness probe was not recorded');
+    assert.ok(Number(readiness[1]) > 0 && Number(readiness[1]) <= 5, `unexpected readiness connect timeout ${readiness[1]}`);
+    assert.ok(Number(readiness[2]) > 0 && Number(readiness[2]) <= 120, `unexpected readiness total timeout ${readiness[2]}`);
   } finally {
     f.cleanup();
   }

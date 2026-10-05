@@ -47,6 +47,9 @@ compose() (
   export LIBREPAPER_DEMO_BACKUP_CONFIG="$BACKUP_CONFIG_PATH"
   export LIBREPAPER_DEMO_APP_ORIGIN="$APP_ORIGIN"
   export LIBREPAPER_DEMO_SITE_ORIGIN="http://localhost:$SITE_PORT"
+  # The shared deployment compose requires an explicit password; this is a
+  # local-only seed that can be overridden for the demo.
+  export GRAFANA_ADMIN_PASSWORD="${LIBREPAPER_DEMO_GRAFANA_PASSWORD:-librepaper-demo-only}"
   export PORT SITE_PORT
   exec docker compose --project-name "$PROJECT" --project-directory "$ROOT/deploy" "${COMPOSE_FILES[@]}" "$@"
 )

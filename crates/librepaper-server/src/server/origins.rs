@@ -207,6 +207,18 @@ impl Origins {
         }
     }
 
+    /// Whether an authority is exactly the configured reader origin. This is
+    /// narrower than `resolve`: monitoring agents may need to distinguish the
+    /// public application host from the document host and from loopback aliases.
+    pub fn is_app_authority(&self, host: &str) -> bool {
+        let Some(authority) = normalize(host) else {
+            return false;
+        };
+        self.configured
+            .as_ref()
+            .is_some_and(|(reader, _)| reader.matches(&authority))
+    }
+
     /// A loopback request stands on its own origin pair, derived from the name
     /// it arrived on, so the reader that answers it agrees with the address in
     /// the browser's bar rather than with a public name it cannot reach.
@@ -621,5 +633,31 @@ mod tests {
         assert!(!origins.ask(""));
         // Loopback deployments serve nothing publicly.
         assert!(!Origins::loopback_only().ask("paper.example"));
+    }
+
+    #[test]
+    fn app_authority_accepts_only_the_configured_reader_authority() {
+        let origins = configured();
+        assert!(origins.is_app_authority("paper.example"));
+        assert!(origins.is_app_authority("paper.example:443"));
+        for host in [
+            "docs.paper.example",
+            "docs.sandbox.example",
+            "sandbox.example",
+            "evil.example",
+            "localhost:8080",
+            "127.0.0.1:8080",
+            "",
+        ] {
+            assert!(
+                !origins.is_app_authority(host),
+                "{host:?} is not the app host"
+            );
+        }
+        assert!(!Origins::loopback_only().is_app_authority("localhost:8080"));
+
+        let custom_docs =
+            Origins::configure("https://paper.example", Some("https://sandbox.example")).unwrap();
+        assert!(!custom_docs.is_app_authority("sandbox.example"));
     }
 }
