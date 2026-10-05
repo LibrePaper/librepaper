@@ -38,9 +38,10 @@ fi
 
 case "$state" in
 disabled)
-		[ "$validate_only" = 1 ] && exit 0
-		librepaper-backup-status disabled
-		exec sleep infinity
+			[ "$validate_only" = 1 ] && exit 0
+			librepaper-backup-status disabled
+			echo "backup startup: backups are disabled; configure [resticprofile] in resticprofile.toml to enable scheduled backups"
+			exec sleep infinity
 		;;
 enabled)
 		# Persist the enabled sentinel before merged-profile validation so invalid

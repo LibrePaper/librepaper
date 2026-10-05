@@ -116,4 +116,53 @@ grep -Fq 'librepaper-x86_64-pc-windows-msvc.zip' "$tmp/capture/bucket/librepaper
 grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing verified archive hash'
 [[ -e "$tmp/pushed" ]] || fail 'Scoop manifest was not pushed'
 
+# A release kit uses committed bytes even when the checkout has dirty config
+# and untracked credentials. It pins the same app version as its images.
+kit_source="$tmp/deploy-source"
+kit_output="$tmp/deploy-output"
+mkdir -p "$kit_source/deploy/caddy" "$kit_source/deploy/secrets" "$kit_output"
+for file in compose.yaml Dockerfile librepaper.toml setup; do
+  printf 'committed fixture %s\n' "$file" > "$kit_source/deploy/$file"
+done
+printf 'committed caddy\n' > "$kit_source/deploy/caddy/Caddyfile"
+printf 'committed operator secret\n' > "$kit_source/deploy/secrets/database_app_url"
+printf 'committed operator state\n' > "$kit_source/deploy/.setup-state.json"
+printf 'committed public tag placeholder\n' > "$kit_source/deploy/.env"
+printf '# Backups are disabled until an operator configures them.\n' > "$kit_source/deploy/resticprofile.toml"
+git -C "$kit_source" init -q
+git -C "$kit_source" config user.name Fixture
+git -C "$kit_source" config user.email fixture@example.invalid
+git -C "$kit_source" add deploy
+git -C "$kit_source" commit -qm 'release deployment files'
+kit_commit=$(git -C "$kit_source" rev-parse HEAD)
+printf 'dirty attacker config\n' > "$kit_source/deploy/librepaper.toml"
+printf 'operator secret\n' > "$kit_source/deploy/.env"
+printf 'operator secret\n' > "$kit_source/deploy/secrets/database_app_url"
+printf 'untracked secret\n' > "$kit_source/deploy/leaked-backup.txt"
+bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$kit_commit"
+kit_archive="$kit_output/librepaper-deploy-kit-v1.2.3.tar.gz"
+kit_extract="$tmp/deploy-extracted"
+mkdir "$kit_extract"
+tar -C "$kit_extract" -xzf "$kit_archive"
+[[ "$(cat "$kit_extract/deploy/.env")" == 'LIBREPAPER_VERSION=v1.2.3' ]] || fail 'deploy kit did not pin its release version'
+[[ "$(cat "$kit_extract/deploy/librepaper.toml")" == 'committed fixture librepaper.toml' ]] || fail 'deploy kit used dirty config instead of committed release bytes'
+[[ ! -e "$kit_extract/deploy/secrets/database_app_url" ]] || fail 'deploy kit included a secret file'
+[[ ! -e "$kit_extract/deploy/.setup-state.json" ]] || fail 'deploy kit included operator setup state'
+[[ ! -e "$kit_extract/deploy/leaked-backup.txt" ]] || fail 'deploy kit included an untracked file'
+[[ "$(cat "$kit_extract/deploy/RELEASE")" == *'app_image=ghcr.io/librepaper/librepaper:v1.2.3'* ]] || fail 'deploy kit app image does not match release'
+[[ "$(cat "$kit_extract/deploy/RELEASE")" == *'backup_image=ghcr.io/librepaper/librepaper-backup:v1.2.3'* ]] || fail 'deploy kit backup image does not match release'
+(cd "$kit_output" && sha256sum -c librepaper-deploy-kit-v1.2.3.tar.gz.sha256 >/dev/null) || fail 'deploy kit checksum did not verify'
+
+if bash "$root/tools/release/package-deploy-kit.sh" v1.2.3-rc.1 "$kit_source" "$kit_output" "$kit_commit" >/dev/null 2>&1; then
+  fail 'deploy kit accepted a prerelease tag'
+fi
+
+printf '[resticprofile]\nrepository = "s3://private-bucket"\n' > "$kit_source/deploy/resticprofile.toml"
+git -C "$kit_source" add deploy/resticprofile.toml
+git -C "$kit_source" commit -qm 'enable restic credentials in committed profile'
+enabled_commit=$(git -C "$kit_source" rev-parse HEAD)
+if bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$enabled_commit" >/dev/null 2>&1; then
+  fail 'deploy kit accepted an enabled restic profile'
+fi
+
 echo 'release packaging mocks passed'

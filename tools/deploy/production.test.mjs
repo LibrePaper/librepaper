@@ -35,6 +35,9 @@ function fixture({
   sopsFailureKey = '',
   configCheckFailure = false,
   backupCheckFailure = false,
+  migrateHelpFailure = false,
+  migrateFailure = false,
+  caddyCheckFailure = false,
   localKitConfig = '',
   backupConfig = '',
   runningConfig = 'previous container config\n',
@@ -55,6 +58,7 @@ function fixture({
   const curlCallsFile = path.join(root, 'curl-calls');
   const composeUpFile = path.join(root, 'compose-up');
   const orderFile = path.join(root, 'order');
+  const setupCallsFile = path.join(root, 'setup-calls');
   const caddyTimeoutFile = path.join(root, 'caddy-timeout');
   const realTimeout = process.env.PATH.split(path.delimiter)
     .map((directory) => path.join(directory, 'timeout'))
@@ -103,7 +107,7 @@ exclude_backup_config=no
 ignore_existing=no
 for arg do
   case "$arg" in
-    --exclude=/librepaper.toml) exclude_config=yes ;;
+    --exclude=/librepaper.toml|--exclude=/librepaper.toml*) exclude_config=yes ;;
     --exclude=/resticprofile.toml) exclude_backup_config=yes ;;
     --ignore-existing) ignore_existing=yes ;;
   esac
@@ -128,6 +132,10 @@ case "$destination" in
   *:librepaper/resticprofile.toml)
     [ "$ignore_existing" = yes ] || exit 95
     [ -e "$REMOTE_ROOT/resticprofile.toml" ] || cp "$source" "$REMOTE_ROOT/resticprofile.toml"
+    ;;
+  *:librepaper/librepaper.toml)
+    [ "$ignore_existing" = yes ] || exit 97
+    [ -e "$REMOTE_ROOT/librepaper.toml" ] || cp "$source" "$REMOTE_ROOT/librepaper.toml"
     ;;
 esac`);
 mockCommand(bin, 'ssh', `
@@ -157,7 +165,16 @@ case "$command" in
     printf 'caddy-reload\\n' >> "$ORDER_FILE"
     [ "$CADDY_RELOAD_FAILURE" = 0 ]
     ;;
-  'cat >> librepaper/caddy/Caddyfile') mkdir -p "$REMOTE_ROOT/caddy"; cat >> "$REMOTE_ROOT/caddy/Caddyfile" ;;
+  *'Caddyfile.candidate.tmp'*) mkdir -p "$REMOTE_ROOT/caddy"; cat > "$REMOTE_ROOT/caddy/Caddyfile.candidate.tmp"; chmod 644 "$REMOTE_ROOT/caddy/Caddyfile.candidate.tmp"; mv "$REMOTE_ROOT/caddy/Caddyfile.candidate.tmp" "$REMOTE_ROOT/caddy/Caddyfile.candidate" ;;
+  *'mv -f caddy/Caddyfile.candidate caddy/Caddyfile'*) mv "$REMOTE_ROOT/caddy/Caddyfile.candidate" "$REMOTE_ROOT/caddy/Caddyfile"; printf 'caddy-install\\n' >> "$ORDER_FILE" ;;
+  *'secrets/.github_client_id.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.github_client_id.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.github_client_id.tmp"; mv "$REMOTE_ROOT/secrets/.github_client_id.tmp" "$REMOTE_ROOT/secrets/github_client_id" ;;
+  *'secrets/.github_client_secret.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.github_client_secret.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.github_client_secret.tmp"; mv "$REMOTE_ROOT/secrets/.github_client_secret.tmp" "$REMOTE_ROOT/secrets/github_client_secret" ;;
+  *'secrets/.google_client_id.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.google_client_id.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.google_client_id.tmp"; mv "$REMOTE_ROOT/secrets/.google_client_id.tmp" "$REMOTE_ROOT/secrets/google_client_id" ;;
+  *'secrets/.google_client_secret.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.google_client_secret.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.google_client_secret.tmp"; mv "$REMOTE_ROOT/secrets/.google_client_secret.tmp" "$REMOTE_ROOT/secrets/google_client_secret" ;;
+  *'secrets/.grafana_admin_password.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.grafana_admin_password.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.grafana_admin_password.tmp"; mv "$REMOTE_ROOT/secrets/.grafana_admin_password.tmp" "$REMOTE_ROOT/secrets/grafana_admin_password" ;;
+  *'./setup status'*) printf 'state=ready database=local\n' ;;
+  *'./setup init'*) [ -f "$REMOTE_ROOT/librepaper.toml" ] || exit 98; printf '%s\n' "$command" >> "$SETUP_CALLS_FILE"; version=$(printf '%s' "$command" | sed -n 's/.*--version \\([^ ]*\\).*/\\1/p'); mkdir -p "$REMOTE_ROOT"; printf 'COMPOSE_FILE=compose.yaml\nLIBREPAPER_VERSION=%s\n' "$version" > "$REMOTE_ROOT/.env" ;;
+  *'./setup check'*) : ;;
   *'psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -q'*) cat > "$REMOTE_ROOT/metrics-role.sql" ;;
   *'sha256sum librepaper.candidate.tmp'*) sha256sum "$REMOTE_ROOT/librepaper.candidate.tmp" | cut -d ' ' -f1 ;;
   *'chmod 755 librepaper.candidate.tmp'*) chmod 755 "$REMOTE_ROOT/librepaper.candidate.tmp"; mv "$REMOTE_ROOT/librepaper.candidate.tmp" "$REMOTE_ROOT/librepaper.candidate" ;;
@@ -174,17 +191,25 @@ case "$command" in
       '{"data":{"result":[{"values":[[1,"1"],[2,"1"]]}]}}' \\
       '${pgUpHealthy ? '{"data":{"result":[{"value":[3,"1"]}]}}' : '{"data":{"result":[]}}'}'
     ;;
-  *'docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'*)
+  *'docker compose up -d --force-recreate --wait --wait-timeout 180 librepaper'*)
     cp "$REMOTE_ROOT/librepaper.toml" "$RUNNING_CONFIG_FILE"
     printf 'app-recreate\\n' >> "$ORDER_FILE"
     ;;
-  *'docker compose stop backup'*) printf 'backup-stop\\n' >> "$ORDER_FILE" ;;
   *'docker compose up -d --force-recreate --no-deps backup'*) printf 'backup-recreate\\n' >> "$ORDER_FILE" ;;
+  *'docker compose up -d --wait postgres'*) printf 'postgres-up\\n' >> "$ORDER_FILE" ;;
+  *'docker compose stop librepaper backup'*) printf 'app-backup-stop\\n' >> "$ORDER_FILE" ;;
+  *'docker compose run --rm --no-deps migrate admin migrate --help'*) printf 'migrate-help\\n' >> "$ORDER_FILE"; [ "$MIGRATE_HELP_FAILURE" = 0 ] ;;
+  *'docker compose run --rm --no-deps migrate'*) printf 'migrate-run\\n' >> "$ORDER_FILE"; [ "$MIGRATE_FAILURE" = 0 ] ;;
+  *'docker compose run --rm --no-deps caddy caddy validate'*) printf 'caddy-validate\\n' >> "$ORDER_FILE"; [ "$CADDY_CHECK_FAILURE" = 0 ] ;;
   *'docker compose up -d --wait --wait-timeout 180'*)
+    cp "$REMOTE_ROOT/librepaper.toml" "$RUNNING_CONFIG_FILE"
     printf called >> "$COMPOSE_UP_FILE"
     printf 'stack-up\\n' >> "$ORDER_FILE"
     ;;
-  *'docker compose build librepaper backup'*) printf 'image-build\\n' >> "$ORDER_FILE" ;;
+  *'docker image prune -f'*) : ;;
+  *'docker compose logs --tail 50'*) : ;;
+  *'docker compose build librepaper migrate backup'*) printf 'image-build\\n' >> "$ORDER_FILE" ;;
+  *'docker compose pull librepaper migrate backup'*) printf 'image-pull\\n' >> "$ORDER_FILE" ;;
   *'docker compose run --rm --no-deps librepaper admin config check'*)
     printf 'config-check\\n' >> "$ORDER_FILE"
     [ "$CONFIG_CHECK_FAILURE" = 0 ]
@@ -195,7 +220,7 @@ case "$command" in
     printf 'backup-check\\n' >> "$ORDER_FILE"
     [ "$BACKUP_CHECK_FAILURE" = 0 ]
     ;;
-  *) : ;;
+  *) echo "unexpected SSH command: $command" >&2; exit 99 ;;
 esac`);
   mockCommand(bin, 'timeout', `
 set -eu
@@ -323,76 +348,81 @@ exit 0`);
       SOPS_FAILURE_KEY: sopsFailureKey,
       CONFIG_CHECK_FAILURE: configCheckFailure ? '1' : '0',
       BACKUP_CHECK_FAILURE: backupCheckFailure ? '1' : '0',
+      MIGRATE_HELP_FAILURE: migrateHelpFailure ? '1' : '0',
+      MIGRATE_FAILURE: migrateFailure ? '1' : '0',
+      CADDY_CHECK_FAILURE: caddyCheckFailure ? '1' : '0',
+      SETUP_CALLS_FILE: setupCallsFile,
     },
     makeCalledFile,
     oauthCallsFile,
     composeUpFile,
     kitSourceFile,
     orderFile,
+    setupCallsFile,
     runningConfigFile,
     backupConfigFile,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
 
-function runProduction(f, command, version = 'v0.0.9') {
+function runProduction(f, command, version = 'v0.0.21') {
   const args = command === 'deploy-local' ? ['deploy-local', f.executable]
     : [command, version];
   return spawnSync(deploy, args, { cwd: repo, env: f.env, encoding: 'utf8' });
 }
 
-test('deploy writes Google OAuth credentials to .env and keeps them out of output', () => {
+test('deploy writes individual scoped credential files and keeps values out of .env and output', () => {
   const f = fixture();
   try {
     const result = runProduction(f, 'deploy');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /5 keys decrypted/);
+    assert.match(result.stdout, /5 scoped credentials decrypted/);
     assert.match(result.stdout, /staged librepaper.toml/);
     assert.equal(readFileSync(f.kitSourceFile, 'utf8'), 'deploy/');
-    const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
-    assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
-    assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 7);
+    const secretDir = path.join(f.remote, 'secrets');
+    assert.equal(readFileSync(path.join(secretDir, 'google_client_id'), 'utf8'), 'google-id');
+    assert.equal(readFileSync(path.join(secretDir, 'google_client_secret'), 'utf8'), 'google-secret');
+    assert.equal(statSync(secretDir).mode & 0o777, 0o700);
+    assert.equal(statSync(path.join(secretDir, 'google_client_secret')).mode & 0o777, 0o444);
+    assert.doesNotMatch(readFileSync(path.join(f.remote, '.env'), 'utf8'), /google-id|google-secret|admin-secret/);
+    assert.match(readFileSync(f.setupCallsFile, 'utf8'), /--monitoring --production-overlay --project librepaper --version v0\.0\.21 --config-file \.\/librepaper\.toml\.candidate --no-local-build/);
+    assert.match(readFileSync(path.join(f.remote, '.env'), 'utf8'), /LIBREPAPER_VERSION=v0\.0\.21/);
     const productionConfig = readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8');
     const shippedBackupConfig = readFileSync(path.join(repo, 'deploy', 'resticprofile.toml'), 'utf8');
     assert.equal(readFileSync(f.backupConfigFile, 'utf8'), shippedBackupConfig);
     assert.equal(readFileSync(path.join(f.root, 'backup-config-at-preflight'), 'utf8'), shippedBackupConfig);
-    const override = readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8');
-    assert.match(override, /\.\/site:\/srv\/site:ro/);
-    assert.doesNotMatch(override, /SOURCE: local|librepaper\.candidate/);
     assert.match(readFileSync(path.join(f.remote, 'caddy', 'Caddyfile'), 'utf8'), /librepaper\.org/);
     assert.equal(existsSync(path.join(f.remote, 'Caddyfile')), false);
     assert.match(productionConfig, /\[origins\]\napp = "https:\/\/app\.librepaper\.org"/);
-    assert.match(productionConfig, /database_url = \{ env = "LIBREPAPER_DATABASE_URL" \}/);
+    assert.match(productionConfig, /database_url = \{ file = "\/run\/secrets\/database_url" \}/);
     const order = readFileSync(f.orderFile, 'utf8');
-    assert.ok(order.indexOf('image-build') < order.indexOf('config-check'));
+    assert.ok(order.indexOf('image-pull') < order.indexOf('config-check'));
     assert.ok(order.indexOf('config-check') < order.indexOf('backup-check'));
-    assert.ok(order.indexOf('backup-check') < order.indexOf('backup-stop'));
-    assert.ok(order.indexOf('backup-stop') < order.indexOf('config-install'));
-    assert.ok(order.indexOf('config-install') < order.indexOf('backup-recreate'));
+    assert.ok(order.indexOf('backup-check') < order.indexOf('migrate-help'));
+    assert.ok(order.indexOf('migrate-help') < order.indexOf('app-backup-stop'));
+    assert.ok(order.indexOf('app-backup-stop') < order.indexOf('config-install'));
+    assert.ok(order.indexOf('config-install') < order.indexOf('migrate-run'));
+    assert.ok(order.indexOf('migrate-run') < order.indexOf('stack-up'));
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
   } finally {
     f.cleanup();
   }
 });
 
-test('deploy-local stages Google OAuth credentials and the candidate binary for rebuilds', () => {
+test('deploy-local stages Google OAuth credentials as files and the candidate binary', () => {
   const f = fixture();
   try {
     const result = runProduction(f, 'deploy-local');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /5 keys decrypted/);
+    assert.match(result.stdout, /5 scoped credentials decrypted/);
     assert.match(result.stdout, /staged librepaper.toml/);
-    const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
-    assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_ID=google-id$/m);
-    assert.match(envFile, /^LIBREPAPER_GOOGLE_CLIENT_SECRET=google-secret$/m);
-    assert.equal(envFile.trimEnd().split('\n').length, 7);
+    assert.equal(readFileSync(path.join(f.remote, 'secrets/google_client_id'), 'utf8'), 'google-id');
+    assert.equal(readFileSync(path.join(f.remote, 'secrets/google_client_secret'), 'utf8'), 'google-secret');
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
+    const setupArgs = readFileSync(f.setupCallsFile, 'utf8');
+    assert.match(setupArgs, /--monitoring --production-overlay --project librepaper --version local-[0-9a-f]{12} --config-file \.\/librepaper\.toml\.candidate --local-build/);
+    assert.match(readFileSync(path.join(f.remote, '.env'), 'utf8'), /LIBREPAPER_VERSION=local-[0-9a-f]{12}/);
     assert.equal(existsSync(path.join(f.remote, 'librepaper.candidate')), true);
-    const override = readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8');
-    assert.match(override, /\.\/site:\/srv\/site:ro/);
-    assert.match(override, /SOURCE: local/);
-    assert.match(override, /librepaper\.candidate/);
   } finally {
     f.cleanup();
   }
@@ -415,9 +445,11 @@ for (const command of ['deploy', 'deploy-local']) {
       assert.equal(readFileSync(path.join(f.root, 'backup-config-at-preflight'), 'utf8'), backupConfig);
       assert.doesNotMatch(installed, /operator-local config/);
       assert.equal(readFileSync(f.runningConfigFile, 'utf8'), installed);
+      const imageAction = command === 'deploy-local' ? 'image-build' : 'image-pull';
       assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), [
-        'image-build', 'config-check', 'backup-check', 'backup-stop', 'config-install',
-        'app-recreate', 'backup-recreate', 'stack-up', 'caddy-reload',
+      imageAction, 'config-check', 'backup-check', 'migrate-help', 'caddy-validate', 'postgres-up',
+        'app-backup-stop', 'config-install', 'migrate-run', 'app-recreate', 'backup-recreate',
+        'caddy-install', 'stack-up', 'caddy-reload',
       ]);
       assert.equal(readFileSync(path.join(f.root, 'caddy-timeout'), 'utf8').trim(), '30');
     } finally {
@@ -433,8 +465,8 @@ for (const command of ['deploy', 'deploy-local']) {
       const result = runProduction(f, command);
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /Caddy configuration reload failed/);
-      assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n').slice(-2), [
-        'stack-up', 'caddy-reload',
+      assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n').slice(-3), [
+        'caddy-install', 'stack-up', 'caddy-reload',
       ]);
       assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:/);
     } finally {
@@ -459,6 +491,35 @@ test('a binary without TOML config support leaves the installed config and runni
   }
 });
 
+test('repeated deploys render Caddy from its template without duplicating site and redirect blocks', () => {
+  const f = fixture();
+  try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = runProduction(f, 'deploy');
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    }
+    const caddy = readFileSync(path.join(f.remote, 'caddy', 'Caddyfile'), 'utf8');
+    assert.equal((caddy.match(/librepaper\.org \{/g) ?? []).length, 1);
+    assert.equal((caddy.match(/www\.librepaper\.org, librepaper\.com/g) ?? []).length, 1);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('invalid Caddy candidate is rejected before stopping app and backup', () => {
+  const f = fixture({ caddyCheckFailure: true });
+  try {
+    const result = runProduction(f, 'deploy');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /candidate Caddy configuration is invalid/);
+    const order = readFileSync(f.orderFile, 'utf8');
+    assert.match(order, /caddy-validate/);
+    assert.doesNotMatch(order, /postgres-up|app-backup-stop|config-install|migrate-run|stack-up/);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test('an invalid backup candidate leaves the installed config and running services in place', () => {
   const f = fixture({ backupCheckFailure: true, localKitConfig: 'operator-local config\n' });
   try {
@@ -469,8 +530,35 @@ test('an invalid backup candidate leaves the installed config and running servic
     assert.equal(readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8'), 'previous production config\n');
     assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
     const order = readFileSync(f.orderFile, 'utf8');
-    assert.match(order, /image-build[\s\S]*config-check[\s\S]*backup-check/);
+    assert.match(order, /image-pull[\s\S]*config-check[\s\S]*backup-check/);
     assert.doesNotMatch(order, /backup-stop|config-install|app-recreate|backup-recreate|stack-up/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('an image without admin migrate support is rejected before stopping services', () => {
+  const f = fixture({ migrateHelpFailure: true });
+  try {
+    const result = runProduction(f, 'deploy');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /lacks the one-shot admin migrate command/);
+    const order = readFileSync(f.orderFile, 'utf8');
+    assert.match(order, /migrate-help/);
+    assert.doesNotMatch(order, /postgres-up|app-backup-stop|config-install|migrate-run|stack-up/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('failed migration leaves app and backup stopped and does not restart the stack', () => {
+  const f = fixture({ migrateFailure: true });
+  try {
+    const result = runProduction(f, 'deploy');
+    assert.notEqual(result.status, 0);
+    const order = readFileSync(f.orderFile, 'utf8');
+    assert.match(order, /app-backup-stop[\s\S]*config-install[\s\S]*migrate-run/);
+    assert.doesNotMatch(order, /stack-up|caddy-reload/);
   } finally {
     f.cleanup();
   }
@@ -572,7 +660,7 @@ test('verify rejects Google 200, 404, and wrong-provider redirects without revea
   }
 });
 
-test('deploy-local verifies and retains the copied candidate binary and keeps secrets out of output', () => {
+test('deploy-local verifies candidate binary and stores credentials outside .env', () => {
   const f = fixture();
   try {
     const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
@@ -580,14 +668,10 @@ test('deploy-local verifies and retains the copied candidate binary and keeps se
     assert.match(result.stdout, /verified SHA-256/);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|github-secret/);
     const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
-    assert.match(envFile, /GRAFANA_ADMIN_PASSWORD=admin-secret/);
-    assert.match(envFile, /^COMPOSE_FILE=compose.yaml:compose.override.yaml$/m);
-    assert.doesNotMatch(envFile, /^COMPOSE_PROFILES=/m);
-    assert.doesNotMatch(envFile, /POSTGRES_EXPORTER_PASSWORD/);
-    assert.equal(statSync(path.join(f.remote, '.env')).mode & 0o777, 0o600);
-    const override = readFileSync(path.join(f.remote, 'compose.override.yaml'), 'utf8');
-    assert.match(override, /SOURCE: local/);
-    assert.match(override, /librepaper.candidate/);
+    assert.doesNotMatch(envFile, /admin-secret|github-secret|google-id|google-secret/);
+    assert.equal(readFileSync(path.join(f.remote, 'secrets/grafana_admin_password'), 'utf8'), 'admin-secret');
+    assert.equal(statSync(path.join(f.remote, 'secrets/grafana_admin_password')).mode & 0o777, 0o444);
+    assert.equal(existsSync(path.join(f.remote, 'compose.override.yaml')), false);
     assert.equal(existsSync(path.join(f.remote, 'librepaper.candidate')), true);
   } finally {
     f.cleanup();
@@ -608,14 +692,13 @@ test('deploy-local refuses to replace the existing binary when transfer checksum
   }
 });
 
-test('deploy-local rejects unsafe .env passwords before any remote write', () => {
-  const secrets = { adminPassword: 'unsafe$#secret' };
+test('deploy-local safely writes shell metacharacters into isolated secret files', () => {
+  const secrets = { adminPassword: 'unsafe$#secret with spaces' };
   const f = fixture(secrets);
   try {
     const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /production passwords must use only ASCII letters/);
-    assert.deepEqual(readdirSync(f.remote), []);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(readFileSync(path.join(f.remote, 'secrets/grafana_admin_password'), 'utf8'), secrets.adminPassword);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /unsafe\$#secret/);
   } finally {
     f.cleanup();
@@ -657,12 +740,12 @@ test('deploy-local refuses monitoring readiness without PostgreSQL exporter heal
   }
 });
 
-test('deploy refuses an uninstrumented v0.0.8 release before writing remotely', () => {
+test('deploy refuses a release below the read-only migration API floor before writing remotely', () => {
   const f = fixture();
   try {
     const result = spawnSync(deploy, ['deploy', 'v0.0.8'], { cwd: repo, env: f.env, encoding: 'utf8' });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /v0.0.8 lacks metrics.*Use deploy-local/);
+    assert.match(result.stderr, /requires v0.0.21 or later.*admin migrate/);
     assert.deepEqual(readdirSync(f.remote), []);
   } finally {
     f.cleanup();

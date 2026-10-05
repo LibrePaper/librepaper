@@ -69,7 +69,7 @@ test("stable dispatch fetches the tag without moving the trusted checkout", (t) 
   assert.equal(git(data.checkout, "rev-parse", "HEAD"), data.workflowSha);
   assert.throws(() => git(data.checkout, "cat-file", "-e", `${data.releasedSha}^{commit}`));
 
-  assert.equal(resolve(data, { DISPATCH_TAG: "v1.2.3" }), "tag=v1.2.3\nproceed=true\n");
+  assert.equal(resolve(data, { DISPATCH_TAG: "v1.2.3" }), `tag=v1.2.3\nsha=${data.releasedSha}\nproceed=true\n`);
   assert.equal(git(data.checkout, "rev-parse", "HEAD"), data.workflowSha);
   assert.equal(git(data.checkout, "rev-parse", "refs/tags/v1.2.3^{commit}"), data.releasedSha);
   assert.doesNotThrow(() => git(data.checkout, "cat-file", "-e", `${data.releasedSha}^{commit}`));
@@ -81,6 +81,15 @@ test("workflow-run resolution rejects a stable tag on a different commit", (t) =
     resolve(data, { RELEASE_SHA: data.workflowSha, RUN_HEAD_BRANCH: "v1.2.3" }),
     "proceed=false\n",
   );
+});
+
+test("successful release workflow resolves the immutable tagged commit SHA", (t) => {
+  const data = fixture(t);
+  assert.equal(
+    resolve(data, { RELEASE_SHA: data.releasedSha, RUN_HEAD_BRANCH: "v1.2.3" }),
+    `tag=v1.2.3\nsha=${data.releasedSha}\nproceed=true\n`,
+  );
+  assert.equal(git(data.checkout, "rev-parse", "HEAD"), data.workflowSha);
 });
 
 test("missing stable and prerelease tags are skipped", (t) => {

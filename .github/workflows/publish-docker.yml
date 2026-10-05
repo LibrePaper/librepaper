@@ -1,7 +1,8 @@
 # Publish Docker image for a stable release.
-# The image is the release binary on Alpine, built from the same Dockerfile
-# the Compose kit uses, published after the Release workflow succeeds so the
-# download inside the build finds the archive.
+# The versioned application and backup images use the matching release
+# archive, Dockerfile, and backup hooks. The workflow helper runs from the
+# trusted default-branch workflow revision; only a successfully published
+# release tag from this repository is used as the build context.
 
 name: Publish Docker image
 
@@ -17,7 +18,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -44,6 +45,14 @@ jobs:
         shell: bash
         run: bash tools/release/resolve-stable-release.sh
 
+      - uses: actions/checkout@v6
+        if: steps.resolve.outputs.proceed == 'true'
+        with:
+          ref: ${{ steps.resolve.outputs.sha }}
+          path: release-source
+          fetch-depth: 1
+          persist-credentials: false
+
       - uses: docker/setup-qemu-action@v3
         if: steps.resolve.outputs.proceed == 'true'
 
@@ -60,11 +69,42 @@ jobs:
       - uses: docker/build-push-action@v6
         if: steps.resolve.outputs.proceed == 'true'
         with:
-          context: deploy
+          context: release-source/deploy
           platforms: linux/amd64,linux/arm64
+          target: app
           push: true
           build-args: LIBREPAPER_VERSION=${{ steps.resolve.outputs.tag }}
           tags: |
             ghcr.io/librepaper/librepaper:${{ steps.resolve.outputs.tag }}
             ghcr.io/librepaper/librepaper:latest
           provenance: false
+
+      - uses: docker/build-push-action@v6
+        if: steps.resolve.outputs.proceed == 'true'
+        with:
+          context: release-source/deploy
+          platforms: linux/amd64,linux/arm64
+          target: backup
+          push: true
+          build-args: LIBREPAPER_VERSION=${{ steps.resolve.outputs.tag }}
+          tags: |
+            ghcr.io/librepaper/librepaper-backup:${{ steps.resolve.outputs.tag }}
+            ghcr.io/librepaper/librepaper-backup:latest
+          provenance: false
+
+      # Publish the kit only after both release-matched images succeeded.
+      # Packaging reads the exact verified Git commit, never a dirty workspace.
+      - name: Package deployment kit
+        if: steps.resolve.outputs.proceed == 'true'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          RELEASE_SHA: ${{ steps.resolve.outputs.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/deploy-kit"
+          bash tools/release/package-deploy-kit.sh \
+            "$TAG" release-source "$RUNNER_TEMP/deploy-kit" "$RELEASE_SHA"
+          gh release upload "$TAG" \
+            "$RUNNER_TEMP/deploy-kit/librepaper-deploy-kit-$TAG.tar.gz" \
+            "$RUNNER_TEMP/deploy-kit/librepaper-deploy-kit-$TAG.tar.gz.sha256" \
+            --clobber

@@ -2,14 +2,16 @@
 # installs it as librepaper/librepaper.toml, mounted read-only at
 # /etc/librepaper/librepaper.toml in the application container.
 #
-# Every setting comes from this file. Secrets are read only through explicit
-# { env = "NAME" } references.
+# Application secrets are mounted individually by Compose and resolved from
+# these explicit file references. The production helper never writes their
+# values into Compose's .env file or the application configuration.
 
 # The container listens on a private port behind the reverse proxy, which
 # serves the public HTTPS origins.
 [server]
 address = "0.0.0.0:8080"
 local_companion = false
+migrate = false
 
 # app is the application and its API (other Host headers get 421); docs
 # isolates rendered documents; site is the project site used for sign-out
@@ -24,7 +26,7 @@ site = "https://librepaper.org"
 # object_store = "s3" and uncomment [storage.s3].
 [storage]
 directory = "/var/lib/librepaper"
-database_url = { env = "LIBREPAPER_DATABASE_URL" }
+database_url = { file = "/run/secrets/database_url" }
 database_connections = 20
 fsync = true
 object_store = "filesystem"
@@ -38,12 +40,12 @@ object_store = "filesystem"
 # Sign-in needs at least one provider, each with both values; omit a table to
 # disable it. Callbacks: /auth/callback (GitHub), /auth/callback/google.
 [auth.github]
-client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }
-client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }
+client_id = { file = "/run/secrets/github_client_id" }
+client_secret = { file = "/run/secrets/github_client_secret" }
 
 [auth.google]
-client_id = { env = "LIBREPAPER_GOOGLE_CLIENT_ID" }
-client_secret = { env = "LIBREPAPER_GOOGLE_CLIENT_SECRET" }
+client_id = { file = "/run/secrets/google_client_id" }
+client_secret = { file = "/run/secrets/google_client_secret" }
 
 # publishers: "any" signed-in account, a GitHub login, a verified Google
 # email, or @example.org (that exact domain, not subdomains). commenters take

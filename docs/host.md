@@ -2,308 +2,239 @@
 title: "Self-hosting"
 ---
 
-> **Warning:** LibrePaper is experimental. We do not recommend self-hosting
-> yet; this guide is for interested readers and system administrators.
+> LibrePaper is experimental. Self-host only if you can maintain the database,
+> storage, credentials, and recovery copies described here.
 
-## Docker Compose
+## Docker Compose quickstart
 
-The kit in `deploy/` runs PostgreSQL, LibrePaper and Caddy. Configure the app
-in `librepaper.toml`; scheduled backups use the separate `resticprofile.toml`.
-Needs Docker Compose 2.24 or newer and ports 80 and 443 reachable from the internet.
+The versioned kit in `deploy/` includes pinned app and backup images, Caddy,
+templates, and a setup helper. Install Docker Engine with Compose **2.24.4 or
+newer**, Python **3.11 or newer**, `openssl`, and `curl`. Open TCP ports 80 and
+443. `deploy/setup` validates config and writes non-secret Compose state; it
+does not start services or replace an existing database. Read the separate
+[credential guide](credentials.md) for the secret file inventory and rotation
+procedures.
+
+Set DNS for the app and docs origins to this host; the site origin is optional.
+In `deploy/`, edit `librepaper.toml` with those origins, access rules, and at least one OAuth
+provider. Put provider credentials in separate files under `secrets/`, using
+the names `github_client_id`, `github_client_secret`, `google_client_id`, and
+`google_client_secret` as needed. Restrict the directory to mode 0700 and files
+to 0444. Never put credentials in `.env`, `librepaper.toml`, shell arguments,
+or a shared `all-secret.env`. For monitoring, add
+`secrets/grafana_admin_password` before initialization.
 
 ```sh
 cd deploy
-# edit librepaper.toml: [origins] and one [auth.*] table
-# First start only: append a private Grafana admin password to .env.
 umask 077
-printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 32)" >> .env
-chmod 600 .env
-docker compose up -d
+mkdir -m 700 -p secrets
+read -r -p 'GitHub OAuth client ID: ' github_id
+read -r -s -p 'GitHub OAuth client secret: ' github_secret; printf '\n'
+printf '%s' "$github_id" | ./setup set-secret github_client_id
+printf '%s' "$github_secret" | ./setup set-secret github_client_secret
+unset github_id github_secret
+./setup init --database local
+./setup check
+docker compose up -d --wait
 ```
 
-Before the first start:
-- Both origin names need DNS records pointing here. Caddy gets a certificate for each on first request, after the server confirms the name; nothing else is configured.
-- PostgreSQL has no password: it is reachable only over a socket shared with the application container.
-- OAuth callback URLs: `https://<app-origin>/auth/callback` (GitHub), `https://<app-origin>/auth/callback/google` (Google).
-- `[access]`: `publishers` and `commenters` take `["any"]` or GitHub logins, verified Google addresses and `@domain` entries.
-- `[retention]` is off by default.
-- Compose requires a nonempty `GRAFANA_ADMIN_PASSWORD` from `.env` or the
-  environment before it starts. Keep `.env` private and preserve this value:
-  Grafana uses it to initialize a new volume, while an existing Grafana volume
-  keeps its current password. The production deployment helper continues to
-  write this setting atomically with mode 600.
+Local initialization creates separate random URLs/passwords for the app,
+migrations, backup, and optional metrics exporter. PostgreSQL stays on the
+private Compose network; it has no public host port. The runtime role cannot
+apply DDL. A one-shot migration service uses the database owner role. Check
+`./setup status`, `./setup check`, and `docker compose ps`. `/health` is a
+liveness endpoint; use `/ready` and container health to confirm database and
+writer readiness.
 
-### Remote database
+| Service | Status | Purpose |
+| --- | --- | --- |
+| `librepaper` | Core | Single app writer and HTTP API |
+| `migrate` | Core, one-shot | Applies schema changes with the owner role |
+| `postgres` | Core for local DB mode | Private local PostgreSQL |
+| `backup` | Core sidecar | Reports disabled/failing status; schedules work only when configured |
+| `caddy` | Core | HTTPS, certificates, reverse proxy, and static site |
+| Prometheus, Grafana, exporters | Optional | Private monitoring and database metrics |
 
-Delete the `postgres` and `postgres-exporter` services in `compose.yaml`, remove the `depends_on` and `pgsocket` lines under `librepaper`, and remove the `postgres` scrape job from `prometheus.yaml`. Set `storage.database_url` in `librepaper.toml` to the full URL. The exporter is configured for the bundled database role and socket. Add `?sslmode=verify-full` for a managed service.
+Caddy is the only service that publishes ports; the database and monitoring
+endpoints remain private.
 
-### Volumes
+## Credentials and external PostgreSQL
 
-- `postgres`: the database (documents, update log, comments)
-- `data`: immutable objects and the secrets that keep sessions and share links valid. Back it up even with S3.
-- `backups`: temporary exports and the local restic repository state
-- `backup-metrics`: backup status files read by Node Exporter
-- `caddy-data`: certificates
+Application credentials are mounted individually, read-only, from files in
+`deploy/secrets/`. Rotate a file by writing a replacement to a temporary file
+in the same protected directory, setting mode 0444, and atomically renaming it
+over the old file. Recreate the services that consume it. Rotate an OAuth
+secret at the provider too. For Grafana, rotate through Grafana's administrator
+interface and then update its secret file; changing the file alone does not
+change a password already stored in an existing Grafana volume. Revoke OAuth by
+disabling the provider credential, removing its file and `[auth.*]` table, and
+recreating the app.
 
-### Monitoring
+For a database password rotation, change one role at a time, atomically replace
+that service's URL file with the new URL, then recreate that role's consumer.
+The owner URL is used only by migrations, the runtime URL by the app, and the
+backup URL by the backup sidecar. Revoke a database credential with
+`ALTER ROLE role_name NOLOGIN` and terminate its existing sessions; remove its
+URL file after confirming no service still needs it. Re-enable the role only
+after installing a fresh password and updating the matching URL file.
 
-- Grafana at `https://<app-origin>/admin/monitoring/`, user `admin`, with the
-  password set in `.env` above. Changing `.env` later does not rotate a password
-  in an existing Grafana volume; rotate it in Grafana and update `.env` to keep
-  fresh-volume recovery consistent.
-- Prometheus, Grafana and exporters start with `docker compose up -d`.
-- Prometheus and the exporters stay on the private Compose network. Grafana is
-  available through the HTTPS proxy only on the configured app origin. Caddy
-  checks the incoming Host with LibrePaper before its monitoring redirect or
-  Grafana proxy; Grafana also requires its own login.
-- Public Grafana access depends on LibrePaper and its host-check endpoint being
-  reachable. Use external uptime monitoring too: the monitoring stack on this
-  VPS cannot report an outage when the VPS itself is unreachable.
-- Docker marks LibrePaper ready only while its configured database and writer
-  are usable. `/health` remains a liveness endpoint. The container allows
-  30 seconds for graceful shutdown. Losing the writer session or timing out its
-  database probe makes the app exit; Docker then restarts it to reclaim ownership.
-- Prometheus keeps 30 days, capped at 8 GB.
-- `prometheus.yaml` and `grafana.json` live at the root of `deploy/`; alert
-  rules and Grafana provisioning stay under `deploy/monitoring/`.
+For external PostgreSQL, create separate roles for runtime, migrations,
+backups, and metrics. Grant the runtime role only needed DML rights, make the
+migration role the schema owner, keep the backup role read-only, and grant the
+metrics role `pg_monitor`. Supply complete URLs in
+`database_app_url`, `database_owner_url`, `database_backup_url`, and
+`database_metrics_url` under `secrets/`; use generated URL-safe passwords.
+For example, read the URL from a protected file rather than putting it on the
+command line: `./setup set-secret database_app_url < /secure/path/app-url`.
+Then run `./setup init --database external`. Require `sslmode=verify-full`
+and a trusted server certificate. Do not reuse a superuser URL across
+services. The app holds its writer lease on a PostgreSQL session, so use
+session pooling if a pooler is present; transaction pooling can move the lease
+to a different backend session. Set `storage.database_connections` within the
+database connection limit, leaving capacity for migrations, backups, and
+monitoring.
 
-### Upgrade
+The supported topology has one app writer and one active backup scheduler per
+database. Room state, in-memory caches, and background jobs are process-local,
+and the writer lease rejects a second writer. Scale vertically or move the
+database and object storage to managed services while keeping one writer. Do
+not run two deployments against one database or data volume.
+
+## Optional monitoring
+
+Monitoring is opt-in. Supply a password without echoing it, then run
+`./setup init --monitoring` and `./setup check`:
 
 ```sh
-# Edit LIBREPAPER_VERSION in compose.yaml or export it
-docker compose stop backup
-LIBREPAPER_VERSION=<tag> docker compose up -d --build
+read -r -s -p 'Grafana admin password: ' grafana_password; printf '\n'
+printf '%s' "$grafana_password" | ./setup set-secret grafana_admin_password
+unset grafana_password
+./setup init --monitoring
+./setup check
 ```
 
-The backup sidecar starts after the app is healthy. Recreate it after
-replacing either configuration file, so its read-only bind mounts see the new files.
+Grafana is served at
+`https://<app-origin>/admin/monitoring/`; Prometheus and exporters stay on the
+private network. Use an external uptime monitor because the local stack cannot
+report a VPS outage.
 
-### Backups
+The backup sidecar starts even when backups are disabled so it can report the
+disabled state. An idle sidecar is not evidence of a successful backup.
+Backups stay disabled until `resticprofile.toml` has a valid
+`[resticprofile]` table.
 
-Backups stay disabled until `resticprofile.toml` has a named `[resticprofile]`
-table. A comments-only file disables backups. Keep application settings in
-`librepaper.toml`; put restic credentials in `[resticprofile.env]` or use
-resticprofile's `password-file` setting. LibrePaper's `{ env = ... }` and
-`{ file = ... }` references do not apply in the resticprofile file. Protect
-both files from other host users while keeping them readable by UID 10001, and
-keep off-host recovery copies of both. Recreate the sidecar and check snapshots:
+## Backups and recovery
+
+Keep application settings in `librepaper.toml`; repository credentials and
+backup settings belong in `resticprofile.toml` and use resticprofile's own
+secret handling. Configure a Restic repository, password, and any remote
+credentials, then recreate the backup container and validate the merged
+profile:
 
 ```sh
 docker compose up -d --force-recreate backup
-docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile snapshots
+docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml \
+  -n resticprofile show
+docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml \
+  -n resticprofile backup
+docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml \
+  -n resticprofile snapshots
 ```
 
-The sidecar exports with `admin backup`, snapshots, and prunes the export. It
-runs daily backups and checks the repository Monday at 06:00. Successful
-backups keep 48 hours plus 14 daily and 11 weekly snapshots. Gaps can extend
-those ages; stopping backups stops pruning. Pruning runs after a successful
-backup, and no fixed deletion window is promised.
+The default profile schedules a daily backup and a Monday repository check.
+Each backup contains a consistent PostgreSQL dump, referenced objects, both
+configs, and the session key. Move the repository off-host. Keep an encrypted
+off-host recovery packet with the matching kit/release, both configs, Restic
+repository location and password, remote-storage and OAuth provider
+credentials, a way to recreate database roles, and the matching session key.
+Keep access separate from the VPS.
 
-To migrate an older combined `config.toml`, keep the application tables in
-`librepaper.toml` and move the complete `[resticprofile]` subtree, including
-its nested tables, to `resticprofile.toml`. Remove that subtree from the app
-file; the app now rejects it. Keep `resticprofile.toml` comments-only to leave
-backups disabled.
+Before serving real documents, make a successful remote snapshot and restore it
+into a separate Compose project, database, and data volume. Verify a restored
+document, its objects, and the session key without replacing production data.
+Record release, snapshot age, elapsed time, and outcome; repeat after changing
+the backup format, storage backend, credentials, or a major release. A green
+backup status alone does not demonstrate that recovery works. Follow the
+[isolated recovery procedure](recovery.md) for the owner-role restore command,
+volume ownership, port and subnet isolation, and post-restore checks.
 
-Override repository, credentials, schedules, retention and notifications only.
-Keep the shipped sources, export hooks, lock and status paths. For versioned
-object stores, expire noncurrent versions too; pruning cannot remove them.
+Losing the session key invalidates existing sessions and prevents the server
+from revealing old share URLs. Existing URLs can still work if their database
+rows and objects are restored. Restore the matching key from the off-host
+packet rather than generating a replacement.
 
-Grafana reports status but does not deliver external alerts. Configure separate
-dead-man URLs for backup and check in each profile. This backup example uses
-Healthchecks.io-style ping URLs:
+## Upgrades and rollback
 
-```toml
-[[resticprofile.backup.send-before]]
-method = "HEAD"
-url = "https://hc-ping.com/<backup-id>/start"
-[[resticprofile.backup.send-after]]
-method = "HEAD"
-url = "https://hc-ping.com/<backup-id>"
-[[resticprofile.backup.send-after-fail]]
-method = "HEAD"
-url = "https://hc-ping.com/<backup-id>/fail"
-```
-
-Repeat under `resticprofile.check` with a separate ID. Set external freshness
-limits to 36 hours for backup and 8 days for check; update them when schedules
-change. The dashboard checks the same freshness limits. Manual resticprofile
-commands use the same lock as scheduled jobs. Do not run restic directly while
-a job is active. The app reads `/etc/librepaper/librepaper.toml`; resticprofile
-reads `/etc/resticprofile/resticprofile.toml`, and its base profile includes
-only that backup file. `prometheus.yaml` and `grafana.json` remain at the root
-of `deploy/`; monitoring rules and provisioning remain under
-`deploy/monitoring/`.
-
-Restic supports local, SFTP, REST server and S3-compatible repositories. A
-local repository can live at `local:/var/backups/librepaper/repository`; it is
-only on the `backups` volume, so copy it off-host. Put `RESTIC_PASSWORD` and
-S3 credentials in a mode-600 `.env` if not using `[resticprofile.env]`. For
-SFTP, mount private key and `known_hosts` files read-only into `backup`, for
-example at `/run/secrets/restic_ssh_key` and
-`/run/secrets/restic_known_hosts`, and configure restic's SSH command to use
-those paths.
-
-For a one-time verified export without a restic snapshot:
+For a normal release upgrade, first confirm a recent successful off-host
+snapshot and `./setup check`. Pull matching images, stop both the app and
+backup scheduler, run the one-shot migration, then start the consumers:
 
 ```sh
-docker compose exec librepaper librepaper admin backup \
-  --config /etc/librepaper/librepaper.toml /var/backups/librepaper/manual
+./setup init --version <release-tag> --no-local-build
+docker compose pull librepaper migrate backup
+docker compose stop librepaper backup
+docker compose run --rm --no-deps migrate
+docker compose up -d --wait
 ```
+
+Do not use `docker compose up -d` alone as a schema-upgrade procedure. The
+version must select matching app, migration, and backup images. To roll back
+after an incompatible migration, stop the app and backup scheduler and restore
+the matching database, data, configuration, and session key from a known-good
+snapshot. Do not start an older binary on a newer schema unless that release
+supports it.
+
+Older local installs that use PostgreSQL socket trust need an explicit role
+upgrade. Review the data-volume backup, then run
+`./setup upgrade --yes --version <compatible-release>` or
+`tools/deploy/production upgrade-database` for the official host.
+The helper stops the app and backup scheduler and preserves the database volume
+and session key. Routine deployment refuses legacy state.
 
 ## Configuration
 
-Server and admin commands use `librepaper.toml`. `admin serve` defaults to
-`/etc/librepaper/librepaper.toml`; use `--config PATH` to choose another file.
+The app reads `/etc/librepaper/librepaper.toml`; the backup process reads
+`/etc/resticprofile/resticprofile.toml`. Application `{ file = "..." }`
+references supply one whole value from a mounted secret file. Database URLs
+are secrets and should not be literals. Backup settings use resticprofile's
+own syntax; the app rejects legacy `[backup]` and `[resticprofile]` tables in
+its configuration.
 
-- Application literals use TOML syntax. In `librepaper.toml`, `{ env = "NAME" }`
-  and `{ file = "path" }` replace one whole value.
-  Referenced strings are used as-is; numbers, booleans, and arrays use TOML
-  syntax in LibrePaper application tables. Backup settings belong in the
-  separate `resticprofile.toml` file and use resticprofile's own syntax. The
-  app rejects misplaced `[resticprofile]` and legacy `[backup]` tables.
-- LibrePaper file references in the application config are config-relative;
-  trailing CR/LF is stripped. Resticprofile uses its own configuration and
-  secret handling rules.
+`admin config check` validates configuration without a database connection.
+`admin config show` displays defaults and provenance while redacting
+credentials and the database URL. Keep one `admin serve` process per database.
+For S3-compatible storage, configure `[storage.s3]` explicitly; ambient AWS
+credentials are not used.
 
-Missing or empty references, invalid keys/types, and old server-setting flags
-fail. There is no interpolation or automatic application-setting override.
+### Without Docker
 
-The shipped `librepaper.toml` is the application reference: every table has a
-comment. The `[metrics]` table is enabled for the Docker monitoring stack; the
-commented-out `[limits]`, `[retention]` and `[server]` tables are optional.
-The separate `resticprofile.toml` is comments-only by default, which disables
-the backup sidecar until a `[resticprofile]` table is added.
-Application secrets may be literals in a protected file readable by the
-container user, or `{ env = "NAME" }` and `{ file = "path" }` references.
-
-Use these commands to check or inspect resolved settings. `check` has no
-startup side effects or database connection; `show` includes defaults and
-provenance and redacts credentials and the database URL.
+Install PostgreSQL and create a dedicated database role and database. The
+standalone server defaults to applying migrations at startup, so this role must
+own the schema. Set `storage.database_url` to a protected literal or a file
+reference, then run one server process:
 
 ```sh
+export LIBREPAPER_DATABASE_URL='postgresql://librepaper:SECRET@127.0.0.1/librepaper'
 librepaper admin config check --config /etc/librepaper/librepaper.toml
-librepaper admin config show --config /etc/librepaper/librepaper.toml
+librepaper admin serve --config /etc/librepaper/librepaper.toml
 ```
 
-## Without Docker
+Keep the PostgreSQL cluster and `storage.directory` on durable storage and
+include the data directory and session key in the recovery plan. Put the
+server behind an HTTPS reverse proxy that preserves the request `Host`, appends
+the actual client address to `X-Forwarded-For`, and trusts only that proxy's
+network in `[proxy].trusted_networks`. Run exactly one `admin serve` process
+per database: the writer lease stops a second process from accepting writes,
+and room state, caches, and scheduled work are process-local. A native install
+can use the same external PostgreSQL, object storage, backup, and recovery
+principles described above; Docker Compose's scoped `app` and `migrate` roles
+are provisioned by `deploy/setup` and are not required for this mode.
 
-1. Create a PostgreSQL role and database with a generated password:
+## Moderation and privacy
 
-   ```sql
-   create role librepaper login password 'replace-with-a-generated-secret';
-   create database librepaper owner librepaper;
-   ```
-
-2. Supply the complete database URL, as a literal in `librepaper.toml` or
-   through a reference:
-
-   ```sh
-   export LIBREPAPER_DATABASE_URL='postgresql://librepaper:SECRET@127.0.0.1/librepaper'
-   librepaper admin serve --config /etc/librepaper/librepaper.toml
-   ```
-
-3. Keep PostgreSQL and the data directory on durable storage. Run only one
-   `admin serve` per database. Put the server behind an HTTPS reverse proxy
-   that preserves `Host`, appends the actual client address to
-   `X-Forwarded-For`, and trusts only the proxy network.
-
-4. For S3-compatible storage, set `object_store = "s3"` in `[storage]` and
-   add a `[storage.s3]` table with `endpoint`, `region`, `bucket`,
-   `access_key_id` and `secret_access_key`. Credentials come only from that
-   table; ambient AWS credentials are not used.
-
-## Storage and backup
-
-The backup contains a consistent PostgreSQL dump, referenced objects, server
-config and session key. Without the key, sessions are invalidated and the app
-cannot reveal old share URLs, though URLs users already hold still work.
-Restore with the matching LibrePaper release, an empty database and new path.
-Keep the original deployment intact until recovery is verified.
-
-1. Stop the app and backup sidecar. Preserve the original database, data volume,
-   both configs and remote repository. Create `compose.recovery.yaml` in `deploy/`
-   with an unused subnet to avoid colliding with production:
-
-   ```yaml
-   services:
-     librepaper:
-       ports:
-         - 127.0.0.1:18080:8080
-   networks:
-     edge:
-       ipam:
-         config: !override
-           - subnet: 172.31.0.0/16
-   ```
-
-   Update the recovery config's `proxy.trusted_networks` to that subnet. Start
-   PostgreSQL in a separate project for a new database and data volume:
-   `docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery up -d postgres`.
-2. Restore the snapshot into a temporary host directory. Override the entrypoint
-   to avoid starting the scheduler:
-
-   ```sh
-   mkdir -m 700 /tmp/librepaper-restore
-   docker compose run --rm --no-deps \
-     -v /tmp/librepaper-restore:/restore \
-     --user 0 --entrypoint resticprofile backup \
-     -c /etc/resticprofile/profiles.toml -n resticprofile restore <snapshot> --target /restore
-   ```
-
-   Inspect the restored hierarchy and copy both
-   `etc/librepaper/librepaper.toml` and
-   `etc/resticprofile/resticprofile.toml` to the recovery project.
-3. Copy the app config to `librepaper-recovery.toml`. Set
-   `storage.directory = "/var/lib/librepaper"` and point the database URL at
-   the recovery DB; remove or replace inherited production URLs. Keep the
-   matching backup config for access to the snapshot. Restore as
-   root because the temporary directory is mode 700. Use the matching release,
-   an empty DB and a nonexistent child path (the volume root exists):
-
-   ```sh
-   LIBREPAPER_VERSION=<snapshot-release> docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery build librepaper
-   LIBREPAPER_VERSION=<snapshot-release> LIBREPAPER_CONFIG_FILE=librepaper-recovery.toml docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery run --rm --no-deps --user 0 \
-     -v /tmp/librepaper-restore:/restore:ro librepaper admin restore \
-     --config /etc/librepaper/librepaper.toml /restore/var/backups/librepaper/current /var/lib/librepaper/recovered
-   ```
-
-4. Install `recovered/objects` and restored `secrets/` at the new volume root
-   with UID 10001 ownership:
-
-   ```sh
-   docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery run --rm --no-deps --user 0 \
-     -v /tmp/librepaper-restore:/restore:ro --entrypoint sh librepaper -c \
-     'cp -a /var/lib/librepaper/recovered/objects /var/lib/librepaper/ && cp -a /restore/var/lib/librepaper/secrets /var/lib/librepaper/ && chown -R 10001:65534 /var/lib/librepaper/objects /var/lib/librepaper/secrets'
-   ```
-
-   For S3, upload and verify each manifest object
-   under the same key in a new recovery bucket, preserving the original. Point
-   recovery at that bucket, or switch explicitly to filesystem storage and
-   remove the old S3 settings. Never start against an empty or unverified store.
-5. Start only the recovery app (not Caddy, whose public ports belong to the
-   original project), then verify it at `http://127.0.0.1:18080`:
-
-   ```sh
-   LIBREPAPER_VERSION=<snapshot-release> LIBREPAPER_CONFIG_FILE=librepaper-recovery.toml \
-     docker compose -f compose.yaml -f compose.recovery.yaml -p librepaper-recovery \
-     up -d --no-deps --wait librepaper
-   ```
-
-   Reapply known deletions requested after the snapshot; restore does not replay
-   a deletion ledger.
-
-Record the release, snapshot age, elapsed time and outcome in restore drills.
-Do not claim a recovery time until measured.
-
-See [cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/cost-policy.md)
-for resource defaults and backup limitations.
-
-## Moderation
-
-Moderation uses the server config. Database access is the operator
-authorization boundary. Every command needs an actor and reason; the
-`moderation_audit` table records actor, timestamp, action, target, and reason.
+Database access is the operator authorization boundary. Every moderation
+command needs an actor and reason; the `moderation_audit` table records actor,
+timestamp, action, target, and reason.
 
 | Command | Effect |
 | --- | --- |
@@ -311,16 +242,5 @@ authorization boundary. Every command needs an actor and reason; the
 | `hide-project` | Keeps data but blocks document, asset, source, history, export, and socket access. |
 
 Open sockets recheck authorization every two seconds; frames already in flight
-may still arrive.
-
-```sh
-librepaper admin moderate block-account github-handle --config /etc/librepaper/librepaper.toml \
-  --actor "on-call@example.org" --reason "automated abuse investigation"
-librepaper admin moderate hide-project abusive-project --config /etc/librepaper/librepaper.toml \
-  --actor "on-call@example.org" --reason "contains abusive material"
-```
-
-## Privacy
-
-[Privacy duties for operators](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/privacy-operators.md)
+may still arrive. [Privacy duties for operators](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/privacy-operators.md)
 covers notices and data requests.

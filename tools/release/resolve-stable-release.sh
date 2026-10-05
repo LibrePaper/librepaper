@@ -35,9 +35,9 @@ tag_sha="$(git rev-parse "refs/tags/${tag}^{commit}" 2>/dev/null || true)"
 if [[ -z "${tag_sha}" ]]; then
   skip "Release tag ${tag} does not resolve to a commit; skipping."
 elif [[ -n "${dispatch_tag}" ]]; then
-  printf 'tag=%s\nproceed=true\n' "${tag}" >> "${output}"
+	printf 'tag=%s\nsha=%s\nproceed=true\n' "${tag}" "${tag_sha}" >> "${output}"
 elif [[ -z "${release_sha}" || "${tag_sha}" != "${release_sha}" ]]; then
   skip "Release tag does not resolve to the triggering commit; skipping."
 else
-  printf 'tag=%s\nproceed=true\n' "${tag}" >> "${output}"
+	printf 'tag=%s\nsha=%s\nproceed=true\n' "${tag}" "${tag_sha}" >> "${output}"
 fi

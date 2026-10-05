@@ -38,23 +38,16 @@ required_key() {
 	printf '%s' "$value"
 }
 
-validate_env_passwords() {
-	local secret
-	for secret in "$@"; do
-		[[ "$secret" =~ ^[A-Za-z0-9_-]+$ ]] || die "production passwords must use only ASCII letters, digits, underscore, or hyphen"
-	done
-}
-
 validate_release_version() {
 	local version="$1" major minor patch
 	if [[ ! "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-		die "release version must be a canonical tag such as v0.0.9"
+		die "release version must be a canonical tag such as v0.0.21"
 	fi
 	major="${BASH_REMATCH[1]}"
 	minor="${BASH_REMATCH[2]}"
 	patch="${BASH_REMATCH[3]}"
-	if (( major == 0 && minor == 0 && patch < 9 )); then
-		die "production metrics require v0.0.9 or later; v0.0.8 lacks metrics. Use deploy-local with a built Linux musl binary until an instrumented release is published"
+	if (( major == 0 && minor == 0 && patch < 21 )); then
+		die "production deployment requires v0.0.21 or later for read-only migration checks and one-shot admin migrate support; use deploy-local with a compatible Linux musl binary"
 	fi
 }
 
@@ -63,22 +56,11 @@ cleanup_verify_tmp() {
 	if [ "${#VERIFY_TMP_FILES[@]}" -gt 0 ]; then rm -f -- "${VERIFY_TMP_FILES[@]}"; fi
 }
 
-# Setting COMPOSE_FILE disables the automatic override load, so the override is
-# listed explicitly.
-write_env() {
-	local version="$1" github_id="$2" github_secret="$3" google_id="$4" google_secret="$5" admin_password="$6"
-	# The values are written only to a mode-600 file on the VPS. The temporary
-	# file and rename make a failed transfer leave the previous environment intact.
-	# shellcheck disable=SC2087 # expand local credentials and send them over stdin
-	ssh "$HOST" 'umask 077; cat > librepaper/.env.tmp && chmod 600 librepaper/.env.tmp && mv -f librepaper/.env.tmp librepaper/.env' <<EOF
-COMPOSE_FILE=compose.yaml:compose.override.yaml
-LIBREPAPER_VERSION=$version
-LIBREPAPER_GITHUB_CLIENT_ID=$github_id
-LIBREPAPER_GITHUB_CLIENT_SECRET=$github_secret
-LIBREPAPER_GOOGLE_CLIENT_ID=$google_id
-LIBREPAPER_GOOGLE_CLIENT_SECRET=$google_secret
-GRAFANA_ADMIN_PASSWORD=$admin_password
-EOF
+write_secret_file() {
+	local name="$1" value="$2"
+	[[ "$name" =~ ^(github_client_id|github_client_secret|google_client_id|google_client_secret|grafana_admin_password)$ ]] || die "invalid production secret name"
+	# Secret bytes travel on stdin, never in SSH arguments or a shared env file.
+	printf '%s' "$value" | ssh "$HOST" "umask 077; mkdir -p librepaper/secrets; chmod 700 librepaper/secrets; tmp=librepaper/secrets/.${name}.tmp; cat > \"\$tmp\" && chmod 444 \"\$tmp\" && mv -f \"\$tmp\" librepaper/secrets/$name"
 }
 
 write_config() {
@@ -92,38 +74,15 @@ install_config() {
 	ssh "$HOST" 'cd librepaper && mv -f librepaper.toml.candidate librepaper.toml'
 }
 
-write_compose_override() {
-	local local_image="${1:-false}" local_build=''
-	if [ "$local_image" = true ]; then
-		local_build='  librepaper:
-    build:
-      target: app
-      args: {SOURCE: local, LIBREPAPER_BINARY: librepaper.candidate}
-  backup:
-    build:
-      target: backup
-      args: {SOURCE: local, LIBREPAPER_BINARY: librepaper.candidate}'
-	fi
-	ssh "$HOST" 'cat > librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<EOF
-# Written by tools/deploy/production. Keep Caddy serving the static site.
-services:
-  caddy:
-    volumes:
-      - ./site:/srv/site:ro
-$local_build
-EOF
+stage_caddy_config() {
+	{
+		cat deploy/caddy/Caddyfile
+		printf '\n%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE"
+	} | ssh "$HOST" 'umask 022; mkdir -p librepaper/caddy; cat > librepaper/caddy/Caddyfile.candidate.tmp && chmod 644 librepaper/caddy/Caddyfile.candidate.tmp && mv -f librepaper/caddy/Caddyfile.candidate.tmp librepaper/caddy/Caddyfile.candidate'
 }
 
-bootstrap_monitoring_role() {
-	step "PostgreSQL: ensure the monitoring exporter role exists with no password"
-	ssh "$HOST" 'cd librepaper && docker compose up -d --wait postgres'
-	# The same SQL compose.yaml runs for a new cluster; production predates it.
-	ssh "$HOST" 'cd librepaper && docker compose exec -T postgres psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -q' <<'SQL'
-SELECT 'CREATE ROLE librepaper_metrics LOGIN'
-  WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'librepaper_metrics') \gexec
-GRANT pg_monitor TO librepaper_metrics;
-SQL
-	ok "ensured least-privilege librepaper_metrics role"
+install_caddy_config() {
+	ssh "$HOST" 'cd librepaper && mv -f caddy/Caddyfile.candidate caddy/Caddyfile'
 }
 
 site_build() {
@@ -156,8 +115,29 @@ load_deployment_secrets() {
 	DEPLOY_GOOGLE_ID=$(required_key PRODUCTION_GOOGLE_CLIENT_ID)
 	DEPLOY_GOOGLE_SECRET=$(required_key PRODUCTION_GOOGLE_CLIENT_SECRET)
 	DEPLOY_ADMIN_PASSWORD=$(required_key PRODUCTION_ADMIN_PASSWORD)
-	validate_env_passwords "$DEPLOY_ADMIN_PASSWORD"
-	ok "5 keys decrypted (values not shown)"
+	ok "5 scoped credentials decrypted (values not shown)"
+}
+
+install_deployment_secrets() {
+	write_secret_file github_client_id "$DEPLOY_GITHUB_ID"
+	write_secret_file github_client_secret "$DEPLOY_GITHUB_SECRET"
+	write_secret_file google_client_id "$DEPLOY_GOOGLE_ID"
+	write_secret_file google_client_secret "$DEPLOY_GOOGLE_SECRET"
+	write_secret_file grafana_admin_password "$DEPLOY_ADMIN_PASSWORD"
+	unset DEPLOY_GITHUB_ID DEPLOY_GITHUB_SECRET DEPLOY_GOOGLE_ID DEPLOY_GOOGLE_SECRET DEPLOY_ADMIN_PASSWORD
+}
+
+sync_deployment_files() {
+	# Refresh kit code while preserving operator state and site-specific Caddy.
+	rsync -a \
+		--exclude='/.env' --exclude='/.env.tmp' --exclude='/.setup-state.json' \
+		--exclude='/secrets' --exclude='/librepaper.toml*' \
+		--exclude='/resticprofile.toml' --exclude='/compose.override.yaml*' \
+		--exclude='/caddy/Caddyfile' --exclude='/librepaper' \
+		--exclude='/librepaper.candidate*' --exclude='/site' \
+		--out-format='    %n' deploy/ "$HOST:librepaper/"
+	rsync -a --ignore-existing deploy/resticprofile.toml "$HOST:librepaper/resticprofile.toml"
+	rsync -a --ignore-existing deploy/librepaper.toml "$HOST:librepaper/librepaper.toml"
 }
 
 prepare_deployment() {
@@ -169,33 +149,21 @@ prepare_deployment() {
 
 	site_build
 	step "Kit: deploy/ -> $HOST:librepaper/"
-	# Keep operator state and the candidate config out of the public kit sync.
-	# The application config is installed only after candidate validation.
-	rsync -a \
-		--exclude='/.env' --exclude='/.env.tmp' \
-		--exclude='/librepaper.toml' --exclude='/librepaper.toml.tmp' \
-		--exclude='/librepaper.toml.candidate*' \
-		--exclude='/resticprofile.toml' \
-		--exclude='/compose.override.yaml' --exclude='/compose.override.yaml.tmp' \
-		--exclude='/librepaper' --exclude='/librepaper.candidate*' \
-		--out-format='    %n' deploy/ "$HOST:librepaper/"
+	sync_deployment_files
 	ok "synced"
-	# Seed a fresh host from the shipped empty config without replacing operator
-	# credentials already present on the VPS.
-	rsync -a --ignore-existing deploy/resticprofile.toml "$HOST:librepaper/resticprofile.toml"
 	site_sync
 
 	step "Caddy: the site, the redirects, and the site volume"
-	printf '\n%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE" | ssh "$HOST" 'cat >> librepaper/caddy/Caddyfile'
-	write_compose_override "$local_image"
+	stage_caddy_config
 	ok "$SITE serves docs/_site; $REDIRECTS -> https://$SITE"
 
-	step ".env on the VPS"
-	write_env "$version" "$DEPLOY_GITHUB_ID" "$DEPLOY_GITHUB_SECRET" "$DEPLOY_GOOGLE_ID" "$DEPLOY_GOOGLE_SECRET" "$DEPLOY_ADMIN_PASSWORD"
-	unset DEPLOY_GITHUB_ID DEPLOY_GITHUB_SECRET DEPLOY_GOOGLE_ID DEPLOY_GOOGLE_SECRET DEPLOY_ADMIN_PASSWORD
+	step "Scoped secret files on the VPS"
+	install_deployment_secrets
 	write_config
-	ok "wrote librepaper/.env atomically (mode 600) and staged librepaper.toml"
-	bootstrap_monitoring_role
+	ok "wrote five scoped secret files (directory 700, files 444) and staged librepaper.toml"
+	local setup_args=(--monitoring --production-overlay --project librepaper --version "$version" --config-file ./librepaper.toml.candidate)
+	if [ "$local_image" = true ]; then setup_args+=(--local-build); else setup_args+=(--no-local-build); fi
+	ssh "$HOST" "cd librepaper && state=\$(./setup status | sed -n 's/^state=\([^ ]*\).*/\1/p') && case \$state in uninitialized) ./setup init ${setup_args[*]} ;; legacy) echo 'legacy database needs the explicit upgrade-database command' >&2; exit 1 ;; ready) ./setup init ${setup_args[*]} ;; *) echo 'could not determine deployment state' >&2; exit 1 ;; esac && ./setup check"
 }
 
 check_application_config() {
@@ -206,31 +174,42 @@ check_application_config() {
 		step "Containers: build and check release config support"
 	fi
 	note "candidate image is checked before configuration changes"
-	ssh "$HOST" 'cd librepaper && docker compose build librepaper backup'
+	if [ "$mode" = local ]; then
+		ssh "$HOST" 'cd librepaper && LIBREPAPER_BINARY=librepaper.candidate docker compose build librepaper migrate backup'
+	else
+		ssh "$HOST" 'cd librepaper && docker compose pull librepaper migrate backup'
+	fi
 	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate docker compose run --rm --no-deps librepaper admin config check --config /etc/librepaper/librepaper.toml'; then
 		die "the candidate binary cannot load librepaper.toml; move legacy [resticprofile] settings into resticprofile.toml, or use a TOML-config-capable release or local binary"
 	fi
 	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate RESTICPROFILE_CONFIG_FILE=resticprofile.toml docker compose run --rm --no-deps -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 backup'; then
 		die "the candidate backup image cannot validate the configured profile; the running deployment was not restarted"
 	fi
+	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate docker compose run --rm --no-deps migrate admin migrate --help >/dev/null'; then
+		die "the candidate image lacks the one-shot admin migrate command; the running deployment was not restarted"
+	fi
+	if ! ssh "$HOST" 'cd librepaper && docker compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile.candidate --adapter caddyfile'; then
+		die "the candidate Caddy configuration is invalid; the running deployment was not restarted"
+	fi
 }
 
 start_application() {
 	local mode="$1"
 	step "Containers: install checked config and start $mode image"
-	# The candidate carries its own SQLx migrations and applies them at startup;
-	# source-checkout migration files do not gate this release or local-binary path.
 	if [ "$mode" = local ]; then
 		note "kept the checked local binary available for future Docker rebuilds"
 	fi
-	# Stop scheduled work before the app can migrate the schema. Renaming the
-	# config changes its inode, so recreate both containers to remount it.
-	ssh "$HOST" 'cd librepaper && docker compose stop backup'
+	# No old app or backup process may use the schema during migration. The
+	# candidate check has already confirmed this image supports the CLI.
+	ssh "$HOST" 'cd librepaper && docker compose up -d --wait postgres'
+	ssh "$HOST" 'cd librepaper && docker compose stop librepaper backup'
 	install_config
-	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'
-	# The app is healthy (and any migration is complete) before the scheduler
-	# starts against the new schema and config inode.
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose run --rm --no-deps migrate'
+	# File secrets and configs are bind-mounted individually. Recreate their
+	# consumers even when the image version is unchanged so they see new inodes.
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --force-recreate --wait --wait-timeout 180 librepaper'
 	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --force-recreate --no-deps backup'
+	install_caddy_config
 	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --wait --wait-timeout 180'
 	if ! timeout "$CADDY_RELOAD_TIMEOUT_SECONDS" ssh "$HOST" 'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'; then
 		die "Caddy configuration reload failed"
@@ -242,9 +221,10 @@ usage() {
 	cat <<'USAGE'
 usage: tools/deploy/production <command>
 
-  deploy [VERSION]   deploy a published instrumented release (canonical vMAJOR.MINOR.PATCH, v0.0.9+)
+  deploy [VERSION]   deploy a published release with migration checks (canonical vMAJOR.MINOR.PATCH, v0.0.21+)
                      (VERSION defaults to v + the version in Cargo.toml)
   deploy-local BINARY deploy a previously-built Linux musl executable instead of a release image
+  upgrade-database  explicitly migrate a legacy local socket-trust database to scoped roles
   site               rebuild and upload the landing page and manual only (no release, no restart)
   verify             app, monitoring, site, documents, redirect, and logs
   logs               follow the container logs
@@ -495,12 +475,22 @@ deploy_local() {
 	printf '\n%sDone: local binary %s is live at https://%s (%ss)%s\n' "$green$bold" "$checksum" "$APP" "$SECONDS" "$reset"
 }
 
+upgrade_database() {
+	step "PostgreSQL: explicit legacy role and trust upgrade"
+	sync_deployment_files
+	ssh "$HOST" 'cd librepaper && state=$(./setup status | sed -n "s/^state=\\([^ ]*\\).*/\\1/p") && [ "$state" = legacy ] || { echo "upgrade-database requires state=legacy" >&2; exit 1; } && ./setup upgrade --yes --monitoring --production-overlay --no-local-build --project librepaper --version v0.0.21 && ./setup check'
+	ok "scoped roles checked; database volume and session key remain in place"
+}
+
 case "${1:-help}" in
 	deploy)
 		deploy "${2:-}"
 		;;
 	deploy-local)
 		deploy_local "${2:-}"
+		;;
+	upgrade-database)
+		upgrade_database
 		;;
 	site)
 		site_build
