@@ -33,12 +33,11 @@ import { browser } from "../helpers/browser-driver.mjs";
 import { psqlCommand } from "../helpers/postgres-test.mjs";
 import { startDeployment, until } from "../helpers/deployment.mjs";
 
-// The smallest pending ceilings the server will accept. `pending_mib` may not
-// go below one document's own buffer allowance (4 MiB plus its framing), and
-// `pending_scratch_mib` may not go below what one maximum-size row costs to
-// write -- a deployment that could not write its largest row would admit work
-// it could never persist, which is the thing the two-pool design exists to
-// prevent. So this is pressure reached as cheaply as the server permits.
+// A 4 MiB log quota lets one maximum update plus framing fit within the
+// 5 MiB pending pool. The default 32 MiB quota would make this configuration
+// invalid. Scratch must also cover writing one maximum-size row, including
+// the database driver's copies. These bounds let three documents exhaust
+// the shared pool while each stays below its own limit.
 const PENDING_MB = 5;
 const SCRATCH_MB = 64;
 // One typed chunk. Random text rather than a repeated character: Loro's
@@ -50,7 +49,7 @@ const DOCUMENTS = 3;
 const noise = process.env.LIBREPAPER_TEST_VERBOSE ? console.error : () => {};
 const deployment = await startDeployment({
   label: "pending_budget",
-  advanced: `[limits]\npending_mib = ${PENDING_MB}\npending_scratch_mib = ${SCRATCH_MB}\n`,
+  advanced: `[limits]\nlog_quota_mib = 4\npending_mib = ${PENDING_MB}\npending_scratch_mib = ${SCRATCH_MB}\n`,
 });
 if (!deployment || deployment.unavailable) {
   console.log(`pending-budget-recovery: ${deployment?.unavailable || "no librepaper binary; run cargo build"}; skipping`);
