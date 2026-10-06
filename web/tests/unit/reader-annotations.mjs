@@ -68,7 +68,7 @@ assert.equal(draft.replies.length, 2);
 assert.equal(reply.creator, "Server reply name");
 assert.equal(view.unconfirmed.length, 0);
 assert.equal(sent[1].creator, undefined);
-assert.equal(sent[1].request_id, reply.temp_id, "reply retries use the stable temp id as the server idempotency key");
+assert.equal(sent[1].request_id, event.temp_id, "reply retries use the stable temp id as the server idempotency key");
 
 annotations.reply(draft, "Unconfirmed reply", "Name");
 const failed = sent.at(-1).temp_id;
