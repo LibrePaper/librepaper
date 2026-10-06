@@ -4,6 +4,38 @@ import { mkdirSync } from "node:fs";
 import { requireChromiumExecutable } from "./browser-executable.mjs";
 
 export const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+
+function hasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function waitForExit(child, timeout) {
+  if (hasExited(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let timer;
+    const finish = (exited) => {
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    child.once("exit", onExit);
+    timer = setTimeout(() => finish(false), timeout);
+    if (hasExited(child)) finish(true);
+  });
+}
+
+export async function stopBrowserProcess(child) {
+  if (!child || hasExited(child)) return;
+  const graceful = waitForExit(child, 5000);
+  child.kill("SIGTERM");
+  if (await graceful || hasExited(child)) return;
+  const forced = waitForExit(child, 2000);
+  child.kill("SIGKILL");
+  if (await forced || hasExited(child)) return;
+  throw new Error("Chromium did not exit after SIGTERM and SIGKILL");
+}
+
 export async function until(label, test, timeout = 60000) {
   const deadline = Date.now() + timeout;
   let last;
@@ -71,8 +103,7 @@ export async function browser(name, directory, port) {
     const send = createProtocol(socket);
     const close = async () => {
       socket.close();
-      child.kill();
-      await Promise.race([new Promise((done) => child.once("exit", done)), pause(2000)]);
+      await stopBrowserProcess(child);
     };
     if (name === "firefox") {
       await send("session.new", { capabilities: {} });

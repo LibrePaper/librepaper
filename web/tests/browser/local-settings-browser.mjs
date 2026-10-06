@@ -210,5 +210,5 @@ try {
 } finally {
   if (b) await b.close();
   server.close();
-  rmSync(temporary, { recursive: true, force: true });
+  rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

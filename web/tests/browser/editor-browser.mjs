@@ -15,6 +15,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
 import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
+import { stopBrowserProcess } from "../helpers/browser-driver.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
@@ -1071,7 +1072,7 @@ try {
   console.log("editor-browser: an old retained recovery warning does not block fresh tracked resolution");
 } finally {
   socket?.close();
-  browser?.kill();
+  await stopBrowserProcess(browser);
   if (server?.listening) await new Promise((resolve) => server.close(resolve));
-  rmSync(temporary, { recursive: true, force: true });
+  rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
