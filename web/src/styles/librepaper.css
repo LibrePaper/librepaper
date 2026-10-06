@@ -747,8 +747,22 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
      of independently scrolling documents. */
   main.reader {
     position: relative;
-    height: calc(100dvh - var(--librepaper-bar));
+    height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)));
     overflow: hidden;
+    transition: margin-top 200ms ease, height 200ms ease;
+  }
+  /* The bar steps aside while a pane scrolls down and comes back on the way
+     up, as phone apps do. The workspace rises into the space it leaves and
+     grows by its height, so no pane is ever drawn under it. */
+  main.reader.bar-hidden {
+    --librepaper-bar-visible: 0px;
+    margin-top: calc(-1 * var(--librepaper-bar));
+  }
+  body > nav {
+    transition: transform 200ms ease;
+  }
+  body > nav.bar-hidden {
+    transform: translateY(-100%);
   }
   main.reader .sidebar,
   main.reader .editorpane,
@@ -790,6 +804,12 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
     top: auto !important;
     bottom: calc(var(--spacing) * 16 + env(safe-area-inset-bottom));
     transform: translateX(-50%);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    body > nav,
+    main.reader {
+      transition: none;
+    }
   }
 }
 

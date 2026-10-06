@@ -16,7 +16,7 @@
   // Page-specific tools may include compact global state, such as the
   // Reader's connection and presence indicator. Pane-specific state stays
   // with the pane it describes.
-  let { me = {}, children = undefined, menus = undefined, tools = undefined, reader = false } = $props();
+  let { me = {}, children = undefined, menus = undefined, tools = undefined, reader = false, hidden = false } = $props();
 </script>
 
 <!-- The way past the bar. Every page puts twenty-odd controls between the
@@ -26,7 +26,7 @@
      invisible otherwise, which is the only time anyone needs it. -->
 <a class="skip-link" href="#main">Skip to content</a>
 
-<nav class="flex items-center justify-between gap-4" class:reader-nav={reader}>
+<nav class="flex items-center justify-between gap-4" class:reader-nav={reader} class:bar-hidden={hidden}>
   <div class="nav-identity flex min-w-0 items-center gap-3">
     <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
       <Logo />

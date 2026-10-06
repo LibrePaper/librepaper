@@ -608,6 +608,24 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-transcript").scrollTop'),100);
   await bounded();
 
+  // The bar slides away while a pane scrolls down and returns on the way up,
+  // at the top, and at desktop widths. The chat transcript is a pane that
+  // really scrolls here; the open source file is one line long.
+  const hidden = 'document.querySelector("body > nav").classList.contains("bar-hidden")';
+  const scrollTo = async (top) => { await b.evaluate(`document.querySelector(".agent-panel .chat-transcript").scrollTop = ${top}`); await flush(); };
+  await scrollTo(0); await scrollTo(200); await scrollTo(400);
+  await until('bar hides on scroll down', () => b.evaluate(hidden), 5000);
+  assert.equal(await b.evaluate('document.querySelector("main#main").classList.contains("bar-hidden")'), true);
+  await scrollTo(300);
+  await until('bar shows on scroll up', () => b.evaluate(`!${hidden}`), 5000);
+  await scrollTo(400);
+  await until('bar hides on scroll down again', () => b.evaluate(hidden), 5000);
+  await b.resize(1280,900); await flush();
+  assert.equal(await b.evaluate(hidden), false, 'the bar never hides at desktop widths');
+  await b.resize(390,844); await flush();
+  await scrollTo(0);
+  await until('bar shows at the top', () => b.evaluate(`!${hidden}`), 5000);
+
   await b.resize(900,900); await flush();
   await click(face('Document'));
   assert.equal(await visible('.viewport'),true);
@@ -632,5 +650,5 @@ try {
     await bounded();
   }
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds and saved layouts passed');
+  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds, the hiding bar and saved layouts passed');
 } finally { await b?.close(); serverHttp?.close(); rmSync(temp,{recursive:true,force:true}); }
