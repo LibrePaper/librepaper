@@ -179,13 +179,13 @@ check_application_config() {
 	else
 		ssh "$HOST" 'cd librepaper && docker compose pull librepaper migrate backup'
 	fi
-	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate docker compose run --rm --no-deps librepaper admin config check --config /etc/librepaper/librepaper.toml'; then
+	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=./librepaper.toml.candidate docker compose run --rm --no-deps librepaper admin config check --config /etc/librepaper/librepaper.toml'; then
 		die "the candidate binary cannot load librepaper.toml; move legacy [resticprofile] settings into resticprofile.toml, or use a TOML-config-capable release or local binary"
 	fi
-	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate LIBREPAPER_RESTICPROFILE_CONFIG_FILE=resticprofile.toml docker compose run --rm --no-deps -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 backup'; then
+	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=./librepaper.toml.candidate LIBREPAPER_RESTICPROFILE_CONFIG_FILE=./resticprofile.toml docker compose run --rm --no-deps -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 backup'; then
 		die "the candidate backup image cannot validate the configured profile; the running deployment was not restarted"
 	fi
-	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml.candidate docker compose run --rm --no-deps migrate admin migrate --help >/dev/null'; then
+	if ! ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=./librepaper.toml.candidate docker compose run --rm --no-deps migrate admin migrate --help >/dev/null'; then
 		die "the candidate image lacks the one-shot admin migrate command; the running deployment was not restarted"
 	fi
 	if ! ssh "$HOST" 'cd librepaper && docker compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile.candidate --adapter caddyfile'; then
@@ -204,13 +204,13 @@ start_application() {
 	ssh "$HOST" 'cd librepaper && docker compose up -d --wait postgres'
 	ssh "$HOST" 'cd librepaper && docker compose stop librepaper backup'
 	install_config
-	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose run --rm --no-deps migrate'
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=./librepaper.toml docker compose run --rm --no-deps migrate'
 	# File secrets and configs are bind-mounted individually. Recreate their
 	# consumers even when the image version is unchanged so they see new inodes.
-	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'
-	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --force-recreate --no-deps backup'
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=./librepaper.toml docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=./librepaper.toml docker compose up -d --force-recreate --no-deps backup'
 	install_caddy_config
-	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=librepaper.toml docker compose up -d --wait --wait-timeout 180'
+	ssh "$HOST" 'cd librepaper && LIBREPAPER_CONFIG_FILE=./librepaper.toml docker compose up -d --wait --wait-timeout 180'
 	if ! timeout "$CADDY_RELOAD_TIMEOUT_SECONDS" ssh "$HOST" 'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'; then
 		die "Caddy configuration reload failed"
 	fi
