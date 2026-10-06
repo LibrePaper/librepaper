@@ -742,10 +742,6 @@ main.reader .sidebar, main.reader .editorpane, main.reader .viewport, main.reade
 main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 
 @media (max-width: 760px) {
-  /* On phones, the top bar slides away when scrolling down and back when
-     scrolling up. The CSS transition animates the bar's transform and the
-     main element's margin and height adjustments. */
-
   /* Keep the workspace inside the viewport. The bottom navigation chooses
      which full-height pane is active; the page itself never becomes a stack
      of independently scrolling documents. */
@@ -755,6 +751,9 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
     overflow: hidden;
     transition: margin-top 200ms ease, height 200ms ease;
   }
+  /* The bar steps aside while a pane scrolls down and comes back on the way
+     up, as phone apps do. The workspace rises into the space it leaves and
+     grows by its height, so no pane is ever drawn under it. */
   main.reader.bar-hidden {
     --librepaper-bar-visible: 0px;
     margin-top: calc(-1 * var(--librepaper-bar));
