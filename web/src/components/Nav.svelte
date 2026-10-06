@@ -104,18 +104,19 @@
     .nav-trail { display: none; }
   }
   @media (max-width: 760px) {
-    :global(body:has(> nav.reader-nav) > nav.reader-nav) {
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr) auto;
-      grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-      height: var(--librepaper-bar);
-      padding: 0 calc(var(--spacing) * 2);
-      gap: 0 var(--spacing);
+    .nav-trail { display: none; }
+    /* At compact widths, the menubar is kept mounted for keyboard navigation
+       and menu logic, but rendered invisible and positioned just below the bar
+       so its dropdowns still open in a sensible place. The nav itself is
+       position: sticky so it is the containing block for this positioning. */
+    .reader-nav :global(.menubar) {
+      position: absolute;
+      top: 100%;
+      left: calc(var(--spacing) * 2);
+      height: 0;
+      overflow: hidden;
+      visibility: hidden;
+      pointer-events: none;
     }
-    .reader-nav .nav-identity { display: contents; }
-    .reader-nav .nav-identity > a { grid-area: 1 / 1; }
-    .reader-nav .nav-trail { grid-area: 1 / 2; }
-    .reader-nav .nav-actions { grid-area: 1 / 3; min-width: 0; }
-    .reader-nav :global(.menubar) { grid-area: 2 / 1 / 3 / 4; width: 100%; justify-content: space-between; }
   }
 </style>

@@ -4,28 +4,26 @@
   import Icon from "../Icon.svelte";
   import { retargetElementAttributes } from "../element-attributes.js";
 
-  let { tabs = [], panel = "", open = false, onselect, onsettings } = $props();
+  let { tabs = [], panel = "", open = false, onselect, onsettings, menus = [], onmenu } = $props();
 
   // The menu is portalled, so its height cannot be inherited from the reader
-  // or its bottom bar. Measure the available space between both bars in the
-  // visual viewport and give the menu's scrolling region all of it.
+  // or the top bar. Measure the available space between the top bar and the
+  // visual viewport, then give the menu's scrolling region all of it with insets.
   function sizeMenu(element) {
     const trigger = document.querySelector(".compact-panels-trigger");
-    const bottomBar = trigger?.closest(".mobile-pane-nav");
     const siteBar = document.querySelector("body > nav");
-    if (!trigger || !bottomBar || !siteBar) return;
+    if (!trigger || !siteBar) return;
 
     let frame;
     const measure = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         const visual = window.visualViewport;
-        const bottomRect = bottomBar.getBoundingClientRect();
         const barRect = siteBar.getBoundingClientRect();
         const viewportTop = visual?.offsetTop ?? 0;
         const viewportBottom = viewportTop + (visual?.height ?? window.innerHeight);
-        const top = Math.max(viewportTop, barRect.bottom) + 8;
-        const bottom = Math.min(viewportBottom, bottomRect.top - 4);
+        const top = barRect.bottom + 8;
+        const bottom = viewportBottom - 8;
         const menu = element.closest(".explorer-menu");
         const style = menu && getComputedStyle(menu);
         const menuInsets = style
@@ -36,7 +34,6 @@
     };
     const observer = new ResizeObserver(measure);
     observer.observe(trigger);
-    observer.observe(bottomBar);
     observer.observe(siteBar);
     window.addEventListener("resize", measure);
     window.visualViewport?.addEventListener("resize", measure);
@@ -60,8 +57,13 @@
     if (tabs.some((tab) => tab.id === chosen.value)) onselect?.(chosen.value);
     // Let the menu finish closing before opening a focus-trapping dialog.
     else if (chosen.value === "settings") setTimeout(() => onsettings?.(), 0);
+    else if (chosen.value.startsWith("menu:")) {
+      const id = chosen.value.slice(5);
+      // Let the menu finish closing before opening the File/Edit/Insert/View menu.
+      setTimeout(() => onmenu?.(id), 0);
+    }
   }}
-  positioning={{ placement: "top-start", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}
+  positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}
 >
   <Menu.Trigger
     class={`btn-icon icon-control icon-standard compact-panels-trigger ${open ? "lp-control-tonal-brand" : "icon-plain"}`}
@@ -71,6 +73,16 @@
   </Menu.Trigger>
   <ExplorerMenu>
     <div class="compact-panels-items" use:sizeMenu>
+      <!-- At compact widths, the File/Edit/Insert/View menus are accessed through
+           the hamburger menu. Menu items appear at the top, above the panel tabs. -->
+      {#each menus as menu (menu.id)}
+        <Menu.Item value={"menu:" + menu.id} class="menuitem" disabled={menu.disabled} data-menu-id={menu.id}>
+          <span class="menuitem-check" aria-hidden="true"></span>
+          <span class="menuitem-label">{menu.label}</span>
+          <span class="menuitem-chevron" aria-hidden="true">›</span>
+        </Menu.Item>
+      {/each}
+      {#if menus.length}<div class="compact-panels-divider" role="separator"></div>{/if}
       {#each tabs as tab (tab.id)}
         {@const selected = open && panel === tab.id}
         <Menu.Item
@@ -153,5 +165,10 @@
   .compact-panels-items :global(.workspace-action) {
     min-height: 2.75rem;
     white-space: normal;
+  }
+
+  .menuitem-chevron {
+    margin-left: auto;
+    padding-left: calc(var(--spacing) * 2);
   }
 </style>

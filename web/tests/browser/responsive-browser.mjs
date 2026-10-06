@@ -397,45 +397,43 @@ try {
       const pills=[...toolbar?.querySelectorAll('.connection-pill')||[]];
       const presence=toolbar?.querySelector('.presence');
       const face=document.querySelector('.face-switch');
-      const mobile=document.querySelector('.mobile-pane-nav');
+      const panels=document.querySelector('.compact-panels-trigger');
+      const mobileNav=document.querySelector('.mobile-pane-nav');
       const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}};
-      const items=[...pills,account,presence].filter(Boolean);
+      const items=[panels,face,...pills,account,presence].filter(Boolean);
       const boxes=items.map(rect);
       const overlaps=boxes.some((a,i)=>boxes.slice(i+1).some(b=>a.left < b.right-1 && b.left < a.right-1 && a.top < b.bottom-1 && b.top < a.bottom-1));
       return {width:innerWidth,items:boxes,overlaps,presenceAvatars:presence?.querySelectorAll('.avatar').length||0,presenceMore:presence?.querySelector('.presence-more')?.textContent.trim()||'',
         menus:menuItems.map(n=>{const r=n.getBoundingClientRect();return {text:n.textContent.trim(),visible:!!n.getClientRects().length && getComputedStyle(n).display!=='none' && getComputedStyle(n).visibility!=='hidden' && r.width>0 && r.height>0 && r.left>=0 && r.right<=innerWidth};}),
-        faceInMobile:!!mobile?.contains(face), faceVisible:!!face?.getClientRects().length};
+        faceInTop:!!face?.closest('nav.reader-nav'), faceVisible:!!face?.getClientRects().length, mobileNavExists:!!mobileNav, panelsInTop:!!panels?.closest('nav.reader-nav')};
     })()`);
     assert.equal(header.overlaps,false,`toolbar controls do not overlap at ${width}px: ${JSON.stringify(header)}`);
-    assert.ok(header.items.every(item=>item.width>0 && item.height>0 && item.left>=-1 && item.right<=width+1 && item.top>=0 && item.bottom<=844),`identity and connection controls stay visible and inside the viewport at ${width}px: ${JSON.stringify(header)}`);
+    assert.ok(header.items.every(item=>item.width>0 && item.height>0 && item.left>=-1 && item.right<=width+1 && item.top>=0 && item.bottom<=844),`top bar controls stay visible and inside the viewport at ${width}px: ${JSON.stringify(header)}`);
     assert.equal(header.presenceAvatars,3,`three collaborator avatars render at ${width}px: ${JSON.stringify(header)}`);
     assert.equal(header.presenceMore,'+2',`the crowded presence overflow badge renders at ${width}px: ${JSON.stringify(header)}`);
-    for (const label of ['File','View']) assert.equal(header.menus.some(item=>item.visible&&item.text===label),true,`${label} stays visible at ${width}px: ${JSON.stringify(header)}`);
-    assert.equal(header.faceInMobile,true,`source/document switch lives in the mobile nav at ${width}px`);
-    assert.equal(header.faceVisible,true,`source/document switch is visible at ${width}px`);
-    for (const label of ['File','View']) {
-      await clickText('.menubar-item',label);
-      await until(`${label} menu opens at ${width}px`,()=>b.evaluate('Boolean(document.querySelector(".explorer-menu[data-state=open]"))'),3000);
-      await click('body');
-    }
+    assert.equal(header.mobileNavExists,false,`no bottom navigation bar at ${width}px: ${JSON.stringify(header)}`);
+    for (const label of ['File','View']) assert.equal(header.menus.some(item=>item.visible&&item.text===label),false,`${label} menu text is hidden at ${width}px: ${JSON.stringify(header)}`);
+    assert.equal(header.faceInTop,true,`source/document switch lives in the top bar at ${width}px: ${JSON.stringify(header)}`);
+    assert.equal(header.faceVisible,true,`source/document switch is visible at ${width}px: ${JSON.stringify(header)}`);
+    assert.equal(header.panelsInTop,true,`panels hamburger menu lives in the top bar at ${width}px: ${JSON.stringify(header)}`);
   }
   await b.resize(900,900); await flush();
-  assert.equal(await b.evaluate('Boolean(document.querySelector(".face-switch")?.closest("nav:not(.mobile-pane-nav)"))'),true,'the source/document switch returns to the top toolbar above 760px');
+  assert.equal(await b.evaluate('Boolean(document.querySelector(".face-switch")?.closest("nav"))'),true,'the source/document switch stays in the top toolbar above 760px');
   await b.resize(390,844); await flush();
   await click(face('Document'));
   const compactNav = await b.evaluate(`(() => {
-    const bar = document.querySelector('.mobile-pane-nav');
-    const trigger = bar?.querySelector('.compact-panels-trigger[aria-label="Panels"]');
-    const faceSwitch = bar?.querySelector('.face-switch');
+    const navbar = document.querySelector('nav.reader-nav');
+    const trigger = navbar?.querySelector('.compact-panels-trigger[aria-label="Panels"]');
+    const faceSwitch = navbar?.querySelector('.face-switch');
     const triggerRect = trigger?.getBoundingClientRect();
     const faceRect = faceSwitch?.getBoundingClientRect();
     const controls = [trigger, ...[...(faceSwitch?.querySelectorAll('button') || [])]];
     const rects = controls.map(control => control?.getBoundingClientRect());
     const styles = controls.map(control => getComputedStyle(control));
     const icons = controls.map(control => control?.querySelector('svg'));
-    return { triggers: bar?.querySelectorAll('.compact-panels-trigger').length || 0,
-      face: Boolean(bar?.querySelector('.face-switch')),
-      faceLabels: [...bar?.querySelectorAll('.face-switch button')||[]].map(button=>button.getAttribute('aria-label')),
+    return { triggers: navbar?.querySelectorAll('.compact-panels-trigger').length || 0,
+      face: Boolean(navbar?.querySelector('.face-switch')),
+      faceLabels: [...navbar?.querySelectorAll('.face-switch button')||[]].map(button=>button.getAttribute('aria-label')),
       height: triggerRect?.height || 0,
       sizes: rects.map(rect => [rect?.width || 0, rect?.height || 0]),
       radii: styles.map(style => style.borderRadius),
@@ -446,21 +444,26 @@ try {
         rects[2]?.left - rects[1]?.right,
       ],
       immediatelyLeft: Boolean(trigger && faceSwitch && trigger.compareDocumentPosition(faceSwitch) & Node.DOCUMENT_POSITION_FOLLOWING
-        && triggerRect.right <= faceRect.left && faceRect.left - triggerRect.right <= parseFloat(getComputedStyle(bar).gap) + 1) };
+        && triggerRect.right <= faceRect.left && faceRect.left - triggerRect.right <= parseFloat(getComputedStyle(navbar).gap) + 1) };
   })()`);
-  assert.equal(compactNav.triggers,1,'mobile panels have one Panels trigger');
-  assert.equal(compactNav.face,true,'mobile nav includes the source/document switch beside Panels');
+  assert.equal(compactNav.triggers,1,'top bar has one Panels trigger');
+  assert.equal(compactNav.face,true,'top bar includes the source/document switch beside Panels');
   assert.deepEqual(compactNav.faceLabels,['Document','Source'],'both mobile workspace faces remain available');
-  assert.equal(compactNav.height,44,'mobile Panels trigger is 44px tall');
-  assert.deepEqual(compactNav.sizes,[[44,44],[44,44],[44,44]],'all three compact controls are 44px square');
-  assert.equal(new Set(compactNav.radii).size,1,'all three compact controls share a corner radius');
-  assert.equal(new Set(compactNav.borders.map(border => border.join('|'))).size,1,'all three compact controls share a border');
-  assert.equal(new Set(compactNav.iconSizes.map(size => size?.join('|'))).size,1,'all three compact controls share an icon size');
-  assert.deepEqual(compactNav.gaps,[8,8],'the three compact controls are separated by equal 8px gaps');
-  assert.equal(compactNav.immediatelyLeft,true,'the icon trigger sits immediately left of the face switch');
+  assert.equal(compactNav.height,44,'Panels trigger is 44px tall');
+  assert.deepEqual(compactNav.sizes,[[44,44],[44,44],[44,44]],'all three top bar controls are 44px square');
+  assert.equal(new Set(compactNav.radii).size,1,'all three controls share a corner radius');
+  assert.equal(new Set(compactNav.borders.map(border => border.join('|'))).size,1,'all three controls share a border');
+  assert.equal(new Set(compactNav.iconSizes.map(size => size?.join('|'))).size,1,'all three controls share an icon size');
+  assert.deepEqual(compactNav.gaps,[8,8],'the three controls are separated by equal 8px gaps');
+  assert.equal(compactNav.immediatelyLeft,true,'the Panels trigger sits immediately left of the face switch');
   assert.equal(await b.evaluate('document.querySelector(".compact-panels-trigger[aria-label=Panels]").innerText.trim()'),'','the Panels trigger is icon only');
   await click('.compact-panels-trigger[aria-label="Panels"]');
   await until('compact Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
+  // The Panels menu now starts with File/Edit/Insert/View menu items, then has a
+  // separator, then the panel items.
+  const menuItems = await b.evaluate(`(() => [...document.querySelectorAll(${JSON.stringify(`${panelMenu} [data-menu-id]`)})].map(node => ({id:node.dataset.menuId,text:node.textContent.trim()})))()`);
+  assert.ok(menuItems.length >= 1, 'File menu item is present in Panels menu');
+  assert.ok(menuItems.some(item => item.id === 'file' && item.text.includes('File')), 'File menu item has correct id and text');
   const menuPanels = await b.evaluate(`(() => [...document.querySelectorAll(${JSON.stringify(`${panelMenu} [data-panel-id]`)})].map(node => ({id:node.dataset.panelId,label:node.getAttribute('aria-label'),text:node.textContent.trim()})))()`);
   assert.deepEqual(menuPanels.map(item => [item.id,item.label,item.text]), [
     ['files','Files','Files'],['outline','Outline','Outline'],['collaboration','Collaboration','Collaboration'],
@@ -522,14 +525,13 @@ try {
       writeFileSync(process.env.LIBREPAPER_COMPACT_SCREENSHOT, Buffer.from(screenshot.data,'base64'));
     }
     const menuBounds = await b.evaluate(`(() => { const menu=document.querySelector(${JSON.stringify(panelMenu)}); const items=document.querySelector('.compact-panels-items'); const rect=menu.getBoundingClientRect();
-      const bar=document.querySelector('.mobile-pane-nav').getBoundingClientRect();
-      const topBar=document.querySelector('.menubar')?.closest('nav')?.getBoundingClientRect();
-      return {left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,width:innerWidth,height:innerHeight,barTop:bar.top,barBottom:bar.bottom,topBarBottom:topBar?.bottom,
+      const topBar=document.querySelector('nav.reader-nav').getBoundingClientRect();
+      return {left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,width:innerWidth,height:innerHeight,topBarBottom:topBar?.bottom,
         itemScrollHeight:items?.scrollHeight||0,itemClientHeight:items?.clientHeight||0}; })()`);
     assert.ok(menuBounds.left >= -1 && menuBounds.right <= width + 1, `menu fits horizontally at ${width}px: ${JSON.stringify(menuBounds)}`);
     assert.ok(menuBounds.top >= -1 && menuBounds.bottom <= height + 1, `menu fits vertically at ${width}x${height}: ${JSON.stringify(menuBounds)}`);
-    assert.ok(menuBounds.top >= menuBounds.topBarBottom && menuBounds.top-menuBounds.topBarBottom <= 16 && Math.abs(menuBounds.bottom-menuBounds.barTop) <= 8,
-      `menu fills the space between the top toolbar and bottom nav at ${width}x${height}: ${JSON.stringify(menuBounds)}`);
+    assert.ok(menuBounds.top >= menuBounds.topBarBottom && menuBounds.top-menuBounds.topBarBottom <= 16 && menuBounds.bottom <= menuBounds.height + 1,
+      `menu opens below the top bar and fits within the viewport at ${width}x${height}: ${JSON.stringify(menuBounds)}`);
     if (height < 500) {
       assert.ok(menuBounds.itemScrollHeight > menuBounds.itemClientHeight, 'the menu items scroll in a short viewport: ' + JSON.stringify(menuBounds));
       await b.evaluate(`(() => {const items=document.querySelector('.compact-panels-items');items.scrollTop=0;const r=items.getBoundingClientRect();window.scrollTarget={x:r.left+r.width/2,y:r.top+r.height/2};})()`);
