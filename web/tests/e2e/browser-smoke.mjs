@@ -209,20 +209,39 @@ async function openTab(url, cookies = [], { ownProfile = false } = {}) {
 }
 
 async function selectPdf(tab, slug, { waitFrame = true } = {}) {
-  await requiredUntil("the View menu", () => tab.eval(`return Boolean(document.querySelector('button[data-menubar="view"]'))`));
-  await tab.eval(`document.querySelector('button[data-menubar="view"]').click(); return true;`);
-  await requiredUntil("the PDF format menu item", () => tab.eval(`
-    return [...document.querySelectorAll(".menuitem")].some((item) =>
-      item.querySelector(".menuitem-check") && item.textContent.replace("✓", "").trim() === "PDF");
+  const clickAt = async (selector, description) => {
+    const { x, y } = await requiredUntil(description, () => tab.eval(`
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      if (!rect.width || !rect.height || getComputedStyle(element).visibility === "hidden") return null;
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    `));
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+      await tab.send("Input.dispatchMouseEvent", {
+        type, x, y, button: "left", clickCount: 1, buttons: type === "mousePressed" ? 1 : 0,
+      });
+    }
+  };
+
+  await clickAt('button[data-menubar="view"]', "the View menu");
+  const pdfItem = '[data-value="format-pdf"]';
+  await requiredUntil("the enabled PDF format menu item", () => tab.eval(`
+    const item = document.querySelector(${JSON.stringify(pdfItem)});
+    return Boolean(item && item.getClientRects().length
+      && item.getAttribute("aria-disabled") !== "true" && !item.hasAttribute("disabled"));
   `));
-  await tab.eval(`
-    const pdf = [...document.querySelectorAll(".menuitem")].find((item) =>
-      item.querySelector(".menuitem-check") && item.textContent.replace("✓", "").trim() === "PDF");
-    if (!pdf) throw new Error("no PDF format menu item");
-    pdf.click();
-    return true;
-  `);
-  if (waitFrame) await requiredUntil("the PDF preview frame", () => tab.eval(`return document.querySelector('iframe[title="Document"]')?.getAttribute("src")?.includes("/pdf/${slug}/") || false`));
+  await clickAt(pdfItem, "the visible PDF format menu item");
+  if (waitFrame) {
+    const frameUrl = await until("the PDF preview frame", () => tab.eval(`
+      const src = document.querySelector('iframe[title="Document"]')?.getAttribute("src");
+      return src?.includes("/pdf/${slug}/") ? src : null;
+    `));
+    if (!frameUrl) {
+      const src = await tab.eval(`return document.querySelector('iframe[title="Document"]')?.getAttribute("src") || "missing"`);
+      throw new Error(`timed out waiting for the PDF preview frame; iframe src=${src}`);
+    }
+  }
 }
 
 let root = null;
