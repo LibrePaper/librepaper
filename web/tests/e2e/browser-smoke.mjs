@@ -19,7 +19,7 @@ import { join, resolve } from "node:path";
 import http from "node:http";
 import { deploymentBinary, sessionCookie, startDeployment } from "../helpers/deployment.mjs";
 import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
-import { createProtocol } from "../helpers/browser-driver.mjs";
+import { createProtocol, stopBrowserProcess } from "../helpers/browser-driver.mjs";
 
 const binary = process.argv[2] || deploymentBinary();
 if (!existsSync(binary)) {
@@ -86,8 +86,31 @@ async function reloadPage(tab, what) {
 /* ------------------------------------------------------------- the browser */
 
 let chrome = null;
-async function connect(port) {
+function browserStartupFailure(child, spawnError) {
+  if (spawnError) return `Chromium failed to spawn: ${spawnError.message}`;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return `Chromium exited before DevTools was ready (code=${child.exitCode}, signal=${child.signalCode})`;
+  }
+  return null;
+}
+
+async function waitForDebugPort(child, portFile, getSpawnError) {
   for (let tries = 0; tries < 100; tries++) {
+    const failure = browserStartupFailure(child, getSpawnError());
+    if (failure) throw new Error(failure);
+    try {
+      const port = Number(readFileSync(portFile, "utf8").split(/\r?\n/, 1)[0]);
+      if (Number.isInteger(port) && port > 0 && port <= 65535) return port;
+    } catch {}
+    await wait(150);
+  }
+  throw new Error(`Chromium did not publish a valid DevTools port in ${portFile}`);
+}
+
+async function connect(port, child, getSpawnError) {
+  for (let tries = 0; tries < 100; tries++) {
+    const failure = browserStartupFailure(child, getSpawnError());
+    if (failure) throw new Error(failure);
     try {
       const list = await fetch(`http://127.0.0.1:${port}/json/version`).then((r) => r.json());
       return list.webSocketDebuggerUrl;
@@ -322,20 +345,24 @@ const MARKDOWN = "# A Paper\n\nThe first paragraph.\n";
 async function run() {
   await requiredUntil("the server", async () => (await fetch(`${BASE}/api/config`)).ok);
 
+  let chromeSpawnError = null;
+  const chromeProfile = join(data, "chrome");
   chrome = spawn(
     chromium,
     [
       "--headless=new",
-      "--remote-debugging-port=9333",
+      "--remote-debugging-port=0",
       "--no-sandbox",
       "--disable-gpu",
       "--disable-dev-shm-usage",
-      `--user-data-dir=${join(data, "chrome")}`,
+      `--user-data-dir=${chromeProfile}`,
       "about:blank",
     ],
     { stdio: "ignore" },
   );
-  const endpoint = await connect(9333);
+  chrome.once("error", (error) => { chromeSpawnError = error; });
+  const debugPort = await waitForDebugPort(chrome, join(chromeProfile, "DevToolsActivePort"), () => chromeSpawnError);
+  const endpoint = await connect(debugPort, chrome, () => chromeSpawnError);
   socket = new WebSocket(endpoint);
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve);
@@ -869,11 +896,30 @@ async function run() {
   `);
   await wait(300);
   await setText(author, "#let greeting = undefined_name\n");
-  const badged = await until("the badge says what is wrong", async () =>
-    author.eval(`return Boolean(document.querySelector(".activity-count.errors"))`),
+  const importDiagnosticButton = await until("the imported-file diagnostic badge", async () =>
+    author.eval(`
+      const label = document.querySelector('button[aria-label^="Diagnostics:"]')?.getAttribute("aria-label") || "";
+      return /\\berror\\b/i.test(label) ? label : null;
+    `),
     20000,
   );
-  check("an error in an imported file is reported", Boolean(badged));
+  if (importDiagnosticButton) {
+    await author.eval(`document.querySelector('button[aria-label^="Diagnostics:"]').click(); return true;`);
+  }
+  const importDiagnostic = await until("the imported-file source error", async () => author.eval(`
+    const panel = document.querySelector('[aria-label="Warnings and errors"]');
+    const text = panel?.innerText || "";
+    return /Errors?\\s*\\(/.test(text) && text.includes("lib.typ") && text.includes("undefined_name") ? text : null;
+  `), 20000);
+  check(
+    "an imported-file error identifies lib.typ and undefined_name",
+    Boolean(importDiagnostic),
+    importDiagnostic?.slice(0, 600) || importDiagnosticButton || "no accessible diagnostics badge",
+  );
+  await author.eval(`document.querySelector('button[aria-label="Files"]')?.click(); return true;`);
+  await requiredUntil("the Files panel after diagnostics", () =>
+    author.eval(`return Boolean(document.querySelector('.explorer-row[title="lib.typ"]'))`),
+  );
 
   // Renaming keeps the words: the name moves and the text stays where it is.
   // A double-click on the row starts the rename, the way a person does it --
@@ -1147,10 +1193,16 @@ try {
   console.error(deployment.log.slice(-2000));
 } finally {
   try {
+    if (root) await root.protocol("Browser.close", {}, undefined, 2000);
+  } catch {}
+  try {
     socket?.close();
   } catch {}
-  chrome?.kill();
-  await wait(300);
+  try {
+    await stopBrowserProcess(chrome);
+  } catch (error) {
+    check("the test browser exits", false, String(error));
+  }
   // Chromium can still be releasing file handles in its profile directory a
   // moment after the process is asked to exit; one retry after a further
   // pause covers that without masking a real cleanup failure.
