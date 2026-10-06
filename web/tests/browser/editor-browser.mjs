@@ -343,7 +343,55 @@ window.vimUndoCheck = async () => {
   const redone = text.toString();
   vimComponent.$destroy();
   value.leave();
-  return { undone, redone };
+
+  const boundarySession = joinSession({ send: () => {}, mayEdit: true });
+  const boundaryTextId = boundarySession.addText("vim-boundaries.md", "start\\n");
+  const boundaryText = boundarySession.textOf(boundaryTextId);
+  boundarySession.setMain(boundaryTextId);
+  const boundaryHost = document.createElement("section");
+  document.body.append(boundaryHost);
+  const boundaryComponent = createClassComponent({
+    component: Editor,
+    target: boundaryHost,
+    props: { session: boundarySession, format: "markdown", file: boundaryTextId, keys: "vim" },
+  });
+  await tick();
+  for (let attempt = 0; attempt < 100 && !boundaryHost.querySelector(".cm-vim-panel"); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const boundaryView = EditorView.findFromDOM(boundaryHost.querySelector(".cm-editor"));
+  const press = (key, code, modifiers = {}) => boundaryView.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
+    key, code, bubbles: true, cancelable: true, ...modifiers,
+  }));
+  boundaryView.focus();
+  press("i", "KeyI");
+  for (const character of "hello") {
+    const position = boundaryView.state.selection.main.head;
+    boundaryView.dispatch({
+      changes: { from: position, insert: character },
+      selection: { anchor: position + character.length },
+    });
+  }
+  press("Escape", "Escape");
+  press("d", "KeyD");
+  press("d", "KeyD");
+  press("u", "KeyU");
+  await tick();
+  const afterDeleteUndo = boundaryText.toString();
+  press("u", "KeyU");
+  await tick();
+  const afterInsertUndo = boundaryText.toString();
+  press("r", "KeyR", { ctrlKey: true });
+  await tick();
+  const afterInsertRedo = boundaryText.toString();
+  press("r", "KeyR", { ctrlKey: true });
+  await tick();
+  const afterDeleteRedo = boundaryText.toString();
+  boundaryComponent.$destroy();
+  boundarySession.leave();
+  boundaryHost.remove();
+
+  return { undone, redone, afterDeleteUndo, afterInsertUndo, afterInsertRedo, afterDeleteRedo };
 };
 window.mergeUndoCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
@@ -970,6 +1018,10 @@ try {
   const vimUndo = await evaluate("vimUndoCheck()");
   assert.equal(vimUndo.undone, "alpha");
   assert.equal(vimUndo.redone, "alphaLOCAL");
+  assert.ok(vimUndo.afterDeleteUndo.includes("hello"), "Vim u merged the insertion with dd instead of restoring the deleted line");
+  assert.equal(vimUndo.afterInsertUndo, "start\n", "one Vim undo did not take back the grouped insert-mode typing");
+  assert.ok(vimUndo.afterInsertRedo.includes("hello"), "Vim Ctrl-R did not redo the grouped insert-mode typing");
+  assert.equal(vimUndo.afterDeleteRedo.includes("hello"), false, "Vim Ctrl-R did not redo the separate line deletion");
   console.log("editor-browser: Vim u and Ctrl-R use collaborative undo and redo");
   const mergeUndo = await evaluate("mergeUndoCheck()");
   assert.equal(mergeUndo.remoteOnly, "REMOTE alpha");

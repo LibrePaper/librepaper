@@ -3,13 +3,62 @@
   // view rather than baked into a file's state, so flipping the setting
   // reconfigures the live editor without dropping the caret, the scroll
   // position or the undo history.
-  import { Compartment } from "@codemirror/state";
-  import { undo as undoFn, redo as redoFn } from "../lib/loro-undo.js";
+  import { Compartment, Prec as vimPrec } from "@codemirror/state";
+  import { ViewPlugin } from "@codemirror/view";
+  import { undo as undoFn, redo as redoFn, undoManagerField as vimUndoManagerField } from "../lib/loro-undo.js";
+  import { loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
   import { keymap } from "@codemirror/view";
 
   // The keys the editor answers to: Vim's, Emacs's, or nothing extra. One
   // compartment, whichever is chosen, so switching swaps one for the other.
   const vimCompartment = new Compartment();
+
+  // Loro merges nearby commits by default. A handled Vim key starts a new
+  // command boundary; the first local edit after it consumes that boundary
+  // only after the Loro sync plugin has committed the edit.
+  // Plain insert-mode keystrokes fall through to CodeMirror, so they keep
+  // grouping under Loro's normal one-second interval.
+  const vimUndoBoundaries = vimPrec.lowest(ViewPlugin.fromClass(class {
+    constructor(view) {
+      this.view = view;
+      this.manager = view.state.field(vimUndoManagerField, false);
+      this.cm = view.cm;
+      this.pendingBoundary = true;
+      this.manager?.setMergeInterval(0);
+      this.onKeypress = () => {
+        this.adoptManager();
+        this.pendingBoundary = true;
+        this.manager?.setMergeInterval(0);
+      };
+      this.cm?.on("vim-keypress", this.onKeypress);
+    }
+
+    adoptManager() {
+      const manager = this.view.state.field(vimUndoManagerField, false);
+      if (manager === this.manager) return;
+      this.manager?.setMergeInterval(1000);
+      this.manager = manager;
+      this.pendingBoundary = true;
+      this.manager?.setMergeInterval(0);
+    }
+
+    update(update) {
+      this.adoptManager();
+      if (!this.pendingBoundary || !this.manager) return;
+      const localEdit = update.transactions.some((transaction) =>
+        transaction.docChanged && transaction.annotation(loroSyncAnnotation) === undefined
+      );
+      if (localEdit) {
+        this.manager.setMergeInterval(1000);
+        this.pendingBoundary = false;
+      }
+    }
+
+    destroy() {
+      this.cm?.off("vim-keypress", this.onKeypress);
+      this.manager?.setMergeInterval(1000);
+    }
+  }));
 
   // Each package is fetched only once a browser asks for its keys, and every
   // editor on the page shares the one download and the one module. Once it
@@ -23,7 +72,7 @@
     if (!vimPromise) {
       vimPromise = import("@replit/codemirror-vim").then(({ Vim, vim }) => {
         defineExCommands(Vim);
-        resolvedVim = vim({ status: true });
+        resolvedVim = [vim({ status: true }), vimUndoBoundaries];
         return resolvedVim;
       });
     }
