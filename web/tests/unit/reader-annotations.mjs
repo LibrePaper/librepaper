@@ -31,6 +31,7 @@ assert.equal(draft.pending, true);
 assert.equal(draft.creator, "Local name");
 assert.equal(sent[0].creator, undefined);
 assert.equal(sent[0].proposed, undefined);
+assert.equal(sent[0].request_id, sent[0].temp_id, "comment retries use the stable temp id as the server idempotency key");
 assert.equal(draft.proposed, undefined);
 assert.equal(anchored.length, 1);
 assert.equal(view.unconfirmed.length, 1);
@@ -67,6 +68,7 @@ assert.equal(draft.replies.length, 2);
 assert.equal(reply.creator, "Server reply name");
 assert.equal(view.unconfirmed.length, 0);
 assert.equal(sent[1].creator, undefined);
+assert.equal(sent[1].request_id, reply.temp_id, "reply retries use the stable temp id as the server idempotency key");
 
 annotations.reply(draft, "Unconfirmed reply", "Name");
 const failed = sent.at(-1).temp_id;
@@ -76,6 +78,7 @@ assert.equal(view.comments[0].replies.length, 2);
 assert.equal(view.unconfirmed.length, 1, "rollback preserves the draft for an explicit retry");
 annotations.outbox.retry(failed, (message) => sent.push(message));
 assert.equal(sent.at(-1).temp_id, failed, "retry retains the idempotency key");
+assert.equal(sent.at(-1).request_id, failed, "retry retains the server's durable idempotency key");
 annotations.discard(failed);
 assert.equal(view.unconfirmed.length, 0);
 

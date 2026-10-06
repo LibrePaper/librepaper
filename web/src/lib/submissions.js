@@ -1,5 +1,14 @@
 import { read, write } from "./storage.js";
 
+function stableRequest(message) {
+  // Creation uses request_id as the durable annotation ID. Matching it to the
+  // outbox key makes retries idempotent and lets snapshots reconcile drafts.
+  if (["comment", "reply"].includes(message?.type) && message.temp_id) {
+    return { ...message, request_id: message.temp_id };
+  }
+  return message;
+}
+
 // Keep the complete submission until the server acknowledges it. A reload or
 // a reconnect never treats a missing acknowledgment as a successful write.
 /** @param {{slug: string, changed?: (items: {message: object, error: string}[]) => void}} options */
@@ -9,10 +18,13 @@ export function submissions({ slug, changed = () => {} }) {
   const items = new Map(
     (Array.isArray(saved) ? saved : [])
       .filter((item) => item?.message?.temp_id && ["comment", "reply"].includes(item.message.type))
-      .map((item) => [item.message.temp_id, {
-        message: item.message,
-        error: "Submission not confirmed. Retry to check or send it.",
-      }]),
+      .map((item) => {
+        const message = stableRequest(item.message);
+        return [message.temp_id, {
+          message,
+          error: "Submission not confirmed. Retry to check or send it.",
+        }];
+      }),
   );
   function publish() {
     const list = [...items.values()];
@@ -24,8 +36,10 @@ export function submissions({ slug, changed = () => {} }) {
     keep(message) {
       // The wire payload is JSON; serializing also unwraps Svelte's nested
       // state proxies, which structuredClone cannot copy.
-      items.set(message.temp_id, { message: JSON.parse(JSON.stringify(message)), error: "" });
+      const stable = JSON.parse(JSON.stringify(stableRequest(message)));
+      items.set(stable.temp_id, { message: stable, error: "" });
       publish();
+      return stable;
     },
     failed(id, error) {
       const item = items.get(id);

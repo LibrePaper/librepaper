@@ -106,8 +106,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
   };
 
   function submit(message) {
-    outbox.keep(message);
-    send(message);
+    send(outbox.keep(message));
   }
 
   function removePending(id) {
