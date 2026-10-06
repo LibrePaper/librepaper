@@ -39,3 +39,10 @@ verification, and initialize with `./setup init --database external`.
 The supported topology uses one app writer and one backup scheduler per
 database. See the self-hosting guide for role privileges, upgrade and rollback
 steps, key recovery, and limits on horizontal scaling.
+
+## Customizing Caddy
+
+Extra site blocks survive redeploys: place them in `caddy/local.d/*.caddy`. Extra
+global options (one per line, no braces) go in `caddy/local.d/*.global`. The kit
+never writes to `caddy/local.d/`. Reload with `docker compose exec caddy caddy
+reload --config /etc/caddy/Caddyfile`.

@@ -226,7 +226,7 @@ usage: tools/deploy/production <command>
   deploy-local BINARY deploy a previously-built Linux musl executable instead of a release image
   upgrade-database  explicitly migrate a legacy local socket-trust database to scoped roles
   site               rebuild and upload the landing page and manual only (no release, no restart)
-  verify             app, monitoring, site, documents, redirect, and logs
+  verify             app, monitoring, site, documents, redirect, operator URLs, and logs
   logs               follow the container logs
   help, -h, --help   show this message
 
@@ -408,6 +408,22 @@ verify() {
 		ok "-> $location"
 	else
 		die "librepaper.com redirects to '${location}', expected https://$SITE/"
+	fi
+
+	step "Operator additions: caddy/local.d/check-urls"
+	local url urls
+	urls=$(ssh "$HOST" 'cat librepaper/caddy/local.d/check-urls 2>/dev/null' || true)
+	if [ -z "$urls" ]; then
+		note "none listed"
+	else
+		while IFS= read -r url; do
+			[[ "$url" =~ ^[[:space:]]*(#|$) ]] && continue
+			if http_request -fs -o /dev/null "$url"; then
+				ok "$url answers"
+			else
+				printf '    %s%s did not answer%s\n' "$red" "$url" "$reset"
+			fi
+		done <<< "$urls"
 	fi
 
 	step "Last 50 log lines"
