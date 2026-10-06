@@ -548,6 +548,21 @@
     tracePassages();
   }
 
+  // Scroll tracking for mobile bar hide/show: called by scroll listeners and
+  // frame scroll messages. Hide the bar when scrolling down past threshold,
+  // show it when scrolling up or at top.
+  function noteScroll(delta, top) {
+    if (!compact || top <= 0) {
+      barHidden = false;
+    } else if (Math.abs(delta) < 4) {
+      return;
+    } else if (delta > 0 && top > 48) {
+      barHidden = true;
+    } else if (delta < 0) {
+      barHidden = false;
+    }
+  }
+
   function fromFrame(message) {
     switch (message.type) {
       case "ready":
@@ -591,6 +606,9 @@
       case "focus":
         void focusAnnotation(message.id);
         break;
+      case "scroll":
+        noteScroll(Number(message.delta) || 0, Number(message.top) || 0);
+        break;
     }
   }
 
@@ -612,6 +630,11 @@
   let assistantRequest = $state(null);
   let selectionRevision = Promise.resolve("");
   let bar = $state({ shown: false, left: 0, top: 0, center: 0 });
+
+  // Mobile top bar slide behaviour: on phones (compact ≤760px), hide the bar
+  // when scrolling down, show it again when scrolling up. The bar slides
+  // away via transform with CSS transitions.
+  let barHidden = $state(false);
 
   // What was selected, as the page had it. That is all this browser sends and
   // all it can honestly send: which passage of which source file those words
@@ -3797,6 +3820,48 @@
     event.preventDefault();
     void runCommand(command.id);
   }
+
+  // Track scrolls on elements inside the main reader pane. Ignore scrolls on
+  // menus, popovers, and the nav itself. Store the last scrollTop per element
+  // in a WeakMap to detect scroll direction and magnitude.
+  $effect(() => {
+    const scrollTops = new WeakMap();
+    function onScroll(event) {
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest("#main")) return;
+      const scrollTop = target.scrollTop || 0;
+      if (!scrollTops.has(target)) {
+        scrollTops.set(target, scrollTop);
+        return;
+      }
+      const prev = scrollTops.get(target);
+      scrollTops.set(target, scrollTop);
+      noteScroll(scrollTop - prev, scrollTop);
+    }
+    document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    return () => document.removeEventListener("scroll", onScroll, { capture: true });
+  });
+
+  // Reveal the bar when transitioning out of compact mode, or when switching
+  // panes (each pane has its own scroll position).
+  $effect(() => {
+    compact; // track compact changes
+    activeMobileView;
+    panel;
+    barHidden = false;
+  });
+
+  // Reveal the bar when keyboard focus enters the nav element, so off-screen
+  // controls are never focused invisibly.
+  $effect(() => {
+    function onNavFocus(event) {
+      if (event.target.closest("body > nav")) {
+        barHidden = false;
+      }
+    }
+    document.addEventListener("focusin", onNavFocus);
+    return () => document.removeEventListener("focusin", onNavFocus);
+  });
 </script>
 
 <svelte:window bind:innerWidth={width} onresize={() => (unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
@@ -3946,7 +4011,7 @@
   {/if}
 {/snippet}
 
-<Nav {me} reader>
+<Nav {me} reader hidden={barHidden}>
   {#snippet tools()}
     {#if compact}
       <!-- At compact widths (≤760px), the top bar contains only the hamburger
@@ -4036,8 +4101,8 @@
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
-      class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact}
-      style="height: calc(100dvh - var(--librepaper-bar)); --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:bar-hidden={barHidden}
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar))); --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
