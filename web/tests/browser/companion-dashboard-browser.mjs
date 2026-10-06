@@ -55,7 +55,7 @@ writeFileSync(harness, `
 <script>
   import SettingsDialog from ${JSON.stringify(join(root, "web/src/components/settings/SettingsDialog.svelte"))};
   let open = $state(true);
-  let category = $state("local");
+  let category = $state("diagnostics");
   window.showSettingsCategory = (next) => category = next;
 </script>
 <SettingsDialog bind:open bind:category sourceFormat="quarto" mayEdit={true} userId="browser-check"
