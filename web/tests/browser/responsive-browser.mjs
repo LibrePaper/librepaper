@@ -608,6 +608,29 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-transcript").scrollTop'),100);
   await bounded();
 
+  await click(face('Source'));
+  assert.equal(await visible('.editorpane'), true);
+  await b.evaluate('document.querySelector(".cm-scroller").scrollTop = 0');
+  await flush();
+  await b.evaluate('document.querySelector(".cm-scroller").scrollTop = 200');
+  await flush();
+  await b.evaluate('document.querySelector(".cm-scroller").scrollTop = 400');
+  await flush();
+  await until('bar hides on scroll down', () => b.evaluate('document.querySelector("body > nav").classList.contains("bar-hidden")'), 5000);
+  assert.equal(await b.evaluate('document.querySelector("main#main").classList.contains("bar-hidden")'), true);
+  await b.evaluate('document.querySelector(".cm-scroller").scrollTop = 300');
+  await flush();
+  await until('bar shows on scroll up', () => b.evaluate('!document.querySelector("body > nav").classList.contains("bar-hidden")'), 5000);
+  await b.evaluate('document.querySelector(".cm-scroller").scrollTop = 400');
+  await flush();
+  await until('bar hides on scroll down again', () => b.evaluate('document.querySelector("body > nav").classList.contains("bar-hidden")'), 5000);
+  await b.resize(1280,900); await flush();
+  assert.equal(await b.evaluate('document.querySelector("body > nav").classList.contains("bar-hidden")'), false);
+  await b.resize(390,844); await flush();
+  await b.evaluate('document.querySelector(".cm-scroller").scrollTop = 0');
+  await flush();
+  await until('bar shows on scroll to top', () => b.evaluate('!document.querySelector("body > nav").classList.contains("bar-hidden")'), 5000);
+
   await b.resize(900,900); await flush();
   await click(face('Document'));
   assert.equal(await visible('.viewport'),true);
@@ -632,5 +655,5 @@ try {
     await bounded();
   }
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds and saved layouts passed');
+  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds and saved layouts, hiding bar passed');
 } finally { await b?.close(); serverHttp?.close(); rmSync(temp,{recursive:true,force:true}); }
