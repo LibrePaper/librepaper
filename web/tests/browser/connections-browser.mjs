@@ -130,23 +130,9 @@ try {
     'Remote settings exposes its connected state');
   await click('[aria-label="Close"]');
 
-  // Narrow windows keep all three named connection status dots visible.
+  // Phones leave the connection lights out of the bar; Settings still has them.
   await b.resize(390,844); await flush();
-  const pills = await b.evaluate(`Array.from(document.querySelectorAll('.connection-pill')).map(pill => {
-    const box=pill.getBoundingClientRect();
-    return {name:pill.getAttribute('aria-label'),visible:Boolean(pill.getClientRects().length && getComputedStyle(pill).visibility !== 'hidden'),left:box.left,right:box.right,top:box.top,bottom:box.bottom};
-  })`);
-  assert.equal(pills.length,3,'all three connection controls remain in the narrow navbar');
-  for (const pill of pills) {
-    assert.equal(pill.visible,true,`${pill.name} is visible in a narrow window`);
-    assert.ok(pill.left >= -1 && pill.right <= 391 && pill.top >= -1 && pill.bottom <= 845,
-      `${pill.name} stays inside the narrow viewport: ${JSON.stringify(pill)}`);
-  }
-  for (let i=0; i<pills.length; i++) for (let j=i+1; j<pills.length; j++) {
-    const a=pills[i], c=pills[j];
-    assert.ok(a.right <= c.left || c.right <= a.left || a.bottom <= c.top || c.bottom <= a.top,
-      `${a.name} and ${c.name} do not overlap`);
-  }
+  assert.equal(await b.evaluate('document.querySelectorAll(".connection-pill").length'),0,'no connection lights in a narrow window');
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
   console.log('connections-browser: status pills, settings pages, local install links, and narrow-window bounds passed');
 } finally { await b?.close(); serverHttp?.close(); rmSync(temp,{recursive:true,force:true}); }

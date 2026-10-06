@@ -63,7 +63,7 @@
       setTimeout(() => onmenu?.(id), 0);
     }
   }}
-  positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}
+  positioning={{ placement: "bottom-end", gutter: 8, flip: true, fitViewport: true, overflowPadding: 8 }}
 >
   <Menu.Trigger
     class={`btn-icon icon-control icon-standard compact-panels-trigger ${open ? "lp-control-tonal-brand" : "icon-plain"}`}

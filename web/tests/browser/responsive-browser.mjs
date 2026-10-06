@@ -409,8 +409,7 @@ try {
     })()`);
     assert.equal(header.overlaps,false,`toolbar controls do not overlap at ${width}px: ${JSON.stringify(header)}`);
     assert.ok(header.items.every(item=>item.width>0 && item.height>0 && item.left>=-1 && item.right<=width+1 && item.top>=0 && item.bottom<=844),`top bar controls stay visible and inside the viewport at ${width}px: ${JSON.stringify(header)}`);
-    assert.equal(header.presenceAvatars,3,`three collaborator avatars render at ${width}px: ${JSON.stringify(header)}`);
-    assert.equal(header.presenceMore,'+2',`the crowded presence overflow badge renders at ${width}px: ${JSON.stringify(header)}`);
+    assert.equal(header.presenceAvatars,0,`collaborator avatars stay out of the compact bar at ${width}px: ${JSON.stringify(header)}`);
     assert.equal(header.mobileNavExists,false,`no bottom navigation bar at ${width}px: ${JSON.stringify(header)}`);
     for (const label of ['File','View']) assert.equal(header.menus.some(item=>item.visible&&item.text===label),false,`${label} menu text is hidden at ${width}px: ${JSON.stringify(header)}`);
     assert.equal(header.faceInTop,true,`source/document switch lives in the top bar at ${width}px: ${JSON.stringify(header)}`);
@@ -444,7 +443,7 @@ try {
         rects[2]?.left - rects[1]?.right,
       ],
       immediatelyLeft: Boolean(trigger && faceSwitch && trigger.compareDocumentPosition(faceSwitch) & Node.DOCUMENT_POSITION_FOLLOWING
-        && triggerRect.right <= faceRect.left && faceRect.left - triggerRect.right <= parseFloat(getComputedStyle(navbar).gap) + 1) };
+        && triggerRect.right <= faceRect.left && faceRect.left - triggerRect.right <= parseFloat(getComputedStyle(trigger.parentElement).gap) + 1) };
   })()`);
   assert.equal(compactNav.triggers,1,'top bar has one Panels trigger');
   assert.equal(compactNav.face,true,'top bar includes the source/document switch beside Panels');
@@ -457,6 +456,23 @@ try {
   assert.deepEqual(compactNav.gaps,[8,8],'the three controls are separated by equal 8px gaps');
   assert.equal(compactNav.immediatelyLeft,true,'the Panels trigger sits immediately left of the face switch');
   assert.equal(await b.evaluate('document.querySelector(".compact-panels-trigger[aria-label=Panels]").innerText.trim()'),'','the Panels trigger is icon only');
+  // The menu bar is hidden on a phone; its menus open from the top of the
+  // Panels menu instead, below the bar, with their own items.
+  for (const [id, item] of [["file", "Settings…"], ["view", "Preview this file"]]) {
+    await click('.compact-panels-trigger[aria-label="Panels"]');
+    await until(`Panels menu before ${id}`, () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(`${panelMenu} [data-menu-id="${id}"]`)}))`), 3000);
+    await click(`${panelMenu} [data-menu-id="${id}"]`);
+    const opened = await until(`${id} menu from Panels`, () => b.evaluate(`(() => {
+      const node=[...document.querySelectorAll(".explorer-menu[data-state=open] [role=menuitem]")].find(n => n.textContent.includes(${JSON.stringify(item)}));
+      if (!node || !node.getClientRects().length) return null;
+      return { top: node.closest(".explorer-menu").getBoundingClientRect().top, bar: document.querySelector("nav.reader-nav").getBoundingClientRect().bottom, panels: Boolean(document.querySelector(".explorer-menu[data-state=open] .compact-panels-items")) };
+    })()`), 3000);
+    assert.ok(opened.top >= opened.bar, `the ${id} menu opens below the top bar: ${JSON.stringify(opened)}`);
+    assert.equal(opened.panels, false, `the Panels menu closes when ${id} opens`);
+    await b.command("Input.dispatchKeyEvent", {type:"keyDown",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+    await b.command("Input.dispatchKeyEvent", {type:"keyUp",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+    await until(`${id} menu closed`, () => b.evaluate('!document.querySelector(".explorer-menu[data-state=open]")'), 3000);
+  }
   await click('.compact-panels-trigger[aria-label="Panels"]');
   await until('compact Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
   // The Panels menu now starts with File/Edit/Insert/View menu items, then has a
@@ -504,7 +520,8 @@ try {
   await key('Enter','Enter',13);
   await until('keyboard opened Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
   await key('ArrowDown','ArrowDown',40);
-  assert.equal(await b.evaluate('document.querySelector(".explorer-menu[data-state=open] [data-highlighted][data-panel-id]")?.dataset.panelId'), 'outline', 'ArrowDown highlights the next panel');
+  // The File/Edit/Insert/View entries come first, so the second item is Edit.
+  assert.equal(await b.evaluate('(() => { const items=[...document.querySelectorAll(".explorer-menu[data-state=open] [role=menuitem]")]; return items.findIndex(item => item.hasAttribute("data-highlighted")); })()'), 1, 'ArrowDown highlights the next item');
   await key('Escape','Escape',27);
   await until('keyboard closed Panels menu', () => b.evaluate(`!document.querySelector(${JSON.stringify(panelMenu)})`), 3000);
   assert.equal(await b.evaluate('document.activeElement?.matches(\'.compact-panels-trigger[aria-label="Panels"]\')'), true, 'Escape restores focus to Panels');

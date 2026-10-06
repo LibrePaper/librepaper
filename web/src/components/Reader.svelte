@@ -2807,17 +2807,6 @@
   // worked out again when it does.
   let unit = $state(measure());
   const compact = $derived(width <= 760);
-  // At compact widths, the File/Edit/Insert/View menus are accessed through the
-  // hamburger menu instead of being visible in the top bar. This array mirrors
-  // exactly when each MenubarMenu is rendered in the menus() snippet.
-  const compactMenus = $derived([
-    { id: "file", label: "File" },
-    ...(editing && mayEdit ? [
-      { id: "edit", label: "Edit", disabled: !editor || !!mergeTarget || !!shownFigure },
-      { id: "insert", label: "Insert", disabled: !mayEdit || !editor },
-    ] : []),
-    ...(editing ? [{ id: "view", label: "View" }] : []),
-  ]);
   const activeMobileView = $derived(panel === "history" && mobileView === "document" ? "source"
     : mobileView === "source" && !editing && panel !== "history" ? "document"
     : mobileView === "sidebar" && !panel ? "document" : mobileView);
@@ -3096,6 +3085,17 @@
   const figureUrl = $derived(ws.figureUrl);
   // Test whether a file path can be displayed as an image in the figure view.
   const isDisplayableImage = (path) => /\.(?:png|jpg|jpeg|gif|svg|webp)$/i.test(path);
+  // At compact widths, the File/Edit/Insert/View menus are accessed through the
+  // hamburger menu instead of being visible in the top bar. This array mirrors
+  // exactly when each MenubarMenu is rendered in the menus() snippet.
+  const compactMenus = $derived([
+    { id: "file", label: "File" },
+    ...(editing && mayEdit ? [
+      { id: "edit", label: "Edit", disabled: !editor || !!mergeTarget || !!shownFigure },
+      { id: "insert", label: "Insert", disabled: !mayEdit || !editor },
+    ] : []),
+    ...(editing ? [{ id: "view", label: "View" }] : []),
+  ]);
   let outlineActiveFrom = $state(null);
   let outlineRevision = $state(0);
   let previewMain = $state("");
@@ -3958,7 +3958,7 @@
       {@render faceSwitch()}
     {:else}
       <!-- Between 761px and the split's narrow point, the face choice stays in
-           the top bar. Compact widths put it in the hamburger menu above. -->
+           the top bar. Compact widths render it beside the hamburger above. -->
       {#if adapted && (editing || panel === "history")}
         {@render faceSwitch()}
       {/if}

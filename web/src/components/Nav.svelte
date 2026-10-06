@@ -99,12 +99,15 @@
        intrinsic width can make the document itself wider than the phone once
        a page adds its own view and status controls. */
     .nav-actions { gap: var(--spacing); flex-shrink: 1; min-width: 0; }
-    .reader-nav .nav-actions { gap: var(--spacing); flex-shrink: 0; }
+    .reader-nav .nav-actions { flex-shrink: 0; }
     .nav-identity { gap: var(--spacing); flex-shrink: 1; min-width: 0; }
     .nav-trail { display: none; }
   }
   @media (max-width: 760px) {
     .nav-trail { display: none; }
+    /* The same 8px between the hamburger, the two faces and the account as
+       between the two faces themselves: one row of thumb-sized controls. */
+    .reader-nav .nav-actions { gap: calc(var(--spacing) * 2); }
     /* At compact widths, the menubar is kept mounted for keyboard navigation
        and menu logic, but rendered invisible and positioned just below the bar
        so its dropdowns still open in a sensible place. The nav itself is
