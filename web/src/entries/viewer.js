@@ -138,6 +138,48 @@ addEventListener("resize", () => {
   }, 150);
 });
 
+// Report scroll position changes so the Reader can hide its top bar on
+// phones when the user scrolls down and reveal it when they scroll up. The
+// document preview is a cross-origin iframe, so its scroll events never
+// reach the Reader; this listener sees all inner element scrolls.
+const scrollOffsets = new WeakMap();
+let scrollRAFHandle = null;
+let pendingScrollDelta = 0;
+let pendingScrollTop = 0;
+function onScroll(event) {
+  if (!readerOrigin) return;
+  const target = event.target;
+  let top = null;
+  if (target === document) {
+    top = (document.scrollingElement || document.documentElement).scrollTop;
+  } else if (target instanceof Element) {
+    top = target.scrollTop;
+  }
+  if (top === null) return;
+
+  const key = target === document ? document : target;
+  const previous = scrollOffsets.get(key) ?? top;
+  scrollOffsets.set(key, top);
+  const delta = top - previous;
+  if (delta === 0) return;
+
+  pendingScrollDelta += delta;
+  pendingScrollTop = top;
+  if (scrollRAFHandle === null) {
+    scrollRAFHandle = requestAnimationFrame(() => {
+      scrollRAFHandle = null;
+      parent.postMessage({
+        librepaper: true,
+        type: "scroll",
+        delta: Math.round(pendingScrollDelta),
+        top: Math.round(pendingScrollTop),
+      }, readerOrigin);
+      pendingScrollDelta = 0;
+    });
+  }
+}
+document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+
 addEventListener("message", async (event) => {
   if (!readerOrigin || event.source !== parent || event.origin !== readerOrigin) return;
   const message = event.data;
