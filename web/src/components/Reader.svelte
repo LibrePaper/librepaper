@@ -3082,6 +3082,8 @@
   const rules = $derived(ws.rules);
   const shownFigure = $derived(ws.figure);
   const figureUrl = $derived(ws.figureUrl);
+  // Test whether a file path can be displayed as an image in the figure view.
+  const isDisplayableImage = (path) => /\.(?:png|jpg|jpeg|gif|svg|webp)$/i.test(path);
   let outlineActiveFrom = $state(null);
   let outlineRevision = $state(0);
   let previewMain = $state("");
@@ -4159,7 +4161,11 @@
                      onclose={() => (mergeTarget = null)} />
       {:else if shownFigure}
         <div class="figureview">
-          {#if !figureUrl}
+          {#if !isDisplayableImage(shownFigure.path) && !shownFigure.path.toLowerCase().endsWith(".pdf")}
+            <div class="notyet">
+              <p class="lp-text-secondary text-sm">{basename(shownFigure.path)} can't be displayed here.</p>
+            </div>
+          {:else if !figureUrl}
             <p>Fetching {shownFigure.path}…</p>
           {:else if shownFigure.path.toLowerCase().endsWith(".pdf")}
             <object data={figureUrl} type="application/pdf" title={shownFigure.path}>

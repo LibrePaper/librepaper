@@ -86,4 +86,11 @@ assert.ok(syntaxTree(EditorState.create({ doc: "# heading", extensions: sourceLa
 assert.equal(syntaxTree(EditorState.create({ doc: "# heading", extensions: sourceLanguage("data.py", "markdown") })).length, 0,
   "a named unsupported file should take precedence over the fallback format");
 
+assert.equal(languageName("json"), "JSON", ".json code fence should resolve to JSON language");
+const json = highlighted("config.json", '{\n  "key": "value"\n}');
+assert.ok(syntaxTree(EditorState.create({ doc: json.source, extensions: sourceLanguage("config.json") })).length > 0,
+  ".json file should produce a complete syntax tree");
+hasToken(json, "key", "property", "JSON property name was not highlighted");
+hasToken(json, '"value"', "string", "JSON string value was not highlighted");
+
 console.log("source language: filename modes, exact fence aliases, embedded syntax and plain-text fallback passed");
