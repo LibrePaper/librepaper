@@ -109,13 +109,19 @@ cmd_sqlx_database() {
 # Fail if crates/librepaper-engine/.sqlx/ no longer matches the queries.
 cmd_sqlx_check() {
     cmd_sqlx_database >/dev/null
-    SQLX_OFFLINE=false DATABASE_URL="$SQLX_DATABASE_URL" cargo sqlx prepare --check --workspace -- --all-targets
+    (
+        cd "$REPO_ROOT/crates/librepaper-engine"
+        SQLX_OFFLINE=false DATABASE_URL="$SQLX_DATABASE_URL" cargo sqlx prepare --check -- --all-targets
+    )
 }
 
 # Regenerate crates/librepaper-engine/.sqlx/ after changing queries or migrations.
 cmd_sqlx_prepare() {
     cmd_sqlx_database >/dev/null
-    SQLX_OFFLINE=false DATABASE_URL="$SQLX_DATABASE_URL" cargo sqlx prepare --workspace -- --all-targets
+    (
+        cd "$REPO_ROOT/crates/librepaper-engine"
+        SQLX_OFFLINE=false DATABASE_URL="$SQLX_DATABASE_URL" cargo sqlx prepare -- --all-targets
+    )
 }
 
 # Drop and recreate the dev database.
