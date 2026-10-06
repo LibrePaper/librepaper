@@ -1,6 +1,7 @@
 import { StreamLanguage } from "@codemirror/language";
 import { markdown } from "@codemirror/lang-markdown";
 import { html } from "@codemirror/lang-html";
+import { json } from "@codemirror/lang-json";
 import { yamlFrontmatter } from "@codemirror/lang-yaml";
 import { languages } from "@codemirror/language-data";
 import { LanguageDescription } from "@codemirror/language";
@@ -59,6 +60,7 @@ export function sourceLanguage(path, fallback = "") {
   if (/\.typ$/.test(extension)) return typst;
   if (/\.(?:md|markdown|qmd)$/.test(extension)) return markdownLanguage();
   if (/\.(?:html|htm)$/.test(extension)) return html();
+  if (/\.json$/.test(extension)) return json();
 
   // Named files of an unsupported type are plain text. Empty paths and .txt
   // retain the document's declared format, as they did in the editor before.

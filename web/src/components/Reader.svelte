@@ -58,6 +58,7 @@
   import { tick, untrack } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import MenubarMenu from "./MenubarMenu.svelte";
+  import { menubar } from "../lib/menubar.svelte.js";
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -3082,6 +3083,19 @@
   const rules = $derived(ws.rules);
   const shownFigure = $derived(ws.figure);
   const figureUrl = $derived(ws.figureUrl);
+  // Test whether a file path can be displayed as an image in the figure view.
+  const isDisplayableImage = (path) => /\.(?:png|jpg|jpeg|gif|svg|webp)$/i.test(path);
+  // At compact widths, the File/Edit/Insert/View menus are accessed through the
+  // hamburger menu instead of being visible in the top bar. This array mirrors
+  // exactly when each MenubarMenu is rendered in the menus() snippet.
+  const compactMenus = $derived([
+    { id: "file", label: "File" },
+    ...(editing && mayEdit ? [
+      { id: "edit", label: "Edit", disabled: !editor || !!mergeTarget || !!shownFigure },
+      { id: "insert", label: "Insert", disabled: !mayEdit || !editor },
+    ] : []),
+    ...(editing ? [{ id: "view", label: "View" }] : []),
+  ]);
   let outlineActiveFrom = $state(null);
   let outlineRevision = $state(0);
   let previewMain = $state("");
@@ -3934,44 +3948,54 @@
 
 <Nav {me} reader>
   {#snippet tools()}
-    <!-- Between 761px and the split's narrow point, the face choice stays in
-         the top bar. Compact widths put it beside the panel menu below. -->
-    {#if adapted && !compact && (editing || panel === "history")}
+    {#if compact}
+      <!-- At compact widths (≤760px), the top bar contains only the hamburger
+           menu trigger (to open the Panels menu and access File/Edit/Insert/View)
+           and the face switch (Document/Source). The menubar stays mounted but is
+           invisible, positioned below the top bar so its dropdowns can still open. -->
+      <CompactPanelMenu tabs={tabs} {panel} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
+                        menus={compactMenus} onmenu={(id) => menubar.show(id)} />
       {@render faceSwitch()}
+    {:else}
+      <!-- Between 761px and the split's narrow point, the face choice stays in
+           the top bar. Compact widths render it beside the hamburger above. -->
+      {#if adapted && (editing || panel === "history")}
+        {@render faceSwitch()}
+      {/if}
+      <!-- How the last build went. This stood in a band across the top of the
+           preview pane, which was a second bar under this one, present on every
+           format, mostly saying a filename this bar already names and the Files
+           pane already marks with an eye. The build is the document's state
+           rather than the frame's, so it belongs with the rest of what this bar
+           says about the document. -->
+      {@render previewStatusControl()}
+      <div class="connection-settings" role="group" aria-label="Connection settings">
+        <button class="connection-pill local-pill" type="button" onclick={() => openSettings("tools")}
+                aria-label={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}; open local settings`}
+                title={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}. Open local settings`}>
+          <span class="connection-dot" class:offline={localAppStatus.state !== "connected"} aria-hidden="true"></span>
+          <span>Local</span>
+        </button>
+        <button class="connection-pill" type="button" onclick={() => openSettings("account")}
+                aria-label={`Remote server ${connected ? "connected" : "disconnected"}; open account settings`}
+                title={connected ? `${peers} people connected. Open account settings` : `${connectionNote}. Open account settings`}>
+          <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
+          <span>Remote</span>
+        </button>
+        <button class="connection-pill backup-pill" type="button" onclick={() => openSettings("backups")}
+                aria-label={`${backupPillLabel}; open backup settings`}
+                title={`${backupPillLabel}. Open backup settings`}>
+          <span class="connection-dot" class:offline={!backupPillGood} aria-hidden="true"></span>
+          <span>Backup</span>
+        </button>
+      </div>
+      <div class="presence" role="group" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
+        {#each participants.slice(0, 3) as person (person.key)}
+          <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
+        {/each}
+        {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
+      </div>
     {/if}
-    <!-- How the last build went. This stood in a band across the top of the
-         preview pane, which was a second bar under this one, present on every
-         format, mostly saying a filename this bar already names and the Files
-         pane already marks with an eye. The build is the document's state
-         rather than the frame's, so it belongs with the rest of what this bar
-         says about the document. -->
-    {@render previewStatusControl()}
-    <div class="connection-settings" role="group" aria-label="Connection settings">
-      <button class="connection-pill local-pill" type="button" onclick={() => openSettings("tools")}
-              aria-label={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}; open local settings`}
-              title={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}. Open local settings`}>
-        <span class="connection-dot" class:offline={localAppStatus.state !== "connected"} aria-hidden="true"></span>
-        <span>Local</span>
-      </button>
-      <button class="connection-pill" type="button" onclick={() => openSettings("account")}
-              aria-label={`Remote server ${connected ? "connected" : "disconnected"}; open account settings`}
-              title={connected ? `${peers} people connected. Open account settings` : `${connectionNote}. Open account settings`}>
-        <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
-        <span>Remote</span>
-      </button>
-      <button class="connection-pill backup-pill" type="button" onclick={() => openSettings("backups")}
-              aria-label={`${backupPillLabel}; open backup settings`}
-              title={`${backupPillLabel}. Open backup settings`}>
-        <span class="connection-dot" class:offline={!backupPillGood} aria-hidden="true"></span>
-        <span>Backup</span>
-      </button>
-    </div>
-    <div class="presence" role="group" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
-      {#each participants.slice(0, 3) as person (person.key)}
-        <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
-      {/each}
-      {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
-    </div>
   {/snippet}
   {#snippet menus()}
     <!-- The File menu is the project's, not the preview's: new files, uploads,
@@ -4159,7 +4183,11 @@
                      onclose={() => (mergeTarget = null)} />
       {:else if shownFigure}
         <div class="figureview">
-          {#if !figureUrl}
+          {#if !isDisplayableImage(shownFigure.path) && !shownFigure.path.toLowerCase().endsWith(".pdf")}
+            <div class="notyet">
+              <p class="lp-text-secondary text-sm">{basename(shownFigure.path)} can't be displayed here.</p>
+            </div>
+          {:else if !figureUrl}
             <p>Fetching {shownFigure.path}…</p>
           {:else if shownFigure.path.toLowerCase().endsWith(".pdf")}
             <object data={figureUrl} type="application/pdf" title={shownFigure.path}>
@@ -4300,15 +4328,6 @@
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
            away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || Boolean(projectUnreadable)} />
-
-  <!-- On compact screens the document/source choice lives beside the panel
-       menu at the bottom edge, leaving the top bar for project controls. -->
-  {#if compact}
-    <nav class="mobile-pane-nav" aria-label="Workspace panels">
-      <CompactPanelMenu tabs={tabs} {panel} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()} />
-      {@render faceSwitch()}
-    </nav>
-  {/if}
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
@@ -4465,11 +4484,9 @@
     font-size: var(--text-sm);
   }
   .execution-short { display: none; }
-  .mobile-pane-nav { justify-content: flex-start; gap: calc(var(--spacing) * 2); }
-  /* Adapted widths keep the two faces grouped. Compact widths use the same
-     standalone square geometry as the Panels control. */
+  /* Adapted widths keep the two faces grouped. Compact widths put them in the
+     top bar beside the hamburger, with the same sizing as the Panels trigger. */
   .face-switch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--radius-container); background: var(--color-subtle); }
-  /* Compact controls are sized for a thumb. */
   @media (max-width: 760px) {
     .face-switch { gap: calc(var(--spacing) * 2); padding: 0; border-radius: 0; background: none; }
     .face-switch :global(.icon-control) { width: 2.75rem; height: 2.75rem; }

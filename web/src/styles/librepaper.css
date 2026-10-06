@@ -18,9 +18,6 @@
 body {
   background: var(--color-shell);
 }
-@media (max-width: 760px) {
-  :root:has(body > nav.reader-nav) { --librepaper-bar: 6rem; }
-}
 body > nav {
   position: sticky;
   top: 0;
@@ -736,25 +733,8 @@ button.summary {
 
 /* ------------------------------------------------------------- the phone */
 
-main.reader.adapted {
-  position: relative;
-  padding-bottom: calc(var(--spacing) * 14 + env(safe-area-inset-bottom));
-}
-.mobile-pane-nav { display: none; }
-main.reader.adapted .mobile-pane-nav {
-  position: absolute;
-  z-index: 8;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  display: flex;
-  align-items: center;
-  height: calc(var(--spacing) * 14 + env(safe-area-inset-bottom));
-  padding: var(--spacing) calc(var(--spacing) * 2) max(var(--spacing), env(safe-area-inset-bottom));
-  border-top: 1px solid var(--color-pane-edge);
-  background: var(--color-shell);
-}
-/* The compact panel menu owns its scrolling and sizes its trigger for touch. */
+/* At compact widths, all panes fit in the viewport since the face switch
+   and panel menu are in the top bar instead of a separate bottom bar. */
 main.reader .sidebar, main.reader .editorpane, main.reader .viewport, main.reader .latexpane {
   min-height: 0;
   overscroll-behavior: contain;
