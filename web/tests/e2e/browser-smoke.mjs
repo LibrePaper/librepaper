@@ -211,9 +211,13 @@ async function openTab(url, cookies = [], { ownProfile = false } = {}) {
 async function selectPdf(tab, slug, { waitFrame = true } = {}) {
   await requiredUntil("the View menu", () => tab.eval(`return Boolean(document.querySelector('button[data-menubar="view"]'))`));
   await tab.eval(`document.querySelector('button[data-menubar="view"]').click(); return true;`);
-  await requiredUntil("the PDF format menu item", () => tab.eval(`return [...document.querySelectorAll(".menuitem")].some((item) => item.textContent.trim().endsWith("PDF"))`));
+  await requiredUntil("the PDF format menu item", () => tab.eval(`
+    return [...document.querySelectorAll(".menuitem")].some((item) =>
+      item.querySelector(".menuitem-check") && item.textContent.replace("✓", "").trim() === "PDF");
+  `));
   await tab.eval(`
-    const pdf = [...document.querySelectorAll(".menuitem")].find((item) => item.textContent.trim().endsWith("PDF"));
+    const pdf = [...document.querySelectorAll(".menuitem")].find((item) =>
+      item.querySelector(".menuitem-check") && item.textContent.replace("✓", "").trim() === "PDF");
     if (!pdf) throw new Error("no PDF format menu item");
     pdf.click();
     return true;
