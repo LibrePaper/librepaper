@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = manifest_dir().join("../..");
     let dist = root.join("web/dist");
     let dist = dist.canonicalize().unwrap_or(dist);
     println!("cargo:rustc-env=LIBREPAPER_SHELL_DIST={}", dist.display());
@@ -38,4 +38,11 @@ fn watch(dir: &Path) {
             watch(&path);
         }
     }
+}
+
+/// Read at run time, not with `env!`: a build-script binary compiled in one
+/// worktree is reused by another that shares the target directory, and the
+/// compiled-in path then points at a checkout that may no longer exist.
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"))
 }
