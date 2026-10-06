@@ -286,7 +286,7 @@ try {
   await until("pair deny result", async () => (await pairStatus(deniedId)) === 403, 10000);
 
   const agentLabel = "Claude";
-  await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "Agents").click()`);
+  await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "AI agents").click()`);
   await until("agents heading visible", () => b.evaluate("Boolean(document.querySelector('#companion-agents-heading'))"), 10000);
   await b.evaluate(`(() => {
     const section = document.querySelector("#companion-agents-heading").closest("section");
@@ -300,6 +300,7 @@ try {
     section.querySelector('input[name="command"]').value = "librepaper-no-such-executable-for-test --version";
     section.querySelector('input[name="command"]').dispatchEvent(new Event("input", { bubbles: true }));
   })()`);
+  await waitForEnabledButton("Add agent", "#companion-agents-heading");
   await b.evaluate(`(() => {
     const section = document.querySelector("#companion-agents-heading").closest("section");
     [...section.querySelectorAll("button[type='submit']")].find((item) => item.textContent.trim() === "Add agent").click();
