@@ -23,14 +23,17 @@ const labels = {
  * @returns {PreviewNote[]}
  */
 export function previewNotes({ openPath, openIsText, mainPath, formatOf }) {
+  /** @type {PreviewNote[]} */
   const notes = [];
 
+  // The warning says all there is to say: a note that the preview shows the
+  // main file would point at a preview that does not exist.
   if (mainPath && !formatOf(mainPath)) {
-    notes.push({
+    return [{
       severity: "warning",
       message: `Nothing to preview: ${mainPath} is not a format LibrePaper renders. Make a .tex, .typ, .qmd or .md file the main file.`,
       source: "preview",
-    });
+    }];
   }
 
   if (

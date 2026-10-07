@@ -212,7 +212,7 @@ export function createPreviewRenderer({
       }
       if (facts().disposed) return;
       if (format === "latex" && !htmlPreview) status.recordLatex(rendered);
-      const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, seconds, log, provenance } = rendered;
+      const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, log } = rendered;
       const contextual = (said || []).map((item) => diagnosticContext(item, source, identity));
       // An in-flight preview may finish after another keystroke: HTML and
       // Typst may show that intermediate progress while the queued render
