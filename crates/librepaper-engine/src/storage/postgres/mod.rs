@@ -2854,9 +2854,17 @@ mod tests {
         );
         let running = tokio::spawn(worker.run());
 
+        // The worker deletes the bytes before the rows that name them, so wait
+        // for both: aborting it between the two would leave the rows behind.
         let mut swept = false;
         for _ in 0..100 {
-            if !blobs.exists(&first_key).await.unwrap() && !blobs.exists(&second_key).await.unwrap()
+            if !blobs.exists(&first_key).await.unwrap()
+                && !blobs.exists(&second_key).await.unwrap()
+                && catalog
+                    .superseded_base_keys(document.id)
+                    .await
+                    .unwrap()
+                    .is_empty()
             {
                 swept = true;
                 break;
