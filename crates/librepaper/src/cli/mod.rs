@@ -471,6 +471,8 @@ fn serve_options(
         app_origin: resolved.app_origin,
         docs_origin: resolved.docs_origin,
         site_origin: resolved.site_origin,
+        admin_origin: resolved.admin_origin,
+        admin_password: resolved.admin_password,
         expire_after: resolved.expire_after,
         expire_from: resolved.expire_from,
         asset_mirror: resolved.asset_mirror,
