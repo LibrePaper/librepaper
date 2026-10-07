@@ -258,13 +258,12 @@ case "$url" in
     if [ -n "$config" ]; then
       [ "$(stat -c %a "$config")" = 600 ]
       grep -Fxq -f "$EXPECTED_AUTH_FILE" "$config"
-      series=()
+      series=
       for i in $(seq 1 "$ADMIN_SERIES"); do
-        series+=('{"name":"series'"$i"'","label":"Series '"$i"'","unit":"count","values":[0.0]}')
+        entry='{"name":"series'"$i"'","label":"Series '"$i"'","unit":"count","values":[0.0]}'
+        if [ -z "$series" ]; then series="$entry"; else series="$series,$entry"; fi
       done
-      IFS=,
-      body='{"from":1791300000,"to":1791386400,"step":144.0,"series":['"\${series[*]}"']}'
-      unset IFS
+      body='{"from":1791300000,"to":1791386400,"step":144.0,"series":['"$series"']}'
     else code=401; fi
     ;;
   https://app.librepaper.org/api/status) code=403 ;;
