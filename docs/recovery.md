@@ -34,7 +34,7 @@ Open the app through a local browser or SSH tunnel and verify rendered content, 
 
 ## External backup alerts
 
-Grafana cannot alert when the VPS is unavailable. Configure separate external dead-man checks for backup and repository-check jobs:
+Nothing on the VPS can report that the VPS is down, so dead-man checks live outside it. Configure Healthchecks for backup and repository-check jobs:
 
 ```toml
 [[resticprofile.backup.send-before]]
@@ -58,7 +58,7 @@ method = "HEAD"
 url = "https://hc-ping.com/<check-id>/fail"
 ```
 
-Set missed-success deadlines to 36 hours for backups and 8 days for repository checks.
+Set missed-success deadlines to 36 hours for backups and 8 days for checks. The Healthchecks account's weekly report, sent on Mondays, lists every check's status and is the summary email.
 
 ## Installs from the v0.0.21 kit
 
