@@ -1,22 +1,10 @@
 # Reuse the deployment services with a checkout image and loopback-only ports.
+# demo-compose writes the Grafana password file and turns the monitoring profile on.
 services:
   grafana:
     environment:
       GF_SERVER_ROOT_URL: http://localhost:${PORT:-8081}/admin/monitoring/
       GF_SECURITY_COOKIE_SECURE: "false"
-  migrate:
-    image: librepaper:demo
-    build:
-      context: ${LIBREPAPER_DEMO_ROOT:?demo root is required}
-      dockerfile: deploy/Dockerfile
-      target: app
-      args:
-        SOURCE: checkout
-    volumes:
-      - type: bind
-        source: ${LIBREPAPER_DEMO_CONFIG:?demo config path is required}
-        target: /etc/librepaper/librepaper.toml
-        read_only: true
   librepaper:
     image: librepaper:demo
     build:
@@ -24,7 +12,6 @@ services:
       dockerfile: deploy/Dockerfile
       args:
         SOURCE: checkout
-    env_file: !override []
     environment:
       LIBREPAPER_DEMO_APP_ORIGIN: ${LIBREPAPER_DEMO_APP_ORIGIN:-http://localhost:8081}
       LIBREPAPER_DEMO_SITE_ORIGIN: ${LIBREPAPER_DEMO_SITE_ORIGIN:-http://localhost:8082}
@@ -43,7 +30,6 @@ services:
       target: backup
       args:
         SOURCE: checkout
-    env_file: !override []
     environment:
       LIBREPAPER_DEMO_APP_ORIGIN: ${LIBREPAPER_DEMO_APP_ORIGIN:-http://localhost:8081}
       LIBREPAPER_DEMO_SITE_ORIGIN: ${LIBREPAPER_DEMO_SITE_ORIGIN:-http://localhost:8082}
@@ -65,6 +51,10 @@ services:
       - ${LIBREPAPER_DEMO_ROOT:?demo root is required}/docs/_site:/srv/site:ro
       - caddy-data:/data
       - caddy-config:/config
+
+secrets:
+  grafana-admin-password:
+    file: ${LIBREPAPER_DEMO_GRAFANA_PASSWORD_FILE:?demo Grafana password file is required}
 
 networks:
   edge:
