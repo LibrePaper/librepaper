@@ -6,9 +6,9 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const assets = join(root, "crates/librepaper-server/src/server/graphs/assets");
@@ -127,5 +127,5 @@ try {
 } finally {
   await tab?.close();
   await new Promise((resolve) => server ? server.close(resolve) : resolve());
-  rmSync(temp, { recursive: true, force: true });
+  removeTemporary(temp);
 }

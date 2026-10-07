@@ -4,11 +4,11 @@
 // and a document without math fetches nothing.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const dist = join(root, "dist");
@@ -110,5 +110,5 @@ try {
 } finally {
   await page?.close?.();
   server?.close();
-  rmSync(temporary, { recursive: true, force: true });
+  removeTemporary(temporary);
 }

@@ -17,9 +17,9 @@ import tailwindcss from "@tailwindcss/vite";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
@@ -212,5 +212,5 @@ try {
   if (tab) console.error(await tab.evaluate(`JSON.stringify({errors:window.testErrors,state:window.roomControl?.state(),toasts:[...document.querySelectorAll('.toast-card')].map(node=>node.textContent),source:[...document.querySelectorAll('.cm-content')].map(node=>({text:node.textContent,editable:node.contentEditable})),active:document.activeElement?.className})`));
   throw error;
 } finally {
-  await tab?.close(); http?.close(); rmSync(temp, { recursive: true, force: true });
+  await tab?.close(); http?.close(); removeTemporary(temp);
 }

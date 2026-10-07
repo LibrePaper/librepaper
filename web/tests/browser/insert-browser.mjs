@@ -6,9 +6,9 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { join, extname } from "node:path";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -209,4 +209,4 @@ try {
   assert.match(trackedInsert.shown,/Before TRACKED AFTER/);
   await evaluate("setupInsert('quarto')");await evaluate("selectInsert(7)");await choose("toc");await until("Quarto TOC",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);await confirm();assert.match((await evaluate("insertState()")).text,/toc: true/);
   console.log("insert-browser: Skeleton table dialogs in all four formats, selection wrapping, remote anchors, undo, file switch and readonly guards passed");
-} catch(error) {console.error(await page?.evaluate("({errors:window.testErrors,dialogs:[...document.querySelectorAll('[role=dialog]')].map(x=>({title:x.textContent,state:x.dataset.state})),documentText:document.querySelector('.cm-content')?.textContent})"));throw error;} finally {await page?.close();server?.close();rmSync(temporary,{recursive:true,force:true});}
+} catch(error) {console.error(await page?.evaluate("({errors:window.testErrors,dialogs:[...document.querySelectorAll('[role=dialog]')].map(x=>({title:x.textContent,state:x.dataset.state})),documentText:document.querySelector('.cm-content')?.textContent})"));throw error;} finally {await page?.close();server?.close();removeTemporary(temporary);}

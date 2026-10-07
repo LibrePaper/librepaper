@@ -9,11 +9,11 @@
 // session; no OAuth service is contacted.
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { ephemeralMirror } from "../helpers/ephemeral-mirror.mjs";
 import { deploymentBinary, sessionCookie, startDeployment } from "../helpers/deployment.mjs";
 
@@ -214,5 +214,5 @@ try {
   local?.kill("SIGINT");
   mirror?.server.close();
   await wait(250);
-  for (const directory of [scratch, mirror?.tls].filter(Boolean)) rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
+  for (const directory of [scratch, mirror?.tls].filter(Boolean)) removeTemporary(directory);
 }

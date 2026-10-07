@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { existsSync, readFileSync, writeFileSync, readdirSync, symlinkSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
 import { tmpdir } from "node:os";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { ephemeralMirror } from "../helpers/ephemeral-mirror.mjs";
 import { postgresTestDatabase } from "../helpers/postgres-test.mjs";
 
@@ -259,5 +259,5 @@ See equation~\eqref{eq:test}.
     rmSync(mirrorServer.tls, { recursive: true, force: true });
   }
   if (overlay) rmSync(overlay, { recursive: true, force: true });
-  rmSync(scratch, { recursive: true, force: true });
+  removeTemporary(scratch);
 }

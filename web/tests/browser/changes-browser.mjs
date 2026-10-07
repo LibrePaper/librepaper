@@ -17,11 +17,11 @@ import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -575,5 +575,5 @@ try {
 } finally {
   await page?.close();
   server?.close();
-  rmSync(temporary, { recursive: true, force: true });
+  removeTemporary(temporary);
 }

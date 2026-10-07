@@ -1,6 +1,6 @@
 // Headless Firefox (BiDi) and Chromium (CDP) for local browser checks.
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { requireChromiumExecutable } from "./browser-executable.mjs";
 
 export const pause = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -25,15 +25,35 @@ function waitForExit(child, timeout) {
   });
 }
 
+// browser() spawns Chromium detached, so it leads its own process group and
+// its helpers (zygote, renderer, GPU, crashpad) share that group.
+function signalGroup(child, signal) {
+  if (!child.pid) return;
+  try { process.kill(-child.pid, signal); }
+  catch (error) {
+    if (error.code !== "ESRCH") throw error;
+    child.kill(signal);
+  }
+}
+
 export async function stopBrowserProcess(child) {
-  if (!child || hasExited(child)) return;
-  const graceful = waitForExit(child, 5000);
-  child.kill("SIGTERM");
-  if (await graceful || hasExited(child)) return;
-  const forced = waitForExit(child, 2000);
-  child.kill("SIGKILL");
-  if (await forced || hasExited(child)) return;
-  throw new Error("Chromium did not exit after SIGTERM and SIGKILL");
+  if (!child) return;
+  if (!hasExited(child)) {
+    const graceful = waitForExit(child, 5000);
+    signalGroup(child, "SIGTERM");
+    if (!(await graceful || hasExited(child))) {
+      const forced = waitForExit(child, 2000);
+      signalGroup(child, "SIGKILL");
+      if (!(await forced || hasExited(child))) throw new Error("Chromium did not exit after SIGTERM and SIGKILL");
+    }
+  }
+  // Helpers can outlive the main process and keep writing into the profile.
+  signalGroup(child, "SIGKILL");
+}
+
+// Chromium may still be flushing its profile just after exit; retry the removal.
+export function removeTemporary(path) {
+  rmSync(path, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 }
 
 export async function until(label, test, timeout = 60000) {
@@ -87,7 +107,7 @@ export async function browser(name, directory, port) {
     ? ["--headless", "--no-remote", "--profile", directory, "--remote-debugging-port", String(port)]
     : ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-features=BackForwardCache", ...(process.env.LIBREPAPER_BROWSER_IGNORE_CERT_ERRORS === "1" ? ["--ignore-certificate-errors"] : []), `--user-data-dir=${directory}`, `--remote-debugging-port=${port}`, "about:blank"];
   const child = spawn(executable, browserArgs,
-  { stdio: "ignore" });
+  { stdio: "ignore", detached: true });
   let spawnError;
   child.on("error", (error) => { spawnError = error; });
   let socket;
@@ -254,5 +274,5 @@ export async function browser(name, directory, port) {
         }
       },
     };
-  } catch (error) { socket?.close(); child.kill(); throw error; }
+  } catch (error) { socket?.close(); signalGroup(child, "SIGKILL"); throw error; }
 }
