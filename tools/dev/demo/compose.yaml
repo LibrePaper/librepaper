@@ -10,6 +10,7 @@ services:
     environment:
       LIBREPAPER_DEMO_APP_ORIGIN: ${LIBREPAPER_DEMO_APP_ORIGIN:-http://localhost:8081}
       LIBREPAPER_DEMO_SITE_ORIGIN: ${LIBREPAPER_DEMO_SITE_ORIGIN:-http://localhost:8082}
+      LIBREPAPER_DEMO_ADMIN_ORIGIN: ${LIBREPAPER_DEMO_ADMIN_ORIGIN:-http://admin.localhost:8081}
       LIBREPAPER_GITHUB_CLIENT_ID: ${LIBREPAPER_GITHUB_CLIENT_ID:-}
       LIBREPAPER_GITHUB_CLIENT_SECRET: ${LIBREPAPER_GITHUB_CLIENT_SECRET:-}
     volumes:
@@ -28,6 +29,7 @@ services:
     environment:
       LIBREPAPER_DEMO_APP_ORIGIN: ${LIBREPAPER_DEMO_APP_ORIGIN:-http://localhost:8081}
       LIBREPAPER_DEMO_SITE_ORIGIN: ${LIBREPAPER_DEMO_SITE_ORIGIN:-http://localhost:8082}
+      LIBREPAPER_DEMO_ADMIN_ORIGIN: ${LIBREPAPER_DEMO_ADMIN_ORIGIN:-http://admin.localhost:8081}
     volumes:
       - type: bind
         source: ${LIBREPAPER_DEMO_CONFIG:?demo config path is required}
