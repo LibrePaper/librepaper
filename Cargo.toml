@@ -151,6 +151,8 @@ serde_jcs = "0.2"
 # integration tests against the production database engine.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "uuid", "time", "json", "migrate", "macros"] }
 uuid = { version = "1", features = ["v7", "v8", "serde"] }
+# The operational history store, bundled so the static musl binary carries SQLite.
+rusqlite = { version = "0.40", features = ["bundled"] }
 # sqlx names its statement-logging level with log::LevelFilter. The engine
 # emits through tracing; the subscriber bridges log records as well.
 log = "0.4"
