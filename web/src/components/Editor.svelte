@@ -1006,6 +1006,23 @@
           // and scrolling the document on every keystroke would make the
           // preview unreadable.
           if (update.selectionSet && !update.docChanged) oncaret?.();
+          // On a phone the keyboard covers the lower half of the screen, and a
+          // tap is what raises it, so the tapped line goes to the top of the
+          // editor where it stays in sight. Only a pointer tap that places the
+          // caret counts: a drag or a double tap selects a range to act on,
+          // and typing, arrow keys, goTo and other people's cursors match
+          // nothing here, so all of those leave the scroll position alone.
+          // The scroll waits a frame because a view may not dispatch from
+          // inside its own update.
+          if (update.selectionSet && update.state.selection.main.empty
+              && update.transactions.some((tr) => tr.isUserEvent("select.pointer"))
+              && window.matchMedia("(max-width: 760px)").matches) {
+            const head = update.state.selection.main.head;
+            requestAnimationFrame(() => {
+              if (!view || view.state.selection.main.head !== head) return;
+              view.dispatch({ effects: EditorView.scrollIntoView(head, { y: "start", yMargin: 8 }) });
+            });
+          }
         }),
       ],
     });
