@@ -4,10 +4,12 @@
 // is the page's -- all three are things on a screen -- and this decides what
 // to do with the numbers, which is the part worth checking without one.
 //
-// Two rules, and both are about not putting the bar somewhere it cannot be
-// used: it never runs off either edge of the window, and it never rises under
+// Three rules, and all are about not putting the bar somewhere it cannot be
+// used: it never runs off either edge of the window, it never rises under
 // the bar at the top of the page, which would put it behind the one thing
-// that is always on top.
+// that is always on top, and it never sinks below the bottom of what can be
+// seen, which is where a phone's keyboard or a selection scrolled out of view
+// would otherwise leave it.
 
 /// The gap kept at the window's edges.
 export const MARGIN = 8;
@@ -27,19 +29,33 @@ export function withinWindow(left, width, windowWidth, margin = MARGIN) {
 /// Where to put a bar of `width` over `rect`, a selection measured inside a
 /// frame whose own position is `frame`.
 ///
-/// `minTop` is the lowest the bar may start: the height of the page's top bar
+/// `minTop` is the highest the bar may start: the height of the page's top bar
 /// plus the gap below it, which the caller reads from the stylesheet that
 /// sets it rather than from a number copied out of it.
+///
+/// `maxTop` is the lowest it may start: the bottom of the visible area less
+/// the bar's own height and a margin, so the bar stays on screen when the
+/// selection is near the bottom or below it. It is applied before `minTop`,
+/// so when a window is too short for both the bar stays clear of the top bar.
 ///
 /// Answers the point it centred on as well as the placing, because the width
 /// it was given is a guess until the bar is drawn and the centring has to be
 /// made good against the same point once it is.
-export function placeBar({ rect, frame, width, minTop, windowWidth, margin = MARGIN, lift = LIFT }) {
+export function placeBar({
+  rect,
+  frame,
+  width,
+  minTop,
+  maxTop = Number.POSITIVE_INFINITY,
+  windowWidth,
+  margin = MARGIN,
+  lift = LIFT,
+}) {
   const center = frame.left + rect.left + (rect.right - rect.left) / 2;
   return {
     center,
     left: withinWindow(center - width / 2, width, windowWidth, margin),
-    top: Math.max(minTop, frame.top + rect.top - lift),
+    top: Math.max(minTop, Math.min(maxTop, frame.top + rect.top - lift)),
   };
 }
 

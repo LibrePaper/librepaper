@@ -23,6 +23,16 @@ const place = (rect, extra = {}) => placeBar({ rect, frame, width: 200, minTop: 
   assert.equal(at.top, 60, "never rises under the bar at the top of the page");
 }
 
+// A selection near the bottom of the visible area, or below it, would put the
+// bar off the screen, so it stops at the lowest line that still shows it all.
+{
+  assert.equal(place({ left: 300, right: 500, top: 900 }, { maxTop: 700 }).top, 700, "never sinks below the visible area");
+  assert.equal(place({ left: 300, right: 500, top: 200 }, { maxTop: 700 }).top, 50 + 200 - LIFT, "room to spare leaves it alone");
+  assert.equal(place({ left: 300, right: 500, top: 900 }).top, 50 + 900 - LIFT, "no maxTop is no limit");
+  // A window too short for both rules keeps the bar clear of the top bar.
+  assert.equal(place({ left: 300, right: 500, top: 900 }, { maxTop: 40 }).top, 60, "minTop wins when both bind");
+}
+
 // Neither edge of the window is crossed.
 {
   assert.equal(place({ left: -200, right: -190, top: 200 }).left, MARGIN, "clamped to the left margin");

@@ -358,6 +358,40 @@ try {
   await flush();
   assert.equal(await visible('#selectionbar'), false, 'Escape puts the bar away');
 
+  // On a phone the bar sits by the selection, as it does on a wide screen,
+  // rather than being pinned to the bottom of the screen. The selection
+  // assertions above ran at the desktop width, so this one changes the width
+  // itself and puts it back before going on.
+  await b.resize(390,844); await flush();
+  await click(face('Document'));
+  assert.equal(await visible('.viewport'), true, 'the document face is showing, so there is a frame to select in');
+  const measureBar = () => b.evaluate(`(() => {
+    const frame=document.querySelector('.viewport').getBoundingClientRect();
+    const bar=document.querySelector('#selectionbar').getBoundingClientRect();
+    return {frame:{top:frame.top,height:frame.height},bar:{left:bar.left,right:bar.right,top:bar.top,bottom:bar.bottom},innerWidth,innerHeight};
+  })()`);
+  await frameMessage({type:'selection',selector:{exact:'A long',position:0,prefix:'',suffix:' document'},rect:{top:80,bottom:100,left:80,right:120}});
+  assert.equal(await visible('#selectionbar'), true, 'a selection raises the bar on a phone too');
+  const nearSelection = await measureBar();
+  assert.ok(nearSelection.bar.bottom <= nearSelection.frame.top + 80 + 8, 'the bar sits above the selected line, not under it: ' + JSON.stringify(nearSelection));
+  assert.ok(nearSelection.bar.top >= nearSelection.frame.top + 80 - 60, 'the bar floats just over the selected line, not at the bottom of the screen: ' + JSON.stringify(nearSelection));
+  assert.ok(nearSelection.bar.left >= 8 && nearSelection.bar.right <= nearSelection.innerWidth - 8, 'the bar stays inside the window edges: ' + JSON.stringify(nearSelection));
+  // A selection at the foot of the frame puts the bar over it, lower than the
+  // first, and still on the screen.
+  await frameMessage({type:'selection',selector:{exact:'A long',position:0,prefix:'',suffix:' document'},rect:{top:nearSelection.frame.height-30,bottom:nearSelection.frame.height-10,left:80,right:120}});
+  const lowSelection = await measureBar();
+  assert.ok(lowSelection.bar.bottom <= lowSelection.innerHeight, 'a selection low in the frame leaves the bar inside the window: ' + JSON.stringify(lowSelection));
+  assert.ok(lowSelection.bar.top > nearSelection.bar.top, 'the bar follows the selection down: ' + JSON.stringify({near:nearSelection,low:lowSelection}));
+  // One that has been scrolled below the visible area cannot take the bar with
+  // it: the bar stops a margin above the bottom of the window.
+  await frameMessage({type:'selection',selector:{exact:'A long',position:0,prefix:'',suffix:' document'},rect:{top:nearSelection.innerHeight+400,bottom:nearSelection.innerHeight+420,left:80,right:120}});
+  const belowSelection = await measureBar();
+  assert.ok(belowSelection.bar.bottom <= belowSelection.innerHeight - 7, 'a selection below the visible area still leaves the bar on screen: ' + JSON.stringify(belowSelection));
+  await b.evaluate("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");
+  await flush();
+  assert.equal(await visible('#selectionbar'), false, 'Escape puts the bar away on a phone too');
+  await b.resize(1280,900); await flush();
+
   // Highlighting arms nothing either: select the words, choose the verb.
   // The swatches hang under Highlight, on the strip of ink below its icon,
   // and picking one is the highlight.
