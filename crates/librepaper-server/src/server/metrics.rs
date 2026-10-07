@@ -435,7 +435,7 @@ impl Metrics {
         self.snapshot_success.set(0);
     }
 
-    fn render(&self) -> String {
+    pub(super) fn render(&self) -> String {
         self.uptime.set(self.started.elapsed().as_secs_f64());
         let mut out = String::with_capacity(32 * 1024);
         // Writing to a String cannot fail.
