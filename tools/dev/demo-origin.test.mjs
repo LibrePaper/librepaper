@@ -35,8 +35,6 @@ async function makeFixture({ running = false, port = 8081, sitePort = 8082, comm
     await readFile(join(root, "tools", "dev", "demo-compose")), { mode: 0o755 });
   await writeFile(join(directory, "tools", "dev", "demo", "config.toml"),
     await readFile(join(root, "tools", "dev", "demo", "config.toml")));
-  await writeFile(join(directory, "deploy", "setup"),
-    await readFile(join(root, "deploy", "setup")), { mode: 0o755 });
   await writeFile(join(directory, "deploy", "librepaper.toml"),
     await readFile(join(root, "deploy", "librepaper.toml")));
   await writeFile(join(directory, "deploy", "resticprofile.toml"), "# empty backup config\n");
