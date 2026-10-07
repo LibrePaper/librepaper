@@ -14,7 +14,7 @@ pub mod socket_budget;
 /// the browser wasm modules under `wasm/<sha256>/` and the pinned LaTeX
 /// release under `latex/<sha256>/`. Browsers fetch them directly; the origin never proxies these
 /// bytes.
-pub const DEFAULT_ASSET_MIRROR: &str = "https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/";
+pub const DEFAULT_ASSET_MIRROR: &str = "https://librepaper-mirror-0001.s3.bhs.io.cloud.ovh.net/";
 
 /// Private disposable state used by the server process, and the fixed
 /// filesystem layout of a local deployment directory.

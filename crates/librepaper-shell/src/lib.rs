@@ -177,7 +177,7 @@ fn walk(dir: &'static Dir<'static>) -> Vec<&'static File<'static>> {
 mod shell_tests {
     use super::*;
 
-    const MIRROR: &str = "https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/";
+    const MIRROR: &str = "https://librepaper-mirror-0001.s3.bhs.io.cloud.ovh.net/";
 
     fn shell() -> HashMap<String, ShellFile> {
         load_shell(MIRROR).expect("the shell is embedded in the binary")
