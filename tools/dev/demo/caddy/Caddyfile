@@ -3,15 +3,7 @@
 }
 
 :80 {
-	@monitoring_root path /admin/monitoring
-	redir @monitoring_root /admin/monitoring/ 308
-	@monitoring path /admin/monitoring/*
-	handle @monitoring {
-		reverse_proxy grafana:3000
-	}
-	handle {
-		reverse_proxy librepaper:8080
-	}
+	reverse_proxy librepaper:8080
 }
 
 :8081 {

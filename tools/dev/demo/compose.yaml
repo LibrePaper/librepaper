@@ -1,10 +1,5 @@
 # Reuse the deployment services with a checkout image and loopback-only ports.
-# demo-compose writes the Grafana password file and turns the monitoring profile on.
 services:
-  grafana:
-    environment:
-      GF_SERVER_ROOT_URL: http://localhost:${PORT:-8081}/admin/monitoring/
-      GF_SECURITY_COOKIE_SECURE: "false"
   librepaper:
     image: librepaper:demo
     build:
@@ -51,10 +46,6 @@ services:
       - ${LIBREPAPER_DEMO_ROOT:?demo root is required}/docs/_site:/srv/site:ro
       - caddy-data:/data
       - caddy-config:/config
-
-secrets:
-  grafana-admin-password:
-    file: ${LIBREPAPER_DEMO_GRAFANA_PASSWORD_FILE:?demo Grafana password file is required}
 
 networks:
   edge:
