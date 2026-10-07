@@ -483,6 +483,10 @@ deploy() {
 	note "the server migrates the schema at startup; nothing is stopped by hand"
 	ssh "$HOST" 'cd librepaper && docker compose pull'
 	ssh "$HOST" 'cd librepaper && docker compose up -d --wait --wait-timeout 180'
+	# Compose compares service definitions, not the bytes behind a bind mount: a
+	# same-version deploy that only changed librepaper.toml, resticprofile.toml or
+	# prometheus.yaml would otherwise leave the old inode in use.
+	ssh "$HOST" 'cd librepaper && docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper backup prometheus'
 	if ! timeout "$CADDY_RELOAD_TIMEOUT_SECONDS" ssh "$HOST" 'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'; then
 		die "Caddy configuration reload failed"
 	fi
