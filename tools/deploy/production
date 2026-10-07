@@ -516,9 +516,13 @@ host_rclone() {
 move_objects() {
 	OBJECTS_KEY_ID=$(required_key LIBREPAPER_OBJECTS_S3_ACCESS_KEY_ID)
 	OBJECTS_SECRET=$(required_key LIBREPAPER_OBJECTS_S3_SECRET_ACCESS_KEY)
-	local bucket remote
+	local bucket endpoint remote
 	bucket=$(required_key LIBREPAPER_OBJECTS_S3_BUCKET)
-	remote=":s3,provider=Other,endpoint=$(required_key LIBREPAPER_OBJECTS_S3_ENDPOINT),region=$(required_key LIBREPAPER_OBJECTS_S3_REGION):$bucket"
+	endpoint=$(required_key LIBREPAPER_OBJECTS_S3_ENDPOINT)
+	# A colon ends rclone's inline remote settings, so the host goes without its
+	# scheme; rclone uses HTTPS by default.
+	endpoint=${endpoint#https://}
+	remote=":s3,provider=Other,endpoint=${endpoint%/},region=$(required_key LIBREPAPER_OBJECTS_S3_REGION):$bucket"
 
 	step "Copy while the app runs"
 	host_rclone copy /data/objects "$remote" --checksum

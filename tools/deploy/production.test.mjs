@@ -1057,6 +1057,8 @@ test('move-objects copies the volume to S3 before and after stopping the app, ch
     const check = indexOfEvent(list, ['docker', /rclone check \/data\/objects/]);
     assert.equal(copies.length, 2);
     assert.ok(copies[0] < stop && stop < copies[1] && copies[1] < check, 'copy, stop, copy and check ran out of order');
+    // A colon would end rclone's inline remote settings, so the endpoint has no scheme.
+    assert.match(list[copies[0]][1], / :s3,provider=Other,endpoint=objects\.example,region=objects-region:objects-bucket( |$)/);
     // The docker mock reads the keys from stdin and fails unless they arrived there.
     assert.deepEqual(walk(f.remote), [], 'move-objects writes no files on the host');
     const text = readFileSync(f.eventsFile, 'utf8');
