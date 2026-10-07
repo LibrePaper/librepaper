@@ -302,23 +302,59 @@ verify() {
 	verify_oauth_redirect google 'https://accounts.google.com/o/oauth2/v2/auth?'
 
 	step "Admin graphs: ${ADMIN}data?points=10"
-	local password response series_count
+	local password config body api_code
 	password=$(required_key PRODUCTION_ADMIN_PASSWORD)
-	response=$(http_request -fsS --user "admin:$password" "${ADMIN}data?points=10")
-	series_count=$(printf '%s' "$response" | grep -o '"name":' | wc -l)
+	config=$(mktemp)
+	body=$(mktemp)
+	VERIFY_TMP_FILES=("$config" "$body")
+	trap cleanup_verify_tmp EXIT
+	chmod 600 "$config" "$body"
+	local escaped_password
+	escaped_password=$(printf '%s' "$password" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	printf 'user = "admin:%s"\n' "$escaped_password" > "$config"
+	unset password escaped_password
+	local api_deadline=$((SECONDS + 90)) api_remaining waiting_note=false
+	while :; do
+		api_remaining=$((api_deadline - SECONDS))
+		[ "$api_remaining" -gt 0 ] || break
+		api_code=$(http_request --connect-timeout "$api_remaining" --max-time "$api_remaining" --config "$config" -sS -o "$body" -w '%{http_code}' "${ADMIN}data?points=10" || true)
+		[ "$api_code" = 200 ] && break
+		case "$api_code" in
+			000|502|503)
+				if [ "$waiting_note" = false ]; then
+					note "waiting for the admin certificate and the first answer (up to 90 seconds)"
+					waiting_note=true
+				fi
+				;;
+			*) die "admin graphs endpoint returned HTTP $api_code" ;;
+		esac
+		api_remaining=$((api_deadline - SECONDS))
+		if [ "$api_remaining" -gt 0 ]; then sleep "$((api_remaining < 2 ? api_remaining : 2))"; fi
+	done
+	[ "$api_code" = 200 ] || die "admin graphs endpoint returned HTTP $api_code"
+	local series_count
+	series_count=$(grep -o '"name":' "$body" | wc -l)
 	[ "$series_count" = 12 ] || die "admin graphs endpoint returned $series_count series, expected 12"
 	ok "authenticated endpoint returns twelve series"
 	local unauthenticated_code
-	unauthenticated_code=$(http_request -o /dev/null -w '%{http_code}' "${ADMIN}data?points=10" || true)
+	unauthenticated_code=$(http_request -sS -o /dev/null -w '%{http_code}' "${ADMIN}data?points=10" || true)
 	[ "$unauthenticated_code" = 401 ] || die "unauthenticated admin endpoint returned HTTP $unauthenticated_code, expected 401"
 	ok "unauthenticated endpoint is 401"
-	for path in /data /graphs; do
-		local code
-		code=$(http_request -s -o /dev/null -w '%{http_code}' "https://$APP$path" || true)
-		[ "$code" = 404 ] || die "https://$APP$path returned HTTP $code, expected 404"
+	for path in /api/status /metrics /data /graphs; do
+		local private_code
+		private_code=$(http_request -sS -o /dev/null -w '%{http_code}' "https://$APP$path" || true)
+		if [ "$path" = /api/status ]; then
+			[ "$private_code" = 403 ] || die "https://$APP$path returned HTTP $private_code, expected 403"
+		elif [ "$path" = /metrics ]; then
+			case "$private_code" in 404|421) ;; *) die "https://$APP$path is public (HTTP $private_code)" ;; esac
+		else
+			[ "$private_code" = 404 ] || die "https://$APP$path returned HTTP $private_code, expected 404"
+		fi
 	done
-	ok "app origin does not serve graphs or data"
-	unset password
+	ok "app origin does not serve graphs or data, admin endpoint is 401, metrics and status are private"
+	cleanup_verify_tmp
+	VERIFY_TMP_FILES=()
+	trap - EXIT
 
 	step "Site: https://$SITE"
 	http_request -fs -o /dev/null "https://$SITE/what.html" || die "https://$SITE/what.html did not answer: is the site uploaded?"

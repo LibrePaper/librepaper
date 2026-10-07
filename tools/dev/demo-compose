@@ -47,6 +47,7 @@ compose() (
   export LIBREPAPER_DEMO_BACKUP_CONFIG="$BACKUP_CONFIG_PATH"
   export LIBREPAPER_DEMO_APP_ORIGIN="$APP_ORIGIN"
   export LIBREPAPER_DEMO_SITE_ORIGIN="http://localhost:$SITE_PORT"
+  export LIBREPAPER_DEMO_ADMIN_ORIGIN="http://admin.localhost:$PORT"
   export PORT SITE_PORT
   # A deploy/.env left by a real install must not reach the demo.
   export COMPOSE_DISABLE_ENV_FILE=1

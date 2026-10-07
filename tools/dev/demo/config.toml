@@ -2,7 +2,7 @@
 [origins]
 app = { env = "LIBREPAPER_DEMO_APP_ORIGIN" }
 site = { env = "LIBREPAPER_DEMO_SITE_ORIGIN" }
-admin = "http://admin.localhost:8081"
+admin = { env = "LIBREPAPER_DEMO_ADMIN_ORIGIN" }
 
 [storage]
 directory = "/var/lib/librepaper"

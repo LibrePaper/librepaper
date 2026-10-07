@@ -51,6 +51,7 @@ function mockCommand(dir, name, contents) {
 // kind, then the arguments.
 function fixture({
   adminPassword = 'admin-secret',
+  adminSeries = 12,
   caddyReloadFailure = false,
   realSleep = false,
   googleClientId = 'google-id',
@@ -240,9 +241,17 @@ if [ -n "$config" ]; then
 fi
 code=200 body='' location= provider=
 case "$url" in
-  */admin/*/data?points=*)
+  https://admin.librepaper.org/data?points=*)
     if [ -n "$config" ]; then
-      body='{"from":1791300000,"to":1791386400,"step":144.0,"series":[{"name":"requests_per_minute","label":"Requests per minute","unit":"count","values":[0.0]},{"name":"client_errors_per_minute","label":"Client errors per minute","unit":"count","values":[0.0]},{"name":"server_errors_per_minute","label":"Server errors per minute","unit":"count","values":[0.0]},{"name":"latency_p95_seconds","label":"Latency (p95)","unit":"seconds","values":[0.0]},{"name":"documents_resident","label":"Documents resident","unit":"count","values":[0.0]},{"name":"sockets_active","label":"Sockets active","unit":"count","values":[0.0]},{"name":"storage_bytes","label":"Storage","unit":"bytes","values":[0.0]},{"name":"process_rss_bytes","label":"Process RSS","unit":"bytes","values":[0.0]},{"name":"memory_available_bytes","label":"Memory available","unit":"bytes","values":[0.0]},{"name":"disk_available_bytes","label":"Disk available","unit":"bytes","values":[0.0]},{"name":"host_cpu_percent","label":"Host CPU","unit":"percent","values":[0.0]},{"name":"db_connections_in_use","label":"DB connections","unit":"count","values":[0.0]}]}'
+      [ "$(stat -c %a "$config")" = 600 ]
+      grep -Fxq -f "$EXPECTED_AUTH_FILE" "$config"
+      series=()
+      for i in $(seq 1 "$ADMIN_SERIES"); do
+        series+=("{\"name\":\"series$i\",\"label\":\"Series $i\",\"unit\":\"count\",\"values\":[0.0]}")
+      done
+      IFS=,
+      body="{\"from\":1791300000,\"to\":1791386400,\"step\":144.0,\"series\":[${series[*]}]}"
+      unset IFS
     else code=401; fi
     ;;
   https://app.librepaper.org/api/status) code=403 ;;
@@ -311,6 +320,7 @@ exit 0`);
       GOOGLE_HTTP_STATUS: String(googleHttpStatus),
       GOOGLE_LOCATION: googleLocation,
       SOPS_FAILURE_KEY: sopsFailureKey,
+      ADMIN_SERIES: String(adminSeries),
     },
     eventsFile,
     makeCalledFile,
@@ -811,6 +821,13 @@ test('verify rejects unauthenticated admin graphs access', () => {
     f.cleanup();
   }
 });
+
+test('verify fails when admin graphs returns fewer than twelve series', () => {
+  const f = fixture({ adminSeries: 11 });
+  try {
+    const result = run(f, 'verify');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /admin graphs endpoint returned 11 series, expected 12/);
   } finally {
     f.cleanup();
   }
