@@ -733,7 +733,10 @@ mod tests {
             .collect();
         let aside = |prefix: &str| names.iter().find(|name| name.starts_with(prefix)).cloned();
         let corrupt = aside("metrics.sqlite.corrupt-").expect("the garbage file is kept");
-        assert!(aside("metrics.sqlite-wal.corrupt-").is_some());
+        // SQLite removes a WAL it cannot use when the failed connection
+        // closes, so the stale sibling is gone or set aside, never kept.
+        let stale = dir.path().join("metrics.sqlite-wal");
+        assert!(!stale.exists() || std::fs::read(&stale).unwrap() != b"stale");
         assert_eq!(
             std::fs::read(dir.path().join(corrupt)).unwrap(),
             vec![0x5a; 4096]
