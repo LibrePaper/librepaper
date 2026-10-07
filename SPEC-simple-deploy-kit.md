@@ -216,8 +216,8 @@ cd librepaper && docker compose pull && docker compose up -d
 
 - The archive from a tag pins that tag, so compose.yaml, Caddyfile, init.sql
   and the binary always agree. Operator files are never in the archive
-  (`caddy/local.d/`, `monitoring/grafana_admin_password`, `.env`,
-  `compose.override.yaml`) and the two config files are excluded on extract.
+  (`caddy/local.d/`, `compose.override.yaml`) and the two config files are
+  excluded on extract.
   Everything an operator customises therefore survives an upgrade; the
   managed-db case is tested that way.
 - The server migrates the schema at startup. Nothing to stop, run or restart
@@ -279,9 +279,8 @@ encrypted recovery packet exactly as before v0.0.21. Then
 `tar czf ~/librepaper-convert/host-files-before.tar.gz` of `~/librepaper`
 (files only, no volumes): with it, `docker compose up -d` brings the old stack
 back if the conversion stops before its transaction commits. Then run the
-`deploy` preparation steps (sync the new kit, secrets, `monitoring/grafana_admin_password`,
-override, `.env` with `COMPOSE_PROFILES=monitoring`, validated config) without
-starting anything.
+`deploy` preparation steps (sync the new kit, secrets including
+`admin_password`, override, validated config) without starting anything.
 
 Host script, in order, stopping on the first error:
 
@@ -324,7 +323,8 @@ rm -rf monitoring
   reused as is; its `pg_hba.conf` keeps `local all all trust` from initdb and
   host lines that nothing can reach. The `data` volume is not touched:
   objects and `session.key` stay. An existing session cookie must still sign
-  in afterwards; `verify` checks readiness, OAuth, monitoring, site and docs.
+  in afterwards; `verify` checks readiness, OAuth, the admin graphs, site
+  and docs.
 - Files are deleted by name. A glob like `compose.*.yaml` would take
   `compose.override.yaml` with it.
 - The dump and the host-files tarball are deleted a week later by hand.
@@ -370,8 +370,7 @@ Delete:
   `tools/test/deploy/roles.sh`, `tools/test/backup/database-role.sh`
 - `docs/credentials.md` and its `nav.js` entry
 - `.gitignore` and `.dockerignore` entries for `deploy/secrets`,
-  `.setup-state.json`; add `deploy/.env`, `deploy/compose.override.yaml`,
-  `deploy/monitoring/grafana_admin_password`
+  `.setup-state.json`; add `deploy/.env`, `deploy/compose.override.yaml`
 
 Rewrite:
 
@@ -399,8 +398,9 @@ Rewrite:
   `deploy-convert`
 
 Keep: `deploy/Dockerfile` (all targets), `deploy/backup/`, `deploy/caddy/`,
-`deploy/monitoring/`, `prometheus.yaml`, `grafana.json`, every Rust crate,
-`tools/deploy/keys.yaml`, `runbook.enc`.
+every Rust crate, `tools/deploy/keys.yaml`, `runbook.enc`. (`deploy/monitoring/`,
+`prometheus.yaml` and `grafana.json` were kept here and then deleted by
+SPEC-monitoring.md.)
 
 Docs, in the house style (short, bullets, `sh` blocks with `#` comments, no
 dashes):
