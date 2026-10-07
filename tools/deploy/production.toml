@@ -14,11 +14,12 @@ local_companion = false
 
 # app is the application and its API (other Host headers get 421); docs
 # isolates rendered documents; site is the project site used for sign-out
-# links.
+# links; admin is the operator graphs origin, behind a password below.
 [origins]
 app = "https://app.librepaper.org"
 docs = "https://docs.librepaper.org"
 site = "https://librepaper.org"
+admin = "https://admin.librepaper.org"
 
 # Objects and server secrets live on the named Docker volume. fsync covers
 # object writes only; PostgreSQL handles its own durability. To use S3, set
@@ -67,9 +68,13 @@ publisher_uploads_per_hour = 30
 [assets]
 mirror = "https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/"
 
-# Prometheus, on the private Compose network only.
+# Private listener for your own Prometheus. Nothing in the kit scrapes it and no host port is published.
 [metrics]
 address = "0.0.0.0:9091"
+
+# Operator graphs: read-only page served on the admin origin, behind a password from SOPS.
+[admin]
+password = { file = "/run/secrets/admin_password" }
 
 # Keep in sync with the `edge` network in compose.yaml.
 [proxy]
