@@ -11,8 +11,8 @@ set -euo pipefail
 # 1. Public Cloud > Object Storage > Users: create an S3 user and generate its S3 credentials.
 # 2. Do NOT create the bucket in the console; `publish` creates it with that user, because
 #    OVH lets only the bucket owner set CORS.
-# 3. sops tools/deploy/keys.yaml: add MIRROR_S3_ENDPOINT, MIRROR_S3_REGION, MIRROR_S3_ACCESS_KEY_ID,
-#    MIRROR_S3_SECRET_ACCESS_KEY and MIRROR_S3_BUCKET.
+# 3. sops tools/deploy/keys.yaml: add LIBREPAPER_MIRROR_S3_ENDPOINT, LIBREPAPER_MIRROR_S3_REGION, LIBREPAPER_MIRROR_S3_ACCESS_KEY_ID,
+#    LIBREPAPER_MIRROR_S3_SECRET_ACCESS_KEY and LIBREPAPER_MIRROR_S3_BUCKET.
 #
 # Each publish:
 # 1. node tools/assets/pins.mjs fetch && tools/assets/mirror build: fetch the pinned wasm modules into web/wasm and
@@ -40,7 +40,7 @@ Commands:
 Environment:
   MIRROR=DIR      LaTeX mirror directory (default ../wasm-latex/mirror)
   KEYS=FILE       sops-encrypted keys (default tools/deploy/keys.yaml)
-  S3_BUCKET=NAME  bucket name (default: MIRROR_S3_BUCKET)
+  S3_BUCKET=NAME  bucket name (default: LIBREPAPER_MIRROR_S3_BUCKET)
   S3_PUBLIC_BASE_URL=URL  public HTTPS URL for bucket probes; required with custom S3_ENDPOINT or S3_REGION
 USAGE
 }

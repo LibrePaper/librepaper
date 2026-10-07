@@ -71,8 +71,8 @@ If `assets.lock` is unchanged, there is no mirror update to publish.
 - Real uploads need AWS CLI v2 (or Nix) and credentials from the environment
   or SOPS.
 
-- SOPS file: `tools/deploy/keys.yaml`. Keys: `MIRROR_S3_ENDPOINT`, `MIRROR_S3_REGION`,
-  `MIRROR_S3_ACCESS_KEY_ID`, `MIRROR_S3_SECRET_ACCESS_KEY`, `MIRROR_S3_BUCKET`.
+- SOPS file: `tools/deploy/keys.yaml`. Keys: `LIBREPAPER_MIRROR_S3_ENDPOINT`, `LIBREPAPER_MIRROR_S3_REGION`,
+  `LIBREPAPER_MIRROR_S3_ACCESS_KEY_ID`, `LIBREPAPER_MIRROR_S3_SECRET_ACCESS_KEY`, `LIBREPAPER_MIRROR_S3_BUCKET`.
 - Overrides: `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`,
   `AWS_SECRET_ACCESS_KEY`. Set `S3_PUBLIC_BASE_URL` for a custom endpoint or region.
 - Use a dedicated OVH S3 user; let the publisher create the bucket under that
