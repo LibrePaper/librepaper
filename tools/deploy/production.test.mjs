@@ -53,6 +53,7 @@ function fixture({
   adminPassword = 'admin-secret',
   adminSeries = 12,
   caddyReloadFailure = false,
+  volumeRemoveFailure = false,
   realSleep = false,
   googleClientId = 'google-id',
   googleClientSecret = 'google-secret',
@@ -203,7 +204,9 @@ case "$*" in
     ;;
   'compose logs --tail 50') ;;
   'volume inspect librepaper_prometheus'|'volume inspect librepaper_grafana'|'volume inspect librepaper_backup-metrics') ;;
-  'volume rm librepaper_prometheus'|'volume rm librepaper_grafana'|'volume rm librepaper_backup-metrics') ;;
+  'volume rm librepaper_prometheus'|'volume rm librepaper_grafana'|'volume rm librepaper_backup-metrics')
+    if [ "$VOLUME_REMOVE_FAILURE" = 1 ]; then echo 'Error response from daemon: volume is in use' >&2; exit 1; fi
+    ;;
   'volume ls --format {{.Name}}') ;;
   *) echo "unexpected docker command: $*" >&2; exit 99 ;;
 esac`);
@@ -305,6 +308,7 @@ exit 0`);
       CADDY_TIMEOUT_FILE: caddyTimeoutFile,
       REAL_TIMEOUT: realTimeout,
       CADDY_RELOAD_FAILURE: caddyReloadFailure ? '1' : '0',
+      VOLUME_REMOVE_FAILURE: volumeRemoveFailure ? '1' : '0',
       CONFIG_CHECK_FAILURE: configCheckFailure ? '1' : '0',
       CADDY_CHECK_FAILURE: caddyCheckFailure ? '1' : '0',
       HOST_SCRIPT_FAILURE: hostScriptFailure ? '1' : '0',
@@ -942,6 +946,21 @@ test('retire-monitoring checks and removes docker volumes, and removes .env and 
     assert.ok(volumeCalls.some((call) => call.includes('volume rm librepaper_grafana')));
     assert.ok(volumeCalls.some((call) => call.includes('volume rm librepaper_backup-metrics')));
     assert.ok(volumeCalls.some((call) => call.includes('volume ls --format')));
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('retire-monitoring fails when a volume cannot be removed and keeps the host files', () => {
+  const f = fixture({ volumeRemoveFailure: true });
+  try {
+    mkdirSync(path.join(f.remote, 'monitoring'), { recursive: true });
+    writeFileSync(path.join(f.remote, '.env'), 'COMPOSE_PROFILES=monitoring\n');
+    const result = run(f, 'retire-monitoring');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /volume is in use/);
+    assert.doesNotMatch(result.stdout, /retired: no volumes remain/);
+    assert.equal(existsSync(path.join(f.remote, '.env')), true, 'the host files stay until the volumes are gone');
   } finally {
     f.cleanup();
   }

@@ -482,15 +482,22 @@ retire_monitoring() {
 	step "Retire Prometheus, Grafana and backup metrics"
 	# The script travels on stdin and runs on the host; nothing in it is a secret.
 	ssh "$HOST" 'cd librepaper && exec bash -s' <<'RETIRE'
+set -eu
+# Absent is fine; any other Docker failure stops here with its message.
 for volume in librepaper_prometheus librepaper_grafana librepaper_backup-metrics; do
-	if docker volume inspect "$volume" >/dev/null 2>&1; then
-		docker volume rm "$volume" || exit 1
+	if inspected=$(docker volume inspect "$volume" 2>&1); then
+		docker volume rm "$volume"
+	elif printf '%s' "$inspected" | grep -qi 'no such volume'; then
+		printf '    volume %s: already gone\n' "$volume"
 	else
-		printf "    volume %s: already gone\n" "$volume"
+		printf 'docker volume inspect %s failed: %s\n' "$volume" "$inspected" >&2
+		exit 1
 	fi
 done
 rm -rf .env monitoring
-leftover=$(docker volume ls --format '{{.Name}}' | grep -E '^librepaper_(prometheus|grafana|backup-metrics)$' || true)
+[ ! -e .env ] && [ ! -e monitoring ] || { echo '.env or monitoring/ is still there' >&2; exit 1; }
+volumes=$(docker volume ls --format '{{.Name}}')
+leftover=$(printf '%s\n' "$volumes" | grep -E '^librepaper_(prometheus|grafana|backup-metrics)$' || true)
 [ -z "$leftover" ] || { printf 'leftover monitoring volumes: %s\n' "$leftover" >&2; exit 1; }
 echo "removed volumes and .env/monitoring directory"
 RETIRE
