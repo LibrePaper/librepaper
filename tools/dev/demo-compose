@@ -3,9 +3,6 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PROJECT="${DEMO_PROJECT:-librepaper-demo}"
-# The one Compose secret in the kit. The name ends in .env only so that the
-# existing ignore pattern for tools/dev/demo/.*.env covers it.
-GRAFANA_PASSWORD_FILE="$ROOT/tools/dev/demo/.${PROJECT}.grafana-password.env"
 COMPOSE_FILES=(
   -f "$ROOT/deploy/compose.yaml"
   -f "$ROOT/tools/dev/demo/compose.yaml"
@@ -50,28 +47,18 @@ compose() (
   export LIBREPAPER_DEMO_BACKUP_CONFIG="$BACKUP_CONFIG_PATH"
   export LIBREPAPER_DEMO_APP_ORIGIN="$APP_ORIGIN"
   export LIBREPAPER_DEMO_SITE_ORIGIN="http://localhost:$SITE_PORT"
-  export LIBREPAPER_DEMO_GRAFANA_PASSWORD_FILE="$GRAFANA_PASSWORD_FILE"
+  export LIBREPAPER_DEMO_ADMIN_ORIGIN="http://admin.localhost:$PORT"
   export PORT SITE_PORT
-  export COMPOSE_PROFILES=monitoring
   # A deploy/.env left by a real install must not reach the demo.
   export COMPOSE_DISABLE_ENV_FILE=1
   exec docker compose --project-name "$PROJECT" --project-directory "$ROOT/deploy" "${COMPOSE_FILES[@]}" "$@"
 )
-
-prepare_grafana_password() {
-  if [[ ! -s "$GRAFANA_PASSWORD_FILE" ]]; then
-    printf '%s\n' "${LIBREPAPER_DEMO_GRAFANA_PASSWORD:-librepaper-demo-only}" >"$GRAFANA_PASSWORD_FILE"
-  fi
-  # Grafana runs as another uid and reads the file through its secret mount.
-  chmod 0644 "$GRAFANA_PASSWORD_FILE"
-}
 
 case "$ACTION" in
   run)
     [[ -f "$CONFIG_PATH" ]] || die "config file does not exist: $CONFIG_PATH"
     [[ -f "$BACKUP_CONFIG_PATH" ]] || die "backup config file does not exist: $BACKUP_CONFIG_PATH"
     [[ -x "$BIN" ]] || die "host companion binary is not executable: $BIN"
-    prepare_grafana_password
     compose_started=0
     companion_pid=''
     logs_pid=''
@@ -114,17 +101,16 @@ case "$ACTION" in
     fi
     printf 'app   %s\n' "$APP_ORIGIN"
     printf 'site  http://localhost:%s\n' "$SITE_PORT"
+    printf 'admin graphs: http://admin.localhost:%s/ (password: librepaper-demo-only-password)\n' "$PORT"
     printf 'Press Ctrl-C to stop the demo containers and any companion started here.\n'
     compose logs --follow &
     logs_pid=$!
     wait "$logs_pid"
     ;;
   stop)
-    prepare_grafana_password
     compose down --remove-orphans
     ;;
   wipe)
-    prepare_grafana_password
     compose down --remove-orphans --volumes
     ;;
   *)

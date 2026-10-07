@@ -129,8 +129,8 @@ stage_kit() {
 	local dest="$1"
 	mkdir -p "$dest"
 	cp -R "$deploy/." "$dest/"
-	rm -rf -- "$dest/Dockerfile" "$dest/backup" "$dest/compose.override.yaml" "$dest/.env" \
-		"$dest/site" "$dest/caddy/local.d" "$dest/monitoring/grafana_admin_password" \
+	rm -rf -- "$dest/Dockerfile" "$dest/backup" "$dest/compose.override.yaml" \
+		"$dest/site" "$dest/caddy/local.d" \
 		"$dest"/*.candidate*
 	chmod -R go+rX "$dest"
 }
@@ -145,8 +145,17 @@ set_toml_line() {
 }
 
 set_origins() {
-	set_toml_line "$1" app '"http://localhost"'
-	set_toml_line "$1" docs '"http://docs.localhost"'
+	local toml="$1"
+	set_toml_line "$toml" app '"http://localhost"'
+	set_toml_line "$toml" docs '"http://docs.localhost"'
+	# Uncomment and set the admin origin line
+	sed -E 's/^# admin = .*$/admin = "http:\/\/admin.localhost"/' "$toml" >"$toml.new"
+	mv "$toml.new" "$toml"
+	chmod 0644 "$toml"
+	grep -qxF 'admin = "http://admin.localhost"' "$toml" || fail "could not set admin in the kit's librepaper.toml"
+	# Append the [admin] section with password
+	echo '[admin]' >>"$toml"
+	echo 'password = "deploy-install-test-password"' >>"$toml"
 }
 
 service_override() {
@@ -214,6 +223,22 @@ app_ready() {
 	fail "the app did not answer /ready ($compose)"
 }
 
+# Admin graphs endpoint must return twelve series with basic auth.
+admin_graphs_answer() {
+	local compose="$1" count
+	# With credentials, the endpoint returns data with twelve series.
+	count=$("$compose" exec -T librepaper wget -qO- --header 'Host: admin.localhost' 'http://admin:deploy-install-test-password@127.0.0.1:8080/data?points=10' | grep -o '"name":' | wc -l)
+	[[ "$count" == 12 ]] || fail "admin graphs endpoint returned $count series, expected 12 ($compose)"
+	# Without credentials, it must return 401.
+	local exit_code
+	exit_code=0
+	"$compose" exec -T librepaper wget -qO- --header 'Host: admin.localhost' 'http://127.0.0.1:8080/data?points=10' >/dev/null 2>&1 || exit_code=$?
+	if [[ $exit_code -eq 0 ]]; then
+		fail "admin graphs endpoint without credentials should fail ($compose)"
+	fi
+	echo "admin graphs: authenticated endpoint returns twelve series and unauthenticated returns 401"
+}
+
 # The override is in effect when neither the configuration nor the containers
 # have a postgres service. The app and the backup sidecar must still be there.
 # Output is captured first: grep -q exiting early would trip pipefail.
@@ -239,6 +264,7 @@ run_local() {
 	build_images local_compose
 	local_compose up -d --wait --wait-timeout 240
 	app_ready local_compose
+	admin_graphs_answer local_compose
 
 	local migrations superuser mode
 	migrations=$(local_compose exec -T postgres psql -U librepaper -d librepaper -XAtc 'select count(*) from _sqlx_migrations')
@@ -282,6 +308,7 @@ run_managed() {
 	build_images managed_compose
 	managed_compose up -d --wait --wait-timeout 240
 	app_ready managed_compose
+	admin_graphs_answer managed_compose
 	assert_no_local_postgres "after the first start"
 	migrations=$(docker exec "$POSTGRES_CONTAINER" psql -U librepaper -d librepaper -XAtc 'select count(*) from _sqlx_migrations')
 	[[ "$migrations" =~ ^[0-9]+$ ]] && (( migrations > 0 )) || fail "the app migrated nothing on the managed database (count: $migrations)"

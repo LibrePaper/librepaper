@@ -46,8 +46,8 @@ git -C "$root" cat-file -e "$legacy_ref^{commit}" 2>/dev/null || {
 	echo "git history is missing $legacy_ref, the last commit with the scoped-role kit" >&2
 	exit 1
 }
-for item in compose.yaml compose.managed-db.yaml librepaper.toml resticprofile.toml prometheus.yaml \
-	grafana.json README.md postgres/init.sql caddy/Caddyfile monitoring; do
+for item in compose.yaml compose.managed-db.yaml librepaper.toml resticprofile.toml \
+	README.md postgres/init.sql caddy/Caddyfile; do
 	[[ -e $kit/$item ]] || {
 		echo "the new kit is not in this checkout: deploy/$item is missing. Run this after the kit branch is integrated" >&2
 		exit 1
@@ -374,16 +374,18 @@ ENV
 # plus the operator's files, without starting anything.
 install_new_kit() {
 	local dir=$1 host=$2 subnet=$3 project=$4 item
-	mkdir -p "$dir/postgres" "$dir/monitoring" "$dir/caddy"
-	for item in compose.yaml compose.managed-db.yaml resticprofile.toml prometheus.yaml grafana.json README.md postgres/init.sql; do
+	mkdir -p "$dir/postgres" "$dir/caddy"
+	for item in compose.yaml compose.managed-db.yaml resticprofile.toml README.md postgres/init.sql; do
 		cp -f -- "$kit/$item" "$dir/$item"
 	done
 	cp -Rf -- "$kit/caddy/." "$dir/caddy/"
-	cp -Rf -- "$kit/monitoring/." "$dir/monitoring/"
 	write_config "$dir/librepaper.toml" "$host" new
-	printf 'COMPOSE_PROFILES=\n' >"$dir/.env"
-	printf 'disposable-grafana-password\n' >"$dir/monitoring/grafana_admin_password"
-	chmod 0644 "$dir/monitoring/grafana_admin_password"
+	# Create placeholder files for prometheus.yaml, grafana.json, and monitoring/
+	# so the conversion script can delete them
+	printf '# placeholder for old kit\n' >"$dir/prometheus.yaml"
+	printf '# placeholder for old kit\n' >"$dir/grafana.json"
+	mkdir -p "$dir/monitoring"
+	printf '# placeholder for old kit\n' >"$dir/monitoring/placeholder"
 	write_override "$dir/compose.override.yaml" new "$subnet"
 	assert_project_name "$dir" "$project"
 }
@@ -538,14 +540,15 @@ rehearse_conversion() {
 	pass 'the converted app answers /ready'
 
 	local gone kept
-	for gone in setup postgres/roles.sql postgres/init-roles.sh .setup-state.json monitoring/grafana-entrypoint.sh \
+	for gone in setup postgres/roles.sql postgres/init-roles.sh .setup-state.json \
 		compose.external-db.yaml compose.local-binary.yaml compose.local-build.yaml compose.monitoring.yaml compose.production.yaml \
+		prometheus.yaml grafana.json monitoring \
 		secrets/database_app_url secrets/database_owner_url secrets/database_backup_url secrets/database_metrics_url secrets/database_metrics_uri secrets/database_metrics_user \
 		secrets/database_app_password secrets/database_owner_password secrets/database_backup_password secrets/database_metrics_password \
-		secrets/postgres_bootstrap_password secrets/grafana_admin_password; do
+		secrets/postgres_bootstrap_password secrets/grafana_admin_password .env; do
 		[[ ! -e $dir/$gone ]] || fail "$gone should have been deleted"
 	done
-	for kept in compose.yaml compose.override.yaml .env librepaper.toml postgres/init.sql monitoring/grafana_admin_password \
+	for kept in compose.yaml compose.override.yaml librepaper.toml postgres/init.sql \
 		secrets/restic_password secrets/github_client_id; do
 		[[ -e $dir/$kept ]] || fail "$kept should have been kept"
 	done

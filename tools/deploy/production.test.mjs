@@ -30,11 +30,9 @@ const OPERATOR_PATHS = [
   '/librepaper.toml*',
   '/resticprofile.toml',
   '/secrets',
-  '/.env',
   '/compose.override.yaml*',
   '/caddy/Caddyfile*',
   '/caddy/local.d',
-  '/monitoring/grafana_admin_password',
   '/site',
 ];
 // The image build context stays in the repository.
@@ -53,11 +51,7 @@ function mockCommand(dir, name, contents) {
 // kind, then the arguments.
 function fixture({
   adminPassword = 'admin-secret',
-  grafanaTransientFailures = 0,
-  grafanaPersistentStatus = 0,
-  grafanaAuthStatus = 200,
-  pgUpHealthy = true,
-  prometheusTransientFailures = 0,
+  adminSeries = 12,
   caddyReloadFailure = false,
   realSleep = false,
   googleClientId = 'google-id',
@@ -83,8 +77,6 @@ function fixture({
   mkdirSync(temp);
   const adminPasswordFile = path.join(root, 'admin-password');
   const expectedAuthFile = path.join(root, 'expected-curl-auth');
-  const grafanaCountFile = path.join(root, 'grafana-count');
-  const prometheusCountFile = path.join(root, 'prometheus-count');
   const makeCalledFile = path.join(root, 'make-called');
   const oauthCallsFile = path.join(root, 'oauth-calls');
   const curlCallsFile = path.join(root, 'curl-calls');
@@ -190,11 +182,11 @@ printf 'docker\\t%s\\n' "$*" >> "$EVENTS_FILE"
 case "$*" in
   'image prune -f') ;;
   'compose pull') ;;
-  'compose up -d --wait --wait-timeout 180')
+  'compose up -d --wait --wait-timeout 180 --remove-orphans')
     cp librepaper.toml "$RUNNING_CONFIG_FILE"
     printf called >> "$COMPOSE_UP_FILE"
     ;;
-  'compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper backup prometheus')
+  'compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper backup')
     cp librepaper.toml "$RUNNING_CONFIG_FILE"
     ;;
   'compose run --rm --no-deps -v ./librepaper.toml.candidate:/etc/librepaper/librepaper.toml:ro librepaper admin config check --config /etc/librepaper/librepaper.toml')
@@ -208,19 +200,6 @@ case "$*" in
     ;;
   'compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile')
     [ "$CADDY_RELOAD_FAILURE" = 0 ]
-    ;;
-  'compose exec -T prometheus sh -s')
-    count=$(cat "$PROMETHEUS_COUNT_FILE" 2>/dev/null || printf '0')
-    count=$((count + 1))
-    printf '%s' "$count" > "$PROMETHEUS_COUNT_FILE"
-    if [ "$count" -le "$PROMETHEUS_TRANSIENT_FAILURES" ]; then exit 1; fi
-    script=$(cat)
-    case "$script" in *pg_up*) ;; *) exit 93 ;; esac
-    if [ "$PG_UP_HEALTHY" = 1 ]; then snapshot='{"data":{"result":[{"value":[3,"1"]}]}}'; else snapshot='{"data":{"result":[]}}'; fi
-    printf '%s\\n---LIBREPAPER-METRICS---\\n%s\\n---LIBREPAPER-METRICS---\\n%s\\n' \\
-      '{"data":{"activeTargets":[{"health":"up","labels":{"job":"librepaper"}},{"health":"up","labels":{"job":"node"}},{"health":"up","labels":{"job":"postgres"}}]}}' \\
-      '{"data":{"result":[{"values":[[1,"1"],[2,"1"]]}]}}' \\
-      "$snapshot"
     ;;
   'compose logs --tail 50') ;;
   *) echo "unexpected docker command: $*" >&2; exit 99 ;;
@@ -262,24 +241,21 @@ if [ -n "$config" ]; then
 fi
 code=200 body='' location= provider=
 case "$url" in
-  */admin/monitoring/api/search*)
+  https://admin.librepaper.org/data?points=*)
     if [ -n "$config" ]; then
-      count=$(cat "$GRAFANA_COUNT_FILE" 2>/dev/null || printf '0')
-      count=$((count + 1))
-      printf '%s' "$count" > "$GRAFANA_COUNT_FILE"
-      if [ "$GRAFANA_PERSISTENT_STATUS" != 0 ]; then code="$GRAFANA_PERSISTENT_STATUS"
-      elif [ "$count" -le "$GRAFANA_TRANSIENT_FAILURES" ]; then code=502
-      elif [ "$GRAFANA_AUTH_STATUS" != 200 ]; then code="$GRAFANA_AUTH_STATUS"
-      else body='[{"type":"dash-db","uid":"monitoring","title":"Production"}]'; fi
+      [ "$(stat -c %a "$config")" = 600 ]
+      grep -Fxq -f "$EXPECTED_AUTH_FILE" "$config"
+      series=()
+      for i in $(seq 1 "$ADMIN_SERIES"); do
+        series+=("{\"name\":\"series$i\",\"label\":\"Series $i\",\"unit\":\"count\",\"values\":[0.0]}")
+      done
+      IFS=,
+      body="{\"from\":1791300000,\"to\":1791386400,\"step\":144.0,\"series\":[${series[*]}]}"
+      unset IFS
     else code=401; fi
     ;;
-  */admin/monitoring/api/dashboards/uid/*) body='{"dashboard":{"panels":[{"type":"stat","title":"Healthy"}]}}' ;;
-  */admin/monitoring/d/*)
-    code=302
-    [ -z "$headers" ] || printf 'HTTP/1.1 302 Found\\r\\nLocation: https://app.librepaper.org/admin/monitoring/login\\r\\n\\r\\n' > "$headers"
-    ;;
   https://app.librepaper.org/api/status) code=403 ;;
-  https://app.librepaper.org/metrics|https://app.librepaper.org/api/v1/*) code=404 ;;
+  https://app.librepaper.org/metrics|https://app.librepaper.org/api/v1/*|https://app.librepaper.org/data|https://app.librepaper.org/graphs) code=404 ;;
   https://app.librepaper.org/auth/login/github)
     code=302
     location=https://github.com/login/oauth/authorize?client_id=test
@@ -334,13 +310,6 @@ exit 0`);
       REAL_SLEEP: realSleep ? '1' : '0',
       ADMIN_PASSWORD_FILE: adminPasswordFile,
       EXPECTED_AUTH_FILE: expectedAuthFile,
-      GRAFANA_COUNT_FILE: grafanaCountFile,
-      PROMETHEUS_COUNT_FILE: prometheusCountFile,
-      GRAFANA_TRANSIENT_FAILURES: String(grafanaTransientFailures),
-      GRAFANA_PERSISTENT_STATUS: String(grafanaPersistentStatus),
-      GRAFANA_AUTH_STATUS: String(grafanaAuthStatus),
-      PROMETHEUS_TRANSIENT_FAILURES: String(prometheusTransientFailures),
-      PG_UP_HEALTHY: pgUpHealthy ? '1' : '0',
       MAKE_CALLED_FILE: makeCalledFile,
       OAUTH_CALLS_FILE: oauthCallsFile,
       CURL_CALLS_FILE: curlCallsFile,
@@ -351,6 +320,7 @@ exit 0`);
       GOOGLE_HTTP_STATUS: String(googleHttpStatus),
       GOOGLE_LOCATION: googleLocation,
       SOPS_FAILURE_KEY: sopsFailureKey,
+      ADMIN_SERIES: String(adminSeries),
     },
     eventsFile,
     makeCalledFile,
@@ -419,7 +389,7 @@ function read(...parts) {
   return readFileSync(path.join(...parts), 'utf8');
 }
 
-test('deploy writes the OAuth and Grafana credentials through stdin only, never in argv, .env or output', () => {
+test('deploy writes the OAuth and admin credentials through stdin only, never in argv or output', () => {
   const adminPassword = 'unsafe$#admin-secret with spaces';
   const f = fixture({ adminPassword });
   try {
@@ -432,14 +402,14 @@ test('deploy writes the OAuth and Grafana credentials through stdin only, never 
       'secrets/github_client_secret': 'github-secret',
       'secrets/google_client_id': 'google-id',
       'secrets/google_client_secret': 'google-secret',
-      'monitoring/grafana_admin_password': adminPassword,
+      'secrets/admin_password': adminPassword,
     };
     for (const [file, value] of Object.entries(credentials)) {
       assert.equal(read(f.remote, file), value, file);
       assert.equal(statSync(path.join(f.remote, file)).mode & 0o777, 0o444, file);
     }
     assert.equal(statSync(path.join(f.remote, 'secrets')).mode & 0o777, 0o755, 'a mounted directory keeps its mode in the container; 0700 would lock out uid 10001');
-    assert.equal(existsSync(path.join(f.remote, 'secrets/grafana_admin_password')), false);
+    assert.equal(existsSync(path.join(f.remote, '.env')), false);
 
     // The values live in those five files and nowhere else on the host.
     for (const file of walk(f.remote)) {
@@ -455,12 +425,11 @@ test('deploy writes the OAuth and Grafana credentials through stdin only, never 
   }
 });
 
-test('.env holds only the monitoring profile and compose.override.yaml only the two host mounts', () => {
+test('deploy writes compose.override.yaml only with the two host mounts', () => {
   const f = fixture();
   try {
     const result = run(f, 'deploy', 'v0.0.21');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.equal(read(f.remote, '.env'), 'COMPOSE_PROFILES=monitoring\n');
     assert.equal(read(f.remote, 'compose.override.yaml'), [
       'services:',
       '  librepaper:',
@@ -471,9 +440,8 @@ test('.env holds only the monitoring profile and compose.override.yaml only the 
       '      - ./site:/srv/site:ro',
       '',
     ].join('\n'));
-    for (const file of ['.env', 'compose.override.yaml']) {
-      assert.equal(statSync(path.join(f.remote, file)).mode & 0o777, 0o644, file);
-    }
+    assert.equal(statSync(path.join(f.remote, 'compose.override.yaml')).mode & 0o777, 0o644, 'compose.override.yaml');
+    assert.equal(existsSync(path.join(f.remote, '.env')), false);
     assert.deepEqual(walk(f.remote).filter((file) => file.endsWith('.tmp')), []);
   } finally {
     f.cleanup();
@@ -492,8 +460,7 @@ test('deploy installs the checked candidates, then pulls and starts the stack in
       ['ssh', /^chmod 700 librepaper$/],
       ['ssh', /sed -i -E/],
       ['ssh', /secrets\/\.github_client_id\.tmp/],
-      ['ssh', /monitoring\/\.grafana_admin_password\.tmp/],
-      ['ssh', /\.env\.tmp/],
+      ['ssh', /secrets\/\.admin_password\.tmp/],
       ['ssh', /compose\.override\.yaml\.tmp/],
       ['ssh', /librepaper\.toml\.candidate\.tmp/],
       ['ssh', /Caddyfile\.candidate\.tmp/],
@@ -502,7 +469,7 @@ test('deploy installs the checked candidates, then pulls and starts the stack in
       ['ssh', /mv -f librepaper\.toml\.candidate librepaper\.toml/],
       ['ssh', /mv -f caddy\/Caddyfile\.candidate caddy\/Caddyfile/],
       ['docker', /^compose pull$/],
-      ['docker', /^compose up -d --wait --wait-timeout 180$/],
+      ['docker', /^compose up -d --wait --wait-timeout 180 --remove-orphans$/],
       ['docker', /^compose up -d --force-recreate --no-deps --wait --wait-timeout 180 /],
       ['docker', /caddy reload/],
       ['docker', /^image prune -f$/],
@@ -520,7 +487,7 @@ test('deploy installs the checked candidates, then pulls and starts the stack in
     assert.ok(recreates[0].includes('--no-deps'));
     assert.deepEqual(
       recreates[0].split(' ').slice(2).filter((arg) => !arg.startsWith('-') && !/^\d+$/.test(arg)),
-      ['librepaper', 'backup', 'prometheus'],
+      ['librepaper', 'backup'],
     );
     // The server migrates at startup: no setup, no migrate, no manual stop, no volume or system cleanup.
     for (const call of dockerCalls(f)) {
@@ -633,7 +600,7 @@ test('repeated deploys render Caddy from its template without duplicating site a
     const caddy = read(f.remote, 'caddy/Caddyfile');
     assert.equal((caddy.match(/librepaper\.org \{/g) ?? []).length, 1);
     assert.equal((caddy.match(/www\.librepaper\.org, librepaper\.com/g) ?? []).length, 1);
-    assert.equal(read(f.remote, '.env'), 'COMPOSE_PROFILES=monitoring\n');
+    assert.equal(existsSync(path.join(f.remote, '.env')), false, '.env should not exist');
   } finally {
     f.cleanup();
   }
@@ -728,7 +695,6 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
       'librepaper.toml': 'kit sample config\n',
       'resticprofile.toml': 'kit sample backup\n',
       'caddy/Caddyfile': 'kit Caddyfile\n',
-      'monitoring/alerts.yml': 'kit alerts\n',
       'postgres/init.sql': 'kit sql\n',
       Dockerfile: 'FROM scratch\n',
       'backup/entrypoint.sh': 'build context\n',
@@ -738,12 +704,10 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
       'librepaper.toml.candidate': 'operator candidate\n',
       'resticprofile.toml': 'operator backup\n',
       'secrets/github_client_id': 'operator id\n',
-      '.env': 'COMPOSE_PROFILES=monitoring\n',
       'compose.override.yaml': 'operator override\n',
       'caddy/Caddyfile': 'operator Caddyfile\n',
       'caddy/Caddyfile.candidate': 'operator Caddyfile candidate\n',
       'caddy/local.d/other.caddy': 'another app\n',
-      'monitoring/grafana_admin_password': 'operator password',
       'site/index.html': 'the site\n',
     };
     writeTree(target, {
@@ -758,7 +722,6 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
     assert.deepEqual(walk(target).sort(), [
       ...Object.keys(operatorFiles),
       'compose.yaml',
-      'monitoring/alerts.yml',
       'postgres/init.sql',
     ].sort());
     for (const [file, contents] of Object.entries(operatorFiles)) assert.equal(read(target, file), contents, file);
@@ -834,72 +797,37 @@ test('verify checks the operator URLs listed in caddy/local.d/check-urls', () =>
   }
 });
 
-test('verify retries transient Grafana startup errors within the bounded startup window', () => {
-  const f = fixture({ grafanaTransientFailures: 1 });
+test('verify checks admin graphs returns twelve series', () => {
+  const f = fixture();
   try {
     const result = run(f, 'verify');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /waiting for Grafana to finish starting/);
-    assert.equal(read(f.root, 'grafana-count'), '2');
+    assert.match(result.stdout, /authenticated endpoint returns twelve series/);
+    assert.match(result.stdout, /unauthenticated endpoint is 401/);
+    assert.match(result.stdout, /app origin does not serve graphs or data/);
   } finally {
     f.cleanup();
   }
 });
 
-test('verify fails immediately for rejected Grafana credentials', () => {
-  const f = fixture({ grafanaAuthStatus: 401 });
-  try {
-    const result = run(f, 'verify');
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /authenticated Grafana dashboard API returned HTTP 401/);
-    assert.equal(read(f.root, 'grafana-count'), '1');
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('verify refuses monitoring readiness without PostgreSQL exporter health', () => {
-  const f = fixture({ pgUpHealthy: false });
-  try {
-    const result = run(f, 'verify');
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Prometheus APIs, targets, LibrePaper sample history, snapshot, or pg_up are unhealthy/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('verify retries a temporary Prometheus API failure and continues when it recovers', () => {
-  const f = fixture({ prometheusTransientFailures: 1 });
+test('verify rejects unauthenticated admin graphs access', () => {
+  const f = fixture();
   try {
     const result = run(f, 'verify');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /waiting for Prometheus APIs/);
-    assert.equal(read(f.root, 'prometheus-count'), '2');
+    // The verify script should ensure unauthenticated access returns 401
+    assert.match(result.stdout, /unauthenticated endpoint is 401/);
   } finally {
     f.cleanup();
   }
 });
 
-test('persistent Grafana API failures time out and remove credential files', {
-  skip: process.env.LIBREPAPER_TEST_SLOW_DEPLOY !== '1',
-}, () => {
-  const f = fixture({ grafanaPersistentStatus: 503, realSleep: true });
-  const started = Date.now();
+test('verify fails when admin graphs returns fewer than twelve series', () => {
+  const f = fixture({ adminSeries: 11 });
   try {
-    const result = spawnSync(deploy, ['verify'], {
-      cwd: repo,
-      env: f.env,
-      encoding: 'utf8',
-      timeout: 70_000,
-    });
-    const elapsed = (Date.now() - started) / 1000;
-    assert.equal(result.error, undefined, result.error?.message);
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /authenticated Grafana dashboard API returned HTTP 503/);
-    assert.ok(elapsed >= 59 && elapsed <= 65, `expected ~60 seconds, got ${elapsed}`);
-    assert.deepEqual(readdirSync(path.join(f.root, 'tmp')), []);
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|github-secret/);
+    const result = run(f, 'verify');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /admin graphs endpoint returned 11 series, expected 12/);
   } finally {
     f.cleanup();
   }
@@ -954,9 +882,9 @@ test('convert-database saves the host files before the sync, streams the host sc
     assert.match(read(f.remote, 'compose.yaml'), /librepaper-backup:v0\.0\.21\b/);
     assert.equal(read(f.remote, 'librepaper.toml'), productionToml);
     assert.equal(existsSync(path.join(f.remote, 'librepaper.toml.candidate')), false);
-    assert.equal(read(f.remote, '.env'), 'COMPOSE_PROFILES=monitoring\n');
+    assert.equal(existsSync(path.join(f.remote, '.env')), false);
     // Nothing starts or stops: the host script owns that.
-    assert.deepEqual(stackCalls(f).filter((call) => !/^compose exec -T prometheus/.test(call)), []);
+    assert.deepEqual(stackCalls(f), []);
     assert.equal(existsSync(f.composeUpFile), false);
   } finally {
     f.cleanup();

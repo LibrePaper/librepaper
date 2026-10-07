@@ -2,6 +2,7 @@
 [origins]
 app = { env = "LIBREPAPER_DEMO_APP_ORIGIN" }
 site = { env = "LIBREPAPER_DEMO_SITE_ORIGIN" }
+admin = { env = "LIBREPAPER_DEMO_ADMIN_ORIGIN" }
 
 [storage]
 directory = "/var/lib/librepaper"
@@ -22,6 +23,9 @@ trusted_networks = ["172.30.0.0/16"]
 [access]
 publishers = ["any"]
 commenters = ["anyone"]
+
+[admin]
+password = "librepaper-demo-only-password"
 
 [demo]
 simulate_activity_days = 21

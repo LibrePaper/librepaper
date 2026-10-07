@@ -11,7 +11,7 @@ APP=app.librepaper.org    # the application: origin in tools/deploy/production.t
 DOCS=docs.librepaper.org  # published documents: origin in tools/deploy/production.toml
 REDIRECTS='www.librepaper.org, librepaper.com, www.librepaper.com'
 ASSET=librepaper-x86_64-unknown-linux-musl.tar.xz
-MONITORING=https://$APP/admin/monitoring/
+ADMIN=https://admin.librepaper.org/  # operator graphs: origin in tools/deploy/production.toml
 HTTP_CONNECT_TIMEOUT=5
 HTTP_REQUEST_TIMEOUT=15
 HEALTH_DEADLINE_SECONDS=120
@@ -22,11 +22,9 @@ OPERATOR_PATHS=(
 	'/librepaper.toml*'
 	/resticprofile.toml
 	/secrets
-	/.env
 	'/compose.override.yaml*'
 	'/caddy/Caddyfile*'
 	/caddy/local.d
-	/monitoring/grafana_admin_password
 	/site
 )
 # The image build context: in the repository, not needed on the host.
@@ -77,8 +75,7 @@ write_secret_file() {
 	# reaching the files. 0755 is fine because ~/librepaper itself is 0700.
 	local name="$1" value="$2" dir=secrets prepare='chmod 755 librepaper/secrets'
 	case "$name" in
-		github_client_id | github_client_secret | google_client_id | google_client_secret) ;;
-		grafana_admin_password) dir=monitoring prepare=: ;;
+		github_client_id | github_client_secret | google_client_id | google_client_secret | admin_password) ;;
 		*) die "invalid production secret name" ;;
 	esac
 	# Secret bytes travel on stdin, never in SSH arguments or a shared env file.
@@ -86,8 +83,6 @@ write_secret_file() {
 }
 
 write_compose_files() {
-	# Compose reads .env on its own; this is how it remembers the monitoring profile.
-	printf 'COMPOSE_PROFILES=monitoring\n' | ssh "$HOST" 'umask 022; cat > librepaper/.env.tmp && chmod 644 librepaper/.env.tmp && mv -f librepaper/.env.tmp librepaper/.env'
 	# Compose appends the volumes of an override to those of compose.yaml, so
 	# only the mounts that are specific to this host belong here.
 	ssh "$HOST" 'umask 022; cat > librepaper/compose.override.yaml.tmp && chmod 644 librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'OVERRIDE'
@@ -161,7 +156,7 @@ install_deployment_secrets() {
 	write_secret_file github_client_secret "$DEPLOY_GITHUB_SECRET"
 	write_secret_file google_client_id "$DEPLOY_GOOGLE_ID"
 	write_secret_file google_client_secret "$DEPLOY_GOOGLE_SECRET"
-	write_secret_file grafana_admin_password "$DEPLOY_ADMIN_PASSWORD"
+	write_secret_file admin_password "$DEPLOY_ADMIN_PASSWORD"
 	unset DEPLOY_GITHUB_ID DEPLOY_GITHUB_SECRET DEPLOY_GOOGLE_ID DEPLOY_GOOGLE_SECRET DEPLOY_ADMIN_PASSWORD
 }
 
@@ -208,10 +203,10 @@ stage_host() {
 	site_sync
 	pin_image_tag "$version"
 
-	step "Credentials, .env and compose.override.yaml on the VPS"
+	step "Credentials and compose.override.yaml on the VPS"
 	install_deployment_secrets
 	write_compose_files
-	ok "wrote four OAuth files (directory 755 inside the 700 kit directory, files 444), the Grafana password, .env and compose.override.yaml"
+	ok "wrote five secret files (directory 755 inside the 700 kit directory, files 444) and compose.override.yaml"
 
 	step "Candidates: librepaper.toml, and Caddy with the site and the redirects"
 	write_config
@@ -256,8 +251,9 @@ usage: tools/deploy/production <command>
   deploy [VERSION]   deploy a published release (canonical vMAJOR.MINOR.PATCH, v0.0.21+)
                      (VERSION defaults to v + the version in Cargo.toml)
   site               rebuild and upload the landing page and manual only (no release, no restart)
-  verify             app, monitoring, site, documents, redirect, operator URLs, and logs
+  verify             app, admin graphs, site, documents, redirect, operator URLs, and logs
   logs               follow the container logs
+  retire-monitoring  one-time: remove Prometheus, Grafana volumes and .env file
   convert-database   TEMPORARY, deleted after production converts: stage the v0.0.21 kit,
                      save the host files, then run tools/deploy/convert-database.sh on the host
   help, -h, --help   show this message
@@ -267,112 +263,6 @@ Environment:
 USAGE
 }
 
-monitoring_verify() {
-	step "Monitoring: authenticated Grafana dashboard $MONITORING"
-	local password config body headers api_code uid
-	password=$(required_key PRODUCTION_ADMIN_PASSWORD)
-	config=$(mktemp)
-	body=$(mktemp)
-	headers=$(mktemp)
-	VERIFY_TMP_FILES=("$config" "$body" "$headers")
-	trap cleanup_verify_tmp EXIT
-	chmod 600 "$config" "$body"
-	# Curl config keeps the credential out of argv and shell history. Escape
-	# characters with meaning in curl's quoted config syntax.
-	local escaped_password
-	escaped_password=$(printf '%s' "$password" | sed 's/\\/\\\\/g; s/"/\\"/g')
-	printf 'user = "admin:%s"\n' "$escaped_password" > "$config"
-	unset password escaped_password
-	local api_deadline=$((SECONDS + 60)) api_remaining waiting_note=false
-	while :; do
-		api_remaining=$((api_deadline - SECONDS))
-		[ "$api_remaining" -gt 0 ] || break
-		api_code=$(curl --connect-timeout "$api_remaining" --max-time "$api_remaining" --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
-		[ "$api_code" = 200 ] && break
-		case "$api_code" in
-			000|502|503)
-				if [ "$waiting_note" = false ]; then
-					note "waiting for Grafana to finish starting (up to 60 seconds)"
-					waiting_note=true
-				fi
-				;;
-			*) die "authenticated Grafana dashboard API returned HTTP $api_code" ;;
-		esac
-		api_remaining=$((api_deadline - SECONDS))
-		if [ "$api_remaining" -gt 0 ]; then sleep "$((api_remaining < 2 ? api_remaining : 2))"; fi
-	done
-	[ "$api_code" = 200 ] || die "authenticated Grafana dashboard API returned HTTP $api_code"
-	DASHBOARDS_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARDS_JSON);process.exit(d.some(x=>x.type==="dash-db"&&x.uid)?0:1)' || die "Grafana has no provisioned dashboard"
-	uid=$(DASHBOARDS_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARDS_JSON);process.stdout.write(d.find(x=>x.type==="dash-db").uid)')
-	ok "configured credentials can read the provisioned dashboard"
-
-	local anonymous_code anonymous_location
-	anonymous_code=$(http_request -sS -D "$headers" -o /dev/null -w '%{http_code}' "${MONITORING}d/$uid" || true)
-	[ "$anonymous_code" = 302 ] || [ "$anonymous_code" = 303 ] || die "unauthenticated Grafana dashboard returned HTTP $anonymous_code, expected a login redirect"
-	anonymous_location=$(tr -d '\r' < "$headers" | awk 'tolower($1)=="location:" {print $2}')
-	case "$anonymous_location" in *login*) ;; *) die "Grafana unauthenticated redirect did not lead to login" ;; esac
-	api_code=$(http_request -sS -o /dev/null -w '%{http_code}' "${MONITORING}api/search?type=dash-db" || true)
-	[ "$api_code" = 401 ] || [ "$api_code" = 403 ] || die "unauthenticated Grafana API returned HTTP $api_code"
-	ok "unauthenticated dashboard redirects to login and API access is denied"
-
-	step "Monitoring: private endpoints and Prometheus history"
-	for path in /metrics /api/status /api/v1/status/config /api/v1/targets; do
-		local private_code
-		private_code=$(http_request -sS -o /dev/null -w '%{http_code}' "https://$APP$path" || true)
-		if [ "$path" = /api/status ]; then
-			[ "$private_code" = 403 ] || die "https://$APP$path returned HTTP $private_code, expected 403"
-		else
-			case "$private_code" in 404|421) ;; *) die "https://$APP$path is public (HTTP $private_code)" ;; esac
-		fi
-	done
-	local targets history snapshot now start prom_deadline=$((SECONDS + 60)) prom_remaining prom_attempts=0
-	local prometheus_ok=false
-	local prom_waiting_note=false
-	while [ "$prom_attempts" -lt 30 ]; do
-		prom_remaining=$((prom_deadline - SECONDS))
-		[ "$prom_remaining" -gt 0 ] || break
-		now=$(date +%s)
-		start=$((now - 90))
-		# Prometheus is internal-only. Run its API from inside the container and
-		# return only JSON metadata to the local Node parser.
-		local response
-		response=$(timeout "$prom_remaining" ssh "$HOST" 'cd librepaper && docker compose exec -T prometheus sh -s' 2>/dev/null <<PROMETHEUS_API_EOF
-targets=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/targets?state=active') || exit 1
-history=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query_range?query=up%7Bjob%3D%22librepaper%22%7D&start=$start&end=$now&step=15s') || exit 1
-snapshot=\$(wget -qO- 'http://127.0.0.1:9090/api/v1/query?query=(librepaper_metrics_snapshot_success%3D%3D1%20and%20time%28%29-librepaper_metrics_snapshot_timestamp_seconds%3C60)%20and%20on%28%29%20(pg_up%3D%3D1)') || exit 1
-printf '%s\n---LIBREPAPER-METRICS---\n%s\n---LIBREPAPER-METRICS---\n%s\n' "\$targets" "\$history" "\$snapshot"
-PROMETHEUS_API_EOF
-		) || response=''
-		if [ -n "$response" ]; then
-		targets=${response%%$'\n---LIBREPAPER-METRICS---\n'*}
-		remainder=${response#*$'\n---LIBREPAPER-METRICS---\n'}
-		history=${remainder%%$'\n---LIBREPAPER-METRICS---\n'*}
-		snapshot=${remainder#*$'\n---LIBREPAPER-METRICS---\n'}
-		if TARGETS_JSON="$targets" HISTORY_JSON="$history" SNAPSHOT_JSON="$snapshot" node -e 'const t=JSON.parse(process.env.TARGETS_JSON).data.activeTargets;const h=JSON.parse(process.env.HISTORY_JSON).data.result;const s=JSON.parse(process.env.SNAPSHOT_JSON).data.result;const expected=["librepaper","node","postgres"];const jobs=t.map(x=>x.labels&&x.labels.job);const healthy=t.length===expected.length&&t.every(x=>x.health==="up"&&expected.includes(x.labels&&x.labels.job))&&expected.every(x=>jobs.includes(x));const samples=h.some(x=>{const v=x.values||[];return v.length>=2&&v.slice(-2).every(y=>y[1]==="1")});const pgup=s.some(x=>x.value&&x.value[1]==="1");process.exit(healthy&&samples&&pgup?0:1)' 2>/dev/null; then
-			prometheus_ok=true
-			break
-		fi
-		fi
-		if [ "$prom_waiting_note" = false ]; then
-			note "waiting for Prometheus APIs, all scrape targets, recent samples, and a fresh snapshot (up to 60 seconds)"
-			prom_waiting_note=true
-		fi
-		prom_attempts=$((prom_attempts + 1))
-		prom_remaining=$((prom_deadline - SECONDS))
-		if [ "$prom_remaining" -gt 0 ]; then sleep "$((prom_remaining < 2 ? prom_remaining : 2))"; fi
-	done
-	[ "$prometheus_ok" = true ] || die "Prometheus APIs, targets, LibrePaper sample history, snapshot, or pg_up are unhealthy"
-	ok "all Prometheus targets are up; LibrePaper has two good samples, a fresh snapshot, and pg_up=1"
-
-	step "Monitoring: provisioned dashboard $uid and panels"
-	api_code=$(http_request --config "$config" -sS -o "$body" -w '%{http_code}' "${MONITORING}api/dashboards/uid/$uid" || true)
-	[ "$api_code" = 200 ] || die "Grafana dashboard API returned HTTP $api_code for $uid"
-	DASHBOARD_JSON=$(cat "$body") node -e 'const d=JSON.parse(process.env.DASHBOARD_JSON).dashboard;const p=d.panels||[];function valid(xs){return xs.every(x=>x.type&&x.title&&(!x.panels||valid(x.panels)))}process.exit(p.length&&valid(p)?0:1)' || die "provisioned Grafana dashboard has missing or invalid panels"
-	ok "provisioned dashboard and panels are valid"
-	cleanup_verify_tmp
-	VERIFY_TMP_FILES=()
-	trap - EXIT
-}
 
 verify() {
 	step "App readiness: https://$APP/ready"
@@ -410,7 +300,61 @@ verify() {
 	ok "answers"
 	verify_oauth_redirect github 'https://github.com/login/oauth/authorize?'
 	verify_oauth_redirect google 'https://accounts.google.com/o/oauth2/v2/auth?'
-	monitoring_verify
+
+	step "Admin graphs: ${ADMIN}data?points=10"
+	local password config body api_code
+	password=$(required_key PRODUCTION_ADMIN_PASSWORD)
+	config=$(mktemp)
+	body=$(mktemp)
+	VERIFY_TMP_FILES=("$config" "$body")
+	trap cleanup_verify_tmp EXIT
+	chmod 600 "$config" "$body"
+	local escaped_password
+	escaped_password=$(printf '%s' "$password" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	printf 'user = "admin:%s"\n' "$escaped_password" > "$config"
+	unset password escaped_password
+	local api_deadline=$((SECONDS + 90)) api_remaining waiting_note=false
+	while :; do
+		api_remaining=$((api_deadline - SECONDS))
+		[ "$api_remaining" -gt 0 ] || break
+		api_code=$(http_request --connect-timeout "$api_remaining" --max-time "$api_remaining" --config "$config" -sS -o "$body" -w '%{http_code}' "${ADMIN}data?points=10" || true)
+		[ "$api_code" = 200 ] && break
+		case "$api_code" in
+			000|502|503)
+				if [ "$waiting_note" = false ]; then
+					note "waiting for the admin certificate and the first answer (up to 90 seconds)"
+					waiting_note=true
+				fi
+				;;
+			*) die "admin graphs endpoint returned HTTP $api_code" ;;
+		esac
+		api_remaining=$((api_deadline - SECONDS))
+		if [ "$api_remaining" -gt 0 ]; then sleep "$((api_remaining < 2 ? api_remaining : 2))"; fi
+	done
+	[ "$api_code" = 200 ] || die "admin graphs endpoint returned HTTP $api_code"
+	local series_count
+	series_count=$(grep -o '"name":' "$body" | wc -l)
+	[ "$series_count" = 12 ] || die "admin graphs endpoint returned $series_count series, expected 12"
+	ok "authenticated endpoint returns twelve series"
+	local unauthenticated_code
+	unauthenticated_code=$(http_request -sS -o /dev/null -w '%{http_code}' "${ADMIN}data?points=10" || true)
+	[ "$unauthenticated_code" = 401 ] || die "unauthenticated admin endpoint returned HTTP $unauthenticated_code, expected 401"
+	ok "unauthenticated endpoint is 401"
+	for path in /api/status /metrics /data /graphs; do
+		local private_code
+		private_code=$(http_request -sS -o /dev/null -w '%{http_code}' "https://$APP$path" || true)
+		if [ "$path" = /api/status ]; then
+			[ "$private_code" = 403 ] || die "https://$APP$path returned HTTP $private_code, expected 403"
+		elif [ "$path" = /metrics ]; then
+			case "$private_code" in 404|421) ;; *) die "https://$APP$path is public (HTTP $private_code)" ;; esac
+		else
+			[ "$private_code" = 404 ] || die "https://$APP$path returned HTTP $private_code, expected 404"
+		fi
+	done
+	ok "app origin does not serve graphs or data, admin endpoint is 401, metrics and status are private"
+	cleanup_verify_tmp
+	VERIFY_TMP_FILES=()
+	trap - EXIT
 
 	step "Site: https://$SITE"
 	http_request -fs -o /dev/null "https://$SITE/what.html" || die "https://$SITE/what.html did not answer: is the site uploaded?"
@@ -485,11 +429,11 @@ deploy() {
 	step "Containers: pull and start $version"
 	note "the server migrates the schema at startup; nothing is stopped by hand"
 	ssh "$HOST" 'cd librepaper && docker compose pull'
-	ssh "$HOST" 'cd librepaper && docker compose up -d --wait --wait-timeout 180'
+	ssh "$HOST" 'cd librepaper && docker compose up -d --wait --wait-timeout 180 --remove-orphans'
 	# Compose compares service definitions, not the bytes behind a bind mount: a
 	# same-version deploy that only changed librepaper.toml, resticprofile.toml or
-	# prometheus.yaml would otherwise leave the old inode in use.
-	ssh "$HOST" 'cd librepaper && docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper backup prometheus'
+	# other files would otherwise leave the old inode in use.
+	ssh "$HOST" 'cd librepaper && docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper backup'
 	if ! timeout "$CADDY_RELOAD_TIMEOUT_SECONDS" ssh "$HOST" 'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'; then
 		die "Caddy configuration reload failed"
 	fi
@@ -533,9 +477,21 @@ convert_database() {
 	printf '\n%sDone: the database is converted; %s is live at https://%s (%ss)%s\n' "$green$bold" "$version" "$APP" "$SECONDS" "$reset"
 }
 
+# One-time cleanup after the first deploy without the monitoring profile.
+retire_monitoring() {
+	step "Retire Prometheus, Grafana and backup metrics"
+	ssh "$HOST" 'cd librepaper && docker volume rm librepaper_prometheus librepaper_grafana librepaper_backup-metrics 2>/dev/null || true; echo "removed volumes (or already gone)"'
+	ssh "$HOST" 'cd librepaper && rm -rf .env monitoring; echo "removed .env and monitoring/ directory (or already gone)"'
+	ok "retired: no volumes remain; .env and monitoring/ are removed"
+	printf '\n%sDone: the monitoring profile is retired. Nothing else needs to change; verify still works.%s\n' "$green$bold" "$reset"
+}
+
 case "${1:-help}" in
 	deploy)
 		deploy "${2:-}"
+		;;
+	retire-monitoring)
+		retire_monitoring
 		;;
 	convert-database)
 		convert_database
