@@ -121,7 +121,7 @@ grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fai
 # and untracked credentials. It pins the release tag in its image references.
 kit_source="$tmp/deploy-source"
 kit_output="$tmp/deploy-output"
-mkdir -p "$kit_source/deploy/caddy" "$kit_source/deploy/monitoring" "$kit_output"
+mkdir -p "$kit_source/deploy/caddy" "$kit_source/deploy/monitoring" "$kit_source/deploy/postgres" "$kit_output"
 for file in compose.yaml compose.managed-db.yaml librepaper.toml prometheus.yaml grafana.json README.md; do
   printf 'committed fixture %s\n' "$file" > "$kit_source/deploy/$file"
 done

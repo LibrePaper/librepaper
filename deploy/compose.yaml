@@ -1,5 +1,7 @@
-# One VPS deployment. Edit librepaper.toml (hostnames and OAuth), then docker compose up -d.
-# Monitoring is optional: either echo COMPOSE_PROFILES=monitoring > .env, or cp compose.managed-db.yaml compose.override.yaml for a database elsewhere.
+# One VPS. Edit librepaper.toml (the two hostnames and OAuth), then docker compose up -d.
+# Every upgrade replaces this file: operator changes go in compose.override.yaml, never here.
+# Monitoring: echo COMPOSE_PROFILES=monitoring > .env
+# A database elsewhere: cp compose.managed-db.yaml compose.override.yaml
 name: librepaper
 
 x-bounded-logs: &bounded-logs
@@ -170,6 +172,7 @@ secrets:
     file: ./monitoring/grafana_admin_password
 
 networks:
+  # Fixed subnet: librepaper.toml [proxy] trusted_networks names it.
   edge:
     ipam:
       config:

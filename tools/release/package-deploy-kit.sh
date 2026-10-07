@@ -50,7 +50,7 @@ mkdir -p "$output_dir"
 
 # The supplied Git commit determines the bytes in the kit. This excludes local
 # edits and untracked files even when the packaging workflow checkout is dirty.
-git -C "$repository" archive --format=tar "$commit" deploy | tar -C "$stage" -xf -
+git -C "$repository" archive --format=tar "$commit" "${required_files[@]}" deploy/monitoring | tar -C "$stage" -xf -
 
 # A release commit is trusted input, but deployment data must never become a
 # public release asset if an operator accidentally committed it. Kits ship
@@ -74,7 +74,6 @@ rm -f -- \
 	"$stage/deploy"/resticprofile.toml.local
 
 # Remove files that must never ship in the kit.
-rm -f "$stage/deploy/setup" "$stage/deploy/Dockerfile"
 rm -rf "$stage/deploy/monitoring/backup_alerts_test.yml"
 
 # Rewrite the two image tags in compose.yaml from their committed literals to the release tag.

@@ -185,9 +185,11 @@ database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepape
 
 ### Backups
 
-- Unchanged sidecar. `resticprofile.toml` sample shows `repository`, an
-  inline `password` under `[resticprofile]`, and an `[resticprofile.env]`
-  table for S3 credentials. No secret mounts.
+- Unchanged sidecar. `resticprofile.toml` sample shows `repository` under
+  `[resticprofile]` and `RESTIC_PASSWORD` plus any S3 credentials in an
+  `[resticprofile.env]` table. resticprofile has no `password` key: verified
+  on the v0.0.21 image, it passes one through as a restic flag that restic
+  rejects. No secret mounts.
 - Both TOML files and `/var/lib/librepaper/secrets` are already in the restic
   `source` list, so a restore brings back config and session key.
 

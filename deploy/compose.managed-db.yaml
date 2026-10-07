@@ -1,4 +1,4 @@
-# Copy this to compose.override.yaml, then set database_url in librepaper.toml.
+# A database elsewhere: cp compose.managed-db.yaml compose.override.yaml, then set database_url in librepaper.toml.
 services:
   postgres:
     profiles: [unused]
@@ -7,4 +7,5 @@ services:
   backup:
     depends_on: !reset []
   postgres-exporter:
+    # Or drop these two lines and set DATA_SOURCE_NAME to the provider's monitoring URL.
     profiles: [unused]

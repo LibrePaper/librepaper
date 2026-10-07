@@ -1,11 +1,12 @@
-# Optional operator configuration for the backup sidecar.
-# Backups are idle until you add a [resticprofile] table here, for example:
+# Backups are idle until this file has a [resticprofile] table. Example:
 #
 # [resticprofile]
-# repository = "s3:https://example.invalid/backups"
-# password = "secret"
+# repository = "s3:s3.amazonaws.com/your-bucket/restic"
 #
-# Or set credentials through the environment:
 # [resticprofile.env]
-# AWS_ACCESS_KEY_ID = "key"
-# AWS_SECRET_ACCESS_KEY = "secret"
+# RESTIC_PASSWORD = "your-restic-password"
+# AWS_ACCESS_KEY_ID = "your-key"
+# AWS_SECRET_ACCESS_KEY = "your-secret"
+#
+# The password and any repository credentials go in the env table: restic reads
+# them from the environment. This file is part of every backup.
