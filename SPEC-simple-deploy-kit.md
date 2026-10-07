@@ -144,7 +144,8 @@ database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepape
 ```
 
 - No `[server] migrate`. `[metrics] address = "0.0.0.0:9091"` stays on, as in
-  the current kit and production: it listens on the `edge` network only.
+  the current kit and production, for an operator's own Prometheus. Nothing in
+  the kit scrapes it and no host port is published.
 - `[auth.github]` holds `client_id` and `client_secret` as literals. One
   comment line says `client_secret = { file = "/run/secrets/github" }` also
   works with a bind mount, for operators who keep secrets in files.
@@ -438,6 +439,8 @@ dashes):
   with the directory mode (0700), never the file mode. That holds for a file
   mount; a directory mount keeps the directory's own mode inside the container,
   so a bind-mounted `secrets/` must be 0755 under the 0700 kit directory.
+- A short-form Compose secret mounts at `/run/secrets/<secret name>`. When a
+  program names the file, use the long form with `target:` (Roborev job 931).
 - The initdb role (OID 10) cannot lose SUPERUSER on PostgreSQL 16 and later;
   it can be renamed and given LOGIN. A session cannot rename or drop its own
   role, which is why the conversion reconnects as `postgres` for the last

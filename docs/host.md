@@ -66,6 +66,12 @@ head -c 24 /dev/urandom | base64         # the password
 docker compose up -d --force-recreate librepaper
 ```
 
+- One DNS record and two lines in the one file. Nothing in Caddy: it asks the server before obtaining a certificate, and the server says yes to three names.
+- The browser asks for the password once per session. User name: anything.
+- Zoom by dragging on any graph; double-click to return to the chosen range.
+
+## Backups and alerts
+
 ```sh
 # Alerts come from outside the VPS, which cannot report its own outage.
 # Backups: add the ping hooks from the recovery guide to resticprofile.toml
@@ -73,15 +79,7 @@ docker compose up -d --force-recreate librepaper
 # Uptime: point an external monitor at https://paper.example/ready.
 ```
 
-## Backups and alerts
-
-- One DNS record and two lines in the one file. Nothing in Caddy: it asks the
-  server before obtaining a certificate, and the server now says yes to three
-  names.
-- The browser asks for the password once per session. User name: anything.
-- Zoom by dragging on any graph; double-click to return to the chosen range.
-- Backups and uptime alert by email the day they fail. The Monday report from
-  Healthchecks is the weekly summary.
+Backups and uptime alert by email the day they fail. The Monday report from Healthchecks is the weekly summary.
 
 ## Upgrade
 
