@@ -295,7 +295,11 @@ async fn the_admin_host_does_nothing_with_application_credentials() {
     for (what, name, value) in [
         ("an arbitrary bearer", "authorization", "Bearer anything"),
         ("a delegated-agent bearer", "authorization", agent.as_str()),
-        ("the owner's session cookie", "cookie", owner_cookie.as_str()),
+        (
+            "the owner's session cookie",
+            "cookie",
+            owner_cookie.as_str(),
+        ),
     ] {
         for path in ["/data?points=10", "/", "/other"] {
             let response = f
