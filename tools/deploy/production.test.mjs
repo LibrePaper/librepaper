@@ -908,7 +908,7 @@ test('persistent Grafana API failures time out and remove credential files', {
 // convert-database is temporary: delete these tests with the command.
 function seedOldHost(f) {
   writeTree(f.remote, {
-    'compose.yaml': 'old compose, longer so rsync cannot mistake it for the kit file\n',
+    'compose.yaml': 'old compose\n',
     setup: 'old setup helper\n',
     'librepaper.toml': 'old production config\n',
     'secrets/database_app_url': 'postgresql://old\n',
