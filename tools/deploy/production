@@ -72,7 +72,10 @@ cleanup_verify_tmp() {
 }
 
 write_secret_file() {
-	local name="$1" value="$2" dir=secrets prepare='chmod 700 librepaper/secrets'
+	# compose.override.yaml bind-mounts the whole directory, and a mounted directory
+	# keeps its own mode inside the container: 0700 would stop uid 10001 from
+	# reaching the files. 0755 is fine because ~/librepaper itself is 0700.
+	local name="$1" value="$2" dir=secrets prepare='chmod 755 librepaper/secrets'
 	case "$name" in
 		github_client_id | github_client_secret | google_client_id | google_client_secret) ;;
 		grafana_admin_password) dir=monitoring prepare=: ;;
@@ -208,7 +211,7 @@ stage_host() {
 	step "Credentials, .env and compose.override.yaml on the VPS"
 	install_deployment_secrets
 	write_compose_files
-	ok "wrote four OAuth files (directory 700, files 444), the Grafana password, .env and compose.override.yaml"
+	ok "wrote four OAuth files (directory 755 inside the 700 kit directory, files 444), the Grafana password, .env and compose.override.yaml"
 
 	step "Candidates: librepaper.toml, and Caddy with the site and the redirects"
 	write_config

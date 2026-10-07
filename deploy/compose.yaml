@@ -127,7 +127,10 @@ services:
       GF_SERVER_ROUTER_LOGGING: "false"
       GF_LOG_FILTERS: context:error
     secrets:
-      - grafana-admin-password
+      # The target is the file name GF_SECURITY_ADMIN_PASSWORD__FILE names; the
+      # short form would mount it as /run/secrets/grafana-admin-password.
+      - source: grafana-admin-password
+        target: grafana_admin_password
     volumes:
       - grafana:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro

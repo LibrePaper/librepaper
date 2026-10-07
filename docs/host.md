@@ -93,7 +93,7 @@ The override survives upgrades. Monitoring's postgres-exporter is disabled by th
 
 ## Secrets in files
 
-Every secret in `librepaper.toml` also accepts `{ file = "/run/secrets/name" }`. Mount the directory with a bind volume in `compose.override.yaml`.
+Every secret in `librepaper.toml` also accepts `{ file = "/run/secrets/name" }`. Mount the directory with a bind volume in `compose.override.yaml`. Leave that directory at 0755 and the files readable: a mounted directory keeps its own mode inside the container, and the app runs as another uid. The kit directory's 0700 is what keeps it private.
 
 ## Without Docker
 

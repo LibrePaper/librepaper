@@ -11,7 +11,8 @@ Restore one remote Restic snapshot into a new deployment on a machine that is no
 mkdir -m 700 librepaper-recovery && cd librepaper-recovery
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
 cd librepaper
-cp /path/to/your/librepaper.toml /path/to/your/resticprofile.toml .   # the repository and RESTIC_PASSWORD are what restore needs
+cp /path/to/your/resticprofile.toml .   # the repository and RESTIC_PASSWORD are all restore needs
+# Keep the kit's own librepaper.toml: it points at the empty local database. Your copy may point at a managed database, or at secret files this kit does not mount.
 mkdir -m 700 staging
 docker compose up -d --wait postgres                                 # an empty database; do not start the app yet
 docker compose run --rm --no-deps --user 0 -v ./staging:/restore --entrypoint resticprofile backup \

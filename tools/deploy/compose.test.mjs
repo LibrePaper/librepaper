@@ -87,9 +87,13 @@ test('the monitoring profile adds its four services and the one Grafana secret',
     assert.ok(inMonitoring(config.services[name]), `${name} belongs to the monitoring profile`);
   }
   assert.deepEqual(names(config.secrets), [grafanaSecret]);
-  assert.ok(
-    (config.services.grafana.secrets ?? []).some((secret) => secret.source === grafanaSecret),
-    'grafana reads the admin password from the Compose secret',
+  const grafana = config.services.grafana;
+  const secret = (grafana.secrets ?? []).find((entry) => entry.source === grafanaSecret);
+  assert.ok(secret, 'grafana reads the admin password from the Compose secret');
+  const passwordFile = grafana.environment.GF_SECURITY_ADMIN_PASSWORD__FILE;
+  assert.equal(
+    secret.target, path.basename(passwordFile),
+    `the secret must be mounted under the name ${passwordFile} points at; the short form would use the secret name`,
   );
   assertNoSecretsOutsideMonitoring(config);
   assert.equal(config.services.postgres.network_mode, 'none');

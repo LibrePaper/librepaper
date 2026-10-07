@@ -438,7 +438,7 @@ test('deploy writes the OAuth and Grafana credentials through stdin only, never 
       assert.equal(read(f.remote, file), value, file);
       assert.equal(statSync(path.join(f.remote, file)).mode & 0o777, 0o444, file);
     }
-    assert.equal(statSync(path.join(f.remote, 'secrets')).mode & 0o777, 0o700);
+    assert.equal(statSync(path.join(f.remote, 'secrets')).mode & 0o777, 0o755, 'a mounted directory keeps its mode in the container; 0700 would lock out uid 10001');
     assert.equal(existsSync(path.join(f.remote, 'secrets/grafana_admin_password')), false);
 
     // The values live in those five files and nowhere else on the host.
