@@ -68,7 +68,7 @@ export function setAddress() {}
 export function probe() { window.probeCalls += 1; return Promise.resolve(); }
 export function retry() { return Promise.resolve(); }
 export function disconnect() { return Promise.resolve(); }
-export function connectApp() { return Promise.resolve(); }
+export function connectApp() { return window.connectFailure ? Promise.reject(new Error(window.connectFailure)) : Promise.resolve(); }
 export function chooseFolderBinding() { return Promise.resolve({ id: "folder", entrypoint: "main.qmd" }); }
 export async function capabilities() { return {}; }
 export async function settings() {
@@ -248,6 +248,31 @@ try {
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent.trim()`), "Not checked");
   assert.match(await b.evaluate(`document.querySelector("#tools-connection .setting-status-pill")?.textContent`), /Not running/);
   assert.match(await b.evaluate(`document.querySelector("#tools-connection").textContent`), /Install|Connect/);
+  // The words keep a column of at least 12rem next to the Install and Connect
+  // buttons, and a failed Connect lands on its own line under both instead of
+  // running over the description.
+  await b.resize(1280, 900);
+  const rem = await b.evaluate(`parseFloat(getComputedStyle(document.documentElement).fontSize)`);
+  const wordsWidth = await b.evaluate(`document.querySelector("#tools-connection .setting-words").getBoundingClientRect().width`);
+  assert.ok(wordsWidth >= 12 * rem - 1, `the Companion words column is ${wordsWidth}px, under 12rem`);
+  await b.evaluate(`window.connectFailure = "LibrePaper Companion is not running on this computer. Start it, then connect again."`);
+  await b.evaluate(`[...document.querySelectorAll("#tools-connection button")].find((button) => button.textContent.trim() === "Connect").click()`);
+  await until("the Connect failure", () => b.evaluate(`Boolean(document.querySelector("#tools-connection [role=alert]"))`), 5000);
+  const rects = JSON.parse(await b.evaluate(`(() => {
+    const row = document.querySelector("#tools-connection");
+    const rect = (node) => { const { top, bottom, left, right } = node.getBoundingClientRect(); return { top, bottom, left, right }; };
+    return JSON.stringify({
+      row: rect(row),
+      description: rect(row.querySelector(".setting-words .setting-description")),
+      controls: rect(row.querySelector(".setting-control")),
+      failure: rect(row.querySelector("[role=alert]")),
+    });
+  })()`));
+  assert.ok(rects.failure.top >= rects.description.bottom - 1, "the failure sits below the description, not over it");
+  assert.ok(rects.failure.top >= rects.controls.bottom - 1, "the failure sits below the Install and Connect buttons");
+  assert.ok(rects.failure.right - rects.failure.left >= rects.row.right - rects.row.left - 1, "the failure takes the whole width of the row");
+  assert.notEqual(await b.evaluate(`getComputedStyle(document.querySelector("#tools-connection [role=alert]")).color`),
+    await b.evaluate(`getComputedStyle(document.querySelector("#tools-connection .setting-words .setting-description")).color`), "the failure keeps its error colour, not the muted description colour");
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero does not load an editable companion config");
   await b.evaluate(`document.querySelector("#tools-quarto .tool-row-toggle").click()`);
   await until("offline Quarto command rows", () => present(["quarto-executable"]).then((found) => found.length === 1), 5000);

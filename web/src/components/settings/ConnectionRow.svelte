@@ -51,7 +51,13 @@
   }
 </script>
 
-<SettingRow {id} title="Companion" {description}>
+<!-- The failure is a note of the row, not a child of its controls: beside the
+     buttons it ran over the description. -->
+{#snippet failed()}
+  <div class="setting-description connection-error" role="alert">{failure}</div>
+{/snippet}
+
+<SettingRow {id} title="Companion" {description} note={failure ? failed : undefined}>
   <div class="setting-actions">
     {#if managedAvailable}
       <StatusPill label={local?.version ? `Connected · ${local.version}` : "Connected"} tone="good" />
@@ -63,9 +69,6 @@
       {/if}
     {/if}
   </div>
-  {#if failure}
-    <span class="setting-description connection-error" role="alert">{failure}</span>
-  {/if}
 </SettingRow>
 
 <style>
