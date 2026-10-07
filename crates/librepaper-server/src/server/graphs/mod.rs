@@ -221,7 +221,11 @@ pub struct SeriesData {
 
 /// Everything the sampler carries from one record to the next.
 struct State {
-    store: Store,
+    /// `None` only after the file could not be created again; the next record
+    /// tries to open it.
+    store: Option<Store>,
+    /// Whether `quick_check` has run on this process's file.
+    checked: bool,
     /// When the last row was recorded, or when the process started.
     last_record: Instant,
     /// What `Live` read at `last_record`.
@@ -229,6 +233,23 @@ struct State {
     /// The host's busy and total CPU ticks at the last record.
     last_ticks: Option<(f64, f64)>,
     last_trim: Instant,
+}
+
+impl State {
+    /// The writer, opening the file when there is none. A failure is logged
+    /// and loses that minute.
+    fn writer(&mut self, path: &Path) -> Option<&mut Store> {
+        if self.store.is_none() {
+            match Store::open(path) {
+                Ok(store) => self.store = Some(store),
+                Err(error) => {
+                    tracing::warn!("the graphs history could not be opened: {error}");
+                    return None;
+                }
+            }
+        }
+        self.store.as_mut()
+    }
 }
 
 /// The history store and its read gate.
@@ -242,49 +263,57 @@ pub struct Graphs {
 
 impl Graphs {
     /// Open `<state_dir>/metrics.sqlite`, or set it aside and start a new one
-    /// when it will not open or fails `quick_check`. History is disposable, so
-    /// only a failure to create the fresh file is an error. Blocking, and
-    /// `quick_check` reads the whole file: call it off the listener path.
+    /// when it will not open. History is disposable, so only a failure to
+    /// create the fresh file is an error. Blocking but cheap: it reads no more
+    /// of the file than it needs. `PRAGMA quick_check`, which reads all of it,
+    /// runs once in the sampler's first `observe`.
     pub fn open(state_dir: &Path) -> Result<Graphs, String> {
         let path = state_dir.join(FILE_NAME);
-        let store = match open_checked(&path) {
-            Ok(store) => store,
+        let (mut store, checked) = match Store::open(&path) {
+            Ok(store) => (store, false),
             Err(error) => {
                 tracing::warn!(
-                    "the graphs history {} is unusable and was set aside: {error}",
+                    "the graphs history {} will not open and was set aside: {error}",
                     path.display()
                 );
                 set_aside(&path);
-                Store::open(&path)
-                    .map_err(|error| format!("could not create {}: {error}", path.display()))?
+                let fresh = Store::open(&path)
+                    .map_err(|error| format!("could not create {}: {error}", path.display()))?;
+                (fresh, true)
             }
         };
+        trim(&mut store, unix_seconds());
         let started = Instant::now();
-        let mut state = State {
-            store,
-            last_record: started,
-            baseline: LiveCounts::default(),
-            last_ticks: None,
-            last_trim: started,
-        };
-        trim(&mut state.store, unix_seconds());
         Ok(Graphs {
             read_slot: Semaphore::new(1),
             path,
-            state: Mutex::new(state),
+            state: Mutex::new(State {
+                store: Some(store),
+                checked,
+                last_record: started,
+                baseline: LiveCounts::default(),
+                last_ticks: None,
+                last_trim: started,
+            }),
         })
     }
 
     /// Called by the sampler on every tick with the snapshot it just took.
-    /// Writes one row per series when a minute has passed since the last, and
-    /// deletes old rows once a day. Failures are logged and lose that minute.
-    /// Blocking.
+    /// The first call checks the file with `quick_check` and, if it is damaged,
+    /// sets it aside and starts a new one. Then it writes one row per series
+    /// when a minute has passed since the last, and deletes old rows once a
+    /// day. Failures are logged and lose that minute. Blocking, and the first
+    /// call reads the whole file.
     pub fn observe(&self, snapshot: &Value, live: &Live) {
         self.observe_at(Instant::now(), unix_seconds(), snapshot, live);
     }
 
     fn observe_at(&self, now: Instant, unix: i64, snapshot: &Value, live: &Live) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if !state.checked {
+            state.checked = true;
+            self.verify(&mut state);
+        }
         let elapsed = now.saturating_duration_since(state.last_record);
         if elapsed < HISTORY_INTERVAL {
             return;
@@ -293,16 +322,40 @@ impl Graphs {
         let window = rates(&counts.since(&state.baseline), elapsed.as_secs_f64());
         let ticks = cpu_ticks(snapshot);
         let values = sample(snapshot, window, cpu_percent(state.last_ticks, ticks));
-        if let Err(error) = state.store.insert(unix, &values) {
-            tracing::warn!("the graphs history could not record a minute: {error}");
+        if let Some(store) = state.writer(&self.path) {
+            if let Err(error) = store.insert(unix, &values) {
+                tracing::warn!("the graphs history could not record a minute: {error}");
+            }
         }
         state.last_record = now;
         state.baseline = counts;
         state.last_ticks = ticks;
         if now.saturating_duration_since(state.last_trim) >= TRIM_INTERVAL {
-            trim(&mut state.store, unix);
+            if let Some(store) = state.writer(&self.path) {
+                trim(store, unix);
+            }
             state.last_trim = now;
         }
+    }
+
+    /// Run `quick_check`. A file that fails it is closed, set aside and
+    /// replaced by a new one, and the sampler carries on with that.
+    fn verify(&self, state: &mut State) {
+        let Some(store) = state.store.as_ref() else {
+            return;
+        };
+        let Some(reason) = damage(store) else {
+            return;
+        };
+        tracing::warn!(
+            "the graphs history {} is damaged and was set aside: {reason}",
+            self.path.display()
+        );
+        // Closed before the move: a connection that closes later would delete
+        // the new file's `-wal` by name.
+        state.store = None;
+        set_aside(&self.path);
+        state.writer(&self.path);
     }
 
     /// Every series over `[from, to)` in `points` cells, in catalog order.
@@ -327,13 +380,12 @@ impl Graphs {
     }
 }
 
-/// Open the file and refuse it unless `quick_check` passes.
-fn open_checked(path: &Path) -> Result<Store, String> {
-    let store = Store::open(path).map_err(|error| error.to_string())?;
+/// Why the file fails `quick_check`, or `None` when it passes.
+fn damage(store: &Store) -> Option<String> {
     match store.quick_check() {
-        Ok(true) => Ok(store),
-        Ok(false) => Err("quick_check found damage".to_string()),
-        Err(error) => Err(error.to_string()),
+        Ok(true) => None,
+        Ok(false) => Some("quick_check found damage".to_string()),
+        Err(error) => Some(error.to_string()),
     }
 }
 
@@ -676,6 +728,74 @@ mod tests {
         assert_eq!(
             std::fs::read(dir.path().join(corrupt)).unwrap(),
             vec![0x5a; 4096]
+        );
+    }
+
+    #[test]
+    fn a_file_that_opens_but_fails_quick_check_is_set_aside_on_the_first_observe() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("metrics.sqlite");
+        let names = || -> Vec<String> {
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect()
+        };
+        // A sound file, closed so nothing is left in the WAL.
+        drop(Store::open(&file).unwrap());
+        let (root, size): (usize, usize) = {
+            let conn = rusqlite::Connection::open(&file).unwrap();
+            let root = conn
+                .query_row(
+                    "SELECT rootpage FROM sqlite_master WHERE name = 'samples'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let size = conn
+                .pragma_query_value(None, "page_size", |row| row.get(0))
+                .unwrap();
+            (root, size)
+        };
+        assert!(!dir.path().join("metrics.sqlite-wal").exists());
+        // Wreck the samples table's root page. The series table is untouched,
+        // so the file still opens.
+        let mut bytes = std::fs::read(&file).unwrap();
+        let start = (root - 1) * size;
+        bytes[start..start + size].fill(0xa5);
+        std::fs::write(&file, &bytes).unwrap();
+
+        let graphs = Graphs::open(dir.path()).unwrap();
+        assert!(!names().iter().any(|name| name.contains(".corrupt-")));
+        assert!(!graphs.state.lock().unwrap().checked);
+
+        let live = Live::default();
+        let started = graphs.state.lock().unwrap().last_record;
+        let now = unix_seconds();
+        graphs.observe_at(started + Duration::from_secs(60), now, &snapshot(0, 0), &live);
+        let aside = names()
+            .into_iter()
+            .find(|name| name.starts_with("metrics.sqlite.corrupt-"))
+            .expect("the damaged file is kept");
+        let kept = std::fs::read(dir.path().join(aside)).unwrap();
+        assert_eq!(kept[start..start + size], vec![0xa5; size][..]);
+        assert!(graphs.state.lock().unwrap().checked);
+        // That minute was recorded in the new file, and so is the next.
+        assert_eq!(column(&graphs, "sockets_active", now, now + 1, 1)[0], Some(1.0));
+        graphs.observe_at(
+            started + Duration::from_secs(120),
+            now + 60,
+            &snapshot(0, 0),
+            &live,
+        );
+        assert_eq!(column(&graphs, "sockets_active", now + 60, now + 61, 1)[0], Some(1.0));
+        // The check ran once: nothing else was set aside.
+        assert_eq!(
+            names()
+                .iter()
+                .filter(|name| name.starts_with("metrics.sqlite.corrupt-"))
+                .count(),
+            1
         );
     }
 
