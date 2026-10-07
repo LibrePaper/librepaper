@@ -7,13 +7,11 @@ tree `a7dc3b7a` and resticprofile `0.33.1`; pending review and merge.
 
 - Add a Docker `backup` sidecar for scheduled exports, snapshots, retention,
   pruning and repository checks. It uses resticprofile `0.33.1` for scheduling,
-  locking and restic operations, plus a small Python helper for status metrics.
+  locking and restic operations.
 - Keep independent operator files: `librepaper.toml` for the app and
   `resticprofile.toml` for resticprofile. The named `[resticprofile]` table is
   merged into a kit-owned base profile; a comments-only backup file disables
   backups.
-- Keep `prometheus.yaml` and `grafana.json` at the root of `deploy/`; rules
-  and provisioning remain under `deploy/monitoring`.
 - The app parser does not understand backup settings or report their presence.
   It rejects misplaced `[resticprofile]` and legacy `[backup]` tables safely.
 - No Docker socket, expiration policy or deletion ledger. If backups stop,
@@ -47,13 +45,9 @@ tree `a7dc3b7a` and resticprofile `0.33.1`; pending review and merge.
 - Keep the app user/runtime unchanged. Run backup as UID 10001 with private
   writable paths and `HEALTHCHECK NONE` (no inherited HTTP check).
 - Compose builds explicit app and backup targets. Backup shares `pgsocket`,
-  read-write `data`, `backups`, read-only app and backup configs, and
-  `backup-metrics`;
+  read-write `data`, `backups`, read-only app and backup configs;
   it gets the app env and DB override and starts after app health. Mount private
   tmpfs at `/run/librepaper-backup` (`uid=10001,gid=65534,mode=0700`).
-- Node-exporter mounts metrics read-only with its textfile collector enabled;
-  files are 0644 and the directory is traversable; private state may be 0600. Recreate backup after
-  config changes because atomic replacement may leave the old mounted inode.
 - Production passes matching source/version/build args to both images, builds
   and checks both, and recreates both. Preserve an existing remote
   `resticprofile.toml` with its credentials; install the empty template only
@@ -107,7 +101,6 @@ initialize = true
 lock = "/run/librepaper-backup/lock"
 cache-dir = "/var/backups/librepaper/cache"
 status-file = "/var/backups/librepaper/status.json"
-prometheus-save-to-file = "/var/backups/librepaper/metrics/restic.prom"
 
 [resticprofile.backup]
 schedule = "daily"
@@ -120,11 +113,8 @@ source = ["/var/backups/librepaper/current", "/etc/librepaper/librepaper.toml", 
 run-before = """
 set -eu
 rm -rf /var/backups/librepaper/current
-librepaper-backup-status start backup
 librepaper admin backup --config /etc/librepaper/librepaper.toml /var/backups/librepaper/current
 """
-run-after = "librepaper-backup-status success backup"
-run-after-fail = "librepaper-backup-status failure backup"
 run-finally = "rm -rf /var/backups/librepaper/current"
 
 [resticprofile.retention]
@@ -140,9 +130,6 @@ schedule = "Mon 06:00"
 schedule-lock-wait = "2h"
 schedule-permission = "user"
 read-data-subset = "10%"
-run-before = "librepaper-backup-status start check"
-run-after = "librepaper-backup-status success check"
-run-after-fail = "librepaper-backup-status failure check"
 ```
 
 - The success hook runs only after export, snapshot and retention/prune succeed.
@@ -159,24 +146,14 @@ run-after-fail = "librepaper-backup-status failure check"
 
 ## Status, alerts and retention
 
-- The helper writes atomic Prometheus textfiles with no account, document,
-  object, repository or credential identifiers. Track enabled state, startup
-  and persisted first-enabled times, plus whole-job start, completion, failure
-  and last success for backup and check. Preserve prior job results across
-  container restarts; initialize both job records when enabling backups.
-- Measure a job's first-success deadline from persisted first-enabled time,
-  not the latest startup. Alert on missing records, missing/stale success,
-  failures and textfile collector errors. Gate job alerts on enabled state;
-  separately alert when the expected node-exporter target lacks the enabled
-  sentinel/metrics. This catches a sidecar that never wrote metrics.
-- Use independent dead-man checks and local stale-success thresholds: 36 hours
-  for backup and 8 days for the weekly check. Hook failures publish job failure;
-  failures outside hooks, including scheduler lock timeout, are caught by the
-  missing-success deadline. `restic.prom` is restic telemetry, not whole-job
-  status.
+- Status is resticprofile's `status-file` (`/var/backups/librepaper/status.json`)
+  plus the external Healthchecks pings. There are no metrics, no textfile, no
+  node-exporter.
+- Use independent dead-man checks: 36 hours for backup and 8 days for the weekly
+  check. Hook failures publish job failure; failures outside hooks, including
+  scheduler lock timeout, are caught by the missed-success deadline.
 - `backups` needs room for one full export including the database dump. Export
-  holds the blob lifecycle lock. Grafana should distinguish whole-job success
-  from restic duration and added-byte statistics.
+  holds the blob lifecycle lock.
 - While backups run, keep snapshots from the last 48 hours, then 14 daily and
   11 weekly. Gaps can extend ages; failed retention/pruning delays removal.
   Successful prune retains zero unused data. Versioned buckets may keep old
@@ -214,13 +191,11 @@ run-after-fail = "librepaper-backup-status failure check"
   `deploy/compose.yaml`; matching production rollout and upgrade order:
   `tools/deploy/production`.
 - Config and status: `deploy/librepaper.toml`, `deploy/resticprofile.toml`,
-  `deploy/prometheus.yaml`, `deploy/grafana.json`, `deploy/monitoring/`,
   `tools/deploy/production.toml`,
-  `deploy/backup/profiles.toml`, sidecar entrypoint and Python helper.
+  `deploy/backup/profiles.toml` and sidecar entrypoint.
 - Parser: `crates/librepaper-base/src/config/mod.rs` and
   `crates/librepaper/src/cli/server_config.rs`; remove `BackupPolicy`, reject
   misplaced `[resticprofile]` and legacy `[backup]` at app startup.
-- Monitoring: `deploy/monitoring/alerts.yml` and Grafana dashboard.
 - Tests/docs: `tools/test/backup/`, `tools/test/suite`, `docs/host.md`,
   `docs/cli.md`, `docs/dev/cost-policy.md`, `docs/privacy.md` and
   `docs/dev/privacy-operators.md`.

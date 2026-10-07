@@ -57,13 +57,31 @@ Backups contain the database dump, referenced objects, both TOML files, and `ses
 ## Monitoring
 
 ```sh
-# Optional. Grafana is at https://paper.example/admin/monitoring/
-head -c 24 /dev/urandom | base64 > monitoring/grafana_admin_password
-echo COMPOSE_PROFILES=monitoring > .env
-docker compose up -d
+# Optional. Graphs of the last 400 days at https://admin.paper.example/, behind a password.
+# DNS: admin.paper.example -> this VPS, like the other two names.
+head -c 24 /dev/urandom | base64         # the password
+# librepaper.toml: under [origins] add   admin = "https://admin.paper.example"
+#                  and a new table       [admin]
+#                                        password = "<the line above>"
+docker compose up -d --force-recreate librepaper
 ```
 
-Grafana URL: `https://paper.example/admin/monitoring/`. The app's metrics listener is already on. Use an external uptime monitor because this VPS cannot report its own outage.
+```sh
+# Alerts come from outside the VPS, which cannot report its own outage.
+# Backups: add the ping hooks from the recovery guide to resticprofile.toml
+#   and turn on the weekly report in the Healthchecks account.
+# Uptime: point an external monitor at https://paper.example/ready.
+```
+
+## Backups and alerts
+
+- One DNS record and two lines in the one file. Nothing in Caddy: it asks the
+  server before obtaining a certificate, and the server now says yes to three
+  names.
+- The browser asks for the password once per session. User name: anything.
+- Zoom by dragging on any graph; double-click to return to the chosen range.
+- Backups and uptime alert by email the day they fail. The Monday report from
+  Healthchecks is the weekly summary.
 
 ## Upgrade
 
@@ -89,7 +107,7 @@ Set `storage.database_url` to a TCP URL with `sslmode=verify-full`. Create the r
 cp compose.managed-db.yaml compose.override.yaml
 ```
 
-The override survives upgrades. Monitoring's postgres-exporter is disabled by that override unless you give it the provider's monitoring URL.
+The override survives upgrades.
 
 ## Secrets in files
 

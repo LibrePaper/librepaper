@@ -1,6 +1,6 @@
 # SPEC: simple deploy kit
 
-Status: decided 2026-10-07, not started. Supersedes SPEC-simplify-deploy-fable.md.
+Status: decided 2026-10-07, merged 2026-10-07 (Kata g5cv). Amended 2026-10-07 by SPEC-monitoring.md.
 
 One VPS, Docker only, one file to edit, `docker compose up -d`. The scoped-role
 kit merged on 2026-10-05 (Kata yb5p, yzve) is rolled back to the socket-trust
@@ -54,13 +54,12 @@ curl -fsS https://paper.example/ready
 
 ```
 librepaper/
-  compose.yaml             one file; monitoring behind a Compose profile
+  compose.yaml             one file
   compose.managed-db.yaml  copied to compose.override.yaml for a database elsewhere
   librepaper.toml          the one file to edit; secrets inline
   resticprofile.toml       backups; idle until it has a [resticprofile] table
-  postgres/init.sql        two roles and one database; no passwords
+  postgres/init.sql        two lines; the librepaper role and database
   caddy/Caddyfile          unchanged; on-demand TLS, local.d imports
-  prometheus.yaml, grafana.json, monitoring/   unchanged provisioning
   README.md                ten lines pointing at docs/host.md
 ```
 
@@ -82,22 +81,15 @@ Deleted from `deploy/`: `setup`, `postgres/roles.sql`, `postgres/init-roles.sh`,
   `/docker-entrypoint-initdb.d/`. Healthcheck `pg_isready -U librepaper -d librepaper`.
 - `librepaper`: the image's own CMD. Volumes `data`, `backups`, `pgsocket`,
   `./librepaper.toml:/etc/librepaper/librepaper.toml:ro`. `depends_on`
-  postgres healthy. Networks `edge`, `monitoring`, `default`.
-- `backup`: volumes `data`, `backups`, `backup-metrics`, `pgsocket`, both
-  TOML files read-only, the existing tmpfs. No `secrets:`, no
-  `AWS_SHARED_CREDENTIALS_FILE`. Network `default`.
+  postgres healthy. Networks `edge`, `default`.
+- `backup`: volumes `data`, `backups`, `pgsocket`, both
+  TOML files read-only, the existing tmpfs. Network `default`.
 - `caddy`: unchanged. Networks `edge`, `default`.
-- `prometheus`, `grafana`, `node-exporter`, `postgres-exporter`:
-  `profiles: [monitoring]`. Grafana reads
-  `GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password` from
-  the one Compose secret in the file, `file: ./monitoring/grafana_admin_password`.
-  The exporter connects over `pgsocket` as `librepaper_metrics`.
 - Networks: `edge` with the fixed `172.29.0.0/16` subnet that
-  `[proxy].trusted_networks` names, `monitoring` internal. Egress is the
-  implicit `default` network.
-- Volumes: `postgres`, `pgsocket`, `data`, `backups`, `backup-metrics`,
-  `caddy-data`, `caddy-config`, `prometheus`, `grafana`. Same names as today,
-  so every volume except `postgres` carries over on production untouched.
+  `[proxy].trusted_networks` names. Egress is the implicit `default` network.
+- Volumes: `postgres`, `pgsocket`, `data`, `backups`,
+  `caddy-data`, `caddy-config`. Same names as today,
+  so every volume carries over on production untouched.
 - Operator changes never go in `compose.yaml`, which every upgrade replaces.
   They go in `compose.override.yaml`, which Compose loads on its own and the
   archive never contains. `compose.managed-db.yaml` is the kit's template for
@@ -112,14 +104,9 @@ services:
     depends_on: !reset []
   backup:
     depends_on: !reset []
-  postgres-exporter:
-    profiles: !override [unused]   # or set DATA_SOURCE_NAME to the provider's monitoring URL
 ```
 
-  The empty `pgsocket` mounts stay; they are harmless. `!override` matters:
-  Compose appends list values on merge, so a plain `profiles: [unused]` on
-  the exporter yields `[monitoring, unused]` and the exporter still starts
-  with the monitoring profile. Verified on Compose 5.4.
+  The empty `pgsocket` mounts stay; they are harmless.
 
 ### Database
 
@@ -128,22 +115,19 @@ services:
 ```sql
 CREATE ROLE librepaper LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
 CREATE DATABASE librepaper OWNER librepaper;
-CREATE ROLE librepaper_metrics LOGIN NOSUPERUSER;
-GRANT pg_monitor TO librepaper_metrics;
 ```
 
 - The app, the backup sidecar and `pg_dump` connect as `librepaper` over the
   socket. The server migrates at startup (default). No `migrate` service.
 - Trust applies to the socket only: the container has no network.
-- The trust boundary, stated plainly: the three containers that mount the
-  socket (app, backup, exporter) can each connect as any role, including the
+- The trust boundary, stated plainly: the two containers that mount the
+  socket (app, backup) can each connect as any role, including the
   superuser `postgres`. They are one trust domain. That is accepted: on one
   VPS they already share the data they could reach, and the previous kit's
   per-service passwords defended against a container compromise that gains
   nothing more than it already has. `librepaper NOSUPERUSER` is not about
   containers; it stops a SQL injection in the app from running
-  `COPY ... TO PROGRAM` or altering roles. `librepaper_metrics` is the
-  exporter's default identity, a convention that costs one line, not a wall.
+  `COPY ... TO PROGRAM` or altering roles.
 - Peer authentication would enforce identity at the socket, but it maps the
   client uid to a name in the postgres container's `/etc/passwd`, where uid
   10001 has none. Rejected as not worth a custom image.
@@ -160,9 +144,7 @@ database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepape
 ```
 
 - No `[server] migrate`. `[metrics] address = "0.0.0.0:9091"` stays on, as in
-  the current kit and production: it listens on the internal `monitoring`
-  network only, and a Prometheus that scrapes a closed port would fire alerts
-  the moment the profile is enabled.
+  the current kit and production: it listens on the `edge` network only.
 - `[auth.github]` holds `client_id` and `client_secret` as literals. One
   comment line says `client_secret = { file = "/run/secrets/github" }` also
   works with a bind mount, for operators who keep secrets in files.
@@ -176,7 +158,7 @@ database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepape
 | Database | none | nobody; socket trust |
 | `session.key` | `data` volume, `/var/lib/librepaper/secrets/` | the server, first start |
 | Restic repository and password | `resticprofile.toml` | the operator |
-| Grafana admin password | `monitoring/grafana_admin_password` | the operator, only with monitoring |
+| Admin password | `librepaper.toml` `[admin]` | the operator, only with the admin origin |
 
 - The archive's top directory is mode 0700. Files inside stay 0644 so the
   containers, which run as other uids, can read their bind mounts. This is the
@@ -199,18 +181,29 @@ database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepape
 ### Monitoring
 
 ```sh
-# Optional. Grafana is at https://paper.example/admin/monitoring/
-head -c 24 /dev/urandom | base64 > monitoring/grafana_admin_password
-echo COMPOSE_PROFILES=monitoring > .env
-docker compose up -d
+# Optional. Graphs of the last 400 days at https://admin.paper.example/, behind a password.
+# DNS: admin.paper.example -> this VPS, like the other two names.
+head -c 24 /dev/urandom | base64         # the password
+# librepaper.toml: under [origins] add   admin = "https://admin.paper.example"
+#                  and a new table       [admin]
+#                                        password = "<the line above>"
+docker compose up -d --force-recreate librepaper
 ```
 
-- The `.env` line is how Compose remembers a profile. The default kit has no
-  `.env`; this one is created by the operator who wants monitoring.
-- The app's metrics listener is already on, so the profile is the only step.
-- Caddy's `forward_auth` host check and Grafana's own login stay.
-- With a database elsewhere, `postgres-exporter` has no socket: the managed-db
-  override disables it or gives it the provider's monitoring URL.
+```sh
+# Alerts come from outside the VPS, which cannot report its own outage.
+# Backups: add the ping hooks from the recovery guide to resticprofile.toml
+#   and turn on the weekly report in the Healthchecks account.
+# Uptime: point an external monitor at https://paper.example/ready.
+```
+
+- One DNS record and two lines in the one file. Nothing in Caddy: it asks the
+  server before obtaining a certificate, and the server now says yes to three
+  names.
+- The browser asks for the password once per session. User name: anything.
+- Zoom by dragging on any graph; double-click to return to the chosen range.
+- Backups and uptime alert by email the day they fail. The Monday report from
+  Healthchecks is the weekly summary.
 
 ### Upgrades
 
@@ -254,9 +247,8 @@ cluster is converted in place, in one transaction, with no data movement.
 ### Layout and helper
 
 - Host: the kit as extracted, plus `librepaper.toml` (from
-  `tools/deploy/production.toml`), `secrets/` with the five OAuth and Grafana
-  files the helper writes from SOPS, `monitoring/grafana_admin_password`,
-  `.env` with `COMPOSE_PROFILES=monitoring`, `compose.override.yaml` mounting
+  `tools/deploy/production.toml`), `secrets/` with the OAuth files and admin password
+  the helper writes from SOPS, `compose.override.yaml` mounting
   `./secrets:/run/secrets:ro` into `librepaper` and `./site:/srv/site:ro` into
   `caddy`, `caddy/local.d/` for the other app on the VPS. `chmod 700 ~/librepaper`.
 - `tools/deploy/production.toml`: the socket `database_url` literal, no
@@ -297,16 +289,15 @@ Host script, in order, stopping on the first error:
 #   pg_roles for OID 10 and rolname LIKE 'librepaper%' is exactly the catalog above
 #   librepaper_app and librepaper_backup own no objects (DROP OWNED would drop them)
 #   librepaper_bootstrap owns nothing in the postgres database
-docker compose stop librepaper backup postgres-exporter     # only this script is connected
+docker compose stop librepaper backup     # only this script is connected
 docker compose exec -T postgres pg_dump -U librepaper_owner -d librepaper -Fc > ~/librepaper-convert/librepaper.dump   # the fallback
 docker compose exec -T postgres psql -U librepaper_bootstrap -d librepaper -v ON_ERROR_STOP=1 -1 -f - <<'SQL'
+DROP OWNED BY librepaper_app, librepaper_backup, librepaper_metrics;  -- revokes their grants and default ACL entries
 ALTER ROLE librepaper RENAME TO postgres;          -- the initdb superuser, as a fresh install names it
 ALTER ROLE postgres LOGIN CREATEDB CREATEROLE;     -- setup upgrade had removed these; a fresh initdb role has them
 ALTER ROLE librepaper_owner RENAME TO librepaper;
 ALTER ROLE librepaper INHERIT PASSWORD NULL;       -- a fresh CREATE ROLE has no password
-DROP OWNED BY librepaper_app, librepaper_backup;   -- revokes their grants and default ACL entries
-DROP ROLE librepaper_app, librepaper_backup;
-ALTER ROLE librepaper_metrics PASSWORD NULL;
+DROP ROLE librepaper_app, librepaper_backup, librepaper_metrics;
 GRANT CONNECT ON DATABASE librepaper TO PUBLIC;    -- the fresh default; setup had revoked it
 SQL
 docker compose exec -T postgres psql -U postgres -d librepaper -v ON_ERROR_STOP=1 -1 -f - <<'SQL'
@@ -316,6 +307,7 @@ SQL
 docker compose up -d --wait --remove-orphans       # postgres is recreated without a network, with the socket volume; the app validates the schema; the old migrate container goes
 rm -f setup postgres/roles.sql postgres/init-roles.sh .setup-state.json monitoring/grafana-entrypoint.sh \
   compose.external-db.yaml compose.local-binary.yaml compose.local-build.yaml compose.monitoring.yaml compose.production.yaml \
+  .env prometheus.yaml grafana.json monitoring/ \
   secrets/database_app_url secrets/database_owner_url secrets/database_backup_url secrets/database_metrics_url secrets/database_metrics_uri secrets/database_metrics_user \
   secrets/database_app_password secrets/database_owner_password secrets/database_backup_password secrets/database_metrics_password \
   secrets/postgres_bootstrap_password secrets/grafana_admin_password
@@ -446,10 +438,6 @@ dashes):
   with the directory mode (0700), never the file mode. That holds for a file
   mount; a directory mount keeps the directory's own mode inside the container,
   so a bind-mounted `secrets/` must be 0755 under the 0700 kit directory.
-- A short-form Compose secret mounts at `/run/secrets/<secret name>`. Grafana's
-  `GF_SECURITY_ADMIN_PASSWORD__FILE` names the file, so the service entry needs
-  the long form with `target:`. Both found by Roborev job 931 after the merge;
-  neither check started Grafana or mounted a real secrets directory.
 - The initdb role (OID 10) cannot lose SUPERUSER on PostgreSQL 16 and later;
   it can be renamed and given LOGIN. A session cannot rename or drop its own
   role, which is why the conversion reconnects as `postgres` for the last
@@ -461,15 +449,14 @@ dashes):
 - `_sqlx_migrations` must be unchanged or `admin serve` refuses the schema.
   Compare it explicitly even though nothing should touch it.
 - A fresh named volume mounted at `/var/run/postgresql` inherits the image
-  directory's 2777 mode, which is what lets uid 10001 and the exporter reach
+  directory's 2777 mode, which is what lets uid 10001 reach
   the socket. Do not pre-create that directory with other modes. Socket paths
   must be short; never put one under a scratchpad path in tests.
 - The app's image runs `pg_dump` 17.11 against server 17.11. Bumping one
   means bumping the other.
 - Operator state lives only in files the archive never contains:
-  `compose.override.yaml`, `.env`, `caddy/local.d/`,
-  `monitoring/grafana_admin_password`, and the two excluded TOML files. Any
-  instruction that has an operator edit `compose.yaml` is a bug.
+  `compose.override.yaml`, `caddy/local.d/`, `secrets/`, and the two excluded
+  TOML files. Any instruction that has an operator edit `compose.yaml` is a bug.
 - `docker compose up -d` on production recreates Caddy when its network list
   changes. Seconds of downtime for the other app on the VPS; acceptable,
   announce nothing, do it once.
@@ -500,5 +487,3 @@ dashes):
   change, but they are the hook for running a migration apart from the
   serving process, which a managed database with a separate schema owner or a
   future lease handoff between two app containers would both need. Keep them.
-- Grafana behind LibrePaper sign-in instead of its own password needs an
-  operator role the server does not have.

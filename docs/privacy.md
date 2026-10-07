@@ -26,22 +26,11 @@ identities and presence in the clear.
 The application does not log visitor requests or persist IP addresses. Its
 monitoring endpoint exports aggregate counts without user or document identifiers.
 
-The official deployment's optional monitoring uses separate, free and open-source
-Prometheus, Grafana, PostgreSQL exporter, and Node Exporter containers. Grafana's
-upstream analytics and update reporting are disabled. Prometheus stores aggregate
-service, database, and host measurements, including request and document counts,
-without account, document, or IP identifiers. Its time series have a 30-day
-retention limit and an 8 GB retained-block size limit; WAL and headroom can use
-additional disk, and storage pressure can shorten retention. Exporter metrics
-include operational metadata such as database names, device statistics, and
-filesystem measurements.
-Grafana administrative and error logs may include an administrator account,
-source IP, or request path. Operators should restrict access to those logs and
-set a retention policy for them separately.
-
-The monitoring containers are not included in the application's document and
-database backup set: dashboards can be reprovisioned from the deployment kit,
-while historical time series and Grafana state are not covered by those backups.
+The server keeps aggregate operational numbers (request counts, latency, memory,
+disk, CPU, socket and document counts) in one SQLite file on the data volume for
+400 days, with no user, document or network identifiers. It is not in backups.
+It is readable only with the admin password on the admin origin, which the
+operator may leave unconfigured.
 These controls describe this deployment's data handling; they do not by themselves
 determine an operator's legal obligations.
 
