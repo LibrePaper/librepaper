@@ -17,12 +17,13 @@ The sidecar integration suite uses the same synthetic five-project fixture,
 then starts the locally built backup image with disposable PostgreSQL and
 temporary repositories. It connects to PostgreSQL with a generated SELECT-only
 backup role, covers disabled/enabled startup, a real profile-merged backup and
-check, failed export metrics, after-backup retention, and restore into a fresh
+check, failed backup recovery, after-backup retention, and restore into a fresh
 database. The restore is run without the source backup role, then the test
 starts the restored app with a restricted DML role and verifies the original
-signed-in session. By default it also runs SFTP, MinIO
-S3-compatible, and authenticated REST backends using generated keys and
-synthetic credentials. Build the image first:
+signed-in session. Status is reported by resticprofile's status.json file and
+Healthchecks hooks. By default it also runs SFTP, MinIO S3-compatible, and
+authenticated REST backends using generated keys and synthetic credentials.
+Build the image first:
 
 ```sh
 make web
