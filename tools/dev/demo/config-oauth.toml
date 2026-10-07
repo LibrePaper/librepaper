@@ -1,16 +1,11 @@
 # Container-ready configuration for make demo with GitHub sign-in.
-[server]
-address = "0.0.0.0:8080"
-local_companion = false
-migrate = false
-
 [origins]
 app = { env = "LIBREPAPER_DEMO_APP_ORIGIN" }
 site = { env = "LIBREPAPER_DEMO_SITE_ORIGIN" }
 
 [storage]
 directory = "/var/lib/librepaper"
-database_url = { file = "/run/secrets/database_url" }
+database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper"
 fsync = false
 object_store = "filesystem"
 

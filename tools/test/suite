@@ -14,8 +14,8 @@ usage: tools/test/suite <suite>
 
   backup      backup, encrypt, restore and replay-verify a synthetic deployment (needs docker, age, age-keygen)
   backup-sidecar exercise the backup sidecar against a synthetic deployment (needs Docker and prebuilt test images)
-  deploy-roles exercise the shipped PostgreSQL SCRAM and scoped-role setup (needs Docker and OpenSSL)
-  deploy-install exercise fresh Compose setup and legacy PostgreSQL upgrade (needs Docker and librepaper-app-test:yb5p)
+  deploy-install boot the Compose kit with a local database and with a managed one, then upgrade it (needs Docker; builds the images from this checkout unless DEPLOY_SMOKE_APP_IMAGE is set)
+  deploy-convert rehearse the production database conversion against a scoped-role fixture (needs Docker, python3, openssl)
   browser     component tests in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   smoke       drive the reader in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   e2e         run browser smoke, history and track-changes deployment scenarios (needs docker and chromium)
@@ -188,23 +188,24 @@ suite_backup_sidecar() {
 	tools/test/backup/sidecar.sh
 }
 
-# Boot PostgreSQL from the actual deployment init scripts and verify its
-# password authentication and application/backup/metrics privilege boundaries.
-suite_deploy_roles() {
-	tools/test/deploy/roles.sh
-}
-
-# Run fresh initialization and the destructive legacy-upgrade path against
-# unique disposable Compose projects and volumes.
+# Boot the shipped Compose kit twice against unique disposable projects and
+# volumes: with its own PostgreSQL, and with a managed one that survives the
+# documented upgrade.
 suite_deploy_install() {
 	tools/test/deploy/install.sh
+}
+
+# Rehearse the one-time production database conversion on a fixture shaped
+# like the scoped-role install.
+suite_deploy_convert() {
+	tools/test/deploy/convert.sh
 }
 
 case "${1:-help}" in
 	backup) suite_backup ;;
 	backup-sidecar) suite_backup_sidecar ;;
-	deploy-roles) suite_deploy_roles ;;
 	deploy-install) suite_deploy_install ;;
+	deploy-convert) suite_deploy_convert ;;
 	browser) suite_browser ;;
 	smoke) suite_smoke ;;
 	e2e) suite_e2e ;;

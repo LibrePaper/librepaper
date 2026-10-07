@@ -37,14 +37,6 @@ case "$work" in /tmp/librepaper-backup-drill.*) ;; *) echo 'unsafe temporary pat
 cleanup() {
   status=$?
   trap - EXIT
-  if [[ -f "$work/backup-database-url.role" ]]; then
-    "$(dirname "$0")/database-role.sh" drop \
-      "$LIBREPAPER_SOURCE_URL" drill_source "$work/backup-database-url" || true
-  fi
-  if [[ -f "$work/restore-app-database-url.role" ]]; then
-    "$(dirname "$0")/database-role.sh" drop \
-      "$LIBREPAPER_RESTORE_URL" drill_restored "$work/restore-app-database-url" || true
-  fi
   case "$work" in
     /tmp/librepaper-backup-drill.*)
       # A caller-supplied directory belongs to the caller, like a kept one.
@@ -64,11 +56,10 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -m 700 "$work/source-data" "$work/restored-data"
-backup_database_url="$work/backup-database-url"
 cat >"$work/source.toml" <<'TOML'
 [storage]
 directory = "source-data"
-database_url = { file = "backup-database-url" }
+database_url = { env = "LIBREPAPER_SOURCE_URL" }
 fsync = false
 TOML
 cat >"$work/restore.toml" <<'TOML'
@@ -86,8 +77,6 @@ node "$(dirname "$0")/fixture.mjs" \
   "$LIBREPAPER_BIN" \
   "$LIBREPAPER_SOURCE_URL" \
   "$work/source-data"
-"$(dirname "$0")/database-role.sh" backup \
-  "$LIBREPAPER_SOURCE_URL" drill_source "$backup_database_url"
 fixture_account_id=$(psql "$LIBREPAPER_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 -c \
   "SELECT id::text FROM accounts WHERE provider_subject='github:fixture'")
 [[ -n "$fixture_account_id" ]] || { echo 'backup fixture account was not created' >&2; exit 1; }
@@ -130,8 +119,6 @@ test -s "$work/source-data/secrets/session.key"
 mkdir -m 700 "$work/recovery-secrets"
 cp -- "$work/source-data/secrets/session.key" "$work/recovery-secrets/session.key"
 chmod 0600 "$work/recovery-secrets/session.key"
-"$(dirname "$0")/database-role.sh" drop \
-  "$LIBREPAPER_SOURCE_URL" drill_source "$backup_database_url"
 
 # The portable recovery point is encrypted with the operator's public age
 # recipient. The private identity is used only to decrypt into this 0700 temp
@@ -182,8 +169,6 @@ mkdir -m 700 "$work/restored-data/secrets"
 cp -- "$work/recovery-secrets/session.key" "$work/restored-data/secrets/session.key"
 chmod 0600 "$work/restored-data/secrets/session.key"
 cmp "$work/source-data/secrets/session.key" "$work/restored-data/secrets/session.key"
-"$(dirname "$0")/database-role.sh" app \
-  "$LIBREPAPER_RESTORE_URL" drill_restored "$work/restore-app-database-url"
 
 cat >"$work/restored-app.toml" <<'TOML'
 [server]
@@ -192,7 +177,7 @@ migrate = false
 
 [storage]
 directory = "restored-data"
-database_url = { file = "restore-app-database-url" }
+database_url = { env = "LIBREPAPER_RESTORE_URL" }
 fsync = false
 
 [access]
@@ -201,8 +186,6 @@ commenters = ["anyone"]
 TOML
 node "$(dirname "$0")/restore-access.mjs" "$LIBREPAPER_BIN" \
   "$work/restored-app.toml" "$fixture_account_id" "$work/source-session-cookie"
-"$(dirname "$0")/database-role.sh" drop \
-  "$LIBREPAPER_RESTORE_URL" drill_restored "$work/restore-app-database-url"
 
 psql "$LIBREPAPER_RESTORE_URL" -XAt -v ON_ERROR_STOP=1 -c "$signature_sql" >"$work/restored-signature"
 cmp "$work/source-signature" "$work/restored-signature"
