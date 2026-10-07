@@ -59,8 +59,8 @@ validate_release_version() {
 	major="${BASH_REMATCH[1]}"
 	minor="${BASH_REMATCH[2]}"
 	patch="${BASH_REMATCH[3]}"
-	if (( major == 0 && minor == 0 && patch < 21 )); then
-		die "production deployment requires v0.0.21 or later: older binaries lack /api/tls/ask, so Caddy would issue no certificates"
+	if (( major == 0 && minor == 0 && patch < 22 )); then
+		die "production deployment requires v0.0.22 or later: older binaries do not recognize the admin origin and password in librepaper.toml"
 	fi
 }
 
@@ -248,13 +248,13 @@ usage() {
 	cat <<'USAGE'
 usage: tools/deploy/production <command>
 
-  deploy [VERSION]   deploy a published release (canonical vMAJOR.MINOR.PATCH, v0.0.21+)
+  deploy [VERSION]   deploy a published release (canonical vMAJOR.MINOR.PATCH)
                      (VERSION defaults to v + the version in Cargo.toml)
   site               rebuild and upload the landing page and manual only (no release, no restart)
   verify             app, admin graphs, site, documents, redirect, operator URLs, and logs
   logs               follow the container logs
   retire-monitoring  one-time: remove Prometheus, Grafana volumes and .env file
-  convert-database   TEMPORARY, deleted after production converts: stage the v0.0.21 kit,
+  convert-database   TEMPORARY, deleted after production converts: stage the v0.0.22 kit,
                      save the host files, then run tools/deploy/convert-database.sh on the host
   help, -h, --help   show this message
 
@@ -452,11 +452,11 @@ deploy() {
 # tools/deploy/convert-database.sh and tools/test/deploy/convert.sh once
 # production has been converted to the socket-trust kit.
 #
-# Stages the v0.0.21 kit without starting anything, saves the host files from
+# Stages the v0.0.22 kit without starting anything, saves the host files from
 # before the sync, installs the checked candidates, then runs the conversion
 # script on the host. The script must not install the candidates itself.
 convert_database() {
-	local version=v0.0.21 script=tools/deploy/convert-database.sh
+	local version=v0.0.22 script=tools/deploy/convert-database.sh
 	[ -f "$script" ] || die "$script is missing"
 
 	printf '%sConverting the database on %s with the %s kit%s\n' "$bold" "$HOST" "$version" "$reset"
@@ -480,8 +480,19 @@ convert_database() {
 # One-time cleanup after the first deploy without the monitoring profile.
 retire_monitoring() {
 	step "Retire Prometheus, Grafana and backup metrics"
-	ssh "$HOST" 'cd librepaper && docker volume rm librepaper_prometheus librepaper_grafana librepaper_backup-metrics 2>/dev/null || true; echo "removed volumes (or already gone)"'
-	ssh "$HOST" 'cd librepaper && rm -rf .env monitoring; echo "removed .env and monitoring/ directory (or already gone)"'
+	ssh "$HOST" 'cd librepaper' <<'RETIRE'
+for volume in librepaper_prometheus librepaper_grafana librepaper_backup-metrics; do
+	if docker volume inspect "$volume" >/dev/null 2>&1; then
+		docker volume rm "$volume" || exit 1
+	else
+		printf "    volume %s: already gone\n" "$volume"
+	fi
+done
+rm -rf .env monitoring
+leftover=$(docker volume ls --format '{{.Name}}' | grep -E '^librepaper_(prometheus|grafana|backup-metrics)$' || true)
+[ -z "$leftover" ] || { printf 'leftover monitoring volumes: %s\n' "$leftover" >&2; exit 1; }
+echo "removed volumes and .env/monitoring directory"
+RETIRE
 	ok "retired: no volumes remain; .env and monitoring/ are removed"
 	printf '\n%sDone: the monitoring profile is retired. Nothing else needs to change; verify still works.%s\n' "$green$bold" "$reset"
 }
