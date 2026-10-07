@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use axum::Router;
 use serde_json::{json, Value};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::server::http_test_support::deployment;
 use crate::server::origins::Origins;
@@ -26,6 +27,8 @@ const READER_HOST: &str = "paper.example";
 const DOCS_HOST: &str = "docs.paper.example";
 const ADMIN_HOST: &str = "admin.paper.example";
 const PASSWORD: &str = "correct-horse-battery-staple";
+/// `anything:` and the password, base64 encoded, for a request written by hand.
+const BASIC_CREDENTIALS: &str = "YW55dGhpbmc6Y29ycmVjdC1ob3JzZS1iYXR0ZXJ5LXN0YXBsZQ==";
 
 /// The twelve series, in the order the page draws them.
 const SERIES: [&str; 12] = [
@@ -419,6 +422,82 @@ async fn the_proxy_is_told_to_obtain_a_certificate_for_the_admin_name() {
             .unwrap();
         assert_eq!(response.status().as_u16(), status, "{domain}");
     }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_certificate_question_is_not_answered_on_the_admin_host_before_the_password() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+
+    // The proxy's own question arrives with the internal authority. Put to the
+    // admin name it is an ordinary request: challenged, then an unknown path.
+    let path = "/api/tls/ask?domain=paper.example";
+    let response = f.get(ADMIN_HOST, path).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 401);
+    let challenge = header(&response, "www-authenticate").unwrap_or_default();
+    assert!(challenge.starts_with("Basic realm="), "{challenge:?}");
+    assert_private_headers(&response, "tls ask without credentials");
+    let response = f.get_as_operator(ADMIN_HOST, path).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 404);
+    assert_private_headers(&response, "tls ask with the password");
+
+    let response = f.get(READER_HOST, path).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+}
+
+/// The status of a request written by hand, for the cases a client library
+/// will not produce: a body whose length is not declared.
+async fn raw_status(address: SocketAddr, request: &str) -> u16 {
+    let mut socket = TcpStream::connect(address).await.unwrap();
+    socket.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    let mut buffer = [0; 1024];
+    while !response.windows(2).any(|window| window == b"\r\n") {
+        let read = socket.read(&mut buffer).await.unwrap();
+        if read == 0 {
+            break;
+        }
+        response.extend_from_slice(&buffer[..read]);
+    }
+    String::from_utf8_lossy(&response)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("0")
+        .parse()
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_body_of_unknown_length_waits_for_the_password_on_the_admin_host() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+    let address: SocketAddr = f.base.trim_start_matches("http://").parse().unwrap();
+
+    let chunked = |authorization: &str| {
+        format!(
+            "POST / HTTP/1.1\r\nHost: {ADMIN_HOST}\r\n{authorization}Transfer-Encoding: chunked\r\n\
+             Connection: close\r\n\r\n0\r\n\r\n"
+        )
+    };
+    // A mutation elsewhere must declare its length; here nothing is read, so
+    // the answer is the gate's, then the method's.
+    assert_eq!(raw_status(address, &chunked("")).await, 401);
+    let authorization = format!("Authorization: Basic {BASIC_CREDENTIALS}\r\n");
+    assert_eq!(raw_status(address, &chunked(&authorization)).await, 405);
+
+    // The app host still refuses an undeclared length.
+    let app = format!(
+        "POST /api/documents HTTP/1.1\r\nHost: {READER_HOST}\r\nTransfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n0\r\n\r\n"
+    );
+    assert_eq!(raw_status(address, &app).await, 411);
 }
 
 #[tokio::test]
