@@ -1808,6 +1808,35 @@
     });
   });
 
+  // The person starts the companion after a local run has already failed, from
+  // the settings page or a terminal, so nothing on this page asked for it, and
+  // the panel must not keep saying it is not running. What that failure left
+  // behind is cleared on the change into "connected" (not on every status
+  // object, and not on the first probe, which has nothing to undo): the
+  // connection error, and the failed render's diagnostic, which a live
+  // preview that now takes the pane would never replace. The run is retried
+  // through startLocalExecution; ensureLocalApp would connect again and come
+  // back here. Where no live preview will own the pane, one ordinary render
+  // paints the document and whatever it says now.
+  let previousLocalAppState = null;
+  $effect(() => {
+    const state = localAppStatus.state;
+    const before = previousLocalAppState;
+    previousLocalAppState = state;
+    if (state !== "connected" || !before || before === "unknown" || before === "connected") return;
+    untrack(() => {
+      localConnectionError = "";
+      if (!localExecutionRelevant) return;
+      void startLocalExecution();
+      // Not allowed to run code: the browser's own renderer is drawing this
+      // document, and what it said still stands.
+      if (!localExecution) return;
+      renderStatus.resetFailure();
+      diagnosticPainter.rendered({ page: true });
+      if (!quartoLiveActive && !calepinActive) void paintPreview();
+    });
+  });
+
   // The profile and parameters, applied from Settings: kept for every Quarto
   // build in this browser, and the live preview -- which reads them only as
   // it starts -- restarted so the page shows the new ones rather than the

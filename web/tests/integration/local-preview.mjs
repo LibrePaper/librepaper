@@ -328,6 +328,72 @@ console.log("local-preview: all checks passed");
   assert.equal(ctl.state.error, "", "a new attempt clears what the last one said");
   await ctl.stop();
 }
+
+// The old message goes when the next run starts, not when it succeeds: the
+// companion was started after a failure and the retry is still running, so
+// the panel must not keep saying it was not running. A retry that fails again
+// says so again, with what the new attempt reported.
+{
+  const { setTimer, clearTimer } = timerHarness();
+  const gate = deferred();
+  let tries = 0;
+  const ctl = createLocalPreview({
+    engine: "quarto", treeNow: () => ({ main: "main.qmd" }),
+    entrypointOf: (t) => t.main, optionsOf: () => ({}),
+    setTimer, clearTimer,
+    local: {
+      syncWorkspace: async () => {},
+      startLocalPreview: async () => {
+        tries += 1;
+        if (tries === 1) throw new Error("LibrePaper Companion is not running");
+        if (tries === 2) { await gate.promise; throw new Error("Quarto is not installed"); }
+        return { id: "third" };
+      },
+      stopLocalPreview: async () => {},
+    },
+  });
+  await ctl.start();
+  assert.equal(ctl.state.error, "LibrePaper Companion is not running");
+  const retry = ctl.start();
+  await new Promise(setImmediate);
+  assert.equal(ctl.starting, true, "the retry is in flight");
+  assert.equal(ctl.state.error, "", "the old message is gone while the retry runs");
+  gate.resolve();
+  await retry;
+  assert.equal(ctl.running, false);
+  assert.equal(ctl.state.error, "Quarto is not installed", "a retry that fails again sets its own message");
+  await ctl.start();
+  assert.equal(ctl.running, true);
+  assert.equal(ctl.state.error, "");
+  await ctl.stop();
+}
+
+// A session the status poll ended leaves its last log line as the error; the
+// next start clears it before anything else happens.
+{
+  const { timers, setTimer, clearTimer } = timerHarness();
+  let runs = 0;
+  const ctl = createLocalPreview({
+    engine: "calepin", treeNow: () => ({ main: "main.typ" }),
+    entrypointOf: (t) => t.main, optionsOf: () => ({}),
+    setTimer, clearTimer,
+    local: {
+      syncWorkspace: async () => {},
+      startLocalPreview: async () => ({ id: `run${++runs}` }),
+      stopLocalPreview: async () => {},
+      localPreviewStatus: async () => ({ state: "stopped", log_tail: "calepin exited\n" }),
+      localPreviewPage: async () => ({ rendering: false }),
+    },
+  });
+  await ctl.start();
+  await runTimer(timers.find((t) => t.ms === 5000 && !t.cleared));
+  assert.equal(ctl.running, false);
+  assert.equal(ctl.state.error, "calepin exited");
+  await ctl.start();
+  assert.equal(ctl.running, true);
+  assert.equal(ctl.state.error, "", "starting again clears the line the last run ended with");
+  await ctl.stop();
+}
 console.log("local-preview: startup edits, cancellation, settings restart and diagnostic-only errors passed");
 
 // Changing files in the same engine releases the old watcher before starting
