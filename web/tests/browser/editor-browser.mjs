@@ -11,11 +11,11 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
 import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
-import { stopBrowserProcess } from "../helpers/browser-driver.mjs";
+import { stopBrowserProcess, removeTemporary } from "../helpers/browser-driver.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
@@ -911,7 +911,7 @@ try {
     `--user-data-dir=${profile}`,
     `--remote-debugging-port=${port}`,
     "about:blank",
-  ], { stdio: "ignore" });
+  ], { stdio: "ignore", detached: true });
   const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
   let browserInfo;
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -1126,5 +1126,5 @@ try {
   socket?.close();
   await stopBrowserProcess(browser);
   if (server?.listening) await new Promise((resolve) => server.close(resolve));
-  rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  removeTemporary(temporary);
 }

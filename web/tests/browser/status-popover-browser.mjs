@@ -7,9 +7,9 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
@@ -106,5 +106,5 @@ try {
   assert.equal(await tab.evaluate("window.commentCardCheck()"), true);
   console.log("comment card: a resolved card keeps focus when it opens; a thread is grouped by author with one avatar per run");
 } finally {
-  await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
+  await tab?.close(); server?.close(); removeTemporary(temporary);
 }

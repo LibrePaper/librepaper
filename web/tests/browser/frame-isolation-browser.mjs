@@ -6,12 +6,12 @@ import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { extname } from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-frame-isolation-"));
@@ -250,5 +250,5 @@ try {
   await page?.close?.();
   if (appServer) await new Promise((resolve) => appServer.close(resolve));
   if (scriptServer) await new Promise((resolve) => scriptServer.close(resolve));
-  rmSync(temporary, { recursive: true, force: true });
+  removeTemporary(temporary);
 }

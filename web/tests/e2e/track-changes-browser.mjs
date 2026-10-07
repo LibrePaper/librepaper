@@ -3,10 +3,10 @@
 // disposable PostgreSQL connection in LIBREPAPER_TEST_POSTGRES_URL.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { deploymentBinary, startDeployment } from "../helpers/deployment.mjs";
 
 const binary = process.argv[2] || deploymentBinary();
@@ -183,5 +183,5 @@ try {
 } finally {
   await editor?.close();
   await deployment.stop();
-  rmSync(profile, { recursive: true, force: true });
+  removeTemporary(profile);
 }

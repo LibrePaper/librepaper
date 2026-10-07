@@ -11,9 +11,9 @@ import tailwindcss from "@tailwindcss/vite";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
@@ -343,5 +343,5 @@ try {
 } finally {
   await tab?.close();
   httpServer?.close();
-  rmSync(temp, {recursive: true, force: true});
+  removeTemporary(temp);
 }

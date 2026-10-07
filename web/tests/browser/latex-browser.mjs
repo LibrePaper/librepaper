@@ -21,11 +21,11 @@
 
 import { execFileSync } from "node:child_process";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 // Usage: node web/tests/browser/latex-browser.mjs [firefox|chromium|both]
 
@@ -437,7 +437,7 @@ async function main(browserName) {
     server.kill();
     await new Promise((r) => setTimeout(r, 200));
     if (server.exitCode !== null && server.exitCode !== 0) console.error(serverLog);
-    rmSync(scratch, { recursive: true, force: true });
+    removeTemporary(scratch);
   }
 }
 

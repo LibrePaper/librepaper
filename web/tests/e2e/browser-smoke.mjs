@@ -358,7 +358,7 @@ async function run() {
       `--user-data-dir=${chromeProfile}`,
       "about:blank",
     ],
-    { stdio: "ignore" },
+    { stdio: "ignore", detached: true },
   );
   chrome.once("error", (error) => { chromeSpawnError = error; });
   const debugPort = await waitForDebugPort(chrome, join(chromeProfile, "DevToolsActivePort"), () => chromeSpawnError);

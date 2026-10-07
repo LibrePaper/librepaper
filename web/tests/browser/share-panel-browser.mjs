@@ -27,9 +27,9 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { browser, until, pause } from "../helpers/browser-driver.mjs";
+import { browser, until, pause, removeTemporary } from "../helpers/browser-driver.mjs";
 
 process.env.TZ = "UTC";
 
@@ -320,5 +320,5 @@ try {
   console.log("share panel: access as a state, a flat row of icons per link, rotation and revocation confirmed, "
     + "and every link the server holds a key for copyable from any session");
 } finally {
-  await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
+  await tab?.close(); server?.close(); removeTemporary(temporary);
 }

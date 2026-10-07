@@ -19,10 +19,10 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { readdirSync } from "node:fs";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 process.env.TZ = "UTC";
 
@@ -461,5 +461,5 @@ try {
   assert.equal(await tab.evaluate("window.historyPanelCheck()"), true);
   console.log("history panel: three views, a day coarsened by significance, and bookmarks");
 } finally {
-  await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
+  await tab?.close(); server?.close(); removeTemporary(temporary);
 }

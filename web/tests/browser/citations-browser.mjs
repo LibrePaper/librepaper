@@ -5,9 +5,10 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
+import { removeTemporary, stopBrowserProcess } from "../helpers/browser-driver.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-citations-check-"));
@@ -160,7 +161,7 @@ try {
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const httpPort = server.address().port;
-  browser = spawn(requireChromiumExecutable(), ["--headless=new", "--no-sandbox", "--disable-gpu", "--user-data-dir=" + profile, "--remote-debugging-port=" + port, "about:blank"], { stdio: "ignore" });
+  browser = spawn(requireChromiumExecutable(), ["--headless=new", "--no-sandbox", "--disable-gpu", "--user-data-dir=" + profile, "--remote-debugging-port=" + port, "about:blank"], { stdio: "ignore", detached: true });
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   let info;
   for (let attempt = 0; attempt < 100; attempt++) { try { info = await fetch("http://127.0.0.1:" + port + "/json").then((r) => r.json()); break; } catch { await wait(50); } }
@@ -211,4 +212,4 @@ try {
     assert.equal(zotero.liveHasBibliography, false, "tracked Zotero import changed the shared file directory");
   }
   console.log("citations-browser: tracked Zotero imports preserve implicit and explicit main metadata");
-} finally { socket?.close(); browser?.kill(); server?.close(); rmSync(temporary, { recursive: true, force: true }); }
+} finally { socket?.close(); await stopBrowserProcess(browser); server?.close(); removeTemporary(temporary); }

@@ -18,11 +18,11 @@
 // `browser-smoke.mjs` and `latex-check.mjs` do it.
 
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { browser } from "../helpers/browser-driver.mjs";
+import { browser, removeTemporary } from "../helpers/browser-driver.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
@@ -447,7 +447,7 @@ try {
   check("the viewer check ran", false, String(error).slice(0, 500));
 } finally {
   await chrome?.close();
-  if (profile) rmSync(profile, { recursive: true, force: true });
+  if (profile) removeTemporary(profile);
   server.close();
   await wait(200);
 }

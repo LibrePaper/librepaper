@@ -4,12 +4,12 @@
 
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { call, handOver } from "../../src/lib/renderer-wasm.js";
-import { browser } from "../helpers/browser-driver.mjs";
+import { browser, removeTemporary } from "../helpers/browser-driver.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
@@ -485,7 +485,7 @@ try {
   check("the Typst viewer check ran", false, String(error).slice(0, 500));
 } finally {
   await chrome?.close();
-  if (profile) rmSync(profile, { recursive: true, force: true });
+  if (profile) removeTemporary(profile);
   server.close();
   await wait(150);
 }

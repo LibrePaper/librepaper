@@ -3,11 +3,11 @@ import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browser, until } from "../helpers/browser-driver.mjs";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 // What the comments panel says and offers when it is holding a prefix of the
 // document's comments rather than all of them.
@@ -126,5 +126,5 @@ try {
 } finally {
   await page?.close();
   if (server) await new Promise((resolve) => server.close(resolve));
-  rmSync(temporary, { recursive: true, force: true });
+  removeTemporary(temporary);
 }
