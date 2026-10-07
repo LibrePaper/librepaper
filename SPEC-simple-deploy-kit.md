@@ -107,16 +107,19 @@ Deleted from `deploy/`: `setup`, `postgres/roles.sql`, `postgres/init-roles.sh`,
 # cp compose.managed-db.yaml compose.override.yaml, then set database_url in librepaper.toml
 services:
   postgres:
-    profiles: [unused]
+    profiles: !override [unused]
   librepaper:
     depends_on: !reset []
   backup:
     depends_on: !reset []
   postgres-exporter:
-    profiles: [unused]   # or set DATA_SOURCE_NAME to the provider's monitoring URL
+    profiles: !override [unused]   # or set DATA_SOURCE_NAME to the provider's monitoring URL
 ```
 
-  The empty `pgsocket` mounts stay; they are harmless.
+  The empty `pgsocket` mounts stay; they are harmless. `!override` matters:
+  Compose appends list values on merge, so a plain `profiles: [unused]` on
+  the exporter yields `[monitoring, unused]` and the exporter still starts
+  with the monitoring profile. Verified on Compose 5.4.
 
 ### Database
 
