@@ -288,7 +288,7 @@ Host script, in order, stopping on the first error:
 ```sh
 # Preconditions, all read-only, or abort:
 #   pg_roles for OID 10 and rolname LIKE 'librepaper%' is exactly the catalog above
-#   librepaper_app and librepaper_backup own no objects (DROP OWNED would drop them)
+#   librepaper_app, librepaper_backup and librepaper_metrics own no objects (DROP OWNED would drop them)
 #   librepaper_bootstrap owns nothing in the postgres database
 docker compose stop librepaper backup     # only this script is connected
 docker compose exec -T postgres pg_dump -U librepaper_owner -d librepaper -Fc > ~/librepaper-convert/librepaper.dump   # the fallback
@@ -308,10 +308,11 @@ SQL
 docker compose up -d --wait --remove-orphans       # postgres is recreated without a network, with the socket volume; the app validates the schema; the old migrate container goes
 rm -f setup postgres/roles.sql postgres/init-roles.sh .setup-state.json monitoring/grafana-entrypoint.sh \
   compose.external-db.yaml compose.local-binary.yaml compose.local-build.yaml compose.monitoring.yaml compose.production.yaml \
-  .env prometheus.yaml grafana.json monitoring/ \
+  .env prometheus.yaml grafana.json \
   secrets/database_app_url secrets/database_owner_url secrets/database_backup_url secrets/database_metrics_url secrets/database_metrics_uri secrets/database_metrics_user \
   secrets/database_app_password secrets/database_owner_password secrets/database_backup_password secrets/database_metrics_password \
   secrets/postgres_bootstrap_password secrets/grafana_admin_password
+rm -rf monitoring
 ```
 
 - `psql -1` runs the file in one transaction: either every statement applies
