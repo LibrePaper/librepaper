@@ -101,8 +101,7 @@ fn decide(server: &Server, request: &Request<Body>) -> Decision {
 /// Whether the request carries `Authorization: Basic` with this password. The
 /// user name is whatever the browser sent and is not compared.
 fn authorized(headers: &HeaderMap, password: &str) -> bool {
-    basic_password(headers)
-        .is_some_and(|supplied| password_matches(&supplied, password.as_bytes()))
+    basic_password(headers).is_some_and(|supplied| password_matches(&supplied, password.as_bytes()))
 }
 
 /// The bytes after the first colon of the decoded credentials. A missing
@@ -168,7 +167,9 @@ fn parse_window(query: Option<&str>, now: i64) -> Result<Window, String> {
         return Err("from must be before to".to_string());
     }
     let oldest = to.saturating_sub(HISTORY_RETENTION.as_secs() as i64);
-    let points = points.unwrap_or(DEFAULT_POINTS).clamp(MIN_POINTS, MAX_POINTS);
+    let points = points
+        .unwrap_or(DEFAULT_POINTS)
+        .clamp(MIN_POINTS, MAX_POINTS);
     Ok(Window {
         from: from.max(oldest),
         to,
@@ -197,19 +198,24 @@ async fn data(server: &Server, query: Option<&str>) -> Response<Body> {
         );
     };
     let reader = Arc::clone(graphs);
-    let read = tokio::task::spawn_blocking(move || {
-        reader.read(window.from, window.to, window.points)
-    })
-    .await;
+    let read =
+        tokio::task::spawn_blocking(move || reader.read(window.from, window.to, window.points))
+            .await;
     match read {
         Ok(Ok(series)) => json_reply(&body(&window, &series)),
         Ok(Err(error)) => {
             tracing::warn!("graphs read failed: {error}");
-            text(StatusCode::INTERNAL_SERVER_ERROR, "the history could not be read")
+            text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the history could not be read",
+            )
         }
         Err(error) => {
             tracing::warn!("graphs read did not finish: {error}");
-            text(StatusCode::INTERNAL_SERVER_ERROR, "the history could not be read")
+            text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the history could not be read",
+            )
         }
     }
 }
@@ -284,8 +290,14 @@ mod tests {
 
     #[test]
     fn the_right_password_is_accepted_with_any_user_name() {
-        assert!(authorized(&credentials("admin:correct horse"), "correct horse"));
-        assert!(authorized(&credentials("anyone:correct horse"), "correct horse"));
+        assert!(authorized(
+            &credentials("admin:correct horse"),
+            "correct horse"
+        ));
+        assert!(authorized(
+            &credentials("anyone:correct horse"),
+            "correct horse"
+        ));
         assert!(authorized(&credentials(":correct horse"), "correct horse"));
     }
 
@@ -297,9 +309,18 @@ mod tests {
 
     #[test]
     fn a_wrong_or_partial_password_is_refused() {
-        assert!(!authorized(&credentials("admin:correct horsE"), "correct horse"));
-        assert!(!authorized(&credentials("admin:correct hors"), "correct horse"));
-        assert!(!authorized(&credentials("admin:correct horse!"), "correct horse"));
+        assert!(!authorized(
+            &credentials("admin:correct horsE"),
+            "correct horse"
+        ));
+        assert!(!authorized(
+            &credentials("admin:correct hors"),
+            "correct horse"
+        ));
+        assert!(!authorized(
+            &credentials("admin:correct horse!"),
+            "correct horse"
+        ));
         assert!(!authorized(&credentials("admin:"), "correct horse"));
         // The user name is not the password.
         assert!(!authorized(&credentials("correct horse:"), "correct horse"));
@@ -330,7 +351,10 @@ mod tests {
             .to_str()
             .unwrap()
             .replacen("Basic", "bAsIc", 1);
-        headers.insert(header::AUTHORIZATION, HeaderValue::from_str(&value).unwrap());
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
         assert!(authorized(&headers, "correct horse"));
     }
 
@@ -370,10 +394,7 @@ mod tests {
         assert_eq!(window.step(), 10.0);
         // A lone `from` runs to now, a lone `to` starts a day earlier.
         assert_eq!(ask("from=100").unwrap().to, NOW);
-        assert_eq!(
-            ask("to=100000").unwrap().from,
-            100_000 - 86_400
-        );
+        assert_eq!(ask("to=100000").unwrap().from, 100_000 - 86_400);
     }
 
     #[test]

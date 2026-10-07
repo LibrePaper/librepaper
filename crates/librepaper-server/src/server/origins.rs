@@ -239,7 +239,11 @@ impl Origins {
                     docs.clone(),
                 ));
             }
-            if let Some(admin) = self.admin.as_ref().filter(|admin| admin.matches(&authority)) {
+            if let Some(admin) = self
+                .admin
+                .as_ref()
+                .filter(|admin| admin.matches(&authority))
+            {
                 return Some(Arrival::settled(
                     Side::Admin,
                     admin.clone(),
@@ -791,7 +795,10 @@ mod tests {
             origins.resolve("docs.paper.example").unwrap().side(),
             Side::Docs
         );
-        for host in ["admin.paper.example:8443", "admin.paper.example.evil.example"] {
+        for host in [
+            "admin.paper.example:8443",
+            "admin.paper.example.evil.example",
+        ] {
             assert!(origins.resolve(host).is_none(), "{host:?}");
         }
     }

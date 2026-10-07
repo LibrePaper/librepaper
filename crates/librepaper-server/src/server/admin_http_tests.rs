@@ -127,12 +127,19 @@ impl Fixture {
 }
 
 fn header<'a>(response: &'a reqwest::Response, name: &str) -> Option<&'a str> {
-    response.headers().get(name).and_then(|value| value.to_str().ok())
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
 }
 
 /// The four headers every admin response carries, including the refusals.
 fn assert_private_headers(response: &reqwest::Response, what: &str) {
-    assert_eq!(header(response, "cache-control"), Some("no-store"), "{what}");
+    assert_eq!(
+        header(response, "cache-control"),
+        Some("no-store"),
+        "{what}"
+    );
     assert_eq!(
         header(response, "x-content-type-options"),
         Some("nosniff"),
@@ -144,7 +151,10 @@ fn assert_private_headers(response: &reqwest::Response, what: &str) {
         "{what}"
     );
     let robots = header(response, "x-robots-tag").unwrap_or_default();
-    assert!(robots.contains("noindex"), "{what}: x-robots-tag {robots:?}");
+    assert!(
+        robots.contains("noindex"),
+        "{what}: x-robots-tag {robots:?}"
+    );
 }
 
 /// Script elements that carry their code in the page rather than in a file.
@@ -228,7 +238,11 @@ async fn only_the_six_routes_exist_and_every_other_answer_is_behind_the_password
         return;
     };
 
-    let unknown = f.get_as_operator(ADMIN_HOST, "/other").send().await.unwrap();
+    let unknown = f
+        .get_as_operator(ADMIN_HOST, "/other")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(unknown.status().as_u16(), 404);
     assert_private_headers(&unknown, "404");
     let post = f
@@ -242,7 +256,14 @@ async fn only_the_six_routes_exist_and_every_other_answer_is_behind_the_password
 
     // A client that does not know the password learns nothing about which
     // paths exist or which methods they take.
-    for path in ["/other", "/api/status", "/graphs", "/data?points=10", "/ready", "/health"] {
+    for path in [
+        "/other",
+        "/api/status",
+        "/graphs",
+        "/data?points=10",
+        "/ready",
+        "/health",
+    ] {
         let response = f.get(ADMIN_HOST, path).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 401, "{path}");
     }
@@ -320,7 +341,12 @@ async fn the_data_endpoint_returns_every_series_in_catalog_order_and_validates()
         );
     }
 
-    for query in ["from=10&to=5", "from=10&to=10", "from=banana", "points=banana"] {
+    for query in [
+        "from=10&to=5",
+        "from=10&to=10",
+        "from=banana",
+        "points=banana",
+    ] {
         let response = f
             .get_as_operator(ADMIN_HOST, &format!("/data?{query}"))
             .send()
@@ -340,7 +366,13 @@ async fn the_app_and_document_hosts_serve_nothing_of_the_admin_page() {
     // The fixture has no shell, so the app host's own answer to a path it does
     // not have is its plain 404. The password does not open it either.
     for host in [READER_HOST, DOCS_HOST] {
-        for path in ["/data", "/data?points=10", "/app.js", "/app.css", "/uplot.js"] {
+        for path in [
+            "/data",
+            "/data?points=10",
+            "/app.js",
+            "/app.css",
+            "/uplot.js",
+        ] {
             for operator in [false, true] {
                 let request = if operator {
                     f.get_as_operator(host, path)
@@ -398,12 +430,18 @@ async fn requests_on_the_admin_host_are_counted_under_the_admin_route_and_no_oth
 
     f.get(ADMIN_HOST, "/").send().await.unwrap();
     f.get_as_operator(ADMIN_HOST, "/").send().await.unwrap();
-    f.get_as_operator(ADMIN_HOST, "/other").send().await.unwrap();
+    f.get_as_operator(ADMIN_HOST, "/other")
+        .send()
+        .await
+        .unwrap();
     f.get_as_operator(ADMIN_HOST, "/data?points=10")
         .send()
         .await
         .unwrap();
-    f.get_as_operator(ADMIN_HOST, "/api/status").send().await.unwrap();
+    f.get_as_operator(ADMIN_HOST, "/api/status")
+        .send()
+        .await
+        .unwrap();
 
     let text = f.server.metrics.render();
     assert!(text.contains("route=\"admin\""), "{text}");
@@ -423,7 +461,9 @@ async fn requests_on_the_admin_host_are_counted_under_the_admin_route_and_no_oth
     f.get(READER_HOST, "/data").send().await.unwrap();
     let text = f.server.metrics.render();
     assert!(
-        text.contains("librepaper_http_requests_total{route=\"other\",method=\"GET\",status_class=\"4xx\"} 1"),
+        text.contains(
+            "librepaper_http_requests_total{route=\"other\",method=\"GET\",status_class=\"4xx\"} 1"
+        ),
         "{text}"
     );
 }

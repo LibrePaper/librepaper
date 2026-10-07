@@ -572,10 +572,8 @@ pub fn spawn_sampler(server: Arc<super::Server>) {
                 server.metrics.update_gauges(&snapshot, &server.config);
                 if let Some(graphs) = server.graphs.clone() {
                     let live = server.metrics.live.clone();
-                    let observed = tokio::task::spawn_blocking(move || {
-                        graphs.observe(&snapshot, &live)
-                    })
-                    .await;
+                    let observed =
+                        tokio::task::spawn_blocking(move || graphs.observe(&snapshot, &live)).await;
                     if let Err(error) = observed {
                         tracing::warn!("operator graphs could not record a sample: {error}");
                     }
@@ -918,14 +916,21 @@ mod tests {
 
         metrics.record_request("health", "GET", 503, Duration::from_millis(12));
         let after = metrics.render();
-        let lines_of =
-            |prefix: &str| after.lines().filter(|line| line.starts_with(prefix)).count();
+        let lines_of = |prefix: &str| {
+            after
+                .lines()
+                .filter(|line| line.starts_with(prefix))
+                .count()
+        };
         assert_eq!(lines_of("librepaper_http_requests_total{"), 1);
         assert_eq!(
             lines_of("librepaper_http_request_duration_seconds_bucket{"),
             HISTOGRAM_EDGES_SECONDS.len() + 1
         );
-        assert_eq!(lines_of("librepaper_http_request_duration_seconds_count{"), 1);
+        assert_eq!(
+            lines_of("librepaper_http_request_duration_seconds_count{"),
+            1
+        );
         assert!(after.contains(
             "librepaper_http_requests_total{route=\"health\",method=\"GET\",status_class=\"5xx\"} 1\n"
         ));

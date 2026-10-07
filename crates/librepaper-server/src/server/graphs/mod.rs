@@ -531,8 +531,8 @@ mod tests {
         assert_eq!(
             units,
             [
-                "count", "count", "count", "seconds", "count", "count", "bytes", "bytes",
-                "bytes", "bytes", "percent", "count",
+                "count", "count", "count", "seconds", "count", "count", "bytes", "bytes", "bytes",
+                "bytes", "percent", "count",
             ]
         );
     }
@@ -618,7 +618,11 @@ mod tests {
     #[test]
     fn a_duration_on_an_edge_belongs_to_that_edges_cell() {
         let live = Live::default();
-        live.record("root", 200, Duration::from_secs_f64(HISTOGRAM_EDGES_SECONDS[2]));
+        live.record(
+            "root",
+            200,
+            Duration::from_secs_f64(HISTOGRAM_EDGES_SECONDS[2]),
+        );
         assert_eq!(live.counts().buckets[2], 1);
     }
 
@@ -669,7 +673,12 @@ mod tests {
         let started = graphs.state.lock().unwrap().last_record;
         let now = unix_seconds();
 
-        graphs.observe_at(started + Duration::from_secs(30), now, &snapshot(0, 0), &live);
+        graphs.observe_at(
+            started + Duration::from_secs(30),
+            now,
+            &snapshot(0, 0),
+            &live,
+        );
         assert!(column(&graphs, "sockets_active", now - 10, now + 10, 20)
             .iter()
             .all(Option::is_none));
@@ -772,7 +781,12 @@ mod tests {
         let live = Live::default();
         let started = graphs.state.lock().unwrap().last_record;
         let now = unix_seconds();
-        graphs.observe_at(started + Duration::from_secs(60), now, &snapshot(0, 0), &live);
+        graphs.observe_at(
+            started + Duration::from_secs(60),
+            now,
+            &snapshot(0, 0),
+            &live,
+        );
         let aside = names()
             .into_iter()
             .find(|name| name.starts_with("metrics.sqlite.corrupt-"))
@@ -781,14 +795,20 @@ mod tests {
         assert_eq!(kept[start..start + size], vec![0xa5; size][..]);
         assert!(graphs.state.lock().unwrap().checked);
         // That minute was recorded in the new file, and so is the next.
-        assert_eq!(column(&graphs, "sockets_active", now, now + 1, 1)[0], Some(1.0));
+        assert_eq!(
+            column(&graphs, "sockets_active", now, now + 1, 1)[0],
+            Some(1.0)
+        );
         graphs.observe_at(
             started + Duration::from_secs(120),
             now + 60,
             &snapshot(0, 0),
             &live,
         );
-        assert_eq!(column(&graphs, "sockets_active", now + 60, now + 61, 1)[0], Some(1.0));
+        assert_eq!(
+            column(&graphs, "sockets_active", now + 60, now + 61, 1)[0],
+            Some(1.0)
+        );
         // The check ran once: nothing else was set aside.
         assert_eq!(
             names()
@@ -807,8 +827,16 @@ mod tests {
         let started = graphs.state.lock().unwrap().last_record;
         let now = unix_seconds();
         let old = now - HISTORY_RETENTION.as_secs() as i64 - 100;
-        graphs.observe_at(started + Duration::from_secs(60), old, &snapshot(0, 0), &live);
-        assert_eq!(column(&graphs, "sockets_active", old, old + 1, 1)[0], Some(1.0));
+        graphs.observe_at(
+            started + Duration::from_secs(60),
+            old,
+            &snapshot(0, 0),
+            &live,
+        );
+        assert_eq!(
+            column(&graphs, "sockets_active", old, old + 1, 1)[0],
+            Some(1.0)
+        );
 
         graphs.observe_at(
             started + Duration::from_secs(60) + TRIM_INTERVAL,
@@ -817,6 +845,9 @@ mod tests {
             &live,
         );
         assert_eq!(column(&graphs, "sockets_active", old, old + 1, 1)[0], None);
-        assert_eq!(column(&graphs, "sockets_active", now, now + 1, 1)[0], Some(1.0));
+        assert_eq!(
+            column(&graphs, "sockets_active", now, now + 1, 1)[0],
+            Some(1.0)
+        );
     }
 }

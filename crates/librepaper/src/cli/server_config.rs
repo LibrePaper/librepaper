@@ -1503,7 +1503,10 @@ mod tests {
             Some(ADMIN_PASSWORD),
         ))
         .unwrap_err();
-        assert!(error.contains("origins.admin requires origins.app"), "{error}");
+        assert!(
+            error.contains("origins.admin requires origins.app"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1560,7 +1563,11 @@ mod tests {
                 "{admin}: {error}"
             );
         }
-        for admin in ["http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080"] {
+        for admin in [
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+        ] {
             let result = load_text(&admin_config(
                 &format!("app = \"http://app.example\"\nadmin = \"{admin}\""),
                 Some(ADMIN_PASSWORD),
@@ -1588,7 +1595,10 @@ mod tests {
         let shown = show_resolved(&loaded);
         assert!(!shown.contains(ADMIN_PASSWORD), "{shown}");
         assert!(shown.contains("password = \"<redacted>\""), "{shown}");
-        assert!(shown.contains("admin = \"https://admin.paper.example\""), "{shown}");
+        assert!(
+            shown.contains("admin = \"https://admin.paper.example\""),
+            "{shown}"
+        );
         assert!(toml::from_str::<toml::Value>(&shown).is_ok());
         assert!(!format!("{loaded:?}").contains(ADMIN_PASSWORD));
 

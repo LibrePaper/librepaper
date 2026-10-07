@@ -798,12 +798,13 @@ mod admin_password_tests {
             assert!(error.contains("together"), "{error}");
         }
 
-        let error = validate_admin_password(
-            Some("https://admin.paper.example"),
-            Some("0123456789abcde"),
-        )
-        .unwrap_err();
-        assert!(error.contains("admin.password must be at least 16"), "{error}");
+        let error =
+            validate_admin_password(Some("https://admin.paper.example"), Some("0123456789abcde"))
+                .unwrap_err();
+        assert!(
+            error.contains("admin.password must be at least 16"),
+            "{error}"
+        );
         assert!(!error.contains("0123456789abcde"), "{error}");
     }
 }
