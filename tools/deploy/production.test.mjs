@@ -247,10 +247,10 @@ case "$url" in
       grep -Fxq -f "$EXPECTED_AUTH_FILE" "$config"
       series=()
       for i in $(seq 1 "$ADMIN_SERIES"); do
-        series+=("{\"name\":\"series$i\",\"label\":\"Series $i\",\"unit\":\"count\",\"values\":[0.0]}")
+        series+=('{"name":"series'"$i"'","label":"Series '"$i"'","unit":"count","values":[0.0]}')
       done
       IFS=,
-      body="{\"from\":1791300000,\"to\":1791386400,\"step\":144.0,\"series\":[${series[*]}]}"
+      body='{"from":1791300000,"to":1791386400,"step":144.0,"series":['"\${series[*]}"']}'
       unset IFS
     else code=401; fi
     ;;
