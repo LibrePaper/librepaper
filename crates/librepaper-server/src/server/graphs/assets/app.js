@@ -4,10 +4,12 @@
 (function () {
   "use strict";
 
-  const POINTS = 600;
+  const MAX_POINTS = 600;
+  const MIN_POINTS = 10;
+  const RECORD = 60; // seconds between records
   const HEIGHT = 190;
   const REFRESH_MS = 60 * 1000;
-  const MIN_SPAN = 60; // seconds; a drag narrower than a record is widened
+  const MIN_SPAN = RECORD; // a drag narrower than a record is widened
   const SIZES = ["B", "KB", "MB", "GB", "TB"];
   // The least a y axis may reach, so an idle series is not stretched to fill it.
   const FLOOR = { seconds: 0.005, percent: 1 };
@@ -21,6 +23,7 @@
   let zoom = null; // {from, to} after a drag-select, else null
   let panels = []; // one {title, plot} per series
   let latest = 0; // the newest request; a slower, older reply is dropped
+  let pending = false; // a load is already scheduled for this turn
 
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
@@ -50,7 +53,7 @@
   // minutes. The latency histogram ends at 5 s, so that value is a floor.
   function titleFor(series, step) {
     const notes = [];
-    if (series.bucket === "max" && step > 60) notes.push("worst minute");
+    if (series.bucket === "max" && step > RECORD) notes.push("worst minute");
     if (series.name === "latency_p95_seconds") notes.push("5 s means at least 5 s");
     return series.label + (notes.length ? " (" + notes.join(", ") + ")" : "");
   }
@@ -85,6 +88,17 @@
     };
   }
 
+  // Cursor sync delivers a drag, and a double-click, to every panel, so each
+  // asks for a load and the turn's loads become one request.
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    queueMicrotask(() => {
+      pending = false;
+      load();
+    });
+  }
+
   // A drag on any panel zooms every panel to that span.
   function selected(u) {
     if (u.select.width < 4) return;
@@ -92,12 +106,12 @@
     const to = Math.ceil(u.posToVal(u.select.left + u.select.width, "x"));
     u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
     zoom = { from: from, to: Math.max(to, from + MIN_SPAN) };
-    load();
+    schedule();
   }
 
   function reset() {
     zoom = null;
-    load();
+    schedule();
   }
 
   function makePanel(series, xs) {
@@ -139,8 +153,11 @@
     const id = ++latest;
     const to = zoom ? zoom.to : Math.floor(Date.now() / 1000);
     const from = zoom ? zoom.from : to - choice;
+    // A cell is never narrower than a record, or each sample would sit alone
+    // between gaps and draw nothing.
+    const points = Math.min(MAX_POINTS, Math.max(MIN_POINTS, Math.floor((to - from) / RECORD)));
     try {
-      const response = await fetch("/data?from=" + from + "&to=" + to + "&points=" + POINTS, { cache: "no-store" });
+      const response = await fetch("/data?from=" + from + "&to=" + to + "&points=" + points, { cache: "no-store" });
       if (!response.ok) throw new Error("HTTP " + response.status);
       const data = await response.json();
       if (id !== latest) return;
