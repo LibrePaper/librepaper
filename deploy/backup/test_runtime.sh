@@ -71,6 +71,22 @@ wait_for_file() {
 	fail "timed out waiting for $path"
 }
 
+wait_for_event_count() {
+	path=$1
+	pattern=$2
+	minimum=$3
+	tries=0
+	while [ "$tries" -lt 90 ]; do
+		count=$(docker exec "$container" grep -c -F "$pattern" "$path" || true)
+		if [ "$count" -ge "$minimum" ]; then
+			return 0
+		fi
+		sleep 1
+		tries=$((tries + 1))
+	done
+	fail "timed out waiting for at least $minimum occurrences of '$pattern' in $path"
+}
+
 
 docker volume create "$backup_volume" >/dev/null
 backup_volume_created=1
@@ -205,9 +221,6 @@ container_created=1
 wait_for_file /run/librepaper-backup/crontab
 docker exec "$container" test -s /run/librepaper-backup/crontab \
 	|| fail "resticprofile did not create a scheduler file"
-wait_for_file /var/backups/librepaper/status.json
-docker exec "$container" test -s /var/backups/librepaper/status.json \
-	|| fail "resticprofile did not create the status file"
 
 docker exec -d "$container" python3 /tmp/librepaper-backup-test-receiver.py >/dev/null
 sleep 1
@@ -231,6 +244,9 @@ fi
 docker exec "$container" resticprofile -c /etc/resticprofile/profiles.toml \
 	-n resticprofile backup >"$workdir/backup-first.log" 2>&1 \
 	|| fail "synthetic backup and after-backup retention failed"
+wait_for_file /var/backups/librepaper/status.json
+docker exec "$container" test -s /var/backups/librepaper/status.json \
+	|| fail "resticprofile did not create the status file"
 docker exec "$container" grep -F /backup/start /var/backups/librepaper/deadman-events.log >/dev/null \
 	|| fail "backup dead-man start hook did not reach local receiver"
 docker exec "$container" grep -F /backup/success /var/backups/librepaper/deadman-events.log >/dev/null \
@@ -242,13 +258,14 @@ sleep 2
 docker exec "$container" touch /run/librepaper-backup/block
 docker exec -d "$container" resticprofile -c /etc/resticprofile/profiles.toml \
 	run-schedule backup@resticprofile >/dev/null
-sleep 2
+wait_for_file /var/backups/librepaper/current/payload
 if docker exec "$container" resticprofile -c /etc/resticprofile/profiles.toml \
 	run-schedule backup@resticprofile >"$workdir/lock-timeout.log" 2>&1; then
 	fail "second scheduled backup unexpectedly passed the shared lock"
 fi
+before=$(docker exec "$container" grep -c -F /backup/success /var/backups/librepaper/deadman-events.log || true)
 docker exec "$container" touch /run/librepaper-backup/release
-sleep 2
+wait_for_event_count /var/backups/librepaper/deadman-events.log /backup/success $((before + 1))
 docker exec "$container" rm -f /run/librepaper-backup/block /run/librepaper-backup/release
 
 # A failed repository check must reach run-after-fail.

@@ -120,6 +120,7 @@ docker run -d --name "$sidecar" "${common[@]}" \
 	-v "$work/disabled-backup.toml:/etc/resticprofile/resticprofile.toml:ro" \
 	"$LIBREPAPER_BACKUP_IMAGE" >/dev/null
 sleep 2
+docker logs "$sidecar" 2>&1 | grep -q 'backups are disabled' || { echo 'disabled sidecar did not report itself' >&2; exit 1; }
 docker rm -f -v "$sidecar" >/dev/null
 
 launch_enabled() {
