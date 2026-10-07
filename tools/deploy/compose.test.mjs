@@ -98,12 +98,5 @@ test('compose.managed-db.yaml removes the local database and the start-up depend
   for (const name of ['librepaper', 'backup']) {
     assert.ok(isEmpty(config.services[name].depends_on), `${name} has no depends_on`);
   }
-  assertNoSecretsOutsideMonitoring(config);
-});
-
-test('compose.managed-db.yaml also removes the database exporter when monitoring is on', { skip }, () => {
-  const config = composeConfig({ managed: true, monitoring: true });
-  assert.equal(config.services.postgres, undefined);
-  assert.equal(config.services['postgres-exporter'], undefined, 'the exporter has no socket to read');
-  assert.deepEqual(names(config.secrets), [grafanaSecret]);
+  assertNoSecrets(config);
 });

@@ -590,7 +590,7 @@ test('repeated deploys render Caddy from its template without duplicating site a
     const caddy = read(f.remote, 'caddy/Caddyfile');
     assert.equal((caddy.match(/librepaper\.org \{/g) ?? []).length, 1);
     assert.equal((caddy.match(/www\.librepaper\.org, librepaper\.com/g) ?? []).length, 1);
-    assert.equal(read(f.remote, '.env'), 'COMPOSE_PROFILES=monitoring\n');
+    assert.equal(existsSync(path.join(f.remote, '.env')), false, '.env should not exist');
   } finally {
     f.cleanup();
   }
@@ -685,7 +685,6 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
       'librepaper.toml': 'kit sample config\n',
       'resticprofile.toml': 'kit sample backup\n',
       'caddy/Caddyfile': 'kit Caddyfile\n',
-      'monitoring/alerts.yml': 'kit alerts\n',
       'postgres/init.sql': 'kit sql\n',
       Dockerfile: 'FROM scratch\n',
       'backup/entrypoint.sh': 'build context\n',
@@ -695,12 +694,10 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
       'librepaper.toml.candidate': 'operator candidate\n',
       'resticprofile.toml': 'operator backup\n',
       'secrets/github_client_id': 'operator id\n',
-      '.env': 'COMPOSE_PROFILES=monitoring\n',
       'compose.override.yaml': 'operator override\n',
       'caddy/Caddyfile': 'operator Caddyfile\n',
       'caddy/Caddyfile.candidate': 'operator Caddyfile candidate\n',
       'caddy/local.d/other.caddy': 'another app\n',
-      'monitoring/grafana_admin_password': 'operator password',
       'site/index.html': 'the site\n',
     };
     writeTree(target, {
@@ -715,7 +712,6 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
     assert.deepEqual(walk(target).sort(), [
       ...Object.keys(operatorFiles),
       'compose.yaml',
-      'monitoring/alerts.yml',
       'postgres/init.sql',
     ].sort());
     for (const [file, contents] of Object.entries(operatorFiles)) assert.equal(read(target, file), contents, file);
