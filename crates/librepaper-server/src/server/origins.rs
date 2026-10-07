@@ -24,11 +24,13 @@ use axum::http::HeaderMap;
 
 pub const DOCS_PREFIX: &str = "docs.";
 
-/// Which of a deployment's two origins a request arrived on.
+/// Which of a deployment's origins a request arrived on. `Admin` exists only
+/// when the operator configured the graphs page's own name.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Side {
     Reader,
     Docs,
+    Admin,
 }
 
 /// One origin, kept as its parts and as the string a browser would compare
@@ -119,18 +121,23 @@ fn default_port(scheme: &str, port: u16) -> bool {
     (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
 }
 
-/// The two origins this deployment answers on. `None` is a deployment the
-/// operator gave no origins, which answers on loopback alone.
+/// The origins this deployment answers on: the reader and documents, and
+/// optionally the operator's graphs page. `None` is a deployment the operator
+/// gave no origins, which answers on loopback alone.
 #[derive(Clone, Debug, Default)]
 pub struct Origins {
     configured: Option<(Origin, Origin)>,
+    admin: Option<Origin>,
 }
 
 impl Origins {
     /// A deployment that answers on loopback alone: development, the test
     /// suite, and `librepaper admin serve` with no `origins.app`.
     pub fn loopback_only() -> Origins {
-        Origins { configured: None }
+        Origins {
+            configured: None,
+            admin: None,
+        }
     }
 
     /// Settles the pair an operator asked for. The document origin defaults to
@@ -160,6 +167,35 @@ impl Origins {
         }
         Ok(Origins {
             configured: Some((reader, docs)),
+            admin: None,
+        })
+    }
+
+    /// Adds the operator's graphs page, which gets a host of its own. It sits
+    /// behind a password the browser keeps per host, so it must not share a
+    /// host with the reader's session or with documents, and it needs a
+    /// reader origin to be a neighbour of.
+    pub fn with_admin(self, admin: Option<&str>) -> Result<Origins, String> {
+        let Some(admin) = admin else {
+            return Ok(self);
+        };
+        let admin = Origin::parse(admin).map_err(|error| format!("origins.admin: {error}"))?;
+        let Some((reader, docs)) = &self.configured else {
+            return Err("origins.admin requires origins.app".into());
+        };
+        if admin.host() == reader.host() || admin.host() == docs.host() {
+            return Err(format!(
+                "origins.admin must be a different host from the reader and document origins, but it is {host}.\n\
+                 The page is behind a password and must not share a host with the reader's session\n\
+                 or with documents. Serve it from its own name, for example admin.{reader_host}: create a\n\
+                 DNS record for it pointing at this deployment.",
+                host = admin.host(),
+                reader_host = reader.host()
+            ));
+        }
+        Ok(Origins {
+            admin: Some(admin),
+            ..self
         })
     }
 
@@ -169,6 +205,10 @@ impl Origins {
 
     pub fn docs(&self) -> Option<&Origin> {
         self.configured.as_ref().map(|(_, docs)| docs)
+    }
+
+    pub fn admin(&self) -> Option<&Origin> {
+        self.admin.as_ref()
     }
 
     /// Which origin a request addressed to `host` is on, or nothing if this
@@ -184,16 +224,34 @@ impl Origins {
         let authority = normalize(host)?;
         if let Some((reader, docs)) = &self.configured {
             if reader.matches(&authority) {
-                return Some(Arrival::settled(Side::Reader, reader.clone(), docs.clone()));
+                return Some(Arrival::settled(
+                    Side::Reader,
+                    reader.clone(),
+                    reader.clone(),
+                    docs.clone(),
+                ));
             }
             if docs.matches(&authority) {
-                return Some(Arrival::settled(Side::Docs, reader.clone(), docs.clone()));
+                return Some(Arrival::settled(
+                    Side::Docs,
+                    docs.clone(),
+                    reader.clone(),
+                    docs.clone(),
+                ));
+            }
+            if let Some(admin) = self.admin.as_ref().filter(|admin| admin.matches(&authority)) {
+                return Some(Arrival::settled(
+                    Side::Admin,
+                    admin.clone(),
+                    reader.clone(),
+                    docs.clone(),
+                ));
             }
         }
         self.loopback(&authority)
     }
 
-    /// Whether `host` is one of the two configured public names, as asked by a
+    /// Whether `host` is one of the configured public names, as asked by a
     /// reverse proxy deciding whether to obtain a certificate for it. Unlike
     /// `resolve`, loopback is not accepted: a certificate is only ever for a
     /// configured public name.
@@ -202,7 +260,14 @@ impl Origins {
             return false;
         };
         match &self.configured {
-            Some((reader, docs)) => reader.matches(&authority) || docs.matches(&authority),
+            Some((reader, docs)) => {
+                reader.matches(&authority)
+                    || docs.matches(&authority)
+                    || self
+                        .admin
+                        .as_ref()
+                        .is_some_and(|admin| admin.matches(&authority))
+            }
             None => false,
         }
     }
@@ -219,6 +284,17 @@ impl Origins {
             .is_some_and(|(reader, _)| reader.matches(&authority))
     }
 
+    /// Whether an authority is exactly the configured admin origin. The cost
+    /// middleware asks before it has an `Arrival`, to label the request.
+    pub fn is_admin_authority(&self, host: &str) -> bool {
+        let Some(authority) = normalize(host) else {
+            return false;
+        };
+        self.admin
+            .as_ref()
+            .is_some_and(|admin| admin.matches(&authority))
+    }
+
     /// A loopback request stands on its own origin pair, derived from the name
     /// it arrived on, so the reader that answers it agrees with the address in
     /// the browser's bar rather than with a public name it cannot reach.
@@ -228,14 +304,14 @@ impl Origins {
         if !is_loopback_name(bare) {
             return None;
         }
-        let side = if name.starts_with(DOCS_PREFIX) {
-            Side::Docs
-        } else {
-            Side::Reader
-        };
         let reader = Origin::assemble("http", bare, port);
         let docs = Origin::assemble("http", &format!("{DOCS_PREFIX}{bare}"), port);
-        Some(Arrival::settled(side, reader, docs))
+        let (side, here) = if name.starts_with(DOCS_PREFIX) {
+            (Side::Docs, docs.clone())
+        } else {
+            (Side::Reader, reader.clone())
+        };
+        Some(Arrival::settled(side, here, reader, docs))
     }
 }
 
@@ -287,29 +363,33 @@ fn is_loopback_name(name: &str) -> bool {
             .is_ok_and(|address| address.is_loopback())
 }
 
-/// What a request tells about where it arrived: which of the deployment's two
-/// origins it is on, and what those origins are, settled once so every check
-/// below sees the same answer.
+/// What a request tells about where it arrived: which of the deployment's
+/// origins it is on, and what the reader and document origins are, settled
+/// once so every check below sees the same answer.
 #[derive(Clone, Debug)]
 pub struct Arrival {
     pub scheme: &'static str,
     side: Side,
+    here: Origin,
     reader: Origin,
     docs: Origin,
 }
 
 impl Arrival {
-    fn settled(side: Side, reader: Origin, docs: Origin) -> Arrival {
-        let here = match side {
-            Side::Reader => &reader,
-            Side::Docs => &docs,
-        };
+    /// `here` is the origin the request arrived on: the reader's, the
+    /// documents' or the admin's.
+    fn settled(side: Side, here: Origin, reader: Origin, docs: Origin) -> Arrival {
         Arrival {
             scheme: here.scheme,
             side,
+            here,
             reader,
             docs,
         }
+    }
+
+    pub fn side(&self) -> Side {
+        self.side
     }
 
     /// Whether this request arrived on the document origin. Decided when the
@@ -347,10 +427,7 @@ impl Arrival {
     }
 
     fn here(&self) -> &str {
-        match self.side {
-            Side::Reader => &self.reader.origin,
-            Side::Docs => &self.docs.origin,
-        }
+        &self.here.origin
     }
 }
 
@@ -633,6 +710,129 @@ mod tests {
         assert!(!origins.ask(""));
         // Loopback deployments serve nothing publicly.
         assert!(!Origins::loopback_only().ask("paper.example"));
+    }
+
+    fn with_admin() -> Origins {
+        configured()
+            .with_admin(Some("https://admin.paper.example"))
+            .unwrap()
+    }
+
+    #[test]
+    fn no_admin_origin_leaves_the_deployment_as_it_was() {
+        let origins = configured().with_admin(None).unwrap();
+        assert!(origins.admin().is_none());
+        assert!(origins.resolve("admin.paper.example").is_none());
+        assert_eq!(
+            with_admin().admin().unwrap().as_str(),
+            "https://admin.paper.example"
+        );
+    }
+
+    #[test]
+    fn an_admin_origin_is_refused_without_a_reader_origin() {
+        let error = Origins::loopback_only()
+            .with_admin(Some("http://admin.localhost:8080"))
+            .expect_err("a loopback-only deployment has no neighbour for the admin page");
+        assert_eq!(error, "origins.admin requires origins.app");
+    }
+
+    #[test]
+    fn an_admin_origin_must_be_an_origin_with_a_host_of_its_own() {
+        let error = configured()
+            .with_admin(Some("admin.paper.example"))
+            .expect_err("a bare host is not an origin");
+        assert!(error.starts_with("origins.admin: "), "{error}");
+
+        let error = configured()
+            .with_admin(Some("https://paper.example"))
+            .expect_err("the reader's host is taken");
+        assert!(error.contains("origins.admin"), "{error}");
+        assert!(error.contains("different host"), "{error}");
+
+        let error = configured()
+            .with_admin(Some("https://docs.paper.example"))
+            .expect_err("the default document host is taken");
+        assert!(error.contains("different host"), "{error}");
+        assert!(error.contains("admin.paper.example"), "{error}");
+
+        let custom_docs =
+            Origins::configure("https://paper.example", Some("https://sandbox.example")).unwrap();
+        let error = custom_docs
+            .with_admin(Some("https://sandbox.example"))
+            .expect_err("a configured document host is taken");
+        assert!(error.contains("different host"), "{error}");
+    }
+
+    #[test]
+    fn the_admin_host_resolves_to_a_side_of_its_own() {
+        let origins = with_admin();
+        for host in [
+            "admin.paper.example",
+            "ADMIN.PAPER.EXAMPLE",
+            "admin.paper.example:443",
+        ] {
+            let arrival = origins.resolve(host).unwrap();
+            assert_eq!(arrival.side(), Side::Admin, "{host:?}");
+            assert!(!arrival.is_docs_host(), "{host:?}");
+            assert!(arrival.is_https());
+            assert_eq!(arrival.reader_origin(), "https://paper.example");
+            assert_eq!(arrival.docs_origin(), "https://docs.paper.example");
+            assert_eq!(
+                arrival.callback_url(),
+                "https://admin.paper.example/auth/callback"
+            );
+        }
+        assert_eq!(
+            origins.resolve("paper.example").unwrap().side(),
+            Side::Reader
+        );
+        assert_eq!(
+            origins.resolve("docs.paper.example").unwrap().side(),
+            Side::Docs
+        );
+        for host in ["admin.paper.example:8443", "admin.paper.example.evil.example"] {
+            assert!(origins.resolve(host).is_none(), "{host:?}");
+        }
+    }
+
+    #[test]
+    fn the_admin_name_gets_a_certificate_and_is_its_own_authority() {
+        let origins = with_admin();
+        assert!(origins.ask("admin.paper.example"));
+        assert!(origins.ask("paper.example"));
+        assert!(!origins.ask("other.example"));
+        assert!(!configured().ask("admin.paper.example"));
+
+        assert!(origins.is_admin_authority("admin.paper.example"));
+        assert!(origins.is_admin_authority("admin.paper.example:443"));
+        for host in [
+            "paper.example",
+            "docs.paper.example",
+            "localhost:8080",
+            "evil.example",
+            "",
+        ] {
+            assert!(!origins.is_admin_authority(host), "{host:?}");
+        }
+        assert!(!configured().is_admin_authority("admin.paper.example"));
+        // The admin name is not the app name either.
+        assert!(!origins.is_app_authority("admin.paper.example"));
+    }
+
+    #[test]
+    fn a_loopback_admin_origin_is_answered_next_to_its_loopback_reader() {
+        let origins = Origins::configure("http://localhost:8080", None)
+            .unwrap()
+            .with_admin(Some("http://admin.localhost:8080"))
+            .unwrap();
+        let arrival = origins.resolve("admin.localhost:8080").unwrap();
+        assert_eq!(arrival.side(), Side::Admin);
+        assert!(!arrival.is_https());
+        assert_eq!(
+            origins.resolve("localhost:8080").unwrap().side(),
+            Side::Reader
+        );
     }
 
     #[test]
