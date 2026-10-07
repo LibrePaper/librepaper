@@ -22,18 +22,31 @@ if [[ ! "$commit" =~ ^[[:xdigit:]]{40}$ ]]; then
 	echo "expected a 40-character release commit SHA" >&2
 	exit 2
 fi
-for required in deploy/compose.yaml deploy/Dockerfile deploy/caddy/Caddyfile deploy/librepaper.toml deploy/setup; do
-	git -C "$repository" cat-file -e "$commit:$required" 2>/dev/null || {
-		echo "release commit is missing $required" >&2
+
+# Verify all required kit files exist in the release commit.
+# monitoring/backup_alerts_test.yml is intentionally excluded.
+required_files=(
+	deploy/compose.yaml
+	deploy/compose.managed-db.yaml
+	deploy/librepaper.toml
+	deploy/resticprofile.toml
+	deploy/postgres/init.sql
+	deploy/caddy/Caddyfile
+	deploy/prometheus.yaml
+	deploy/grafana.json
+	deploy/README.md
+)
+for file in "${required_files[@]}"; do
+	git -C "$repository" cat-file -e "$commit:$file" 2>/dev/null || {
+		echo "release commit is missing $file" >&2
 		exit 2
 	}
 done
 
 command -v tar >/dev/null
-command -v sha256sum >/dev/null
 stage=$(mktemp -d)
 trap 'rm -rf -- "$stage"' EXIT
-mkdir -p "$stage/deploy" "$output_dir"
+mkdir -p "$output_dir"
 
 # The supplied Git commit determines the bytes in the kit. This excludes local
 # edits and untracked files even when the packaging workflow checkout is dirty.
@@ -47,6 +60,8 @@ if [[ -f "$stage/deploy/resticprofile.toml" ]] &&
 	echo "refusing to package an enabled resticprofile.toml; release kits must ship backups disabled" >&2
 	exit 2
 fi
+
+# Remove operator files and directories even though git archive only ships tracked files.
 rm -rf -- "$stage/deploy/secrets" "$stage/deploy/backups" "$stage/deploy/backup-metrics"
 rm -f -- \
 	"$stage/deploy/.env" \
@@ -58,18 +73,37 @@ rm -f -- \
 	"$stage/deploy"/librepaper.exe \
 	"$stage/deploy"/resticprofile.toml.local
 
-# The only environment file in the archive contains the public release tag.
-# Compose uses it to build/pull the same app release as the matching images.
-printf 'LIBREPAPER_VERSION=%s\n' "$tag" > "$stage/deploy/.env"
-chmod 0644 "$stage/deploy/.env"
-cat > "$stage/deploy/RELEASE" <<EOF
-tag=$tag
-commit=$commit
-app_image=ghcr.io/librepaper/librepaper:$tag
-backup_image=ghcr.io/librepaper/librepaper-backup:$tag
-EOF
-chmod 0644 "$stage/deploy/RELEASE"
+# Remove files that must never ship in the kit.
+rm -f "$stage/deploy/setup" "$stage/deploy/Dockerfile"
+rm -rf "$stage/deploy/monitoring/backup_alerts_test.yml"
 
-archive="librepaper-deploy-kit-${tag}.tar.gz"
-tar -C "$stage" -czf "$output_dir/$archive" deploy
-(cd "$output_dir" && sha256sum "$archive" > "$archive.sha256")
+# Rewrite the two image tags in compose.yaml from their committed literals to the release tag.
+if [[ ! -f "$stage/deploy/compose.yaml" ]]; then
+	echo "release commit is missing compose.yaml" >&2
+	exit 2
+fi
+app_tag_count=$(grep -c 'ghcr.io/librepaper/librepaper:' "$stage/deploy/compose.yaml" || true)
+if [[ "$app_tag_count" != 1 ]]; then
+	echo "compose.yaml must contain ghcr.io/librepaper/librepaper: exactly once" >&2
+	exit 2
+fi
+backup_tag_count=$(grep -c 'ghcr.io/librepaper/librepaper-backup:' "$stage/deploy/compose.yaml" || true)
+if [[ "$backup_tag_count" != 1 ]]; then
+	echo "compose.yaml must contain ghcr.io/librepaper/librepaper-backup: exactly once" >&2
+	exit 2
+fi
+
+# Replace image tags with the release tag.
+sed -i "s|ghcr.io/librepaper/librepaper:[^ \"]*|ghcr.io/librepaper/librepaper:$tag|g" "$stage/deploy/compose.yaml"
+sed -i "s|ghcr.io/librepaper/librepaper-backup:[^ \"]*|ghcr.io/librepaper/librepaper-backup:$tag|g" "$stage/deploy/compose.yaml"
+
+# Move deploy to librepaper and set permissions.
+mv "$stage/deploy" "$stage/librepaper"
+chmod 0700 "$stage/librepaper"
+find "$stage/librepaper" -type f -exec chmod 0644 {} \;
+find "$stage/librepaper" -type d -exec chmod 0755 {} \;
+chmod 0700 "$stage/librepaper"
+
+# Create the archive with fixed name and explicit owner/group.
+archive="librepaper-deploy.tar.gz"
+tar -C "$stage" --owner=0 --group=0 --numeric-owner -czf "$output_dir/$archive" librepaper

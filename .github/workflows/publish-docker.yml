@@ -105,6 +105,5 @@ jobs:
           bash tools/release/package-deploy-kit.sh \
             "$TAG" release-source "$RUNNER_TEMP/deploy-kit" "$RELEASE_SHA"
           gh release upload "$TAG" \
-            "$RUNNER_TEMP/deploy-kit/librepaper-deploy-kit-$TAG.tar.gz" \
-            "$RUNNER_TEMP/deploy-kit/librepaper-deploy-kit-$TAG.tar.gz.sha256" \
+            "$RUNNER_TEMP/deploy-kit/librepaper-deploy.tar.gz" \
             --clobber

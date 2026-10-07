@@ -118,51 +118,89 @@ grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fai
 [[ -e "$tmp/pushed" ]] || fail 'Scoop manifest was not pushed'
 
 # A release kit uses committed bytes even when the checkout has dirty config
-# and untracked credentials. It pins the same app version as its images.
+# and untracked credentials. It pins the release tag in its image references.
 kit_source="$tmp/deploy-source"
 kit_output="$tmp/deploy-output"
-mkdir -p "$kit_source/deploy/caddy" "$kit_source/deploy/secrets" "$kit_output"
-for file in compose.yaml Dockerfile librepaper.toml setup; do
+mkdir -p "$kit_source/deploy/caddy" "$kit_source/deploy/monitoring" "$kit_output"
+for file in compose.yaml compose.managed-db.yaml librepaper.toml prometheus.yaml grafana.json README.md; do
   printf 'committed fixture %s\n' "$file" > "$kit_source/deploy/$file"
 done
+printf 'ghcr.io/librepaper/librepaper:v0.0.21\n' >> "$kit_source/deploy/compose.yaml"
+printf 'ghcr.io/librepaper/librepaper-backup:v0.0.21\n' >> "$kit_source/deploy/compose.yaml"
 printf 'committed caddy\n' > "$kit_source/deploy/caddy/Caddyfile"
-printf 'committed operator secret\n' > "$kit_source/deploy/secrets/database_app_url"
-printf 'committed operator state\n' > "$kit_source/deploy/.setup-state.json"
-printf 'committed public tag placeholder\n' > "$kit_source/deploy/.env"
+printf 'committed monitoring alerts\n' > "$kit_source/deploy/monitoring/alerts.yml"
 printf '# Backups are disabled until an operator configures them.\n' > "$kit_source/deploy/resticprofile.toml"
+printf 'committed init\n' > "$kit_source/deploy/postgres/init.sql"
 "$real_git" -C "$kit_source" init -q
 "$real_git" -C "$kit_source" config user.name Fixture
 "$real_git" -C "$kit_source" config user.email fixture@example.invalid
 "$real_git" -C "$kit_source" add deploy
 "$real_git" -C "$kit_source" commit -qm 'release deployment files'
 kit_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
+
+# Plant unwanted files that should be excluded: setup, backup_alerts_test.yml
+printf 'excluded\n' > "$kit_source/deploy/setup"
+printf 'excluded\n' > "$kit_source/deploy/monitoring/backup_alerts_test.yml"
+"$real_git" -C "$kit_source" add deploy/setup deploy/monitoring/backup_alerts_test.yml
+"$real_git" -C "$kit_source" commit -qm 'add files that should be excluded'
+excluded_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
+
+# Dirty files should not be included in archive
 printf 'dirty attacker config\n' > "$kit_source/deploy/librepaper.toml"
 printf 'operator secret\n' > "$kit_source/deploy/.env"
-printf 'operator secret\n' > "$kit_source/deploy/secrets/database_app_url"
 printf 'untracked secret\n' > "$kit_source/deploy/leaked-backup.txt"
+
+# Test with the first commit (clean files, no excluded setup yet)
 PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$kit_commit"
-kit_archive="$kit_output/librepaper-deploy-kit-v1.2.3.tar.gz"
+kit_archive="$kit_output/librepaper-deploy.tar.gz"
 kit_extract="$tmp/deploy-extracted"
 mkdir "$kit_extract"
 tar -C "$kit_extract" -xzf "$kit_archive"
-[[ "$(cat "$kit_extract/deploy/.env")" == 'LIBREPAPER_VERSION=v1.2.3' ]] || fail 'deploy kit did not pin its release version'
-[[ "$(cat "$kit_extract/deploy/librepaper.toml")" == 'committed fixture librepaper.toml' ]] || fail 'deploy kit used dirty config instead of committed release bytes'
-[[ ! -e "$kit_extract/deploy/secrets/database_app_url" ]] || fail 'deploy kit included a secret file'
-[[ ! -e "$kit_extract/deploy/.setup-state.json" ]] || fail 'deploy kit included operator setup state'
-[[ ! -e "$kit_extract/deploy/leaked-backup.txt" ]] || fail 'deploy kit included an untracked file'
-[[ "$(cat "$kit_extract/deploy/RELEASE")" == *'app_image=ghcr.io/librepaper/librepaper:v1.2.3'* ]] || fail 'deploy kit app image does not match release'
-[[ "$(cat "$kit_extract/deploy/RELEASE")" == *'backup_image=ghcr.io/librepaper/librepaper-backup:v1.2.3'* ]] || fail 'deploy kit backup image does not match release'
-(cd "$kit_output" && sha256sum -c librepaper-deploy-kit-v1.2.3.tar.gz.sha256 >/dev/null) || fail 'deploy kit checksum did not verify'
 
+# Verify top directory is librepaper/ with mode 700
+[[ -d "$kit_extract/librepaper" ]] || fail 'archive did not extract to librepaper/ directory'
+top_mode=$(stat -c '%a' "$kit_extract/librepaper" 2>/dev/null || stat -f '%OLp' "$kit_extract/librepaper" | tail -c 4)
+[[ "$top_mode" == "0700" || "$top_mode" == "700" ]] || fail "librepaper/ directory has mode $top_mode, expected 0700"
+
+# Verify no .env, no RELEASE, no .sha256 files
+[[ ! -e "$kit_extract/librepaper/.env" ]] || fail 'archive included .env file'
+[[ ! -e "$kit_extract/librepaper/RELEASE" ]] || fail 'archive included RELEASE file'
+[[ ! -e "$kit_output/librepaper-deploy.tar.gz.sha256" ]] || fail 'archive generated .sha256 file'
+
+# Verify committed fixture was included, not dirty version
+[[ "$(cat "$kit_extract/librepaper/librepaper.toml")" == 'committed fixture librepaper.toml' ]] || fail 'deploy kit used dirty config instead of committed release bytes'
+
+# Verify image tags were rewritten to the release tag
+compose_content=$(cat "$kit_extract/librepaper/compose.yaml")
+[[ "$compose_content" == *'ghcr.io/librepaper/librepaper:v1.2.3'* ]] || fail 'deploy kit did not rewrite app image tag'
+[[ "$compose_content" == *'ghcr.io/librepaper/librepaper-backup:v1.2.3'* ]] || fail 'deploy kit did not rewrite backup image tag'
+[[ "$compose_content" != *'v0.0.21'* ]] || fail 'deploy kit did not replace original version tag'
+
+# Verify only allowed files are present
+[[ ! -e "$kit_extract/librepaper/secrets" ]] || fail 'archive included secrets directory'
+[[ ! -e "$kit_extract/librepaper/.setup-state.json" ]] || fail 'archive included operator setup state'
+[[ ! -e "$kit_extract/librepaper/leaked-backup.txt" ]] || fail 'archive included untracked file'
+
+# Now test with excluded_commit to verify setup and backup_alerts_test.yml are excluded
+rm -rf "$kit_extract" "$kit_output"
+mkdir "$kit_extract" "$kit_output"
+PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$excluded_commit"
+tar -C "$kit_extract" -xzf "$kit_output/librepaper-deploy.tar.gz"
+[[ ! -e "$kit_extract/librepaper/setup" ]] || fail 'archive included deploy/setup'
+[[ ! -e "$kit_extract/librepaper/monitoring/backup_alerts_test.yml" ]] || fail 'archive included monitoring/backup_alerts_test.yml'
+[[ -e "$kit_extract/librepaper/monitoring/alerts.yml" ]] || fail 'archive excluded monitoring/alerts.yml'
+
+# Reject prerelease tags
 if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3-rc.1 "$kit_source" "$kit_output" "$kit_commit" >/dev/null 2>&1; then
   fail 'deploy kit accepted a prerelease tag'
 fi
 
+# Reject enabled resticprofile.toml
 printf '[resticprofile]\nrepository = "s3://private-bucket"\n' > "$kit_source/deploy/resticprofile.toml"
 "$real_git" -C "$kit_source" add deploy/resticprofile.toml
 "$real_git" -C "$kit_source" commit -qm 'enable restic credentials in committed profile'
-enabled_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
-if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$enabled_commit" >/dev/null 2>&1; then
+enabled_restic_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
+if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$enabled_restic_commit" >/dev/null 2>&1; then
   fail 'deploy kit accepted an enabled restic profile'
 fi
 
