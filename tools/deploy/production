@@ -480,7 +480,8 @@ convert_database() {
 # One-time cleanup after the first deploy without the monitoring profile.
 retire_monitoring() {
 	step "Retire Prometheus, Grafana and backup metrics"
-	ssh "$HOST" 'cd librepaper' <<'RETIRE'
+	# The script travels on stdin and runs on the host; nothing in it is a secret.
+	ssh "$HOST" 'cd librepaper && exec bash -s' <<'RETIRE'
 for volume in librepaper_prometheus librepaper_grafana librepaper_backup-metrics; do
 	if docker volume inspect "$volume" >/dev/null 2>&1; then
 		docker volume rm "$volume" || exit 1

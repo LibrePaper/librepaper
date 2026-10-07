@@ -456,7 +456,7 @@ test('deploy installs the checked candidates, then pulls and starts the stack in
   try {
     const result = run(f, 'deploy', 'v0.0.22');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /Done: v0\.0\.21 is live/);
+    assert.match(result.stdout, /Done: v0\.0\.22 is live/);
     assertInOrder(events(f), [
       ['make', /^/],
       ['rsync', /--delete/],
@@ -881,8 +881,8 @@ test('convert-database saves the host files before the sync, streams the host sc
     assert.equal(oldCompose.stdout, 'old compose\n');
 
     assert.equal(readFileSync(f.streamedScriptFile, 'utf8'), readFileSync(hostScript, 'utf8'));
-    assert.match(read(f.remote, 'compose.yaml'), /librepaper:v0\.0\.21\b/);
-    assert.match(read(f.remote, 'compose.yaml'), /librepaper-backup:v0\.0\.21\b/);
+    assert.match(read(f.remote, 'compose.yaml'), /librepaper:v0\.0\.22\b/);
+    assert.match(read(f.remote, 'compose.yaml'), /librepaper-backup:v0\.0\.22\b/);
     assert.equal(read(f.remote, 'librepaper.toml'), productionToml);
     assert.equal(existsSync(path.join(f.remote, 'librepaper.toml.candidate')), false);
     assert.equal(existsSync(path.join(f.remote, '.env')), false);
@@ -925,9 +925,14 @@ test('a failing host script stops convert-database before verify and says how to
 test('retire-monitoring checks and removes docker volumes, and removes .env and monitoring', () => {
   const f = fixture();
   try {
+    mkdirSync(path.join(f.remote, 'monitoring'), { recursive: true });
+    writeFileSync(path.join(f.remote, '.env'), 'COMPOSE_PROFILES=monitoring\n');
+    writeFileSync(path.join(f.remote, 'monitoring', 'grafana_admin_password'), 'old');
     const result = run(f, 'retire-monitoring');
-    assert.equal(result.status, 0);
-    assert.match(result.stderr, /retired: no volumes remain; \.env and monitoring\/ are removed/);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /retired: no volumes remain; \.env and monitoring\/ are removed/);
+    assert.equal(existsSync(path.join(f.remote, '.env')), false, '.env is removed on the host');
+    assert.equal(existsSync(path.join(f.remote, 'monitoring')), false, 'monitoring/ is removed on the host');
     const dockerCalls = events(f).filter(([kind]) => kind === 'docker').map(([, call]) => call);
     const volumeCalls = dockerCalls.filter((call) => call.includes('volume'));
     assert.ok(volumeCalls.some((call) => call.includes('volume inspect librepaper_prometheus')));
