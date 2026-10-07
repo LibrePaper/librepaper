@@ -6,32 +6,28 @@ Restore one remote Restic snapshot into a new deployment on a machine that is no
 
 ## Restore steps
 
-Install Docker, extract the kit, and prepare the recovery directory:
-
 ```sh
-mkdir -m 700 /srv/librepaper-recovery
-cd /srv/librepaper-recovery
+# On a machine that is not the VPS. Docker is the only requirement.
+mkdir -m 700 librepaper-recovery && cd librepaper-recovery
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
-cp /path/to/backup/librepaper.toml librepaper/
-cp /path/to/backup/resticprofile.toml librepaper/
-```
-
-Start postgres and restore the database dump:
-
-```sh
 cd librepaper
-docker compose up -d postgres
-docker compose exec -T postgres pg_restore -U librepaper -d librepaper -Fc /path/to/librepaper.dump
-```
-
-Restore objects and session.key, then start the app:
-
-```sh
-docker compose run --rm -u 0 backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile restore <snapshot-id> --target /tmp/restore
-docker compose run --rm -u 0 -v /tmp/restore:/restore librepaper sh -c 'install -d -o 10001 -g 65534 /var/lib/librepaper/{objects,secrets} && cp -a /restore/var/lib/librepaper/objects/. /var/lib/librepaper/objects/ && cp /restore/var/lib/librepaper/secrets/session.key /var/lib/librepaper/secrets/ && chown -R 10001:65534 /var/lib/librepaper/objects'
-docker compose up -d
+cp /path/to/your/librepaper.toml /path/to/your/resticprofile.toml .   # the repository and RESTIC_PASSWORD are what restore needs
+mkdir -m 700 staging
+docker compose up -d --wait postgres                                 # an empty database; do not start the app yet
+docker compose run --rm --no-deps --user 0 -v ./staging:/restore --entrypoint resticprofile backup \
+  -c /etc/resticprofile/profiles.toml -n resticprofile restore <snapshot-id> --target /restore
+docker compose run --rm --no-deps --user 0 -v ./staging:/restore:ro librepaper \
+  admin restore --config /etc/librepaper/librepaper.toml /restore/var/backups/librepaper/current /var/lib/librepaper/recovered
+docker compose run --rm --no-deps --user 0 -v ./staging:/restore:ro --entrypoint sh librepaper -c '
+  install -d -o 10001 -g 65534 /var/lib/librepaper/objects /var/lib/librepaper/secrets
+  cp -a /var/lib/librepaper/recovered/objects/. /var/lib/librepaper/objects/
+  install -o 10001 -g 65534 -m 0600 /restore/var/lib/librepaper/secrets/session.key /var/lib/librepaper/secrets/session.key
+  chown -R 10001:65534 /var/lib/librepaper/objects'
+docker compose up -d --wait
 docker compose exec librepaper wget -qO- http://127.0.0.1:8080/ready
 ```
+
+`admin restore` verifies the manifest and object hashes and loads the database in one transaction; it refuses a non-empty database or an existing destination. Use the session key from the same snapshot, never one from another deployment.
 
 Open the app through a local browser or SSH tunnel and verify rendered content, assets, and existing sessions.
 
