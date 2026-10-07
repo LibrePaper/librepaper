@@ -257,11 +257,13 @@ cluster is converted in place, in one transaction, with no data movement.
 - `tools/deploy/production` keeps `deploy VERSION`, `site`, `verify`, `logs`.
   `deploy-local` and `upgrade-database` are deleted. `deploy` is: DNS check,
   decrypt keys, `make site`, rsync kit files excluding operator files, sed the
-  tag into the host compose.yaml, write secrets, override and `.env`, stage
+  tag into the host compose.yaml, write secrets and the override, stage
   and validate `librepaper.toml.candidate` with `admin config check` and the
   Caddyfile candidate with `caddy validate`, install both,
-  `docker compose pull`, `docker compose up -d --wait`, `caddy reload`,
-  `docker image prune -f`, `verify`. Version floor stays v0.0.21.
+  `docker compose pull`, `docker compose up -d --wait --remove-orphans`,
+  `caddy reload`, `docker image prune -f`, `verify`. The version floor is
+  v0.0.22: production.toml names the admin origin and password, which older
+  parsers refuse.
 - `production.test.mjs` is rewritten around what the helper still guards:
   secrets never in argv, `.env` or output; a rejected candidate config or
   Caddyfile leaves the running stack untouched; the version floor; the
@@ -424,12 +426,12 @@ dashes):
 1. One branch, worktrees per piece: kit, production helper, release packaging,
    tests and demo, docs, conversion. Central review, then `make test`, then
    `tools/test/suite deploy-install`, `backup-sidecar`, `deploy-convert`.
-2. Merge. Convert production with the v0.0.21 images and the new kit
-   (recovery packet, host-files tarball, `convert-database`, then `verify`
-   and a sign-in with an existing cookie).
-3. Cut v0.0.22 so `releases/latest/download/librepaper-deploy.tar.gz` carries
-   the new kit. `tools/deploy/production deploy v0.0.22` is the first routine
-   upgrade through the new path.
+2. Merge, then cut v0.0.22 so `releases/latest/download/librepaper-deploy.tar.gz`
+   carries the new kit and the image serves the admin origin. Nothing older
+   accepts production.toml now.
+3. Convert production with the v0.0.22 images and the new kit (recovery
+   packet, host-files tarball, `convert-database`, then `verify` and a
+   sign-in with an existing cookie), then `retire-monitoring` once.
 4. Follow-up commit: delete `convert-database`, `convert-database.sh`,
    `convert.sh` and the `deploy-convert` suite entry. A week later, delete
    `~/librepaper-convert` on the host (the dump and the host-files tarball).
@@ -467,8 +469,8 @@ dashes):
 - `docker compose up -d` on production recreates Caddy when its network list
   changes. Seconds of downtime for the other app on the VPS; acceptable,
   announce nothing, do it once.
-- The version floor stays v0.0.21: older binaries lack `/api/tls/ask` and
-  Caddy would issue no certificates.
+- The version floor is v0.0.22: older binaries refuse the admin origin and
+  password in production.toml, and before v0.0.21 they lacked `/api/tls/ask`.
 
 ## Rejected
 
