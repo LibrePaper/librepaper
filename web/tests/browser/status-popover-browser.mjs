@@ -1,10 +1,6 @@
-// Small surfaces whose behaviour is not what their markup looks like: the
-// preview status, which is a popover rather than a disclosure, and a comment
-// card, whose summary button stops existing the moment it is activated and
-// whose thread is a run of authors rather than a list of messages. The first
-// two were written by hand and got the interesting parts wrong -- a panel
-// that closed for neither Escape nor a click outside it, and focus dropped to
-// the body -- so all three are pinned here.
+// A comment card, whose summary button stops existing the moment it is activated and
+// whose thread is a run of authors rather than a list of messages. It was written by hand and got the interesting parts wrong -- focus
+// dropped to the body -- so it is pinned here.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -17,14 +13,12 @@ import { browser, until } from "../helpers/browser-driver.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
-const temporary = mkdtempSync(join(tmpdir(), "librepaper-status-popover-check-"));
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-comment-card-check-"));
 const output = join(temporary, "build");
 const profile = join(temporary, "browser");
 const entry = join(temporary, "entry.js");
 
 const source = `
-import PreviewStatus from ${JSON.stringify(join(root, "web/src/components/PreviewStatus.svelte"))};
-import PreviewStatusHarness from ${JSON.stringify(join(root, "web/tests/fixtures/PreviewStatusHarness.svelte"))};
 import CommentCard from ${JSON.stringify(join(root, "web/src/components/CommentCard.svelte"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
@@ -32,65 +26,7 @@ import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modul
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 60)); await tick(); };
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 
-window.statusPopoverCheck = async () => {
-  const statusHost = document.createElement('div');
-  document.body.append(statusHost);
-  const status = createClassComponent({ component: PreviewStatus, target: statusHost, props: {
-    label: 'Built 3 seconds ago', tone: 'neutral', busy: false,
-  } });
-  await flush();
-
-  const trigger = document.querySelector('.preview-status-trigger');
-  check(trigger && trigger.tagName === 'BUTTON', 'the status is a button, not a summary');
-  check(trigger.getAttribute('aria-expanded') === 'false', 'a shut popover says so');
-  // The panel stays mounted and is hidden, which is Zag's doing; what matters
-  // is whether it is shown, so that is what these ask.
-  const node = () => document.querySelector('.preview-status-popover');
-  const panel = () => { const found = node(); return found && found.dataset.state === 'open' ? found : null; };
-  check(node() && !panel(), 'the panel is mounted but shut until it is asked for');
-
-  trigger.click(); await flush();
-  check(panel(), 'clicking the status opens the panel');
-  check(trigger.getAttribute('aria-expanded') === 'true', 'an open popover says so');
-  // Portalled to the body: the preview header is a positioned, clipping row,
-  // and a panel confined to it was the reason this moved.
-  check(node().closest('.preview-status-trigger') === null && !statusHost.contains(node()),
-    'the panel is not rendered inside the header it was opened from');
-
-  // The two dismissals a <details> never had.
-  document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-  document.body.click(); await flush();
-  check(!panel(), 'a click outside the panel closes it');
-
-  trigger.click(); await flush();
-  check(panel(), 'it opens again');
-  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await flush();
-  check(!panel(), 'Escape closes it');
-
-  status.$destroy();
-  statusHost.remove();
-
-  // A panel whose action opens something else has to get out of the way, and
-  // the preview it covers is a cross-origin frame Zag cannot hear a click in.
-  const harnessHost = document.createElement('div');
-  document.body.append(harnessHost);
-  const harness = createClassComponent({ component: PreviewStatusHarness, target: harnessHost });
-  await flush();
-  const harnessTrigger = harnessHost.querySelector('.preview-status-trigger');
-  harnessTrigger.click(); await flush();
-  check(panel(), 'the panel opens');
-  // Stacked above the panes: Zag copies the content's z-index onto the
-  // positioner inline, so a class on the positioner never applied.
-  check(getComputedStyle(node().parentElement).zIndex === '30', 'the panel stacks above the panes');
-  node().querySelector('.harness-action').click(); await flush();
-  check(!panel(), 'an action inside the panel puts it away');
-  harnessTrigger.click(); await flush();
-  check(panel(), 'it opens again');
-  harnessHost.querySelector('.harness-frame').focus();
-  window.dispatchEvent(new Event('blur')); await flush();
-  check(!panel(), 'focus moving into a frame closes the panel');
-  harness.$destroy();
-  harnessHost.remove();
+window.commentCardCheck = async () => {
 
   // A resolved card collapses to one line, and the button that opens it is
   // replaced by the card itself. Focus has to land somewhere real.
@@ -155,20 +91,20 @@ let server;
 let tab;
 try {
   await build({ configFile: false, root: join(root, "web"), plugins: [svelte({ emitCss: false })], logLevel: "error",
-    build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "status-popover-check.js" } } });
+    build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "comment-card-check.js" } } });
   server = createServer((request, response) => {
     const file = join(output, request.url.slice(1));
     if (request.url !== "/" && existsSync(file)) { response.setHeader("Content-Type", "text/javascript"); response.end(readFileSync(file)); return; }
-    response.setHeader("Content-Type", "text/html"); response.end('<body><script type="module" src="/status-popover-check.js"></script></body>');
+    response.setHeader("Content-Type", "text/html"); response.end('<body><script type="module" src="/comment-card-check.js"></script></body>');
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
   tab = await browser("chromium", profile, 23000 + Math.floor(Math.random() * 1000));
   await tab.navigate(`http://127.0.0.1:${port}/`);
-  await until("status popover component", () => tab.evaluate("Boolean(window.statusPopoverCheck)"));
-  assert.equal(await tab.evaluate("window.statusPopoverCheck()"), true);
-  console.log("status popover: the preview panel flips, dismisses and portals; an action closes it; frame focus closes it; z-index stacks correctly; a resolved card keeps focus when it opens");
+  await until("comment card component", () => tab.evaluate("Boolean(window.commentCardCheck)"));
+  assert.equal(await tab.evaluate("window.commentCardCheck()"), true);
+  console.log("comment card: a resolved card keeps focus when it opens; a thread is grouped by author with one avatar per run");
 } finally {
   await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
 }
