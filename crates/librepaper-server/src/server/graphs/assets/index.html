@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LibrePaper graphs</title>
+<link rel="stylesheet" href="/uplot.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <h1>LibrePaper graphs</h1>
+  <nav id="ranges" aria-label="Range">
+    <button type="button" data-seconds="3600">1h</button>
+    <button type="button" data-seconds="21600">6h</button>
+    <button type="button" data-seconds="86400" class="active">24h</button>
+    <button type="button" data-seconds="604800">7d</button>
+    <button type="button" data-seconds="2592000">30d</button>
+    <button type="button" data-seconds="31536000">1y</button>
+  </nav>
+  <span id="status" role="status"></span>
+</header>
+<main id="grid"></main>
+<script src="/uplot.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
