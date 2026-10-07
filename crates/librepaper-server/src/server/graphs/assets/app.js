@@ -58,6 +58,21 @@
     return series.label + (notes.length ? " (" + notes.join(", ") + ")" : "");
   }
 
+  // The indices of samples with a gap, or an edge, on both sides. A line needs
+  // two neighbours to be seen, so a lone sample is drawn as a mark instead; a
+  // run of samples stays a line. An idle instance has a p95 only in the minutes
+  // that had requests, so most of its samples are lone.
+  function isolated(u, seriesIdx) {
+    const ys = u.data[seriesIdx];
+    const lone = [];
+    for (let i = 0; i < ys.length; i++) {
+      const gapBefore = i === 0 || ys[i - 1] == null;
+      const gapAfter = i === ys.length - 1 || ys[i + 1] == null;
+      if (ys[i] != null && gapBefore && gapAfter) lone.push(i);
+    }
+    return lone;
+  }
+
   function options(series, width) {
     const rule = css("--rule");
     const axis = { stroke: css("--ink"), grid: { stroke: rule, width: 1 }, ticks: { stroke: rule, width: 1 } };
@@ -80,6 +95,7 @@
           fill: css("--fill"),
           width: 1.5,
           spanGaps: false,
+          points: { show: true, size: 5, fill: css("--line"), filter: isolated },
           value: (u, v) => format(v, series.unit) || "no data",
         },
       ],
