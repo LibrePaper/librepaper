@@ -202,6 +202,9 @@ case "$*" in
     [ "$CADDY_RELOAD_FAILURE" = 0 ]
     ;;
   'compose logs --tail 50') ;;
+  'volume inspect librepaper_prometheus'|'volume inspect librepaper_grafana'|'volume inspect librepaper_backup-metrics') ;;
+  'volume rm librepaper_prometheus'|'volume rm librepaper_grafana'|'volume rm librepaper_backup-metrics') ;;
+  'volume ls --format {{.Name}}') ;;
   *) echo "unexpected docker command: $*" >&2; exit 99 ;;
 esac`);
   mockCommand(bin, 'timeout', `
@@ -393,7 +396,7 @@ test('deploy writes the OAuth and admin credentials through stdin only, never in
   const adminPassword = 'unsafe$#admin-secret with spaces';
   const f = fixture({ adminPassword });
   try {
-    const result = run(f, 'deploy', 'v0.0.21');
+    const result = run(f, 'deploy', 'v0.0.22');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /5 credentials decrypted/);
 
@@ -428,7 +431,7 @@ test('deploy writes the OAuth and admin credentials through stdin only, never in
 test('deploy writes compose.override.yaml only with the two host mounts', () => {
   const f = fixture();
   try {
-    const result = run(f, 'deploy', 'v0.0.21');
+    const result = run(f, 'deploy', 'v0.0.22');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.equal(read(f.remote, 'compose.override.yaml'), [
       'services:',
@@ -451,7 +454,7 @@ test('deploy writes compose.override.yaml only with the two host mounts', () => 
 test('deploy installs the checked candidates, then pulls and starts the stack in order, stopping nothing by hand', () => {
   const f = fixture();
   try {
-    const result = run(f, 'deploy', 'v0.0.21');
+    const result = run(f, 'deploy', 'v0.0.22');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /Done: v0\.0\.21 is live/);
     assertInOrder(events(f), [
@@ -537,7 +540,7 @@ test('a rejected candidate config leaves the installed config and the running st
       'librepaper.toml': 'previous production config\n',
       'caddy/Caddyfile': 'previous Caddyfile\n',
     });
-    const result = run(f, 'deploy', 'v0.0.21');
+    const result = run(f, 'deploy', 'v0.0.22');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /candidate binary cannot load librepaper\.toml/);
     assert.equal(read(f.checkedConfigFile), productionToml, 'the candidate that was checked is production.toml');
@@ -559,7 +562,7 @@ test('an invalid Caddyfile candidate is rejected before the installed files chan
       'librepaper.toml': 'previous production config\n',
       'caddy/Caddyfile': 'previous Caddyfile\n',
     });
-    const result = run(f, 'deploy', 'v0.0.21');
+    const result = run(f, 'deploy', 'v0.0.22');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /candidate Caddy configuration is invalid/);
     assertInOrder(events(f), [['docker', /admin config check/], ['docker', /caddy validate/]]);
@@ -577,7 +580,7 @@ test('an invalid Caddyfile candidate is rejected before the installed files chan
 test('a failed Caddy reload is reported after the stack starts', () => {
   const f = fixture({ caddyReloadFailure: true });
   try {
-    const result = run(f, 'deploy', 'v0.0.21');
+    const result = run(f, 'deploy', 'v0.0.22');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Caddy configuration reload failed/);
     assert.deepEqual(dockerCalls(f).slice(-2).map((call) => call.split(' ').slice(0, 3).join(' ')), [
@@ -594,7 +597,7 @@ test('repeated deploys render Caddy from its template without duplicating site a
   const f = fixture();
   try {
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = run(f, 'deploy', 'v0.0.21');
+      const result = run(f, 'deploy', 'v0.0.22');
       assert.equal(result.status, 0, result.stderr || result.stdout);
     }
     const caddy = read(f.remote, 'caddy/Caddyfile');
@@ -617,7 +620,7 @@ test('invalid or undecryptable Google credentials stop the deploy before the sit
   for (const scenario of badCredentials) {
     const f = fixture(scenario.options);
     try {
-      const result = run(f, 'deploy', 'v0.0.21');
+      const result = run(f, 'deploy', 'v0.0.22');
       assert.notEqual(result.status, 0, `${scenario.name} unexpectedly succeeded`);
       assert.match(result.stderr, new RegExp(scenario.key));
       assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret|private SOPS diagnostic/);
@@ -630,12 +633,12 @@ test('invalid or undecryptable Google credentials stop the deploy before the sit
   }
 });
 
-test('deploy refuses a release below the v0.0.21 floor, and a non-canonical tag, before writing remotely', () => {
+test('deploy refuses a release below the v0.0.22 floor, and a non-canonical tag, before writing remotely', () => {
   for (const [version, message] of [
-    ['v0.0.8', /requires v0\.0\.21 or later.*\/api\/tls\/ask/],
-    ['v0.0.20', /requires v0\.0\.21 or later.*\/api\/tls\/ask/],
-    ['0.0.21', /canonical tag/],
-    ['v0.0.021', /canonical tag/],
+    ['v0.0.8', /requires v0\.0\.22 or later.*admin origin/],
+    ['v0.0.21', /requires v0\.0\.22 or later.*admin origin/],
+    ['0.0.22', /canonical tag/],
+    ['v0.0.022', /canonical tag/],
   ]) {
     const f = fixture();
     try {
@@ -660,7 +663,7 @@ function kitSyncArguments(f) {
 test('the kit sync deletes dropped kit files and neither sends nor removes the operator paths', () => {
   const f = fixture();
   try {
-    const result = run(f, 'deploy', 'v0.0.21');
+    const result = run(f, 'deploy', 'v0.0.22');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const { calls, kit } = kitSyncArguments(f);
     assert.equal(kit.at(-2), 'deploy/');
@@ -685,7 +688,7 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
 }, () => {
   const f = fixture();
   try {
-    const result = run(f, 'deploy', 'v0.0.21');
+    const result = run(f, 'deploy', 'v0.0.22');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const { kit } = kitSyncArguments(f);
     const source = path.join(f.root, 'kit-source');
@@ -914,6 +917,26 @@ test('a failing host script stops convert-database before verify and says how to
     assert.match(result.stderr, /convert-database\.sh failed.*tar xzf librepaper-convert\/host-files-before\.tar\.gz.*docker compose up -d/);
     assert.equal(indexOfEvent(events(f), ['docker', /^compose logs/]), -1);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('retire-monitoring checks and removes docker volumes, and removes .env and monitoring', () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'retire-monitoring');
+    assert.equal(result.status, 0);
+    assert.match(result.stderr, /retired: no volumes remain; \.env and monitoring\/ are removed/);
+    const dockerCalls = events(f).filter(([kind]) => kind === 'docker').map(([, call]) => call);
+    const volumeCalls = dockerCalls.filter((call) => call.includes('volume'));
+    assert.ok(volumeCalls.some((call) => call.includes('volume inspect librepaper_prometheus')));
+    assert.ok(volumeCalls.some((call) => call.includes('volume inspect librepaper_grafana')));
+    assert.ok(volumeCalls.some((call) => call.includes('volume inspect librepaper_backup-metrics')));
+    assert.ok(volumeCalls.some((call) => call.includes('volume rm librepaper_prometheus')));
+    assert.ok(volumeCalls.some((call) => call.includes('volume rm librepaper_grafana')));
+    assert.ok(volumeCalls.some((call) => call.includes('volume rm librepaper_backup-metrics')));
+    assert.ok(volumeCalls.some((call) => call.includes('volume ls --format')));
   } finally {
     f.cleanup();
   }
