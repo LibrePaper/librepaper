@@ -194,6 +194,9 @@ case "$*" in
     cp librepaper.toml "$RUNNING_CONFIG_FILE"
     printf called >> "$COMPOSE_UP_FILE"
     ;;
+  'compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper backup prometheus')
+    cp librepaper.toml "$RUNNING_CONFIG_FILE"
+    ;;
   'compose run --rm --no-deps -v ./librepaper.toml.candidate:/etc/librepaper/librepaper.toml:ro librepaper admin config check --config /etc/librepaper/librepaper.toml')
     [ -f librepaper.toml.candidate ] || exit 96
     cp librepaper.toml.candidate "$CHECKED_CONFIG_FILE"
@@ -500,6 +503,7 @@ test('deploy installs the checked candidates, then pulls and starts the stack in
       ['ssh', /mv -f caddy\/Caddyfile\.candidate caddy\/Caddyfile/],
       ['docker', /^compose pull$/],
       ['docker', /^compose up -d --wait --wait-timeout 180$/],
+      ['docker', /^compose up -d --force-recreate --no-deps --wait --wait-timeout 180 /],
       ['docker', /caddy reload/],
       ['docker', /^image prune -f$/],
       ['docker', /^compose logs --tail 50$/],
@@ -510,9 +514,17 @@ test('deploy installs the checked candidates, then pulls and starts the stack in
     assert.equal(existsSync(path.join(f.remote, 'librepaper.toml.candidate')), false);
     assert.equal(existsSync(path.join(f.remote, 'caddy/Caddyfile.candidate')), false);
     assert.equal(read(f.root, 'caddy-timeout').trim(), '30');
+    // The one forced recreate names exactly the services that bind-mount a file the deploy replaces.
+    const recreates = dockerCalls(f).filter((call) => call.includes('--force-recreate'));
+    assert.equal(recreates.length, 1);
+    assert.ok(recreates[0].includes('--no-deps'));
+    assert.deepEqual(
+      recreates[0].split(' ').slice(2).filter((arg) => !arg.startsWith('-') && !/^\d+$/.test(arg)),
+      ['librepaper', 'backup', 'prometheus'],
+    );
     // The server migrates at startup: no setup, no migrate, no manual stop, no volume or system cleanup.
     for (const call of dockerCalls(f)) {
-      assert.doesNotMatch(call, /^compose (stop|down|restart|rm|kill)\b|--force-recreate|volume|system|migrate/, call);
+      assert.doesNotMatch(call, /^compose (stop|down|restart|rm|kill)\b|volume|system|migrate/, call);
     }
     for (const [kind, text] of events(f)) {
       if (kind === 'ssh') assert.doesNotMatch(text, /setup|migrate/, text);
