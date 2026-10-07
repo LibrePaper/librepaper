@@ -242,12 +242,26 @@ async fn only_the_six_routes_exist_and_every_other_answer_is_behind_the_password
 
     // A client that does not know the password learns nothing about which
     // paths exist or which methods they take.
-    for path in ["/other", "/api/status", "/graphs", "/data?points=10"] {
+    for path in ["/other", "/api/status", "/graphs", "/data?points=10", "/ready", "/health"] {
         let response = f.get(ADMIN_HOST, path).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 401, "{path}");
     }
     let post = f.post(ADMIN_HOST, "/").send().await.unwrap();
     assert_eq!(post.status().as_u16(), 401);
+
+    // Liveness and readiness are not answered on the admin name before the
+    // password: without it the challenge, with it the path is just unknown.
+    let ready = f.get(ADMIN_HOST, "/ready").send().await.unwrap();
+    assert_eq!(ready.status().as_u16(), 401);
+    let challenge = header(&ready, "www-authenticate").unwrap_or_default();
+    assert!(challenge.starts_with("Basic realm="), "{challenge:?}");
+    for path in ["/ready", "/health"] {
+        let response = f.get_as_operator(ADMIN_HOST, path).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 404, "{path}");
+    }
+    // The app host still answers liveness without credentials.
+    let health = f.get(READER_HOST, "/health").send().await.unwrap();
+    assert_eq!(health.status().as_u16(), 200);
 
     for (path, kind) in [
         ("/", "html"),

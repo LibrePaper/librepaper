@@ -249,11 +249,14 @@ async fn middleware_inner(
     };
     // Liveness stays independent of database and writer health. Readiness is
     // a bounded probe of the dedicated lease session and is intentionally not
-    // charged to the ordinary request budget.
-    if path == "/health" {
+    // charged to the ordinary request budget. The Docker healthcheck arrives
+    // over loopback, never on the admin name, so nothing there is answered
+    // before the password.
+    let admin_side = arrival.side() == origins::Side::Admin;
+    if path == "/health" && !admin_side {
         return write_json(200, &json!({"ok":true}));
     }
-    if path == "/ready" {
+    if path == "/ready" && !admin_side {
         if method != Method::GET {
             return plain(405, "method not allowed");
         }
@@ -348,7 +351,7 @@ async fn middleware_inner(
     // taken the work permit and the same per-network budget as any anonymous
     // request above, so a client guessing the password is bounded like every
     // other anonymous client. Nothing below runs for it.
-    if arrival.side() == origins::Side::Admin {
+    if admin_side {
         return super::graphs::routes::admin(&server, &request).await;
     }
     let permit = if path.starts_with("/api/fonts/")
