@@ -329,6 +329,20 @@ async fn middleware_inner(
         request.headers(),
         &server.config.cost.trusted_proxies,
     ));
+    // The operator's graphs page has its own origin and its own gate, and it
+    // does nothing with application credentials: no bearer, cookie or session
+    // is read, so a delegated-agent scope check or a provider verification
+    // cannot answer before the password does. It sits here, with the work
+    // permit taken, and is charged the budget of an anonymous request from
+    // this network, so a client guessing the password is bounded like every
+    // other anonymous client. Nothing below runs for it.
+    if admin_side {
+        if !server.cost.admit_request(&network, "") {
+            server.metrics.record_refusal("request_budget");
+            return refusal("request_budget", "network");
+        }
+        return super::graphs::routes::admin(&server, &request).await;
+    }
     // Authenticate before request-budget admission so the budget can be
     // keyed on the authenticated principal rather than only the network.
     let authentication = server
@@ -354,13 +368,6 @@ async fn middleware_inner(
             "principal"
         };
         return refusal("request_budget", scope);
-    }
-    // The operator's graphs page has its own origin and its own gate. It has
-    // taken the work permit and the same per-network budget as any anonymous
-    // request above, so a client guessing the password is bounded like every
-    // other anonymous client. Nothing below runs for it.
-    if admin_side {
-        return super::graphs::routes::admin(&server, &request).await;
     }
     let permit = if path.starts_with("/api/fonts/")
         || path.starts_with("/published/")

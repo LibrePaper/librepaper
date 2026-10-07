@@ -15,11 +15,15 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::server::http_test_support::deployment;
 use crate::server::origins::Origins;
+use librepaper_base::auth::{
+    sign_agent_grant, sign_session, AgentGrant, Identity, PROVIDER_GITHUB,
+};
 use librepaper_engine::storage::postgres::WriterLease;
 use librepaper_engine::storage::store::DocumentInput;
 
 use super::Server;
 
+const SLUG: &str = "admin-origin-fixture";
 const READER: &str = "https://paper.example";
 const DOCS: &str = "https://docs.paper.example";
 const ADMIN: &str = "https://admin.paper.example";
@@ -52,6 +56,9 @@ struct Fixture {
     server: Arc<Server>,
     base: String,
     client: reqwest::Client,
+    /// The fixture's owner, whose application credentials the admin origin
+    /// must ignore.
+    owner: Identity,
     _stop: tokio::sync::oneshot::Sender<()>,
     _writer: WriterLease,
     _history: tempfile::TempDir,
@@ -60,7 +67,7 @@ struct Fixture {
 async fn fixture() -> Option<Fixture> {
     let deployment = deployment(
         DocumentInput {
-            slug: "admin-origin-fixture".into(),
+            slug: SLUG.into(),
             title: "Admin origin fixture".into(),
             source: "# Admin origin fixture\n".into(),
             source_format: "markdown".into(),
@@ -71,6 +78,14 @@ async fn fixture() -> Option<Fixture> {
         "",
     )
     .await?;
+    let owner = Identity {
+        provider: PROVIDER_GITHUB.into(),
+        id: deployment.owner_id.to_string(),
+        handle: "owner".into(),
+        name: "Owner".into(),
+        picture: String::new(),
+        session_generation: deployment.owner_session_generation.clone(),
+    };
     let mut server = deployment.server;
     let writer = deployment._writer;
     let history = tempfile::tempdir().unwrap();
@@ -103,6 +118,7 @@ async fn fixture() -> Option<Fixture> {
         server,
         base: format!("http://{address}"),
         client: reqwest::Client::new(),
+        owner,
         _stop: stop,
         _writer: writer,
         _history: history,
@@ -119,6 +135,29 @@ impl Fixture {
     /// The right password under a user name the server must not care about.
     fn get_as_operator(&self, host: &str, path: &str) -> reqwest::RequestBuilder {
         self.get(host, path).basic_auth("anything", Some(PASSWORD))
+    }
+
+    /// A delegated-agent bearer the app would accept for the owner on their
+    /// own document, and refuse anywhere else.
+    fn agent_bearer(&self) -> String {
+        let grant = AgentGrant {
+            identity: self.owner.clone(),
+            slug: SLUG.into(),
+            link_hash: "ab".repeat(32),
+            role: 1,
+            expires_at: librepaper_base::util::now_unix() + 60,
+        };
+        sign_agent_grant(&self.server.key, &grant).unwrap()
+    }
+
+    /// The owner's signed-in session, as the app's own cookie.
+    fn owner_cookie(&self) -> String {
+        let token = sign_session(
+            &self.server.key,
+            &self.owner,
+            librepaper_base::util::now_unix() + 3600,
+        );
+        format!("__Host-librepaper_session={token}")
     }
 
     fn post(&self, host: &str, path: &str) -> reqwest::RequestBuilder {
@@ -222,6 +261,57 @@ async fn the_admin_host_asks_for_a_password_before_anything_else() {
     );
     assert!(!html.contains("style="), "no inline style attribute");
     assert!(!html.contains("<style"), "no inline style element");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_admin_host_does_nothing_with_application_credentials() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+
+    // Control: the app refuses this delegated token outside its document, so
+    // it is a token the application scope checks would act on.
+    let agent = format!("Bearer {}", f.agent_bearer());
+    let control = f
+        .get(READER_HOST, "/api/list")
+        .header("authorization", &agent)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(control.status().as_u16(), 403);
+
+    let owner_cookie = f.owner_cookie();
+    for (what, name, value) in [
+        ("an arbitrary bearer", "authorization", "Bearer anything"),
+        ("a delegated-agent bearer", "authorization", agent.as_str()),
+        ("the owner's session cookie", "cookie", owner_cookie.as_str()),
+    ] {
+        for path in ["/data?points=10", "/", "/other"] {
+            let response = f
+                .get(ADMIN_HOST, path)
+                .header(name, value)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 401, "{what} on {path}");
+            let challenge = header(&response, "www-authenticate").unwrap_or_default();
+            assert!(
+                challenge.starts_with("Basic realm="),
+                "{what} on {path}: {challenge:?}"
+            );
+            assert_private_headers(&response, what);
+        }
+    }
+
+    // With the password, the application credential changes nothing either.
+    let response = f
+        .get_as_operator(ADMIN_HOST, "/data?points=10")
+        .header("cookie", &owner_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
 }
 
 #[tokio::test]
