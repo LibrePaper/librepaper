@@ -1,17 +1,16 @@
 # Configuration for the official LibrePaper deployment. tools/deploy/production
 # installs it as librepaper/librepaper.toml, mounted read-only at
-# /etc/librepaper/librepaper.toml in the application container.
+# /etc/librepaper/librepaper.toml in the application and backup containers.
 #
-# Application secrets are mounted individually by Compose and resolved from
-# these explicit file references. The production helper never writes their
-# values into Compose's .env file or the application configuration.
+# The OAuth credentials are files that the helper writes from SOPS into
+# librepaper/secrets, which compose.override.yaml mounts at /run/secrets. The
+# helper never writes their values into this file or into Compose's .env file.
 
 # The container listens on a private port behind the reverse proxy, which
 # serves the public HTTPS origins.
 [server]
 address = "0.0.0.0:8080"
 local_companion = false
-migrate = false
 
 # app is the application and its API (other Host headers get 421); docs
 # isolates rendered documents; site is the project site used for sign-out
@@ -26,7 +25,8 @@ site = "https://librepaper.org"
 # object_store = "s3" and uncomment [storage.s3].
 [storage]
 directory = "/var/lib/librepaper"
-database_url = { file = "/run/secrets/database_url" }
+# The PostgreSQL container's Unix socket on the pgsocket volume; no password.
+database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper"
 database_connections = 20
 fsync = true
 object_store = "filesystem"
