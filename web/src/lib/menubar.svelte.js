@@ -17,13 +17,13 @@ let anchor = $state(null);
 // This is the one box every menu on a phone opens in, hanging from the right
 // edge of the Panels trigger; the hamburger panel and the menus chosen from it
 // share it so choosing File does not move the panel.
-export const PANEL_POSITIONING = {
+export const PANEL_POSITIONING = /** @type {const} */ ({
   placement: "bottom-end",
   gutter: 8,
   flip: true,
   fitViewport: true,
   overflowPadding: 8,
-};
+});
 
 // The triggers in the order the bar shows them, read off the document rather
 // than registered: menus come and go with what the page can do right now, and
