@@ -439,6 +439,9 @@ dashes):
   with the directory mode (0700), never the file mode. That holds for a file
   mount; a directory mount keeps the directory's own mode inside the container,
   so a bind-mounted `secrets/` must be 0755 under the 0700 kit directory.
+- Compose appends list values when it merges an override: `profiles: [unused]`
+  on a service that already has a profile yields both. `profiles: !override
+  [unused]` replaces the list. Verified on Compose 5.4.
 - A short-form Compose secret mounts at `/run/secrets/<secret name>`. When a
   program names the file, use the long form with `target:` (Roborev job 931).
 - The initdb role (OID 10) cannot lose SUPERUSER on PostgreSQL 16 and later;
