@@ -226,9 +226,7 @@ async fn middleware_inner(
     // the proxy addresses it with a Host header we do not serve. It arrives
     // with the internal authority, never the admin name, so on the admin host
     // the question is an ordinary request and waits for the password.
-    if method == Method::GET
-        && path == "/api/tls/ask"
-        && !server.origins.is_admin_authority(&host)
+    if method == Method::GET && path == "/api/tls/ask" && !server.origins.is_admin_authority(&host)
     {
         let domain = request.uri().query().and_then(|q| {
             url::form_urlencoded::parse(q.as_bytes())
