@@ -438,10 +438,6 @@ dashes):
   with the directory mode (0700), never the file mode. That holds for a file
   mount; a directory mount keeps the directory's own mode inside the container,
   so a bind-mounted `secrets/` must be 0755 under the 0700 kit directory.
-- A short-form Compose secret mounts at `/run/secrets/<secret name>`. Grafana's
-  `GF_SECURITY_ADMIN_PASSWORD__FILE` names the file, so the service entry needs
-  the long form with `target:`. Both found by Roborev job 931 after the merge;
-  neither check started Grafana or mounted a real secrets directory.
 - The initdb role (OID 10) cannot lose SUPERUSER on PostgreSQL 16 and later;
   it can be renamed and given LOGIN. A session cannot rename or drop its own
   role, which is why the conversion reconnects as `postgres` for the last
@@ -453,15 +449,14 @@ dashes):
 - `_sqlx_migrations` must be unchanged or `admin serve` refuses the schema.
   Compare it explicitly even though nothing should touch it.
 - A fresh named volume mounted at `/var/run/postgresql` inherits the image
-  directory's 2777 mode, which is what lets uid 10001 and the exporter reach
+  directory's 2777 mode, which is what lets uid 10001 reach
   the socket. Do not pre-create that directory with other modes. Socket paths
   must be short; never put one under a scratchpad path in tests.
 - The app's image runs `pg_dump` 17.11 against server 17.11. Bumping one
   means bumping the other.
 - Operator state lives only in files the archive never contains:
-  `compose.override.yaml`, `.env`, `caddy/local.d/`,
-  `monitoring/grafana_admin_password`, and the two excluded TOML files. Any
-  instruction that has an operator edit `compose.yaml` is a bug.
+  `compose.override.yaml`, `caddy/local.d/`, `secrets/`, and the two excluded
+  TOML files. Any instruction that has an operator edit `compose.yaml` is a bug.
 - `docker compose up -d` on production recreates Caddy when its network list
   changes. Seconds of downtime for the other app on the VPS; acceptable,
   announce nothing, do it once.
