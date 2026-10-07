@@ -456,22 +456,54 @@ try {
   assert.deepEqual(compactNav.gaps,[8,8],'the three controls are separated by equal 8px gaps');
   assert.equal(compactNav.immediatelyLeft,true,'the Panels trigger sits immediately left of the face switch');
   assert.equal(await b.evaluate('document.querySelector(".compact-panels-trigger[aria-label=Panels]").innerText.trim()'),'','the Panels trigger is icon only');
-  // The menu bar is hidden on a phone; its menus open from the top of the
-  // Panels menu instead, below the bar, with their own items.
+  // The menu bar is hidden on a phone; its menus open from the Panels trigger in
+  // the Panels panel's own box, the frame is deaf while they are open, and a press
+  // on the pane around it closes them.
+  // The bar may be stepping aside after the resize above, and its slide briefly
+  // gives the page a scrollbar that moves the trigger. Bring it back the way
+  // focus does and let it come to rest before opening anything from it.
+  const barAtRest = `(() => { const nav = document.querySelector("nav.reader-nav").getBoundingClientRect(); return nav.top === 0 && document.documentElement.scrollHeight <= innerHeight ? true : null; })()`;
   for (const [id, item] of [["file", "Settings…"], ["view", "Preview this file"]]) {
+    await b.evaluate('document.querySelector(".compact-panels-trigger").focus()');
+    await until(`top bar at rest before ${id}`, () => b.evaluate(barAtRest), 3000);
     await click('.compact-panels-trigger[aria-label="Panels"]');
     await until(`Panels menu before ${id}`, () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(`${panelMenu} [data-menu-id="${id}"]`)}))`), 3000);
+    // Measured once the panel hangs from its trigger, 8px below its right edge.
+    const panels = await until(`Panels panel settled before ${id}`, () => b.evaluate(`(() => {
+      const menu = document.querySelector(${JSON.stringify(panelMenu)});
+      const items = menu?.querySelector('.compact-panels-items');
+      const frame = document.querySelector('.viewport iframe');
+      const rect = menu?.getBoundingClientRect();
+      const trigger = document.querySelector('.compact-panels-trigger')?.getBoundingClientRect();
+      if (!rect || !trigger || Math.abs(rect.right - trigger.right) > 1 || Math.abs(rect.top - trigger.bottom - 8) > 1) return null;
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, triggerRight: trigger.right, itemsClient: items?.clientHeight, itemsScroll: items?.scrollHeight, pointerEvents: frame ? getComputedStyle(frame).pointerEvents : 'missing', innerHeight: window.innerHeight };
+    })()`), 3000);
+    assert.ok(Math.abs(panels.itemsClient - panels.itemsScroll) <= 1, 'the Panels panel is as tall as its items');
+    assert.ok(panels.bottom < panels.innerHeight - 8, 'the Panels panel stops at its last item');
+    assert.equal(panels.pointerEvents, 'none', 'the frame is deaf while the Panels menu is open');
     await click(`${panelMenu} [data-menu-id="${id}"]`);
     const opened = await until(`${id} menu from Panels`, () => b.evaluate(`(() => {
       const node=[...document.querySelectorAll(".explorer-menu[data-state=open] [role=menuitem]")].find(n => n.textContent.includes(${JSON.stringify(item)}));
       if (!node || !node.getClientRects().length) return null;
-      return { top: node.closest(".explorer-menu").getBoundingClientRect().top, bar: document.querySelector("nav.reader-nav").getBoundingClientRect().bottom, panels: Boolean(document.querySelector(".explorer-menu[data-state=open] .compact-panels-items")) };
+      const menu = node.closest(".explorer-menu");
+      const frame = document.querySelector('.viewport iframe');
+      const menuRect = menu.getBoundingClientRect();
+      return { top: menuRect.top, left: menuRect.left, width: menuRect.width, bar: document.querySelector("nav.reader-nav").getBoundingClientRect().bottom, panels: Boolean(menu.querySelector(".compact-panels-items")), right: menuRect.right, pointerEvents: frame ? getComputedStyle(frame).pointerEvents : 'missing' };
     })()`), 3000);
     assert.ok(opened.top >= opened.bar, `the ${id} menu opens below the top bar: ${JSON.stringify(opened)}`);
     assert.equal(opened.panels, false, `the Panels menu closes when ${id} opens`);
-    await b.command("Input.dispatchKeyEvent", {type:"keyDown",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
-    await b.command("Input.dispatchKeyEvent", {type:"keyUp",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+    assert.ok(Math.abs(opened.right - panels.right) <= 1, `the ${id} menu opens in the Panels panel's box: ${JSON.stringify({menu: opened, panels})}`);
+    assert.ok(Math.abs(opened.top - panels.top) <= 1, `the ${id} menu opens at the top of the Panels panel's box: ${JSON.stringify({menu: opened, panels})}`);
+    assert.equal(opened.pointerEvents, 'none', `the frame is deaf while the ${id} menu is open`);
+    if (id === 'file') {
+      await click('.viewport');
+    } else {
+      await b.command("Input.dispatchKeyEvent", {type:"keyDown",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+      await b.command("Input.dispatchKeyEvent", {type:"keyUp",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+    }
     await until(`${id} menu closed`, () => b.evaluate('!document.querySelector(".explorer-menu[data-state=open]")'), 3000);
+    const framePointerEventsAfter = await b.evaluate('getComputedStyle(document.querySelector(".viewport iframe")).pointerEvents');
+    assert.equal(framePointerEventsAfter, 'auto', 'the frame hears presses again once the menus are closed');
   }
   await click('.compact-panels-trigger[aria-label="Panels"]');
   await until('compact Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);

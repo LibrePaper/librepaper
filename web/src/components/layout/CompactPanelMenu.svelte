@@ -3,12 +3,14 @@
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import Icon from "../Icon.svelte";
   import { retargetElementAttributes } from "../element-attributes.js";
+  import { PANEL_POSITIONING } from "../../lib/menubar.svelte.js";
 
   let { tabs = [], panel = "", open = false, onselect, onsettings, menus = [], onmenu } = $props();
 
-  // The menu is portalled, so its height cannot be inherited from the reader
-  // or the top bar. Measure the available space between the top bar and the
-  // visual viewport, then give the menu's scrolling region all of it with insets.
+  // The menu is portalled so it cannot inherit a height; measure the room
+  // between the top bar and the visual viewport and let the scrolling region
+  // take at most that much, so the panel is as tall as its items and no
+  // taller, and a press below the last item is a press outside.
   function sizeMenu(element) {
     const trigger = document.querySelector(".compact-panels-trigger");
     const siteBar = document.querySelector("body > nav");
@@ -29,7 +31,7 @@
         const menuInsets = style
           ? parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth)
           : 0;
-        element.style.height = `${Math.max(0, bottom - top - menuInsets)}px`;
+        element.style.maxHeight = `${Math.max(0, bottom - top - menuInsets)}px`;
       });
     };
     const observer = new ResizeObserver(measure);
@@ -59,11 +61,14 @@
     else if (chosen.value === "settings") setTimeout(() => onsettings?.(), 0);
     else if (chosen.value.startsWith("menu:")) {
       const id = chosen.value.slice(5);
-      // Let the menu finish closing before opening the File/Edit/Insert/View menu.
-      setTimeout(() => onmenu?.(id), 0);
+      // Let this menu finish closing before opening the File/Edit/Insert/View
+      // menu, which then opens in this panel's place, hanging from the same
+      // trigger.
+      const trigger = document.querySelector(".compact-panels-trigger");
+      setTimeout(() => onmenu?.(id, trigger), 0);
     }
   }}
-  positioning={{ placement: "bottom-end", gutter: 8, flip: true, fitViewport: true, overflowPadding: 8 }}
+  positioning={PANEL_POSITIONING}
 >
   <Menu.Trigger
     class={`btn-icon icon-control icon-standard compact-panels-trigger ${open ? "lp-control-tonal-brand" : "icon-plain"}`}
@@ -145,7 +150,7 @@
     box-sizing: border-box;
     min-height: 0;
     overflow-x: hidden;
-    overflow-y: scroll;
+    overflow-y: auto;
     overscroll-behavior: contain;
     touch-action: pan-y;
     -webkit-overflow-scrolling: touch;
