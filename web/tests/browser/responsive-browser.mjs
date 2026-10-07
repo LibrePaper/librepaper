@@ -615,6 +615,44 @@ try {
   assert.equal(await visible('.viewport'),false);
   assert.equal(await b.evaluate('document.querySelector(".cm-editor") === window.savedEditor'), true);
   assert.ok(Math.abs(await b.evaluate('document.querySelector(".cm-scroller").scrollTop') - sourceTop) < 2);
+
+  // A tap in the source on a phone brings the tapped line to the top of the
+  // editor, where the keyboard the tap raises cannot cover it; beside the
+  // document the same tap leaves the scroll alone. The room's 180 lines make the
+  // editor scroll, and a real mouse press on a line near the bottom of the
+  // visible editor is what CodeMirror marks as a pointer selection, so the test
+  // needs the DOM only and never the view.
+  const tapLowLine = async () => {
+    await b.evaluate('document.querySelector(".cm-scroller").scrollTop = 0');
+    await flush();
+    await until('top bar at rest before the tap', () => b.evaluate(barAtRest), 3000);
+    const target = await b.evaluate(`(() => {
+      const scroller = document.querySelector('.cm-scroller').getBoundingClientRect();
+      const line = [...document.querySelectorAll('.cm-line')].filter(node => node.getBoundingClientRect().bottom < scroller.bottom).at(-1);
+      const rect = line.getBoundingClientRect(), x = rect.left + 40, y = rect.top + rect.height / 2;
+      return { text: line.textContent, x, y, hit: Boolean(document.elementFromPoint(x, y)?.closest('.cm-line')) };
+    })()`);
+    assert.equal(target.hit, true, 'the line to tap is under the pointer: ' + JSON.stringify(target));
+    for (const type of ['mousePressed', 'mouseReleased']) await b.command('Input.dispatchMouseEvent', { type, x: target.x, y: target.y, button: 'left', clickCount: 1 });
+    return target.text;
+  };
+  const tapped = await tapLowLine();
+  await until('the tapped line rises to the top', () => b.evaluate(`(() => {
+    const line = document.querySelector('.cm-activeLine');
+    const scroller = document.querySelector('.cm-scroller').getBoundingClientRect();
+    return Boolean(line) && line.textContent === ${JSON.stringify(tapped)}
+      && Math.abs(line.getBoundingClientRect().top - scroller.top) <= 24;
+  })()`), 3000);
+  await b.resize(1280, 900); await flush();
+  assert.equal(await visible('.viewport'), true);
+  const tappedWide = await tapLowLine();
+  await until('the wide tap moves the caret', () => b.evaluate(`document.querySelector('.cm-activeLine')?.textContent === ${JSON.stringify(tappedWide)}`), 3000);
+  await flush();
+  assert.equal(await b.evaluate('document.querySelector(".cm-scroller").scrollTop'), 0, 'beside the document a tap leaves the scroll position alone');
+  await b.resize(390, 844); await flush();
+  await click(face('Source'));
+  assert.equal(await visible('.editorpane'), true);
+  await until('top bar at rest after the tap', () => b.evaluate(barAtRest), 3000);
   await nav('Files');
   assert.equal(await visible('.filelist'),true);
   assert.equal(await visible('.editorpane'),false);
@@ -682,5 +720,5 @@ try {
     await bounded();
   }
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds, the hiding bar and saved layouts passed');
+  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds, tap to top, the hiding bar and saved layouts passed');
 } finally { await b?.close(); serverHttp?.close(); rmSync(temp,{recursive:true,force:true}); }
