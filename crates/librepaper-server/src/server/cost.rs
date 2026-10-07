@@ -3,23 +3,6 @@
 use super::*;
 use axum::body::HttpBody;
 
-fn host_check_response(origins: &origins::Origins, method: &Method, host: &str) -> Reply {
-    if method != Method::GET {
-        let mut response = plain(405, "method not allowed");
-        set(&mut response, "cache-control", "no-store");
-        return response;
-    }
-    if !origins.is_app_authority(host) {
-        let mut response = plain(421, "this host is not the application host");
-        set(&mut response, "cache-control", "no-store");
-        return response;
-    }
-    let mut response = Response::new(Body::empty());
-    *response.status_mut() = StatusCode::NO_CONTENT;
-    set(&mut response, "cache-control", "no-store");
-    response
-}
-
 pub struct CostMeter {
     requests: Option<governor::DefaultKeyedRateLimiter<String>>,
     pub transfers: Arc<tokio::sync::Semaphore>,
@@ -69,6 +52,15 @@ impl CostMeter {
 }
 
 impl Server {
+    /// The host measurements, with the disk figures taken from the filesystem
+    /// the deployment directory lives on when this server knows it.
+    async fn host_snapshot(&self) -> Value {
+        let deployment = self.paths.as_ref().map(|paths| paths.deployment.clone());
+        tokio::task::spawn_blocking(move || super::host_metrics::snapshot(deployment.as_deref()))
+            .await
+            .unwrap_or(Value::Null)
+    }
+
     /// Lightweight metrics sample. Keep this separate from `/api/status`:
     /// that operator endpoint also asks the catalogue for a storage usage
     /// total, which is not suitable for a periodic scrape task.
@@ -85,9 +77,7 @@ impl Server {
             "active_artifact_transfers": self.config.cost.artifact_transfers - self.cost.transfers.available_permits(),
         });
         snapshot["background"] = self.background.snapshot();
-        snapshot["host"] = tokio::task::spawn_blocking(super::host_metrics::snapshot)
-            .await
-            .unwrap_or(Value::Null);
+        snapshot["host"] = self.host_snapshot().await;
         snapshot["database"] = self.store.catalog.pool_snapshot();
         snapshot
     }
@@ -123,9 +113,7 @@ impl Server {
         // reached, and hands the work back to a durable rescan. That is
         // invisible from outside unless it is counted here.
         snapshot["background"] = self.background.snapshot();
-        snapshot["host"] = tokio::task::spawn_blocking(super::host_metrics::snapshot)
-            .await
-            .unwrap_or(Value::Null);
+        snapshot["host"] = self.host_snapshot().await;
         // The one pool, and the three waits kept apart: this is the wait for
         // a connection, `http_work` above is the wait for an admission slot,
         // and neither is the query itself. REVIEW-BIG-IDEAS.md §2.1 asked
@@ -202,7 +190,14 @@ pub(super) async fn middleware(
     next: axum::middleware::Next,
 ) -> Reply {
     let started = std::time::Instant::now();
-    let route = super::metrics::route_class(request.uri().path());
+    // The operator's page is labelled by the host it arrived on, whatever its
+    // path, so the request series and the graphs can both leave it out.
+    let host = origins::header(request.headers(), "host").unwrap_or_default();
+    let route = if server.origins.is_admin_authority(&host) {
+        "admin"
+    } else {
+        super::metrics::route_class(request.uri().path())
+    };
     let method = request.method().as_str().to_owned();
     let response = middleware_inner(
         axum::extract::State(server.clone()),
@@ -225,13 +220,6 @@ async fn middleware_inner(
 ) -> Reply {
     let path = request.uri().path().to_string();
     let method = request.method().clone();
-    // Caddy's forward_auth probe deliberately preserves the public Host. It
-    // answers only for the configured application authority, before ordinary
-    // origin admission, authentication, or request-budget consumption.
-    if path == "/api/monitoring/host-check" {
-        let host = origins::header(request.headers(), "host").unwrap_or_default();
-        return host_check_response(&server.origins, &method, &host);
-    }
     // The reverse proxy asks whether we serve a hostname before obtaining a
     // certificate for it. This must be answered before the host check, because
     // the proxy addresses it with a Host header we do not serve.
@@ -261,11 +249,14 @@ async fn middleware_inner(
     };
     // Liveness stays independent of database and writer health. Readiness is
     // a bounded probe of the dedicated lease session and is intentionally not
-    // charged to the ordinary request budget.
-    if path == "/health" {
+    // charged to the ordinary request budget. The Docker healthcheck arrives
+    // over loopback, never on the admin name, so nothing there is answered
+    // before the password.
+    let admin_side = arrival.side() == origins::Side::Admin;
+    if path == "/health" && !admin_side {
         return write_json(200, &json!({"ok":true}));
     }
-    if path == "/ready" {
+    if path == "/ready" && !admin_side {
         if method != Method::GET {
             return plain(405, "method not allowed");
         }
@@ -355,6 +346,13 @@ async fn middleware_inner(
             "principal"
         };
         return refusal("request_budget", scope);
+    }
+    // The operator's graphs page has its own origin and its own gate. It has
+    // taken the work permit and the same per-network budget as any anonymous
+    // request above, so a client guessing the password is bounded like every
+    // other anonymous client. Nothing below runs for it.
+    if admin_side {
+        return super::graphs::routes::admin(&server, &request).await;
     }
     let permit = if path.starts_with("/api/fonts/")
         || path.starts_with("/published/")
@@ -594,47 +592,6 @@ mod agent_scope_tests {
         assert_eq!(agent_document_slug("/api/account/erase"), None);
         assert_eq!(agent_document_slug("/api/documents"), None);
         assert_eq!(agent_document_slug("/api/documents/"), None);
-    }
-}
-
-#[cfg(test)]
-mod monitoring_host_check_tests {
-    use super::host_check_response;
-    use crate::server::origins::Origins;
-    use axum::http::Method;
-
-    #[test]
-    fn host_check_accepts_only_the_configured_app_authority() {
-        let origins = Origins::configure("https://paper.example", None).unwrap();
-        for host in ["paper.example", "paper.example:443"] {
-            let response = host_check_response(&origins, &Method::GET, host);
-            assert_eq!(response.status(), 204, "{host:?}");
-            assert_eq!(response.headers()["cache-control"], "no-store");
-        }
-        for host in [
-            "docs.paper.example",
-            "sandbox.example",
-            "evil.example",
-            "localhost:8080",
-            "127.0.0.1:8080",
-            "",
-        ] {
-            assert_eq!(
-                host_check_response(&origins, &Method::GET, host).status(),
-                421,
-                "{host:?} must be rejected"
-            );
-        }
-        let custom_docs =
-            Origins::configure("https://paper.example", Some("https://sandbox.example")).unwrap();
-        assert_eq!(
-            host_check_response(&custom_docs, &Method::GET, "sandbox.example").status(),
-            421
-        );
-        assert_eq!(
-            host_check_response(&origins, &Method::POST, "paper.example").status(),
-            405
-        );
     }
 }
 

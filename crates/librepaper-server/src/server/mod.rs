@@ -46,6 +46,8 @@ use librepaper_room::room::{
     Sender,
 };
 
+#[cfg(test)]
+mod admin_http_tests;
 mod agent_auth;
 mod chat;
 #[cfg(test)]
@@ -54,6 +56,7 @@ pub mod cost;
 mod documents;
 mod figures;
 pub mod fonts;
+mod graphs;
 mod history;
 #[cfg(test)]
 mod history_frontier_tests;
@@ -208,6 +211,15 @@ pub struct Server {
     /// `origins.app`; a deployment given none answers on loopback alone, which is
     /// what development and the tests use.
     pub origins: origins::Origins,
+    /// The deployment's directories, or nothing in a server built without
+    /// them. Background tasks find the state directory here.
+    pub paths: Option<librepaper_base::config::DeploymentPaths>,
+    /// The password of the operator graphs page, which is served on the
+    /// admin origin.
+    pub admin_password: Option<String>,
+    /// The history behind the graphs page, open only when the admin origin
+    /// is configured and its file could be opened.
+    pub graphs: Option<Arc<graphs::Graphs>>,
     pub publishers: Policy,
     pub commenters: Policy,
     /// Who a GitHub login is, for a grant by name. GitHub in a running
@@ -859,6 +871,9 @@ impl Server {
             tokens: TokenCache::new(),
             config,
             origins: origins::Origins::loopback_only(),
+            paths: None,
+            admin_password: None,
+            graphs: None,
             publishers,
             commenters,
             accounts,

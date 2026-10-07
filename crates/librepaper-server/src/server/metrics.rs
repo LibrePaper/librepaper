@@ -32,6 +32,7 @@ use tokio::net::TcpListener;
 const ROUTES: &[&str] = &[
     "root",
     "health",
+    "admin",
     "api_status",
     "api_config",
     "api_auth",
@@ -50,7 +51,8 @@ const METHODS: &[&str] = &[
     "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "OTHER",
 ];
 const STATUS_CLASSES: &[&str] = &["1xx", "2xx", "3xx", "4xx", "5xx"];
-const HISTOGRAM_EDGES_SECONDS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
+pub(super) const HISTOGRAM_EDGES_SECONDS: &[f64] =
+    &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
 const REFUSALS: &[&str] = &[
     "request_memory",
     "work_concurrency",
@@ -132,6 +134,10 @@ pub struct Metrics {
     snapshot_success: Gauge<u64, AtomicU64>,
     snapshot_timestamp: Gauge<u64, AtomicU64>,
     samples: Arc<SampledGauges>,
+    /// The request counters the operator graphs diff between records. They
+    /// are fed by `record_request` beside the Prometheus families and do not
+    /// read the registry.
+    pub live: Arc<super::graphs::Live>,
 }
 
 impl Default for Metrics {
@@ -169,22 +175,11 @@ impl Default for Metrics {
             snapshot_timestamp.clone(),
         );
 
-        // Every bounded series exists from startup so rate() sees a zero.
+        // A series exists once it has been observed. The labels are bounded
+        // by the fixed enums above, so the exposition cannot grow past them.
         let requests: Family<RequestLabels, Counter> = Family::default();
         let durations: DurationFamily =
             Family::new_with_constructor(new_duration_histogram as fn() -> Histogram);
-        for &route in ROUTES {
-            for &method in METHODS {
-                drop(durations.get_or_create(&DurationLabels { route, method }));
-                for &status_class in STATUS_CLASSES {
-                    drop(requests.get_or_create(&RequestLabels {
-                        route,
-                        method,
-                        status_class,
-                    }));
-                }
-            }
-        }
         registry.register(
             "librepaper_http_requests",
             "Completed HTTP requests by bounded route, method, and response class",
@@ -197,9 +192,6 @@ impl Default for Metrics {
         );
 
         let refusals: Family<RefusalLabels, Counter> = Family::default();
-        for &reason in REFUSALS {
-            drop(refusals.get_or_create(&RefusalLabels { reason }));
-        }
         registry.register(
             "librepaper_resource_refusals",
             "Requests refused by bounded deployment resource reason",
@@ -219,6 +211,7 @@ impl Default for Metrics {
             snapshot_success,
             snapshot_timestamp,
             samples,
+            live: Arc::default(),
         }
     }
 }
@@ -242,6 +235,7 @@ impl Metrics {
         self.durations
             .get_or_create(&DurationLabels { route, method })
             .observe(elapsed.as_secs_f64());
+        self.live.record(route, status, elapsed);
     }
 
     pub(super) fn record_middleware_result(
@@ -441,7 +435,7 @@ impl Metrics {
         self.snapshot_success.set(0);
     }
 
-    fn render(&self) -> String {
+    pub(super) fn render(&self) -> String {
         self.uptime.set(self.started.elapsed().as_secs_f64());
         let mut out = String::with_capacity(32 * 1024);
         // Writing to a String cannot fail.
@@ -486,8 +480,6 @@ pub fn route_class(path: &str) -> &'static str {
         "root"
     } else if path == "/health" || path == "/ready" {
         "health"
-    } else if path == "/api/monitoring/host-check" {
-        "api_monitoring"
     } else if path == "/api/status" {
         "api_status"
     } else if path == "/api/config" {
@@ -578,6 +570,16 @@ pub fn spawn_sampler(server: Arc<super::Server>) {
                 tokio::time::timeout(SCRAPE_SAMPLE_TIMEOUT, server.metrics_snapshot()).await;
             if let Ok(snapshot) = snapshot {
                 server.metrics.update_gauges(&snapshot, &server.config);
+                if let Some(graphs) = server.graphs.clone() {
+                    let live = server.metrics.live.clone();
+                    let observed = tokio::task::spawn_blocking(move || {
+                        graphs.observe(&snapshot, &live)
+                    })
+                    .await;
+                    if let Err(error) = observed {
+                        tracing::warn!("operator graphs could not record a sample: {error}");
+                    }
+                }
             } else {
                 server.metrics.note_snapshot_failure();
             }
@@ -796,6 +798,26 @@ const GAUGE_FIELDS: &[(&str, &str, &str)] = &[
         "host",
         "disk_write_bytes",
     ),
+    (
+        "librepaper_host_disk_available_bytes",
+        "host",
+        "disk_available_bytes",
+    ),
+    (
+        "librepaper_host_disk_total_bytes",
+        "host",
+        "disk_total_bytes",
+    ),
+    (
+        "librepaper_host_cpu_busy_ticks_total",
+        "host",
+        "host_cpu_busy_ticks",
+    ),
+    (
+        "librepaper_host_cpu_ticks_total",
+        "host",
+        "host_cpu_total_ticks",
+    ),
 ];
 
 #[cfg(test)]
@@ -811,6 +833,44 @@ mod tests {
         );
         assert_eq!(route_class("/raw/secret-document/abc"), "raw");
         assert_eq!(route_class("/unknown/private"), "other");
+    }
+
+    #[test]
+    fn every_route_class_is_a_listed_route_and_admin_is_only_ever_assigned_by_host() {
+        assert!(ROUTES.contains(&"admin"));
+        assert!(!ROUTES.contains(&"api_monitoring"));
+        for path in [
+            "/",
+            "/health",
+            "/ready",
+            "/api/status",
+            "/api/config",
+            "/api/auth/device",
+            "/api/documents/x",
+            "/api/comments/x",
+            "/api/assets/x",
+            "/api/fonts/x",
+            "/api/other",
+            "/api/monitoring/host-check",
+            "/auth/callback",
+            "/published/x",
+            "/raw/x",
+            "/pdf/x",
+            "/data",
+            "/app.js",
+        ] {
+            let class = route_class(path);
+            assert!(ROUTES.contains(&class), "{path}: {class}");
+            assert_ne!(class, "admin", "{path}: the path alone never says admin");
+        }
+        assert_eq!(route_class("/api/monitoring/host-check"), "api_other");
+
+        let metrics = Metrics::new();
+        metrics.record_request("admin", "GET", 401, Duration::from_millis(1));
+        let text = metrics.render();
+        assert!(text.contains(
+            "librepaper_http_requests_total{route=\"admin\",method=\"GET\",status_class=\"4xx\"} 1\n"
+        ));
     }
 
     #[test]
@@ -835,48 +895,37 @@ mod tests {
         assert!(text.contains("le=\"+Inf\",route=\"api_documents\",method=\"GET\"} 1\n"));
         assert!(text.contains("librepaper_http_request_duration_seconds_count{route=\"api_documents\",method=\"GET\"} 1"));
         assert!(text.contains("librepaper_resource_refusals_total{reason=\"work_concurrency\"} 1"));
-        for reason in REFUSALS {
-            assert!(text.contains(&format!(
-                "librepaper_resource_refusals_total{{reason=\"{reason}\"}} "
-            )));
-        }
+        assert!(!text.contains("librepaper_resource_refusals_total{reason=\"request_budget\"}"));
         assert!(!text.contains("sensitive-id"));
         assert!(!text.contains("private_id"));
         assert!(!text.contains("/api/documents"));
     }
 
     #[test]
-    fn zero_series_are_exposed_at_startup_and_first_5xx_advances_them() {
+    fn a_fresh_registry_has_no_request_series_and_one_request_creates_exactly_one() {
         let metrics = Metrics::new();
         let before = metrics.render();
-        let request_series = before
-            .lines()
-            .filter(|line| line.starts_with("librepaper_http_requests_total{"))
-            .count();
-        assert_eq!(
-            request_series,
-            ROUTES.len() * METHODS.len() * STATUS_CLASSES.len()
+        assert!(
+            !before.contains("librepaper_http_requests_total"),
+            "no request has been observed"
         );
-        let histogram_bucket_series = before
-            .lines()
-            .filter(|line| line.starts_with("librepaper_http_request_duration_seconds_bucket{"))
-            .count();
-        assert_eq!(
-            histogram_bucket_series,
-            ROUTES.len() * METHODS.len() * (HISTOGRAM_EDGES_SECONDS.len() + 1)
+        assert!(!before.contains("librepaper_http_request_duration_seconds"));
+        assert!(!before.contains("librepaper_resource_refusals_total"));
+        assert!(
+            before.contains("librepaper_build_info"),
+            "series that are not per request still render"
         );
-        assert!(before.contains(
-            "librepaper_http_requests_total{route=\"health\",method=\"GET\",status_class=\"5xx\"} 0\n"
-        ));
-        assert!(before.contains(
-            "librepaper_http_request_duration_seconds_count{route=\"health\",method=\"GET\"} 0\n"
-        ));
-        assert!(before.contains(
-            "librepaper_http_request_duration_seconds_bucket{le=\"+Inf\",route=\"health\",method=\"GET\"} 0\n"
-        ));
 
         metrics.record_request("health", "GET", 503, Duration::from_millis(12));
         let after = metrics.render();
+        let lines_of =
+            |prefix: &str| after.lines().filter(|line| line.starts_with(prefix)).count();
+        assert_eq!(lines_of("librepaper_http_requests_total{"), 1);
+        assert_eq!(
+            lines_of("librepaper_http_request_duration_seconds_bucket{"),
+            HISTOGRAM_EDGES_SECONDS.len() + 1
+        );
+        assert_eq!(lines_of("librepaper_http_request_duration_seconds_count{"), 1);
         assert!(after.contains(
             "librepaper_http_requests_total{route=\"health\",method=\"GET\",status_class=\"5xx\"} 1\n"
         ));
@@ -889,6 +938,17 @@ mod tests {
         assert!(after.contains(
             "librepaper_http_request_duration_seconds_count{route=\"health\",method=\"GET\"} 1\n"
         ));
+
+        metrics.record_request("health", "GET", 200, Duration::from_millis(1));
+        let again = metrics.render();
+        assert_eq!(
+            again
+                .lines()
+                .filter(|line| line.starts_with("librepaper_http_requests_total{"))
+                .count(),
+            2,
+            "a different status class is a second series, not a rewrite of the first"
+        );
     }
 
     #[test]
@@ -1025,6 +1085,10 @@ mod tests {
     #[test]
     fn exposition_keeps_names_types_and_help_and_ends_with_eof() {
         let metrics = Metrics::new();
+        // A family with no series is not rendered at all, so each one is
+        // observed once.
+        metrics.record_request("root", "GET", 200, Duration::from_millis(1));
+        metrics.record_refusal("request_budget");
         metrics.update_gauges(
             &serde_json::json!({
                 "rooms": {"documents": 3},
@@ -1060,5 +1124,31 @@ mod tests {
         assert!(text.contains("librepaper_memory_budget_evicted_caches_total 4"));
         assert!(!text.contains("librepaper_memory_budget_evicted_caches_total_total"));
         assert!(!text.contains("librepaper_http_requests_total_total"));
+    }
+
+    #[test]
+    fn the_host_disk_and_cpu_fields_become_gauges_and_counters() {
+        let metrics = Metrics::new();
+        metrics.update_gauges(
+            &serde_json::json!({"host": {
+                "disk_available_bytes": 1000,
+                "disk_total_bytes": 4000,
+                "host_cpu_busy_ticks": 70,
+                "host_cpu_total_ticks": 300,
+                "disk_read_bytes": null,
+            }}),
+            &librepaper_base::config::Configuration::default(),
+        );
+        let text = metrics.render();
+        assert!(text.contains("# TYPE librepaper_host_disk_available_bytes gauge\n"));
+        assert!(text.contains("librepaper_host_disk_available_bytes 1000"));
+        assert!(text.contains("librepaper_host_disk_total_bytes 4000"));
+        assert!(text.contains("# TYPE librepaper_host_cpu_busy_ticks counter\n"));
+        assert!(text.contains("librepaper_host_cpu_busy_ticks_total 70"));
+        assert!(text.contains("librepaper_host_cpu_ticks_total 300"));
+        assert!(
+            !text.contains("librepaper_host_disk_read_bytes_total"),
+            "a null field is omitted rather than exported as zero"
+        );
     }
 }

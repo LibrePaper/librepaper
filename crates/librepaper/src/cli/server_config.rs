@@ -58,6 +58,8 @@ pub(crate) struct ResolvedConfig {
     pub(crate) app_origin: Option<String>,
     pub(crate) docs_origin: Option<String>,
     pub(crate) site_origin: Option<String>,
+    pub(crate) admin_origin: Option<String>,
+    pub(crate) admin_password: Option<String>,
     pub(crate) local_companion: bool,
     pub(crate) migrate: bool,
     pub(crate) storage: StorageOptions,
@@ -91,6 +93,11 @@ impl fmt::Debug for ResolvedConfig {
             .field("app_origin", &self.app_origin)
             .field("docs_origin", &self.docs_origin)
             .field("site_origin", &self.site_origin)
+            .field("admin_origin", &self.admin_origin)
+            .field(
+                "admin_password",
+                &self.admin_password.as_ref().map(|_| "<redacted>"),
+            )
             .field("local_companion", &self.local_companion)
             .field("migrate", &self.migrate)
             .field("storage", &"<redacted>")
@@ -134,6 +141,7 @@ struct Reference {
 struct Raw {
     server: Server,
     origins: Origins,
+    admin: Admin,
     storage: Storage,
     auth: Auth,
     access: Access,
@@ -158,6 +166,12 @@ struct Origins {
     app: Option<Input<String>>,
     docs: Option<Input<String>>,
     site: Option<Input<String>>,
+    admin: Option<Input<String>>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Admin {
+    password: Option<Input<String>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -386,6 +400,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
         &[
             "server",
             "origins",
+            "admin",
             "storage",
             "auth",
             "access",
@@ -399,7 +414,8 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
         ],
     )?;
     section(v, "server", &["address", "local_companion", "migrate"])?;
-    section(v, "origins", &["app", "docs", "site"])?;
+    section(v, "origins", &["app", "docs", "site", "admin"])?;
+    section(v, "admin", &["password"])?;
     section(
         v,
         "storage",
@@ -598,6 +614,8 @@ pub(crate) fn load_with_postgres_env(
     let app_origin = r.optional("origins.app", raw.origins.app)?;
     let docs_origin = r.optional("origins.docs", raw.origins.docs)?;
     let site_origin = r.optional("origins.site", raw.origins.site)?;
+    let admin_origin = r.optional("origins.admin", raw.origins.admin)?;
+    let admin_password = r.optional("admin.password", raw.admin.password)?;
     let storage = resolve_storage(raw.storage, &mut r)?;
     let github_client_id = r.optional("auth.github.client_id", raw.auth.github.client_id)?;
     let github_client_secret =
@@ -730,13 +748,22 @@ pub(crate) fn load_with_postgres_env(
         app_origin.as_deref(),
         docs_origin.as_deref(),
         site_origin.as_deref(),
+        admin_origin.as_deref(),
         &asset_mirror,
+    )?;
+    validate_admin(
+        admin_origin.as_deref(),
+        admin_password.as_deref(),
+        app_origin.as_deref(),
+        docs_origin.as_deref(),
     )?;
     Ok(ResolvedConfig {
         address,
         app_origin,
         docs_origin,
         site_origin,
+        admin_origin,
+        admin_password,
         local_companion,
         migrate,
         storage,
@@ -762,12 +789,80 @@ fn validate_public_urls(
     app_origin: Option<&str>,
     docs_origin: Option<&str>,
     site_origin: Option<&str>,
+    admin_origin: Option<&str>,
     asset_mirror: &str,
 ) -> Result<(), String> {
     validate_public_url("origins.app", app_origin, false, true, true)?;
     validate_public_url("origins.docs", docs_origin, false, true, true)?;
     validate_public_url("origins.site", site_origin, false, true, true)?;
+    validate_public_url("origins.admin", admin_origin, false, true, true)?;
     validate_public_url("assets.mirror", Some(asset_mirror), true, false, false)
+}
+
+fn non_blank(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn host_of(origin: &str) -> Option<String> {
+    url::Url::parse(origin)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_lowercase))
+}
+
+/// The graphs page is behind a password that rides on every request, so it
+/// has a host of its own, https off loopback, and a password nobody can guess
+/// by hand: Basic auth has no lockout.
+fn validate_admin(
+    admin_origin: Option<&str>,
+    admin_password: Option<&str>,
+    app_origin: Option<&str>,
+    docs_origin: Option<&str>,
+) -> Result<(), String> {
+    let (admin, password) = match (non_blank(admin_origin), admin_password) {
+        (None, None) => return Ok(()),
+        (Some(admin), Some(password)) => (admin, password),
+        _ => {
+            return Err("origins.admin and admin.password must be configured together".into());
+        }
+    };
+    let parsed =
+        url::Url::parse(admin).map_err(|_| "origins.admin must be an absolute URL".to_string())?;
+    let loopback = match parsed.host() {
+        Some(url::Host::Domain(host)) => host == "localhost" || host.ends_with(".localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
+        return Err("origins.admin must be an https: URL, or http: on loopback".into());
+    }
+    let Some(app) = non_blank(app_origin) else {
+        return Err("origins.admin requires origins.app".into());
+    };
+    let admin_host = host_of(admin);
+    if admin_host == host_of(app) {
+        return Err(
+            "origins.admin must be a different host from origins.app: the page must not share a host with the reader's session"
+                .into(),
+        );
+    }
+    // Without origins.docs the documents are served from docs.<app host>.
+    let docs_host = match non_blank(docs_origin) {
+        Some(docs) => host_of(docs),
+        None => host_of(app).map(|host| format!("docs.{host}")),
+    };
+    if admin_host == docs_host {
+        return Err(
+            "origins.admin must be a different host from origins.docs: the page must not share a host with documents"
+                .into(),
+        );
+    }
+    if password.trim().chars().count() < 16 {
+        return Err(
+            "admin.password must be at least 16 characters: Basic auth has no lockout".into(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_public_url(
@@ -854,6 +949,22 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "origins.site",
         "site",
         c.site_origin.as_deref(),
+    );
+    optional(
+        &mut out,
+        &c.sources,
+        "origins.admin",
+        "admin",
+        c.admin_origin.as_deref(),
+    );
+
+    section(&mut out, "admin");
+    redacted(
+        &mut out,
+        &c.sources,
+        "admin.password",
+        "password",
+        c.admin_password.is_some(),
     );
 
     section(&mut out, "storage");
@@ -1323,6 +1434,168 @@ mod tests {
             Some("secret")
         );
     }
+    const ADMIN_PASSWORD: &str = "0123456789abcdefghijklmn";
+
+    fn load_text(text: &str) -> Result<ResolvedConfig, String> {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, text).unwrap();
+        load(&path)
+    }
+
+    fn admin_config(origins: &str, password: Option<&str>) -> String {
+        match password {
+            Some(password) => {
+                format!("[origins]\n{origins}\n[admin]\npassword = {password:?}\n")
+            }
+            None => format!("[origins]\n{origins}\n"),
+        }
+    }
+
+    #[test]
+    fn the_admin_origin_and_password_are_accepted_on_loopback_and_on_https() {
+        let loaded = load_text(&admin_config(
+            "app = \"http://localhost:8080\"\nadmin = \"http://admin.localhost:8080\"",
+            Some(ADMIN_PASSWORD),
+        ))
+        .unwrap();
+        assert_eq!(
+            loaded.admin_origin.as_deref(),
+            Some("http://admin.localhost:8080")
+        );
+        assert_eq!(loaded.admin_password.as_deref(), Some(ADMIN_PASSWORD));
+
+        let loaded = load_text(&admin_config(
+            "app = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"",
+            Some(ADMIN_PASSWORD),
+        ))
+        .unwrap();
+        assert_eq!(
+            loaded.admin_origin.as_deref(),
+            Some("https://admin.paper.example")
+        );
+        let loaded = load_text("").unwrap();
+        assert!(loaded.admin_origin.is_none() && loaded.admin_password.is_none());
+    }
+
+    #[test]
+    fn the_admin_origin_and_password_are_refused_unless_they_come_together() {
+        let error = load_text(&admin_config(
+            "app = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"",
+            None,
+        ))
+        .unwrap_err();
+        assert!(error.contains("origins.admin"), "{error}");
+        assert!(error.contains("admin.password"), "{error}");
+        assert!(error.contains("together"), "{error}");
+
+        let error = load_text(&admin_config(
+            "app = \"https://paper.example\"",
+            Some(ADMIN_PASSWORD),
+        ))
+        .unwrap_err();
+        assert!(error.contains("origins.admin"), "{error}");
+        assert!(error.contains("together"), "{error}");
+        assert!(!error.contains(ADMIN_PASSWORD), "{error}");
+
+        let error = load_text(&admin_config(
+            "admin = \"https://admin.paper.example\"",
+            Some(ADMIN_PASSWORD),
+        ))
+        .unwrap_err();
+        assert!(error.contains("origins.admin requires origins.app"), "{error}");
+    }
+
+    #[test]
+    fn a_short_admin_password_is_refused_without_echoing_it() {
+        let short = "0123456789abcde";
+        assert_eq!(short.len(), 15);
+        let error = load_text(&admin_config(
+            "app = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"",
+            Some(short),
+        ))
+        .unwrap_err();
+        assert!(error.contains("admin.password"), "{error}");
+        assert!(error.contains("at least 16"), "{error}");
+        assert!(!error.contains(short), "{error}");
+    }
+
+    #[test]
+    fn the_admin_host_must_differ_from_the_app_and_document_hosts() {
+        for (origins, key) in [
+            (
+                "app = \"https://paper.example\"\nadmin = \"https://paper.example\"",
+                "origins.app",
+            ),
+            (
+                "app = \"https://paper.example\"\ndocs = \"https://sandbox.example\"\nadmin = \"https://sandbox.example\"",
+                "origins.docs",
+            ),
+            (
+                "app = \"https://paper.example\"\nadmin = \"https://docs.paper.example\"",
+                "origins.docs",
+            ),
+        ] {
+            let error = load_text(&admin_config(origins, Some(ADMIN_PASSWORD))).unwrap_err();
+            assert!(error.contains("origins.admin"), "{origins}: {error}");
+            assert!(error.contains(key), "{origins}: {error}");
+            assert!(error.contains("different host"), "{origins}: {error}");
+        }
+    }
+
+    #[test]
+    fn plain_http_is_refused_for_the_admin_origin_off_loopback() {
+        for admin in [
+            "http://admin.paper.example",
+            "http://admin.localhost.example",
+            "http://10.0.0.5",
+        ] {
+            let error = load_text(&admin_config(
+                &format!("app = \"https://paper.example\"\nadmin = \"{admin}\""),
+                Some(ADMIN_PASSWORD),
+            ))
+            .unwrap_err();
+            assert!(
+                error.contains("origins.admin must be an https: URL, or http: on loopback"),
+                "{admin}: {error}"
+            );
+        }
+        for admin in ["http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080"] {
+            let result = load_text(&admin_config(
+                &format!("app = \"http://app.example\"\nadmin = \"{admin}\""),
+                Some(ADMIN_PASSWORD),
+            ));
+            assert!(result.is_ok(), "{admin}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn the_admin_password_resolves_from_a_file_and_stays_out_of_the_display() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(
+            directory.path().join("admin_password"),
+            format!("{ADMIN_PASSWORD}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            &path,
+            "[origins]\napp = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"\n[admin]\npassword = { file = \"admin_password\" }\n",
+        )
+        .unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.admin_password.as_deref(), Some(ADMIN_PASSWORD));
+        let shown = show_resolved(&loaded);
+        assert!(!shown.contains(ADMIN_PASSWORD), "{shown}");
+        assert!(shown.contains("password = \"<redacted>\""), "{shown}");
+        assert!(shown.contains("admin = \"https://admin.paper.example\""), "{shown}");
+        assert!(toml::from_str::<toml::Value>(&shown).is_ok());
+        assert!(!format!("{loaded:?}").contains(ADMIN_PASSWORD));
+
+        std::fs::write(&path, "[admin]\nwat = 1\n").unwrap();
+        assert!(load(&path).unwrap_err().contains("admin.wat"));
+    }
+
     #[test]
     fn empty_config_uses_schema_defaults() {
         let d = tempfile::tempdir().unwrap();

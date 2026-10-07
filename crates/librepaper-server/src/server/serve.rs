@@ -67,6 +67,11 @@ pub struct ServeOptions {
     /// out goes there; a deployment without one sends a signed-out reader to
     /// its own front page.
     pub site_origin: Option<String>,
+    /// The origin of the operator's graphs page, and the password that
+    /// guards it. They are configured together: a page with no password would
+    /// be open, and a password with no page guards nothing.
+    pub admin_origin: Option<String>,
+    pub admin_password: Option<String>,
     pub expire_after: Option<String>,
     pub expire_from: Option<String>,
     /// HTTPS static mirror URL published to browsers. Renderer and LaTeX
@@ -145,6 +150,39 @@ pub(crate) fn validate_site_origin(value: &str) -> Result<String, String> {
         );
     }
     Ok(parsed.origin().ascii_serialization())
+}
+
+fn non_blank(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// The origin set a deployment asked for: the reader and document origins,
+/// and the admin origin when there is one. Settled before storage is opened or
+/// a port claimed.
+fn configured_origins(options: &ServeOptions) -> Result<Origins, String> {
+    let origins = match non_blank(options.app_origin.as_deref()) {
+        Some(reader) => Origins::configure(reader, options.docs_origin.as_deref())
+            .map_err(|error| format!("origins.app/origins.docs: {error}"))?,
+        None if options.docs_origin.is_some() => {
+            return Err("origins.docs requires origins.app".into());
+        }
+        None => Origins::loopback_only(),
+    };
+    origins.with_admin(non_blank(options.admin_origin.as_deref()))
+}
+
+/// The page is guarded by Basic auth, which has no lockout, so the password is
+/// the whole defence and it comes with the origin or not at all.
+fn validate_admin_password(origin: Option<&str>, password: Option<&str>) -> Result<(), String> {
+    if non_blank(origin).is_some() != password.is_some() {
+        return Err("origins.admin and admin.password must be configured together".into());
+    }
+    if password.is_some_and(|password| password.trim().chars().count() < 16) {
+        return Err(
+            "admin.password must be at least 16 characters: Basic auth has no lockout".into(),
+        );
+    }
+    Ok(())
 }
 
 /// Claims a port: the one asked for, or the first free one in the default
@@ -275,20 +313,11 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
         .map_err(|error| format!("retention.expire_after: {error}"))?;
     parse_expire_from(options.expire_from.as_deref().unwrap_or(""))
         .map_err(|error| format!("retention.expire_from: {error}"))?;
-    let origins = match options
-        .app_origin
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(reader) => Origins::configure(reader, options.docs_origin.as_deref())
-            .map_err(|error| format!("origins.app/origins.docs: {error}"))?,
-        None if options.docs_origin.is_some() => {
-            return Err("origins.docs requires origins.app".into());
-        }
-        None => Origins::loopback_only(),
-    };
-    let _ = origins;
+    configured_origins(options)?;
+    validate_admin_password(
+        options.admin_origin.as_deref(),
+        options.admin_password.as_deref(),
+    )?;
     validate_asset_mirror(&options.asset_mirror)?;
     if let Some(site) = options.site_origin.as_deref() {
         validate_site_origin(site)?;
@@ -343,16 +372,7 @@ pub async fn serve(options: ServeOptions) {
     // scheme/host/port tuple, and all startup can do is confirm the operator
     // asked for two different hosts and name the record and certificate that
     // have to exist for that to be true.
-    let origins = match options
-        .app_origin
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(reader) => Origins::configure(reader, options.docs_origin.as_deref())
-            .unwrap_or_else(|error| die(error)),
-        None => Origins::loopback_only(),
-    };
+    let origins = configured_origins(&options).unwrap_or_else(|error| die(error));
     // Read before anything is opened or a port is claimed: a mirror value
     // which cannot work is a typo the operator is still standing in front of.
     let assets = validate_asset_mirror(&options.asset_mirror).unwrap_or_else(|err| die(err));
@@ -531,6 +551,19 @@ pub async fn serve(options: ServeOptions) {
     instance.google = google;
     instance.simulate_activity = options.simulate_activity;
     instance.origins = origins.clone();
+    instance.paths = Some(deployment_paths.clone());
+    instance.admin_password = options.admin_password;
+    // The history behind the graphs page opens only when the page has a name.
+    // A file that cannot be opened costs the graphs and nothing else: the
+    // server never refuses to start over disposable measurements.
+    if origins.admin().is_some() {
+        let state = deployment_paths.state.clone();
+        match tokio::task::spawn_blocking(move || super::graphs::Graphs::open(&state)).await {
+            Ok(Ok(graphs)) => instance.graphs = Some(Arc::new(graphs)),
+            Ok(Err(error)) => tracing::warn!("operator graphs are off: {error}"),
+            Err(error) => tracing::warn!("operator graphs are off: {error}"),
+        }
+    }
     instance.latex = Some(latex);
     instance.site = site;
     instance.fonts = fonts;
@@ -550,11 +583,15 @@ pub async fn serve(options: ServeOptions) {
     };
     instance.local_app = local.as_ref().map(|app| app.address.clone());
     let instance = Arc::new(instance);
+    // The sampler feeds the metrics page and the graphs, so either one is
+    // reason enough to run it. Only the listener needs `[metrics] address`.
+    if metrics_listener.is_some() || instance.graphs.is_some() {
+        super::metrics::spawn_sampler(instance.clone());
+    }
     if let Some(metrics_listener) = metrics_listener {
         if let Ok(address) = metrics_listener.local_addr() {
-            println!("  private Prometheus metrics: http://{address}/metrics");
+            println!("  private metrics: http://{address}/metrics");
         }
-        super::metrics::spawn_sampler(instance.clone());
         let metrics_server = instance.clone();
         tokio::spawn(async move {
             if let Err(error) = super::metrics::serve(metrics_listener, metrics_server).await {
@@ -573,6 +610,9 @@ pub async fn serve(options: ServeOptions) {
             println!("  documents on http://{DOCS_PREFIX}localhost{address}");
             println!("  no origins.app: this deployment answers on loopback only");
         }
+    }
+    if let Some(admin) = origins.admin() {
+        println!("  operator graphs: {}/", admin.as_str());
     }
     println!("  data in {}", blobs.describe());
     println!("  publishing: {}", publishers.describe());
@@ -733,6 +773,38 @@ mod site_origin_tests {
                 "{refused:?} is not an origin this deployment should send anyone to"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod admin_password_tests {
+    use super::*;
+
+    #[test]
+    fn the_admin_origin_and_password_come_together_and_the_password_is_long() {
+        let password = Some("0123456789abcdef");
+        assert!(validate_admin_password(None, None).is_ok());
+        assert!(validate_admin_password(Some(" "), None).is_ok());
+        assert!(validate_admin_password(Some("https://admin.paper.example"), password).is_ok());
+
+        for (origin, password) in [
+            (Some("https://admin.paper.example"), None),
+            (None, password),
+            (Some(" "), password),
+        ] {
+            let error = validate_admin_password(origin, password).unwrap_err();
+            assert!(error.contains("origins.admin"), "{error}");
+            assert!(error.contains("admin.password"), "{error}");
+            assert!(error.contains("together"), "{error}");
+        }
+
+        let error = validate_admin_password(
+            Some("https://admin.paper.example"),
+            Some("0123456789abcde"),
+        )
+        .unwrap_err();
+        assert!(error.contains("admin.password must be at least 16"), "{error}");
+        assert!(!error.contains("0123456789abcde"), "{error}");
     }
 }
 
