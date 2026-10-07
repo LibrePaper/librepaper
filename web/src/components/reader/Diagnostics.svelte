@@ -25,8 +25,9 @@
     // LaTeX can read it faster than anyone can improve the parser.
     log = "",
   } = $props();
-  const errors = $derived(diagnostics.filter((item) => item.severity !== "warning"));
+  const errors = $derived(diagnostics.filter((item) => item.severity !== "warning" && item.severity !== "info"));
   const warnings = $derived(diagnostics.filter((item) => item.severity === "warning"));
+  const notes = $derived(diagnostics.filter((item) => item.severity === "info"));
   // The attempts that were superseded by the one that produced this preview
   // -- everything but the last -- kept collapsed by default: useful when a
   // fallback happened, noise otherwise.
@@ -76,7 +77,7 @@
   {#if transcript}
     <!-- Open on a failed compile: a run that produced no document is exactly
          when the transcript is what the person came here for. -->
-    <details class="mb-4" open={diagnostics.some((item) => item.severity !== "warning")}>
+    <details class="mb-4" open={errors.length > 0}>
       <summary class="panel-section-title">Compile log</summary>
       <div class="mt-2 flex gap-2">
         <button type="button" class="btn btn-sm lp-control-tonal-brand"
@@ -88,17 +89,17 @@
            aria-label="Compile log">{transcript}</pre>
     </details>
   {/if}
-  {#if diagnostics.length === 0}
+  {#if errors.length === 0 && warnings.length === 0}
     <p class="panel-muted">No warnings or errors.</p>
   {:else}
-    {#each [{ title: "Errors", items: errors, warning: false }, { title: "Warnings", items: warnings, warning: true }] as group}
+    {#each [{ title: "Errors", items: errors, tone: "error" }, { title: "Warnings", items: warnings, tone: "warning" }, { title: "Notes", items: notes, tone: "neutral" }] as group}
       {#if group.items.length}
         <h3 class="panel-section-title mb-2">{group.title} ({group.items.length})</h3>
         <ul class="space-y-3 mb-4">
           {#each group.items as item}
             <li class="rounded-container border border-[var(--color-divider)] p-3">
-              <span class="badge mb-2 {group.warning ? 'lp-tone-warning' : 'lp-tone-error'}">
-                {group.warning ? "Warning" : "Error"}
+              <span class="badge mb-2 lp-tone-{group.tone}">
+                {group.tone === "error" ? "Error" : group.tone === "warning" ? "Warning" : "Note"}
               </span>
               <p class="whitespace-pre-wrap break-words">{item.message}</p>
               {#if item.file || item.line > 0}
