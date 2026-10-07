@@ -11,6 +11,7 @@ use axum::response::Response;
 use base64::Engine;
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
+use tokio::sync::Semaphore;
 
 use super::{unix_seconds, Bucket, SeriesData, HISTORY_RETENTION};
 use crate::server::{set, Server};
@@ -188,30 +189,40 @@ async fn data(server: &Server, query: Option<&str>) -> Response<Body> {
         Ok(window) => window,
         Err(message) => return text(StatusCode::BAD_REQUEST, &message),
     };
-    // One read at a time. There is one operator: a second request waits for
-    // the first instead of being refused.
-    let Ok(_slot) = graphs.read_slot.acquire().await else {
-        return text(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "the graphs history is not available",
-        );
-    };
     let reader = Arc::clone(graphs);
-    let read = tokio::task::spawn_blocking(move || {
+    let read = in_read_slot(&graphs.read_slot, move || {
         reader.read(window.from, window.to, window.points)
     })
     .await;
     match read {
         Ok(Ok(series)) => json_reply(&body(&window, &series)),
-        Ok(Err(error)) => {
+        Ok(Err(error)) | Err(error) => {
             tracing::warn!("graphs read failed: {error}");
             text(StatusCode::INTERNAL_SERVER_ERROR, "the history could not be read")
         }
-        Err(error) => {
-            tracing::warn!("graphs read did not finish: {error}");
-            text(StatusCode::INTERNAL_SERVER_ERROR, "the history could not be read")
-        }
     }
+}
+
+/// Run a blocking read once the one read slot is free. There is one operator:
+/// a second request waits for the first instead of being refused. The permit
+/// moves into the blocking task, so a request that is cancelled mid-read does
+/// not free the slot while SQLite is still reading.
+async fn in_read_slot<T, F>(slot: &Arc<Semaphore>, read: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let permit = Arc::clone(slot)
+        .acquire_owned()
+        .await
+        .map_err(|error| error.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let output = read();
+        drop(permit);
+        output
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
 
 /// The `/data` document. A value that is not a number is `null`.
@@ -463,6 +474,63 @@ mod tests {
         assert_eq!(document["series"][1]["bucket"], "max");
         assert_eq!(document["series"][1]["values"], json!([null, null, null]));
         assert!(!document.to_string().contains("NaN"));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_request_does_not_free_the_slot_while_its_read_runs() {
+        let slot = Arc::new(Semaphore::new(1));
+        let request = tokio::spawn({
+            let slot = Arc::clone(&slot);
+            async move {
+                in_read_slot(&slot, || {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    7
+                })
+                .await
+            }
+        });
+        // Let the request take the permit and hand it to the blocking task.
+        while slot.available_permits() == 1 {
+            tokio::task::yield_now().await;
+        }
+        let cancelled_at = std::time::Instant::now();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        // The awaiting future is gone, the read is not.
+        assert!(slot.try_acquire().is_err());
+        let permit = tokio::time::timeout(std::time::Duration::from_secs(5), slot.acquire())
+            .await
+            .expect("the read finishes and frees the slot")
+            .unwrap();
+        assert!(cancelled_at.elapsed() >= std::time::Duration::from_millis(100));
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn a_second_read_waits_for_the_first() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let slot = Arc::new(Semaphore::new(1));
+        let first_done = Arc::new(AtomicBool::new(false));
+        let first = tokio::spawn({
+            let slot = Arc::clone(&slot);
+            let first_done = Arc::clone(&first_done);
+            async move {
+                in_read_slot(&slot, move || {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    first_done.store(true, Ordering::SeqCst);
+                })
+                .await
+            }
+        });
+        while slot.available_permits() == 1 {
+            tokio::task::yield_now().await;
+        }
+        let seen = Arc::clone(&first_done);
+        let second_saw_first_done = in_read_slot(&slot, move || seen.load(Ordering::SeqCst))
+            .await
+            .unwrap();
+        assert!(second_saw_first_done);
+        first.await.unwrap().unwrap();
     }
 
     #[test]

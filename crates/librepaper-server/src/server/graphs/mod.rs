@@ -12,7 +12,7 @@ mod store;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -255,8 +255,9 @@ impl State {
 /// The history store and its read gate.
 pub struct Graphs {
     /// One read at a time: a second `/data` request waits behind the first
-    /// rather than being refused.
-    pub read_slot: Semaphore,
+    /// rather than being refused. Shared so a permit can travel into the
+    /// blocking read and outlive the request that took it.
+    pub read_slot: Arc<Semaphore>,
     path: PathBuf,
     state: Mutex<State>,
 }
@@ -285,7 +286,7 @@ impl Graphs {
         trim(&mut store, unix_seconds());
         let started = Instant::now();
         Ok(Graphs {
-            read_slot: Semaphore::new(1),
+            read_slot: Arc::new(Semaphore::new(1)),
             path,
             state: Mutex::new(State {
                 store: Some(store),
