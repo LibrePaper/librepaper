@@ -17,8 +17,6 @@ docker compose up -d
 curl -fsS https://paper.example/ready
 ```
 
-- Docker Engine with Compose v2 is the only requirement.
-- Two DNS names: one for the app, one for published documents.
 - The directory is private to you (mode 700). Files inside stay readable (0644) so the containers can read their bind mounts; never chmod 600 librepaper.toml.
 - GitHub OAuth callback URL: `https://paper.example/auth/callback`. Google's is `/auth/callback/google`.
 
@@ -34,14 +32,14 @@ Use the third command if the app does not answer.
 
 ## Backups and recovery
 
-Backups are idle until `resticprofile.toml` has a `[resticprofile]` table. Configure a remote Restic repository, its password, and optional S3 credentials:
+Backups are idle until `resticprofile.toml` has a `[resticprofile]` table. Configure a remote Restic repository; the password and any S3 credentials go in the env table:
 
 ```toml
 [resticprofile]
-password = "your-restic-password"
 repository = "s3:s3.amazonaws.com/your-bucket/restic"
 
 [resticprofile.env]
+RESTIC_PASSWORD = "your-restic-password"
 AWS_ACCESS_KEY_ID = "your-key"
 AWS_SECRET_ACCESS_KEY = "your-secret"
 ```
