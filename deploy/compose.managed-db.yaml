@@ -1,0 +1,10 @@
+# Copy this to compose.override.yaml, then set database_url in librepaper.toml.
+services:
+  postgres:
+    profiles: [unused]
+  librepaper:
+    depends_on: !reset []
+  backup:
+    depends_on: !reset []
+  postgres-exporter:
+    profiles: [unused]

@@ -1,13 +1,11 @@
 # Optional operator configuration for the backup sidecar.
-# Add native resticprofile tables here to enable scheduled backups, for example:
+# Backups are idle until you add a [resticprofile] table here, for example:
 #
 # [resticprofile]
 # repository = "s3:https://example.invalid/backups"
-# password-file = "/run/secrets/restic_password"
+# password = "secret"
 #
-# Or set a password through the native resticprofile environment table:
+# Or set credentials through the environment:
 # [resticprofile.env]
-# AWS_SHARED_CREDENTIALS_FILE = "/run/secrets/aws_credentials"
-#
-# Keep credentials in the per-service mounted secret files. This file
-# intentionally ships without a [resticprofile] table, so backups stay idle.
+# AWS_ACCESS_KEY_ID = "key"
+# AWS_SECRET_ACCESS_KEY = "secret"
