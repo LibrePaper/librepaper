@@ -11,9 +11,7 @@ fn main() {
     }
     println!(
         "cargo:rerun-if-changed={}",
-        manifest_dir()
-            .join(".sqlx")
-            .display()
+        manifest_dir().join(".sqlx").display()
     );
 }
 
