@@ -151,9 +151,9 @@ SQL
 		die "a role named postgres already exists: renaming the initdb superuser would collide with it"
 	fi
 
-	say "preconditions: librepaper_app and librepaper_backup own nothing, librepaper_bootstrap owns nothing"
+	say "preconditions: librepaper_app, librepaper_backup, librepaper_metrics, and librepaper_bootstrap own nothing"
 	local role database owned
-	for role in librepaper_app librepaper_backup librepaper_bootstrap; do
+	for role in librepaper_app librepaper_backup librepaper_metrics librepaper_bootstrap; do
 		for database in librepaper postgres; do
 			owned=$(owned_objects "$role" "$database")
 			if [[ -n $owned ]]; then
