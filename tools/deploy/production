@@ -19,10 +19,10 @@ HEALTH_DEADLINE_SECONDS=120
 CADDY_RELOAD_TIMEOUT_SECONDS=30
 
 # Paths on the host that the kit archive never contains and a deploy never replaces.
+# secrets/ is not listed: the kit no longer ships or owns it, so the sync deletes the old one.
 OPERATOR_PATHS=(
 	'/librepaper.toml*'
 	/resticprofile.toml
-	/secrets
 	'/compose.override.yaml*'
 	'/caddy/Caddyfile*'
 	/caddy/local.d
@@ -70,27 +70,11 @@ cleanup_verify_tmp() {
 	if [ "${#VERIFY_TMP_FILES[@]}" -gt 0 ]; then rm -f -- "${VERIFY_TMP_FILES[@]}"; fi
 }
 
-write_secret_file() {
-	# compose.override.yaml bind-mounts the whole directory, and a mounted directory
-	# keeps its own mode inside the container: 0700 would stop uid 10001 from
-	# reaching the files. 0755 is fine because ~/librepaper itself is 0700.
-	local name="$1" value="$2" dir=secrets prepare='chmod 755 librepaper/secrets'
-	case "$name" in
-		github_client_id | github_client_secret | google_client_id | google_client_secret | admin_password) ;;
-		*) die "invalid production secret name" ;;
-	esac
-	# Secret bytes travel on stdin, never in SSH arguments or a shared env file.
-	printf '%s' "$value" | ssh "$HOST" "umask 077; mkdir -p librepaper/$dir; $prepare; tmp=librepaper/$dir/.${name}.tmp; cat > \"\$tmp\" && chmod 444 \"\$tmp\" && mv -f \"\$tmp\" librepaper/$dir/$name"
-}
-
 write_compose_files() {
 	# Compose appends the volumes of an override to those of compose.yaml, so
 	# only the mounts that are specific to this host belong here.
 	ssh "$HOST" 'umask 022; cat > librepaper/compose.override.yaml.tmp && chmod 644 librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'OVERRIDE'
 services:
-  librepaper:
-    volumes:
-      - ./secrets:/run/secrets:ro
   caddy:
     volumes:
       - ./site:/srv/site:ro
@@ -98,10 +82,17 @@ OVERRIDE
 }
 
 write_config() {
-	# This file holds literals and references to files under /run/secrets.
-	# Stage it separately so the candidate binary can validate it before the
-	# currently installed configuration is replaced.
-	ssh "$HOST" 'umask 022; cat > librepaper/librepaper.toml.candidate.tmp && chmod 644 librepaper/librepaper.toml.candidate.tmp && mv -f librepaper/librepaper.toml.candidate.tmp librepaper/librepaper.toml.candidate' < tools/deploy/production.toml
+	# The rendered file holds credentials. ~/librepaper is 0700 and keeps it
+	# private; 444 lets the containers read it as uid 10001. Stage it separately
+	# so the candidate binary can validate it before the installed configuration
+	# is replaced.
+	printf '%s' "$DEPLOY_CONFIG" | ssh "$HOST" 'umask 077; cat > librepaper/librepaper.toml.candidate.tmp && chmod 444 librepaper/librepaper.toml.candidate.tmp && mv -f librepaper/librepaper.toml.candidate.tmp librepaper/librepaper.toml.candidate'
+}
+
+write_resticprofile() {
+	# The rendered profile holds the restic and S3 credentials; 444 and the 0700
+	# directory work as for librepaper.toml.
+	printf '%s' "$DEPLOY_RESTICPROFILE" | ssh "$HOST" 'umask 077; tmp=librepaper/.resticprofile.toml.tmp; cat > "$tmp" && chmod 444 "$tmp" && mv -f "$tmp" librepaper/resticprofile.toml'
 }
 
 install_config() {
@@ -143,22 +134,26 @@ check_production_dns() {
 	ok "$names names -> $ip"
 }
 
-load_deployment_secrets() {
-	DEPLOY_GITHUB_ID=$(required_key PRODUCTION_GITHUB_CLIENT_ID)
-	DEPLOY_GITHUB_SECRET=$(required_key PRODUCTION_GITHUB_CLIENT_SECRET)
-	DEPLOY_GOOGLE_ID=$(required_key PRODUCTION_GOOGLE_CLIENT_ID)
-	DEPLOY_GOOGLE_SECRET=$(required_key PRODUCTION_GOOGLE_CLIENT_SECRET)
-	DEPLOY_ADMIN_PASSWORD=$(required_key PRODUCTION_ADMIN_PASSWORD)
-	ok "5 credentials decrypted (values not shown)"
-}
-
-install_deployment_secrets() {
-	write_secret_file github_client_id "$DEPLOY_GITHUB_ID"
-	write_secret_file github_client_secret "$DEPLOY_GITHUB_SECRET"
-	write_secret_file google_client_id "$DEPLOY_GOOGLE_ID"
-	write_secret_file google_client_secret "$DEPLOY_GOOGLE_SECRET"
-	write_secret_file admin_password "$DEPLOY_ADMIN_PASSWORD"
-	unset DEPLOY_GITHUB_ID DEPLOY_GITHUB_SECRET DEPLOY_GOOGLE_ID DEPLOY_GOOGLE_SECRET DEPLOY_ADMIN_PASSWORD
+RENDERED_KEYS=0
+# render FILE TARGET fills each @LIBREPAPER_NAME@ in FILE from the key of the
+# same name in keys.yaml and sets the global TARGET to the result. The value
+# is escaped for a TOML basic string; it is never printed.
+render() {
+	local file="$1" target="$2" text placeholder name value escaped placeholders
+	text=$(<"$file")
+	text+=$'\n'
+	placeholders=$(grep -oE '@LIBREPAPER_[A-Z0-9_]+@' "$file" | sort -u || true)
+	for placeholder in $placeholders; do
+		name="${placeholder#@}"
+		name="${name%@}"
+		value=$(required_key "$name")
+		[[ ! "$value" =~ [[:cntrl:]] ]] || die "$name in tools/deploy/keys.yaml contains a control character"
+		escaped="${value//\\/\\\\}"
+		escaped="${escaped//\"/\\\"}"
+		text=${text//"$placeholder"/"$escaped"}
+		RENDERED_KEYS=$((RENDERED_KEYS + 1))
+	done
+	printf -v "$target" '%s' "$text"
 }
 
 sync_deployment_files() {
@@ -173,7 +168,6 @@ sync_deployment_files() {
 		args+=(--exclude="$path")
 	done
 	rsync -a --delete "${args[@]}" --out-format='    %n' deploy/ "$HOST:librepaper/"
-	rsync -a --ignore-existing deploy/resticprofile.toml "$HOST:librepaper/resticprofile.toml"
 	# The archive's top directory is private; files inside stay readable for the containers.
 	ssh "$HOST" 'chmod 700 librepaper'
 }
@@ -191,7 +185,9 @@ prepare_local() {
 	check_production_dns
 
 	step "Secrets from tools/deploy/keys.yaml"
-	load_deployment_secrets
+	render tools/deploy/production.toml DEPLOY_CONFIG
+	render tools/deploy/production-resticprofile.toml DEPLOY_RESTICPROFILE
+	ok "$RENDERED_KEYS values decrypted from keys.yaml (not shown)"
 
 	site_build
 }
@@ -204,13 +200,14 @@ stage_host() {
 	site_sync
 	pin_image_tag "$version"
 
-	step "Credentials and compose.override.yaml on the VPS"
-	install_deployment_secrets
+	step "Compose override and resticprofile.toml on the VPS"
+	write_resticprofile
 	write_compose_files
-	ok "wrote five secret files (directory 755 inside the 700 kit directory, files 444) and compose.override.yaml"
+	ok "wrote resticprofile.toml (files 444) and compose.override.yaml"
 
 	step "Candidates: librepaper.toml, and Caddy with the site and the redirects"
 	write_config
+	unset DEPLOY_CONFIG DEPLOY_RESTICPROFILE
 	stage_caddy_config
 	ok "staged librepaper.toml.candidate; $SITE serves docs/_site; $REDIRECTS -> https://$SITE"
 
@@ -220,7 +217,7 @@ stage_host() {
 
 validate_candidates() {
 	# Nothing here touches the installed files or the running stack. The
-	# override already mounts ./secrets, so the OAuth file references resolve.
+	# candidate holds its values itself, so it needs no mounts.
 	if ! ssh "$HOST" 'cd librepaper && docker compose run --rm --no-deps -v ./librepaper.toml.candidate:/etc/librepaper/librepaper.toml:ro librepaper admin config check --config /etc/librepaper/librepaper.toml'; then
 		die "the candidate binary cannot load librepaper.toml; the installed configuration and the running deployment were not touched"
 	fi
@@ -255,6 +252,7 @@ usage: tools/deploy/production <command>
   verify             app, admin graphs, site, documents, redirect, operator URLs, and logs
   logs               follow the container logs
   retire-monitoring  one-time: remove Prometheus, Grafana volumes and .env file
+  move-objects       one-time: copy user files from the data volume to the S3 bucket; run before the deploy that switches to S3
   convert-database   TEMPORARY, deleted after production converts: stage the v0.0.22 kit,
                      save the host files, then run tools/deploy/convert-database.sh on the host
   help, -h, --help   show this message
@@ -304,7 +302,7 @@ verify() {
 
 	step "Admin graphs: ${ADMIN}data?points=10"
 	local password config body api_code
-	password=$(required_key PRODUCTION_ADMIN_PASSWORD)
+	password=$(required_key LIBREPAPER_ADMIN_PASSWORD)
 	config=$(mktemp)
 	body=$(mktemp)
 	VERIFY_TMP_FILES=("$config" "$body")
@@ -506,12 +504,50 @@ RETIRE
 	printf '\n%sDone: the monitoring profile is retired. Nothing else needs to change; verify still works.%s\n' "$green$bold" "$reset"
 }
 
+# host_rclone runs rclone in a container on the host. The S3 keys travel on
+# stdin (set by move_objects) and the container reads them from there, so they
+# never reach a command line or a file on the host.
+host_rclone() {
+	printf '%s\n%s\n' "$OBJECTS_KEY_ID" "$OBJECTS_SECRET" | ssh "$HOST" "cd librepaper && docker run --rm -i -v librepaper_data:/data:ro --entrypoint sh rclone/rclone:1.68.2 -c 'read -r RCLONE_S3_ACCESS_KEY_ID; read -r RCLONE_S3_SECRET_ACCESS_KEY; export RCLONE_S3_ACCESS_KEY_ID RCLONE_S3_SECRET_ACCESS_KEY; exec rclone $*'"
+}
+
+# One-time copy of user files to the S3 bucket, before the deploy that switches
+# to S3. Nothing is deleted from the volume.
+move_objects() {
+	OBJECTS_KEY_ID=$(required_key LIBREPAPER_OBJECTS_S3_ACCESS_KEY_ID)
+	OBJECTS_SECRET=$(required_key LIBREPAPER_OBJECTS_S3_SECRET_ACCESS_KEY)
+	local bucket remote
+	bucket=$(required_key LIBREPAPER_OBJECTS_S3_BUCKET)
+	remote=":s3,provider=Other,endpoint=$(required_key LIBREPAPER_OBJECTS_S3_ENDPOINT),region=$(required_key LIBREPAPER_OBJECTS_S3_REGION):$bucket"
+
+	step "Copy while the app runs"
+	host_rclone copy /data/objects "$remote" --checksum
+	ok "copied"
+
+	step "Stop the app so nothing new lands on the volume"
+	ssh "$HOST" 'cd librepaper && docker compose stop librepaper backup'
+	ok "stopped"
+
+	step "Final copy and check"
+	if ! host_rclone copy /data/objects "$remote" --checksum ||
+		! host_rclone check /data/objects "$remote" --one-way --checksum; then
+		die "the final copy or check failed and the app is stopped; storage is not switched. Start it again with: ssh $HOST 'cd librepaper && docker compose start librepaper backup'"
+	fi
+	ok "checked"
+	unset OBJECTS_KEY_ID OBJECTS_SECRET
+
+	ok "objects are in $bucket; the app stays stopped until 'tools/deploy/production deploy' starts it on S3. The volume copy is kept for rollback."
+}
+
 case "${1:-help}" in
 	deploy)
 		deploy "${2:-}"
 		;;
 	retire-monitoring)
 		retire_monitoring
+		;;
+	move-objects)
+		move_objects
 		;;
 	convert-database)
 		convert_database

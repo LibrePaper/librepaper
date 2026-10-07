@@ -2,9 +2,9 @@
 # installs it as librepaper/librepaper.toml, mounted read-only at
 # /etc/librepaper/librepaper.toml in the application and backup containers.
 #
-# The OAuth credentials are files that the helper writes from SOPS into
-# librepaper/secrets, which compose.override.yaml mounts at /run/secrets. The
-# helper never writes their values into this file or into Compose's .env file.
+# Values in "@NAME@" (credentials, buckets, endpoints, regions) are filled from
+# tools/deploy/keys.yaml (SOPS) by tools/deploy/production at deploy time; the
+# rendered file is what lands on the host.
 
 # The container listens on a private port behind the reverse proxy, which
 # serves the public HTTPS origins.
@@ -21,32 +21,32 @@ docs = "https://docs.librepaper.org"
 site = "https://librepaper.org"
 admin = "https://admin.librepaper.org"
 
-# Objects and server secrets live on the named Docker volume. fsync covers
-# object writes only; PostgreSQL handles its own durability. To use S3, set
-# object_store = "s3" and uncomment [storage.s3].
+# Server secrets live on the named Docker volume; user files live in the
+# private objects bucket. fsync covers filesystem objects only.
 [storage]
 directory = "/var/lib/librepaper"
 # The PostgreSQL container's Unix socket on the pgsocket volume; no password.
 database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper"
 database_connections = 20
 fsync = true
-object_store = "filesystem"
-# [storage.s3]
-# endpoint = "https://s3.example"
-# region = "us-east-1"
-# bucket = "librepaper-production"
-# access_key_id = { env = "LIBREPAPER_S3_ACCESS_KEY_ID" }
-# secret_access_key = { env = "LIBREPAPER_S3_SECRET_ACCESS_KEY" }
+object_store = "s3"
+
+[storage.s3]
+endpoint = "@LIBREPAPER_OBJECTS_S3_ENDPOINT@"
+region = "@LIBREPAPER_OBJECTS_S3_REGION@"
+bucket = "@LIBREPAPER_OBJECTS_S3_BUCKET@"
+access_key_id = "@LIBREPAPER_OBJECTS_S3_ACCESS_KEY_ID@"
+secret_access_key = "@LIBREPAPER_OBJECTS_S3_SECRET_ACCESS_KEY@"
 
 # Sign-in needs at least one provider, each with both values; omit a table to
 # disable it. Callbacks: /auth/callback (GitHub), /auth/callback/google.
 [auth.github]
-client_id = { file = "/run/secrets/github_client_id" }
-client_secret = { file = "/run/secrets/github_client_secret" }
+client_id = "@LIBREPAPER_GITHUB_CLIENT_ID@"
+client_secret = "@LIBREPAPER_GITHUB_CLIENT_SECRET@"
 
 [auth.google]
-client_id = { file = "/run/secrets/google_client_id" }
-client_secret = { file = "/run/secrets/google_client_secret" }
+client_id = "@LIBREPAPER_GOOGLE_CLIENT_ID@"
+client_secret = "@LIBREPAPER_GOOGLE_CLIENT_SECRET@"
 
 # publishers: "any" signed-in account, a GitHub login, a verified Google
 # email, or @example.org (that exact domain, not subdomains). commenters take
@@ -66,7 +66,7 @@ publisher_uploads_per_hour = 30
 # Browsers fetch pinned renderer and LaTeX assets from this mirror, which sees
 # their IP. It must allow CORS GET and HEAD from the application origins.
 [assets]
-mirror = "https://librepaper-s3-assets-0001.s3.bhs.io.cloud.ovh.net/"
+mirror = "https://@LIBREPAPER_MIRROR_S3_BUCKET@.s3.@LIBREPAPER_MIRROR_S3_REGION@.io.cloud.ovh.net/"
 
 # Private listener for your own Prometheus. Nothing in the kit scrapes it and no host port is published.
 [metrics]
@@ -74,7 +74,7 @@ address = "0.0.0.0:9091"
 
 # Operator graphs: read-only page served on the admin origin, behind a password from SOPS.
 [admin]
-password = { file = "/run/secrets/admin_password" }
+password = "@LIBREPAPER_ADMIN_PASSWORD@"
 
 # Keep in sync with the `edge` network in compose.yaml.
 [proxy]

@@ -594,14 +594,14 @@ export async function stageWasmMirror(directory = join(fileURLToPath(new URL("..
 }
 
 export function mappedEnvironment(env) {
-  const bucket = env.S3_BUCKET || env.MIRROR_S3_BUCKET;
+  const bucket = env.S3_BUCKET || env.LIBREPAPER_MIRROR_S3_BUCKET;
   const mapped = {
     ...env,
-    S3_ENDPOINT: env.S3_ENDPOINT || env.MIRROR_S3_ENDPOINT,
-    S3_REGION: env.S3_REGION || env.MIRROR_S3_REGION,
+    S3_ENDPOINT: env.S3_ENDPOINT || env.LIBREPAPER_MIRROR_S3_ENDPOINT,
+    S3_REGION: env.S3_REGION || env.LIBREPAPER_MIRROR_S3_REGION,
     S3_BUCKET: bucket,
-    AWS_ACCESS_KEY_ID: env.AWS_ACCESS_KEY_ID || env.MIRROR_S3_ACCESS_KEY_ID,
-    AWS_SECRET_ACCESS_KEY: env.AWS_SECRET_ACCESS_KEY || env.MIRROR_S3_SECRET_ACCESS_KEY,
+    AWS_ACCESS_KEY_ID: env.AWS_ACCESS_KEY_ID || env.LIBREPAPER_MIRROR_S3_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: env.AWS_SECRET_ACCESS_KEY || env.LIBREPAPER_MIRROR_S3_SECRET_ACCESS_KEY,
   };
   for (const [key, value] of Object.entries({
     S3_ENDPOINT: mapped.S3_ENDPOINT,
@@ -612,15 +612,15 @@ export function mappedEnvironment(env) {
   })) {
     if (value !== undefined && value !== null && typeof value !== "string") throw new Error(`${key} must be a string`);
   }
-  if (!env.S3_BUCKET && typeof env.MIRROR_S3_BUCKET === "string" && !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(env.MIRROR_S3_BUCKET)) {
-    throw new Error("MIRROR_S3_BUCKET must be a valid bucket name");
+  if (!env.S3_BUCKET && typeof env.LIBREPAPER_MIRROR_S3_BUCKET === "string" && !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(env.LIBREPAPER_MIRROR_S3_BUCKET)) {
+    throw new Error("LIBREPAPER_MIRROR_S3_BUCKET must be a valid bucket name");
   }
   return mapped;
 }
 
 export function selectedMirrorFields(secrets) {
   const selected = {};
-  for (const key of ["MIRROR_S3_ENDPOINT", "MIRROR_S3_ACCESS_KEY_ID", "MIRROR_S3_SECRET_ACCESS_KEY", "MIRROR_S3_REGION", "MIRROR_S3_BUCKET"]) {
+  for (const key of ["LIBREPAPER_MIRROR_S3_ENDPOINT", "LIBREPAPER_MIRROR_S3_ACCESS_KEY_ID", "LIBREPAPER_MIRROR_S3_SECRET_ACCESS_KEY", "LIBREPAPER_MIRROR_S3_REGION", "LIBREPAPER_MIRROR_S3_BUCKET"]) {
     if (secrets[key] !== undefined && secrets[key] !== null) selected[key] = secrets[key];
   }
   return selected;

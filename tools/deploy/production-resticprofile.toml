@@ -1,0 +1,13 @@
+# Production backup profile, merged over deploy/backup/profiles.toml by resticprofile.
+# Values in "@NAME@" (credentials, bucket, endpoint, region) are filled from
+# tools/deploy/keys.yaml (SOPS) by tools/deploy/production at deploy time; the
+# rendered file is what lands on the host.
+
+[resticprofile]
+repository = "s3:@LIBREPAPER_BACKUPS_S3_ENDPOINT@/@LIBREPAPER_BACKUPS_S3_BUCKET@/restic"
+
+[resticprofile.env]
+AWS_DEFAULT_REGION = "@LIBREPAPER_BACKUPS_S3_REGION@"
+RESTIC_PASSWORD = "@LIBREPAPER_RESTIC_PASSWORD@"
+AWS_ACCESS_KEY_ID = "@LIBREPAPER_BACKUPS_S3_ACCESS_KEY_ID@"
+AWS_SECRET_ACCESS_KEY = "@LIBREPAPER_BACKUPS_S3_SECRET_ACCESS_KEY@"

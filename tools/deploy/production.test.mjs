@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const deploy = path.join(repo, 'tools/deploy/production');
 const productionToml = readFileSync(path.join(repo, 'tools/deploy/production.toml'), 'utf8');
+const productionResticProfile = readFileSync(path.join(repo, 'tools/deploy/production-resticprofile.toml'), 'utf8');
 const hostScript = path.join(repo, 'tools/deploy/convert-database.sh');
 const sshHost = 'ubuntu@test-host';
 
@@ -29,7 +30,6 @@ const KIT_COMPOSE = [
 const OPERATOR_PATHS = [
   '/librepaper.toml*',
   '/resticprofile.toml',
-  '/secrets',
   '/compose.override.yaml*',
   '/caddy/Caddyfile*',
   '/caddy/local.d',
@@ -37,6 +37,42 @@ const OPERATOR_PATHS = [
 ];
 // The image build context stays in the repository.
 const BUILD_ONLY_PATHS = ['/Dockerfile', '/backup'];
+
+// The values the sops mock returns for each placeholder.
+const mockCredentials = {
+  LIBREPAPER_GITHUB_CLIENT_ID: 'github-id',
+  LIBREPAPER_GITHUB_CLIENT_SECRET: 'github-secret',
+  LIBREPAPER_GOOGLE_CLIENT_ID: 'google-id',
+  LIBREPAPER_GOOGLE_CLIENT_SECRET: 'google-secret',
+  LIBREPAPER_ADMIN_PASSWORD: 'admin-secret',
+  LIBREPAPER_OBJECTS_S3_ACCESS_KEY_ID: 'objects-key-id',
+  LIBREPAPER_OBJECTS_S3_SECRET_ACCESS_KEY: 'objects-secret',
+  LIBREPAPER_RESTIC_PASSWORD: 'restic-password',
+  LIBREPAPER_BACKUPS_S3_ACCESS_KEY_ID: 'backup-key-id',
+  LIBREPAPER_BACKUPS_S3_SECRET_ACCESS_KEY: 'backup-secret',
+};
+
+// Settings that are not secret: they may appear in commands and output.
+const mockSettings = {
+  LIBREPAPER_OBJECTS_S3_ENDPOINT: 'https://objects.example',
+  LIBREPAPER_OBJECTS_S3_REGION: 'objects-region',
+  LIBREPAPER_OBJECTS_S3_BUCKET: 'objects-bucket',
+  LIBREPAPER_BACKUPS_S3_ENDPOINT: 'https://backups.example',
+  LIBREPAPER_BACKUPS_S3_REGION: 'backups-region',
+  LIBREPAPER_BACKUPS_S3_BUCKET: 'backups-bucket',
+  LIBREPAPER_MIRROR_S3_REGION: 'mirror-region',
+  LIBREPAPER_MIRROR_S3_BUCKET: 'mirror-bucket',
+};
+
+// Fills each @NAME@ the way the deploy does: values escaped for a TOML basic string.
+function renderExpected(text, values) {
+  return text.replace(/@(LIBREPAPER_[A-Z0-9_]+)@/g, (match, name) => {
+    assert.ok(name in values, `no mock value for ${name}`);
+    return values[name].replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  });
+}
+const expectedConfig = renderExpected(productionToml, { ...mockCredentials, ...mockSettings });
+const expectedResticProfile = renderExpected(productionResticProfile, { ...mockCredentials, ...mockSettings });
 
 function mockCommand(dir, name, contents) {
   const file = path.join(dir, name);
@@ -55,6 +91,7 @@ function fixture({
   adminDnsMissing = false,
   caddyReloadFailure = false,
   volumeRemoveFailure = false,
+  objectsCheckFailure = false,
   realSleep = false,
   googleClientId = 'google-id',
   googleClientSecret = 'google-secret',
@@ -109,21 +146,34 @@ printf "192.0.2.7\\n"
   mockCommand(bin, 'sops', `
 for arg do
   case "$arg" in
-    *PRODUCTION_GITHUB_CLIENT_ID*) printf 'github-id\\n'; exit ;;
-    *PRODUCTION_GITHUB_CLIENT_SECRET*) printf 'github-secret\\n'; exit ;;
-    *PRODUCTION_GOOGLE_CLIENT_ID*)
-      if [ "$SOPS_FAILURE_KEY" = PRODUCTION_GOOGLE_CLIENT_ID ]; then printf 'private SOPS diagnostic\\n' >&2; exit 1; fi
+    *LIBREPAPER_GITHUB_CLIENT_ID*) printf 'github-id\\n'; exit ;;
+    *LIBREPAPER_GITHUB_CLIENT_SECRET*) printf 'github-secret\\n'; exit ;;
+    *LIBREPAPER_GOOGLE_CLIENT_ID*)
+      if [ "$SOPS_FAILURE_KEY" = LIBREPAPER_GOOGLE_CLIENT_ID ]; then printf 'private SOPS diagnostic\\n' >&2; exit 1; fi
       [ "$GOOGLE_CLIENT_ID_PRESENT" = 1 ] || exit 0
       printf '%s' "$GOOGLE_CLIENT_ID"
       exit
       ;;
-    *PRODUCTION_GOOGLE_CLIENT_SECRET*)
-      if [ "$SOPS_FAILURE_KEY" = PRODUCTION_GOOGLE_CLIENT_SECRET ]; then printf 'private SOPS diagnostic\\n' >&2; exit 1; fi
+    *LIBREPAPER_GOOGLE_CLIENT_SECRET*)
+      if [ "$SOPS_FAILURE_KEY" = LIBREPAPER_GOOGLE_CLIENT_SECRET ]; then printf 'private SOPS diagnostic\\n' >&2; exit 1; fi
       [ "$GOOGLE_CLIENT_SECRET_PRESENT" = 1 ] || exit 0
       printf '%s' "$GOOGLE_CLIENT_SECRET"
       exit
       ;;
-    *PRODUCTION_ADMIN_PASSWORD*) cat "$ADMIN_PASSWORD_FILE"; exit ;;
+    *LIBREPAPER_ADMIN_PASSWORD*) cat "$ADMIN_PASSWORD_FILE"; exit ;;
+    *LIBREPAPER_RESTIC_PASSWORD*) printf 'restic-password\\n'; exit ;;
+    *LIBREPAPER_OBJECTS_S3_ENDPOINT*) printf 'https://objects.example\\n'; exit ;;
+    *LIBREPAPER_OBJECTS_S3_REGION*) printf 'objects-region\\n'; exit ;;
+    *LIBREPAPER_OBJECTS_S3_BUCKET*) printf 'objects-bucket\\n'; exit ;;
+    *LIBREPAPER_BACKUPS_S3_ENDPOINT*) printf 'https://backups.example\\n'; exit ;;
+    *LIBREPAPER_BACKUPS_S3_REGION*) printf 'backups-region\\n'; exit ;;
+    *LIBREPAPER_BACKUPS_S3_BUCKET*) printf 'backups-bucket\\n'; exit ;;
+    *LIBREPAPER_MIRROR_S3_REGION*) printf 'mirror-region\\n'; exit ;;
+    *LIBREPAPER_MIRROR_S3_BUCKET*) printf 'mirror-bucket\\n'; exit ;;
+    *LIBREPAPER_BACKUPS_S3_ACCESS_KEY_ID*) printf 'backup-key-id\\n'; exit ;;
+    *LIBREPAPER_BACKUPS_S3_SECRET_ACCESS_KEY*) printf 'backup-secret\\n'; exit ;;
+    *LIBREPAPER_OBJECTS_S3_ACCESS_KEY_ID*) printf 'objects-key-id\\n'; exit ;;
+    *LIBREPAPER_OBJECTS_S3_SECRET_ACCESS_KEY*) printf 'objects-secret\\n'; exit ;;
   esac
 done
 exit 1`);
@@ -139,19 +189,9 @@ previous= last=
 for arg do previous="$last"; last="$arg"; done
 source="$previous"
 destination="$last"
-ignore_existing=no
-for arg do
-  case "$arg" in
-    --ignore-existing) ignore_existing=yes ;;
-  esac
-done
 case "$destination" in
   *:librepaper/site/)
     mkdir -p "$REMOTE_ROOT/site"
-    ;;
-  *:librepaper/resticprofile.toml)
-    [ "$ignore_existing" = yes ] || exit 95
-    [ -e "$REMOTE_ROOT/resticprofile.toml" ] || cp "$source" "$REMOTE_ROOT/resticprofile.toml"
     ;;
   *:librepaper/)
     mkdir -p "$REMOTE_ROOT"
@@ -170,7 +210,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 command="$2"
-case "$*" in *admin-secret*|*github-id*|*github-secret*|*google-id*|*google-secret*) exit 91 ;; esac
+case "$*" in *admin-secret*|*github-id*|*github-secret*|*google-id*|*google-secret*|*restic-password*|*backup-key-id*|*backup-secret*|*objects-key-id*|*objects-secret*) exit 91 ;; esac
 printf 'ssh\\t%s\\n' "$command" >> "$EVENTS_FILE"
 case "$command" in
   'cd librepaper && bash -s')
@@ -191,15 +231,15 @@ case "$*" in
   'image prune -f') ;;
   'compose pull') ;;
   'compose up -d --wait --wait-timeout 180 --remove-orphans')
-    cp librepaper.toml "$RUNNING_CONFIG_FILE"
+    cp -f librepaper.toml "$RUNNING_CONFIG_FILE"
     printf called >> "$COMPOSE_UP_FILE"
     ;;
   'compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper backup')
-    cp librepaper.toml "$RUNNING_CONFIG_FILE"
+    cp -f librepaper.toml "$RUNNING_CONFIG_FILE"
     ;;
   'compose run --rm --no-deps -v ./librepaper.toml.candidate:/etc/librepaper/librepaper.toml:ro librepaper admin config check --config /etc/librepaper/librepaper.toml')
     [ -f librepaper.toml.candidate ] || exit 96
-    cp librepaper.toml.candidate "$CHECKED_CONFIG_FILE"
+    cp -f librepaper.toml.candidate "$CHECKED_CONFIG_FILE"
     [ "$CONFIG_CHECK_FAILURE" = 0 ]
     ;;
   'compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile.candidate --adapter caddyfile')
@@ -210,6 +250,15 @@ case "$*" in
     [ "$CADDY_RELOAD_FAILURE" = 0 ]
     ;;
   'compose logs --tail 50') ;;
+  'compose stop librepaper backup') ;;
+  *'rclone/rclone:1.68.2'*)
+    # The container reads the S3 keys from its stdin, as the real command does.
+    read -r key_id; read -r key_secret
+    [ "$key_id" = objects-key-id ] && [ "$key_secret" = objects-secret ] || exit 95
+    case "$*" in
+      *'exec rclone check '*) [ "$OBJECTS_CHECK_FAILURE" = 0 ] ;;
+    esac
+    ;;
   'volume inspect librepaper_prometheus'|'volume inspect librepaper_grafana'|'volume inspect librepaper_backup-metrics') ;;
   'volume rm librepaper_prometheus'|'volume rm librepaper_grafana'|'volume rm librepaper_backup-metrics')
     if [ "$VOLUME_REMOVE_FAILURE" = 1 ]; then echo 'Error response from daemon: volume is in use' >&2; exit 1; fi
@@ -315,6 +364,7 @@ exit 0`);
       REAL_TIMEOUT: realTimeout,
       CADDY_RELOAD_FAILURE: caddyReloadFailure ? '1' : '0',
       VOLUME_REMOVE_FAILURE: volumeRemoveFailure ? '1' : '0',
+      OBJECTS_CHECK_FAILURE: objectsCheckFailure ? '1' : '0',
       CONFIG_CHECK_FAILURE: configCheckFailure ? '1' : '0',
       CADDY_CHECK_FAILURE: caddyCheckFailure ? '1' : '0',
       HOST_SCRIPT_FAILURE: hostScriptFailure ? '1' : '0',
@@ -403,52 +453,62 @@ function read(...parts) {
   return readFileSync(path.join(...parts), 'utf8');
 }
 
-test('deploy writes the OAuth and admin credentials through stdin only, never in argv or output', () => {
-  const adminPassword = 'unsafe$#admin-secret with spaces';
+test('deploy renders the credentials into the host config files only, never in argv or output', () => {
+  const adminPassword = 'unsafe$#admin-secret with "quotes" and back\\slash';
   const f = fixture({ adminPassword });
   try {
     const result = run(f, 'deploy', 'v0.0.22');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /5 credentials decrypted/);
+    assert.match(result.stdout, /18 values decrypted from keys.yaml/);
 
-    const credentials = {
-      'secrets/github_client_id': 'github-id',
-      'secrets/github_client_secret': 'github-secret',
-      'secrets/google_client_id': 'google-id',
-      'secrets/google_client_secret': 'google-secret',
-      'secrets/admin_password': adminPassword,
-    };
-    for (const [file, value] of Object.entries(credentials)) {
-      assert.equal(read(f.remote, file), value, file);
-      assert.equal(statSync(path.join(f.remote, file)).mode & 0o777, 0o444, file);
-    }
-    assert.equal(statSync(path.join(f.remote, 'secrets')).mode & 0o777, 0o755, 'a mounted directory keeps its mode in the container; 0700 would lock out uid 10001');
+    const values = { ...mockCredentials, ...mockSettings, LIBREPAPER_ADMIN_PASSWORD: adminPassword };
+    const config = read(f.remote, 'librepaper.toml');
+    assert.equal(config, renderExpected(productionToml, values));
+    assert.ok(config.includes('password = "unsafe$#admin-secret with \\"quotes\\" and back\\\\slash"\n'), 'the admin password is escaped for TOML');
+    assert.equal(statSync(path.join(f.remote, 'librepaper.toml')).mode & 0o777, 0o444, 'librepaper.toml');
+    const profile = read(f.remote, 'resticprofile.toml');
+    assert.equal(profile, renderExpected(productionResticProfile, values));
+    assert.equal(statSync(path.join(f.remote, 'resticprofile.toml')).mode & 0o777, 0o444, 'resticprofile.toml');
+    assert.equal(existsSync(path.join(f.remote, 'secrets')), false, 'the host has no secrets directory');
     assert.equal(existsSync(path.join(f.remote, '.env')), false);
 
-    // The values live in those five files and nowhere else on the host.
+    // The values live in librepaper.toml and resticprofile.toml, and nowhere else on the host.
+    const secretValues = Object.values({ ...mockCredentials, LIBREPAPER_ADMIN_PASSWORD: adminPassword });
     for (const file of walk(f.remote)) {
-      if (file in credentials) continue;
+      if (file === 'librepaper.toml' || file === 'resticprofile.toml') continue;
       const text = read(f.remote, file);
-      for (const value of Object.values(credentials)) assert.ok(!text.includes(value), `${file} contains a credential`);
+      for (const value of secretValues) assert.ok(!text.includes(value), `${file} contains a credential`);
     }
     // Nor in any command line, nor in what the helper prints.
     const visible = `${result.stdout}${result.stderr}${readFileSync(f.eventsFile, 'utf8')}`;
-    for (const value of Object.values(credentials)) assert.ok(!visible.includes(value), 'a credential reached argv or output');
+    for (const value of secretValues) assert.ok(!visible.includes(value), 'a credential reached argv or output');
   } finally {
     f.cleanup();
   }
 });
 
-test('deploy writes compose.override.yaml only with the two host mounts', () => {
+test('a control character in a key stops the deploy before any remote call, naming the key but not the value', () => {
+  const f = fixture({ googleClientSecret: 'google\tsecret' });
+  try {
+    const result = run(f, 'deploy', 'v0.0.22');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /LIBREPAPER_GOOGLE_CLIENT_SECRET in tools\/deploy\/keys\.yaml contains a control character/);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google\tsecret/);
+    assert.equal(existsSync(f.makeCalledFile), false, 'ran make');
+    assert.deepEqual(readdirSync(f.remote), []);
+    assert.deepEqual(events(f), [], 'called the host');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy writes compose.override.yaml with only the site mount', () => {
   const f = fixture();
   try {
     const result = run(f, 'deploy', 'v0.0.22');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.equal(read(f.remote, 'compose.override.yaml'), [
       'services:',
-      '  librepaper:',
-      '    volumes:',
-      '      - ./secrets:/run/secrets:ro',
       '  caddy:',
       '    volumes:',
       '      - ./site:/srv/site:ro',
@@ -473,8 +533,7 @@ test('deploy installs the checked candidates, then pulls and starts the stack in
       ['rsync', /--delete/],
       ['ssh', /^chmod 700 librepaper$/],
       ['ssh', /sed -i -E/],
-      ['ssh', /secrets\/\.github_client_id\.tmp/],
-      ['ssh', /secrets\/\.admin_password\.tmp/],
+      ['ssh', /\.resticprofile\.toml\.tmp/],
       ['ssh', /compose\.override\.yaml\.tmp/],
       ['ssh', /librepaper\.toml\.candidate\.tmp/],
       ['ssh', /Caddyfile\.candidate\.tmp/],
@@ -489,8 +548,9 @@ test('deploy installs the checked candidates, then pulls and starts the stack in
       ['docker', /^image prune -f$/],
       ['docker', /^compose logs --tail 50$/],
     ]);
-    assert.equal(read(f.remote, 'librepaper.toml'), productionToml);
-    assert.equal(read(f.runningConfigFile), productionToml);
+    assert.equal(read(f.remote, 'librepaper.toml'), expectedConfig);
+    assert.equal(read(f.remote, 'resticprofile.toml'), expectedResticProfile);
+    assert.equal(read(f.runningConfigFile), expectedConfig);
     assert.match(read(f.remote, 'caddy/Caddyfile'), /librepaper\.org/);
     assert.equal(existsSync(path.join(f.remote, 'librepaper.toml.candidate')), false);
     assert.equal(existsSync(path.join(f.remote, 'caddy/Caddyfile.candidate')), false);
@@ -554,7 +614,7 @@ test('a rejected candidate config leaves the installed config and the running st
     const result = run(f, 'deploy', 'v0.0.22');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /candidate binary cannot load librepaper\.toml/);
-    assert.equal(read(f.checkedConfigFile), productionToml, 'the candidate that was checked is production.toml');
+    assert.equal(read(f.checkedConfigFile), expectedConfig, 'the candidate that was checked is the rendered production.toml');
     assert.equal(read(f.remote, 'librepaper.toml'), 'previous production config\n');
     assert.equal(read(f.remote, 'caddy/Caddyfile'), 'previous Caddyfile\n');
     assert.equal(read(f.runningConfigFile), 'previous container config\n');
@@ -622,11 +682,11 @@ test('repeated deploys render Caddy from its template without duplicating site a
 
 test('invalid or undecryptable Google credentials stop the deploy before the site build or any remote change', () => {
   const badCredentials = [
-    { name: 'missing Google client ID', options: { googleClientIdPresent: false }, key: 'PRODUCTION_GOOGLE_CLIENT_ID' },
-    { name: 'null Google client secret', options: { googleClientSecret: 'null' }, key: 'PRODUCTION_GOOGLE_CLIENT_SECRET' },
-    { name: 'empty Google client ID', options: { googleClientId: '' }, key: 'PRODUCTION_GOOGLE_CLIENT_ID' },
-    { name: 'whitespace-only Google client secret', options: { googleClientSecret: '  \t' }, key: 'PRODUCTION_GOOGLE_CLIENT_SECRET' },
-    { name: 'Google client secret decryption failure', options: { sopsFailureKey: 'PRODUCTION_GOOGLE_CLIENT_SECRET' }, key: 'PRODUCTION_GOOGLE_CLIENT_SECRET' },
+    { name: 'missing Google client ID', options: { googleClientIdPresent: false }, key: 'LIBREPAPER_GOOGLE_CLIENT_ID' },
+    { name: 'null Google client secret', options: { googleClientSecret: 'null' }, key: 'LIBREPAPER_GOOGLE_CLIENT_SECRET' },
+    { name: 'empty Google client ID', options: { googleClientId: '' }, key: 'LIBREPAPER_GOOGLE_CLIENT_ID' },
+    { name: 'whitespace-only Google client secret', options: { googleClientSecret: '  \t' }, key: 'LIBREPAPER_GOOGLE_CLIENT_SECRET' },
+    { name: 'Google client secret decryption failure', options: { sopsFailureKey: 'LIBREPAPER_GOOGLE_CLIENT_SECRET' }, key: 'LIBREPAPER_GOOGLE_CLIENT_SECRET' },
   ];
   for (const scenario of badCredentials) {
     const f = fixture(scenario.options);
@@ -689,15 +749,14 @@ test('the kit sync deletes dropped kit files and neither sends nor removes the o
   try {
     const result = run(f, 'deploy', 'v0.0.22');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    const { calls, kit } = kitSyncArguments(f);
+    const { kit } = kitSyncArguments(f);
     assert.equal(kit.at(-2), 'deploy/');
     assert.ok(kit.includes('--delete'));
     const excluded = kit.filter((arg) => arg.startsWith('--exclude=')).map((arg) => arg.slice('--exclude='.length));
     assert.deepEqual(excluded.sort(), [...OPERATOR_PATHS, ...BUILD_ONLY_PATHS].sort());
     const protectedPaths = kit.filter((arg) => arg.startsWith('--filter=')).map((arg) => arg.slice('--filter='.length));
     assert.deepEqual(protectedPaths.sort(), OPERATOR_PATHS.map((p) => `P ${p}`).sort());
-    const restic = calls.find((args) => args.at(-1) === `${sshHost}:librepaper/resticprofile.toml`);
-    assert.deepEqual(restic.slice(-3), ['--ignore-existing', 'deploy/resticprofile.toml', `${sshHost}:librepaper/resticprofile.toml`]);
+    assert.ok(!events(f).some(([kind, ...args]) => kind === 'rsync' && args.at(-1) === `${sshHost}:librepaper/resticprofile.toml`), 'resticprofile.toml comes from tools/deploy/production-resticprofile.toml, not the kit');
     assertInOrder(events(f), [['rsync', /--delete/], ['ssh', /^chmod 700 librepaper$/]]);
     assert.equal(statSync(f.remote).mode & 0o777, 0o700);
   } finally {
@@ -730,7 +789,6 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
       'librepaper.toml': 'operator config\n',
       'librepaper.toml.candidate': 'operator candidate\n',
       'resticprofile.toml': 'operator backup\n',
-      'secrets/github_client_id': 'operator id\n',
       'compose.override.yaml': 'operator override\n',
       'caddy/Caddyfile': 'operator Caddyfile\n',
       'caddy/Caddyfile.candidate': 'operator Caddyfile candidate\n',
@@ -743,6 +801,8 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
       setup: 'dropped from the kit\n',
       'compose.production.yaml': 'dropped from the kit\n',
       'postgres/roles.sql': 'dropped from the kit\n',
+      // The old host secrets directory is not operator-owned any more.
+      'secrets/github_client_id': 'old host secret\n',
     });
     const sync = spawnSync('rsync', [...kit.slice(0, -2), `${source}/`, `${target}/`], { encoding: 'utf8' });
     assert.equal(sync.status, 0, sync.stderr);
@@ -907,7 +967,7 @@ test('convert-database saves the host files before the sync, streams the host sc
     assert.equal(readFileSync(f.streamedScriptFile, 'utf8'), readFileSync(hostScript, 'utf8'));
     assert.match(read(f.remote, 'compose.yaml'), /librepaper:v0\.0\.22\b/);
     assert.match(read(f.remote, 'compose.yaml'), /librepaper-backup:v0\.0\.22\b/);
-    assert.equal(read(f.remote, 'librepaper.toml'), productionToml);
+    assert.equal(read(f.remote, 'librepaper.toml'), expectedConfig);
     assert.equal(existsSync(path.join(f.remote, 'librepaper.toml.candidate')), false);
     assert.equal(existsSync(path.join(f.remote, '.env')), false);
     // Nothing starts or stops: the host script owns that.
@@ -981,6 +1041,39 @@ test('retire-monitoring fails when a volume cannot be removed and keeps the host
     assert.match(result.stderr, /volume is in use/);
     assert.doesNotMatch(result.stdout, /retired: no volumes remain/);
     assert.equal(existsSync(path.join(f.remote, '.env')), true, 'the host files stay until the volumes are gone');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('move-objects copies the volume to S3 before and after stopping the app, checks it, and never shows a key', () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'move-objects');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const list = events(f);
+    const copies = list.flatMap((event, index) => (event[0] === 'docker' && /rclone copy \/data\/objects/.test(event[1]) ? [index] : []));
+    const stop = indexOfEvent(list, ['ssh', /^cd librepaper && docker compose stop librepaper backup$/]);
+    const check = indexOfEvent(list, ['docker', /rclone check \/data\/objects/]);
+    assert.equal(copies.length, 2);
+    assert.ok(copies[0] < stop && stop < copies[1] && copies[1] < check, 'copy, stop, copy and check ran out of order');
+    // The docker mock reads the keys from stdin and fails unless they arrived there.
+    assert.deepEqual(walk(f.remote), [], 'move-objects writes no files on the host');
+    const text = readFileSync(f.eventsFile, 'utf8');
+    assert.ok(!text.includes('objects-key-id') && !text.includes('objects-secret'), 'a key reached the events');
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /objects-key-id|objects-secret/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('move-objects stops when rclone check fails and says how to start the app again', () => {
+  const f = fixture({ objectsCheckFailure: true });
+  try {
+    const result = run(f, 'move-objects');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /docker compose start librepaper backup/);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:/);
   } finally {
     f.cleanup();
   }
