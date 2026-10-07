@@ -4,11 +4,9 @@
 export function createRenderStatus() {
   const state = $state({
     compiling: false,
-    lastCompile: 0,
     failure: false,
     failureReason: "",
     lastLatexResult: null,
-    provenance: null,
     docxArtifact: null,
   });
 
@@ -31,11 +29,7 @@ export function createRenderStatus() {
       state.failure = false;
       state.failureReason = "";
     },
-    recordDuration(seconds) {
-      if (seconds) state.lastCompile = seconds;
-    },
     recordLatex(result) { state.lastLatexResult = result; },
-    recordProvenance(value) { state.provenance = value; },
     recordDocx(value) { state.docxArtifact = value; },
     clearDocx() { state.docxArtifact = null; },
   };

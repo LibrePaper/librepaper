@@ -73,4 +73,10 @@ failureMessage = "";
 diagnostics2.render([]);
 assert.deepEqual(visible.length, 0, "no failure appended when failure returns empty");
 
+// Failure not appended when fatal or other non-warning, non-info severity
+visible = [];
+failureMessage = "unknown build error";
+diagnostics2.render([{ severity: "fatal", message: "fatal error", file: "main.tex" }]);
+assert.deepEqual(visible.map((item) => item.message), ["fatal error"], "failure not appended when fatal exists");
+
 console.log("render diagnostics tests passed");

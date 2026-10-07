@@ -5,6 +5,18 @@
  * @typedef {{ severity: "warning" | "info", message: string, file?: string, line?: number, source: "preview" }} PreviewNote
  */
 
+const labels = {
+  bib: "BibTeX",
+  json: "JSON",
+  csv: "CSV",
+  yml: "YAML",
+  yaml: "YAML",
+  cls: "LaTeX class and style",
+  sty: "LaTeX class and style",
+  lua: "Lua",
+  txt: "Plain text",
+};
+
 /**
  * Produce diagnostics for files that have no preview of their own.
  * @param {{ openPath: string | null, openIsText: boolean, mainPath: string | null, formatOf: (path: string) => string | null }} options
@@ -13,7 +25,6 @@
 export function previewNotes({ openPath, openIsText, mainPath, formatOf }) {
   const notes = [];
 
-  // If main file is set and cannot be rendered, warn about it.
   if (mainPath && !formatOf(mainPath)) {
     notes.push({
       severity: "warning",
@@ -22,7 +33,6 @@ export function previewNotes({ openPath, openIsText, mainPath, formatOf }) {
     });
   }
 
-  // If open file is text but not renderable, note that it shows the main file's preview.
   if (
     openPath &&
     openIsText &&
@@ -30,28 +40,11 @@ export function previewNotes({ openPath, openIsText, mainPath, formatOf }) {
     openPath !== mainPath
   ) {
     const ext = openPath.split(".").pop()?.toLowerCase();
-    const labels = {
-      bib: "BibTeX",
-      json: "JSON",
-      csv: "CSV",
-      yml: "YAML",
-      yaml: "YAML",
-      cls: "LaTeX class and style",
-      sty: "LaTeX class and style",
-      lua: "Lua",
-      txt: "Plain text",
-    };
     const label = labels[ext] || "This file";
-    const isPlural = label === "This file" ? false : true;
-    const noun = isPlural ? "files" : "file";
-    const verb = isPlural ? "have" : "has";
-    const possessive = isPlural ? "their" : "its";
-    let message;
-    if (mainPath) {
-      message = `${label} ${noun} ${verb} no preview of ${possessive} own; the preview shows ${mainPath}.`;
-    } else {
-      message = `${label} ${noun} ${verb} no preview of ${possessive} own.`;
-    }
+    const isPlural = label !== "This file";
+    const message = isPlural
+      ? `${label} files have no preview of their own${mainPath ? `; the preview shows ${mainPath}` : ""}.`
+      : `This file has no preview of its own${mainPath ? `; the preview shows ${mainPath}` : ""}.`;
     notes.push({
       severity: "info",
       message,

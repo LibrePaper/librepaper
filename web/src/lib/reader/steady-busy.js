@@ -1,10 +1,10 @@
 // A busy flag at reading speed.
 //
-// The preview's progress line displays this flag to show a render is under way.
-// A render that takes 40ms is honestly reported by a flag that is true for 40ms, and
-// the result is a line that appears and disappears several times a second
-// while somebody types -- a strobe rather than a status. Typst and Markdown render that fast; LaTeX
-// takes seconds and is what the indicator is actually for.
+// The preview's progress line shows this flag. A render that takes 40ms is
+// honestly reported by a flag that is true for 40ms, and the result is a
+// line that appears and disappears several times a second while somebody
+// types, a strobe rather than a status. Typst and Markdown render that
+// fast; LaTeX takes seconds and is what the indicator is actually for.
 //
 // So the flag is held to two numbers: nothing is shown until a render has
 // been running long enough to be worth saying anything about, and anything

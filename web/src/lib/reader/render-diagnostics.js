@@ -24,7 +24,7 @@ export function createRenderDiagnostics({ active, local, update, deliver, painte
     });
     // A build that failed with nothing a diagnostic could carry is still told.
     const failureMessage = failure();
-    if (failureMessage && !combined.some((item) => item.severity === "error")) {
+    if (failureMessage && !combined.some((item) => item.severity !== "warning" && item.severity !== "info")) {
       combined.push({ severity: "error", message: failureMessage, source: "preview" });
     }
     update(combined);

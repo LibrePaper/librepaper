@@ -239,13 +239,6 @@ export function createPreviewRenderer({
           navigation: capturedNavigation,
         });
       } else if (artifactKind !== "docx") status.clearDocx();
-      status.recordProvenance({
-        backend: "browser",
-        builder: format === "quarto" ? "Markdown draft" : format,
-        ...provenance,
-        snapshot: identity,
-      });
-      if (paged || htmlPreview) status.recordDuration(seconds);
       // A render carries `html` or `pdf`, and the reader posts whichever it
       // has. The bytes are transferred rather than copied: a PDF is megabytes
       // and this page has no further use for it once the frame has it.

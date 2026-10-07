@@ -2250,14 +2250,14 @@
   const unrendered = $derived(pdfOutput && !everPaintedShown && !renderState.failure);
   const failedBeforeRender = $derived(renderState.failure && !everPaintedShown);
 
-
   // The LaTeX compile status: idle, running, or failed, with progress and
   // messages. Used by Diagnostics and the preview's progress line.
   let latexState = $state.raw(latex.status());
   const latexPhase = $derived(latexState.phase);
   $effect(() => latex.subscribe((next) => (latexState = next)));
 
-  // A build that failed and said nothing a diagnostic could carry still has to be told somewhere.
+  // A build that failed and said nothing a diagnostic could carry must
+  // still be reported somewhere.
   const buildFailure = $derived(
     sourceFormat === "latex" && !latexHtmlPreview
       ? (latexPhase === "failed" ? latexState.message || "The LaTeX build failed without reporting why." : "")
@@ -2270,14 +2270,6 @@
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && mayEdit &&
       localAppStatus.state !== "connected",
   );
-  // A read-only visitor cannot authorize the companion to receive a
-  // workspace, but the browser's Markdown draft still leaves executable
-  // Quarto cells unrun. Say why the page is a draft instead of implying that
-  // the document has no complete preview available.
-  const quartoReaderNeedsLocalTool = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !mayEdit,
-  );
-
   // A PDF from Markdown or Quarto source is only ever produced by a tool on
   // this computer: this browser's own renderer makes HTML and nothing else.
   // Until that tool is running the PDF frame has nothing to show, and the
@@ -2378,7 +2370,6 @@
     // A compile can beat this; IndexedDB is fast but it is not free. The
     // cached page is only ever a stand-in for an empty pane.
     if (!remembered || readerDisposed || everPainted || !paintsTheFrame) return;
-    if (readerDisposed || everPainted) return;
     framePreview.publish(remembered.kind === "pdf"
       ? { kind: "pdf", sha: remembered.identity, bytes: new Uint8Array(remembered.bytes).slice() }
       : { kind: "html", html: remembered.html });
@@ -2410,12 +2401,12 @@
     (sourceFormat === "latex" && !latexHtmlPreview && ["loading", "compiling", "browser-biber"].includes(latexPhase))
       || renderState.compiling || quartoPreviewStarting || quartoRendering || calepinRendering,
   ));
-  // What the preview pane's progress line draws: the same fact, at reading speed. A Typst or
-  // Markdown render finishes in tens of milliseconds, and a control that
-  // mounts and unmounts with each one strobes the line while somebody
-  // types. `steady-busy.js` holds it: nothing appears until a render has
-  // lasted long enough to be worth saying, and what appears stays long
-  // enough to be read.
+  // The preview pane's progress line shows this flag. A Typst or Markdown
+  // render finishes in tens of milliseconds, and a control that mounts and
+  // unmounts with each one strobes the line while somebody types.
+  // `steady-busy.js` holds it: nothing appears until a render has lasted
+  // long enough to be worth saying, and what appears stays long enough to
+  // be read.
   let previewBusy = $state(false);
   const steadyBusy = createSteadyBusy({ onchange: (shown) => (previewBusy = shown) });
   // One subscription to `compiling`, feeding the one smoother. The smoother
