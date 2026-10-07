@@ -106,7 +106,7 @@ const configPath = join(dataDirectory, "config.toml");
 writeFileSync(configPath, [
   "[server]", `address = "127.0.0.1:${port}"`, "local_companion = false", "",
   "[storage]", `directory = ${JSON.stringify(resolve(dataDirectory))}`, 'database_url = { env = "LIBREPAPER_SOURCE_URL" }', "fsync = false", 'object_store = "filesystem"', "",
-  "[auth.github]", 'client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }', 'client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }', "",
+  "[auth.github]", 'client_id = { env = "DEV_GITHUB_CLIENT_ID" }', 'client_secret = { env = "DEV_GITHUB_CLIENT_SECRET" }', "",
   "[access]", 'publishers = ["any"]', 'commenters = ["anyone"]', "",
 ].join("\n"));
 let log = "";
@@ -114,7 +114,7 @@ const server = spawn(binary, [
   "admin", "serve", "--config", configPath,
 ], {
   stdio: ["ignore", "pipe", "pipe"],
-  env: { ...process.env, LIBREPAPER_SOURCE_URL: databaseUrl, LIBREPAPER_GITHUB_CLIENT_ID: "fixture", LIBREPAPER_GITHUB_CLIENT_SECRET: "fixture" },
+  env: { ...process.env, LIBREPAPER_SOURCE_URL: databaseUrl, DEV_GITHUB_CLIENT_ID: "fixture", DEV_GITHUB_CLIENT_SECRET: "fixture" },
 });
 server.stdout.on("data", (bytes) => { log += bytes; });
 server.stderr.on("data", (bytes) => { log += bytes; });

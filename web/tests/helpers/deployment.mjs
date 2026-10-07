@@ -100,7 +100,7 @@ export async function startDeployment({
   const config = [
     "[server]", `address = "127.0.0.1:${port}"`, `local_companion = ${localCompanion}`, "",
     "[storage]", `directory = ${JSON.stringify(data)}`, 'database_url = { env = "LIBREPAPER_DATABASE_URL" }', "fsync = false", "object_store = \"filesystem\"", "",
-    "[auth.github]", 'client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }', 'client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }', "",
+    "[auth.github]", 'client_id = { env = "DEV_GITHUB_CLIENT_ID" }', 'client_secret = { env = "DEV_GITHUB_CLIENT_SECRET" }', "",
     "[access]", 'publishers = ["any"]', 'commenters = ["anyone"]', "",
     advanced || "",
   ].join("\n");
@@ -121,7 +121,7 @@ export async function startDeployment({
     launchError = null;
     server = spawn(binary, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, LIBREPAPER_GITHUB_CLIENT_ID: "integration-test", LIBREPAPER_GITHUB_CLIENT_SECRET: "integration-test" },
+      env: { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, DEV_GITHUB_CLIENT_ID: "integration-test", DEV_GITHUB_CLIENT_SECRET: "integration-test" },
     });
     server.once("error", (error) => { launchError = error; });
     serverClosed = new Promise((done) => server.once("close", done));

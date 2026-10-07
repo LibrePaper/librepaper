@@ -187,16 +187,16 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # Publishing needs sign-in, so `demo` uses SOPS keys when available; otherwise
 # it starts without sign-in. CONFIG= may select an explicitly container-ready
 # TOML file.
-DEMO_KEYS ?= tools/deploy/keys.yaml
+DEMO_KEYS ?= tools/dev/keys.yaml
 demo:  ## Run a local Docker deployment and host companion (21 days of simulated activity)
 	@if [ "$(CONFIG_WAS_SUPPLIED)" = yes ]; then \
 		echo "demo: using CONFIG=$(CONFIG)"; \
 		exec $(MAKE) --no-print-directory demo-run CONFIG="$(CONFIG)"; \
-	elif [ -z "$$LIBREPAPER_GITHUB_CLIENT_ID" ] && command -v sops >/dev/null 2>&1 \
-		&& sops --decrypt --extract '["LIBREPAPER_GITHUB_CLIENT_ID"]' $(DEMO_KEYS) >/dev/null 2>&1; then \
+	elif [ -z "$$DEV_GITHUB_CLIENT_ID" ] && command -v sops >/dev/null 2>&1 \
+		&& sops --decrypt --extract '["DEV_GITHUB_CLIENT_ID"]' $(DEMO_KEYS) >/dev/null 2>&1; then \
 		echo "demo: GitHub sign-in from $(DEMO_KEYS)"; \
 		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run CONFIG=tools/dev/demo/config-oauth.toml'; \
-	elif [ -n "$$LIBREPAPER_GITHUB_CLIENT_ID" ]; then \
+	elif [ -n "$$DEV_GITHUB_CLIENT_ID" ]; then \
 		echo "demo: GitHub sign-in from the environment"; \
 		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/demo/config-oauth.toml; \
 	else \

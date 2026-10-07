@@ -8,7 +8,7 @@ import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { awsFailureMessage, bucketFromArn, mappedEnvironment, metadataFor, preflightMirror, publish, publisherEnvironment, selectedOvhFields, stageWasmMirror } from './mirror.mjs';
+import { awsFailureMessage, mappedEnvironment, metadataFor, preflightMirror, publish, publisherEnvironment, selectedMirrorFields, stageWasmMirror } from './mirror.mjs';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 const deploy = join(repo, 'tools/assets/mirror');
@@ -47,11 +47,11 @@ else if (args[0] === 'tools/assets/mirror.mjs' && args[1] === 'credentials') {
   const secrets = JSON.parse(input);
   const keys = ['S3_ENDPOINT', 'S3_REGION', 'S3_BUCKET', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'];
   const resolved = {
-    S3_ENDPOINT: process.env.S3_ENDPOINT || secrets.OVH_S3_ENDPOINT,
-    S3_REGION: process.env.S3_REGION || secrets.OVH_S3_REGION,
-    S3_BUCKET: process.env.S3_BUCKET || (secrets.OVH_S3_ARN ? secrets.OVH_S3_ARN.match(/arn:aws:s3:::([a-z0-9][a-z0-9.-]*[a-z0-9])/)[1] : ''),
-    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID || secrets.OVH_S3_USER,
-    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY || secrets.OVH_S3_SECRET,
+    S3_ENDPOINT: process.env.S3_ENDPOINT || secrets.MIRROR_S3_ENDPOINT,
+    S3_REGION: process.env.S3_REGION || secrets.MIRROR_S3_REGION,
+    S3_BUCKET: process.env.S3_BUCKET || secrets.MIRROR_S3_BUCKET,
+    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID || secrets.MIRROR_S3_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY || secrets.MIRROR_S3_SECRET_ACCESS_KEY,
   };
   const values = keys.map((key) => resolved[key]);
   if (values.some((value) => typeof value !== 'string' || !value || /[\\x00-\\x1f]/.test(value))) process.exit(1);
@@ -68,8 +68,8 @@ else if (args[0] === 'tools/assets/mirror.mjs' && args[1] === 'credentials') {
   await mock('openssl', '');
   await mock('sops', `
 require('node:fs').appendFileSync(process.env.SOPS_CALLS, 'decrypt\\n');
-process.stdout.write(JSON.stringify({ OVH_S3_ENDPOINT: 'https://api.from-sops.invalid', OVH_S3_REGION: 'region-from-sops',
-  OVH_S3_USER: 'key-from-sops', OVH_S3_SECRET: 'secret-from-sops', OVH_S3_ARN: 'arn:aws:s3:::bucket-from-sops' }));
+process.stdout.write(JSON.stringify({ MIRROR_S3_ENDPOINT: 'https://api.from-sops.invalid', MIRROR_S3_REGION: 'region-from-sops',
+  MIRROR_S3_ACCESS_KEY_ID: 'key-from-sops', MIRROR_S3_SECRET_ACCESS_KEY: 'secret-from-sops', MIRROR_S3_BUCKET: 'bucket-from-sops' }));
 `);
   await mock('aws', `
 require('node:fs').appendFileSync(process.env.AWS_CALLS, process.argv.slice(2).join(' ') + '\\n');
@@ -635,30 +635,31 @@ async function makeMirrors(root, wasmName = 'wasm dir', latexName = 'latex mirro
   return { wasm, lock, latex, release: releaseDir, moduleHash: sha256(module) };
 }
 
-test('OVH variables map safely, canonical overrides win, and only an exact bucket ARN is derived', () => {
-  assert.deepEqual(mappedEnvironment({ OVH_S3_ENDPOINT: 'https://ovh.invalid', OVH_S3_REGION: 'bhs',
-    OVH_S3_USER: 'publisher', OVH_S3_SECRET: 'secret', OVH_S3_ARN: 'arn:aws:s3:::asset-bucket' }), {
-    OVH_S3_ENDPOINT: 'https://ovh.invalid', OVH_S3_REGION: 'bhs', OVH_S3_USER: 'publisher', OVH_S3_SECRET: 'secret',
-    OVH_S3_ARN: 'arn:aws:s3:::asset-bucket', S3_ENDPOINT: 'https://ovh.invalid', S3_REGION: 'bhs',
+test('Mirror variables map safely and canonical overrides win', () => {
+  assert.deepEqual(mappedEnvironment({ MIRROR_S3_ENDPOINT: 'https://mirror.invalid', MIRROR_S3_REGION: 'bhs',
+    MIRROR_S3_ACCESS_KEY_ID: 'publisher', MIRROR_S3_SECRET_ACCESS_KEY: 'secret', MIRROR_S3_BUCKET: 'asset-bucket' }), {
+    MIRROR_S3_ENDPOINT: 'https://mirror.invalid', MIRROR_S3_REGION: 'bhs', MIRROR_S3_ACCESS_KEY_ID: 'publisher', MIRROR_S3_SECRET_ACCESS_KEY: 'secret',
+    MIRROR_S3_BUCKET: 'asset-bucket', S3_ENDPOINT: 'https://mirror.invalid', S3_REGION: 'bhs',
     S3_BUCKET: 'asset-bucket', AWS_ACCESS_KEY_ID: 'publisher', AWS_SECRET_ACCESS_KEY: 'secret',
   });
   assert.equal(mappedEnvironment({ S3_ENDPOINT: 'https://override.invalid', S3_REGION: 'override', S3_BUCKET: 'chosen',
-    AWS_ACCESS_KEY_ID: 'id', AWS_SECRET_ACCESS_KEY: 'secret', OVH_S3_ENDPOINT: 'https://ignored.invalid',
-    OVH_S3_ARN: 'not-an-arn' }).S3_BUCKET, 'chosen');
-  assert.throws(() => bucketFromArn('arn:aws:s3:::bucket/object'), /exact bucket ARN/);
+    AWS_ACCESS_KEY_ID: 'id', AWS_SECRET_ACCESS_KEY: 'secret', MIRROR_S3_ENDPOINT: 'https://ignored.invalid',
+    MIRROR_S3_BUCKET: 'ignored-bucket' }).S3_BUCKET, 'chosen');
 });
 
 test('null SOPS placeholders are absent and canonical overrides precede effective-value validation', () => {
-  const selected = selectedOvhFields({ OVH_S3_ENDPOINT: null, OVH_S3_BUCKET: null, OVH_S3_SECRET: 17 });
-  assert.deepEqual(selected, { OVH_S3_SECRET: 17 });
+  const selected = selectedMirrorFields({ MIRROR_S3_ENDPOINT: null, MIRROR_S3_BUCKET: null, MIRROR_S3_SECRET_ACCESS_KEY: 17 });
+  assert.deepEqual(selected, { MIRROR_S3_SECRET_ACCESS_KEY: 17 });
   assert.equal(mappedEnvironment({ ...selected, S3_ENDPOINT: 'https://canonical.invalid', S3_BUCKET: 'canonical-bucket',
     S3_REGION: 'region', AWS_ACCESS_KEY_ID: 'id', AWS_SECRET_ACCESS_KEY: 'secret' }).S3_BUCKET, 'canonical-bucket');
-  assert.throws(() => mappedEnvironment({ ...selected, OVH_S3_ENDPOINT: 17 }), /S3_ENDPOINT must be a string/);
+  assert.throws(() => mappedEnvironment({ ...selected, MIRROR_S3_ENDPOINT: 17 }), /S3_ENDPOINT must be a string/);
 });
 
-test('a null OVH bucket allows the exact bucket ARN fallback', () => {
-  const selected = selectedOvhFields({ OVH_S3_BUCKET: null, OVH_S3_ARN: 'arn:aws:s3:::asset-bucket' });
-  assert.equal(mappedEnvironment(selected).S3_BUCKET, 'asset-bucket');
+test('Mirror bucket name must be a valid S3 bucket name', () => {
+  assert.throws(() => mappedEnvironment({ MIRROR_S3_BUCKET: 'invalid/bucket' }), /valid bucket name/);
+  assert.throws(() => mappedEnvironment({ MIRROR_S3_BUCKET: 'x' }), /valid bucket name/);
+  assert.throws(() => mappedEnvironment({ MIRROR_S3_BUCKET: 'Upper-Case' }), /valid bucket name/);
+  assert.doesNotThrow(() => mappedEnvironment({ MIRROR_S3_BUCKET: 'a-valid-bucket-123' }));
 });
 
 test('complete canonical publisher settings skip SOPS while incomplete settings retain fallback mapping', async () => {
@@ -678,8 +679,8 @@ test('complete canonical publisher settings skip SOPS while incomplete settings 
   const partial = await publisherEnvironment({ S3_ENDPOINT: 'https://override.invalid' }, async () => {
     loads += 1;
     return {
-      OVH_S3_ENDPOINT: 'https://from-sops.invalid', OVH_S3_REGION: 'region-from-sops',
-      OVH_S3_ARN: 'arn:aws:s3:::sops-bucket', OVH_S3_USER: 'sops-id', OVH_S3_SECRET: 'sops-secret',
+      MIRROR_S3_ENDPOINT: 'https://from-sops.invalid', MIRROR_S3_REGION: 'region-from-sops',
+      MIRROR_S3_BUCKET: 'sops-bucket', MIRROR_S3_ACCESS_KEY_ID: 'sops-id', MIRROR_S3_SECRET_ACCESS_KEY: 'sops-secret',
     };
   });
   assert.equal(loads, 1);
@@ -750,7 +751,7 @@ test("both mirrors are preflighted before any AWS upload", async () => {
   const sops = join(bin, "sops");
   const aws = join(bin, "aws");
   const calls = join(root, "aws-called");
-  await writeFile(sops, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ OVH_S3_ENDPOINT:'https://s3.example.invalid', OVH_S3_REGION:'bhs', OVH_S3_USER:'id', OVH_S3_SECRET:'secret', OVH_S3_ARN:'arn:aws:s3:::asset-bucket' }));\n`);
+  await writeFile(sops, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ MIRROR_S3_ENDPOINT:'https://s3.example.invalid', MIRROR_S3_REGION:'bhs', MIRROR_S3_ACCESS_KEY_ID:'id', MIRROR_S3_SECRET_ACCESS_KEY:'secret', MIRROR_S3_BUCKET:'asset-bucket' }));\n`);
   await writeFile(aws, `#!${process.execPath}\nrequire('node:fs').appendFileSync(process.env.AWS_CALLED, 'call\\n');\n`);
   await chmod(sops, 0o755);
   await chmod(aws, 0o755);
@@ -775,7 +776,7 @@ test("SOPS key mappings reach the shared publisher for both prefixes", async () 
   await mkdir(bin);
   const sops = join(bin, "sops");
   const aws = join(bin, "aws");
-  await writeFile(sops, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ OVH_S3_ENDPOINT:'https://ovh.example.invalid', OVH_S3_REGION:'bhs', OVH_S3_USER:'mapped-id', OVH_S3_SECRET:'mapped-secret', OVH_S3_ARN:'arn:aws:s3:::mapped-bucket', unrelated:{ignored:true} }));\n`);
+  await writeFile(sops, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ MIRROR_S3_ENDPOINT:'https://ovh.example.invalid', MIRROR_S3_REGION:'bhs', MIRROR_S3_ACCESS_KEY_ID:'mapped-id', MIRROR_S3_SECRET_ACCESS_KEY:'mapped-secret', MIRROR_S3_BUCKET:'mapped-bucket', unrelated:{ignored:true} }));\n`);
   await writeFile(aws, `#!${process.execPath}
 const fs=require('node:fs'); const path=require('node:path'); const a=process.argv.slice(2); const at=k=>a.indexOf(k); const val=k=>at(k)<0?undefined:a[at(k)+1];
 const storePath=process.env.AWS_STORE; let store={}; try{store=JSON.parse(fs.readFileSync(storePath,'utf8'))}catch{}

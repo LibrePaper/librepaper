@@ -176,9 +176,9 @@ async function demoFixture({ configEnvironment, githubId, decryptable = false } 
     KEYS_DECRYPTABLE: decryptable ? "1" : "0",
   };
   delete environment.CONFIG;
-  delete environment.LIBREPAPER_GITHUB_CLIENT_ID;
+  delete environment.DEV_GITHUB_CLIENT_ID;
   if (configEnvironment !== undefined) environment.CONFIG = configEnvironment;
-  if (githubId !== undefined) environment.LIBREPAPER_GITHUB_CLIENT_ID = githubId;
+  if (githubId !== undefined) environment.DEV_GITHUB_CLIENT_ID = githubId;
   return {
     directory, mockMake, makeLog, sopsLog, environment,
     cleanup: () => rm(directory, { recursive: true, force: true }),

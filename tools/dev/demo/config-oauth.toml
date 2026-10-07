@@ -11,8 +11,8 @@ fsync = false
 object_store = "filesystem"
 
 [auth.github]
-client_id = { env = "LIBREPAPER_GITHUB_CLIENT_ID" }
-client_secret = { env = "LIBREPAPER_GITHUB_CLIENT_SECRET" }
+client_id = { env = "DEV_GITHUB_CLIENT_ID" }
+client_secret = { env = "DEV_GITHUB_CLIENT_SECRET" }
 
 [metrics]
 address = "0.0.0.0:9091"
