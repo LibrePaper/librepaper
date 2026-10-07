@@ -1,0 +1,40 @@
+/* The graphs page. Colors come from variables so the dark scheme is one block. */
+:root {
+  color-scheme: light dark;
+  --bg: #f4f5f3;
+  --card: #ffffff;
+  --ink: #1d2327;
+  --muted: #5d666d;
+  --rule: #d9dcdf;
+  --line: #2b6cb0;
+  --fill: rgba(43, 108, 176, 0.12);
+  --alert: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14181b;
+    --card: #1d2327;
+    --ink: #e6e8ea;
+    --muted: #9aa4ab;
+    --rule: #323a40;
+    --line: #6aa5e0;
+    --fill: rgba(106, 165, 224, 0.16);
+    --alert: #f2918a;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 16px; }
+h1 { margin: 0 auto 0 0; font-size: 16px; }
+nav { display: flex; gap: 4px; }
+button { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button.active { color: var(--bg); background: var(--line); border-color: var(--line); }
+#status { color: var(--muted); }
+#status.failed { color: var(--alert); }
+main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0 16px 16px; }
+@media (max-width: 800px) { main { grid-template-columns: minmax(0, 1fr); } }
+.panel { min-width: 0; padding: 8px 10px; background: var(--card); border: 1px solid var(--rule); border-radius: 8px; }
+.panel h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+.plot { width: 100%; }
+.u-legend { color: var(--muted); font-size: 12px; }
+.u-select { background: var(--fill); }
