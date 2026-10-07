@@ -1,7 +1,6 @@
-// Pure text and mapping helpers for the compile status line.
+// Pure text and mapping helpers for compile provenance.
 //
-// `LatexStatus.svelte`, `Diagnostics.svelte` and `Reader.svelte`'s
-// `renderedNote` all need to turn a `Status` or a `Provenance` into a
+// `Diagnostics.svelte` needs to turn a `Provenance` into a
 // sentence a reader can act on. None of that needs a DOM, a worker or
 // `latex.js` itself, so it lives here, in plain functions a Node check can
 // call directly (see tests/unit/latex-reader.mjs) -- the same reason
@@ -10,14 +9,6 @@
 // LaTeX is built in the browser and nowhere else, so there is one backend to
 // name and no fallback to explain. Every wording below uses the controller
 // messages verbatim; this file never invents a `status.message`.
-
-/// The chip beside the status message: which backend is producing pages.
-export function backendChip(status) {
-  if (!status) return "";
-  if (status.phase === "browser-biber") return "browser Biber";
-  if (status.backend === "browser") return "browser";
-  return "";
-}
 
 const ENGINE_NAMES = { pdflatex: "pdfLaTeX", xelatex: "XeLaTeX", lualatex: "LuaLaTeX" };
 

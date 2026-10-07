@@ -212,7 +212,7 @@ export function createPreviewRenderer({
       }
       if (facts().disposed) return;
       if (format === "latex" && !htmlPreview) status.recordLatex(rendered);
-      const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, seconds, log, provenance } = rendered;
+      const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, log } = rendered;
       const contextual = (said || []).map((item) => diagnosticContext(item, source, identity));
       // An in-flight preview may finish after another keystroke: HTML and
       // Typst may show that intermediate progress while the queued render
@@ -239,13 +239,6 @@ export function createPreviewRenderer({
           navigation: capturedNavigation,
         });
       } else if (artifactKind !== "docx") status.clearDocx();
-      status.recordProvenance({
-        backend: "browser",
-        builder: format === "quarto" ? "Markdown draft" : format,
-        ...provenance,
-        snapshot: identity,
-      });
-      if (paged || htmlPreview) status.recordDuration(seconds);
       // A render carries `html` or `pdf`, and the reader posts whichever it
       // has. The bytes are transferred rather than copied: a PDF is megabytes
       // and this page has no further use for it once the frame has it.

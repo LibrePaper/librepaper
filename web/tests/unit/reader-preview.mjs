@@ -76,7 +76,7 @@ assert.match(readerSource, /menu-section-label">Local execution<\/div>\s*<Menu\.
 assert.match(readerSource, /const toggleLocalExecution = \(\) => \{\s*if \(localExecution\) void stopLocalExecution\(\);\s*else localExecutionConsent = true;/);
 // The control asks before it runs: the warning is a dialog somebody has to
 // answer, not a tooltip a mouse might hover over.
-assert.match(readerSource, /\{#snippet previewStatusControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !localExecution\}[\s\S]*?<button[\s\S]*?localExecutionConsent = true[\s\S]*?<\/button>/);
+assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !localExecution\}[\s\S]*?<button[\s\S]*?localExecutionConsent = true[\s\S]*?<\/button>/);
 // The dialog's buttons come from Modal's `confirm`, which is what puts focus
 // on the action: this one is answered with Enter like every other question.
 // Only the dialog grants, and what it says names who has to be trusted: the

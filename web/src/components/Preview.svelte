@@ -18,7 +18,11 @@
   // the formats with nothing to put in it. What is being previewed is said in
   // the Files pane, by the eye beside the file, rather than spelled out again
   // here.
-  let { src, docsOrigin, onmessage, onload, grabbing = false, away = false, controls } = $props();
+  //
+  // A thin progress line along the top edge signals a render under way without
+  // covering the document, and nothing shows for renders under the
+  // steady-busy threshold.
+  let { src, docsOrigin, onmessage, onload, grabbing = false, away = false, controls, busy = false, progress = null } = $props();
 
   let frame = $state(null);
   let viewport = $state(null);
@@ -76,6 +80,11 @@
 
 <section class="viewport" class:away bind:this={viewport} inert={away}
          style:--held-width="{heldWidth}px" style:--held-height="{heldHeight}px">
+  {#if busy}
+    <div class="render-line" role="progressbar" aria-label="Rendering preview" aria-valuemin="0" aria-valuemax={progress ? progress.total : undefined} aria-valuenow={progress ? progress.done : undefined}>
+      <span class="render-line-bar" class:indeterminate={!progress} style:width={progress ? `${Math.min(100, (progress.done / progress.total) * 100)}%` : null}></span>
+    </div>
+  {/if}
   {@render controls?.()}
   <!-- allow-same-origin refers to the document's own origin, not this one, so
        the agent can read the document while the document can read nothing
@@ -97,3 +106,40 @@
     ></iframe>
   {/key}
 </section>
+
+<style>
+  .render-line {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 9;
+  }
+
+  .render-line-bar {
+    height: 100%;
+    background: var(--color-brand);
+    transition: width 120ms linear;
+  }
+
+  .render-line-bar.indeterminate {
+    width: 35%;
+    animation: render-sweep 1.1s ease-in-out infinite;
+  }
+
+  @keyframes render-sweep {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(285%); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .render-line-bar.indeterminate {
+      animation: none;
+      width: 100%;
+      opacity: .5;
+    }
+  }
+</style>

@@ -217,8 +217,8 @@ const context = (values) => {
     render: (ticket) => ctx.renderPreview(ticket),
   });
   ctx.renderState = {
-    compiling: false, lastCompile: 0, failure: false, failureReason: "",
-    lastLatexResult: null, provenance: null, docxArtifact: null,
+    compiling: false, failure: false, failureReason: "",
+    lastLatexResult: null, docxArtifact: null,
   };
   ctx.renderStatus = {
     begin: ({ clearFailure = false } = {}) => {
@@ -229,9 +229,7 @@ const context = (values) => {
     succeeded: () => { ctx.renderState.failure = false; ctx.renderState.failureReason = ""; },
     failed: (reason) => { ctx.renderState.failure = true; ctx.renderState.failureReason = String(reason || "could not render"); },
     resetFailure: () => { ctx.renderState.failure = false; ctx.renderState.failureReason = ""; },
-    recordDuration: (seconds) => { if (seconds) ctx.renderState.lastCompile = seconds; },
     recordLatex: (result) => { ctx.renderState.lastLatexResult = result; },
-    recordProvenance: (value) => { ctx.renderState.provenance = value; },
     recordDocx: (value) => { ctx.renderState.docxArtifact = value; },
     clearDocx: () => { ctx.renderState.docxArtifact = null; },
   };
@@ -258,8 +256,8 @@ const preview = (values = {}) => {
     ...values.facts,
   };
   const state = {
-    compiling: false, lastCompile: 0, failure: false, failureReason: "",
-    lastLatexResult: null, provenance: null, docxArtifact: null,
+    compiling: false, failure: false, failureReason: "",
+    lastLatexResult: null, docxArtifact: null,
   };
   const status = {
     begin: ({ clearFailure = false } = {}) => {
@@ -270,9 +268,7 @@ const preview = (values = {}) => {
     succeeded: () => { state.failure = false; state.failureReason = ""; },
     failed: (reason) => { state.failure = true; state.failureReason = String(reason || "could not render"); },
     resetFailure: () => { state.failure = false; state.failureReason = ""; },
-    recordDuration: (seconds) => { if (seconds) state.lastCompile = seconds; },
     recordLatex: (result) => { state.lastLatexResult = result; },
-    recordProvenance: (value) => { state.provenance = value; },
     recordDocx: (value) => { state.docxArtifact = value; },
     clearDocx: () => { state.docxArtifact = null; },
   };

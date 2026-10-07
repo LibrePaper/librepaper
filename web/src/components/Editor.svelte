@@ -597,6 +597,7 @@
       // screen, for an error at line 40 of a different chapter, would be a
       // confident lie.
       .filter((diagnostic) => fileOf(diagnostic) === showing)
+      .filter((diagnostic) => diagnostic.severity !== "info")
       .filter((diagnostic) => diagnostic.line > 0 && diagnostic.line <= doc.lines)
       .map((diagnostic) => {
         const from = place(diagnostic.line, diagnostic.column);

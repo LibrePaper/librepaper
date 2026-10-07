@@ -1,12 +1,10 @@
 // A busy flag at reading speed.
 //
-// The preview's "Compiling…" indicator is a spinner and a word that mount
-// into the header row and unmount again with the flag behind them. A render
-// that takes 40ms is honestly reported by a flag that is true for 40ms, and
-// the result is a control that appears and disappears several times a second
-// while somebody types -- a strobe rather than a status, and one that moves
-// the rest of the row each time. Typst and Markdown render that fast; LaTeX
-// takes seconds and is what the indicator is actually for.
+// The preview's progress line shows this flag. A render that takes 40ms is
+// honestly reported by a flag that is true for 40ms, and the result is a
+// line that appears and disappears several times a second while somebody
+// types, a strobe rather than a status. Typst and Markdown render that
+// fast; LaTeX takes seconds and is what the indicator is actually for.
 //
 // So the flag is held to two numbers: nothing is shown until a render has
 // been running long enough to be worth saying anything about, and anything

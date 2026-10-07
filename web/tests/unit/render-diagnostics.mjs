@@ -37,4 +37,46 @@ local = [{ severity: "error", message: "hidden" }];
 diagnostics.refresh();
 assert.deepEqual(visible.map((item) => item.message), ["render failed", "missing citation", "local tool unavailable"]);
 
+// --- failure option tests ---------------------------------------------------
+
+// Reset state
+editing = true;
+visible = [];
+delivered = [];
+
+let failureMessage = "";
+const diagnostics2 = createRenderDiagnostics({
+  active: () => editing,
+  local: () => [],
+  update: (list) => (visible = list),
+  deliver: (list) => (delivered = list),
+  painterOptions: { delay: 0, setTimer: (paint) => { paint(); return 1; }, clearTimer: () => {} },
+  failure: () => failureMessage,
+});
+
+// Failure appended when no error present
+failureMessage = "unknown build error";
+diagnostics2.render([]);
+assert.deepEqual(visible.map((item) => item.message), ["unknown build error"], "failure appended when no error");
+assert.equal(visible[0].severity, "error", "failure has error severity");
+assert.equal(visible[0].source, "preview", "failure has preview source");
+
+// Failure not appended when error already present
+visible = [];
+failureMessage = "unknown build error";
+diagnostics2.render([{ severity: "error", message: "compile error", file: "main.tex" }]);
+assert.deepEqual(visible.map((item) => item.message), ["compile error"], "failure not appended when error exists");
+
+// Failure not appended when empty
+visible = [];
+failureMessage = "";
+diagnostics2.render([]);
+assert.deepEqual(visible.length, 0, "no failure appended when failure returns empty");
+
+// Failure not appended when fatal or other non-warning, non-info severity
+visible = [];
+failureMessage = "unknown build error";
+diagnostics2.render([{ severity: "fatal", message: "fatal error", file: "main.tex" }]);
+assert.deepEqual(visible.map((item) => item.message), ["fatal error"], "failure not appended when fatal exists");
+
 console.log("render diagnostics tests passed");

@@ -75,8 +75,6 @@
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import ProjectFolderSetting from "./settings/ProjectFolderSetting.svelte";
   import { anonymousIdentity, read as readBuildPreferences, update as updateBuildPreferences, writeQuartoOptions } from "../lib/build-preferences.js";
-  import LatexStatus from "./LatexStatus.svelte";
-  import PreviewStatus from "./PreviewStatus.svelte";
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
@@ -88,6 +86,7 @@
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
   import { createSteadyBusy } from "../lib/reader/steady-busy.js";
   import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
+  import { previewNotes } from "../lib/reader/preview-notes.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
   import { recenteredLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
   import { VERBS, motivationFor } from "../lib/annotating.js";
@@ -2068,7 +2067,8 @@
   let diagnostics = $state([]);
   const diagnosticsController = createRenderDiagnostics({
     active: () => editing,
-    local: () => localAppDiagnostics,
+    local: () => [...localAppDiagnostics, ...previewNoteItems],
+    failure: () => buildFailure,
     update: (list) => (diagnostics = list),
     deliver: (list) => editor?.setDiagnostics?.(list),
   });
@@ -2082,8 +2082,8 @@
   // the question is asked from the template.
   let everPaintedShown = $state(false);
 
-  const errorCount = $derived(diagnostics.filter((d) => d.severity !== "warning").length);
-  const warningCount = $derived(diagnostics.length - errorCount);
+  const errorCount = $derived(diagnostics.filter((d) => d.severity !== "warning" && d.severity !== "info").length);
+  const warningCount = $derived(diagnostics.filter((d) => d.severity === "warning").length);
   const counted = (n, thing) => `${n} ${thing}${n === 1 ? "" : "s"}`;
   const diagnosticBadge = $derived(
     errorCount && warningCount
@@ -2250,20 +2250,19 @@
   const unrendered = $derived(pdfOutput && !everPaintedShown && !renderState.failure);
   const failedBeforeRender = $derived(renderState.failure && !everPaintedShown);
 
-  // A paged compile that is running says so, and says how long the last one
-  // took once there has been one. Before the first, there is no honest number
-  // to give. LaTeX has its own, richer status detail -- `LatexStatus.svelte`,
-  // fed straight from `latex.subscribe` -- so this badge is Typst's alone.
-  const compileBadge = $derived(
-    !renderState.compiling ? "" : renderState.lastCompile ? `compiling… (last took ${renderState.lastCompile.toFixed(1)}s)` : "compiling…",
-  );
-
-  // Whether `LatexStatus` has anything to draw. It draws nothing while the
-  // engine is idle, and the Preview header uses the phase for its compact
-  // status control.
+  // The LaTeX compile status: idle, running, or failed, with progress and
+  // messages. Used by Diagnostics and the preview's progress line.
   let latexState = $state.raw(latex.status());
   const latexPhase = $derived(latexState.phase);
   $effect(() => latex.subscribe((next) => (latexState = next)));
+
+  // A build that failed and said nothing a diagnostic could carry must
+  // still be reported somewhere.
+  const buildFailure = $derived(
+    sourceFormat === "latex" && !latexHtmlPreview
+      ? (latexPhase === "failed" ? latexState.message || "The LaTeX build failed without reporting why." : "")
+      : renderState.failure ? renderState.failureReason || "The build failed without reporting why." : "",
+  );
 
   // Quarto preview mode chosen, but not yet paired with the local app on
   // this computer: the pane shows the draft, and Diagnostics explains why.
@@ -2271,14 +2270,6 @@
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && mayEdit &&
       localAppStatus.state !== "connected",
   );
-  // A read-only visitor cannot authorize the companion to receive a
-  // workspace, but the browser's Markdown draft still leaves executable
-  // Quarto cells unrun. Say why the page is a draft instead of implying that
-  // the document has no complete preview available.
-  const quartoReaderNeedsLocalTool = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && !mayEdit,
-  );
-
   // A PDF from Markdown or Quarto source is only ever produced by a tool on
   // this computer: this browser's own renderer makes HTML and nothing else.
   // Until that tool is running the PDF frame has nothing to show, and the
@@ -2315,15 +2306,17 @@
   );
 
   const localAppDiagnostics = $derived([
-    localAppStatus.state !== "connected" ? localConnectionError : "",
-    quartoNeedsLocalApp && !localConnectionError ? "Quarto preview needs the local LibrePaper app. Connect to execute code chunks." : "",
-    typstNeedsLocalApp && !localConnectionError ? "Calepin preview needs the local LibrePaper app." : "",
-    typstNeedsCalepinCommand ? "Calepin preview needs the calepin command on this computer." : "",
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? quartoPreviewError : "",
-    sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? calepinPreviewError : "",
-  ].filter(Boolean).map((message) => ({ severity: "error", message, source: "local-app" })));
+    localAppStatus.state !== "connected" ? { severity: "error", message: localConnectionError } : null,
+    quartoNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "Showing the Markdown preview. Quarto preview needs the local LibrePaper app; connect it to execute code chunks." } : null,
+    typstNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "Calepin preview needs the local LibrePaper app." } : null,
+    typstNeedsCalepinCommand ? { severity: "warning", message: "Calepin preview needs the calepin command on this computer." } : null,
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? { severity: "error", message: quartoPreviewError } : null,
+    sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? { severity: "error", message: calepinPreviewError } : null,
+  ].filter(Boolean).map((item) => ({ ...item, source: "local-app" })));
   $effect(() => {
     void localAppDiagnostics;
+    void previewNoteItems;
+    void buildFailure;
     void editing;
     untrack(() => diagnosticsController.refresh());
   });
@@ -2369,15 +2362,6 @@
     },
   });
 
-  // Whether what is in the frame is the page this browser drew last time
-  // rather than one compiled for the source on screen now. Cleared by the
-  // first real render, which is the thing that makes it untrue.
-  let paintedFromCache = $state(false);
-  // And whether that page was drawn from this very source. A document nobody
-  // edited between visits comes back to a page that is not stale at all, only
-  // older than the tab it is in, and saying "rendering" about it would be
-  // describing work rather than the document.
-  let cacheMatchedSource = $state(false);
 
   /// Puts the last page this browser drew for this document into the frame,
   /// if the frame has nothing newer in it yet.
@@ -2386,10 +2370,6 @@
     // A compile can beat this; IndexedDB is fast but it is not free. The
     // cached page is only ever a stand-in for an empty pane.
     if (!remembered || readerDisposed || everPainted || !paintsTheFrame) return;
-    paintedFromCache = true;
-    cacheMatchedSource = Boolean(remembered.identity)
-      && remembered.identity === await renderers.snapshotDigest(treeNow()).catch(() => "");
-    if (readerDisposed || everPainted) return;
     framePreview.publish(remembered.kind === "pdf"
       ? { kind: "pdf", sha: remembered.identity, bytes: new Uint8Array(remembered.bytes).slice() }
       : { kind: "html", html: remembered.html });
@@ -2419,14 +2399,14 @@
 
   const compiling = $derived(Boolean(
     (sourceFormat === "latex" && !latexHtmlPreview && ["loading", "compiling", "browser-biber"].includes(latexPhase))
-      || compileBadge || quartoPreviewStarting || quartoRendering || calepinRendering,
+      || renderState.compiling || quartoPreviewStarting || quartoRendering || calepinRendering,
   ));
-  // What the header draws: the same fact, at reading speed. A Typst or
-  // Markdown render finishes in tens of milliseconds, and a control that
-  // mounts and unmounts with each one strobes the whole row while somebody
-  // types. `steady-busy.js` holds it: nothing appears until a render has
-  // lasted long enough to be worth saying, and what appears stays long
-  // enough to be read.
+  // The preview pane's progress line shows this flag. A Typst or Markdown
+  // render finishes in tens of milliseconds, and a control that mounts and
+  // unmounts with each one strobes the line while somebody types.
+  // `steady-busy.js` holds it: nothing appears until a render has lasted
+  // long enough to be worth saying, and what appears stays long enough to
+  // be read.
   let previewBusy = $state(false);
   const steadyBusy = createSteadyBusy({ onchange: (shown) => (previewBusy = shown) });
   // One subscription to `compiling`, feeding the one smoother. The smoother
@@ -2436,22 +2416,6 @@
     steadyBusy.set(compiling);
   });
   $effect(() => () => steadyBusy.stop());
-  const previewProblem = $derived(Boolean(
-    (sourceFormat === "latex" && (latexHtmlPreview ? renderState.failure : latexPhase === "failed")) || quartoPreviewError || (!typstHtmlPreview && calepinPreviewError)
-      || quartoNeedsLocalApp || typstNeedsLocalApp || typstNeedsCalepinCommand,
-  ));
-  const previewStatusLabel = $derived(
-    localConnecting ? "Connecting to the local app"
-      : previewProblem ? "Preview needs attention"
-      // What is on screen came from the last visit. While it is being
-      // compiled again, say which of the two it is: a page drawn from this
-      // very source is not stale and calling it "last session's" would send
-      // somebody looking for a difference that is not there.
-      : paintedFromCache && cacheMatchedSource ? "Checking this page is current"
-      : paintedFromCache ? "Last session's page, compiling this one"
-      : previewBusy ? (sourceFormat === "quarto" ? "Rendering Quarto" : sourceFormat === "typst" ? "Rendering Typst" : "Compiling")
-      : !everPaintedShown && !renderState.failure ? "Rendering from source" : "",
-  );
 
   let previousConnected = null;
   $effect(() => {
@@ -2479,10 +2443,6 @@
     diagnosticContext,
     parseSynctex,
     rememberPreview: (page, identity) => {
-      // A page compiled here is the page for the source on screen, so
-      // whatever the frame was standing in with is no longer what it holds.
-      paintedFromCache = false;
-      cacheMatchedSource = false;
       rememberPreview(previewCacheKey(), page, identity);
     },
     onRendered: (_identity, projectDigest) => {
@@ -3126,6 +3086,12 @@
   // Empty means follow the shared main file; opening an include never pins it.
   let previewFile = $state("");
   const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
+  const previewNoteItems = $derived(previewNotes({
+    openPath: toolbarPath,
+    openIsText: files.find((file) => file.id === openFile)?.kind === "text",
+    mainPath: previewMain || session?.mainPath?.() || "",
+    formatOf: renderers.formatOf,
+  }));
   const editorFormat = $derived(renderers.formatOf(toolbarPath) || sourceFormat);
   const canPreviewFile = $derived(files.some((file) =>
     file.id === openFile && file.kind === "text" && Boolean(renderers.formatOf(file.path))));
@@ -3519,10 +3485,8 @@
     renderers.warm(format);
     // And put the last page this browser drew for this document up while that
     // happens. Loading an engine and compiling a paper takes seconds, and the
-    // pane spent all of them blank -- showing nothing, while holding the page
-    // that is almost always about to be drawn again. The compile replaces it
-    // when it lands, and `paintedFromCache` is what makes the status say so
-    // until then.
+    // pane would otherwise spend all of them blank -- showing nothing, while
+    // holding the page that is almost always about to be drawn again.
     void restoreLastPreview();
     await startCollaboration(document_);
     // `onSource` starts projection metadata only after the initial document state
@@ -3959,37 +3923,6 @@
   {@render layoutItems()}
 {/snippet}
 
-{#snippet previewStatusDetails(close)}
-  <div class="preview-status-details">
-    {#if renderState.provenance}
-      <p>Built with {renderState.provenance.builder} · {renderState.provenance.backend}{renderState.provenance.engine ? ` · ${renderState.provenance.engine}` : ""}{renderState.provenance.version ? ` · ${renderState.provenance.version}` : ""}</p>
-    {/if}
-    {#if latexHtmlPreview}
-      {#if compileBadge}<p>{compileBadge}</p>{/if}
-      {#if renderState.failureReason}<p>{renderState.failureReason}</p>{/if}
-    {:else if sourceFormat === "latex" && editing}
-      <LatexStatus />
-    {:else if sourceFormat === "typst" && compileBadge}
-      <p>{compileBadge}</p>
-    {/if}
-    {#if sourceFormat === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
-      <p>Showing Markdown preview. {quartoPreviewError || localConnectionError || "Use Quarto on this computer to generate the full preview."}</p>
-      <button class="btn btn-sm lp-control-outline" disabled={localConnecting} onclick={() => { close(); void startLocalExecution(); }}>
-        {quartoNeedsLocalApp ? "Enable local rendering" : "Retry Quarto preview"}
-      </button>
-      {#if quartoNeedsLocalApp}<button class="btn btn-sm lp-control-outline" onclick={() => { close(); openSettings("tools"); }}>Install or configure companion</button>{/if}
-    {/if}
-    {#if quartoReaderNeedsLocalTool}
-      <p>Showing the browser's Markdown draft. Full Quarto preview requires the local LibrePaper app with Quarto and its execution tools.</p>
-    {/if}
-    {#if sourceFormat === "typst" && !typstHtmlPreview && (typstNeedsLocalApp || typstNeedsCalepinCommand || calepinPreviewError)}
-      <p>{calepinPreviewError || localConnectionError || (typstNeedsCalepinCommand ? "Install the calepin command to use this preview." : "Connect the local LibrePaper app to use Calepin preview.")}</p>
-    {/if}
-    {#if previewProblem}
-      <button class="btn btn-sm lp-control-outline" onclick={() => { close(); showPanel("diagnostics"); }}>Open Diagnostics</button>
-    {/if}
-  </div>
-{/snippet}
 {#snippet faceSwitch()}
   <div class="face-switch" role="group" aria-label="Workspace view">
     <IconButton icon="eye" label="Document" pressed={shown.document}
@@ -4000,14 +3933,9 @@
     {/if}
   </div>
 {/snippet}
-{#snippet previewStatusControl()}
+{#snippet localExecutionControl()}
   {#if sourceFormat === "quarto" && mayEdit && !localExecution}
     <button class="btn btn-sm lp-control-brand reader-local-execution" aria-label="Turn on local execution" title="Turn on local execution" onclick={() => (localExecutionConsent = true)}><span class="execution-full">Turn on local execution</span><span class="execution-short">Run</span></button>
-  {:else}
-    <PreviewStatus label={previewStatusLabel} busy={previewBusy || localConnecting}
-      tone={previewProblem && !localConnecting ? "error" : "neutral"}>
-      {#snippet details(close)}{@render previewStatusDetails(close)}{/snippet}
-    </PreviewStatus>
   {/if}
 {/snippet}
 
@@ -4027,13 +3955,9 @@
       {#if adapted && (editing || panel === "history")}
         {@render faceSwitch()}
       {/if}
-      <!-- How the last build went. This stood in a band across the top of the
-           preview pane, which was a second bar under this one, present on every
-           format, mostly saying a filename this bar already names and the Files
-           pane already marks with an eye. The build is the document's state
-           rather than the frame's, so it belongs with the rest of what this bar
-           says about the document. -->
-      {@render previewStatusControl()}
+      <!-- The build's state is told by the preview pane's progress line and
+           by Diagnostics, so the bar only carries the local execution switch. -->
+      {@render localExecutionControl()}
       <div class="connection-settings" role="group" aria-label="Connection settings">
         <button class="connection-pill local-pill" type="button" onclick={() => openSettings("tools")}
                 aria-label={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}; open local settings`}
@@ -4392,6 +4316,8 @@
   {/snippet}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
+           busy={previewBusy}
+           progress={sourceFormat === "latex" && !latexHtmlPreview && latexState.progress?.total ? latexState.progress : null}
            away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || Boolean(projectUnreadable)} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
@@ -4573,11 +4499,9 @@
   .presence { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-divider); color: var(--color-text-secondary); font-size: .65rem; }
-  .preview-status-details { display: grid; gap: calc(var(--spacing) * 2); justify-items: start; }
   /* A heading over a run of items. Aligned with the names rather than with
      the panel edge, so the column the items make starts once. */
   .menu-section-label { padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5) calc(var(--spacing) * 0.5) calc(var(--spacing) * 7); color: var(--color-text-secondary); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
-  .preview-status-details :global(.latex-status) { display: flex; }
   @media (max-width: 600px) {
     .reader-local-execution { padding-inline: .5rem; }
     .reader-local-execution .execution-full { display: none; }

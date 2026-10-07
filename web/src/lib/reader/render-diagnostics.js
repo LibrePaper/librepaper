@@ -6,8 +6,8 @@ import { diagnosticContext } from "../assistant-review.js";
 // Owns the three diagnostic streams shown by the reader. Render diagnostics
 // have their own delayed-paint policy; bibliography and local-tool diagnostics
 // are merged into the latest visible result without duplicating entries.
-/** @param {{ active: () => boolean, local: () => RenderDiagnostic[], update: (items: RenderDiagnostic[]) => void, deliver: (items: RenderDiagnostic[]) => void, painterOptions?: { delay?: number, now?: () => number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout } }} options */
-export function createRenderDiagnostics({ active, local, update, deliver, painterOptions = {} }) {
+/** @param {{ active: () => boolean, local: () => RenderDiagnostic[], update: (items: RenderDiagnostic[]) => void, deliver: (items: RenderDiagnostic[]) => void, painterOptions?: { delay?: number, now?: () => number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout }, failure?: () => string }} options */
+export function createRenderDiagnostics({ active, local, update, deliver, painterOptions = {}, failure = () => "" }) {
   /** @type {RenderDiagnostic[]} */
   let rendered = [];
   /** @type {RenderDiagnostic[]} */
@@ -22,6 +22,11 @@ export function createRenderDiagnostics({ active, local, update, deliver, painte
       seen.add(key);
       return true;
     });
+    // A build that failed with nothing a diagnostic could carry is still told.
+    const failureMessage = failure();
+    if (failureMessage && !combined.some((item) => item.severity !== "warning" && item.severity !== "info")) {
+      combined.push({ severity: "error", message: failureMessage, source: "preview" });
+    }
     update(combined);
     deliver(combined);
   }
