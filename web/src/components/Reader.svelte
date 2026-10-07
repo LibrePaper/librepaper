@@ -780,9 +780,14 @@
 
   // Measuring is here, because the selection, the frame and the bar are all
   // things on a screen; where the numbers put the bar is `annotation-bar.js`.
+  // The bar goes next to the selection at every width. On a phone the visible
+  // area is what the keyboard and the browser's own bars leave, which is the
+  // visual viewport rather than the window, so that is what keeps the bar from
+  // sinking out of sight.
   function placeBar(rect) {
-    if (rect && !matchMedia("(max-width:760px)").matches) {
+    if (rect) {
       const frame = document.querySelector(".viewport").getBoundingClientRect();
+      const visibleHeight = window.visualViewport?.height ?? innerHeight;
       bar = {
         shown: true,
         ...placeSelectionBar({
@@ -790,6 +795,7 @@
           frame,
           width: barElement?.offsetWidth || 250,
           minTop: belowTheBar(),
+          maxTop: visibleHeight - (barElement?.offsetHeight || 40) - 8,
           windowWidth: innerWidth,
         }),
       };

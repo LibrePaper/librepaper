@@ -807,13 +807,6 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
     order: 0;
     border: 0;
   }
-  #selectionbar {
-    left: 50% !important;
-    right: auto;
-    top: auto !important;
-    bottom: calc(var(--spacing) * 16 + env(safe-area-inset-bottom));
-    transform: translateX(-50%);
-  }
   @media (prefers-reduced-motion: reduce) {
     body > nav,
     main.reader {
