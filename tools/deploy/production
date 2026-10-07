@@ -12,6 +12,7 @@ DOCS=docs.librepaper.org  # published documents: origin in tools/deploy/producti
 REDIRECTS='www.librepaper.org, librepaper.com, www.librepaper.com'
 ASSET=librepaper-x86_64-unknown-linux-musl.tar.xz
 ADMIN=https://admin.librepaper.org/  # operator graphs: origin in tools/deploy/production.toml
+ADMIN_NAME=admin.librepaper.org  # hostname extracted from ADMIN
 HTTP_CONNECT_TIMEOUT=5
 HTTP_REQUEST_TIMEOUT=15
 HEALTH_DEADLINE_SECONDS=120
@@ -135,7 +136,7 @@ check_production_dns() {
 	local ip name names=0
 	ip=$(dig +short "$SITE" | tail -n 1)
 	[ -n "$ip" ] || die "$SITE does not resolve"
-	for name in "$SITE" "$APP" "$DOCS" ${REDIRECTS//,/}; do
+	for name in "$SITE" "$APP" "$DOCS" "$ADMIN_NAME" ${REDIRECTS//,/}; do
 		[ "$(dig +short "$name" | tail -n 1)" = "$ip" ] || die "$name does not resolve to $ip yet: add its A record at Hover"
 		names=$((names + 1))
 	done
