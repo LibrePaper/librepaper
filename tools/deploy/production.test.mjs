@@ -52,6 +52,7 @@ function mockCommand(dir, name, contents) {
 function fixture({
   adminPassword = 'admin-secret',
   adminSeries = 12,
+  adminDnsMissing = false,
   caddyReloadFailure = false,
   volumeRemoveFailure = false,
   realSleep = false,
@@ -98,7 +99,13 @@ function fixture({
   writeFileSync(runningConfigFile, runningConfig);
 
   mockCommand(bin, 'make', 'printf "make\\n" >> "$EVENTS_FILE"; printf called >> "$MAKE_CALLED_FILE"; exit 0');
-  mockCommand(bin, 'dig', 'printf "192.0.2.7\\n"');
+  mockCommand(bin, 'dig', `
+query="$2"
+if [ "$ADMIN_DNS_MISSING" = 1 ] && [ "$query" = admin.librepaper.org ]; then
+  exit 0
+fi
+printf "192.0.2.7\\n"
+`);
   mockCommand(bin, 'sops', `
 for arg do
   case "$arg" in
@@ -312,6 +319,7 @@ exit 0`);
       CONFIG_CHECK_FAILURE: configCheckFailure ? '1' : '0',
       CADDY_CHECK_FAILURE: caddyCheckFailure ? '1' : '0',
       HOST_SCRIPT_FAILURE: hostScriptFailure ? '1' : '0',
+      ADMIN_DNS_MISSING: adminDnsMissing ? '1' : '0',
       TMPDIR: temp,
       NODE_EXECUTABLE: process.execPath,
       REAL_SLEEP: realSleep ? '1' : '0',
@@ -654,6 +662,19 @@ test('deploy refuses a release below the v0.0.22 floor, and a non-canonical tag,
     } finally {
       f.cleanup();
     }
+  }
+});
+
+test('deploy fails at DNS check when admin.librepaper.org is missing, mentions the admin name, and makes no remote change', () => {
+  const f = fixture({ adminDnsMissing: true });
+  try {
+    const result = run(f, 'deploy', 'v0.0.22');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /admin\.librepaper\.org.*does not resolve/);
+    assert.deepEqual(readdirSync(f.remote), []);
+    assert.deepEqual(events(f), []);
+  } finally {
+    f.cleanup();
   }
 });
 
