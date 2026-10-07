@@ -1,4 +1,4 @@
--- Behaviour regression assertions for postgres migration 0003.
+-- Behaviour regression assertions for the catalogue constraints.
 -- Run against a database after applying all catalogue migrations. The whole
 -- script rolls back, so it leaves no catalogue rows behind.
 

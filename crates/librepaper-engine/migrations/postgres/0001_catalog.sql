@@ -7,11 +7,11 @@
 -- The shape of this file follows from SPEC-server-is-a-log: the server stores
 -- and forwards source bytes and reads only their headers to do so. So there is
 -- one append-only log per document (`document_updates`), one compaction base
--- under it (`document_bases`), and relational rows whose meaning depends on
--- the source name the row that made their evidence durable. There is no
--- revision counter, no receipt table, no job queue, no rendered-bundle table
--- and no version table: each of those existed to hold something the server no
--- longer claims to know.
+-- under it (the current row of `document_snapshots`), and relational rows
+-- whose meaning depends on the source name the row that made their evidence
+-- durable. There is no revision counter, no receipt table, no job queue, no
+-- rendered-bundle table and no version table: each of those existed to hold
+-- something the server no longer claims to know.
 --
 -- One deliberate departure from that spec: it lists `schema_metadata` among
 -- the tables kept, and this file does not have it. The table held a single
@@ -30,7 +30,6 @@ CREATE TABLE accounts (
     email text,
     status text NOT NULL CHECK (status IN ('active', 'erasing', 'blocked')),
     session_generation bigint NOT NULL DEFAULT 1 CHECK (session_generation >= 1),
-    preferences jsonb NOT NULL DEFAULT '{"version":1}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     last_seen_at timestamptz NOT NULL DEFAULT now(),
     CHECK ((kind = 'registered' AND provider IS NOT NULL AND provider_subject IS NOT NULL)
@@ -43,9 +42,11 @@ CREATE TABLE documents (
     id uuid PRIMARY KEY,
     slug text NOT NULL UNIQUE,
     owner_id uuid NOT NULL REFERENCES accounts(id),
-    ownership_mode text NOT NULL CHECK (ownership_mode IN ('owned', 'open', 'example')),
+    ownership_mode text NOT NULL CHECK (ownership_mode IN ('owned', 'open')),
     title text NOT NULL,
-    status text NOT NULL CHECK (status IN ('active', 'deleting')),
+    -- `deleting` is the trash; `purging` is the claim taken before touching
+    -- blobs, so a restoration cannot race a purge that has already started.
+    status text NOT NULL CHECK (status IN ('active', 'deleting', 'purging')),
     source_format text NOT NULL CHECK (source_format IN ('markdown','html','typst','latex','quarto')),
     main_path text NOT NULL,
     -- The head row of this document's log. The sequencer loads it on
@@ -53,7 +54,6 @@ CREATE TABLE documents (
     -- It identifies a row and nothing else: what state the log holds is the
     -- version vector on that row.
     update_sequence bigint NOT NULL DEFAULT 0 CHECK (update_sequence >= 0),
-    settings jsonb NOT NULL DEFAULT '{"version":1}'::jsonb,
     -- Compaction admission is an O(1) decision taken under the document row
     -- lock, so the size of the backlog is kept on the row rather than counted
     -- out of document_updates.
@@ -64,7 +64,7 @@ CREATE TABLE documents (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     deleted_at timestamptz,
-    CHECK ((status = 'deleting') = (deleted_at IS NOT NULL))
+    CHECK ((status IN ('deleting', 'purging')) = (deleted_at IS NOT NULL))
 );
 
 -- Both listings page by (updated_at, id): one scoped to an owner, one across
@@ -78,19 +78,8 @@ CREATE INDEX documents_active_updated ON documents(updated_at DESC, id DESC)
 CREATE INDEX documents_compaction_due ON documents(id)
     WHERE status = 'active'
       AND (uncompacted_update_count >= 100 OR uncompacted_update_bytes >= 16777216);
-CREATE INDEX documents_deleting ON documents(id) WHERE status = 'deleting';
-
-CREATE TABLE grants (
-    document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    role text NOT NULL CHECK (role IN ('reader','commenter','editor')),
-    created_at timestamptz NOT NULL DEFAULT now(),
-    -- The link this grant came through, when it came through one. Part of the
-    -- authorization decision: revoking a link revokes what it handed out.
-    source_link_hash bytea CHECK (source_link_hash IS NULL OR octet_length(source_link_hash) = 32),
-    PRIMARY KEY (document_id, account_id)
-);
-CREATE INDEX grants_account ON grants(account_id, document_id);
+CREATE INDEX documents_deleting ON documents(id)
+    WHERE status IN ('deleting', 'purging');
 
 CREATE TABLE share_links (
     id uuid PRIMARY KEY,
@@ -98,7 +87,6 @@ CREATE TABLE share_links (
     role text NOT NULL CHECK (role IN ('reader','commenter','editor')),
     token_hash bytea NOT NULL UNIQUE CHECK (octet_length(token_hash) = 32),
     label text NOT NULL DEFAULT '',
-    generation bigint NOT NULL DEFAULT 1 CHECK (generation >= 1),
     -- The raw key of the URL, sealed with the deployment's session key, which
     -- lives in the secrets directory and never here. A copy of this database on
     -- its own yields no working link: the digest above does the whole job of
@@ -110,20 +98,44 @@ CREATE TABLE share_links (
     created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz,
     revoked_at timestamptz,
-    CHECK (expires_at IS NULL OR expires_at >= created_at)
+    CHECK (expires_at IS NULL OR expires_at >= created_at),
+    -- The target of the grant provenance key below: a grant names a link of its
+    -- own document, never one of somebody else's.
+    CONSTRAINT share_links_document_token_hash_key UNIQUE (document_id, token_hash)
 );
-CREATE INDEX share_links_document ON share_links(document_id, role) WHERE revoked_at IS NULL;
+CREATE INDEX share_links_document ON share_links(document_id, role);
+
+CREATE TABLE grants (
+    document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    -- NULL for a grant that came through a share link: the link remains the
+    -- source of its authority, and a copied role here would let later link
+    -- edits leave a stronger stale grant behind.
+    role text CHECK (role IN ('reader','commenter','editor')),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    -- The link this grant came through, when it came through one. Part of the
+    -- authorization decision: revoking a link revokes what it handed out.
+    source_link_hash bytea CHECK (source_link_hash IS NULL OR octet_length(source_link_hash) = 32),
+    PRIMARY KEY (document_id, account_id),
+    CONSTRAINT grants_role_provenance CHECK (
+        (source_link_hash IS NULL) = (role IS NOT NULL)
+    ),
+    CONSTRAINT grants_source_link_document_fkey
+        FOREIGN KEY (document_id, source_link_hash)
+        REFERENCES share_links(document_id, token_hash) ON DELETE CASCADE
+);
+CREATE INDEX grants_account ON grants(account_id, document_id);
 
 -- What one person has done with one document, as distinct from what they may
 -- do to it.
 --
 -- `grants` says what a person is allowed to do, and exists only for documents
--- somebody was given. Favouriting and opening are neither permissions nor
--- gifts: you favourite your own work, and the document you opened most recently
--- is usually one nobody had to share with you. One table for both, because they
--- are the same shape -- a person, a document, a timestamp -- and a listing that
--- shows Favorites sorted by when you last opened them would otherwise join the
--- same pair of ids twice.
+-- somebody was given. Favouriting, opening and hiding a shared document are
+-- neither permissions nor gifts: you favourite your own work, and the document
+-- you opened most recently is usually one nobody had to share with you. One
+-- table for all of them, because they are the same shape -- a person, a
+-- document, a mark -- and a listing that shows Favorites sorted by when you
+-- last opened them would otherwise join the same pair of ids twice.
 CREATE TABLE document_marks (
     account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -135,20 +147,15 @@ CREATE TABLE document_marks (
     -- starred without opening -- rare, but reachable: a project shared with
     -- you can be starred from the listing before you ever go in.
     opened_at timestamptz,
+    shared_hidden boolean NOT NULL DEFAULT false,
     PRIMARY KEY (account_id, document_id),
-    -- A row that says neither is a row that says nothing. Un-favouriting
-    -- something never opened deletes the row rather than blanking the column,
-    -- so the table holds marks and not the debris of marks.
-    CHECK (favorited_at IS NOT NULL OR opened_at IS NOT NULL)
+    -- A row that marks nothing says nothing. Clearing the last
+    -- mark deletes the row rather than blanking the columns, so the table
+    -- holds marks and not the debris of marks.
+    CONSTRAINT document_marks_has_mark
+        CHECK (favorited_at IS NOT NULL OR opened_at IS NOT NULL OR shared_hidden)
 );
-
--- One index per destination in the listing's rail, both partial: a person's
--- recently-opened projects are a small suffix of everything they have ever
--- opened, and their favourites a small subset of that.
-CREATE INDEX document_marks_favorites ON document_marks(account_id, favorited_at DESC)
-    WHERE favorited_at IS NOT NULL;
-CREATE INDEX document_marks_recent ON document_marks(account_id, opened_at DESC)
-    WHERE opened_at IS NOT NULL;
+CREATE INDEX document_marks_document ON document_marks(document_id);
 
 -- The collaboration log: framed batches, appended and never updated.
 --
@@ -171,38 +178,101 @@ CREATE TABLE document_updates (
     PRIMARY KEY (document_id, update_sequence)
 );
 
-CREATE TABLE document_bases (
-    document_id uuid PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
-    base_id uuid NOT NULL UNIQUE,
-    through_update_sequence bigint NOT NULL CHECK (through_update_sequence >= 0),
-    -- The version vector this base covers, proved against the snapshot's own
-    -- header before the rows behind it were deleted (§8.4 step 4).
-    vector bytea NOT NULL DEFAULT ''::bytea,
-    snapshot_key text NOT NULL UNIQUE,
-    snapshot_digest bytea NOT NULL CHECK (octet_length(snapshot_digest) = 32),
-    snapshot_bytes bigint NOT NULL CHECK (snapshot_bytes >= 0),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
--- The bases compaction has replaced, kept readable for seven days so a reader
--- mid-download is not cut off (§8.4 step 5).
+-- The compaction bases, in two stages kept in one table. A base remains the
+-- same snapshot when compaction retires it: the current one has no
+-- `delete_after`, and a retired one keeps its metadata for backups until its
+-- grace (seven days, so a reader mid-download is not cut off, §8.4 step 5)
+-- expires. Retired rows may carry no evidence of their own, so their
+-- metadata can be NULL; every current snapshot must have complete evidence.
 --
--- Rows, not a pair of columns on `document_bases`, because that table holds
--- exactly one row per document while compaction fires every 100 updates or
--- 16 MiB: an actively edited document supersedes a base once or twice a day,
--- so a single predecessor slot is overwritten several times before the grace
--- expires and every base but the newest is left in the object store with
--- nothing naming it. `snapshot_key` is the primary key so scheduling the same
--- blob twice is idempotent, and the cascade is what stops a deleted document
--- from stranding rows that name blobs its deletion already removed.
-CREATE TABLE superseded_bases (
+-- Rows, not a pair of columns on one row per document, because compaction
+-- fires every 100 updates or 16 MiB: an actively edited document supersedes a
+-- base once or twice a day, so a single predecessor slot would be overwritten
+-- several times before the grace expires and every base but the newest would
+-- be left in the object store with nothing naming it. `snapshot_key` is the
+-- primary key so scheduling the same blob twice is idempotent, and the
+-- cascade is what stops a deleted document from stranding rows that name
+-- blobs its deletion already removed.
+CREATE TABLE document_snapshots (
     snapshot_key text PRIMARY KEY,
     document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    delete_after timestamptz NOT NULL
+    through_update_sequence bigint CHECK (through_update_sequence >= 0),
+    -- The version vector this base covers, proved against the snapshot's own
+    -- header before the rows behind it were deleted (§8.4 step 4).
+    vector bytea,
+    snapshot_digest bytea CHECK (octet_length(snapshot_digest) = 32),
+    snapshot_bytes bigint CHECK (snapshot_bytes >= 0),
+    updated_at timestamptz DEFAULT now(),
+    delete_after timestamptz,
+    CONSTRAINT document_snapshots_current_metadata CHECK (
+        delete_after IS NOT NULL OR (
+            through_update_sequence IS NOT NULL
+            AND vector IS NOT NULL
+            AND snapshot_digest IS NOT NULL
+            AND snapshot_bytes IS NOT NULL
+            AND updated_at IS NOT NULL
+        )
+    )
+);
+CREATE UNIQUE INDEX document_snapshots_current ON document_snapshots(document_id)
+    WHERE delete_after IS NULL;
+CREATE INDEX document_snapshots_document ON document_snapshots(document_id);
+CREATE INDEX document_snapshots_due ON document_snapshots(delete_after)
+    WHERE delete_after IS NOT NULL;
+
+-- A proposed change is a branch, and the branch is deleted when its last hunk
+-- is decided or it is discarded, so every row here is pending by construction.
+-- A client that can write to the document can write to anything stored in it,
+-- including the record that says whether its own edit was approved; keeping
+-- the decision here is what makes it server-owned.
+--
+-- The branch itself is stored here too, as the operations since its fork. A
+-- base is large, long-lived and read on cold start; a branch is none of those.
+-- More decisively, accepting a proposal has to write the decision and the
+-- resulting source together or not at all, and one transaction over one store
+-- is how that is actually achieved.
+CREATE TABLE document_proposals (
+    id uuid PRIMARY KEY,
+    document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+
+    -- Who opened it, for attribution in the UI. The authorship that matters is
+    -- not this: it is carried by the operations themselves, and survives a
+    -- partial accept because the branch is merged whole.
+    author text NOT NULL,
+
+    -- Encoded frontiers. `base` is where the branch forked; `tip` is where it
+    -- had reached when it was last updated. Review is the diff between them, and
+    -- a decision names the tip it was computed against so that a decision made
+    -- against a stale tip can be refused rather than applied to text that has
+    -- since changed underneath the reviewer.
+    base_frontiers bytea NOT NULL,
+    tip_frontiers bytea NOT NULL,
+
+    -- The branch: Loro operations since the fork, not a whole document.
+    branch_bytes bytea NOT NULL,
+
+    -- Bumped by every transition, so a conditional update can refuse a
+    -- decision made against a row somebody else has already moved (§7.2).
+    version bigint NOT NULL DEFAULT 1 CHECK (version >= 1),
+
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+
+    -- The authenticated principal that wrote the branch, separate from the
+    -- display label in `author`. It controls who may replace a pending branch.
+    -- NULL means no trustworthy identity: the proposal stays reviewable and
+    -- any editor can discard it, but nobody can claim ownership to update.
+    owner_key text,
+
+    -- A suggestion annotation names its proposal through (document_id, id), so
+    -- the tenant boundary is explicit and a mismatched-document reference is
+    -- impossible.
+    CONSTRAINT document_proposals_document_id_id_key UNIQUE (document_id, id)
 );
 
-CREATE INDEX superseded_bases_due ON superseded_bases (delete_after);
-CREATE INDEX superseded_bases_document ON superseded_bases (document_id);
+-- The open proposals for a document, which is what a joining client asks for and
+-- what the sequencer broadcasts after every decision.
+CREATE INDEX document_proposals_document ON document_proposals(document_id);
 
 -- A comment is a place in the source, not a quotation.
 --
@@ -230,8 +300,8 @@ CREATE TABLE annotations (
 
     -- The log row that made the quoted text durable, and the frontier of the
     -- state the range was measured against.
-    source_sequence bigint CHECK (source_sequence IS NULL OR source_sequence >= 0),
-    frontier bytea,
+    source_sequence bigint NOT NULL CHECK (source_sequence IS NULL OR source_sequence >= 0),
+    frontier bytea NOT NULL,
     -- The projection digest of the rendered page this remark was made against,
     -- when it was made by a reader rather than in the editor. A comment whose
     -- render is no longer the head projection is refused with the current
@@ -257,6 +327,11 @@ CREATE TABLE annotations (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
 
+    -- A suggestion annotation is the human-facing discussion attached to one
+    -- proposal branch. Keep the relation explicit so catalog reloads cannot
+    -- turn a reviewable suggestion into an ordinary comment.
+    proposal_id uuid UNIQUE,
+
     CONSTRAINT annotations_target_kind CHECK (target_kind IN ('source_text', 'document')),
     -- A passage carries a range and its evidence; a remark about the document
     -- as a whole carries none of it. Neither can be half filled in.
@@ -265,8 +340,8 @@ CREATE TABLE annotations (
             AND file_id IS NOT NULL
             AND start_utf16 IS NOT NULL AND start_utf16 >= 0
             AND end_utf16 IS NOT NULL AND end_utf16 >= start_utf16
-            AND start_side IN ('left', 'right')
-            AND end_side IN ('left', 'right')
+            AND start_side IS NOT NULL AND start_side IN ('left', 'right')
+            AND end_side IS NOT NULL AND end_side IN ('left', 'right')
             AND exact IS NOT NULL AND prefix IS NOT NULL AND suffix IS NOT NULL)
         OR
         (target_kind = 'document'
@@ -274,12 +349,21 @@ CREATE TABLE annotations (
             AND start_utf16 IS NULL AND end_utf16 IS NULL
             AND start_side IS NULL AND end_side IS NULL
             AND exact IS NULL AND prefix IS NULL AND suffix IS NULL)
-    )
+    ),
+    CONSTRAINT annotations_evidence_required
+        CHECK (source_sequence IS NOT NULL AND frontier IS NOT NULL),
+    CONSTRAINT annotations_suggestion_proposal CHECK (
+        (kind = 'suggestion' AND proposal_id IS NOT NULL)
+        OR (kind <> 'suggestion' AND proposal_id IS NULL)
+    ),
+    CONSTRAINT annotations_document_proposal_fkey
+        FOREIGN KEY (document_id, proposal_id)
+        REFERENCES document_proposals(document_id, id) ON DELETE CASCADE
 );
 CREATE INDEX annotations_timeline ON annotations(document_id, created_at, id);
--- Finding every comment on a file, which is what a resolution pass walks.
-CREATE INDEX annotations_source_file ON annotations(document_id, file_id, created_at, id)
-    WHERE file_id IS NOT NULL;
+CREATE INDEX annotations_author_account
+    ON annotations(author_account_id)
+    WHERE author_account_id IS NOT NULL;
 
 CREATE TABLE replies (
     id uuid PRIMARY KEY,
@@ -292,6 +376,9 @@ CREATE TABLE replies (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX replies_timeline ON replies(annotation_id, created_at, id);
+CREATE INDEX replies_author_account
+    ON replies(author_account_id)
+    WHERE author_account_id IS NOT NULL;
 
 -- Content-addressed and unique per (document_id, digest, byte_length). Nothing
 -- deletes from this table, and the orphan sweeper treats every key it names as
@@ -306,6 +393,19 @@ CREATE TABLE document_assets (
     original_name text,
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (document_id, digest, byte_length)
+);
+
+-- A plain-source archive object. Archive bytes belong to the object, not to
+-- every label that names it: weight and digests live once here, so labels
+-- cannot disagree about object metadata, and the storage counter moves once
+-- per object. A key denotes one immutable object of one document.
+CREATE TABLE document_archives (
+    storage_key text PRIMARY KEY,
+    document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    tree_digest bytea CHECK (tree_digest IS NULL OR octet_length(tree_digest) = 32),
+    content_digest bytea CHECK (content_digest IS NULL OR octet_length(content_digest) = 32),
+    byte_length bigint NOT NULL CHECK (byte_length >= 0),
+    UNIQUE (document_id, storage_key)
 );
 
 -- A named moment: what somebody asked to be able to come back to.
@@ -333,92 +433,34 @@ CREATE TABLE document_labels (
     -- command for the retry record a source-producing command writes (§7.2):
     -- `restore`, `agent-patch`, `replace`, `accept`.
     reason text NOT NULL,
-    -- The client's idempotency key for a source-producing command. A retry
-    -- with the same id finds this row and returns its result.
-    request_id uuid UNIQUE,
+    -- The client's idempotency key for a source-producing command, scoped to
+    -- the log that owns the request. A retry with the same id finds this row
+    -- and returns its result; a client may reuse one UUID in another document.
+    request_id uuid,
     author_account_id uuid REFERENCES accounts(id),
     author_label text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     archive_requested_at timestamptz,
     archive_key text,
     archive_error text,
-    UNIQUE (document_id, sequence)
+    UNIQUE (document_id, sequence),
+    CONSTRAINT document_labels_document_request_id_key UNIQUE (document_id, request_id),
+    CONSTRAINT document_labels_archive_fk
+        FOREIGN KEY (document_id, archive_key)
+        REFERENCES document_archives (document_id, storage_key)
+        ON DELETE CASCADE
 );
-CREATE INDEX document_labels_timeline ON document_labels(document_id, sequence DESC);
 -- The startup scan for archives that were asked for and never landed.
 CREATE INDEX document_labels_archive_pending
-    ON document_labels(document_id, sequence)
+    ON document_labels(id)
     WHERE archive_requested_at IS NOT NULL AND archive_key IS NULL;
 -- Storage accounting looks up siblings by key on every write and delete, and
 -- the backup enumerator and the orphan sweeper read this column too.
 CREATE INDEX document_labels_archive_key ON document_labels(archive_key)
     WHERE archive_key IS NOT NULL;
-
--- A proposed change is a branch, and its status lives here rather than in the
--- document. A client that can write to the document can write to anything
--- stored in it, including the record that says whether its own edit was
--- approved; keeping the decision here is what makes it server-owned.
---
--- The branch itself is stored here too, as the operations since its fork. A
--- base is large, long-lived and read on cold start; a branch is none of those.
--- More decisively, accepting a proposal has to write the decision and the
--- resulting source together or not at all, and one transaction over one store
--- is how that is actually achieved.
-CREATE TABLE document_proposals (
-    id uuid PRIMARY KEY,
-    document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-
-    -- Who opened it, for attribution in the UI. The authorship that matters is
-    -- not this: it is carried by the operations themselves, and survives a
-    -- partial accept because the branch is merged whole.
-    author text NOT NULL,
-
-    -- The peer that wrote the branch. Kept so the sequencer can tell a
-    -- proposal's own operations from everyone else's without decoding the blob.
-    author_peer bigint NOT NULL,
-
-    -- Encoded frontiers. `base` is where the branch forked; `tip` is where it
-    -- had reached when it was last updated. Review is the diff between them, and
-    -- a decision names the tip it was computed against so that a decision made
-    -- against a stale tip can be refused rather than applied to text that has
-    -- since changed underneath the reviewer.
-    base_frontiers bytea NOT NULL,
-    tip_frontiers bytea NOT NULL,
-
-    -- The branch: Loro operations since the fork, not a whole document.
-    branch_bytes bytea NOT NULL,
-
-    -- `pending` until every hunk has been decided; then `resolved`. A proposal
-    -- that the document has moved past without deciding is `superseded`.
-    status text NOT NULL CHECK (status IN ('pending', 'resolved', 'superseded')),
-
-    -- Bumped by every transition, so a conditional update can refuse a
-    -- decision made against a row somebody else has already moved (§7.2).
-    version bigint NOT NULL DEFAULT 1 CHECK (version >= 1),
-
-    -- Set when the proposal resolves, together in one write with the source
-    -- that carried its accepted hunks into the document.
-    resolved_by text,
-    resolved_at timestamptz,
-
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
--- The open proposals for a document, which is what a joining client asks for and
--- what the sequencer broadcasts after every decision.
-CREATE INDEX document_proposals_open ON document_proposals(document_id, status);
-
--- A suggestion annotation is the human-facing discussion attached to one
--- proposal branch. Keep the relation explicit so catalog reloads cannot turn
--- a reviewable suggestion into an ordinary comment.
-ALTER TABLE annotations
-    ADD COLUMN proposal_id uuid UNIQUE REFERENCES document_proposals(id) ON DELETE CASCADE;
-ALTER TABLE annotations
-    ADD CONSTRAINT annotations_suggestion_proposal CHECK (
-        (kind = 'suggestion' AND proposal_id IS NOT NULL)
-        OR (kind <> 'suggestion' AND proposal_id IS NULL)
-    );
+CREATE INDEX document_labels_author_account
+    ON document_labels(author_account_id)
+    WHERE author_account_id IS NOT NULL;
 
 -- One row per decision, because a reviewer decides hunks and not proposals.
 --
@@ -445,6 +487,118 @@ CREATE TABLE document_proposal_hunks (
     PRIMARY KEY (proposal_id, hunk_index)
 );
 
+-- A proposal is deleted when it is decided or discarded. Keep bounded,
+-- expiring evidence so a reconnecting author can separate its reviewed branch
+-- from edits that were still local when the final answer was lost.
+CREATE TABLE document_proposal_outcomes (
+    document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    proposal_id uuid NOT NULL,
+    base_frontiers bytea NOT NULL,
+    tip_frontiers bytea NOT NULL,
+    decisions jsonb NOT NULL DEFAULT '[]'::jsonb,
+    discarded boolean NOT NULL DEFAULT false,
+    decision_request_id uuid,
+    expires_at bigint NOT NULL,
+    PRIMARY KEY (document_id, proposal_id)
+);
+CREATE INDEX document_proposal_outcomes_expiry
+    ON document_proposal_outcomes(document_id, expires_at);
+
+-- Compact MCP outcomes commit alongside the mutation they describe. These are
+-- actor-scoped recovery evidence, never permission to execute a write again.
+CREATE TABLE operation_outcomes (
+    document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    actor text NOT NULL CHECK (octet_length(actor) BETWEEN 1 AND 512),
+    request_id text NOT NULL CHECK (octet_length(request_id) BETWEEN 1 AND 128),
+    digest text NOT NULL CHECK (octet_length(digest) = 64),
+    tool text NOT NULL CHECK (tool IN ('document_propose', 'document_apply', 'document_comment')),
+    outcome jsonb NOT NULL CHECK (octet_length(outcome::text) <= 32768),
+    expires_at bigint NOT NULL,
+    PRIMARY KEY (document_id, actor, request_id)
+);
+CREATE INDEX operation_outcomes_expiry ON operation_outcomes(expires_at);
+
+-- One row for each admitted upload request. The account id makes the limit
+-- survive browser changes, sign-in sessions, and server restarts.
+CREATE TABLE account_upload_admissions (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX account_upload_admissions_recent
+    ON account_upload_admissions(account_id, created_at DESC);
+CREATE INDEX account_upload_admissions_created
+    ON account_upload_admissions(created_at);
+
+-- Successful account initiated project and figure uploads consume the same
+-- rolling hourly allowance. Events outlive replacement or deletion of the
+-- project rows whose bytes they admitted.
+CREATE TABLE upload_admissions (
+    id uuid PRIMARY KEY,
+    account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX upload_admissions_account_created_at
+    ON upload_admissions(account_id, created_at DESC);
+
+-- Reversible operator controls. A hidden document remains active and keeps
+-- every source, asset, history row, and share grant; public access is denied
+-- by the application while this row exists.
+CREATE TABLE moderated_projects (
+    document_id uuid PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+    hidden_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE moderation_audit (
+    id uuid PRIMARY KEY,
+    actor text NOT NULL CHECK (length(btrim(actor)) > 0),
+    occurred_at timestamptz NOT NULL DEFAULT now(),
+    action text NOT NULL CHECK (action IN ('block_account','unblock_account','hide_project','unhide_project')),
+    target_kind text NOT NULL CHECK (target_kind IN ('account','project')),
+    target_id uuid NOT NULL,
+    target_label text NOT NULL,
+    reason text NOT NULL CHECK (length(btrim(reason)) > 0)
+);
+CREATE INDEX moderation_audit_time ON moderation_audit(occurred_at DESC, id DESC);
+
+-- Quota reserved for source batches accepted into a live sequencer but not
+-- yet committed to document_updates. The process writer epoch makes crash
+-- recovery safe after the deployment advisory lease has been claimed.
+CREATE TABLE pending_log_reservations (
+    reservation_id uuid PRIMARY KEY,
+    document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    writer_epoch bigint NOT NULL,
+    bytes bigint NOT NULL CHECK (bytes > 0),
+    batch_digest bytea NOT NULL CHECK (octet_length(batch_digest) = 32)
+);
+CREATE INDEX pending_log_reservations_document_idx
+    ON pending_log_reservations(document_id, writer_epoch);
+
+-- A custom template is an ordinary project plus a row here. The row is the
+-- whole of the mark: the project keeps its owner, its quota charge and its
+-- trash lifecycle, and the cascade drops the mark with the document.
+CREATE TABLE document_templates (
+    document_id uuid PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- A custom template is hidden from ordinary listings as soon as its marker
+-- is written. The operation row makes it visible on the template shelf only
+-- after the copied source and its first durable label commit together.
+CREATE TABLE document_template_operations (
+    owner_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    request_id uuid NOT NULL,
+    source_document_id uuid NOT NULL,
+    title text NOT NULL,
+    target_document_id uuid NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+    completed_at timestamptz,
+    source_sequence bigint CHECK (source_sequence IS NULL OR source_sequence >= 0),
+    tree_digest bytea CHECK (tree_digest IS NULL OR octet_length(tree_digest) = 32),
+    PRIMARY KEY (owner_id, request_id),
+    CHECK ((completed_at IS NULL) = (source_sequence IS NULL)),
+    CHECK ((completed_at IS NULL) = (tree_digest IS NULL))
+);
+
 -- One deployment writer fences every document transaction. The row lock,
 -- rather than an unlocked epoch read, remains held until commit.
 CREATE TABLE deployment_writer (
@@ -465,16 +619,11 @@ CREATE TABLE server_runtime_state (
 
 -- Deployment storage counts objects, not references.
 --
--- The counter is the number of bytes actually held in the blob store. Archives
--- are named by digest and shared, so a row naming an object some other row
--- already names adds no bytes, and refunding on its delete would decrement the
--- counter for bytes that are still held -- a counter that drifts below the
--- truth eventually admits writes the deployment has no room for.
---
--- So each side asks the same question -- is this row the only one naming this
--- object? -- and moves the counter only then. It is asked in an AFTER trigger,
--- where on INSERT the new row is already visible and must not count itself, and
--- on DELETE the old row is already gone.
+-- The counter is the number of bytes actually held in the blob store. Assets
+-- and archives are each one row per object, so each row moves the counter by
+-- its own weight, once, on insert, delete and (for archives) update. A
+-- negative result is allowed to fail the CHECK on `bytes`, because clamping
+-- would hide drift.
 CREATE TABLE storage_usage (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
     bytes bigint NOT NULL CHECK (bytes >= 0)
@@ -490,48 +639,30 @@ BEGIN
 END
 $$;
 
--- A label's archive is named by the digest of the projection it holds, so two
--- labels naming the same document name one object and it is stored once. The
--- key arrives by UPDATE rather than INSERT -- the label exists before its
--- archive does (§8.5) -- so this trigger watches all three verbs and counts a
--- key exactly once across the whole table.
-CREATE FUNCTION adjust_label_archive_storage_usage() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION adjust_document_archive_storage() RETURNS trigger
+LANGUAGE plpgsql AS $$
 DECLARE
-    shared boolean;
-    weight bigint;
+    delta bigint;
 BEGIN
-    IF TG_OP <> 'INSERT' AND OLD.archive_key IS NOT NULL
-       AND (TG_OP = 'DELETE' OR NEW.archive_key IS DISTINCT FROM OLD.archive_key) THEN
-        SELECT EXISTS(SELECT 1 FROM document_labels
-                      WHERE archive_key = OLD.archive_key AND id IS DISTINCT FROM OLD.id)
-          INTO shared;
-        IF NOT shared THEN
-            SELECT COALESCE(OLD.archive_bytes, 0) INTO weight;
-            UPDATE storage_usage SET bytes = GREATEST(0, bytes - weight);
+    IF TG_OP = 'INSERT' THEN
+        delta := NEW.byte_length;
+    ELSIF TG_OP = 'DELETE' THEN
+        delta := -OLD.byte_length;
+    ELSE
+        delta := NEW.byte_length - OLD.byte_length;
+    END IF;
+    IF delta <> 0 THEN
+        UPDATE storage_usage SET bytes = bytes + delta WHERE singleton;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'storage_usage singleton is missing';
         END IF;
     END IF;
-    IF TG_OP <> 'DELETE' AND NEW.archive_key IS NOT NULL
-       AND (TG_OP = 'INSERT' OR NEW.archive_key IS DISTINCT FROM OLD.archive_key) THEN
-        SELECT EXISTS(SELECT 1 FROM document_labels
-                      WHERE archive_key = NEW.archive_key AND id IS DISTINCT FROM NEW.id)
-          INTO shared;
-        IF NOT shared THEN
-            UPDATE storage_usage SET bytes = bytes + COALESCE(NEW.archive_bytes, 0);
-        END IF;
-    END IF;
-    IF TG_OP = 'DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
+    RETURN NULL;
 END
 $$;
 
--- What the archive weighs, so the trigger above has a number to move. NULL
--- until the archive lands, and set in the same UPDATE as the key.
-ALTER TABLE document_labels
-    ADD COLUMN archive_bytes bigint CHECK (archive_bytes IS NULL OR archive_bytes >= 0),
-    ADD CONSTRAINT document_labels_archive_pair
-        CHECK ((archive_key IS NULL) = (archive_bytes IS NULL));
-
 CREATE TRIGGER document_assets_storage_usage AFTER INSERT OR DELETE ON document_assets
     FOR EACH ROW EXECUTE FUNCTION adjust_asset_storage_usage();
-CREATE TRIGGER document_labels_storage_usage
-    AFTER INSERT OR UPDATE OF archive_key OR DELETE ON document_labels
-    FOR EACH ROW EXECUTE FUNCTION adjust_label_archive_storage_usage();
+CREATE TRIGGER document_archives_storage_usage
+    AFTER INSERT OR UPDATE OR DELETE ON document_archives
+    FOR EACH ROW EXECUTE FUNCTION adjust_document_archive_storage();
