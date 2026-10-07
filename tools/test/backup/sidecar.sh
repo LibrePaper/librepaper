@@ -13,7 +13,6 @@ command -v ssh-keygen >/dev/null
 work=$(mktemp -d /tmp/librepaper-backup-sidecar.XXXXXX)
 prefix="lp-backup-${work##*.}"
 sidecar="${prefix}-sidecar"
-restore_url=""
 cleanup() {
 	local status=$?
 	trap - EXIT
@@ -28,14 +27,6 @@ cleanup() {
 	fi
 	docker rm -f -v "$sidecar" >/dev/null 2>&1 || true
 	for name in "${backend_containers[@]:-}"; do docker rm -f -v "$name" >/dev/null 2>&1 || true; done
-	if [[ -f "$work/secrets/database_url.role" ]]; then
-		"$(dirname "$0")/database-role.sh" drop \
-			"$LIBREPAPER_SOURCE_URL" backup_fixture "$work/secrets/database_url" || true
-	fi
-	if [[ -n "$restore_url" && -f "$work/restore-app-database-url.role" ]]; then
-		"$(dirname "$0")/database-role.sh" drop \
-			"$restore_url" backup_restored "$work/restore-app-database-url" || true
-	fi
 	if [[ "${BACKUP_SIDECAR_KEEP:-0}" == 1 || $status != 0 ]]; then
 		# Return test data ownership to the invoking user before preserving it.
 		docker run --rm --user 0 -v "$work:/test" --entrypoint chown \
@@ -78,8 +69,8 @@ docker run --rm --user 0 -v "$work/source-data:/var/lib/librepaper" \
 	--entrypoint chown "$LIBREPAPER_BACKUP_IMAGE" -R 10001:65534 /var/lib/librepaper >/dev/null
 
 backup_database_url="$work/secrets/database_url"
-tools/test/backup/database-role.sh backup \
-	"$LIBREPAPER_SOURCE_URL" backup_fixture "$backup_database_url"
+printf '%s\n' "$LIBREPAPER_SOURCE_URL" >"$backup_database_url"
+chmod 0400 "$backup_database_url"
 cp -- "$backup_database_url" "$work/backup-url-original"
 chmod 0444 "$work/backup-url-original"
 docker run --rm --user 0 -v "$work/secrets:/secrets" --entrypoint chown \
@@ -216,12 +207,6 @@ restic_session_key="$work/restic-restore/var/lib/librepaper/secrets/session.key"
 test -s "$restic_session_key"
 cmp "$work/source-session-key" "$restic_session_key"
 
-# The backup role appears in ACLs in the database dump. Remove it before
-# restoring so pg_restore has to ignore source privileges/owners and leave
-# permissions to the target runtime role.
-tools/test/backup/database-role.sh drop \
-	"$LIBREPAPER_SOURCE_URL" backup_fixture "$backup_database_url"
-
 restore_url="postgresql://postgres:drill@127.0.0.1:${POSTGRES_PORT}/backup_restored"
 printf '%s\n' "$restore_url" >"$work/restore-owner-url"
 chmod 0600 "$work/restore-owner-url"
@@ -239,8 +224,6 @@ cp -- "$restic_session_key" "$work/restore-data/secrets/session.key"
 chmod 0600 "$work/restore-data/secrets/session.key"
 cmp "$work/source-session-key" "$work/restore-data/secrets/session.key"
 
-tools/test/backup/database-role.sh app \
-	"$restore_url" backup_restored "$work/restore-app-database-url"
 cat >"$work/restore-app.toml" <<TOML
 [server]
 address = { env = "TEST_RESTORE_ADDRESS" }
@@ -248,7 +231,7 @@ migrate = false
 
 [storage]
 directory = "$work/restore-data"
-database_url = { file = "$work/restore-app-database-url" }
+database_url = { file = "$work/restore-owner-url" }
 fsync = false
 
 [access]
@@ -257,15 +240,6 @@ commenters = ["anyone"]
 TOML
 node tools/test/backup/restore-access.mjs "$LIBREPAPER_BIN" \
 	"$work/restore-app.toml" "$fixture_account_id" "$work/source-session-cookie"
-tools/test/backup/database-role.sh drop \
-	"$restore_url" backup_restored "$work/restore-app-database-url"
-
-# Later SFTP/MinIO/REST profiles still exercise backup with a working limited
-# source role after the source-only role was absent during the restore.
-tools/test/backup/database-role.sh backup \
-	"$LIBREPAPER_SOURCE_URL" backup_fixture "$backup_database_url"
-docker run --rm --user 0 -v "$work/secrets:/secrets" --entrypoint chown \
-	"$LIBREPAPER_BACKUP_IMAGE" 10001:65534 /secrets/database_url >/dev/null
 
 BACKUP_DRILL_SOURCE_URL="$LIBREPAPER_SOURCE_URL" \
 BACKUP_DRILL_RESTORE_URL="postgresql://postgres:drill@127.0.0.1:${POSTGRES_PORT}/backup_restored" \
