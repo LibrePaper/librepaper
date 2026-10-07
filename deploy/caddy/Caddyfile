@@ -14,18 +14,6 @@ https:// {
 		on_demand
 	}
 	encode zstd gzip
-	@monitoring path /admin/monitoring /admin/monitoring/*
-	handle @monitoring {
-		route {
-			forward_auth librepaper:8080 {
-				uri /api/monitoring/host-check
-				header_up Host {http.request.hostport}
-			}
-			@monitoring_root path /admin/monitoring
-			redir @monitoring_root /admin/monitoring/ 308
-			reverse_proxy grafana:3000
-		}
-	}
 	handle {
 		reverse_proxy librepaper:8080
 	}
@@ -40,7 +28,3 @@ import local.d/*.caddy
 # www.paper.example {
 #	redir https://paper.example{uri} permanent
 # }
-#
-# The monitoring path is available only on the configured app origin. Caddy
-# asks LibrePaper to authorize the original Host before redirecting or proxying;
-# Grafana keeps its own login as a second gate.

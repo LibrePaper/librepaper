@@ -10,7 +10,6 @@ initialize = true
 lock = "/run/librepaper-backup/lock"
 cache-dir = "/var/backups/librepaper/cache"
 status-file = "/var/backups/librepaper/status.json"
-prometheus-save-to-file = "/var/backups/librepaper/metrics/restic.prom"
 
 [resticprofile.backup]
 schedule = "daily"
@@ -20,9 +19,7 @@ extended-status = true
 host = "librepaper"
 tag = ["librepaper"]
 source = ["/var/backups/librepaper/current", "/etc/librepaper/librepaper.toml", "/etc/resticprofile/resticprofile.toml", "/var/lib/librepaper/secrets"]
-run-before = "set -eu; librepaper-backup-status start backup; rm -rf /var/backups/librepaper/current; librepaper admin backup --config /etc/librepaper/librepaper.toml /var/backups/librepaper/current"
-run-after = "librepaper-backup-status success backup"
-run-after-fail = "librepaper-backup-status failure backup"
+run-before = "set -eu; rm -rf /var/backups/librepaper/current; librepaper admin backup --config /etc/librepaper/librepaper.toml /var/backups/librepaper/current"
 run-finally = "rm -rf /var/backups/librepaper/current"
 
 [resticprofile.retention]
@@ -38,6 +35,3 @@ schedule = "Mon 06:00"
 schedule-lock-wait = "2h"
 schedule-permission = "user"
 read-data-subset = "10%"
-run-before = "librepaper-backup-status start check"
-run-after = "librepaper-backup-status success check"
-run-after-fail = "librepaper-backup-status failure check"
