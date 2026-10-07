@@ -108,10 +108,10 @@
     /* The same 8px between the hamburger, the two faces and the account as
        between the two faces themselves: one row of thumb-sized controls. */
     .reader-nav .nav-actions { gap: calc(var(--spacing) * 2); }
-    /* At compact widths, the menubar is kept mounted for keyboard navigation
-       and menu logic, but rendered invisible and positioned just below the bar
-       so its dropdowns still open in a sensible place. The nav itself is
-       position: sticky so it is the containing block for this positioning. */
+    /* At compact widths the menubar is kept mounted for keyboard navigation
+       and the menu logic but rendered invisible and kept out of the flow;
+       where its menus open is not decided here, a menu chosen from the Panels
+       trigger hangs from that trigger (lib/menubar.svelte.js). */
     .reader-nav :global(.menubar) {
       position: absolute;
       top: 100%;

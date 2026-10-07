@@ -3945,9 +3945,10 @@
       <!-- At compact widths (≤760px), the top bar contains only the hamburger
            menu trigger (to open the Panels menu and access File/Edit/Insert/View)
            and the face switch (Document/Source). The menubar stays mounted but is
-           invisible, positioned below the top bar so its dropdowns can still open. -->
+           invisible; a menu chosen from the hamburger opens in the hamburger panel's
+           own box. -->
       <CompactPanelMenu tabs={tabs} {panel} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
-                        menus={compactMenus} onmenu={(id) => menubar.show(id)} />
+                        menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
     {:else}
       <!-- Between 761px and the split's narrow point, the face choice stays in

@@ -1,7 +1,7 @@
 <script>
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
-  import { menubar } from "../lib/menubar.svelte.js";
+  import { menubar, PANEL_POSITIONING } from "../lib/menubar.svelte.js";
   import { untrack } from "svelte";
 
   // One word in the bar and the panel behind it. The open state is the bar's,
@@ -24,12 +24,18 @@
     }
     wasOpen = isOpen;
   });
+
+  // Opened from the Panels trigger the menu hangs from that trigger, in the
+  // same box its panel used; returning null when the trigger is gone lets Zag
+  // fall back to the menu's own trigger.
+  const positioning = $derived(menubar.anchor ? { ...PANEL_POSITIONING, getAnchorRect: () => (menubar.anchor?.isConnected ? menubar.anchor.getBoundingClientRect() : null) } : undefined);
 </script>
 
 <Menu
   open={menubar.opened === id}
   onOpenChange={(event) => { if (event.open) { menubar.show(id); } else menubar.close(id); }}
   onSelect={(chosen) => onselect?.(chosen.value)}
+  {positioning}
 >
   <Menu.Trigger
     class="menubar-item"
@@ -38,5 +44,5 @@
     onpointerenter={() => { if (!disabled) menubar.point(id); }}
     {...rest}
   >{label}</Menu.Trigger>
-  <ExplorerMenu>{@render children()}</ExplorerMenu>
+  <ExplorerMenu {positioning}>{@render children()}</ExplorerMenu>
 </Menu>

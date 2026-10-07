@@ -182,6 +182,15 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
   border: 0;
   background: var(--color-shell);
 }
+/* A menu closes on a press anywhere else, and on a phone "anywhere else"
+   is mostly the document. The frame is another origin, so a press inside
+   it never reaches this page and the menu would stay open. While a menu
+   is open the frame is deaf: the press lands on the pane around it, the
+   menu hears it and closes, and nothing else happens, which is all a
+   dismissing tap should do. */
+body:has(.explorer-menu[data-state="open"]) .viewport iframe {
+  pointer-events: none;
+}
 /* The controls for whatever is in the frame. A paged document has zoom and a
    cursor tool, a flowing one has neither, and a format with none is a pane
    with nothing over it.
