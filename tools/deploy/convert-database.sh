@@ -182,7 +182,7 @@ SQL
 	if ! {
 		cat <<'SQL'
 ALTER ROLE librepaper RENAME TO postgres;
-ALTER ROLE postgres LOGIN;
+ALTER ROLE postgres LOGIN CREATEDB CREATEROLE;
 ALTER ROLE librepaper_owner RENAME TO librepaper;
 ALTER ROLE librepaper INHERIT PASSWORD NULL;
 DROP OWNED BY librepaper_app, librepaper_backup;
@@ -218,7 +218,7 @@ SQL
 	fi
 
 	say "starting the converted stack: the app validates the schema"
-	docker compose up -d --wait --wait-timeout 180
+	docker compose up -d --wait --wait-timeout 180 --remove-orphans
 
 	say "deleting the old kit files by name"
 	rm -f setup postgres/roles.sql postgres/init-roles.sh .setup-state.json monitoring/grafana-entrypoint.sh \

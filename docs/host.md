@@ -75,6 +75,12 @@ cd librepaper && docker compose pull && docker compose up -d
 
 The server migrates the schema at startup. When a release note says the kit changed, this same procedure applies.
 
+After editing `librepaper.toml` or `resticprofile.toml`, recreate the containers that read them. Compose compares service definitions, not the bytes behind a mounted file:
+
+```sh
+docker compose up -d --force-recreate librepaper backup
+```
+
 ## Database elsewhere
 
 Set `storage.database_url` to a TCP URL with `sslmode=verify-full`. Create the role on the provider as a non-superuser database owner. Then:

@@ -748,7 +748,7 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
     };
     writeTree(target, {
       ...operatorFiles,
-      'compose.yaml': 'old compose\n',
+      'compose.yaml': 'old compose, longer so rsync cannot mistake it for the kit file\n',
       setup: 'dropped from the kit\n',
       'compose.production.yaml': 'dropped from the kit\n',
       'postgres/roles.sql': 'dropped from the kit\n',
@@ -908,7 +908,7 @@ test('persistent Grafana API failures time out and remove credential files', {
 // convert-database is temporary: delete these tests with the command.
 function seedOldHost(f) {
   writeTree(f.remote, {
-    'compose.yaml': 'old compose\n',
+    'compose.yaml': 'old compose, longer so rsync cannot mistake it for the kit file\n',
     setup: 'old setup helper\n',
     'librepaper.toml': 'old production config\n',
     'secrets/database_app_url': 'postgresql://old\n',

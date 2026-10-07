@@ -301,7 +301,7 @@ docker compose stop librepaper backup postgres-exporter     # only this script i
 docker compose exec -T postgres pg_dump -U librepaper_owner -d librepaper -Fc > ~/librepaper-convert/librepaper.dump   # the fallback
 docker compose exec -T postgres psql -U librepaper_bootstrap -d librepaper -v ON_ERROR_STOP=1 -1 -f - <<'SQL'
 ALTER ROLE librepaper RENAME TO postgres;          -- the initdb superuser, as a fresh install names it
-ALTER ROLE postgres LOGIN;
+ALTER ROLE postgres LOGIN CREATEDB CREATEROLE;     -- setup upgrade had removed these; a fresh initdb role has them
 ALTER ROLE librepaper_owner RENAME TO librepaper;
 ALTER ROLE librepaper INHERIT PASSWORD NULL;       -- a fresh CREATE ROLE has no password
 DROP OWNED BY librepaper_app, librepaper_backup;   -- revokes their grants and default ACL entries
@@ -313,7 +313,7 @@ docker compose exec -T postgres psql -U postgres -d librepaper -v ON_ERROR_STOP=
 DROP OWNED BY librepaper_bootstrap;                -- a role cannot drop itself, hence the reconnect
 DROP ROLE librepaper_bootstrap;
 SQL
-docker compose up -d --wait                        # postgres is recreated without a network, with the socket volume; the app validates the schema
+docker compose up -d --wait --remove-orphans       # postgres is recreated without a network, with the socket volume; the app validates the schema; the old migrate container goes
 rm -f setup postgres/roles.sql postgres/init-roles.sh .setup-state.json monitoring/grafana-entrypoint.sh \
   compose.external-db.yaml compose.local-binary.yaml compose.local-build.yaml compose.monitoring.yaml compose.production.yaml \
   secrets/database_app_url secrets/database_owner_url secrets/database_backup_url secrets/database_metrics_url secrets/database_metrics_uri secrets/database_metrics_user \
@@ -341,10 +341,12 @@ Acceptance for "identical to a fresh install": the rehearsal diffs, between a
 converted fixture and a fresh new-kit install, `pg_roles` (name, super, login,
 createdb, createrole, inherit, password null), the database owner and ACL,
 the `public` schema owner and ACL, `pg_default_acl`, and the owner of every
-relation, sequence and type in `public`. The only accepted difference is the
-`public` schema being owned by `librepaper` directly rather than through
-`pg_database_owner`, and the extra `host ... scram-sha-256` lines in
-`pg_hba.conf`.
+relation, sequence and type in `public`. Accepted differences: the `public`
+schema being owned by `librepaper` directly rather than through
+`pg_database_owner`; raw `datacl` and `nspacl` being explicit where a fresh
+install has NULL (an ACL never returns to NULL once touched, so the diff
+compares effective privileges per role and for PUBLIC instead); and the extra
+`host ... scram-sha-256` lines in `pg_hba.conf`.
 
 Rehearsal (`tools/test/deploy/convert.sh`): build a production-shaped
 fixture the way the deleted `install.sh` built its legacy case, from the
