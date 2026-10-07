@@ -220,10 +220,16 @@ async fn middleware_inner(
 ) -> Reply {
     let path = request.uri().path().to_string();
     let method = request.method().clone();
+    let host = origins::header(request.headers(), "host").unwrap_or_default();
     // The reverse proxy asks whether we serve a hostname before obtaining a
     // certificate for it. This must be answered before the host check, because
-    // the proxy addresses it with a Host header we do not serve.
-    if method == Method::GET && path == "/api/tls/ask" {
+    // the proxy addresses it with a Host header we do not serve. It arrives
+    // with the internal authority, never the admin name, so on the admin host
+    // the question is an ordinary request and waits for the password.
+    if method == Method::GET
+        && path == "/api/tls/ask"
+        && !server.origins.is_admin_authority(&host)
+    {
         let domain = request.uri().query().and_then(|q| {
             url::form_urlencoded::parse(q.as_bytes())
                 .find(|(key, _)| key == "domain")
@@ -243,7 +249,6 @@ async fn middleware_inner(
     // request addressed elsewhere is a proxy rewriting `Host`, a stray DNS
     // record, or a visitor naming a host we do not serve, and answering it on
     // a guess is what collapses the boundary between reader and document.
-    let host = origins::header(request.headers(), "host").unwrap_or_default();
     let Some(arrival) = server.origins.resolve(&host) else {
         return plain(421, "this host is not served by this deployment");
     };
@@ -277,8 +282,11 @@ async fn middleware_inner(
     // Mutations must declare their length, because without one the only bound
     // would be a ceiling, and there is no ceiling any more. Four times the
     // declared length is reserved from the memory budget -- the same budget
-    // decoded documents live in -- and released when the request ends.
-    let _incoming = if matches!(method, Method::POST | Method::PUT | Method::PATCH) {
+    // decoded documents live in -- and released when the request ends. The
+    // admin side reads no body, so it reserves nothing and is not refused
+    // before the password is checked.
+    let mutation = matches!(method, Method::POST | Method::PUT | Method::PATCH);
+    let _incoming = if mutation && !admin_side {
         let Some(length) = request.body().size_hint().exact() else {
             return plain(411, "a mutation must declare its content length");
         };
