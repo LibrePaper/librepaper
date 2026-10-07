@@ -226,8 +226,12 @@ struct State {
     store: Option<Store>,
     /// Whether `quick_check` has run on this process's file.
     checked: bool,
-    /// When the last row was recorded, or when the process started.
+    /// When the last row was recorded, or when the process started. Rates
+    /// divide by the real time since then.
     last_record: Instant,
+    /// When the next row is due. A fixed one minute grid from the start, so a
+    /// tick that lands a few milliseconds early is not pushed a whole tick late.
+    next_due: Instant,
     /// What `Live` read at `last_record`.
     baseline: LiveCounts,
     /// The host's busy and total CPU ticks at the last record.
@@ -292,6 +296,7 @@ impl Graphs {
                 store: Some(store),
                 checked,
                 last_record: started,
+                next_due: started + HISTORY_INTERVAL,
                 baseline: LiveCounts::default(),
                 last_ticks: None,
                 last_trim: started,
@@ -302,9 +307,9 @@ impl Graphs {
     /// Called by the sampler on every tick with the snapshot it just took.
     /// The first call checks the file with `quick_check` and, if it is damaged,
     /// sets it aside and starts a new one. Then it writes one row per series
-    /// when a minute has passed since the last, and deletes old rows once a
-    /// day. Failures are logged and lose that minute. Blocking, and the first
-    /// call reads the whole file.
+    /// each time the one minute grid from the start comes due, and deletes old
+    /// rows once a day. Failures are logged and lose that minute. Blocking, and
+    /// the first call reads the whole file.
     pub fn observe(&self, snapshot: &Value, live: &Live) {
         self.observe_at(Instant::now(), unix_seconds(), snapshot, live);
     }
@@ -315,10 +320,10 @@ impl Graphs {
             state.checked = true;
             self.verify(&mut state);
         }
-        let elapsed = now.saturating_duration_since(state.last_record);
-        if elapsed < HISTORY_INTERVAL {
+        if now < state.next_due {
             return;
         }
+        let elapsed = now.saturating_duration_since(state.last_record);
         let counts = live.counts();
         let window = rates(&counts.since(&state.baseline), elapsed.as_secs_f64());
         let ticks = cpu_ticks(snapshot);
@@ -329,6 +334,12 @@ impl Graphs {
             }
         }
         state.last_record = now;
+        // Stay on the grid. After a stall, skip the minutes that were missed
+        // instead of recording once for each.
+        state.next_due += HISTORY_INTERVAL;
+        while state.next_due <= now {
+            state.next_due += HISTORY_INTERVAL;
+        }
         state.baseline = counts;
         state.last_ticks = ticks;
         if now.saturating_duration_since(state.last_trim) >= TRIM_INTERVAL {
@@ -717,6 +728,68 @@ mod tests {
         near(later("requests_per_minute"), 0.0);
         assert_eq!(later("latency_p95_seconds"), None);
         near(later("host_cpu_percent"), 25.0);
+    }
+
+    /// The seconds after `base` at which the sockets series has a row.
+    fn recorded(graphs: &Graphs, base: i64) -> Vec<usize> {
+        column(graphs, "sockets_active", base, base + 601, 601)
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| value.is_some())
+            .map(|(second, _)| second)
+            .collect()
+    }
+
+    /// Observe at `millis` after `started`, with the unix second moving along.
+    fn tick(graphs: &Graphs, live: &Live, started: Instant, base: i64, millis: u64) {
+        graphs.observe_at(
+            started + Duration::from_millis(millis),
+            base + (millis / 1000) as i64,
+            &snapshot(0, 0),
+            live,
+        );
+    }
+
+    #[test]
+    fn records_stay_on_a_one_minute_grid_when_ticks_jitter() {
+        let dir = tempfile::tempdir().unwrap();
+        let graphs = Graphs::open(dir.path()).unwrap();
+        let live = Live::default();
+        let started = graphs.state.lock().unwrap().last_record;
+        let base = 1_800_000_000;
+        // A 15 second tick that lands a little late, early or on time. The
+        // record at 60.01 must not push the one due at 120 to 135.
+        for millis in [
+            15_000, 30_000, 45_000, 60_010, 75_000, 90_000, 105_000, 120_000, 135_000, 150_000,
+            165_000, 180_020, 195_000, 210_000, 225_000, 239_990,
+        ] {
+            tick(&graphs, &live, started, base, millis);
+        }
+        assert_eq!(recorded(&graphs, base), vec![60, 120, 180]);
+        tick(&graphs, &live, started, base, 240_000);
+        assert_eq!(recorded(&graphs, base), vec![60, 120, 180, 240]);
+    }
+
+    #[test]
+    fn a_stall_makes_one_record_and_not_a_burst() {
+        let dir = tempfile::tempdir().unwrap();
+        let graphs = Graphs::open(dir.path()).unwrap();
+        let live = Live::default();
+        let started = graphs.state.lock().unwrap().last_record;
+        let base = 1_800_000_000;
+        tick(&graphs, &live, started, base, 60_000);
+        // Nothing observed for almost six minutes.
+        tick(&graphs, &live, started, base, 400_000);
+        assert_eq!(recorded(&graphs, base), vec![60, 400]);
+        // Back on the grid: the next minute after 400 s is 420.
+        assert_eq!(
+            graphs.state.lock().unwrap().next_due,
+            started + Duration::from_secs(420)
+        );
+        tick(&graphs, &live, started, base, 410_000);
+        assert_eq!(recorded(&graphs, base), vec![60, 400]);
+        tick(&graphs, &live, started, base, 460_000);
+        assert_eq!(recorded(&graphs, base), vec![60, 400, 460]);
     }
 
     #[test]
