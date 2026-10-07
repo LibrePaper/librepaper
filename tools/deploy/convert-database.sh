@@ -10,8 +10,7 @@
 #   ssh "$HOST" 'cd librepaper && bash -s' < tools/deploy/convert-database.sh
 #
 # Already in place when it starts:
-#   - the new kit files, .env with COMPOSE_PROFILES=monitoring,
-#     compose.override.yaml and the secrets, in the current directory
+#   - the new kit files, compose.override.yaml and the secrets, in the current directory
 #   - the old containers, still running under the same Compose project
 #   - $LIBREPAPER_CONVERT_DIR/host-files-before.tar.gz, a tar of the whole
 #     kit directory taken before the new kit was synced (the directory is the
@@ -163,8 +162,8 @@ SQL
 		done
 	done
 
-	say "stopping librepaper, backup and postgres-exporter: this script is now the only client"
-	docker compose --profile monitoring stop librepaper backup postgres-exporter
+	say "stopping librepaper and backup: this script is now the only client"
+	docker compose stop librepaper backup
 
 	say "dumping the librepaper database to $dump (the fallback)"
 	docker compose exec -T postgres pg_dump -U librepaper_owner -d librepaper -Fc >"$dump.partial"
@@ -185,9 +184,8 @@ ALTER ROLE librepaper RENAME TO postgres;
 ALTER ROLE postgres LOGIN CREATEDB CREATEROLE;
 ALTER ROLE librepaper_owner RENAME TO librepaper;
 ALTER ROLE librepaper INHERIT PASSWORD NULL;
-DROP OWNED BY librepaper_app, librepaper_backup;
-DROP ROLE librepaper_app, librepaper_backup;
-ALTER ROLE librepaper_metrics PASSWORD NULL;
+DROP OWNED BY librepaper_app, librepaper_backup, librepaper_metrics;
+DROP ROLE librepaper_app, librepaper_backup, librepaper_metrics;
 GRANT CONNECT ON DATABASE librepaper TO PUBLIC;
 SQL
 		if [[ ${LIBREPAPER_CONVERT_INJECT_FAILURE:-} == 1 ]]; then
@@ -221,11 +219,13 @@ SQL
 	docker compose up -d --wait --wait-timeout 180 --remove-orphans
 
 	say "deleting the old kit files by name"
-	rm -f setup postgres/roles.sql postgres/init-roles.sh .setup-state.json monitoring/grafana-entrypoint.sh \
+	rm -f setup postgres/roles.sql postgres/init-roles.sh .setup-state.json \
 		compose.external-db.yaml compose.local-binary.yaml compose.local-build.yaml compose.monitoring.yaml compose.production.yaml \
+		.env prometheus.yaml grafana.json \
 		secrets/database_app_url secrets/database_owner_url secrets/database_backup_url secrets/database_metrics_url secrets/database_metrics_uri secrets/database_metrics_user \
 		secrets/database_app_password secrets/database_owner_password secrets/database_backup_password secrets/database_metrics_password \
 		secrets/postgres_bootstrap_password secrets/grafana_admin_password
+	rm -rf monitoring
 
 	local tables migrations
 	tables=$(awk '/^== _sqlx_migrations/ {exit} !/^==/ {n++} END {print n+0}' "$after")
