@@ -15,7 +15,6 @@ usage: tools/test/suite <suite>
   backup      backup, encrypt, restore and replay-verify a synthetic deployment (needs docker, age, age-keygen)
   backup-sidecar exercise the backup sidecar against a synthetic deployment (needs Docker and prebuilt test images)
   deploy-install boot the Compose kit with a local database and with a managed one, then upgrade it (needs Docker; builds the images from this checkout unless DEPLOY_SMOKE_APP_IMAGE is set)
-  deploy-convert rehearse the production database conversion against a scoped-role fixture (needs Docker, python3, openssl)
   browser     component tests in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   smoke       drive the reader in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   e2e         run browser smoke, history and track-changes deployment scenarios (needs docker and chromium)
@@ -195,17 +194,10 @@ suite_deploy_install() {
 	tools/test/deploy/install.sh
 }
 
-# Rehearse the one-time production database conversion on a fixture shaped
-# like the scoped-role install.
-suite_deploy_convert() {
-	tools/test/deploy/convert.sh
-}
-
 case "${1:-help}" in
 	backup) suite_backup ;;
 	backup-sidecar) suite_backup_sidecar ;;
 	deploy-install) suite_deploy_install ;;
-	deploy-convert) suite_deploy_convert ;;
 	browser) suite_browser ;;
 	smoke) suite_smoke ;;
 	e2e) suite_e2e ;;

@@ -59,7 +59,3 @@ url = "https://hc-ping.com/<check-id>/fail"
 ```
 
 Set missed-success deadlines to 36 hours for backups and 8 days for checks. The Healthchecks account's weekly report, sent on Mondays, lists every check's status and is the summary email.
-
-## Installs from the v0.0.21 kit
-
-Installs using the scoped-role kit with separate credentials are not converted. Back up with the sidecar, install this new kit, and restore the snapshot using the procedure above.

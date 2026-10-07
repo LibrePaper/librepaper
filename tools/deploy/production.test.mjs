@@ -10,7 +10,6 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const deploy = path.join(repo, 'tools/deploy/production');
 const productionToml = readFileSync(path.join(repo, 'tools/deploy/production.toml'), 'utf8');
 const productionResticProfile = readFileSync(path.join(repo, 'tools/deploy/production-resticprofile.toml'), 'utf8');
-const hostScript = path.join(repo, 'tools/deploy/convert-database.sh');
 const sshHost = 'ubuntu@test-host';
 
 // What the kit sync delivers to the host: the previous release's tags, which
@@ -82,16 +81,14 @@ function mockCommand(dir, name, contents) {
 
 // The host is a directory: ssh runs each remote command with a shell in
 // root/home, so `librepaper/...` is root/home/librepaper (f.remote). Files,
-// modes and renames are real. docker, rsync and the streamed host script are
-// mocked, and every call is appended to one events file, tab separated:
+// modes and renames are real. docker and rsync are mocked, and every call is
+// appended to one events file, tab separated:
 // kind, then the arguments.
 function fixture({
   adminPassword = 'admin-secret',
   adminSeries = 12,
   adminDnsMissing = false,
   caddyReloadFailure = false,
-  volumeRemoveFailure = false,
-  objectsCheckFailure = false,
   realSleep = false,
   googleClientId = 'google-id',
   googleClientSecret = 'google-secret',
@@ -102,7 +99,6 @@ function fixture({
   sopsFailureKey = '',
   configCheckFailure = false,
   caddyCheckFailure = false,
-  hostScriptFailure = false,
   composeYaml = KIT_COMPOSE,
   runningConfig = 'previous container config\n',
 } = {}) {
@@ -123,7 +119,6 @@ function fixture({
   const eventsFile = path.join(root, 'events');
   const caddyTimeoutFile = path.join(root, 'caddy-timeout');
   const kitComposeFile = path.join(root, 'kit-compose.yaml');
-  const streamedScriptFile = path.join(root, 'streamed-script');
   const checkedConfigFile = path.join(root, 'checked-librepaper.toml');
   const runningConfigFile = path.join(root, 'running-librepaper.toml');
   const realTimeout = process.env.PATH.split(path.delimiter)
@@ -212,16 +207,8 @@ done
 command="$2"
 case "$*" in *admin-secret*|*github-id*|*github-secret*|*google-id*|*google-secret*|*restic-password*|*backup-key-id*|*backup-secret*|*objects-key-id*|*objects-secret*) exit 91 ;; esac
 printf 'ssh\\t%s\\n' "$command" >> "$EVENTS_FILE"
-case "$command" in
-  'cd librepaper && bash -s')
-    cat > "$STREAMED_SCRIPT_FILE"
-    [ "$HOST_SCRIPT_FAILURE" = 0 ]
-    ;;
-  *)
-    cd "$FAKE_HOME"
-    exec bash -c "$command"
-    ;;
-esac`);
+cd "$FAKE_HOME"
+exec bash -c "$command"`);
   // The calls run from the host's librepaper directory, as after
   // `cd librepaper &&`; image prune runs from the home directory.
   mockCommand(bin, 'docker', `
@@ -250,20 +237,6 @@ case "$*" in
     [ "$CADDY_RELOAD_FAILURE" = 0 ]
     ;;
   'compose logs --tail 50') ;;
-  'compose stop librepaper backup') ;;
-  *'rclone/rclone:1.68.2'*)
-    # The container reads the S3 keys from its stdin, as the real command does.
-    read -r key_id; read -r key_secret
-    [ "$key_id" = objects-key-id ] && [ "$key_secret" = objects-secret ] || exit 95
-    case "$*" in
-      *'exec rclone check '*) [ "$OBJECTS_CHECK_FAILURE" = 0 ] ;;
-    esac
-    ;;
-  'volume inspect librepaper_prometheus'|'volume inspect librepaper_grafana'|'volume inspect librepaper_backup-metrics') ;;
-  'volume rm librepaper_prometheus'|'volume rm librepaper_grafana'|'volume rm librepaper_backup-metrics')
-    if [ "$VOLUME_REMOVE_FAILURE" = 1 ]; then echo 'Error response from daemon: volume is in use' >&2; exit 1; fi
-    ;;
-  'volume ls --format {{.Name}}') ;;
   *) echo "unexpected docker command: $*" >&2; exit 99 ;;
 esac`);
   mockCommand(bin, 'timeout', `
@@ -356,18 +329,14 @@ exit 0`);
       REMOTE_ROOT: remote,
       EVENTS_FILE: eventsFile,
       KIT_COMPOSE_FILE: kitComposeFile,
-      STREAMED_SCRIPT_FILE: streamedScriptFile,
       CHECKED_CONFIG_FILE: checkedConfigFile,
       RUNNING_CONFIG_FILE: runningConfigFile,
       COMPOSE_UP_FILE: composeUpFile,
       CADDY_TIMEOUT_FILE: caddyTimeoutFile,
       REAL_TIMEOUT: realTimeout,
       CADDY_RELOAD_FAILURE: caddyReloadFailure ? '1' : '0',
-      VOLUME_REMOVE_FAILURE: volumeRemoveFailure ? '1' : '0',
-      OBJECTS_CHECK_FAILURE: objectsCheckFailure ? '1' : '0',
       CONFIG_CHECK_FAILURE: configCheckFailure ? '1' : '0',
       CADDY_CHECK_FAILURE: caddyCheckFailure ? '1' : '0',
-      HOST_SCRIPT_FAILURE: hostScriptFailure ? '1' : '0',
       ADMIN_DNS_MISSING: adminDnsMissing ? '1' : '0',
       TMPDIR: temp,
       NODE_EXECUTABLE: process.execPath,
@@ -392,7 +361,6 @@ exit 0`);
     curlCallsFile,
     composeUpFile,
     caddyTimeoutFile,
-    streamedScriptFile,
     checkedConfigFile,
     runningConfigFile,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
@@ -915,167 +883,6 @@ test('verify fails when admin graphs returns fewer than twelve series', () => {
     const result = run(f, 'verify');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /admin graphs endpoint returned 11 series, expected 12/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-// convert-database is temporary: delete these tests with the command.
-function seedOldHost(f) {
-  writeTree(f.remote, {
-    'compose.yaml': 'old compose\n',
-    setup: 'old setup helper\n',
-    'librepaper.toml': 'old production config\n',
-    'secrets/database_app_url': 'postgresql://old\n',
-    'site/index.html': 'the site\n',
-  });
-}
-
-test('convert-database saves the host files before the sync, streams the host script, and never pulls or starts', () => {
-  const f = fixture();
-  try {
-    seedOldHost(f);
-    const result = run(f, 'convert-database');
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const list = events(f);
-    // Before the snapshot only the local site build has run.
-    const snapshotAt = indexOfEvent(list, ['ssh', /tar czf librepaper-convert\/host-files-before\.tar\.gz/]);
-    assert.ok(snapshotAt >= 0);
-    assert.deepEqual(list.slice(0, snapshotAt).map(([kind]) => kind), ['make']);
-    assertInOrder(list, [
-      ['ssh', /tar czf librepaper-convert\/host-files-before\.tar\.gz/],
-      ['rsync', /--delete/],
-      ['ssh', /sed -i -E/],
-      ['docker', /admin config check/],
-      ['docker', /caddy validate/],
-      ['ssh', /mv -f librepaper\.toml\.candidate librepaper\.toml/],
-      ['ssh', /^cd librepaper && bash -s$/],
-      ['docker', /^compose logs --tail 50$/],
-    ]);
-
-    const tarball = path.join(f.home, 'librepaper-convert/host-files-before.tar.gz');
-    assert.equal(statSync(path.dirname(tarball)).mode & 0o777, 0o700);
-    const listing = spawnSync('tar', ['tzf', tarball], { encoding: 'utf8', env: process.env });
-    assert.equal(listing.status, 0, listing.stderr);
-    const members = listing.stdout.split('\n').filter(Boolean);
-    assert.ok(members.includes('librepaper/setup'));
-    assert.ok(members.includes('librepaper/secrets/database_app_url'));
-    assert.ok(!members.some((member) => member.startsWith('librepaper/site')), 'the site is not saved');
-    const oldCompose = spawnSync('tar', ['xzOf', tarball, 'librepaper/compose.yaml'], { encoding: 'utf8', env: process.env });
-    assert.equal(oldCompose.stdout, 'old compose\n');
-
-    assert.equal(readFileSync(f.streamedScriptFile, 'utf8'), readFileSync(hostScript, 'utf8'));
-    assert.match(read(f.remote, 'compose.yaml'), /librepaper:v0\.0\.22\b/);
-    assert.match(read(f.remote, 'compose.yaml'), /librepaper-backup:v0\.0\.22\b/);
-    assert.equal(read(f.remote, 'librepaper.toml'), expectedConfig);
-    assert.equal(existsSync(path.join(f.remote, 'librepaper.toml.candidate')), false);
-    assert.equal(existsSync(path.join(f.remote, '.env')), false);
-    // Nothing starts or stops: the host script owns that.
-    assert.deepEqual(stackCalls(f), []);
-    assert.equal(existsSync(f.composeUpFile), false);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('convert-database keeps an earlier snapshot instead of saving the half-synced host', () => {
-  const f = fixture();
-  try {
-    seedOldHost(f);
-    mkdirSync(path.join(f.home, 'librepaper-convert'), { mode: 0o700 });
-    writeFileSync(path.join(f.home, 'librepaper-convert/host-files-before.tar.gz'), 'the state before the first run');
-    const result = run(f, 'convert-database');
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.equal(read(f.home, 'librepaper-convert/host-files-before.tar.gz'), 'the state before the first run');
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('a failing host script stops convert-database before verify and says how to roll back', () => {
-  const f = fixture({ hostScriptFailure: true });
-  try {
-    seedOldHost(f);
-    const result = run(f, 'convert-database');
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /convert-database\.sh failed.*tar xzf librepaper-convert\/host-files-before\.tar\.gz.*docker compose up -d/);
-    assert.equal(indexOfEvent(events(f), ['docker', /^compose logs/]), -1);
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('retire-monitoring checks and removes docker volumes, and removes .env and monitoring', () => {
-  const f = fixture();
-  try {
-    mkdirSync(path.join(f.remote, 'monitoring'), { recursive: true });
-    writeFileSync(path.join(f.remote, '.env'), 'COMPOSE_PROFILES=monitoring\n');
-    writeFileSync(path.join(f.remote, 'monitoring', 'grafana_admin_password'), 'old');
-    const result = run(f, 'retire-monitoring');
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /retired: no volumes remain; \.env and monitoring\/ are removed/);
-    assert.equal(existsSync(path.join(f.remote, '.env')), false, '.env is removed on the host');
-    assert.equal(existsSync(path.join(f.remote, 'monitoring')), false, 'monitoring/ is removed on the host');
-    const dockerCalls = events(f).filter(([kind]) => kind === 'docker').map(([, call]) => call);
-    const volumeCalls = dockerCalls.filter((call) => call.includes('volume'));
-    assert.ok(volumeCalls.some((call) => call.includes('volume inspect librepaper_prometheus')));
-    assert.ok(volumeCalls.some((call) => call.includes('volume inspect librepaper_grafana')));
-    assert.ok(volumeCalls.some((call) => call.includes('volume inspect librepaper_backup-metrics')));
-    assert.ok(volumeCalls.some((call) => call.includes('volume rm librepaper_prometheus')));
-    assert.ok(volumeCalls.some((call) => call.includes('volume rm librepaper_grafana')));
-    assert.ok(volumeCalls.some((call) => call.includes('volume rm librepaper_backup-metrics')));
-    assert.ok(volumeCalls.some((call) => call.includes('volume ls --format')));
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('retire-monitoring fails when a volume cannot be removed and keeps the host files', () => {
-  const f = fixture({ volumeRemoveFailure: true });
-  try {
-    mkdirSync(path.join(f.remote, 'monitoring'), { recursive: true });
-    writeFileSync(path.join(f.remote, '.env'), 'COMPOSE_PROFILES=monitoring\n');
-    const result = run(f, 'retire-monitoring');
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /volume is in use/);
-    assert.doesNotMatch(result.stdout, /retired: no volumes remain/);
-    assert.equal(existsSync(path.join(f.remote, '.env')), true, 'the host files stay until the volumes are gone');
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('move-objects copies the volume to S3 before and after stopping the app, checks it, and never shows a key', () => {
-  const f = fixture();
-  try {
-    const result = run(f, 'move-objects');
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const list = events(f);
-    const copies = list.flatMap((event, index) => (event[0] === 'docker' && /rclone copy \/data\/objects/.test(event[1]) ? [index] : []));
-    const stop = indexOfEvent(list, ['ssh', /^cd librepaper && docker compose stop librepaper backup$/]);
-    const check = indexOfEvent(list, ['docker', /rclone check \/data\/objects/]);
-    assert.equal(copies.length, 2);
-    assert.ok(copies[0] < stop && stop < copies[1] && copies[1] < check, 'copy, stop, copy and check ran out of order');
-    // A colon would end rclone's inline remote settings, so the endpoint has no scheme.
-    assert.match(list[copies[0]][1], / :s3,provider=Other,endpoint=objects\.example,region=objects-region:objects-bucket( |$)/);
-    // The docker mock reads the keys from stdin and fails unless they arrived there.
-    assert.deepEqual(walk(f.remote), [], 'move-objects writes no files on the host');
-    const text = readFileSync(f.eventsFile, 'utf8');
-    assert.ok(!text.includes('objects-key-id') && !text.includes('objects-secret'), 'a key reached the events');
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /objects-key-id|objects-secret/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('move-objects stops when rclone check fails and says how to start the app again', () => {
-  const f = fixture({ objectsCheckFailure: true });
-  try {
-    const result = run(f, 'move-objects');
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /docker compose start librepaper backup/);
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:/);
   } finally {
     f.cleanup();
   }

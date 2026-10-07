@@ -234,14 +234,6 @@ install_candidates() {
 	ok "installed librepaper.toml and caddy/Caddyfile"
 }
 
-snapshot_host_files() {
-	# TEMPORARY, with convert-database. Files only, no volumes, no site. An
-	# earlier snapshot is kept: it is the state before the first sync.
-	step "Snapshot: ~/librepaper -> $HOST:librepaper-convert/host-files-before.tar.gz"
-	ssh "$HOST" 'mkdir -p -m 700 librepaper-convert && { [ -e librepaper-convert/host-files-before.tar.gz ] || tar czf librepaper-convert/host-files-before.tar.gz --exclude=librepaper/site -C . librepaper; }'
-	ok "host files are saved (restore with tar xzf in the home directory, then docker compose up -d)"
-}
-
 usage() {
 	cat <<'USAGE'
 usage: tools/deploy/production <command>
@@ -251,10 +243,6 @@ usage: tools/deploy/production <command>
   site               rebuild and upload the landing page and manual only (no release, no restart)
   verify             app, admin graphs, site, documents, redirect, operator URLs, and logs
   logs               follow the container logs
-  retire-monitoring  one-time: remove Prometheus, Grafana volumes and .env file
-  move-objects       one-time: copy user files from the data volume to the S3 bucket; run before the deploy that switches to S3
-  convert-database   TEMPORARY, deleted after production converts: stage the v0.0.22 kit,
-                     save the host files, then run tools/deploy/convert-database.sh on the host
   help, -h, --help   show this message
 
 Environment:
@@ -447,114 +435,9 @@ deploy() {
 	printf '\n%sDone: %s is live. Site https://%s, app https://%s (%ss)%s\n' "$green$bold" "$version" "$SITE" "$APP" "$SECONDS" "$reset"
 }
 
-# TEMPORARY. Delete this function, its case entry, its usage line,
-# tools/deploy/convert-database.sh and tools/test/deploy/convert.sh once
-# production has been converted to the socket-trust kit.
-#
-# Stages the v0.0.22 kit without starting anything, saves the host files from
-# before the sync, installs the checked candidates, then runs the conversion
-# script on the host. The script must not install the candidates itself.
-convert_database() {
-	local version=v0.0.22 script=tools/deploy/convert-database.sh
-	[ -f "$script" ] || die "$script is missing"
-
-	printf '%sConverting the database on %s with the %s kit%s\n' "$bold" "$HOST" "$version" "$reset"
-
-	prepare_local
-	snapshot_host_files
-	stage_host "$version"
-	install_candidates
-
-	step "Host script: $script"
-	if ! ssh "$HOST" 'cd librepaper && bash -s' < "$script"; then
-		die "$script failed. If it stopped before its transaction committed: cd ~ && tar xzf librepaper-convert/host-files-before.tar.gz && cd librepaper && docker compose up -d"
-	fi
-	ok "converted"
-
-	verify
-
-	printf '\n%sDone: the database is converted; %s is live at https://%s (%ss)%s\n' "$green$bold" "$version" "$APP" "$SECONDS" "$reset"
-}
-
-# One-time cleanup after the first deploy without the monitoring profile.
-retire_monitoring() {
-	step "Retire Prometheus, Grafana and backup metrics"
-	# The script travels on stdin and runs on the host; nothing in it is a secret.
-	ssh "$HOST" 'cd librepaper && exec bash -s' <<'RETIRE'
-set -eu
-# Absent is fine; any other Docker failure stops here with its message.
-for volume in librepaper_prometheus librepaper_grafana librepaper_backup-metrics; do
-	if inspected=$(docker volume inspect "$volume" 2>&1); then
-		docker volume rm "$volume"
-	elif printf '%s' "$inspected" | grep -qi 'no such volume'; then
-		printf '    volume %s: already gone\n' "$volume"
-	else
-		printf 'docker volume inspect %s failed: %s\n' "$volume" "$inspected" >&2
-		exit 1
-	fi
-done
-rm -rf .env monitoring
-[ ! -e .env ] && [ ! -e monitoring ] || { echo '.env or monitoring/ is still there' >&2; exit 1; }
-volumes=$(docker volume ls --format '{{.Name}}')
-leftover=$(printf '%s\n' "$volumes" | grep -E '^librepaper_(prometheus|grafana|backup-metrics)$' || true)
-[ -z "$leftover" ] || { printf 'leftover monitoring volumes: %s\n' "$leftover" >&2; exit 1; }
-echo "removed volumes and .env/monitoring directory"
-RETIRE
-	ok "retired: no volumes remain; .env and monitoring/ are removed"
-	printf '\n%sDone: the monitoring profile is retired. Nothing else needs to change; verify still works.%s\n' "$green$bold" "$reset"
-}
-
-# host_rclone runs rclone in a container on the host. The S3 keys travel on
-# stdin (set by move_objects) and the container reads them from there, so they
-# never reach a command line or a file on the host.
-host_rclone() {
-	printf '%s\n%s\n' "$OBJECTS_KEY_ID" "$OBJECTS_SECRET" | ssh "$HOST" "cd librepaper && docker run --rm -i -v librepaper_data:/data:ro --entrypoint sh rclone/rclone:1.68.2 -c 'read -r RCLONE_S3_ACCESS_KEY_ID; read -r RCLONE_S3_SECRET_ACCESS_KEY; export RCLONE_S3_ACCESS_KEY_ID RCLONE_S3_SECRET_ACCESS_KEY; exec rclone $*'"
-}
-
-# One-time copy of user files to the S3 bucket, before the deploy that switches
-# to S3. Nothing is deleted from the volume.
-move_objects() {
-	OBJECTS_KEY_ID=$(required_key LIBREPAPER_OBJECTS_S3_ACCESS_KEY_ID)
-	OBJECTS_SECRET=$(required_key LIBREPAPER_OBJECTS_S3_SECRET_ACCESS_KEY)
-	local bucket endpoint remote
-	bucket=$(required_key LIBREPAPER_OBJECTS_S3_BUCKET)
-	endpoint=$(required_key LIBREPAPER_OBJECTS_S3_ENDPOINT)
-	# A colon ends rclone's inline remote settings, so the host goes without its
-	# scheme; rclone uses HTTPS by default.
-	endpoint=${endpoint#https://}
-	remote=":s3,provider=Other,endpoint=${endpoint%/},region=$(required_key LIBREPAPER_OBJECTS_S3_REGION):$bucket"
-
-	step "Copy while the app runs"
-	host_rclone copy /data/objects "$remote" --checksum
-	ok "copied"
-
-	step "Stop the app so nothing new lands on the volume"
-	ssh "$HOST" 'cd librepaper && docker compose stop librepaper backup'
-	ok "stopped"
-
-	step "Final copy and check"
-	if ! host_rclone copy /data/objects "$remote" --checksum ||
-		! host_rclone check /data/objects "$remote" --one-way --checksum; then
-		die "the final copy or check failed and the app is stopped; storage is not switched. Start it again with: ssh $HOST 'cd librepaper && docker compose start librepaper backup'"
-	fi
-	ok "checked"
-	unset OBJECTS_KEY_ID OBJECTS_SECRET
-
-	ok "objects are in $bucket; the app stays stopped until 'tools/deploy/production deploy' starts it on S3. The volume copy is kept for rollback."
-}
-
 case "${1:-help}" in
 	deploy)
 		deploy "${2:-}"
-		;;
-	retire-monitoring)
-		retire_monitoring
-		;;
-	move-objects)
-		move_objects
-		;;
-	convert-database)
-		convert_database
 		;;
 	site)
 		site_build
