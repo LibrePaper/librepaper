@@ -8,6 +8,37 @@ import { fileURLToPath } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const deploy = path.join(repo, 'tools/deploy/production');
+const productionToml = readFileSync(path.join(repo, 'tools/deploy/production.toml'), 'utf8');
+const hostScript = path.join(repo, 'tools/deploy/convert-database.sh');
+const sshHost = 'ubuntu@test-host';
+
+// What the kit sync delivers to the host: the previous release's tags, which
+// the helper must pin to the deployed version.
+const KIT_COMPOSE = [
+  'services:',
+  '  librepaper:',
+  '    image: ghcr.io/librepaper/librepaper:v0.0.20',
+  '  backup:',
+  '    image: ghcr.io/librepaper/librepaper-backup:v0.0.20',
+  '  caddy:',
+  '    image: caddy:2.11.4-alpine',
+  '',
+].join('\n');
+
+// Paths the archive never contains and a sync must neither send nor delete.
+const OPERATOR_PATHS = [
+  '/librepaper.toml*',
+  '/resticprofile.toml',
+  '/secrets',
+  '/.env',
+  '/compose.override.yaml*',
+  '/caddy/Caddyfile*',
+  '/caddy/local.d',
+  '/monitoring/grafana_admin_password',
+  '/site',
+];
+// The image build context stays in the repository.
+const BUILD_ONLY_PATHS = ['/Dockerfile', '/backup'];
 
 function mockCommand(dir, name, contents) {
   const file = path.join(dir, name);
@@ -15,10 +46,13 @@ function mockCommand(dir, name, contents) {
   chmodSync(file, 0o755);
 }
 
+// The host is a directory: ssh runs each remote command with a shell in
+// root/home, so `librepaper/...` is root/home/librepaper (f.remote). Files,
+// modes and renames are real. docker, rsync and the streamed host script are
+// mocked, and every call is appended to one events file, tab separated:
+// kind, then the arguments.
 function fixture({
-  corruptTransfer = false,
   adminPassword = 'admin-secret',
-  exporterPassword = 'exporter-secret',
   grafanaTransientFailures = 0,
   grafanaPersistentStatus = 0,
   grafanaAuthStatus = 200,
@@ -34,51 +68,43 @@ function fixture({
   googleLocation = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
   sopsFailureKey = '',
   configCheckFailure = false,
-  backupCheckFailure = false,
-  migrateHelpFailure = false,
-  migrateFailure = false,
-  setupState = 'ready',
-  setupUpgradeFailure = false,
   caddyCheckFailure = false,
-  localKitConfig = '',
-  backupConfig = '',
+  hostScriptFailure = false,
+  composeYaml = KIT_COMPOSE,
   runningConfig = 'previous container config\n',
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
   const bin = path.join(root, 'bin');
-  const remote = path.join(root, 'remote');
+  const home = path.join(root, 'home');
+  const remote = path.join(home, 'librepaper');
   const temp = path.join(root, 'tmp');
   mkdirSync(bin);
-  mkdirSync(remote);
+  mkdirSync(remote, { recursive: true });
   mkdirSync(temp);
   const adminPasswordFile = path.join(root, 'admin-password');
   const expectedAuthFile = path.join(root, 'expected-curl-auth');
-  const exporterPasswordFile = path.join(root, 'exporter-password');
   const grafanaCountFile = path.join(root, 'grafana-count');
   const prometheusCountFile = path.join(root, 'prometheus-count');
   const makeCalledFile = path.join(root, 'make-called');
   const oauthCallsFile = path.join(root, 'oauth-calls');
   const curlCallsFile = path.join(root, 'curl-calls');
   const composeUpFile = path.join(root, 'compose-up');
-  const orderFile = path.join(root, 'order');
-  const setupCallsFile = path.join(root, 'setup-calls');
+  const eventsFile = path.join(root, 'events');
   const caddyTimeoutFile = path.join(root, 'caddy-timeout');
+  const kitComposeFile = path.join(root, 'kit-compose.yaml');
+  const streamedScriptFile = path.join(root, 'streamed-script');
+  const checkedConfigFile = path.join(root, 'checked-librepaper.toml');
+  const runningConfigFile = path.join(root, 'running-librepaper.toml');
   const realTimeout = process.env.PATH.split(path.delimiter)
     .map((directory) => path.join(directory, 'timeout'))
     .find(existsSync);
-  const kitSourceFile = path.join(root, 'kit-source');
-  const localKitConfigFile = path.join(root, 'local-kit-librepaper.toml');
-  const runningConfigFile = path.join(root, 'running-librepaper.toml');
-  const backupConfigFile = path.join(remote, 'resticprofile.toml');
   writeFileSync(adminPasswordFile, adminPassword);
   const escapedAdminPassword = adminPassword.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   writeFileSync(expectedAuthFile, `user = "admin:${escapedAdminPassword}"\n`, { mode: 0o600 });
-  writeFileSync(exporterPasswordFile, exporterPassword);
-  if (localKitConfig) writeFileSync(localKitConfigFile, localKitConfig);
-  if (backupConfig) writeFileSync(backupConfigFile, backupConfig);
+  writeFileSync(kitComposeFile, composeYaml);
   writeFileSync(runningConfigFile, runningConfig);
 
-  mockCommand(bin, 'make', 'printf called >> "$MAKE_CALLED_FILE"; exit 0');
+  mockCommand(bin, 'make', 'printf "make\\n" >> "$EVENTS_FILE"; printf called >> "$MAKE_CALLED_FILE"; exit 0');
   mockCommand(bin, 'dig', 'printf "192.0.2.7\\n"');
   mockCommand(bin, 'sops', `
 for arg do
@@ -101,153 +127,100 @@ for arg do
   esac
 done
 exit 1`);
-mockCommand(bin, 'rsync', `
+  // rsync only records its arguments and delivers the kit's compose.yaml. A
+  // test that needs the real filter semantics replays the recorded arguments
+  // against a local tree.
+  mockCommand(bin, 'rsync', `
 set -eu
+printf 'rsync' >> "$EVENTS_FILE"
+for arg do printf '\\t%s' "$arg" >> "$EVENTS_FILE"; done
+printf '\\n' >> "$EVENTS_FILE"
 previous= last=
 for arg do previous="$last"; last="$arg"; done
 source="$previous"
 destination="$last"
-exclude_config=no
-exclude_backup_config=no
 ignore_existing=no
 for arg do
   case "$arg" in
-    --exclude=/librepaper.toml|--exclude=/librepaper.toml*) exclude_config=yes ;;
-    --exclude=/resticprofile.toml) exclude_backup_config=yes ;;
     --ignore-existing) ignore_existing=yes ;;
   esac
 done
 case "$destination" in
-  *:librepaper/librepaper.candidate.tmp)
-    mkdir -p "$REMOTE_ROOT"
-    cp "$source" "$REMOTE_ROOT/librepaper.candidate.tmp"
-    ${corruptTransfer ? "printf 'corrupt\\n' >> \"$REMOTE_ROOT/librepaper.candidate.tmp\"" : ':'}
-    ;;
   *:librepaper/site/)
     mkdir -p "$REMOTE_ROOT/site"
-    ;;
-  *:librepaper/)
-    mkdir -p "$REMOTE_ROOT"
-    printf '%s' "$source" > "$KIT_SOURCE_FILE"
-    if [ -n "$LOCAL_KIT_CONFIG_FILE" ] && [ -f "$LOCAL_KIT_CONFIG_FILE" ] && [ "$exclude_config" = no ]; then
-      cp "$LOCAL_KIT_CONFIG_FILE" "$REMOTE_ROOT/librepaper.toml"
-    fi
-    [ "$exclude_backup_config" = yes ] || exit 94
     ;;
   *:librepaper/resticprofile.toml)
     [ "$ignore_existing" = yes ] || exit 95
     [ -e "$REMOTE_ROOT/resticprofile.toml" ] || cp "$source" "$REMOTE_ROOT/resticprofile.toml"
     ;;
-  *:librepaper/librepaper.toml)
-    [ "$ignore_existing" = yes ] || exit 97
-    [ -e "$REMOTE_ROOT/librepaper.toml" ] || cp "$source" "$REMOTE_ROOT/librepaper.toml"
+  *:librepaper/)
+    mkdir -p "$REMOTE_ROOT"
+    cp "$KIT_COMPOSE_FILE" "$REMOTE_ROOT/compose.yaml"
+    ;;
+  *) echo "unexpected rsync destination: $destination" >&2; exit 99 ;;
+esac`);
+  // A credential in ssh arguments fails the call. Every other remote command
+  // really runs, in the fake home, so stdin, modes and renames are exercised.
+  mockCommand(bin, 'ssh', `
+set -eu
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+command="$2"
+case "$*" in *admin-secret*|*github-id*|*github-secret*|*google-id*|*google-secret*) exit 91 ;; esac
+printf 'ssh\\t%s\\n' "$command" >> "$EVENTS_FILE"
+case "$command" in
+  'cd librepaper && bash -s')
+    cat > "$STREAMED_SCRIPT_FILE"
+    [ "$HOST_SCRIPT_FAILURE" = 0 ]
+    ;;
+  *)
+    cd "$FAKE_HOME"
+    exec bash -c "$command"
     ;;
 esac`);
-mockCommand(bin, 'ssh', `
+  // The calls run from the host's librepaper directory, as after
+  // `cd librepaper &&`; image prune runs from the home directory.
+  mockCommand(bin, 'docker', `
 set -eu
-command="$2"
-case "$*" in *admin-secret*|*github-secret*|*google-id*|*google-secret*) exit 91 ;; esac
-case "$command" in
-  *'.env.tmp'*)
-    cat > "$REMOTE_ROOT/.env.tmp"
-    chmod 600 "$REMOTE_ROOT/.env.tmp"
-    mv "$REMOTE_ROOT/.env.tmp" "$REMOTE_ROOT/.env"
+printf 'docker\\t%s\\n' "$*" >> "$EVENTS_FILE"
+case "$*" in
+  'image prune -f') ;;
+  'compose pull') ;;
+  'compose up -d --wait --wait-timeout 180')
+    cp librepaper.toml "$RUNNING_CONFIG_FILE"
+    printf called >> "$COMPOSE_UP_FILE"
     ;;
-  *'compose.override.yaml.tmp'*)
-    cat > "$REMOTE_ROOT/compose.override.yaml.tmp"
-    mv "$REMOTE_ROOT/compose.override.yaml.tmp" "$REMOTE_ROOT/compose.override.yaml"
+  'compose run --rm --no-deps -v ./librepaper.toml.candidate:/etc/librepaper/librepaper.toml:ro librepaper admin config check --config /etc/librepaper/librepaper.toml')
+    [ -f librepaper.toml.candidate ] || exit 96
+    cp librepaper.toml.candidate "$CHECKED_CONFIG_FILE"
+    [ "$CONFIG_CHECK_FAILURE" = 0 ]
     ;;
-  *'librepaper.toml.candidate.tmp'*)
-    cat > "$REMOTE_ROOT/librepaper.toml.candidate.tmp"
-    chmod 644 "$REMOTE_ROOT/librepaper.toml.candidate.tmp"
-    mv -f "$REMOTE_ROOT/librepaper.toml.candidate.tmp" "$REMOTE_ROOT/librepaper.toml.candidate"
+  'compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile.candidate --adapter caddyfile')
+    [ -f caddy/Caddyfile.candidate ] || exit 96
+    [ "$CADDY_CHECK_FAILURE" = 0 ]
     ;;
-  *'mv -f librepaper.toml.candidate librepaper.toml'*)
-    mv -f "$REMOTE_ROOT/librepaper.toml.candidate" "$REMOTE_ROOT/librepaper.toml"
-    printf 'config-install\\n' >> "$ORDER_FILE"
-    ;;
-  'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile')
-    printf 'caddy-reload\\n' >> "$ORDER_FILE"
+  'compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile')
     [ "$CADDY_RELOAD_FAILURE" = 0 ]
     ;;
-  *'Caddyfile.candidate.tmp'*) mkdir -p "$REMOTE_ROOT/caddy"; cat > "$REMOTE_ROOT/caddy/Caddyfile.candidate.tmp"; chmod 644 "$REMOTE_ROOT/caddy/Caddyfile.candidate.tmp"; mv "$REMOTE_ROOT/caddy/Caddyfile.candidate.tmp" "$REMOTE_ROOT/caddy/Caddyfile.candidate" ;;
-  *'mv -f caddy/Caddyfile.candidate caddy/Caddyfile'*) mv "$REMOTE_ROOT/caddy/Caddyfile.candidate" "$REMOTE_ROOT/caddy/Caddyfile"; printf 'caddy-install\\n' >> "$ORDER_FILE" ;;
-  *'secrets/.github_client_id.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.github_client_id.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.github_client_id.tmp"; mv "$REMOTE_ROOT/secrets/.github_client_id.tmp" "$REMOTE_ROOT/secrets/github_client_id" ;;
-  *'secrets/.github_client_secret.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.github_client_secret.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.github_client_secret.tmp"; mv "$REMOTE_ROOT/secrets/.github_client_secret.tmp" "$REMOTE_ROOT/secrets/github_client_secret" ;;
-  *'secrets/.google_client_id.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.google_client_id.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.google_client_id.tmp"; mv "$REMOTE_ROOT/secrets/.google_client_id.tmp" "$REMOTE_ROOT/secrets/google_client_id" ;;
-  *'secrets/.google_client_secret.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.google_client_secret.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.google_client_secret.tmp"; mv "$REMOTE_ROOT/secrets/.google_client_secret.tmp" "$REMOTE_ROOT/secrets/google_client_secret" ;;
-  *'secrets/.grafana_admin_password.tmp'*) mkdir -p "$REMOTE_ROOT/secrets"; chmod 700 "$REMOTE_ROOT/secrets"; cat > "$REMOTE_ROOT/secrets/.grafana_admin_password.tmp"; chmod 444 "$REMOTE_ROOT/secrets/.grafana_admin_password.tmp"; mv "$REMOTE_ROOT/secrets/.grafana_admin_password.tmp" "$REMOTE_ROOT/secrets/grafana_admin_password" ;;
-  *'./setup upgrade'*)
-    [ "$SETUP_STATE" = legacy ] || exit 90
-    [ -f "$REMOTE_ROOT/librepaper.toml.candidate" ] || exit 97
-    old_grafana=$(sed -n 's/^GRAFANA_ADMIN_PASSWORD=//p' "$REMOTE_ROOT/.env")
-    [ "$old_grafana" = legacy-admin-password ] || exit 98
-    printf '%s\n' "$command" >> "$SETUP_CALLS_FILE"
-    printf 'setup-upgrade\n' >> "$ORDER_FILE"
-    [ "$SETUP_UPGRADE_FAILURE" = 0 ] || exit 1
-    mkdir -p "$REMOTE_ROOT/secrets"
-    printf '%s' "$old_grafana" > "$REMOTE_ROOT/secrets/grafana_admin_password"
-    printf 'COMPOSE_FILE=compose.yaml:compose.monitoring.yaml\nLIBREPAPER_VERSION=v0.0.21\n' > "$REMOTE_ROOT/.env"
-    ;;
-  *'./setup status'*'./setup init'*)
-    case "$SETUP_STATE" in ready|uninitialized) ;; *) exit 89 ;; esac
-    [ -f "$REMOTE_ROOT/librepaper.toml" ] || exit 98
-    printf '%s\n' "$command" >> "$SETUP_CALLS_FILE"
-    printf 'setup-init\n' >> "$ORDER_FILE"
-    version=$(printf '%s' "$command" | sed -n 's/.*--version \\([^ ]*\\).*/\\1/p')
-    mkdir -p "$REMOTE_ROOT"
-    printf 'COMPOSE_FILE=compose.yaml\nLIBREPAPER_VERSION=%s\n' "$version" > "$REMOTE_ROOT/.env"
-    ;;
-  *'./setup status'*) printf 'state=%s database=local\n' "$SETUP_STATE" ;;
-  *'./setup init'*) exit 88 ;;
-  *'./setup check'*) printf 'setup-check\n' >> "$ORDER_FILE" ;;
-  *'psql -U librepaper -d librepaper -v ON_ERROR_STOP=1 -q'*) cat > "$REMOTE_ROOT/metrics-role.sql" ;;
-  *'sha256sum librepaper.candidate.tmp'*) sha256sum "$REMOTE_ROOT/librepaper.candidate.tmp" | cut -d ' ' -f1 ;;
-  *'chmod 755 librepaper.candidate.tmp'*) chmod 755 "$REMOTE_ROOT/librepaper.candidate.tmp"; mv "$REMOTE_ROOT/librepaper.candidate.tmp" "$REMOTE_ROOT/librepaper.candidate" ;;
-  *'mv -f librepaper.candidate librepaper'*) mv -f "$REMOTE_ROOT/librepaper.candidate" "$REMOTE_ROOT/librepaper" ;;
-  *'prometheus sh -s'*)
+  'compose exec -T prometheus sh -s')
     count=$(cat "$PROMETHEUS_COUNT_FILE" 2>/dev/null || printf '0')
     count=$((count + 1))
     printf '%s' "$count" > "$PROMETHEUS_COUNT_FILE"
     if [ "$count" -le "$PROMETHEUS_TRANSIENT_FAILURES" ]; then exit 1; fi
     script=$(cat)
     case "$script" in *pg_up*) ;; *) exit 93 ;; esac
+    if [ "$PG_UP_HEALTHY" = 1 ]; then snapshot='{"data":{"result":[{"value":[3,"1"]}]}}'; else snapshot='{"data":{"result":[]}}'; fi
     printf '%s\\n---LIBREPAPER-METRICS---\\n%s\\n---LIBREPAPER-METRICS---\\n%s\\n' \\
       '{"data":{"activeTargets":[{"health":"up","labels":{"job":"librepaper"}},{"health":"up","labels":{"job":"node"}},{"health":"up","labels":{"job":"postgres"}}]}}' \\
       '{"data":{"result":[{"values":[[1,"1"],[2,"1"]]}]}}' \\
-      '${pgUpHealthy ? '{"data":{"result":[{"value":[3,"1"]}]}}' : '{"data":{"result":[]}}'}'
+      "$snapshot"
     ;;
-  *'docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper'*)
-    cp "$REMOTE_ROOT/librepaper.toml" "$RUNNING_CONFIG_FILE"
-    printf 'app-recreate\\n' >> "$ORDER_FILE"
-    ;;
-  *'docker compose up -d --force-recreate --no-deps backup'*) printf 'backup-recreate\\n' >> "$ORDER_FILE" ;;
-  *'docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 prometheus'*) printf 'prometheus-recreate\\n' >> "$ORDER_FILE" ;;
-  *'docker compose up -d --wait postgres'*) printf 'postgres-up\\n' >> "$ORDER_FILE" ;;
-  *'docker compose stop librepaper backup'*) printf 'app-backup-stop\\n' >> "$ORDER_FILE" ;;
-  *'docker compose run --rm --no-deps migrate admin migrate --help'*) printf 'migrate-help\\n' >> "$ORDER_FILE"; [ "$MIGRATE_HELP_FAILURE" = 0 ] ;;
-  *'docker compose run --rm --no-deps migrate'*) printf 'migrate-run\\n' >> "$ORDER_FILE"; [ "$MIGRATE_FAILURE" = 0 ] ;;
-  *'docker compose run --rm --no-deps caddy caddy validate'*) printf 'caddy-validate\\n' >> "$ORDER_FILE"; [ "$CADDY_CHECK_FAILURE" = 0 ] ;;
-  *'docker compose up -d --wait --wait-timeout 180'*)
-    cp "$REMOTE_ROOT/librepaper.toml" "$RUNNING_CONFIG_FILE"
-    printf called >> "$COMPOSE_UP_FILE"
-    printf 'stack-up\\n' >> "$ORDER_FILE"
-    ;;
-  *'docker image prune -f'*) : ;;
-  *'docker compose logs --tail 50'*) : ;;
-  *'docker compose build librepaper migrate backup'*) printf 'image-build\\n' >> "$ORDER_FILE" ;;
-  *'docker compose pull librepaper migrate backup'*) printf 'image-pull\\n' >> "$ORDER_FILE" ;;
-  *'docker compose run --rm --no-deps librepaper admin config check'*)
-    printf 'config-check\\n' >> "$ORDER_FILE"
-    [ "$CONFIG_CHECK_FAILURE" = 0 ]
-    ;;
-  *'docker compose run --rm --no-deps -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 backup'*)
-    [ -f "$REMOTE_ROOT/resticprofile.toml" ] || exit 96
-    cp "$REMOTE_ROOT/resticprofile.toml" "$BACKUP_CONFIG_COPY_FILE"
-    printf 'backup-check\\n' >> "$ORDER_FILE"
-    [ "$BACKUP_CHECK_FAILURE" = 0 ]
-    ;;
-  *) echo "unexpected SSH command: $command" >&2; exit 99 ;;
+  'compose logs --tail 50') ;;
+  *) echo "unexpected docker command: $*" >&2; exit 99 ;;
 esac`);
   mockCommand(bin, 'timeout', `
 set -eu
@@ -262,7 +235,7 @@ case "$*" in
 esac
 exec "$REAL_TIMEOUT" "$duration" "$@"
 `);
-mockCommand(bin, 'curl', `
+  mockCommand(bin, 'curl', `
 set -eu
 out= headers= format= url= config= followed=no connect_timeout= max_time=
 for arg do case "$arg" in *admin-secret*|*github-secret*|*google-id*|*google-secret*) exit 92 ;; esac; done
@@ -330,40 +303,41 @@ if [ "$REAL_SLEEP" = 1 ]; then
   exec "$NODE_EXECUTABLE" -e 'setTimeout(() => process.exit(0), Number(process.argv[1]) * 1000)' "$1"
 fi
 exit 0`);
-  const executable = path.join(root, 'librepaper');
-  writeFileSync(executable, '#!/bin/sh\nexit 0\n');
-  chmodSync(executable, 0o755);
 
   return {
     root,
+    home,
     remote,
-    executable,
     env: {
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
+      HOST: sshHost,
+      FAKE_HOME: home,
       REMOTE_ROOT: remote,
+      EVENTS_FILE: eventsFile,
+      KIT_COMPOSE_FILE: kitComposeFile,
+      STREAMED_SCRIPT_FILE: streamedScriptFile,
+      CHECKED_CONFIG_FILE: checkedConfigFile,
+      RUNNING_CONFIG_FILE: runningConfigFile,
       COMPOSE_UP_FILE: composeUpFile,
-      KIT_SOURCE_FILE: kitSourceFile,
-      ORDER_FILE: orderFile,
       CADDY_TIMEOUT_FILE: caddyTimeoutFile,
       REAL_TIMEOUT: realTimeout,
       CADDY_RELOAD_FAILURE: caddyReloadFailure ? '1' : '0',
-      LOCAL_KIT_CONFIG_FILE: localKitConfig ? localKitConfigFile : '',
-      RUNNING_CONFIG_FILE: runningConfigFile,
-      BACKUP_CONFIG_COPY_FILE: path.join(root, 'backup-config-at-preflight'),
-      HOST: 'ubuntu@test-host',
+      CONFIG_CHECK_FAILURE: configCheckFailure ? '1' : '0',
+      CADDY_CHECK_FAILURE: caddyCheckFailure ? '1' : '0',
+      HOST_SCRIPT_FAILURE: hostScriptFailure ? '1' : '0',
       TMPDIR: temp,
       NODE_EXECUTABLE: process.execPath,
       REAL_SLEEP: realSleep ? '1' : '0',
       ADMIN_PASSWORD_FILE: adminPasswordFile,
       EXPECTED_AUTH_FILE: expectedAuthFile,
-      EXPORTER_PASSWORD_FILE: exporterPasswordFile,
       GRAFANA_COUNT_FILE: grafanaCountFile,
       PROMETHEUS_COUNT_FILE: prometheusCountFile,
       GRAFANA_TRANSIENT_FAILURES: String(grafanaTransientFailures),
       GRAFANA_PERSISTENT_STATUS: String(grafanaPersistentStatus),
       GRAFANA_AUTH_STATUS: String(grafanaAuthStatus),
       PROMETHEUS_TRANSIENT_FAILURES: String(prometheusTransientFailures),
+      PG_UP_HEALTHY: pgUpHealthy ? '1' : '0',
       MAKE_CALLED_FILE: makeCalledFile,
       OAUTH_CALLS_FILE: oauthCallsFile,
       CURL_CALLS_FILE: curlCallsFile,
@@ -374,148 +348,264 @@ exit 0`);
       GOOGLE_HTTP_STATUS: String(googleHttpStatus),
       GOOGLE_LOCATION: googleLocation,
       SOPS_FAILURE_KEY: sopsFailureKey,
-      CONFIG_CHECK_FAILURE: configCheckFailure ? '1' : '0',
-      BACKUP_CHECK_FAILURE: backupCheckFailure ? '1' : '0',
-      MIGRATE_HELP_FAILURE: migrateHelpFailure ? '1' : '0',
-      MIGRATE_FAILURE: migrateFailure ? '1' : '0',
-      SETUP_STATE: setupState,
-      SETUP_UPGRADE_FAILURE: setupUpgradeFailure ? '1' : '0',
-      CADDY_CHECK_FAILURE: caddyCheckFailure ? '1' : '0',
-      SETUP_CALLS_FILE: setupCallsFile,
     },
+    eventsFile,
     makeCalledFile,
     oauthCallsFile,
+    curlCallsFile,
     composeUpFile,
-    kitSourceFile,
-    orderFile,
-    setupCallsFile,
+    caddyTimeoutFile,
+    streamedScriptFile,
+    checkedConfigFile,
     runningConfigFile,
-    backupConfigFile,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
 
-function runProduction(f, command, version = 'v0.0.21') {
-  const args = command === 'deploy-local' ? ['deploy-local', f.executable]
-    : [command, version];
+function run(f, ...args) {
   return spawnSync(deploy, args, { cwd: repo, env: f.env, encoding: 'utf8' });
 }
 
-test('deploy writes individual scoped credential files and keeps values out of .env and output', () => {
-  const f = fixture();
+// One entry per mock call, in order: [kind, ...arguments].
+function events(f) {
+  if (!existsSync(f.eventsFile)) return [];
+  return readFileSync(f.eventsFile, 'utf8').split('\n').filter(Boolean).map((line) => line.split('\t'));
+}
+
+function dockerCalls(f) {
+  return events(f).filter(([kind]) => kind === 'docker').map(([, call]) => call);
+}
+
+function indexOfEvent(list, [kind, pattern]) {
+  return list.findIndex(([k, ...rest]) => k === kind && pattern.test(rest.join('\t')));
+}
+
+function assertInOrder(list, steps) {
+  let previous = -1;
+  for (const step of steps) {
+    const at = indexOfEvent(list, step);
+    assert.notEqual(at, -1, `missing ${step[0]} ${step[1]}`);
+    assert.ok(at > previous, `${step[0]} ${step[1]} ran out of order`);
+    previous = at;
+  }
+}
+
+// Calls that touch the running stack: none may happen before the candidates pass.
+const STACK_CALL = /^compose (pull|up|stop|down|restart|exec)\b|^image /;
+
+function stackCalls(f) {
+  return dockerCalls(f).filter((call) => STACK_CALL.test(call));
+}
+
+function walk(dir, base = dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    return entry.isDirectory() ? walk(full, base) : [path.relative(base, full)];
+  });
+}
+
+function writeTree(dir, files) {
+  for (const [name, contents] of Object.entries(files)) {
+    const file = path.join(dir, name);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, contents);
+  }
+}
+
+function read(...parts) {
+  return readFileSync(path.join(...parts), 'utf8');
+}
+
+test('deploy writes the OAuth and Grafana credentials through stdin only, never in argv, .env or output', () => {
+  const adminPassword = 'unsafe$#admin-secret with spaces';
+  const f = fixture({ adminPassword });
   try {
-    const result = runProduction(f, 'deploy');
+    const result = run(f, 'deploy', 'v0.0.21');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /5 scoped credentials decrypted/);
-    assert.match(result.stdout, /staged librepaper.toml/);
-    assert.equal(readFileSync(f.kitSourceFile, 'utf8'), 'deploy/');
-    const secretDir = path.join(f.remote, 'secrets');
-    assert.equal(readFileSync(path.join(secretDir, 'google_client_id'), 'utf8'), 'google-id');
-    assert.equal(readFileSync(path.join(secretDir, 'google_client_secret'), 'utf8'), 'google-secret');
-    assert.equal(statSync(secretDir).mode & 0o777, 0o700);
-    assert.equal(statSync(path.join(secretDir, 'google_client_secret')).mode & 0o777, 0o444);
-    assert.doesNotMatch(readFileSync(path.join(f.remote, '.env'), 'utf8'), /google-id|google-secret|admin-secret/);
-    assert.match(readFileSync(f.setupCallsFile, 'utf8'), /--monitoring --production-overlay --project librepaper --version v0\.0\.21 --config-file \.\/librepaper\.toml\.candidate --no-local-build/);
-    assert.match(readFileSync(path.join(f.remote, '.env'), 'utf8'), /LIBREPAPER_VERSION=v0\.0\.21/);
-    const productionConfig = readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8');
-    const shippedBackupConfig = readFileSync(path.join(repo, 'deploy', 'resticprofile.toml'), 'utf8');
-    assert.equal(readFileSync(f.backupConfigFile, 'utf8'), shippedBackupConfig);
-    assert.equal(readFileSync(path.join(f.root, 'backup-config-at-preflight'), 'utf8'), shippedBackupConfig);
-    assert.match(readFileSync(path.join(f.remote, 'caddy', 'Caddyfile'), 'utf8'), /librepaper\.org/);
-    assert.equal(existsSync(path.join(f.remote, 'Caddyfile')), false);
-    assert.match(productionConfig, /\[origins\]\napp = "https:\/\/app\.librepaper\.org"/);
-    assert.match(productionConfig, /database_url = \{ file = "\/run\/secrets\/database_url" \}/);
-    const order = readFileSync(f.orderFile, 'utf8');
-    assert.ok(order.indexOf('image-pull') < order.indexOf('config-check'));
-    assert.ok(order.indexOf('config-check') < order.indexOf('backup-check'));
-    assert.ok(order.indexOf('backup-check') < order.indexOf('migrate-help'));
-    assert.ok(order.indexOf('migrate-help') < order.indexOf('app-backup-stop'));
-    assert.ok(order.indexOf('app-backup-stop') < order.indexOf('config-install'));
-    assert.ok(order.indexOf('config-install') < order.indexOf('migrate-run'));
-    assert.ok(order.indexOf('migrate-run') < order.indexOf('stack-up'));
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
+    assert.match(result.stdout, /5 credentials decrypted/);
+
+    const credentials = {
+      'secrets/github_client_id': 'github-id',
+      'secrets/github_client_secret': 'github-secret',
+      'secrets/google_client_id': 'google-id',
+      'secrets/google_client_secret': 'google-secret',
+      'monitoring/grafana_admin_password': adminPassword,
+    };
+    for (const [file, value] of Object.entries(credentials)) {
+      assert.equal(read(f.remote, file), value, file);
+      assert.equal(statSync(path.join(f.remote, file)).mode & 0o777, 0o444, file);
+    }
+    assert.equal(statSync(path.join(f.remote, 'secrets')).mode & 0o777, 0o700);
+    assert.equal(existsSync(path.join(f.remote, 'secrets/grafana_admin_password')), false);
+
+    // The values live in those five files and nowhere else on the host.
+    for (const file of walk(f.remote)) {
+      if (file in credentials) continue;
+      const text = read(f.remote, file);
+      for (const value of Object.values(credentials)) assert.ok(!text.includes(value), `${file} contains a credential`);
+    }
+    // Nor in any command line, nor in what the helper prints.
+    const visible = `${result.stdout}${result.stderr}${readFileSync(f.eventsFile, 'utf8')}`;
+    for (const value of Object.values(credentials)) assert.ok(!visible.includes(value), 'a credential reached argv or output');
   } finally {
     f.cleanup();
   }
 });
 
-test('deploy-local stages Google OAuth credentials as files and the candidate binary', () => {
+test('.env holds only the monitoring profile and compose.override.yaml only the two host mounts', () => {
   const f = fixture();
   try {
-    const result = runProduction(f, 'deploy-local');
+    const result = run(f, 'deploy', 'v0.0.21');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /5 scoped credentials decrypted/);
-    assert.match(result.stdout, /staged librepaper.toml/);
-    assert.equal(readFileSync(path.join(f.remote, 'secrets/google_client_id'), 'utf8'), 'google-id');
-    assert.equal(readFileSync(path.join(f.remote, 'secrets/google_client_secret'), 'utf8'), 'google-secret');
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret/);
-    const setupArgs = readFileSync(f.setupCallsFile, 'utf8');
-    assert.match(setupArgs, /--monitoring --production-overlay --project librepaper --version local-[0-9a-f]{12} --config-file \.\/librepaper\.toml\.candidate --local-build/);
-    assert.match(readFileSync(path.join(f.remote, '.env'), 'utf8'), /LIBREPAPER_VERSION=local-[0-9a-f]{12}/);
-    assert.equal(existsSync(path.join(f.remote, 'librepaper.candidate')), true);
+    assert.equal(read(f.remote, '.env'), 'COMPOSE_PROFILES=monitoring\n');
+    assert.equal(read(f.remote, 'compose.override.yaml'), [
+      'services:',
+      '  librepaper:',
+      '    volumes:',
+      '      - ./secrets:/run/secrets:ro',
+      '  caddy:',
+      '    volumes:',
+      '      - ./site:/srv/site:ro',
+      '',
+    ].join('\n'));
+    for (const file of ['.env', 'compose.override.yaml']) {
+      assert.equal(statSync(path.join(f.remote, file)).mode & 0o777, 0o644, file);
+    }
+    assert.deepEqual(walk(f.remote).filter((file) => file.endsWith('.tmp')), []);
   } finally {
     f.cleanup();
   }
 });
 
-for (const command of ['deploy', 'deploy-local']) {
-  test(`${command} replaces the running app config even when the image is unchanged`, () => {
-    const f = fixture({
-      localKitConfig: 'operator-local config that must not be deployed\n',
-      backupConfig: '[global]\nscheduler = "operator scheduler"\n',
-      runningConfig: 'previously mounted config\n',
+test('deploy installs the checked candidates, then pulls and starts the stack in order, stopping nothing by hand', () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'deploy', 'v0.0.21');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Done: v0\.0\.21 is live/);
+    assertInOrder(events(f), [
+      ['make', /^/],
+      ['rsync', /--delete/],
+      ['ssh', /^chmod 700 librepaper$/],
+      ['ssh', /sed -i -E/],
+      ['ssh', /secrets\/\.github_client_id\.tmp/],
+      ['ssh', /monitoring\/\.grafana_admin_password\.tmp/],
+      ['ssh', /\.env\.tmp/],
+      ['ssh', /compose\.override\.yaml\.tmp/],
+      ['ssh', /librepaper\.toml\.candidate\.tmp/],
+      ['ssh', /Caddyfile\.candidate\.tmp/],
+      ['docker', /admin config check/],
+      ['docker', /caddy validate/],
+      ['ssh', /mv -f librepaper\.toml\.candidate librepaper\.toml/],
+      ['ssh', /mv -f caddy\/Caddyfile\.candidate caddy\/Caddyfile/],
+      ['docker', /^compose pull$/],
+      ['docker', /^compose up -d --wait --wait-timeout 180$/],
+      ['docker', /caddy reload/],
+      ['docker', /^image prune -f$/],
+      ['docker', /^compose logs --tail 50$/],
+    ]);
+    assert.equal(read(f.remote, 'librepaper.toml'), productionToml);
+    assert.equal(read(f.runningConfigFile), productionToml);
+    assert.match(read(f.remote, 'caddy/Caddyfile'), /librepaper\.org/);
+    assert.equal(existsSync(path.join(f.remote, 'librepaper.toml.candidate')), false);
+    assert.equal(existsSync(path.join(f.remote, 'caddy/Caddyfile.candidate')), false);
+    assert.equal(read(f.root, 'caddy-timeout').trim(), '30');
+    // The server migrates at startup: no setup, no migrate, no manual stop, no volume or system cleanup.
+    for (const call of dockerCalls(f)) {
+      assert.doesNotMatch(call, /^compose (stop|down|restart|rm|kill)\b|--force-recreate|volume|system|migrate/, call);
+    }
+    for (const [kind, text] of events(f)) {
+      if (kind === 'ssh') assert.doesNotMatch(text, /setup|migrate/, text);
+    }
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy pins the tag into compose.yaml before it pulls, and a line the sed leaves alone stops it', () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'deploy', 'v0.0.22');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(read(f.remote, 'compose.yaml'), KIT_COMPOSE.replaceAll('v0.0.20', 'v0.0.22'));
+    assertInOrder(events(f), [['ssh', /sed -i -E/], ['docker', /^compose pull$/]]);
+  } finally {
+    f.cleanup();
+  }
+
+  for (const [name, composeYaml] of [
+    ['a backup image on latest', KIT_COMPOSE.replace('librepaper-backup:v0.0.20', 'librepaper-backup:latest')],
+    ['an interpolated tag', KIT_COMPOSE.replace('librepaper:v0.0.20', 'librepaper:${LIBREPAPER_VERSION:-v0.0.20}')],
+    ['no image lines at all', 'services: {}\n'],
+  ]) {
+    const unpinned = fixture({ composeYaml });
+    try {
+      const result = run(unpinned, 'deploy', 'v0.0.22');
+      assert.notEqual(result.status, 0, `${name} unexpectedly deployed`);
+      assert.match(result.stderr, /does not pin both images to v0\.0\.22/, name);
+      assert.deepEqual(dockerCalls(unpinned), [], `${name} reached docker`);
+      assert.equal(existsSync(path.join(unpinned.remote, 'librepaper.toml')), false, `${name} installed a config`);
+    } finally {
+      unpinned.cleanup();
+    }
+  }
+});
+
+test('a rejected candidate config leaves the installed config and the running stack untouched', () => {
+  const f = fixture({ configCheckFailure: true });
+  try {
+    writeTree(f.remote, {
+      'librepaper.toml': 'previous production config\n',
+      'caddy/Caddyfile': 'previous Caddyfile\n',
     });
-    try {
-      writeFileSync(path.join(f.remote, 'librepaper.toml'), 'previously installed config\n');
-      const result = runProduction(f, command);
-      assert.equal(result.status, 0, result.stderr || result.stdout);
-      const installed = readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8');
-      const backupConfig = '[global]\nscheduler = "operator scheduler"\n';
-      assert.equal(readFileSync(f.backupConfigFile, 'utf8'), backupConfig);
-      assert.equal(readFileSync(path.join(f.root, 'backup-config-at-preflight'), 'utf8'), backupConfig);
-      assert.doesNotMatch(installed, /operator-local config/);
-      assert.equal(readFileSync(f.runningConfigFile, 'utf8'), installed);
-      const imageAction = command === 'deploy-local' ? 'image-build' : 'image-pull';
-      assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n'), [
-        'setup-init', imageAction, 'config-check', 'backup-check', 'migrate-help', 'caddy-validate', 'postgres-up',
-        'app-backup-stop', 'config-install', 'migrate-run', 'app-recreate', 'backup-recreate',
-        'caddy-install', 'stack-up', 'caddy-reload', 'prometheus-recreate',
-      ]);
-      assert.equal(readFileSync(path.join(f.root, 'caddy-timeout'), 'utf8').trim(), '30');
-    } finally {
-      f.cleanup();
-    }
-  });
-}
-
-for (const command of ['deploy', 'deploy-local']) {
-  test(`${command} reports Caddy reload failure after the stack starts`, () => {
-    const f = fixture({ caddyReloadFailure: true });
-    try {
-      const result = runProduction(f, command);
-      assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /Caddy configuration reload failed/);
-      assert.deepEqual(readFileSync(f.orderFile, 'utf8').trim().split('\n').slice(-3), [
-        'caddy-install', 'stack-up', 'caddy-reload',
-      ]);
-      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:/);
-    } finally {
-      f.cleanup();
-    }
-  });
-}
-
-test('a binary without TOML config support leaves the installed config and running app in place', () => {
-  const f = fixture({ configCheckFailure: true, localKitConfig: 'operator-local config\n' });
-  try {
-    writeFileSync(path.join(f.remote, 'librepaper.toml'), 'previous production config\n');
-    const result = runProduction(f, 'deploy');
+    const result = run(f, 'deploy', 'v0.0.21');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /candidate binary cannot load librepaper\.toml/);
-    assert.equal(readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8'), 'previous production config\n');
-    assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
+    assert.equal(read(f.checkedConfigFile), productionToml, 'the candidate that was checked is production.toml');
+    assert.equal(read(f.remote, 'librepaper.toml'), 'previous production config\n');
+    assert.equal(read(f.remote, 'caddy/Caddyfile'), 'previous Caddyfile\n');
+    assert.equal(read(f.runningConfigFile), 'previous container config\n');
     assert.equal(existsSync(f.composeUpFile), false);
-    assert.doesNotMatch(readFileSync(f.orderFile, 'utf8'), /caddy-reload/);
+    assert.deepEqual(stackCalls(f), []);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('an invalid Caddyfile candidate is rejected before the installed files change, a pull or an up', () => {
+  const f = fixture({ caddyCheckFailure: true });
+  try {
+    writeTree(f.remote, {
+      'librepaper.toml': 'previous production config\n',
+      'caddy/Caddyfile': 'previous Caddyfile\n',
+    });
+    const result = run(f, 'deploy', 'v0.0.21');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /candidate Caddy configuration is invalid/);
+    assertInOrder(events(f), [['docker', /admin config check/], ['docker', /caddy validate/]]);
+    assert.equal(read(f.remote, 'librepaper.toml'), 'previous production config\n');
+    assert.equal(read(f.remote, 'caddy/Caddyfile'), 'previous Caddyfile\n');
+    assert.equal(existsSync(path.join(f.remote, 'caddy/Caddyfile.candidate')), true);
+    assert.equal(read(f.runningConfigFile), 'previous container config\n');
+    assert.deepEqual(stackCalls(f), []);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('a failed Caddy reload is reported after the stack starts', () => {
+  const f = fixture({ caddyReloadFailure: true });
+  try {
+    const result = run(f, 'deploy', 'v0.0.21');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Caddy configuration reload failed/);
+    assert.deepEqual(dockerCalls(f).slice(-2).map((call) => call.split(' ').slice(0, 3).join(' ')), [
+      'compose up -d',
+      'compose exec -T',
+    ]);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:/);
   } finally {
     f.cleanup();
   }
@@ -525,94 +615,19 @@ test('repeated deploys render Caddy from its template without duplicating site a
   const f = fixture();
   try {
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = runProduction(f, 'deploy');
+      const result = run(f, 'deploy', 'v0.0.21');
       assert.equal(result.status, 0, result.stderr || result.stdout);
     }
-    const caddy = readFileSync(path.join(f.remote, 'caddy', 'Caddyfile'), 'utf8');
+    const caddy = read(f.remote, 'caddy/Caddyfile');
     assert.equal((caddy.match(/librepaper\.org \{/g) ?? []).length, 1);
     assert.equal((caddy.match(/www\.librepaper\.org, librepaper\.com/g) ?? []).length, 1);
+    assert.equal(read(f.remote, '.env'), 'COMPOSE_PROFILES=monitoring\n');
   } finally {
     f.cleanup();
   }
 });
 
-test('invalid Caddy candidate is rejected before stopping app and backup', () => {
-  const f = fixture({ caddyCheckFailure: true });
-  try {
-    const result = runProduction(f, 'deploy');
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /candidate Caddy configuration is invalid/);
-    const order = readFileSync(f.orderFile, 'utf8');
-    assert.match(order, /caddy-validate/);
-    assert.doesNotMatch(order, /postgres-up|app-backup-stop|config-install|migrate-run|stack-up/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('an invalid backup candidate leaves the installed config and running services in place', () => {
-  const f = fixture({ backupCheckFailure: true, localKitConfig: 'operator-local config\n' });
-  try {
-    writeFileSync(path.join(f.remote, 'librepaper.toml'), 'previous production config\n');
-    const result = runProduction(f, 'deploy');
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /candidate backup image cannot validate the configured profile/);
-    assert.equal(readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8'), 'previous production config\n');
-    assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
-    const order = readFileSync(f.orderFile, 'utf8');
-    assert.match(order, /image-pull[\s\S]*config-check[\s\S]*backup-check/);
-    assert.doesNotMatch(order, /backup-stop|config-install|app-recreate|backup-recreate|stack-up/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('an image without admin migrate support is rejected before stopping services', () => {
-  const f = fixture({ migrateHelpFailure: true });
-  try {
-    const result = runProduction(f, 'deploy');
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /lacks the one-shot admin migrate command/);
-    const order = readFileSync(f.orderFile, 'utf8');
-    assert.match(order, /migrate-help/);
-    assert.doesNotMatch(order, /postgres-up|app-backup-stop|config-install|migrate-run|stack-up/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('failed migration leaves app and backup stopped and does not restart the stack', () => {
-  const f = fixture({ migrateFailure: true });
-  try {
-    const result = runProduction(f, 'deploy');
-    assert.notEqual(result.status, 0);
-    const order = readFileSync(f.orderFile, 'utf8');
-    assert.match(order, /app-backup-stop[\s\S]*config-install[\s\S]*migrate-run/);
-    assert.doesNotMatch(order, /stack-up|caddy-reload/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('an incompatible local candidate leaves the installed executable untouched', () => {
-  const f = fixture({ configCheckFailure: true, localKitConfig: 'operator-local config\n' });
-  try {
-    writeFileSync(path.join(f.remote, 'librepaper'), 'previous production executable\n');
-    writeFileSync(path.join(f.remote, 'librepaper.toml'), 'previous production config\n');
-    const result = runProduction(f, 'deploy-local');
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /candidate binary cannot load librepaper\.toml/);
-    assert.equal(readFileSync(path.join(f.remote, 'librepaper'), 'utf8'), 'previous production executable\n');
-    assert.equal(readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8'), 'previous production config\n');
-    assert.equal(readFileSync(f.runningConfigFile, 'utf8'), 'previous container config\n');
-    assert.equal(existsSync(f.composeUpFile), false);
-    assert.doesNotMatch(readFileSync(f.orderFile, 'utf8'), /caddy-reload/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('invalid or undecryptable Google credentials stop both deployment paths before build or remote mutation', () => {
+test('invalid or undecryptable Google credentials stop the deploy before the site build or any remote change', () => {
   const badCredentials = [
     { name: 'missing Google client ID', options: { googleClientIdPresent: false }, key: 'PRODUCTION_GOOGLE_CLIENT_ID' },
     { name: 'null Google client secret', options: { googleClientSecret: 'null' }, key: 'PRODUCTION_GOOGLE_CLIENT_SECRET' },
@@ -620,44 +635,165 @@ test('invalid or undecryptable Google credentials stop both deployment paths bef
     { name: 'whitespace-only Google client secret', options: { googleClientSecret: '  \t' }, key: 'PRODUCTION_GOOGLE_CLIENT_SECRET' },
     { name: 'Google client secret decryption failure', options: { sopsFailureKey: 'PRODUCTION_GOOGLE_CLIENT_SECRET' }, key: 'PRODUCTION_GOOGLE_CLIENT_SECRET' },
   ];
-  for (const command of ['deploy', 'deploy-local']) {
-    for (const scenario of badCredentials) {
-      const f = fixture(scenario.options);
-      try {
-        const result = runProduction(f, command);
-        assert.notEqual(result.status, 0, `${command}: ${scenario.name} unexpectedly succeeded`);
-        assert.match(result.stderr, new RegExp(scenario.key));
-        assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret|private SOPS diagnostic/);
-        assert.equal(existsSync(f.makeCalledFile), false, `${command}: ran make for ${scenario.name}`);
-        assert.deepEqual(readdirSync(f.remote), [], `${command}: mutated remote for ${scenario.name}`);
-      } finally {
-        f.cleanup();
-      }
+  for (const scenario of badCredentials) {
+    const f = fixture(scenario.options);
+    try {
+      const result = run(f, 'deploy', 'v0.0.21');
+      assert.notEqual(result.status, 0, `${scenario.name} unexpectedly succeeded`);
+      assert.match(result.stderr, new RegExp(scenario.key));
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret|private SOPS diagnostic/);
+      assert.equal(existsSync(f.makeCalledFile), false, `ran make for ${scenario.name}`);
+      assert.deepEqual(readdirSync(f.remote), [], `mutated the remote for ${scenario.name}`);
+      assert.deepEqual(events(f), [], `called the host for ${scenario.name}`);
+    } finally {
+      f.cleanup();
     }
+  }
+});
+
+test('deploy refuses a release below the v0.0.21 floor, and a non-canonical tag, before writing remotely', () => {
+  for (const [version, message] of [
+    ['v0.0.8', /requires v0\.0\.21 or later.*\/api\/tls\/ask/],
+    ['v0.0.20', /requires v0\.0\.21 or later.*\/api\/tls\/ask/],
+    ['0.0.21', /canonical tag/],
+    ['v0.0.021', /canonical tag/],
+  ]) {
+    const f = fixture();
+    try {
+      const result = run(f, 'deploy', version);
+      assert.notEqual(result.status, 0, `${version} unexpectedly deployed`);
+      assert.match(result.stderr, message, version);
+      assert.deepEqual(readdirSync(f.remote), [], version);
+      assert.deepEqual(events(f), [], version);
+    } finally {
+      f.cleanup();
+    }
+  }
+});
+
+function kitSyncArguments(f) {
+  const calls = events(f).filter(([kind]) => kind === 'rsync').map(([, ...args]) => args);
+  const kit = calls.find((args) => args.at(-1) === `${sshHost}:librepaper/`);
+  assert.ok(kit, 'the kit sync was not recorded');
+  return { calls, kit };
+}
+
+test('the kit sync deletes dropped kit files and neither sends nor removes the operator paths', () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'deploy', 'v0.0.21');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const { calls, kit } = kitSyncArguments(f);
+    assert.equal(kit.at(-2), 'deploy/');
+    assert.ok(kit.includes('--delete'));
+    const excluded = kit.filter((arg) => arg.startsWith('--exclude=')).map((arg) => arg.slice('--exclude='.length));
+    assert.deepEqual(excluded.sort(), [...OPERATOR_PATHS, ...BUILD_ONLY_PATHS].sort());
+    const protectedPaths = kit.filter((arg) => arg.startsWith('--filter=')).map((arg) => arg.slice('--filter='.length));
+    assert.deepEqual(protectedPaths.sort(), OPERATOR_PATHS.map((p) => `P ${p}`).sort());
+    const restic = calls.find((args) => args.at(-1) === `${sshHost}:librepaper/resticprofile.toml`);
+    assert.deepEqual(restic.slice(-3), ['--ignore-existing', 'deploy/resticprofile.toml', `${sshHost}:librepaper/resticprofile.toml`]);
+    assertInOrder(events(f), [['rsync', /--delete/], ['ssh', /^chmod 700 librepaper$/]]);
+    assert.equal(statSync(f.remote).mode & 0o777, 0o700);
+  } finally {
+    f.cleanup();
+  }
+});
+
+const realRsync = spawnSync('rsync', ['--version'], { encoding: 'utf8' });
+
+test('the recorded kit sync arguments keep operator files and drop deleted kit files under real rsync', {
+  skip: realRsync.status !== 0 ? 'rsync is not installed' : false,
+}, () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'deploy', 'v0.0.21');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const { kit } = kitSyncArguments(f);
+    const source = path.join(f.root, 'kit-source');
+    const target = path.join(f.root, 'kit-target');
+    writeTree(source, {
+      'compose.yaml': 'kit compose\n',
+      'librepaper.toml': 'kit sample config\n',
+      'resticprofile.toml': 'kit sample backup\n',
+      'caddy/Caddyfile': 'kit Caddyfile\n',
+      'monitoring/alerts.yml': 'kit alerts\n',
+      'postgres/init.sql': 'kit sql\n',
+      Dockerfile: 'FROM scratch\n',
+      'backup/entrypoint.sh': 'build context\n',
+    });
+    const operatorFiles = {
+      'librepaper.toml': 'operator config\n',
+      'librepaper.toml.candidate': 'operator candidate\n',
+      'resticprofile.toml': 'operator backup\n',
+      'secrets/github_client_id': 'operator id\n',
+      '.env': 'COMPOSE_PROFILES=monitoring\n',
+      'compose.override.yaml': 'operator override\n',
+      'caddy/Caddyfile': 'operator Caddyfile\n',
+      'caddy/Caddyfile.candidate': 'operator Caddyfile candidate\n',
+      'caddy/local.d/other.caddy': 'another app\n',
+      'monitoring/grafana_admin_password': 'operator password',
+      'site/index.html': 'the site\n',
+    };
+    writeTree(target, {
+      ...operatorFiles,
+      'compose.yaml': 'old compose\n',
+      setup: 'dropped from the kit\n',
+      'compose.production.yaml': 'dropped from the kit\n',
+      'postgres/roles.sql': 'dropped from the kit\n',
+    });
+    const sync = spawnSync('rsync', [...kit.slice(0, -2), `${source}/`, `${target}/`], { encoding: 'utf8' });
+    assert.equal(sync.status, 0, sync.stderr);
+    assert.deepEqual(walk(target).sort(), [
+      ...Object.keys(operatorFiles),
+      'compose.yaml',
+      'monitoring/alerts.yml',
+      'postgres/init.sql',
+    ].sort());
+    for (const [file, contents] of Object.entries(operatorFiles)) assert.equal(read(target, file), contents, file);
+    assert.equal(read(target, 'compose.yaml'), 'kit compose\n');
+  } finally {
+    f.cleanup();
   }
 });
 
 test('verify checks both OAuth providers with unfollowed matching authorization redirects', () => {
   const f = fixture();
   try {
-    const result = spawnSync(deploy, ['verify'], { cwd: repo, env: f.env, encoding: 'utf8' });
+    const result = run(f, 'verify');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /github OAuth redirect answers/i);
     assert.match(result.stdout, /google OAuth redirect answers/i);
-    const calls = readFileSync(f.oauthCallsFile, 'utf8').trim().split('\n');
+    const calls = read(f.oauthCallsFile).trim().split('\n');
     assert.deepEqual(calls, ['github\tno', 'google\tno']);
   } finally {
     f.cleanup();
   }
 });
 
+test('verify rejects Google 200, 404, and wrong-provider redirects without revealing the URL', () => {
+  for (const scenario of [
+    { name: '200 without redirect', googleHttpStatus: '200', googleLocation: '' },
+    { name: '404 without Location', googleHttpStatus: '404', googleLocation: '' },
+    { name: 'redirect to GitHub', googleHttpStatus: '302', googleLocation: 'https://github.com/login/oauth/authorize?client_id=test' },
+  ]) {
+    const f = fixture(scenario);
+    try {
+      const result = run(f, 'verify');
+      assert.notEqual(result.status, 0, `${scenario.name} unexpectedly passed`);
+      assert.match(result.stderr, /google OAuth/i);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /accounts\.google\.com|github\.com/);
+    } finally {
+      f.cleanup();
+    }
+  }
+});
+
 test('verify bounds every HTTP request and passes the readiness probe its remaining deadline', () => {
   const f = fixture();
   try {
-    const result = spawnSync(deploy, ['verify'], { cwd: repo, env: f.env, encoding: 'utf8' });
+    const result = run(f, 'verify');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    const requests = readFileSync(path.join(f.root, 'curl-calls'), 'utf8').trim().split('\n')
-      .map((line) => line.split('\t'));
+    const requests = read(f.curlCallsFile).trim().split('\n').map((line) => line.split('\t'));
     assert.ok(requests.length > 0);
     for (const [url, connectTimeout, maxTime] of requests) {
       assert.ok(Number(connectTimeout) > 0, `${url} is missing a connect timeout`);
@@ -672,97 +808,48 @@ test('verify bounds every HTTP request and passes the readiness probe its remain
   }
 });
 
-test('verify rejects Google 200, 404, and wrong-provider redirects without revealing the URL', () => {
-  for (const scenario of [
-    { name: '200 without redirect', googleHttpStatus: '200', googleLocation: '' },
-    { name: '404 without Location', googleHttpStatus: '404', googleLocation: '' },
-    { name: 'redirect to GitHub', googleHttpStatus: '302', googleLocation: 'https://github.com/login/oauth/authorize?client_id=test' },
-  ]) {
-    const f = fixture(scenario);
-    try {
-      const result = spawnSync(deploy, ['verify'], { cwd: repo, env: f.env, encoding: 'utf8' });
-      assert.notEqual(result.status, 0, `${scenario.name} unexpectedly passed`);
-      assert.match(result.stderr, /google OAuth/i);
-      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /accounts\.google\.com|github\.com/);
-    } finally {
-      f.cleanup();
-    }
-  }
-});
-
-test('deploy-local verifies candidate binary and stores credentials outside .env', () => {
+test('verify checks the operator URLs listed in caddy/local.d/check-urls', () => {
   const f = fixture();
   try {
-    const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
+    writeTree(f.remote, { 'caddy/local.d/check-urls': '# the other app\n\nhttps://other.example/health\n' });
+    const result = run(f, 'verify');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /verified SHA-256/);
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|github-secret/);
-    const envFile = readFileSync(path.join(f.remote, '.env'), 'utf8');
-    assert.doesNotMatch(envFile, /admin-secret|github-secret|google-id|google-secret/);
-    assert.equal(readFileSync(path.join(f.remote, 'secrets/grafana_admin_password'), 'utf8'), 'admin-secret');
-    assert.equal(statSync(path.join(f.remote, 'secrets/grafana_admin_password')).mode & 0o777, 0o444);
-    assert.equal(existsSync(path.join(f.remote, 'compose.override.yaml')), false);
-    assert.equal(existsSync(path.join(f.remote, 'librepaper.candidate')), true);
+    assert.match(result.stdout, /https:\/\/other\.example\/health answers/);
+    const urls = read(f.curlCallsFile).trim().split('\n').map((line) => line.split('\t')[0]);
+    assert.ok(urls.includes('https://other.example/health'));
   } finally {
     f.cleanup();
   }
 });
 
-test('deploy-local refuses to replace the existing binary when transfer checksum differs', () => {
-  const f = fixture({ corruptTransfer: true });
-  try {
-    writeFileSync(path.join(f.remote, 'librepaper'), 'previous binary');
-    const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /remote binary checksum mismatch/);
-    assert.equal(readFileSync(path.join(f.remote, 'librepaper'), 'utf8'), 'previous binary');
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|github-secret/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('deploy-local safely writes shell metacharacters into isolated secret files', () => {
-  const secrets = { adminPassword: 'unsafe$#secret with spaces' };
-  const f = fixture(secrets);
-  try {
-    const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.equal(readFileSync(path.join(f.remote, 'secrets/grafana_admin_password'), 'utf8'), secrets.adminPassword);
-    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /unsafe\$#secret/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('deploy-local retries transient Grafana startup errors within the bounded startup window', () => {
+test('verify retries transient Grafana startup errors within the bounded startup window', () => {
   const f = fixture({ grafanaTransientFailures: 1 });
   try {
-    const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
+    const result = run(f, 'verify');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /waiting for Grafana to finish starting/);
-    assert.equal(readFileSync(path.join(f.root, 'grafana-count'), 'utf8'), '2');
+    assert.equal(read(f.root, 'grafana-count'), '2');
   } finally {
     f.cleanup();
   }
 });
 
-test('deploy-local fails immediately for rejected Grafana credentials', () => {
+test('verify fails immediately for rejected Grafana credentials', () => {
   const f = fixture({ grafanaAuthStatus: 401 });
   try {
-    const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
+    const result = run(f, 'verify');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /authenticated Grafana dashboard API returned HTTP 401/);
-    assert.equal(readFileSync(path.join(f.root, 'grafana-count'), 'utf8'), '1');
+    assert.equal(read(f.root, 'grafana-count'), '1');
   } finally {
     f.cleanup();
   }
 });
 
-test('deploy-local refuses monitoring readiness without PostgreSQL exporter health', () => {
+test('verify refuses monitoring readiness without PostgreSQL exporter health', () => {
   const f = fixture({ pgUpHealthy: false });
   try {
-    const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
+    const result = run(f, 'verify');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Prometheus APIs, targets, LibrePaper sample history, snapshot, or pg_up are unhealthy/);
   } finally {
@@ -770,64 +857,13 @@ test('deploy-local refuses monitoring readiness without PostgreSQL exporter heal
   }
 });
 
-test('deploy refuses a release below the read-only migration API floor before writing remotely', () => {
-  const f = fixture();
-  try {
-    const result = spawnSync(deploy, ['deploy', 'v0.0.8'], { cwd: repo, env: f.env, encoding: 'utf8' });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /requires v0.0.21 or later.*admin migrate/);
-    assert.deepEqual(readdirSync(f.remote), []);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('legacy database upgrade validates staged file-based config and installs it only after role conversion', () => {
-  const f = fixture({ setupState: 'legacy' });
-  try {
-    writeFileSync(path.join(f.remote, '.env'), 'GRAFANA_ADMIN_PASSWORD=legacy-admin-password\n');
-    writeFileSync(path.join(f.remote, 'librepaper.toml'), 'legacy environment-based config\n');
-    const result = runProduction(f, 'upgrade-database');
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const order = readFileSync(f.orderFile, 'utf8');
-    assert.match(order, /setup-upgrade[\s\S]*config-install[\s\S]*setup-check/);
-    const upgrade = readFileSync(f.setupCallsFile, 'utf8');
-    assert.match(upgrade, /--yes --monitoring --production-overlay --no-local-build --project librepaper --version v0\.0\.21 --config-file \.\/librepaper\.toml\.candidate/);
-    const installed = readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8');
-    assert.match(installed, /database_url = \{ file = "\/run\/secrets\/database_url" \}/);
-    assert.match(installed, /migrate = false/);
-    assert.doesNotMatch(readFileSync(path.join(f.remote, '.env'), 'utf8'), /legacy-admin-password/);
-    assert.equal(readFileSync(path.join(f.remote, 'secrets/grafana_admin_password'), 'utf8'), 'legacy-admin-password');
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('failed legacy role conversion preserves the active config and skips setup check', () => {
-  const f = fixture({ setupState: 'legacy', setupUpgradeFailure: true });
-  try {
-    writeFileSync(path.join(f.remote, '.env'), 'GRAFANA_ADMIN_PASSWORD=legacy-admin-password\n');
-    writeFileSync(path.join(f.remote, 'librepaper.toml'), 'legacy environment-based config\n');
-    const result = runProduction(f, 'upgrade-database');
-    assert.notEqual(result.status, 0);
-    assert.equal(readFileSync(path.join(f.remote, 'librepaper.toml'), 'utf8'), 'legacy environment-based config\n');
-    assert.equal(existsSync(path.join(f.remote, 'librepaper.toml.candidate')), true);
-    assert.equal(readFileSync(path.join(f.remote, '.env'), 'utf8'), 'GRAFANA_ADMIN_PASSWORD=legacy-admin-password\n');
-    const order = readFileSync(f.orderFile, 'utf8');
-    assert.match(order, /setup-upgrade/);
-    assert.doesNotMatch(order, /config-install|setup-check/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('deploy-local retries a temporary Prometheus API failure and continues when it recovers', () => {
+test('verify retries a temporary Prometheus API failure and continues when it recovers', () => {
   const f = fixture({ prometheusTransientFailures: 1 });
   try {
-    const result = spawnSync(deploy, ['deploy-local', f.executable], { cwd: repo, env: f.env, encoding: 'utf8' });
+    const result = run(f, 'verify');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /waiting for Prometheus APIs/);
-    assert.equal(readFileSync(path.join(f.root, 'prometheus-count'), 'utf8'), '2');
+    assert.equal(read(f.root, 'prometheus-count'), '2');
   } finally {
     f.cleanup();
   }
@@ -839,7 +875,7 @@ test('persistent Grafana API failures time out and remove credential files', {
   const f = fixture({ grafanaPersistentStatus: 503, realSleep: true });
   const started = Date.now();
   try {
-    const result = spawnSync(deploy, ['deploy-local', f.executable], {
+    const result = spawnSync(deploy, ['verify'], {
       cwd: repo,
       env: f.env,
       encoding: 'utf8',
@@ -852,6 +888,92 @@ test('persistent Grafana API failures time out and remove credential files', {
     assert.ok(elapsed >= 59 && elapsed <= 65, `expected ~60 seconds, got ${elapsed}`);
     assert.deepEqual(readdirSync(path.join(f.root, 'tmp')), []);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /admin-secret|github-secret/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+// convert-database is temporary: delete these tests with the command.
+function seedOldHost(f) {
+  writeTree(f.remote, {
+    'compose.yaml': 'old compose\n',
+    setup: 'old setup helper\n',
+    'librepaper.toml': 'old production config\n',
+    'secrets/database_app_url': 'postgresql://old\n',
+    'site/index.html': 'the site\n',
+  });
+}
+
+test('convert-database saves the host files before the sync, streams the host script, and never pulls or starts', () => {
+  const f = fixture();
+  try {
+    seedOldHost(f);
+    const result = run(f, 'convert-database');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const list = events(f);
+    // Before the snapshot only the local site build has run.
+    const snapshotAt = indexOfEvent(list, ['ssh', /tar czf librepaper-convert\/host-files-before\.tar\.gz/]);
+    assert.ok(snapshotAt >= 0);
+    assert.deepEqual(list.slice(0, snapshotAt).map(([kind]) => kind), ['make']);
+    assertInOrder(list, [
+      ['ssh', /tar czf librepaper-convert\/host-files-before\.tar\.gz/],
+      ['rsync', /--delete/],
+      ['ssh', /sed -i -E/],
+      ['docker', /admin config check/],
+      ['docker', /caddy validate/],
+      ['ssh', /mv -f librepaper\.toml\.candidate librepaper\.toml/],
+      ['ssh', /^cd librepaper && bash -s$/],
+      ['docker', /^compose logs --tail 50$/],
+    ]);
+
+    const tarball = path.join(f.home, 'librepaper-convert/host-files-before.tar.gz');
+    assert.equal(statSync(path.dirname(tarball)).mode & 0o777, 0o700);
+    const listing = spawnSync('tar', ['tzf', tarball], { encoding: 'utf8', env: process.env });
+    assert.equal(listing.status, 0, listing.stderr);
+    const members = listing.stdout.split('\n').filter(Boolean);
+    assert.ok(members.includes('librepaper/setup'));
+    assert.ok(members.includes('librepaper/secrets/database_app_url'));
+    assert.ok(!members.some((member) => member.startsWith('librepaper/site')), 'the site is not saved');
+    const oldCompose = spawnSync('tar', ['xzOf', tarball, 'librepaper/compose.yaml'], { encoding: 'utf8', env: process.env });
+    assert.equal(oldCompose.stdout, 'old compose\n');
+
+    assert.equal(readFileSync(f.streamedScriptFile, 'utf8'), readFileSync(hostScript, 'utf8'));
+    assert.match(read(f.remote, 'compose.yaml'), /librepaper:v0\.0\.21\b/);
+    assert.match(read(f.remote, 'compose.yaml'), /librepaper-backup:v0\.0\.21\b/);
+    assert.equal(read(f.remote, 'librepaper.toml'), productionToml);
+    assert.equal(existsSync(path.join(f.remote, 'librepaper.toml.candidate')), false);
+    assert.equal(read(f.remote, '.env'), 'COMPOSE_PROFILES=monitoring\n');
+    // Nothing starts or stops: the host script owns that.
+    assert.deepEqual(stackCalls(f).filter((call) => !/^compose exec -T prometheus/.test(call)), []);
+    assert.equal(existsSync(f.composeUpFile), false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('convert-database keeps an earlier snapshot instead of saving the half-synced host', () => {
+  const f = fixture();
+  try {
+    seedOldHost(f);
+    mkdirSync(path.join(f.home, 'librepaper-convert'), { mode: 0o700 });
+    writeFileSync(path.join(f.home, 'librepaper-convert/host-files-before.tar.gz'), 'the state before the first run');
+    const result = run(f, 'convert-database');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(read(f.home, 'librepaper-convert/host-files-before.tar.gz'), 'the state before the first run');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('a failing host script stops convert-database before verify and says how to roll back', () => {
+  const f = fixture({ hostScriptFailure: true });
+  try {
+    seedOldHost(f);
+    const result = run(f, 'convert-database');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /convert-database\.sh failed.*tar xzf librepaper-convert\/host-files-before\.tar\.gz.*docker compose up -d/);
+    assert.equal(indexOfEvent(events(f), ['docker', /^compose logs/]), -1);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:/);
   } finally {
     f.cleanup();
   }
