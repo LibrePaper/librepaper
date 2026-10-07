@@ -8,6 +8,10 @@
 app = "https://paper.example"
 docs = "https://docs.paper.example"
 
+# Optional. Operational graphs at this name, behind the password in [admin].
+# One more DNS record pointing here; Caddy obtains its certificate on first visit.
+# admin = "https://admin.paper.example"
+
 # Sign-in needs at least one provider. Callback URLs:
 # GitHub  https://paper.example/auth/callback
 # Google  https://paper.example/auth/callback/google
@@ -38,9 +42,13 @@ commenters = ["any"]
 [proxy]
 trusted_networks = ["172.29.0.0/16"]
 
-# Private listener for the bundled Prometheus; no host port is published.
+# Private listener for your own Prometheus. Nothing in the kit scrapes it and no host port is published.
 [metrics]
 address = "0.0.0.0:9091"
+
+# Optional, with origins.admin. Paste 24 random bytes in base64 (head -c 24 /dev/urandom | base64).
+# [admin]
+# password = "replace"
 
 # Optional. Per-publisher storage in MiB and uploads per rolling hour.
 # [limits]

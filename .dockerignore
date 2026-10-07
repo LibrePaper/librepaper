@@ -22,7 +22,6 @@ deploy/data/
 backups/
 deploy/backups/
 deploy/compose.override.yaml
-deploy/monitoring/grafana_admin_password
 librepaper-data/
 dist/
 tools/deploy/keys.yaml

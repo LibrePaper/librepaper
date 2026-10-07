@@ -128,14 +128,12 @@ FROM app-runtime AS backup
 USER root
 RUN set -eu; \
 	apk add --no-cache openssh-client python3 restic supercronic; \
-	install -d -o 10001 -g 65534 -m 0700 /run/librepaper-backup; \
-	install -d -o 10001 -g 65534 -m 0755 /var/backups/librepaper/metrics
+	install -d -o 10001 -g 65534 -m 0700 /run/librepaper-backup
 COPY --from=resticprofile-binary /usr/bin/resticprofile /usr/bin/resticprofile
 COPY --from=backup-assets /profiles.toml /etc/resticprofile/profiles.toml
-COPY --from=backup-assets /status.py /usr/local/bin/librepaper-backup-status
 COPY --from=backup-assets /entrypoint.sh /usr/local/bin/librepaper-backup-entrypoint
 RUN chmod 0644 /etc/resticprofile/profiles.toml \
-	&& chmod 0755 /usr/local/bin/librepaper-backup-status /usr/local/bin/librepaper-backup-entrypoint
+	&& chmod 0755 /usr/local/bin/librepaper-backup-entrypoint
 USER 10001:65534
 HEALTHCHECK NONE
 ENTRYPOINT ["/usr/local/bin/librepaper-backup-entrypoint"]

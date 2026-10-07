@@ -121,14 +121,13 @@ grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fai
 # and untracked credentials. It pins the release tag in its image references.
 kit_source="$tmp/deploy-source"
 kit_output="$tmp/deploy-output"
-mkdir -p "$kit_source/deploy/caddy" "$kit_source/deploy/monitoring" "$kit_source/deploy/postgres" "$kit_output"
-for file in compose.yaml compose.managed-db.yaml librepaper.toml prometheus.yaml grafana.json README.md; do
+mkdir -p "$kit_source/deploy/caddy" "$kit_source/deploy/postgres" "$kit_output"
+for file in compose.yaml compose.managed-db.yaml librepaper.toml README.md; do
   printf 'committed fixture %s\n' "$file" > "$kit_source/deploy/$file"
 done
 printf 'ghcr.io/librepaper/librepaper:v0.0.21\n' >> "$kit_source/deploy/compose.yaml"
 printf 'ghcr.io/librepaper/librepaper-backup:v0.0.21\n' >> "$kit_source/deploy/compose.yaml"
 printf 'committed caddy\n' > "$kit_source/deploy/caddy/Caddyfile"
-printf 'committed monitoring alerts\n' > "$kit_source/deploy/monitoring/alerts.yml"
 printf '# Backups are disabled until an operator configures them.\n' > "$kit_source/deploy/resticprofile.toml"
 printf 'committed init\n' > "$kit_source/deploy/postgres/init.sql"
 "$real_git" -C "$kit_source" init -q
@@ -138,10 +137,9 @@ printf 'committed init\n' > "$kit_source/deploy/postgres/init.sql"
 "$real_git" -C "$kit_source" commit -qm 'release deployment files'
 kit_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
 
-# Plant unwanted files that should be excluded: setup, backup_alerts_test.yml
+# Plant unwanted files that should be excluded: setup
 printf 'excluded\n' > "$kit_source/deploy/setup"
-printf 'excluded\n' > "$kit_source/deploy/monitoring/backup_alerts_test.yml"
-"$real_git" -C "$kit_source" add deploy/setup deploy/monitoring/backup_alerts_test.yml
+"$real_git" -C "$kit_source" add deploy/setup
 "$real_git" -C "$kit_source" commit -qm 'add files that should be excluded'
 excluded_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
 
@@ -181,14 +179,12 @@ compose_content=$(cat "$kit_extract/librepaper/compose.yaml")
 [[ ! -e "$kit_extract/librepaper/.setup-state.json" ]] || fail 'archive included operator setup state'
 [[ ! -e "$kit_extract/librepaper/leaked-backup.txt" ]] || fail 'archive included untracked file'
 
-# Now test with excluded_commit to verify setup and backup_alerts_test.yml are excluded
+# Now test with excluded_commit to verify setup is excluded
 rm -rf "$kit_extract" "$kit_output"
 mkdir "$kit_extract" "$kit_output"
 PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$excluded_commit"
 tar -C "$kit_extract" -xzf "$kit_output/librepaper-deploy.tar.gz"
 [[ ! -e "$kit_extract/librepaper/setup" ]] || fail 'archive included deploy/setup'
-[[ ! -e "$kit_extract/librepaper/monitoring/backup_alerts_test.yml" ]] || fail 'archive included monitoring/backup_alerts_test.yml'
-[[ -e "$kit_extract/librepaper/monitoring/alerts.yml" ]] || fail 'archive excluded monitoring/alerts.yml'
 
 # Reject prerelease tags
 if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3-rc.1 "$kit_source" "$kit_output" "$kit_commit" >/dev/null 2>&1; then

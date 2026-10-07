@@ -1,6 +1,5 @@
 # One VPS. Edit librepaper.toml (the two hostnames and OAuth), then docker compose up -d.
 # Every upgrade replaces this file: operator changes go in compose.override.yaml, never here.
-# Monitoring: echo COMPOSE_PROFILES=monitoring > .env
 # A database elsewhere: cp compose.managed-db.yaml compose.override.yaml
 name: librepaper
 
@@ -41,7 +40,7 @@ services:
       - backups:/var/backups/librepaper
       - pgsocket:/var/run/postgresql
       - ./librepaper.toml:/etc/librepaper/librepaper.toml:ro
-    networks: [edge, monitoring, default]
+    networks: [edge, default]
 
   backup:
     image: ghcr.io/librepaper/librepaper-backup:v0.0.21
@@ -52,7 +51,6 @@ services:
     volumes:
       - data:/var/lib/librepaper:rw
       - backups:/var/backups/librepaper
-      - backup-metrics:/var/backups/librepaper/metrics
       - pgsocket:/var/run/postgresql
       - ./librepaper.toml:/etc/librepaper/librepaper.toml:ro
       - ./resticprofile.toml:/etc/resticprofile/resticprofile.toml:ro
@@ -75,121 +73,17 @@ services:
       - caddy-config:/config
     networks: [edge, default]
 
-  prometheus:
-    image: prom/prometheus:v3.15.0
-    profiles: [monitoring]
-    restart: unless-stopped
-    logging: *bounded-logs
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=30d
-      - --storage.tsdb.retention.size=8GB
-    volumes:
-      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
-      - prometheus:/prometheus
-    networks: [monitoring]
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
-      interval: 10s
-      timeout: 3s
-      start_period: 20s
-      retries: 3
-
-  grafana:
-    image: grafana/grafana:13.2.3
-    profiles: [monitoring]
-    restart: unless-stopped
-    logging: *bounded-logs
-    depends_on:
-      prometheus:
-        condition: service_healthy
-    environment:
-      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/admin/monitoring/"
-      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/librepaper.json
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_USERS_ALLOW_ORG_CREATE: "false"
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_ANALYTICS_REPORTING_ENABLED: "false"
-      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
-      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
-      GF_PLUGINS_PREINSTALL: ""
-      GF_PLUGINS_PREINSTALL_DISABLED: "true"
-      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
-      GF_SECURITY_DISABLE_GRAVATAR: "true"
-      GF_SECURITY_COOKIE_SECURE: "true"
-      GF_SECURITY_COOKIE_SAMESITE: strict
-      GF_LOG_MODE: console
-      GF_SERVER_ROUTER_LOGGING: "false"
-      GF_LOG_FILTERS: context:error
-    secrets:
-      # The target is the file name GF_SECURITY_ADMIN_PASSWORD__FILE names; the
-      # short form would mount it as /run/secrets/grafana-admin-password.
-      - source: grafana-admin-password
-        target: grafana_admin_password
-    volumes:
-      - grafana:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana.json:/var/lib/grafana/dashboards/librepaper.json:ro
-    networks: [edge, monitoring]
-
-  node-exporter:
-    image: prom/node-exporter:v1.12.1
-    profiles: [monitoring]
-    restart: unless-stopped
-    logging: *bounded-logs
-    command:
-      - --path.procfs=/host/proc
-      - --path.sysfs=/host/sys
-      - --path.rootfs=/host/root
-      - --collector.textfile.directory=/var/lib/librepaper-metrics
-      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)
-    pid: host
-    read_only: true
-    security_opt: [no-new-privileges:true]
-    cap_drop: [ALL]
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/host/root:ro,rslave
-      - backup-metrics:/var/lib/librepaper-metrics:ro
-    networks: [monitoring]
-
-  postgres-exporter:
-    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
-    profiles: [monitoring]
-    restart: unless-stopped
-    logging: *bounded-logs
-    environment:
-      DATA_SOURCE_NAME: "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper_metrics&sslmode=disable"
-    volumes:
-      - pgsocket:/var/run/postgresql
-    networks: [monitoring]
-
-secrets:
-  grafana-admin-password:
-    file: ./monitoring/grafana_admin_password
-
 networks:
   # Fixed subnet: librepaper.toml [proxy] trusted_networks names it.
   edge:
     ipam:
       config:
         - subnet: 172.29.0.0/16
-  monitoring:
-    internal: true
 
 volumes:
   postgres:
   pgsocket:
   data:
   backups:
-  backup-metrics:
   caddy-data:
   caddy-config:
-  prometheus:
-  grafana:

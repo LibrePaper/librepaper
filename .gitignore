@@ -9,7 +9,6 @@ deploy/compose.override.yaml
 deploy/librepaper.toml.candidate*
 deploy/resticprofile.toml.candidate*
 deploy/librepaper.candidate*
-deploy/monitoring/grafana_admin_password
 deploy/site/
 tools/dev/demo/.env
 tools/dev/demo/secrets/

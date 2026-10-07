@@ -71,29 +71,22 @@ wait_for_file() {
 	fail "timed out waiting for $path"
 }
 
-metric() {
-	name=$1
-	task=$2
-	docker exec "$container" awk -v name="$name" -v task="$task" \
-		'$1 ~ ("^" name "\\{task=\"" task "\"\\}$") { print $2 }' \
-		/var/backups/librepaper/metrics/librepaper_backup.prom
-}
-
-wait_for_metric_change() {
-	name=$1
-	task=$2
-	old=$3
+wait_for_event_count() {
+	path=$1
+	pattern=$2
+	minimum=$3
 	tries=0
 	while [ "$tries" -lt 90 ]; do
-		new="$(metric "$name" "$task" 2>/dev/null || true)"
-		if [ -n "$new" ] && [ "$new" != "$old" ]; then
+		count=$(docker exec "$container" grep -c -F "$pattern" "$path" || true)
+		if [ "$count" -ge "$minimum" ]; then
 			return 0
 		fi
 		sleep 1
 		tries=$((tries + 1))
 	done
-	fail "timed out waiting for $name for $task to change"
+	fail "timed out waiting for at least $minimum occurrences of '$pattern' in $path"
 }
+
 
 docker volume create "$backup_volume" >/dev/null
 backup_volume_created=1
@@ -116,7 +109,7 @@ repository = "/var/backups/restic-repository"
 [resticprofile.backup]
 schedule-lock-wait = "1s"
 source = ["/var/backups/librepaper/current"]
-run-before = """set -eu; librepaper-backup-status start backup; rm -rf /var/backups/librepaper/current; mkdir -p /var/backups/librepaper/current; printf synthetic-backup-data > /var/backups/librepaper/current/payload; if [ -e /run/librepaper-backup/block ]; then while [ ! -e /run/librepaper-backup/release ]; do sleep 1; done; fi"""
+run-before = """set -eu; rm -rf /var/backups/librepaper/current; mkdir -p /var/backups/librepaper/current; printf synthetic-backup-data > /var/backups/librepaper/current/payload; if [ -e /run/librepaper-backup/block ]; then while [ ! -e /run/librepaper-backup/release ]; do sleep 1; done; fi"""
 
 [[resticprofile.backup.send-before]]
 method = "HEAD"
@@ -194,8 +187,7 @@ class Receiver(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", 8765), Receiver).serve_forever()
 PY
 
-# Malformed configuration must fail without echoing values and leave an
-# independently visible config-error sentinel.
+# Malformed configuration must fail without echoing values.
 if docker run --rm \
 	--mount "type=volume,source=$backup_volume,target=/var/backups/librepaper" \
 	--mount "type=bind,source=$workdir/malformed.toml,target=/etc/resticprofile/resticprofile.toml,readonly" \
@@ -206,11 +198,6 @@ fi
 if grep -F "synthetic-secret-must-not-be-logged" "$workdir/malformed.log" >/dev/null; then
 	fail "malformed config leaked a value to logs"
 fi
-docker run --rm \
-	--mount "type=volume,source=$backup_volume,target=/var/backups/librepaper" \
-	--entrypoint /bin/sh "$BACKUP_TEST_IMAGE" \
-	-c 'grep -F "librepaper_backup_config_error 1" /var/backups/librepaper/metrics/librepaper_backup.prom >/dev/null' \
-	|| fail "malformed config did not publish the config-error metric"
 
 health="$(docker image inspect --format '{{if or (not .Config.Healthcheck) (eq (index .Config.Healthcheck.Test 0) "NONE")}}none{{else}}present{{end}}' "$BACKUP_TEST_IMAGE")"
 [ "$health" = none ] || fail "backup image inherited a healthcheck"
@@ -234,10 +221,6 @@ container_created=1
 wait_for_file /run/librepaper-backup/crontab
 docker exec "$container" test -s /run/librepaper-backup/crontab \
 	|| fail "resticprofile did not create a scheduler file"
-[ "$(docker exec "$container" stat -c '%a' /var/backups/librepaper/.status-state.json)" = 600 ] \
-	|| fail "persistent status state is not private"
-[ "$(docker exec "$container" stat -c '%a' /var/backups/librepaper/metrics/librepaper_backup.prom)" = 644 ] \
-	|| fail "node-exporter metrics are not readable"
 
 docker exec -d "$container" python3 /tmp/librepaper-backup-test-receiver.py >/dev/null
 sleep 1
@@ -261,57 +244,44 @@ fi
 docker exec "$container" resticprofile -c /etc/resticprofile/profiles.toml \
 	-n resticprofile backup >"$workdir/backup-first.log" 2>&1 \
 	|| fail "synthetic backup and after-backup retention failed"
-backup_success="$(metric librepaper_backup_job_last_success_timestamp_seconds backup)"
-[ "$backup_success" -gt 0 ] || fail "successful backup did not publish whole-job status"
+wait_for_file /var/backups/librepaper/status.json
+docker exec "$container" test -s /var/backups/librepaper/status.json \
+	|| fail "resticprofile did not create the status file"
 docker exec "$container" grep -F /backup/start /var/backups/librepaper/deadman-events.log >/dev/null \
 	|| fail "backup dead-man start hook did not reach local receiver"
 docker exec "$container" grep -F /backup/success /var/backups/librepaper/deadman-events.log >/dev/null \
 	|| fail "backup dead-man success hook did not reach local receiver"
 
 # Hold a scheduled backup inside its export hook. The competing schedule should
-# time out on the shared lock without changing the last-success timestamp.
+# time out on the shared lock.
 sleep 2
 docker exec "$container" touch /run/librepaper-backup/block
-started_before="$(metric librepaper_backup_job_started_timestamp_seconds backup)"
 docker exec -d "$container" resticprofile -c /etc/resticprofile/profiles.toml \
 	run-schedule backup@resticprofile >/dev/null
-wait_for_metric_change librepaper_backup_job_started_timestamp_seconds backup "$started_before"
-sleep 2
+wait_for_file /var/backups/librepaper/current/payload
 if docker exec "$container" resticprofile -c /etc/resticprofile/profiles.toml \
 	run-schedule backup@resticprofile >"$workdir/lock-timeout.log" 2>&1; then
 	fail "second scheduled backup unexpectedly passed the shared lock"
 fi
-[ "$(metric librepaper_backup_job_last_success_timestamp_seconds backup)" = "$backup_success" ] \
-	|| fail "lock timeout changed last successful backup"
+before=$(docker exec "$container" grep -c -F /backup/success /var/backups/librepaper/deadman-events.log || true)
 docker exec "$container" touch /run/librepaper-backup/release
-wait_for_metric_change librepaper_backup_job_last_success_timestamp_seconds backup "$backup_success"
+wait_for_event_count /var/backups/librepaper/deadman-events.log /backup/success $((before + 1))
 docker exec "$container" rm -f /run/librepaper-backup/block /run/librepaper-backup/release
 
-# A failed repository check or retention command must reach run-after-fail and
-# leave the last-success value unchanged.
-check_success="$(metric librepaper_backup_job_last_success_timestamp_seconds check)"
+# A failed repository check must reach run-after-fail.
 if docker exec -e BACKUP_TEST_RESTIC_FAIL=check "$container" \
 	resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile check \
 	>"$workdir/check-failure.log" 2>&1; then
 	fail "synthetic failed repository check unexpectedly succeeded"
 fi
-[ "$(metric librepaper_backup_job_last_success_timestamp_seconds check)" = "$check_success" ] \
-	|| fail "failed repository check published success"
-[ "$(metric librepaper_backup_job_last_result_success check)" = 0 ] \
-	|| fail "failed repository check did not publish failure"
 docker exec "$container" grep -F /check/failure /var/backups/librepaper/deadman-events.log >/dev/null \
 	|| fail "check dead-man failure hook did not reach local receiver"
 
-backup_success="$(metric librepaper_backup_job_last_success_timestamp_seconds backup)"
 if docker exec -e BACKUP_TEST_RESTIC_FAIL=forget "$container" \
 	resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup \
 	>"$workdir/retention-failure.log" 2>&1; then
 	fail "synthetic retention failure unexpectedly succeeded"
 fi
-[ "$(metric librepaper_backup_job_last_success_timestamp_seconds backup)" = "$backup_success" ] \
-	|| fail "failed retention published backup success"
-[ "$(metric librepaper_backup_job_last_result_success backup)" = 0 ] \
-	|| fail "failed retention did not publish backup failure"
 docker exec "$container" grep -F /backup/failure /var/backups/librepaper/deadman-events.log >/dev/null \
 	|| fail "backup dead-man failure hook did not reach local receiver"
 
@@ -320,18 +290,14 @@ docker exec "$container" grep -F /backup/failure /var/backups/librepaper/deadman
 sleep 2
 docker exec "$container" touch /run/librepaper-backup/block
 docker exec "$container" rm -f /run/librepaper-backup/release
-started_before="$(metric librepaper_backup_job_started_timestamp_seconds backup)"
 docker exec -d "$container" resticprofile -c /etc/resticprofile/profiles.toml \
 	-n resticprofile backup >/dev/null
-wait_for_metric_change librepaper_backup_job_started_timestamp_seconds backup "$started_before"
 wait_for_file /var/backups/librepaper/current/payload
 docker kill --signal KILL "$container" >/dev/null
 docker start "$container" >/dev/null
 wait_for_file /run/librepaper-backup/crontab
 docker exec -d "$container" python3 /tmp/librepaper-backup-test-receiver.py >/dev/null
 sleep 1
-[ "$(metric librepaper_backup_job_last_success_timestamp_seconds backup)" = "$backup_success" ] \
-	|| fail "abrupt job termination erased successful backup history"
 docker exec "$container" test -f /var/backups/librepaper/current/payload \
 	|| fail "killed export did not leave staged data for recovery"
 docker exec "$container" resticprofile -c /etc/resticprofile/profiles.toml \

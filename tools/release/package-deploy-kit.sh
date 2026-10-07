@@ -24,7 +24,6 @@ if [[ ! "$commit" =~ ^[[:xdigit:]]{40}$ ]]; then
 fi
 
 # Verify all required kit files exist in the release commit.
-# monitoring/backup_alerts_test.yml is intentionally excluded.
 required_files=(
 	deploy/compose.yaml
 	deploy/compose.managed-db.yaml
@@ -32,8 +31,6 @@ required_files=(
 	deploy/resticprofile.toml
 	deploy/postgres/init.sql
 	deploy/caddy/Caddyfile
-	deploy/prometheus.yaml
-	deploy/grafana.json
 	deploy/README.md
 )
 for file in "${required_files[@]}"; do
@@ -50,7 +47,7 @@ mkdir -p "$output_dir"
 
 # The supplied Git commit determines the bytes in the kit. This excludes local
 # edits and untracked files even when the packaging workflow checkout is dirty.
-git -C "$repository" archive --format=tar "$commit" "${required_files[@]}" deploy/monitoring | tar -C "$stage" -xf -
+git -C "$repository" archive --format=tar "$commit" "${required_files[@]}" | tar -C "$stage" -xf -
 
 # A release commit is trusted input, but deployment data must never become a
 # public release asset if an operator accidentally committed it. Kits ship
@@ -62,7 +59,7 @@ if [[ -f "$stage/deploy/resticprofile.toml" ]] &&
 fi
 
 # Remove operator files and directories even though git archive only ships tracked files.
-rm -rf -- "$stage/deploy/secrets" "$stage/deploy/backups" "$stage/deploy/backup-metrics"
+rm -rf -- "$stage/deploy/secrets" "$stage/deploy/backups"
 rm -f -- \
 	"$stage/deploy/.env" \
 	"$stage/deploy"/.env.* \
@@ -72,9 +69,6 @@ rm -f -- \
 	"$stage/deploy"/librepaper \
 	"$stage/deploy"/librepaper.exe \
 	"$stage/deploy"/resticprofile.toml.local
-
-# Remove files that must never ship in the kit.
-rm -rf "$stage/deploy/monitoring/backup_alerts_test.yml"
 
 # Rewrite the two image tags in compose.yaml from their committed literals to the release tag.
 if [[ ! -f "$stage/deploy/compose.yaml" ]]; then

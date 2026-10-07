@@ -29,53 +29,42 @@ else:
     print("enabled")
 PY
 ); then
-	# A malformed config cannot establish whether backups were enabled. Missing
-	# metrics are independently alerted by the monitoring rules.
-	[ "$validate_only" = 1 ] || librepaper-backup-status config-error || true
 	echo "backup startup: invalid configuration TOML" >&2
 	exit 1
 fi
 
 case "$state" in
 disabled)
-			[ "$validate_only" = 1 ] && exit 0
-			librepaper-backup-status disabled
-			echo "backup startup: backups are disabled; configure [resticprofile] in resticprofile.toml to enable scheduled backups"
-			exec sleep infinity
-		;;
+		[ "$validate_only" = 1 ] && exit 0
+		echo "backup startup: backups are disabled; configure [resticprofile] in resticprofile.toml to enable scheduled backups"
+		exec sleep infinity
+	;;
 enabled)
-		# Persist the enabled sentinel before merged-profile validation so invalid
-		# settings remain visible to monitoring after the process exits.
-		[ "$validate_only" = 1 ] || librepaper-backup-status enabled
-		;;
-	legacy)
-		[ "$validate_only" = 1 ] || librepaper-backup-status config-error || true
-		echo "backup startup: legacy [backup] configuration is unsupported; configure resticprofile.toml" >&2
-		exit 1
-		;;
-	wrong-type)
-		[ "$validate_only" = 1 ] || librepaper-backup-status config-error || true
-		echo "backup startup: [resticprofile] must be a TOML table" >&2
-		exit 1
-		;;
-	*)
-		echo "backup startup: invalid configuration" >&2
-		exit 1
-		;;
+	;;
+legacy)
+	echo "backup startup: legacy [backup] configuration is unsupported; configure resticprofile.toml" >&2
+	exit 1
+	;;
+wrong-type)
+	echo "backup startup: [resticprofile] must be a TOML table" >&2
+	exit 1
+	;;
+*)
+	echo "backup startup: invalid configuration" >&2
+	exit 1
+	;;
 esac
 
 # `show` validates the merged profile; discard its output because it can
 # contain repository credentials supplied by the operator.
 if ! resticprofile -c "$PROFILE" -n resticprofile show >/dev/null 2>&1; then
-	[ "$validate_only" = 1 ] || librepaper-backup-status config-error || true
 	echo "backup startup: merged profile validation failed" >&2
 	exit 1
 fi
 if ! resticprofile -c "$PROFILE" -n resticprofile schedule >/dev/null 2>&1; then
-	[ "$validate_only" = 1 ] || librepaper-backup-status config-error || true
 	echo "backup startup: schedule installation failed" >&2
 	exit 1
 fi
-[ -s "$CRONTAB" ] || { [ "$validate_only" = 1 ] || librepaper-backup-status config-error || true; echo "backup startup: schedule file is empty" >&2; exit 1; }
+[ -s "$CRONTAB" ] || { echo "backup startup: schedule file is empty" >&2; exit 1; }
 [ "$validate_only" = 1 ] && exit 0
 exec /usr/bin/supercronic "$CRONTAB"
