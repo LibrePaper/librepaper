@@ -1,7 +1,0 @@
-# Compose overlay selected by `deploy/setup init --database external`.
-services:
-  postgres:
-    profiles: [local-db]
-  migrate:
-    depends_on: !reset []
-    networks: [egress]

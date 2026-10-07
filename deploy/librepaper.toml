@@ -1,7 +1,5 @@
-# Application settings for a standalone Compose deployment. Set the origins
-# and at least one [auth.*] table, then run `./setup init` and start Compose.
-# Everything not listed here has a default; see docs/host.md. Backup settings
-# belong in the separate resticprofile.toml file.
+# The one file to edit: set the two origins and one [auth.*] table, then docker compose up -d.
+# Everything not listed here has a default; see docs/host.md.
 
 # app is the application. docs serves published documents and must be a
 # different host, because a document is code and the browser is what keeps
@@ -14,25 +12,20 @@ docs = "https://docs.paper.example"
 # GitHub  https://paper.example/auth/callback
 # Google  https://paper.example/auth/callback/google
 [auth.github]
-client_id = { file = "/run/secrets/github_client_id" }
-client_secret = { file = "/run/secrets/github_client_secret" }
+client_id = "replace"
+client_secret = "replace"
+# Alternatively: client_secret = { file = "/run/secrets/github" }
 
 # [auth.google]
-# client_id = { file = "/run/secrets/google_client_id" }
-# client_secret = { file = "/run/secrets/google_client_secret" }
+# client_id = "replace"
+# client_secret = "replace"
 
-# The local database uses private TCP with SCRAM authentication. The setup
-# helper writes separate URLs for the migration owner, app and backup roles;
-# each service mounts only its own URL at the same in-container path. External
-# databases use sslmode=verify-full and the compose.external-db.yaml overlay.
+# The bundled database, over the socket compose.yaml shares with it. For a
+# database elsewhere, write the full URL here, with ?sslmode=verify-full for a managed service:
+# database_url = "postgresql://user:password@db.example/librepaper?sslmode=verify-full"
 [storage]
 directory = "/var/lib/librepaper"
-database_url = { file = "/run/secrets/database_url" }
-
-[server]
-# Schema changes run in the one-shot migration service, using librepaper_owner.
-migrate = false
-# Optional listener override, for example: address = "0.0.0.0:8080"
+database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper"
 
 # Who may publish and comment: "any" signed-in account, a GitHub login, a
 # verified Google address, or "@example.org". "anyone" also allows
@@ -41,9 +34,13 @@ migrate = false
 publishers = ["any"]
 commenters = ["any"]
 
-# Matches the Caddy/app edge network in compose.yaml; do not widen.
+# Matches the edge network in compose.yaml; do not widen.
 [proxy]
 trusted_networks = ["172.29.0.0/16"]
+
+# Private listener for the bundled Prometheus; no host port is published.
+[metrics]
+address = "0.0.0.0:9091"
 
 # Optional. Per-publisher storage in MiB and uploads per rolling hour.
 # [limits]
@@ -54,7 +51,3 @@ trusted_networks = ["172.29.0.0/16"]
 # [retention]
 # expire_after = "30d"
 # expire_from = "created"
-
-# Private listener for the bundled Prometheus; no host port is published.
-[metrics]
-address = "0.0.0.0:9091"

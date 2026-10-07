@@ -5,13 +5,11 @@ docs/examples/*_files/
 .envrc
 .env
 deploy/.env
-deploy/.setup-state.json
-deploy/secrets/
-deploy/secrets/**
+deploy/compose.override.yaml
 deploy/librepaper.toml.candidate*
 deploy/resticprofile.toml.candidate*
-deploy/compose.override.yaml*
 deploy/librepaper.candidate*
+deploy/monitoring/grafana_admin_password
 deploy/site/
 tools/dev/demo/.env
 tools/dev/demo/.setup-state.json
