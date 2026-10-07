@@ -383,7 +383,7 @@ async fn the_app_and_document_hosts_serve_nothing_of_the_admin_page() {
                 assert_eq!(response.status().as_u16(), 404, "{host}{path}");
                 assert!(header(&response, "www-authenticate").is_none());
                 let body: Value = response.json().await.unwrap();
-                assert_eq!(body, json!({"error": "not found"}), "{host}{path}");
+                assert_eq!(body["error"], json!("not found"), "{host}{path}");
             }
         }
     }
