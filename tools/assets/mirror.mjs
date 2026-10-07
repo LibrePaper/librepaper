@@ -594,15 +594,14 @@ export async function stageWasmMirror(directory = join(fileURLToPath(new URL("..
 }
 
 export function mappedEnvironment(env) {
-  const bucketSource = env.S3_BUCKET || env.OVH_S3_BUCKET;
-  const bucket = bucketSource || bucketFromArn(env.OVH_S3_ARN);
+  const bucket = env.S3_BUCKET || env.MIRROR_S3_BUCKET;
   const mapped = {
     ...env,
-    S3_ENDPOINT: env.S3_ENDPOINT || env.OVH_S3_ENDPOINT,
-    S3_REGION: env.S3_REGION || env.OVH_S3_REGION,
+    S3_ENDPOINT: env.S3_ENDPOINT || env.MIRROR_S3_ENDPOINT,
+    S3_REGION: env.S3_REGION || env.MIRROR_S3_REGION,
     S3_BUCKET: bucket,
-    AWS_ACCESS_KEY_ID: env.AWS_ACCESS_KEY_ID || env.OVH_S3_USER,
-    AWS_SECRET_ACCESS_KEY: env.AWS_SECRET_ACCESS_KEY || env.OVH_S3_SECRET,
+    AWS_ACCESS_KEY_ID: env.AWS_ACCESS_KEY_ID || env.MIRROR_S3_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: env.AWS_SECRET_ACCESS_KEY || env.MIRROR_S3_SECRET_ACCESS_KEY,
   };
   for (const [key, value] of Object.entries({
     S3_ENDPOINT: mapped.S3_ENDPOINT,
@@ -613,22 +612,18 @@ export function mappedEnvironment(env) {
   })) {
     if (value !== undefined && value !== null && typeof value !== "string") throw new Error(`${key} must be a string`);
   }
+  if (!env.S3_BUCKET && typeof env.MIRROR_S3_BUCKET === "string" && !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(env.MIRROR_S3_BUCKET)) {
+    throw new Error("MIRROR_S3_BUCKET must be a valid bucket name");
+  }
   return mapped;
 }
 
-export function selectedOvhFields(secrets) {
+export function selectedMirrorFields(secrets) {
   const selected = {};
-  for (const key of ["OVH_S3_ENDPOINT", "OVH_S3_USER", "OVH_S3_SECRET", "OVH_S3_ARN", "OVH_S3_REGION", "OVH_S3_BUCKET"]) {
+  for (const key of ["MIRROR_S3_ENDPOINT", "MIRROR_S3_ACCESS_KEY_ID", "MIRROR_S3_SECRET_ACCESS_KEY", "MIRROR_S3_REGION", "MIRROR_S3_BUCKET"]) {
     if (secrets[key] !== undefined && secrets[key] !== null) selected[key] = secrets[key];
   }
   return selected;
-}
-
-export function bucketFromArn(arn) {
-  if (!arn) return undefined;
-  const match = /^arn:aws:s3:::([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])$/.exec(arn);
-  if (!match) throw new Error("OVH_S3_ARN must be an exact bucket ARN (or set S3_BUCKET)");
-  return match[1];
 }
 
 const publisherEnvironmentKeys = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
@@ -637,7 +632,7 @@ const publisherEnvironmentKeys = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "AWS_
 // still load SOPS when the caller has not supplied a complete canonical config.
 export async function publisherEnvironment(env, loadSecrets = loadSecretsFromSops) {
   const complete = publisherEnvironmentKeys.every((key) => env[key]);
-  const candidate = complete ? env : { ...env, ...selectedOvhFields(await loadSecrets()) };
+  const candidate = complete ? env : { ...env, ...selectedMirrorFields(await loadSecrets()) };
   return mappedEnvironment(candidate);
 }
 
