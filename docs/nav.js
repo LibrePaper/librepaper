@@ -38,7 +38,6 @@ export const nav = [
     path: "host",
     label: "Self-hosting",
     pages: [
-      { path: "credentials", label: "Credentials" },
       { path: "recovery", label: "Recovery exercise" },
     ],
   },
