@@ -22,15 +22,7 @@ export const nav = [
       { path: "notebooks/calepin", label: "Calepin" },
     ],
   },
-  {
-    label: "Collaborate",
-    pages: [
-      { path: "collaborate/share", label: "Share" },
-      { path: "collaborate/edit", label: "Edit in the browser" },
-      { path: "collaborate/history", label: "History" },
-      { path: "collaborate/review", label: "Review" },
-    ],
-  },
+  { path: "collaborate", label: "Collaborate" },
   { path: "agents", label: "Agents" },
   { path: "cli", label: "CLI" },
   { path: "backups", label: "Local backups" },
