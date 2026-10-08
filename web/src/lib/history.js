@@ -13,8 +13,8 @@ import * as renderers from "./renderers.js";
 
 const asked = (headers) => ({ ...SHELL_HEADERS, ...headers });
 
-/// A `document_labels` row (`handle_history`'s `label_wire`, room-v2.md's
-/// timeline) turned into what the rest of this panel reads. The wire names
+/// A `document_labels` row (`handle_history`'s `label_wire`, see room.md
+/// "Labels") turned into what the rest of this panel reads. The wire names
 /// are the storage row's own -- `sequence`, `reason` -- and the panel and the
 /// calendar coarsening both read `seq` and `why`, the names this codebase
 /// used before checkpoints and labels were the same table; normalizing once
@@ -98,7 +98,7 @@ export async function read(slug, sha, headers = {}) {
   return { ...payload, files };
 }
 
-/// Asks for a version's plain-source archive (room-v2.md "Labels" and
+/// Asks for a version's plain-source archive (room.md "Labels" and
 /// §8.5): the first call requests one if none is pending or ready yet, and
 /// every call reports where that request stands. Polls leave terminal
 /// failures alone; a fresh download can explicitly retry one.

@@ -1465,8 +1465,8 @@
       }
       // A comment on rendered text was refused because the passage's
       // projection moved under it before the comment landed
-      // (`CommandError::StaleSelection`, room-v2.md "Annotation HTTP
-      // results"). The server names the digest a retry should read against;
+      // (`CommandError::StaleSelection`, room.md "Annotation writes"). The
+      // server names the digest a retry should read against;
       // a reader holds no source to reconcile a stale selection by hand, so
       // the useful response is to refresh to that projection -- which also
       // brings `renderedProjectDigest` current for the next attempt -- and
@@ -1943,7 +1943,7 @@
   const confirmRestore = async () => timeline.confirm(projectSignature(), await projectFrontier());
   const nameLabel = (sha, given) => timeline.name(sha, given);
 
-  /// A version's plain-source archive is produced on request (room-v2.md
+  /// A version's plain-source archive is produced on request (room.md
   /// "Labels", §8.5): the first ask starts it, and it is a 404 until it
   /// finishes. Without this the only affordance would be a click that either
   /// does nothing visible for a while or silently 404s a moment later; this
