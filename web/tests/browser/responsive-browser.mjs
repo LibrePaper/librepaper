@@ -420,10 +420,13 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".explorer-scroll").scrollTop'), filesTop);
   assert.equal(await b.evaluate('document.querySelector(".filelist .panel-actions").getBoundingClientRect().bottom <= document.querySelector(".explorer-scroll").getBoundingClientRect().top'), true);
 
+  const barAtRest = `(() => { const nav = document.querySelector("nav.reader-nav").getBoundingClientRect(); return nav.top === 0 && document.documentElement.scrollHeight <= innerHeight ? true : null; })()`;
   for (const width of [320,390,600,760]) {
     await b.evaluate('window.refreshTestPresence()');
     await flush();
     await b.resize(width,844); await flush();
+    // After a resize the bar slides away and animates back over 200 ms.
+    await until(`top bar at rest at ${width}px`, () => b.evaluate(barAtRest), 3000);
     const header = await b.evaluate(`(() => {
       const toolbar=document.querySelector('nav');
       const menuItems=[...document.querySelectorAll('.menubar-item')];
@@ -496,7 +499,6 @@ try {
   // The bar may be stepping aside after the resize above, and its slide briefly
   // gives the page a scrollbar that moves the trigger. Bring it back the way
   // focus does and let it come to rest before opening anything from it.
-  const barAtRest = `(() => { const nav = document.querySelector("nav.reader-nav").getBoundingClientRect(); return nav.top === 0 && document.documentElement.scrollHeight <= innerHeight ? true : null; })()`;
   for (const [id, item] of [["file", "Settings…"], ["view", "Preview this file"]]) {
     await b.evaluate('document.querySelector(".compact-panels-trigger").focus()');
     await until(`top bar at rest before ${id}`, () => b.evaluate(barAtRest), 3000);
@@ -621,19 +623,19 @@ try {
       const point=await b.evaluate('window.scrollTarget');
       await b.command('Input.dispatchMouseEvent',{type:'mouseWheel',x:point.x,y:point.y,deltaX:0,deltaY:500});
       await flush();
-      assert.ok(await b.evaluate('document.querySelector(".compact-panels-items").scrollTop>0'),'a wheel gesture scrolls the menu items in a short viewport');
+      await until('a wheel gesture scrolls the menu items in a short viewport', async () => (await b.evaluate('document.querySelector(".compact-panels-items").scrollTop>0')), 3000);
       await b.evaluate('document.querySelector(".compact-panels-items").scrollTop=0');
       await b.command('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:1});
       await b.command('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:point.x,y:point.y}]});
       await b.command('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:point.x,y:point.y-180}]});
       await b.command('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
       await flush();
-      assert.ok(await b.evaluate('document.querySelector(".compact-panels-items").scrollTop>0'),'a touch gesture scrolls the menu items in a short viewport');
+      await until('a touch gesture scrolls the menu items in a short viewport', async () => (await b.evaluate('document.querySelector(".compact-panels-items").scrollTop>0')), 3000);
       await b.command('Emulation.setTouchEmulationEnabled',{enabled:false});
       await b.evaluate('document.querySelector(".compact-panels-items").scrollTop=0');
       await b.command('Input.dispatchMouseEvent',{type:'mouseWheel',x:point.x,y:point.y,deltaX:0,deltaY:5000});
       await flush();
-      assert.ok(await b.evaluate(`(() => {const doc=[...document.querySelectorAll(${JSON.stringify(`${panelMenu} [data-workspace-action]`)})].find(node=>node.dataset.workspaceAction==='docs');const clip=document.querySelector('.compact-panels-items').getBoundingClientRect();const r=doc.getBoundingClientRect();const x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;const hit=document.elementFromPoint(x,y);return r.top>=clip.top-1 && r.bottom<=clip.bottom+1 && (hit===doc || doc.contains(hit))})()`), 'Docs is visible inside the menu scrollport after a real scroll');
+      await until('Docs visible inside the menu scrollport after a real scroll', async () => (await b.evaluate(`(() => {const doc=[...document.querySelectorAll(${JSON.stringify(`${panelMenu} [data-workspace-action]`)})].find(node=>node.dataset.workspaceAction==='docs');const clip=document.querySelector('.compact-panels-items').getBoundingClientRect();const r=doc.getBoundingClientRect();const x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;const hit=document.elementFromPoint(x,y);return r.top>=clip.top-1 && r.bottom<=clip.bottom+1 && (hit===doc || doc.contains(hit))})()`)), 3000);
     }
     await click('body');
   }
