@@ -6,9 +6,9 @@ Use the coding agent you already have: Claude Code, Codex, Pi, or opencode. Libr
 
 The [Agent Client Protocol](https://agentclientprotocol.com) (ACP) starts your agent and relays requests and permission requests. The [Model Context Protocol](https://modelcontextprotocol.io) (MCP) gives the agent tools to read, comment, suggest changes and, with edit access, apply them.
 
-## Local app
+## Companion
 
-The LibrePaper local app finds agents installed on your computer, starts the one you pick, and hands it the document tools. See [the local app](local-app.html).
+The LibrePaper companion finds agents installed on your computer, starts the one you pick, and hands it the document tools. See [the companion](local-app.html).
 
 ```sh
 librepaper                           # start in the background
