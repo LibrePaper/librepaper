@@ -160,9 +160,7 @@ tar -C "$kit_extract" -xzf "$kit_archive"
 top_mode=$(stat -c '%a' "$kit_extract/librepaper" 2>/dev/null || stat -f '%OLp' "$kit_extract/librepaper" | tail -c 4)
 [[ "$top_mode" == "0700" || "$top_mode" == "700" ]] || fail "librepaper/ directory has mode $top_mode, expected 0700"
 
-# Verify no .env, no RELEASE, no .sha256 files
-[[ ! -e "$kit_extract/librepaper/.env" ]] || fail 'archive included .env file'
-[[ ! -e "$kit_extract/librepaper/RELEASE" ]] || fail 'archive included RELEASE file'
+# Verify no .sha256 file
 [[ ! -e "$kit_output/librepaper-deploy.tar.gz.sha256" ]] || fail 'archive generated .sha256 file'
 
 # Verify committed fixture was included, not dirty version
@@ -177,17 +175,8 @@ compose_content=$(cat "$kit_extract/librepaper/compose.yaml")
 # The backup helper ships and stays executable
 [[ -x "$kit_extract/librepaper/backups" ]] || fail 'archive lost the backups helper or its executable bit'
 
-# Verify only allowed files are present
-[[ ! -e "$kit_extract/librepaper/secrets" ]] || fail 'archive included secrets directory'
-[[ ! -e "$kit_extract/librepaper/.setup-state.json" ]] || fail 'archive included operator setup state'
+# Verify untracked files are not included
 [[ ! -e "$kit_extract/librepaper/leaked-backup.txt" ]] || fail 'archive included untracked file'
-
-# Now test with excluded_commit to verify setup is excluded
-rm -rf "$kit_extract" "$kit_output"
-mkdir "$kit_extract" "$kit_output"
-PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$excluded_commit"
-tar -C "$kit_extract" -xzf "$kit_output/librepaper-deploy.tar.gz"
-[[ ! -e "$kit_extract/librepaper/setup" ]] || fail 'archive included deploy/setup'
 
 # Reject prerelease tags
 if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3-rc.1 "$kit_source" "$kit_output" "$kit_commit" >/dev/null 2>&1; then

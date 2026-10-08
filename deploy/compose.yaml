@@ -37,7 +37,6 @@ services:
         condition: service_healthy
     volumes:
       - data:/var/lib/librepaper
-      - backups:/var/backups/librepaper
       - pgsocket:/var/run/postgresql
       - ./librepaper.toml:/etc/librepaper/librepaper.toml:ro
     networks: [edge, default]

@@ -108,7 +108,6 @@ docs = "https://docs.paper.example"
 [auth.github]
 client_id = "replace"
 client_secret = "replace"
-# Alternatively: client_secret = { file = "/run/secrets/github" }
 
 # [auth.google]
 # client_id = "replace"

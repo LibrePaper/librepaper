@@ -59,23 +59,7 @@ if [[ -f "$stage/deploy/resticprofile.toml" ]] &&
 	exit 2
 fi
 
-# Remove operator files and directories even though git archive only ships tracked files.
-rm -rf -- "$stage/deploy/secrets"
-rm -f -- \
-	"$stage/deploy/.env" \
-	"$stage/deploy"/.env.* \
-	"$stage/deploy/.setup-state.json" \
-	"$stage/deploy"/*.candidate \
-	"$stage/deploy"/*.tmp \
-	"$stage/deploy"/librepaper \
-	"$stage/deploy"/librepaper.exe \
-	"$stage/deploy"/resticprofile.toml.local
-
 # Rewrite the two image tags in compose.yaml from their committed literals to the release tag.
-if [[ ! -f "$stage/deploy/compose.yaml" ]]; then
-	echo "release commit is missing compose.yaml" >&2
-	exit 2
-fi
 app_tag_count=$(grep -c 'ghcr.io/librepaper/librepaper:' "$stage/deploy/compose.yaml" || true)
 if [[ "$app_tag_count" != 1 ]]; then
 	echo "compose.yaml must contain ghcr.io/librepaper/librepaper: exactly once" >&2

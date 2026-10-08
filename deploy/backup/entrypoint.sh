@@ -19,9 +19,7 @@ except (OSError, tomllib.TOMLDecodeError):
     print("invalid")
     raise SystemExit(2)
 
-if "backup" in config:
-    print("legacy")
-elif "resticprofile" not in config:
+if "resticprofile" not in config:
     print("disabled")
 elif not isinstance(config["resticprofile"], dict):
     print("wrong-type")
@@ -41,16 +39,8 @@ disabled)
 	;;
 enabled)
 	;;
-legacy)
-	echo "backup startup: legacy [backup] configuration is unsupported; configure resticprofile.toml" >&2
-	exit 1
-	;;
 wrong-type)
 	echo "backup startup: [resticprofile] must be a TOML table" >&2
-	exit 1
-	;;
-*)
-	echo "backup startup: invalid configuration" >&2
 	exit 1
 	;;
 esac
