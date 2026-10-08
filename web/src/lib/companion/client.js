@@ -400,6 +400,8 @@ function instructionsFor(state) {
       return `LibrePaper Companion is not running on this computer (nothing answered at ${address()}). Run \`librepaper\` in a terminal, then try again. Not installed? See Companion settings.`;
     case "denied":
       return "Your browser blocked this site from reaching LibrePaper Companion on this computer. Allow local network access for this site in the browser's site settings, then try again.";
+    case "asking":
+      return "Your browser has not let this site reach LibrePaper Companion yet. Click Connect, then allow access to devices on your local network when the browser asks. If it does not ask, allow local network access for this site in the browser's site settings.";
     case "unauthorized":
       return "Local LibrePaper is running but has not allowed this site yet. Click Connect and approve the dialog the companion shows.";
     case "connected":
@@ -552,7 +554,11 @@ async function sha256hex(bytes) {
 async function unreachableState(error) {
   if (/permission|blocked|private network/i.test(String(error?.message || error))) return "denied";
   try {
-    if (await deps.localNetworkPermission?.() === "denied") return "denied";
+    // An undecided permission fails the same way as a stopped companion, and
+    // only the permission tells them apart.
+    const permission = await deps.localNetworkPermission?.();
+    if (permission === "denied") return "denied";
+    if (permission === "prompt") return "asking";
   } catch { /* no answer is not a denial */ }
   return "unreachable";
 }
@@ -774,7 +780,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
       // successful health response above proves the companion is available;
       // on an explicit Connect, ask it for fresh consent in this same click.
       dropPairing();
-    } else if (status.state === "denied") {
+    } else if (status.state === "denied" || status.state === "asking") {
       clearPending();
       throw named("Refused", status.instructions);
     } else if (status.state === "incompatible") {
@@ -797,7 +803,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
           dropPairing();
           break;
         }
-        if (retryStatus.state === "denied" || retryStatus.state === "incompatible") {
+        if (retryStatus.state === "denied" || retryStatus.state === "asking" || retryStatus.state === "incompatible") {
           throw named("Refused", retryStatus.instructions);
         }
         // Nothing has answered since the link fired, so nothing is starting.
@@ -884,7 +890,11 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
     } catch (error) {
       checkScope();
       const state = await unreachableState(error);
-      if (state === "denied") throw named("Refused", instructionsFor("denied"));
+      if (state === "denied") { clearPending(); throw named("Refused", instructionsFor("denied")); }
+      if (state === "asking") {
+        clearPending();
+        throw named("Refused", instructionsFor("asking"));
+      }
       // Nothing has answered since the link fired, so nothing is starting.
       if (!answered && deps.now() - started >= startGraceMs) {
         clearPending();

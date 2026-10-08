@@ -42,7 +42,7 @@ function inject(claim) {
 // ask fails, so `connectApp` falls back to the `librepaper://connect` link.
 function setup(claim) {
   local._testing.reset();
-  now = 0; link = ""; pairBody = null; storage = new Map(); attempts = 0; companionUp = false; healthUp = true; permission = "prompt"; staleCapabilities = null; session = null; sessionCalls = 0;
+  now = 0; link = ""; pairBody = null; storage = new Map(); attempts = 0; companionUp = false; healthUp = true; permission = "granted"; staleCapabilities = null; session = null; sessionCalls = 0;
   inject(claim);
   local.configure({ origin: "https://papers.example", project: "paper" });
 }
@@ -212,6 +212,13 @@ setup(() => { throw new TypeError("Failed to fetch"); });
 permission = "denied";
 await assert.rejects(local.connectApp(), (error) => error.name === "Refused" && /blocked this site/.test(error.message));
 
+// An undecided permission fails the same way, but the browser will not let the
+// request through, so the attempt says so at once instead of waiting the grace.
+setup(() => { throw new TypeError("Failed to fetch"); });
+permission = "prompt";
+await assert.rejects(local.connectApp(), (error) => error.name === "Refused" && /has not let this site reach/.test(error.message));
+assert.ok(now < 15000, "an undecided permission gives up before the start grace");
+
 // Paired, then the companion stopped: the relaunch link fires, the probe
 // keeps finding nothing, and the same explanation follows the grace.
 setup((n) => (n === 1 ? response(202, {}) : response(200, { token: "stopped-token", expires: 1000000, instance: "restart" })));
@@ -230,7 +237,7 @@ local._testing.inject({ fetch: async () => { throw new TypeError("Failed to fetc
 await assert.rejects(local.agents(), (error) => /not running on this computer/.test(error.message) && !/Failed to fetch/.test(error.message));
 
 local._testing.reset();
-console.log("local-companion: cold launch, direct ask, verifier isolation, restart, already-connected, rejection, scope change and timeout, not running, blocked passed");
+console.log("local-companion: cold launch, direct ask, verifier isolation, restart, already-connected, rejection, scope change and timeout, not running, blocked and asking passed");
 
 // Fragment intake: the OS link handler's only channel back to this page is a
 // top-level navigation carrying the real port in the hash, matched against
