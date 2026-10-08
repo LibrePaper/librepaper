@@ -44,21 +44,25 @@ async function loadMarkdownEngine() {
 
 /* ------------------------------------------------------------ frontmatter */
 
-// Only `title:` is needed, so a hand-rolled parser is enough: everything
-// between the first two `---` lines is scanned for a `title:` key, quoted or
-// not, and the rest of the document -- frontmatter included -- is passed on
-// unparsed. Pulling in a YAML library for one string would be a dependency
-// this build does not need.
+// Only `title:` and an optional `notice:` are read, so a hand-rolled parser
+// is enough: everything between the first two `---` lines is scanned for
+// those keys, quoted or not, and the rest of the document is passed on
+// unparsed. Pulling in a YAML library for two strings would be a dependency
+// this build does not need. A notice is plain text shown above the title.
 function splitFrontmatter(source) {
-  if (!source.startsWith("---")) return { title: "", body: source };
+  if (!source.startsWith("---")) return { title: "", notice: "", body: source };
   const end = source.indexOf("\n---", 3);
-  if (end === -1) return { title: "", body: source };
+  if (end === -1) return { title: "", notice: "", body: source };
   const frontmatter = source.slice(3, end);
   const body = source.slice(end + 4).replace(/^\r?\n/, "");
-  const match = frontmatter.match(/^title:\s*(.*)$/m);
-  const title = match ? match[1].trim().replace(/^["']|["']$/g, "") : "";
-  return { title, body };
+  const field = (key) => {
+    const match = frontmatter.match(new RegExp(`^${key}:\\s*(.*)$`, "m"));
+    return match ? match[1].trim().replace(/^["']|["']$/g, "") : "";
+  };
+  return { title: field("title"), notice: field("notice"), body };
 }
+
+const escapeHtml = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 /* --------------------------------------------------------------- the ABI */
 
@@ -143,7 +147,7 @@ function renderNav(currentPath) {
 // lives once, at web/src/site/docs.js.
 const docsEntry = resolve(here, "../src/site/docs.js");
 
-function template({ title, currentPath, toc, body, scriptSrc }) {
+function template({ title, notice, currentPath, toc, body, scriptSrc }) {
   return `<!doctype html>
 <html data-theme="librepaper">
   <head>
@@ -174,7 +178,7 @@ function template({ title, currentPath, toc, body, scriptSrc }) {
             </div>
           </details>
         </aside>
-        <article class="prose"><h1>${title}</h1>${body}</article>
+        <article class="prose">${notice ? `<blockquote class="page-notice"><p>${escapeHtml(notice)}</p></blockquote>` : ""}<h1>${title}</h1>${body}</article>
         ${
           toc
             ? `<aside class="pagetoc" aria-label="On this page"><p>On this page</p><nav id="tableOfContents">\n${toc}\n</nav></aside>`
@@ -194,7 +198,7 @@ function template({ title, currentPath, toc, body, scriptSrc }) {
 
 async function buildPage(wasm, entry) {
   const source = await readFile(resolve(siteDir, `${entry.path}.md`), "utf8");
-  const { title, body: sourceMarkdown } = splitFrontmatter(source);
+  const { title, notice, body: sourceMarkdown } = splitFrontmatter(source);
   const rendered = call(wasm, "compile", sourceMarkdown, title || entry.label);
   if (!rendered.ok) {
     throw new Error(`${entry.path}.md failed to render: ${JSON.stringify(rendered.diagnostics)}`);
@@ -207,6 +211,7 @@ async function buildPage(wasm, entry) {
   const posixRelative = relative(dirname(outPath), docsEntry).split(sep).join("/");
   const html = template({
     title: title || entry.label,
+    notice,
     currentPath: entry.path,
     toc: tableOfContents(body),
     body,

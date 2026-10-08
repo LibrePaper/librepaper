@@ -1,13 +1,11 @@
 ---
 title: "Simple deployment"
+notice: "LibrePaper is experimental. Self-host only if you can maintain its database, files, credentials, and recovery copies."
 ---
 
 One VPS, Docker only, one file to edit. Backups, object storage, alerts and the rest are in [Advanced features](advanced.html).
 
-> LibrePaper is experimental. Self-host only if you can maintain its database,
-> files, credentials, and recovery copies.
-
-## Install
+## LibrePaper
 
 ### How it works
 
@@ -35,7 +33,7 @@ Everything is on one machine, so losing the VPS loses it all until [backups](adv
 - Two DNS names pointing at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`).
 - A GitHub OAuth app, a Google OAuth client, or both: see [Sign-in](#sign-in).
 
-### Download
+## Install
 
 Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. Run this on the VPS, over SSH; it unpacks into a `librepaper/` directory that is private to you (mode 700).
 
