@@ -204,7 +204,7 @@ try {
   await capture("tools");
   assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero"]);
   assert.equal(await b.evaluate('Boolean(document.querySelector("#settings-companion"))'), true, "the Companion status sits in the dialog on the Tools page");
-  assert.deepEqual(await subheads(), ["Programs", "Connected sites"]);
+  assert.deepEqual(await subheads(), ["Programs"], "Connected sites needs a managing connection");
   assert.match(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent`), /Available · 7\.0/);
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero has no command to edit");
   assert.match(await b.evaluate(`document.querySelector("#settings-companion .setting-status-pill")?.textContent`), /Running/);
