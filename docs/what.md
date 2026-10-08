@@ -6,7 +6,7 @@ LibrePaper is a free and open source platform for collaborative writing. Write
 with colleagues, collect comments on a published document, or connect an LLM
 agent to comment and edit.
 
-![The LibrePaper editor: LaTeX source on the left, the compiled paper with its figure, equation and table on the right.](../images/editor-latex.png)
+![The LibrePaper editor shows LaTeX source on the left and the compiled paper on the right, with its figure, equation and table.](../images/editor-latex.png)
 
 ## Features
 
