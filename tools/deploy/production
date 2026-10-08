@@ -84,7 +84,8 @@ write_candidates() {
 
 write_site_caddy() {
 	# Operator site blocks live in caddy/local.d, which upgrades never overwrite.
-	printf '%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE" |
+	# The site block also keeps the old install page URL working, redirecting it to local-app.
+	printf '%s {\n\tencode zstd gzip\n\tredir /install.html /local-app.html permanent\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE" |
 		ssh "$HOST" 'umask 022; mkdir -p librepaper/caddy/local.d; cat > librepaper/caddy/local.d/librepaper-org.caddy.tmp && chmod 644 librepaper/caddy/local.d/librepaper-org.caddy.tmp && mv -f librepaper/caddy/local.d/librepaper-org.caddy.tmp librepaper/caddy/local.d/librepaper-org.caddy'
 }
 

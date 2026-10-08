@@ -10,7 +10,7 @@
 
   let { id = undefined, needs = "" } = $props();
 
-  const INSTALL = "https://librepaper.org/install.html";
+  const INSTALL = "https://librepaper.org/local-app.html";
   const STATES = {
     connected: { says: "Running", tone: "good" },
     unreachable: { says: "Not running", tone: "error", hint: "Run librepaper in a terminal, or install it." },
