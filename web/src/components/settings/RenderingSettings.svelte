@@ -9,7 +9,7 @@
   let { userId = "anonymous", onquartooptions } = $props();
 
   let draftProfile = $state("");
-  let parametersText = $state("{}");
+  let parametersText = $state("");
   let validationError = $state("");
   let applyError = $state("");
   let applying = $state(false);
@@ -94,7 +94,7 @@
 
 <SettingRow id="rendering-profile" title="Profile"
             description="Optional Quarto profile, such as draft for _quarto-draft.yml.">
-  <input class="input setting-input" type="text" value={draftProfile} placeholder="None"
+  <input class="input setting-input" type="text" value={draftProfile}
          aria-label="Quarto profile" autocomplete="off" spellcheck="false"
          oninput={(event) => { draftProfile = event.currentTarget.value; changed(); }} disabled={controlsDisabled} />
 </SettingRow>
@@ -102,7 +102,6 @@
 <SettingRow id="rendering-parameters" title="Parameters" stacked
             description="Optional JSON values for params declared in the document’s front matter.">
   <textarea class="textarea setting-textarea" rows="4" value={parametersText}
-            placeholder={'{"year": 2026, "region": "north", "draft": true}'}
             aria-label="Quarto parameters" aria-invalid={Boolean(validationError)} spellcheck="false"
             aria-describedby={validationError || applyError ? "rendering-parameters-error" : undefined}
             oninput={(event) => { parametersText = event.currentTarget.value; changed(); }} disabled={controlsDisabled}></textarea>

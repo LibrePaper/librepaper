@@ -166,7 +166,7 @@
     <!-- Only a link that can write has anything to spend. -->
     {#if role.id !== "reader"}
       <label class="share-field panel-meta">Comments/hour
-        <input class="input share-input" type="number" min="0" step="1" aria-label="{role.label} link budget" placeholder="Server default" bind:value={draft.budget} disabled={busy} />
+        <input class="input share-input" type="number" min="0" step="1" aria-label="{role.label} link budget" bind:value={draft.budget} disabled={busy} />
       </label>
     {/if}
     <div class="share-form-actions">

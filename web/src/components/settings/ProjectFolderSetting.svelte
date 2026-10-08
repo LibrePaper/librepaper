@@ -10,7 +10,6 @@
   let { sourceFormat = "", main = "", mayEdit = false, onbindingid } = $props();
   const local = $derived(companion.status);
   $effect(() => companion.watch());
-  const quarto = $derived(sourceFormat === "quarto");
   const connected = $derived(local?.state === "connected");
 
   let folderError = $state("");
@@ -42,7 +41,7 @@
   <ConnectionRow needs="project folders" />
 {/if}
 <SettingRow id="render-folder" title="Project folder" description="Folder used for live previews; one-shot builds use a temporary copy.">
-  <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder={quarto ? "main.qmd" : sourceFormat === "typst" ? "main.typ" : "main.md"} bind:value={entrypoint} disabled={!canChoose} />
+  <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" bind:value={entrypoint} disabled={!canChoose} />
   <button type="button" class="btn btn-sm lp-control-outline" disabled={!canChoose || !entrypoint.trim()} onclick={() => void chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose folder…"}</button>
 </SettingRow>
 {#if folderError}<p class="setting-description folder-error" role="alert">{folderError}</p>{/if}

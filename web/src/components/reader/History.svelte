@@ -412,7 +412,7 @@
         {#each bookmarks as point (point.sha)}
           <li class="mark-row" data-sha={point.sha}>
             {#if naming === point.sha}
-              {@render nameField("sent to the journal", "Name this bookmark")}
+              {@render nameField("Name this bookmark")}
             {:else}
               <button type="button" class="timeline-point mark-point"
                       class:timeline-here={viewing === point.sha}
@@ -453,7 +453,7 @@
            the month: the list runs newest first, and nothing is newer. -->
       <li class="day-row day-now">
         {#if naming === "current"}
-          {@render nameField("sent to the journal", "Name this bookmark")}
+          {@render nameField("Name this bookmark")}
         {:else}
           <!-- Not an event, so not shaped like one: a label at the left and
                what it points at at the right, rather than a time and a word
@@ -519,7 +519,7 @@
   {@const who = actor(point)}
   <li class="day-row" data-sha={point.sha}>
     {#if naming === point.sha}
-      {@render nameField("sent to the journal", "Name this bookmark")}
+      {@render nameField("Name this bookmark")}
     {:else}
       <button
         type="button"
@@ -566,12 +566,11 @@
   </li>
 {/snippet}
 
-{#snippet nameField(placeholder, label)}
+{#snippet nameField(label)}
   <input
     bind:this={field}
     bind:value={draft}
     class="input"
-    {placeholder}
     aria-label={label}
     onkeydown={(event) => {
       if (event.key === "Enter") finishNaming();

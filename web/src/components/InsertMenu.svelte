@@ -215,7 +215,7 @@
       {:else}<p class="panel-muted">No matching bibliography entries.</p>{/each}
     </div>
     <label class="label">Citation style <select class="select" bind:value={draft.style}><option value="default">Default</option><option value="narrative">Narrative / textual</option><option value="parenthetical">Parenthetical</option></select></label>
-    <label class="label">Page or locator <input class="input" placeholder="optional" bind:value={draft.locator} /></label>
+    <label class="label">Page or locator (optional) <input class="input" bind:value={draft.locator} /></label>
   {:else if dialog === "figure"}
     <label class="label">Project image <select class="select" bind:value={draft.path}><option value="">Choose an image…</option>{#if draft.path && !selectedImage}<option value={draft.path}>{draft.path}</option>{/if}{#each (captured?.files || []) as file}{@const path = typeof file === "string" ? file : file.path}{#if /\.(png|jpe?g|gif|svg|pdf|webp)$/i.test(path || "")}<option value={path}>{path}</option>{/if}{/each}</select></label>
     <label class="label">Upload image <input type="file" accept="image/*,.pdf" onchange={upload} /></label>
@@ -224,8 +224,8 @@
       {#await onpreview(draft.path) then url}{#if url}<img class="insert-image-preview" src={url} alt="Selected project asset" />{/if}{/await}
     {:else if selectedImagePreview}<img class="insert-image-preview" src={selectedImagePreview} alt="Selected project asset" />{/if}
     <label class="label">Caption <input class="input" bind:value={draft.caption} /></label>
-    <label class="label">Label <input class="input" placeholder="fig:example" bind:value={draft.label} /></label>
-    <label class="label">Width <input class="input" placeholder="e.g. 80% or 0.8\linewidth" bind:value={draft.width} /></label>
+    <label class="label">Label <input class="input" bind:value={draft.label} /></label>
+    <label class="label">Width <input class="input" bind:value={draft.width} /></label>
   {:else if dialog === "table"}
     <div class="grid grid-cols-2 gap-3"><label class="label">Rows <input class="input" type="number" min="1" max="100" bind:value={draft.rows} /></label><label class="label">Columns <input class="input" type="number" min="1" max="30" bind:value={draft.columns} /></label></div>
     <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.header} /> Header row</label>
@@ -240,25 +240,25 @@
     <label class="label">Brackets <select class="select" bind:value={draft.brackets}><option value="parentheses">( )</option><option value="brackets">Square brackets</option><option value="braces">Curly braces</option><option value="bars">Vertical bars</option><option value="doublebars">Double bars</option><option value="none">None</option></select></label>
   {:else if dialog === "cases"}
     <label class="label">Rows <input class="input" type="number" min="1" max="20" bind:value={draft.rows} /></label>
-    <label class="label">Label <input class="input" placeholder="eq:cases" bind:value={draft.label} /></label>
+    <label class="label">Label <input class="input" bind:value={draft.label} /></label>
     <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown"} /> Numbered</label>
   {:else if ["display-math", "aligned-math", "gather-math"].includes(dialog)}
     <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown"} /> Numbered</label>
-    <label class="label">Label <input class="input" placeholder="eq:example" bind:value={draft.label} /></label>
+    <label class="label">Label <input class="input" bind:value={draft.label} /></label>
   {:else if dialog === "code-block"}
-    <label class="label">Language <input class="input" placeholder="e.g. r, python, bash" bind:value={draft.language} /></label>
+    <label class="label">Language <input class="input" bind:value={draft.language} /></label>
   {:else if dialog === "link"}
-    <label class="label">Text <input class="input" bind:value={draft.text} /></label><label class="label">URL <input class="input" type="url" placeholder="https://" bind:value={draft.url} /></label>
+    <label class="label">Text <input class="input" bind:value={draft.text} /></label><label class="label">URL <input class="input" type="url" bind:value={draft.url} /></label>
   {:else if ["theorem", "lemma", "proposition", "definition", "proof", "example", "remark"].includes(dialog)}
-    <label class="label">Title <input class="input" placeholder="optional" bind:value={draft.title} /></label><label class="label">Label <input class="input" placeholder="thm:example" bind:value={draft.label} /></label>
+    <label class="label">Title (optional) <input class="input" bind:value={draft.title} /></label><label class="label">Label <input class="input" bind:value={draft.label} /></label>
   {:else if dialog === "columns"}
-    <div class="grid grid-cols-2 gap-3"><label class="label">Columns <input class="input" type="number" min="2" max="6" bind:value={draft.columns} /></label>{#if captured?.format !== "quarto"}<label class="label">Gap <input class="input" placeholder="optional" bind:value={draft.gap} /></label>{/if}</div>
+    <div class="grid grid-cols-2 gap-3"><label class="label">Columns <input class="input" type="number" min="2" max="6" bind:value={draft.columns} /></label>{#if captured?.format !== "quarto"}<label class="label">Gap (optional) <input class="input" bind:value={draft.gap} /></label>{/if}</div>
   {:else}
-    {#if dialog === "custom-environment"}<label class="label">Environment <input class="input" placeholder="e.g. important" bind:value={draft.environment} />{#if environments.length}<select class="select mt-2" aria-label="Defined environments" onchange={(event) => draft.environment = event.currentTarget.value}><option value="">Choose a defined environment…</option>{#each environments as name}<option value={name}>{name}</option>{/each}</select>{/if}</label>{/if}
-    {#if dialog === "custom-environment" && environmentFields.length}<label class="label">Arguments (one per line)<textarea class="textarea" rows={environmentFields.length} placeholder={environmentFields.map(field => field.label + (field.optional ? " (optional)" : "")).join("\n")} bind:value={draft.argumentsText}></textarea><span class="panel-muted">Enter source expressions in this order: {environmentFields.map(field => field.label).join(", ")}.</span></label>{/if}
+    {#if dialog === "custom-environment"}<label class="label">Environment <input class="input" bind:value={draft.environment} />{#if environments.length}<select class="select mt-2" aria-label="Defined environments" onchange={(event) => draft.environment = event.currentTarget.value}><option value="">Choose a defined environment…</option>{#each environments as name}<option value={name}>{name}</option>{/each}</select>{/if}</label>{/if}
+    {#if dialog === "custom-environment" && environmentFields.length}<label class="label">Arguments (one per line)<textarea class="textarea" rows={environmentFields.length} bind:value={draft.argumentsText}></textarea><span class="panel-muted">Enter source expressions in this order: {environmentFields.map(field => field.label).join(", ")}.</span></label>{/if}
     {#if needsText(dialog)}<label class="label">Text <input class="input" bind:value={draft.text} /></label>{/if}
-    {#if dialog === "heading"}<div class="grid grid-cols-2 gap-3"><label class="label">Level <input class="input" type="number" min="1" max={captured?.format === "latex" ? 5 : 6} bind:value={draft.level} /></label><label class="flex items-center gap-2 mt-6"><input type="checkbox" bind:checked={draft.numbered} /> Numbered</label></div><label class="label">Label <input class="input" placeholder="sec:example" bind:value={draft.label} /></label>{/if}
-    {#if dialog === "label"}<label class="label">Label <input class="input" placeholder="sec:example" bind:value={draft.label} /></label>{/if}
+    {#if dialog === "heading"}<div class="grid grid-cols-2 gap-3"><label class="label">Level <input class="input" type="number" min="1" max={captured?.format === "latex" ? 5 : 6} bind:value={draft.level} /></label><label class="flex items-center gap-2 mt-6"><input type="checkbox" bind:checked={draft.numbered} /> Numbered</label></div><label class="label">Label <input class="input" bind:value={draft.label} /></label>{/if}
+    {#if dialog === "label"}<label class="label">Label <input class="input" bind:value={draft.label} /></label>{/if}
   {/if}
   {#if preview}
     <details class="insert-preview" open><summary>Source preview</summary>{#if preview.text}<pre>{preview.text}</pre>{:else}<p class="panel-muted">No source will be inserted.</p>{/if}{#if preview.notes?.length}<ul>{#each preview.notes as note}<li>{note}</li>{/each}</ul>{/if}{#if preview.additionalEdits?.length}<p class="panel-muted">Additional source edits:</p>{#each preview.additionalEdits as edit}<pre>{edit.path ? `${edit.path}: ` : ""}{edit.insert || "(delete)"}</pre>{/each}{/if}</details>

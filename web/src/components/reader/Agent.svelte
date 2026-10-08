@@ -787,8 +787,8 @@
         </div>
       {/if}
       {#if diagnostic}<div class="diagnostic-context"><strong>Diagnostic · {contextPath}{diagnostic.line ? `:${diagnostic.line}` : ""}</strong><span>{diagnostic.message || "Explain this diagnostic"}</span><span>{diagnostic.source || ""}</span><button class="btn btn-sm" onclick={() => { diagnostic = null; diagnosticRevision = ""; }}>Remove diagnostic</button></div>{/if}
-      <label class="label">Additional instructions
-        <textarea class="input" rows="3" value={extra} oninput={(event) => extra = event.currentTarget.value} placeholder="Optional"></textarea>
+      <label class="label">Additional instructions (optional)
+        <textarea class="input" rows="3" value={extra} oninput={(event) => extra = event.currentTarget.value}></textarea>
       </label>
       {#if !preparable}<p class="panel-meta" role="status">This task needs the appropriate access and context. Choose another scope, or attach a passage in the document.</p>
       {:else if !runnerReady}<p class="panel-meta" role="status">Start an agent in the Chat tab before sending a task.</p>{/if}

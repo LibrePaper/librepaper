@@ -165,7 +165,7 @@
   </SettingRow>
   <SettingRow id="backup-destination" title="Backup folder">
     <div class="backup-folder-control setting-actions">
-      <input class="input input-sm setting-input backup-path" aria-label="Selected backup folder" value={destinationLabel} placeholder="No folder selected" readonly disabled={!canUseCompanion || busy !== ""} />
+      <input class="input input-sm setting-input backup-path" aria-label="Selected backup folder" value={destinationLabel} readonly disabled={!canUseCompanion || busy !== ""} />
       <button type="button" class="btn btn-sm lp-control-outline" disabled={!canUseCompanion || busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
     </div>
   </SettingRow>

@@ -55,8 +55,8 @@
     <div id="agents-add" class="agent-add">
       {#if adding}
         <form class="agent-form" onsubmit={addAgent}>
-          <input class="input input-sm setting-input agent-name" name="label" aria-label="Agent name" placeholder="Name" bind:value={label} disabled={Boolean(view.pending)} />
-          <input class="input input-sm setting-input agent-command" name="command" aria-label="Command" placeholder="Command, e.g. my-agent --acp" bind:value={command} disabled={Boolean(view.pending)} />
+          <label class="label agent-name-field"><span class="label-text">Name</span><input class="input input-sm setting-input agent-name" name="label" aria-label="Agent name" bind:value={label} disabled={Boolean(view.pending)} /></label>
+          <label class="label agent-command-field"><span class="label-text">Command</span><input class="input input-sm setting-input agent-command" name="command" aria-label="Command" bind:value={command} disabled={Boolean(view.pending)} /></label>
           <button class="btn btn-sm lp-control-brand" type="submit" disabled={Boolean(view.pending)}>{view.pending === "agent-add" ? "Adding…" : "Add agent"}</button>
           <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={close}>Cancel</button>
         </form>
@@ -78,6 +78,8 @@
   .management-error { color: var(--color-error-text); }
   .agent-add { margin-top: calc(var(--spacing) * 2); }
   .agent-form { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); }
-  .agent-name { width: 10rem; }
-  .agent-command { flex: 1; min-width: 12rem; }
+  .agent-name-field { width: 10rem; }
+  .agent-name { width: 100%; }
+  .agent-command-field { flex: 1; min-width: 12rem; }
+  .agent-command { width: 100%; }
 </style>

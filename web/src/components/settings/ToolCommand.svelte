@@ -144,11 +144,11 @@
 
 <div class="tool-command">
   <SettingRow id={`${name}-executable`} title="Executable" description="Executable path; leave blank to use PATH.">
-    <input class="input input-sm setting-input" type="text" aria-label="Executable path" placeholder="Found on PATH" bind:value={editingPath} oninput={() => savedFeedback = false} disabled={!canEdit} />
+    <input class="input input-sm setting-input" type="text" aria-label="Executable path" bind:value={editingPath} oninput={() => savedFeedback = false} disabled={!canEdit} />
   </SettingRow>
 
   <SettingRow id={`${name}-arguments`} title="Arguments" description="Added to each run, e.g. --log-level warning.">
-    <input class="input input-sm setting-input" type="text" aria-label="Arguments" placeholder="--quiet" bind:value={editingArgs} oninput={() => savedFeedback = false} disabled={!canEdit} />
+    <input class="input input-sm setting-input" type="text" aria-label="Arguments" bind:value={editingArgs} oninput={() => savedFeedback = false} disabled={!canEdit} />
   </SettingRow>
 
   <div class="setting-actions tool-command-actions">
