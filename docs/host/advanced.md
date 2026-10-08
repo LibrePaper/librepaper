@@ -67,11 +67,30 @@ docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n 
 
 Backups contain the database dump, referenced objects, both TOML files, and `session.key`. Keep the session key to preserve existing sessions and saved share secrets.
 
-Schedule and retention (set by the sidecar image):
+Schedule and retention come from a base profile inside the backup image. Your `resticprofile.toml` is merged over it, so any setting you add there wins. The defaults:
 
 - A backup runs daily at midnight UTC.
 - Retention: keep all snapshots from the last 48 hours, then 14 daily and 11 weekly.
 - A `restic check` of 10% of the data runs on Mondays at 06:00.
+
+To change them, add the keys you want to `resticprofile.toml`, then recreate the sidecar (it installs the schedule when it starts):
+
+```toml
+[resticprofile.backup]
+schedule = "*-*-* 03:30"   # every day at 03:30 UTC
+
+[resticprofile.retention]
+keep-daily = 30
+keep-weekly = 52
+```
+
+```sh
+docker compose up -d --force-recreate backup
+docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile show   # the merged result
+```
+
+- Leave `source`, `run-before` and `run-finally` alone: they produce the database export that every snapshot contains.
+- If you change the schedule, change the Healthchecks period to match (see [backup alerts](#backup-alerts)).
 
 Notes:
 
