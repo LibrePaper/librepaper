@@ -90,7 +90,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: sudo apt-get install -y --no-install-recommends mold
       - run: make pins web/dist/index.html
-      - run: docker build -f docker/Dockerfile --build-arg SOURCE=checkout --target backup -t librepaper-backup-test:local .
+      - run: docker build -f tools/docker/Dockerfile --build-arg SOURCE=checkout --target backup -t librepaper-backup-test:local .
       - run: tools/test/suite backup-sidecar
 
   # Boot the packaged Compose kit and drive ./manage against it, with images

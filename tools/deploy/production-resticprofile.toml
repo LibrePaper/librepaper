@@ -1,4 +1,4 @@
-# Production backup profile, merged over docker/backup-profiles.toml by resticprofile.
+# Production backup profile, merged over tools/docker/backup-profiles.toml by resticprofile.
 # Values in "@NAME@" (credentials, bucket, endpoint, region, ping URLs) are filled from
 # tools/deploy/keys.yaml (SOPS) by tools/deploy/production at deploy time; the
 # rendered file is what lands on the host.
