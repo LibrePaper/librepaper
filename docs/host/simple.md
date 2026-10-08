@@ -64,16 +64,16 @@ docs = "https://docs.paper.example"
 
 ### Sign-in
 
-LibrePaper has no passwords of its own: people sign in with GitHub or Google, and the server never sees or stores a password. You register LibrePaper once with the provider, which gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required; set up both to let people choose.
+LibrePaper has no passwords of its own: people sign in with GitHub or Google, and the server never sees or stores a password. You register LibrePaper once with the provider, which gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required; both can be enabled.
 
-**GitHub** suits most researchers and developers, who already have an account. LibrePaper asks for no permissions: it receives only the public login name.
+**GitHub.** LibrePaper requests no scopes and receives the account's public login name.
 
 - Instructions: [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) (on GitHub: Settings, Developer settings, OAuth Apps, New OAuth App).
 - Homepage URL: `https://paper.example`
 - Authorization callback URL: `https://paper.example/auth/callback`
 - Copy the client ID, generate a client secret, and put both in `[auth.github]`.
 
-**Google** covers everyone without a GitHub account, and lets you open publishing to a whole email domain (for example your university's). LibrePaper asks for the account's name and email address. A Gmail address must be verified by Google; an address at another domain signs in only if that domain uses Google Workspace.
+**Google.** LibrePaper requests the `openid`, `email` and `profile` scopes and receives the account's name and email address. A Gmail address must be verified by Google. An address at another domain signs in only if that domain uses Google Workspace.
 
 - Instructions: [Setting up OAuth 2.0](https://support.google.com/cloud/answer/6158849) (in Google Cloud Console: APIs and Services, Credentials, Create credentials, OAuth client ID, Web application). Google asks you to configure the consent screen first.
 - Authorized redirect URI: `https://paper.example/auth/callback/google`
