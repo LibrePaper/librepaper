@@ -6,7 +6,6 @@ START_DIR=$PWD
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 BACKUP_DIR=/var/backups/librepaper/current
-APP_IMAGE_PREFIX=ghcr.io/librepaper/librepaper:
 RELEASES=https://github.com/LibrePaper/librepaper/releases
 TMP=
 
@@ -39,14 +38,21 @@ step() { printf '\n==> %s\n' "$*"; }
 cleanup() { [ -z "$TMP" ] || rm -rf -- "$TMP"; }
 trap cleanup EXIT
 
-# The pinned app version in a compose file, such as v0.0.24.
-pinned_version() {
-	sed -n 's|.*ghcr\.io/librepaper/librepaper:\(v[0-9][0-9.]*\).*|\1|p' "${1:-compose.yaml}" | head -n 1
+# service_image <service> [compose file]: the image a service runs.
+service_image() {
+	awk -v svc="$1" '
+		/^  [^ #][^:]*:/ { current = $1; sub(/:$/, "", current) }
+		current == svc && /^    image:/ { print $2; exit }
+	' "${2:-compose.yaml}"
 }
 
-# The image reference for a service-name prefix in a compose file.
-image_ref() {
-	sed -n "s|^[[:space:]]*image:[[:space:]]*\\($1[^[:space:]\"]*\\).*|\\1|p" "$2" | head -n 1
+# The pinned app version in a compose file, such as v0.0.24.
+pinned_version() {
+	local image
+	image=$(service_image librepaper "${1:-compose.yaml}")
+	case "$image" in
+	*:v[0-9]*) echo "${image##*:}" ;;
+	esac
 }
 
 # True when $1 is older than $2; both are vMAJOR.MINOR.PATCH.
@@ -278,9 +284,9 @@ cmd_upgrade() {
 	step "Checking configs with the new images"
 	local failed=0 app_file
 	app_file=$(config_file librepaper.toml)
-	check_app "$app_file" "$(image_ref "$APP_IMAGE_PREFIX" "$kit/compose.yaml")" || failed=1
+	check_app "$app_file" "$(service_image librepaper "$kit/compose.yaml")" || failed=1
 	check_backup "$(config_file resticprofile.toml)" "$app_file" \
-		"$(image_ref ghcr.io/librepaper/librepaper-backup: "$kit/compose.yaml")" || failed=1
+		"$(service_image backup "$kit/compose.yaml")" || failed=1
 	[ "$failed" -eq 0 ] || die "a check failed; nothing was changed"
 
 	step "Installing kit files"
