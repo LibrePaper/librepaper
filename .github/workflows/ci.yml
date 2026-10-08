@@ -93,6 +93,19 @@ jobs:
       - run: docker build -f deploy/Dockerfile --build-arg SOURCE=checkout --target backup -t librepaper-backup-test:local .
       - run: tools/test/suite backup-sidecar
 
+  # Boot the packaged Compose kit and drive ./manage against it, with images
+  # built from this checkout.
+  deploy-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - run: sudo apt-get install -y --no-install-recommends mold
+      - run: make pins web/dist/index.html
+      - run: tools/test/suite deploy-install
+
   quarto-toolchains:
     runs-on: ubuntu-latest
     steps:

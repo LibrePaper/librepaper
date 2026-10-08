@@ -3,13 +3,18 @@ set -Eeuo pipefail
 
 # Boot the shipped Compose kit in two throwaway Compose projects.
 #
+# The kit is the release archive, built with tools/release/package-deploy-kit.sh
+# from the current commit. Only committed files are packaged, as in a release,
+# so uncommitted edits under deploy/ are not tested. Its two image pins are then
+# pointed at the images this run uses.
+#
 #   local    the kit as extracted: its own PostgreSQL on a socket with no
 #            network, the app migrating at start-up, /ready answering from
-#            inside the app container, and an app role that is not a superuser
+#            inside the app container, and an app role that is not a superuser;
+#            then ./manage status, check and apply (a good and a broken candidate)
 #   managed  compose.managed-db.yaml as compose.override.yaml, with a disposable
-#            TCP PostgreSQL standing in for a provider's, then the documented
-#            upgrade (the kit extracted over the same directory without the two
-#            config files) to show the override survives
+#            TCP PostgreSQL standing in for a provider's, then ./manage upgrade
+#            from the local archive to show the operator files and override survive
 #
 # Requirements:
 #   - docker with Compose 2.24.4 or later (the overrides use !reset and !override)
@@ -17,6 +22,7 @@ set -Eeuo pipefail
 #   - DEPLOY_SMOKE_APP_IMAGE and DEPLOY_SMOKE_BACKUP_IMAGE, optional: prebuilt
 #     images to run instead of building the app and backup images from the
 #     checkout; each one that is set skips its build
+#   - git, for the archive of the current commit
 #   - DEPLOY_INSTALL_KEEP=1 keeps the temporary kit directories
 #
 # usage: tools/test/deploy/install.sh [local|managed|all]
@@ -27,7 +33,6 @@ set -Eeuo pipefail
 # with a running kit.
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-deploy="$root/deploy"
 variant="${1:-all}"
 case "$variant" in
 local | managed | all) ;;
@@ -63,8 +68,12 @@ local_dir="$work/local"
 managed_dir="$work/managed"
 db_container="lp-install-db-$suffix"
 db_network="lp-install-dbnet-$suffix"
-app_image="${app_prebuilt:-librepaper-install-test:$suffix}"
-backup_image="${backup_prebuilt:-librepaper-backup-install-test:$suffix}"
+# Local images carry the release tag, so ./manage reports a real version.
+version=$(grep -m1 '^version = ' "$root/Cargo.toml" | cut -d'"' -f2)
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "could not read the workspace version ($version)"
+app_image="${app_prebuilt:-librepaper-install-test-$suffix:v$version}"
+backup_image="${backup_prebuilt:-librepaper-backup-install-test-$suffix:v$version}"
+kit_archive="$work/kit/librepaper-deploy.tar.gz"
 local_owned=0
 managed_owned=0
 db_network_owned=0
@@ -77,6 +86,15 @@ managed_compose() {
 	(cd "$managed_dir" &&
 		COMPOSE_FILE=compose.yaml:compose.override.yaml:compose.test.yaml \
 			docker compose -p "$managed_project" "$@")
+}
+
+# The same environment ./manage gets on an operator's host, aimed at this run.
+local_manage() { (cd "$local_dir" && COMPOSE_PROJECT_NAME="$local_project" ./manage "$@"); }
+managed_manage() {
+	(cd "$managed_dir" &&
+		COMPOSE_PROJECT_NAME="$managed_project" \
+			COMPOSE_FILE=compose.yaml:compose.override.yaml:compose.test.yaml \
+			./manage "$@")
 }
 
 cleanup() {
@@ -123,15 +141,27 @@ random_edge_subnet() {
 	printf '10.%s.%s.0/24' "$((240 + high % 16))" "$((1 + low % 254))"
 }
 
-# The kit as the release archive holds it: deploy/ without the image build
-# inputs and without anything an operator keeps beside it.
+# The release archive for the current commit, with the two image pins pointed
+# at this run's images (package-deploy-kit.sh only knows registry tags).
+package_kit() {
+	local out="$work/kit" unpacked="$work/kit-unpacked"
+	mkdir -p "$out" "$unpacked"
+	"$root/tools/release/package-deploy-kit.sh" "v$version" "$root" "$out" "$(git -C "$root" rev-parse HEAD)"
+	tar -C "$unpacked" -xzf "$kit_archive"
+	sed -i -e "s|ghcr.io/librepaper/librepaper:[^ \"]*|$app_image|" \
+		-e "s|ghcr.io/librepaper/librepaper-backup:[^ \"]*|$backup_image|" \
+		"$unpacked/librepaper/compose.yaml"
+	grep -qF "image: $app_image" "$unpacked/librepaper/compose.yaml" || fail 'could not pin the app image in the kit'
+	grep -qF "image: $backup_image" "$unpacked/librepaper/compose.yaml" || fail 'could not pin the backup image in the kit'
+	tar -C "$unpacked" --owner=0 --group=0 --numeric-owner -czf "$kit_archive" librepaper
+	rm -rf -- "$unpacked"
+}
+
+# Extract the archive as an operator does.
 stage_kit() {
 	local dest="$1"
 	mkdir -p "$dest"
-	cp -R "$deploy/." "$dest/"
-	rm -rf -- "$dest/Dockerfile" "$dest/backup" "$dest/compose.override.yaml" \
-		"$dest/site" "$dest/caddy/local.d" \
-		"$dest"/*.candidate*
+	tar -C "$dest" --strip-components=1 -xzf "$kit_archive"
 	chmod -R go+rX "$dest"
 }
 
@@ -254,6 +284,31 @@ assert_no_local_postgres() {
 	if grep -qx postgres <<<"$running"; then fail "postgres is a running service $when"; fi
 }
 
+# ./manage on the running local kit: status, check, then apply with a good and
+# a broken candidate.
+manage_local_checks() {
+	echo '== manage'
+	local toml="$local_dir/librepaper.toml" status before
+	status=$(local_manage status) || fail './manage status failed'
+	grep -qF "v$version" <<<"$status" || fail "./manage status does not show v$version"
+	local_manage check >/dev/null || fail './manage check failed on the kit'
+
+	cp "$toml" "$toml.candidate"
+	printf '[limits]\npublisher_uploads_per_hour = 31\n' >>"$toml.candidate"
+	local_manage apply >/dev/null || fail './manage apply failed on a good candidate'
+	[[ ! -e "$toml.candidate" ]] || fail 'apply left the candidate behind'
+	grep -qxF 'publisher_uploads_per_hour = 31' "$toml" || fail 'apply did not install the candidate'
+	app_ready local_compose
+
+	before=$(sha256sum "$toml")
+	printf 'this is = not [valid toml\n' >"$toml.candidate"
+	if local_manage apply >/dev/null 2>&1; then fail './manage apply accepted a broken candidate'; fi
+	[[ "$(sha256sum "$toml")" == "$before" ]] || fail 'a failed apply changed the live librepaper.toml'
+	rm -f -- "$toml.candidate"
+	app_ready local_compose
+	echo 'manage: status, check and apply work; a broken candidate is refused and the app keeps answering'
+}
+
 run_local() {
 	echo '== local database'
 	assert_project_unused "$local_project"
@@ -274,6 +329,8 @@ run_local() {
 	mode=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$(local_compose ps -q postgres)")
 	[[ "$mode" == none ]] || fail "postgres must run without a network (mode: $mode)"
 	echo "local database: ready, $migrations migrations, librepaper is not a superuser, postgres has no network"
+
+	manage_local_checks
 
 	local_compose down --volumes --remove-orphans >/dev/null 2>&1 || true
 }
@@ -314,25 +371,25 @@ run_managed() {
 	[[ "$migrations" =~ ^[0-9]+$ ]] && (( migrations > 0 )) || fail "the app migrated nothing on the managed database (count: $migrations)"
 	echo "managed database: ready, $migrations migrations applied over TCP, no postgres service"
 
-	# The documented upgrade: the new kit is extracted over the directory, minus
-	# the two config files the operator edits. The old compose.yaml is marked so
-	# the test can see it was replaced.
+	# The documented upgrade, from the local archive instead of GitHub. The old
+	# compose.yaml is marked so the test can see it was replaced. Same version:
+	# ./manage allows a reapply. The operator's files must come through byte for byte.
 	echo '== upgrade over the managed install'
 	printf '\n# stale\n' >>"$managed_dir/compose.yaml"
 	(cd "$managed_dir" && sha256sum compose.override.yaml compose.test.yaml librepaper.toml resticprofile.toml >"$work/operator.sums")
-	stage_kit "$work/archive"
-	rm -f -- "$work/archive/librepaper.toml" "$work/archive/resticprofile.toml"
-	cp -R "$work/archive/." "$managed_dir/"
-	if grep -q '^# stale$' "$managed_dir/compose.yaml"; then fail 'the extracted compose.yaml did not replace the old one'; fi
+	LIBREPAPER_KIT="$kit_archive" managed_manage upgrade --no-backup ||
+		fail './manage upgrade failed'
+	if grep -q '^# stale$' "$managed_dir/compose.yaml"; then fail 'the upgrade did not replace compose.yaml'; fi
 	(cd "$managed_dir" && sha256sum --check --quiet "$work/operator.sums") ||
 		fail 'the upgrade changed a file the operator owns'
-	managed_compose up -d --wait --wait-timeout 240
 	app_ready managed_compose
 	assert_no_local_postgres "after the upgrade"
-	echo 'upgrade: the override and both config files survived, the app still answers /ready'
+	echo 'upgrade: the override and the config files survived, the app still answers /ready'
 
 	managed_compose down --volumes --remove-orphans >/dev/null 2>&1 || true
 }
+
+package_kit
 
 case "$variant" in
 local) run_local ;;

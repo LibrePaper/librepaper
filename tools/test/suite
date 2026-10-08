@@ -14,7 +14,7 @@ usage: tools/test/suite <suite>
 
   backup      backup, encrypt, restore and replay-verify a synthetic deployment (needs docker, age, age-keygen)
   backup-sidecar exercise the backup sidecar against a synthetic deployment (needs Docker and prebuilt test images)
-  deploy-install boot the Compose kit with a local database and with a managed one, then upgrade it (needs Docker; builds the images from this checkout unless DEPLOY_SMOKE_APP_IMAGE is set)
+  deploy-install boot the packaged Compose kit with a local database (./manage status, check, apply) and a managed one (./manage upgrade) (needs Docker; builds the images from this checkout unless DEPLOY_SMOKE_APP_IMAGE is set)
   browser     component tests in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   smoke       drive the reader in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
   e2e         run browser smoke, history and track-changes deployment scenarios (needs docker and chromium)
@@ -187,9 +187,9 @@ suite_backup_sidecar() {
 	tools/test/backup/sidecar.sh
 }
 
-# Boot the shipped Compose kit twice against unique disposable projects and
-# volumes: with its own PostgreSQL, and with a managed one that survives the
-# documented upgrade.
+# Boot the packaged Compose kit twice against unique disposable projects and
+# volumes: with its own PostgreSQL and ./manage status, check and apply, and
+# with a managed one that survives ./manage upgrade.
 suite_deploy_install() {
 	tools/test/deploy/install.sh
 }
