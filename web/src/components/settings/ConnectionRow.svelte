@@ -5,7 +5,6 @@
   import SettingRow from "./SettingRow.svelte";
   import StatusPill from "./StatusPill.svelte";
   import * as localBridge from "../../lib/companion/client.js";
-  import * as control from "../../lib/companion/control.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
   let { id = undefined, needs = "" } = $props();
@@ -26,19 +25,14 @@
   const state = $derived(STATES[local?.state] || STATES.unknown);
   const connected = $derived(local?.state === "connected");
   const says = $derived(connected && local?.version ? `${state.says} · ${local.version}` : state.says);
-  let managedAvailable = $state(control.available());
   const description = $derived(
-    managedAvailable || connected
+    connected
       ? "Runs local programs for LibrePaper on this computer."
       : [needs ? `Needed for ${needs}.` : "", state.hint || ""].filter(Boolean).join(" ")
   );
 
   let connecting = $state(false);
   let failure = $state("");
-  $effect(() => {
-    const unsubscribe = control.subscribe((access) => { managedAvailable = Boolean(access?.available); });
-    return unsubscribe;
-  });
   $effect(() => { if (connected) failure = ""; });
 
   async function connect() {
@@ -59,14 +53,10 @@
 
 <SettingRow {id} title="Companion" {description} note={failure ? failed : undefined}>
   <div class="setting-actions">
-    {#if managedAvailable}
-      <StatusPill label={local?.version ? `Connected · ${local.version}` : "Connected"} tone="good" />
-    {:else}
-      <StatusPill label={says} tone={state.tone} accessibleLabel={`LibrePaper Companion: ${says}`} />
-      {#if !connected}
-        {#if local?.state !== "denied"}<a class="btn btn-sm lp-control-outline" href={INSTALL} target="_blank" rel="noreferrer">Install</a>{/if}
-        {#if local?.state !== "incompatible"}<button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button>{/if}
-      {/if}
+    <StatusPill label={says} tone={state.tone} accessibleLabel={`LibrePaper Companion: ${says}`} />
+    {#if !connected}
+      {#if local?.state !== "denied"}<a class="btn btn-sm lp-control-outline" href={INSTALL} target="_blank" rel="noreferrer">Install</a>{/if}
+      {#if local?.state !== "incompatible"}<button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button>{/if}
     {/if}
   </div>
 </SettingRow>
