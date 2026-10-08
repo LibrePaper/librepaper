@@ -1,6 +1,6 @@
 # Publish Docker image for a stable release.
 # The versioned application and backup images use the matching release
-# archive and the files under docker/. The workflow helper runs from the
+# archive and the files under tools/docker/. The workflow helper runs from the
 # trusted default-branch workflow revision; only a successfully published
 # release tag from this repository is used as the build context.
 
@@ -70,7 +70,7 @@ jobs:
         if: steps.resolve.outputs.proceed == 'true'
         with:
           context: release-source
-          file: release-source/docker/Dockerfile
+          file: release-source/tools/docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           target: app
           push: true
@@ -83,7 +83,7 @@ jobs:
         if: steps.resolve.outputs.proceed == 'true'
         with:
           context: release-source
-          file: release-source/docker/Dockerfile
+          file: release-source/tools/docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           target: backup
           push: true

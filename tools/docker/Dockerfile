@@ -9,10 +9,10 @@
 # build uses the repository root as its context. For `SOURCE=checkout`, run
 # `make web` first so `web/dist` is ready to embed; BuildKit skips unused stages.
 #
-#   docker build -f docker/Dockerfile --build-arg LIBREPAPER_VERSION=<compatible-tag> -t librepaper .
-#   docker build -f docker/Dockerfile --build-arg SOURCE=local -t librepaper .
+#   docker build -f tools/docker/Dockerfile --build-arg LIBREPAPER_VERSION=<compatible-tag> -t librepaper .
+#   docker build -f tools/docker/Dockerfile --build-arg SOURCE=local -t librepaper .
 #   make web
-#   docker build -f docker/Dockerfile --build-arg SOURCE=checkout -t librepaper .
+#   docker build -f tools/docker/Dockerfile --build-arg SOURCE=checkout -t librepaper .
 ARG SOURCE=release
 ARG RUST_BUILDER_IMAGE=rust:1-alpine
 
@@ -118,8 +118,8 @@ RUN set -eu; \
 	apk add --no-cache openssh-client python3 restic supercronic; \
 	install -d -o 10001 -g 65534 -m 0700 /run/librepaper-backup
 COPY --from=resticprofile-binary /usr/bin/resticprofile /usr/bin/resticprofile
-COPY docker/backup-profiles.toml /etc/resticprofile/profiles.toml
-COPY docker/backup-entrypoint.sh /usr/local/bin/librepaper-backup-entrypoint
+COPY tools/docker/backup-profiles.toml /etc/resticprofile/profiles.toml
+COPY tools/docker/backup-entrypoint.sh /usr/local/bin/librepaper-backup-entrypoint
 RUN chmod 0644 /etc/resticprofile/profiles.toml \
 	&& chmod 0755 /usr/local/bin/librepaper-backup-entrypoint
 # Only the backup service stages its export here; the app never writes it.

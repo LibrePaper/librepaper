@@ -1,6 +1,6 @@
 # Repository tools
 
-For maintainers. Self-hosters use `deploy/` at the repository root (the download) and `docker/` (the image build).
+For maintainers. Self-hosters use `deploy/` at the repository root, the download.
 
 ```
 tools/
@@ -14,6 +14,10 @@ tools/
     keys                      shell, edit, names for the SOPS file keys.yaml
     runbook                   print or edit runbook.enc
     policies/                 S3 bucket policies, applied by hand at OVH
+  docker/     the two published images
+    Dockerfile                app (the static binary) and backup (plus pg_dump, restic, resticprofile) targets
+    backup-entrypoint.sh      idle without a backup section, otherwise installs the cron schedule
+    backup-profiles.toml      the image's resticprofile base; includes the operator's file
   dev/        local development
     db                        persistent Postgres in Docker; wipe, sqlx-check, sqlx-prepare, test
     dev.toml, dev-oauth.toml  configs for make serve; keys.yaml holds the dev OAuth app

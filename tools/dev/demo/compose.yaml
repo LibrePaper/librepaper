@@ -4,7 +4,7 @@ services:
     image: librepaper:demo
     build:
       context: ${LIBREPAPER_DEMO_ROOT:?demo root is required}
-      dockerfile: docker/Dockerfile
+      dockerfile: tools/docker/Dockerfile
       args:
         SOURCE: checkout
     environment:
@@ -22,7 +22,7 @@ services:
     image: librepaper-backup:demo
     build:
       context: ${LIBREPAPER_DEMO_ROOT:?demo root is required}
-      dockerfile: docker/Dockerfile
+      dockerfile: tools/docker/Dockerfile
       target: backup
       args:
         SOURCE: checkout
