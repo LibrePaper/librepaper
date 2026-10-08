@@ -2,20 +2,63 @@
 title: "Simple deployment"
 ---
 
-One VPS, Docker only, one file to edit. PostgreSQL and all user files live on the same machine, in Docker volumes.
+One VPS, Docker only, one file to edit. PostgreSQL and all user files live on the same machine, in Docker volumes. Backups, object storage, alerts and the rest are in [Advanced features](advanced.html).
 
 > LibrePaper is experimental. Self-host only if you can maintain its database,
 > files, credentials, and recovery copies.
 
-## What you need
+## Install
+
+### What you need
 
 - A virtual private server (for example OVHcloud, Hetzner, DigitalOcean or Linode).
 - Docker Engine and Compose v2 on it.
 - Ports 80 and 443 open.
-- Two DNS names pointing at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`). A published document is code, so it needs its own host: the browser is what keeps it out of a reader's session.
-- A GitHub OAuth app, a Google OAuth client, or both: see [Sign-in](#sign-in).
+- Two DNS names pointing at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`).
+- A GitHub OAuth app, a Google OAuth client, or both: see [Sign-in](#sign-in) under Configure.
 
-## Sign-in
+### The kit
+
+LibrePaper supplies a self-hosting kit, `librepaper-deploy.tar.gz`, attached to every GitHub release. The images it pins are that release's own version.
+
+| File | What it is |
+|---|---|
+| `compose.yaml` | Four services: `postgres` (the database), `librepaper` (the app), `backup` (the restic backup sidecar, idle until configured), `caddy` (the HTTPS proxy; it obtains certificates automatically) |
+| `librepaper.toml` | The one file to edit |
+| `resticprofile.toml` | Backups, off by default |
+| `caddy/Caddyfile` | The proxy configuration |
+| `postgres/init.sql` | Creates the database and its role on first start |
+| `compose.managed-db.yaml` | For a database elsewhere, see [Database elsewhere](advanced.html#database-elsewhere) |
+| `README.md` | The quick start, and a link here |
+
+### Download
+
+Run this on the VPS, over SSH. The kit unpacks into a `librepaper/` directory that is private to you (mode 700).
+
+```sh
+curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
+cd librepaper
+```
+
+## Configure
+
+Everything is set in one file, `librepaper.toml`. You need your two origins and at least one sign-in provider; everything else has a working default.
+
+```sh
+$EDITOR librepaper.toml
+```
+
+### Origins
+
+```toml
+[origins]
+app = "https://paper.example"
+docs = "https://docs.paper.example"
+```
+
+`app` is where people use LibrePaper. `docs` serves published documents and must be a different host: a document is code, and the browser is what keeps it out of a reader's session.
+
+### Sign-in
 
 LibrePaper has no passwords of its own: people sign in with GitHub or Google, and the server never sees or stores a password. You register LibrePaper once with the provider, which gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required; set up both to let people choose.
 
@@ -38,64 +81,11 @@ client_id = "replace"
 client_secret = "replace"
 ```
 
-## The kit
-
-LibrePaper supplies a self-hosting kit, `librepaper-deploy.tar.gz`, attached to every GitHub release. The images it pins are that release's own version.
-
-| File | What it is |
-|---|---|
-| `compose.yaml` | Four services: `postgres` (the database), `librepaper` (the app), `backup` (the restic backup sidecar, idle until configured), `caddy` (the HTTPS proxy; it obtains certificates automatically) |
-| `librepaper.toml` | The one file to edit |
-| `resticprofile.toml` | Backups, off by default |
-| `caddy/Caddyfile` | The proxy configuration |
-| `postgres/init.sql` | Creates the database and its role on first start |
-| `compose.managed-db.yaml` | For a database elsewhere, see [Database elsewhere](advanced.html#database-elsewhere) |
-| `README.md` | The quick start, and a link here |
-
-## Deploy
-
-Run these on the VPS, over SSH.
-
-**1. Download the kit.** It unpacks into a `librepaper/` directory, which is private to you (mode 700).
-
-```sh
-curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
-cd librepaper
-```
-
-**2. Edit `librepaper.toml`.** Set your two origins and at least one sign-in provider; everything else has a working default (the whole file is under [Configure](#configure)).
-
-```sh
-$EDITOR librepaper.toml
-```
-
-```toml
-[origins]
-app = "https://paper.example"
-docs = "https://docs.paper.example"
-
-[auth.github]               # or [auth.google], or both: see Sign-in
-client_id = "replace"
-client_secret = "replace"
-```
+### Permissions
 
 Leave the files readable (0644): the containers read them through bind mounts, and the 700 directory is what keeps them private. Never `chmod 600 librepaper.toml`.
 
-**3. Start it.** Docker pulls the images and starts the four services. The database is created on the first start.
-
-```sh
-docker compose up -d
-```
-
-**4. Check it.** Caddy obtains a certificate the first time a name is visited, so the first request can take a few seconds. A successful answer means the app is serving.
-
-```sh
-curl -fsS https://paper.example/ready
-```
-
-Then open `https://paper.example` in a browser and sign in. If anything fails, see [Check](#check).
-
-## Configure
+### The whole file
 
 The kit's `librepaper.toml`, as shipped. The comments say what each setting does; the [advanced features](advanced.html) explain the optional ones.
 
@@ -163,7 +153,23 @@ address = "0.0.0.0:9091"
 # expire_from = "created"
 ```
 
-## Where your data lives
+### Changing it later
+
+After editing `librepaper.toml` or `resticprofile.toml`, recreate the containers that read them. Compose compares service definitions, not the bytes behind a mounted file:
+
+```sh
+docker compose up -d --force-recreate librepaper backup
+```
+
+## Deploy
+
+Docker pulls the images and starts the four services. The database is created on the first start.
+
+```sh
+docker compose up -d
+```
+
+What it creates:
 
 - PostgreSQL: the `postgres` volume.
 - User files (uploads, document snapshots): `objects/` in the `data` volume, mounted at `/var/lib/librepaper`.
@@ -173,13 +179,18 @@ Nothing is backed up until you configure backups. See [Backups](advanced.html#ba
 
 ## Check
 
+Caddy obtains a certificate the first time a name is visited, so the first request can take a few seconds. A successful answer means the app is serving.
+
 ```sh
-docker compose ps
 curl -fsS https://paper.example/ready
-docker compose logs librepaper
 ```
 
-Use the third command if the app does not answer.
+Then open `https://paper.example` in a browser and sign in. If something fails:
+
+```sh
+docker compose ps                 # all four services should be running
+docker compose logs librepaper    # why the app is not answering
+```
 
 ## Upgrade
 
@@ -190,20 +201,3 @@ cd librepaper && docker compose pull && docker compose up -d
 ```
 
 The server migrates the schema at startup. When a release note says the kit changed, this same procedure applies. `compose.yaml` is replaced on every upgrade: put your own changes in `compose.override.yaml`.
-
-## Change the configuration
-
-After editing `librepaper.toml` or `resticprofile.toml`, recreate the containers that read them. Compose compares service definitions, not the bytes behind a mounted file:
-
-```sh
-docker compose up -d --force-recreate librepaper backup
-```
-
-## Next
-
-- [DNS](advanced.html#dns): the optional admin name, extra names.
-- [Sign-in and access](advanced.html#sign-in-and-access): Google, who may publish and comment.
-- [Backups](advanced.html#backups) and the [restore drill](advanced.html#restore-drill).
-- [Object storage](advanced.html#object-storage): keep user files in an S3 bucket.
-- [Health](advanced.html#health): graphs, uptime and backup alerts.
-- [Secrets](advanced.html#secrets), [Database elsewhere](advanced.html#database-elsewhere), [Limits and retention](advanced.html#limits-and-retention), [Without Docker](advanced.html#without-docker).
