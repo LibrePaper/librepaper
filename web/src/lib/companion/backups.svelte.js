@@ -3,16 +3,19 @@
 // never starts a first-time companion probe by itself.
 import * as client from "./client.js";
 
-export function createBackupStatus(bridge = client) {
+export function createBackupStatus(bridge = client, { runningPollMs = 1000 } = {}) {
   let current = $state.raw({ accountId: "", paired: false, loading: false, data: null, error: "" });
   let scope = 0;
   let timer = null;
+  let runningTimer = null;
   let inFlight = null;
   let queuedRefresh = null;
 
   function stop() {
     if (timer !== null) clearInterval(timer);
     timer = null;
+    if (runningTimer !== null) clearTimeout(runningTimer);
+    runningTimer = null;
   }
 
   async function refresh() {
@@ -35,6 +38,13 @@ export function createBackupStatus(bridge = client) {
         const data = await bridge.backups(accountId);
         if (requestScope === scope && accountId === current.accountId && current.paired) {
           current = { ...current, loading: false, data, error: "" };
+          // A running backup finishes in seconds, so check again soon.
+          if (data?.running && runningTimer === null) {
+            runningTimer = setTimeout(() => {
+              runningTimer = null;
+              if (requestScope === scope) void refresh();
+            }, runningPollMs);
+          }
         }
       } catch (error) {
         if (requestScope === scope && accountId === current.accountId && current.paired) {

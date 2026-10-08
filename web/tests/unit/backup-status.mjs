@@ -33,3 +33,21 @@ assert.equal(state.status.data.destination, "folder-b");
 state.setScope("account-b", false);
 assert.equal(state.status.data, null, "disconnecting clears account backup state");
 state.reset();
+
+// A running backup schedules one quicker follow-up read, then stops once it is done.
+requests = [];
+const bridge2 = {
+  backups(accountId) {
+    return new Promise((resolve, reject) => requests.push({ accountId, resolve, reject }));
+  },
+};
+const fast = createBackupStatus(bridge2, { runningPollMs: 1 });
+fast.setScope("account-a", true);
+assert.equal(requests.length, 1);
+requests[0].resolve({ running: true });
+await new Promise((r) => setTimeout(r, 20));
+assert.equal(requests.length, 2, "a running backup triggers one quicker follow-up read");
+requests[1].resolve({ running: false });
+await new Promise((r) => setTimeout(r, 20));
+assert.equal(requests.length, 2, "a finished backup does not schedule another quick read");
+fast.reset();
