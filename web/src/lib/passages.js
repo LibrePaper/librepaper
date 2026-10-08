@@ -3,7 +3,7 @@
 // A comment records a source range and the frontier it was made on -- the
 // exact position in the editing history, not a label (§8.2 dropped
 // `annotations.checkpoint_id`; the anchor now carries `source_sequence` and
-// `frontier` instead, room-v2.md). While the passage is still in the document
+// `frontier` instead, room.md). While the passage is still in the document
 // there is nothing to say. When it is gone, the card used to read "Needs
 // re-anchoring", which told the person who wrote the comment nothing they did
 // not already know. What they want is where it went, and the two records

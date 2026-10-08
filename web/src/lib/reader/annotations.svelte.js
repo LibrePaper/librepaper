@@ -12,7 +12,7 @@ const REFRESH_PAGES_MAX = 8;
 // to it before the room has confirmed them.
 //
 // The list is a *prefix* of the document's comments, not the document's
-// comments: the server pages them (docs/protocol/comments-v1.md) and
+// comments: the server pages them (docs/dev/protocol/comments-v1.md) and
 // nothing here drains those pages on its own. `state.page` is what the
 // panel shows instead of counting rows -- the authoritative totals, whether
 // there is more, and whether the last request failed.

@@ -55,7 +55,7 @@ const order = (points) => [...points].sort(labelOrder).map((point) => point.sha)
 
 {
   // The wire is `document_labels` rows under `labels`, not `checkpoints`
-  // (`handle_history`'s `label_wire`, room-v2.md's timeline): `sequence`
+  // (`handle_history`'s `label_wire`, see room.md "Labels"): `sequence`
   // where this codebase reads `seq`, and `reason` where it reads `why`. A
   // page keyed on the old names would come back looking empty rather than
   // wrong -- `payload.labels ?? []` never throws -- so this checks the

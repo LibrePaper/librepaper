@@ -175,7 +175,7 @@ const { openRoom } = await import("../../src/lib/room.js");
 }
 
 // A comment sent while the socket is down falls back to the REST route
-// (room-v2.md "Annotation HTTP results"). A room command's own refusal there
+// (room.md "Annotation writes"). A room command's own refusal there
 // answers with `message`, the field the socket's error frame also carries --
 // not `error`, which belongs to the handful of routes that refuse before a
 // command is even built. `CommandError::StaleSelection` (§7.1) also carries

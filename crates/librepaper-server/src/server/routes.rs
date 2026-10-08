@@ -587,9 +587,9 @@ pub(super) fn segments(path: &str) -> Vec<&str> {
 
 pub(super) fn bundled_documentation(path: &str) -> Option<&'static str> {
     match path {
-        "/docs/protocol/room-v2.md" => Some(include_str!(concat!(
+        "/docs/protocol/room.md" => Some(include_str!(concat!(
             env!("LIBREPAPER_DOCS"),
-            "/dev/protocol/room-v2.md"
+            "/dev/protocol/room.md"
         ))),
         "/docs/protocol/chat.md" => Some(include_str!(concat!(
             env!("LIBREPAPER_DOCS"),

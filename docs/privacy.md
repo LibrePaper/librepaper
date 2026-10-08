@@ -1,6 +1,13 @@
 ---
-title: "Privacy"
+title: "Privacy and data retention"
 ---
+
+> **Warning:** Do not store private or highly sensitive data on librepaper.org.
+> The website does not use end-to-end encryption, because the server must have
+> access to a file's content to reconcile edits made by concurrent editors, and the
+> administrators must be able to consult files to enforce the terms of service.
+> If you require private file handling, consider
+> [self-hosting](./host/simple.html).
 
 This notice describes the public LibrePaper deployment. If you run another
 instance, its operator controls the database, object storage, logs, backups,
@@ -77,7 +84,7 @@ Pseudonymous comments hide identity from other readers, not the operator.
 - **Sign-in:** GitHub or Google sees the request and returns identity. No documents are sent.
 - **LaTeX mirror:** Compilers and packages come from the project mirror, which sees
   browser address and files requested. It never sees source. Package choices are
-  fingerprintable. Operators can avoid this by [hosting their own mirror](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md#hosting-your-own-copy).
+  fingerprintable. Operators can avoid this by [hosting their own mirror](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md#host-a-copy).
 - **Local companion:** The writing assistant runs on your computer. The server relays
   messages. When you start an agent from an open document page, the browser silently
   renews a document- and link-scoped five-minute token. The headless CLI uses the
@@ -99,7 +106,7 @@ Pseudonymous comments hide identity from other readers, not the operator.
 
 Hosting, database and object-storage providers see what they store.
 
-## Retention
+## Data retention
 
 - **Documents** are kept until deleted or the configured `[retention].expire_after` period passes. The period is measured from the last update or creation. See [storage, limits, and backup](./host/advanced.html#backups).
 - **Checkpoints and edit history** are retained by default while the document
@@ -108,14 +115,25 @@ Hosting, database and object-storage providers see what they store.
 - **Sessions:** session credentials expire after 30 days. Signing out clears the
   current browser's cookie. It does not invalidate a copied credential. Account
   erasure revokes the account's sessions.
-- **Backups:** the Docker kit can encrypt and schedule database/object recovery
-  points when `resticprofile.toml` contains a `[resticprofile]` table.
-  Snapshots can retain erased data until retention removes it. Operators must
-  review and reapply deletion requests after recovery. Session keys are included
-  so restored sessions and share URLs remain valid. Backup access, repository
-  credentials and off-host copies are the operator's responsibility.
+- **Backups** keep deleted data until the backup that holds it expires. See
+  [backups on librepaper.org](#backups-on-librepaperorg).
 
 Deleting a document deletes files, comments, replies, checkpoints and share links.
+
+## Backups on librepaper.org
+
+- Documents on librepaper.org do not expire. They stay until their owner deletes them.
+- A backup runs every day at midnight UTC. It holds the database, every stored
+  file, the server configuration and the session key.
+- Backups are encrypted and stored in object storage, away from the server.
+- Every backup from the last 48 hours is kept. After that, one backup per day is
+  kept for 14 days and one per week for 11 weeks.
+- A deleted document or an erased account therefore stays in backups for about
+  three months.
+- After a restore, erasure requests made since that backup are applied again.
+
+Another deployment sets its own schedule and retention. The defaults are in
+[backups](./host/advanced.html#backups).
 
 ## Erasing an account
 
@@ -126,9 +144,6 @@ Choose **Settings > Account > Erase this account** and confirm with your handle:
 3. Comments, replies and labels on others' documents remain as "Deleted user"
 4. The account record is deleted after its owned documents are purged
 
-Account and document deletion affects the live service according to the
-retention periods above. Separate backup copies may still contain deleted data
-until the operator's backup-retention process removes them. Restoring a backup
-does not automatically replay an independent deletion ledger. Operators must
-review and reapply applicable deletion requests after restore. See the
-[operator privacy guide](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/privacy-operators.md).
+Backups still hold the erased account until they expire. See
+[backups on librepaper.org](#backups-on-librepaperorg). Operators of other
+deployments should read the [operator privacy guide](./host/advanced.html#privacy).

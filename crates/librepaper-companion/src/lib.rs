@@ -1,5 +1,4 @@
 //! Internal to librepaper: no stable API, versioned in lockstep with it.
-//! See docs/dev/specs/SPEC-split-crates.md, "Workspace layout".
 //! The companion: the local app that compiles on the author's machine, the
 //! assistant sessions it hosts, and the headless automation peer.
 
