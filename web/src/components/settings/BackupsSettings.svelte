@@ -1,7 +1,6 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import StatusPill from "./StatusPill.svelte";
-  import ConnectionRow from "./ConnectionRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import { backups } from "../../lib/companion/backups.svelte.js";
@@ -135,8 +134,6 @@
   <SettingRow id="backup-connection" title="Account connection" description="Sign in to load account backup settings.">
     <StatusPill label="Signed out" />
   </SettingRow>
-{:else if !paired}
-  <ConnectionRow id="backup-connection" needs="backups" />
 {:else if backupStatus.error}
   <div class="setting-status" data-tone="warn" role="alert">
     <span class="setting-status-dot" aria-hidden="true"></span>
@@ -156,7 +153,7 @@
   </div>
 {/if}
 
-  <SettingRow id="backup-enable" title="Automatic backups" description={needsLogin ? "Authorize to enable backups." : !destinationSet ? "Choose a folder first." : ""}>
+  <SettingRow id="backup-enable" title="Automatic backups" description={signedIn && !paired ? "Connect the companion first." : needsLogin ? "Authorize to enable backups." : !destinationSet ? "Choose a folder first." : ""}>
     {#if !hasStatus}<StatusPill label="Unknown" />{/if}
     <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked={Boolean(data.enabled)} aria-describedby={!hasStatus ? "backup-enable-state" : undefined} data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseCompanion || (needsLogin ? !data.enabled : !destinationSet)} onclick={() => void changeSettings(!data.enabled)}>
       <span class="switch-thumb" data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"}></span>

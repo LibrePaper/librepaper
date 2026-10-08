@@ -157,8 +157,8 @@ try {
     await b.resize(1280, 900);
   };
   const everything = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters",
-    "tools-connection", "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites", "quarto-executable", "quarto-arguments",
-    "diagnostics-connection", "diagnostics-address", "diagnostics-startup", "diagnostics-report", "diagnostics-activity",
+    "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites", "quarto-executable", "quarto-arguments",
+    "diagnostics-address", "diagnostics-startup", "diagnostics-report", "diagnostics-activity",
     "remote-status", "remote-address", "storage-account", "account-erase"];
   const renderingRows = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters"];
   const renderingSections = ["LaTeX", "Markdown and Quarto"];
@@ -209,22 +209,23 @@ try {
   await show("tools", "quarto", "Tools");
   await until("the program rows", () => present(["tools-zotero"]).then((found) => found.length === 1), 5000);
   await capture("tools");
-  assert.deepEqual(await present(everything), ["tools-connection", "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites"]);
+  assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites"]);
+  assert.equal(await b.evaluate('Boolean(document.querySelector("#settings-companion"))'), true, "the Companion status sits in the dialog on the Tools page");
   assert.deepEqual(await subheads(), ["Programs", "Connected sites"]);
   assert.match(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent`), /Available · 7\.0/);
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero has no command to edit");
-  assert.match(await b.evaluate(`document.querySelector("#tools-connection .setting-status-pill")?.textContent`), /Running/);
+  assert.match(await b.evaluate(`document.querySelector("#settings-companion .setting-status-pill")?.textContent`), /Running/);
   // Quarto lists its executable and arguments behind Details.
   assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, "the executable row starts hidden");
   await b.evaluate(`document.querySelector("#tools-quarto .tool-row-toggle").click()`);
   await until("the Quarto command rows", () => present(["quarto-executable", "quarto-arguments"]).then((found) => found.length === 2), 5000);
-  assert.deepEqual(await present(everything), ["tools-connection", "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites", "quarto-executable", "quarto-arguments"]);
+  assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites", "quarto-executable", "quarto-arguments"]);
 
   // The Diagnostics page is the address, the machine and the setup check.
   await show("diagnostics", "quarto", "Diagnostics");
   await until("the startup row", () => present(["diagnostics-startup"]).then((found) => found.length === 1), 5000);
   await capture("diagnostics");
-  assert.deepEqual(await present(everything), ["diagnostics-connection", "diagnostics-address", "diagnostics-startup", "diagnostics-report", "diagnostics-activity"]);
+  assert.deepEqual(await present(everything), ["diagnostics-address", "diagnostics-startup", "diagnostics-report", "diagnostics-activity"]);
 
   // A visitor's Account page is the server; storage and erasure need an account.
   await show("account", "quarto", "Account");
@@ -246,33 +247,22 @@ try {
   await show("tools", "quarto", "Tools");
   assert.equal(await b.evaluate(`document.querySelector("#tools-calepin .setting-status-pill")?.textContent.trim()`), "Not checked");
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent.trim()`), "Not checked");
-  assert.match(await b.evaluate(`document.querySelector("#tools-connection .setting-status-pill")?.textContent`), /Not running/);
-  assert.match(await b.evaluate(`document.querySelector("#tools-connection").textContent`), /Install|Connect/);
-  // The words keep a column of at least 12rem next to the Install and Connect
-  // buttons, and a failed Connect lands on its own line under both instead of
-  // running over the description.
+  assert.match(await b.evaluate(`document.querySelector("#settings-companion .setting-status-pill")?.textContent`), /Not running/);
+  assert.match(await b.evaluate(`document.querySelector("#settings-companion").textContent`), /Install|Connect/);
+  // A failed Connect lands on its own line under the status pill instead of
+  // running beside it.
   await b.resize(1280, 900);
-  const rem = await b.evaluate(`parseFloat(getComputedStyle(document.documentElement).fontSize)`);
-  const wordsWidth = await b.evaluate(`document.querySelector("#tools-connection .setting-words").getBoundingClientRect().width`);
-  assert.ok(wordsWidth >= 12 * rem - 1, `the Companion words column is ${wordsWidth}px, under 12rem`);
   await b.evaluate(`window.connectFailure = "LibrePaper Companion is not running on this computer. Start it, then connect again."`);
-  await b.evaluate(`[...document.querySelectorAll("#tools-connection button")].find((button) => button.textContent.trim() === "Connect").click()`);
-  await until("the Connect failure", () => b.evaluate(`Boolean(document.querySelector("#tools-connection [role=alert]"))`), 5000);
-  const rects = JSON.parse(await b.evaluate(`(() => {
-    const row = document.querySelector("#tools-connection");
-    const rect = (node) => { const { top, bottom, left, right } = node.getBoundingClientRect(); return { top, bottom, left, right }; };
-    return JSON.stringify({
-      row: rect(row),
-      description: rect(row.querySelector(".setting-words .setting-description")),
-      controls: rect(row.querySelector(".setting-control")),
-      failure: rect(row.querySelector("[role=alert]")),
-    });
+  await b.evaluate(`[...document.querySelectorAll("#settings-companion button")].find((button) => button.textContent.trim() === "Connect").click()`);
+  await until("the Connect failure", () => b.evaluate(`Boolean(document.querySelector("#settings-companion [role=alert]"))`), 5000);
+  const placed = JSON.parse(await b.evaluate(`(() => {
+    const pill = document.querySelector("#settings-companion .setting-status-pill").getBoundingClientRect();
+    const failure = document.querySelector("#settings-companion [role=alert]").getBoundingClientRect();
+    return JSON.stringify({ pillBottom: pill.bottom, failureTop: failure.top });
   })()`));
-  assert.ok(rects.failure.top >= rects.description.bottom - 1, "the failure sits below the description, not over it");
-  assert.ok(rects.failure.top >= rects.controls.bottom - 1, "the failure sits below the Install and Connect buttons");
-  assert.ok(rects.failure.right - rects.failure.left >= rects.row.right - rects.row.left - 1, "the failure takes the whole width of the row");
-  assert.notEqual(await b.evaluate(`getComputedStyle(document.querySelector("#tools-connection [role=alert]")).color`),
-    await b.evaluate(`getComputedStyle(document.querySelector("#tools-connection .setting-words .setting-description")).color`), "the failure keeps its error colour, not the muted description colour");
+  assert.ok(placed.failureTop >= placed.pillBottom - 1, "the failure sits below the status pill");
+  assert.notEqual(await b.evaluate(`getComputedStyle(document.querySelector("#settings-companion [role=alert]")).color`),
+    await b.evaluate(`getComputedStyle(document.querySelector("#settings-companion .companion-status-label")).color`), "the failure keeps its error colour, not the muted label colour");
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero does not load an editable companion config");
   await b.evaluate(`document.querySelector("#tools-quarto .tool-row-toggle").click()`);
   await until("offline Quarto command rows", () => present(["quarto-executable"]).then((found) => found.length === 1), 5000);
