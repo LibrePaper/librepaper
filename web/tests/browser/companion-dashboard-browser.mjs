@@ -165,15 +165,18 @@ try {
 
   const requestId = Buffer.from(`settings-allow-${Date.now()}`).toString("base64url").padEnd(32, "x");
   const challenge = "a".repeat(64);
+  // Another site asks: a pair request from the configured origin itself would
+  // replace this page's own pairing when allowed.
+  const siteOrigin = "https://site.example";
   async function askForPair(id) {
     const response = await fetch(`${companionAddress}librepaper/local/pair/request`, {
       method: "POST",
-      headers: { "content-type": "application/json", Origin: appOrigin },
+      headers: { "content-type": "application/json", Origin: siteOrigin },
       body: JSON.stringify({
-        origin: appOrigin,
+        origin: siteOrigin,
         request: id,
         challenge,
-        return: `${appOrigin}/document`,
+        return: `${siteOrigin}/document`,
       }),
     });
     assert.equal(response.status, 202, `pair request queued: ${await response.text()}`);
@@ -335,23 +338,23 @@ try {
     return quarto.path === quartoPath && quarto.args.join(" ") === quartoArgs;
   }, 10000);
 
-  // Last, because revoking the site this page is paired as ends its own management access.
+  // Revoking the other site leaves this page's own pairing and its management in place.
   await until("sites heading visible", () => b.evaluate("Boolean(document.querySelector('#tools-sites-heading'))"), 10000);
 
   await until("allowed site visible in Settings", () => b.evaluate(`
     [...document.querySelector("#tools-sites-heading").closest("section").querySelectorAll(".setting-row")]
-      .some((item) => item.textContent.includes(${JSON.stringify(appOrigin)}))
+      .some((item) => item.textContent.includes(${JSON.stringify(siteOrigin)}))
   `), 10000);
   await waitForEnabledButton("Revoke", "#tools-sites-heading");
   await b.evaluate(`(() => {
     const section = document.querySelector("#tools-sites-heading").closest("section");
-    const row = [...section.querySelectorAll(".setting-row")].find((item) => item.textContent.includes(${JSON.stringify(appOrigin)}));
+    const row = [...section.querySelectorAll(".setting-row")].find((item) => item.textContent.includes(${JSON.stringify(siteOrigin)}));
     if (!row) throw new Error("allowed site did not appear in Settings");
     row.querySelector("button").click();
   })()`);
   await until("connected site revoked through Settings", async () => {
     const response = await apiState();
-    return response.status === 401 || (response.ok && !(await response.json()).pairings.some((item) => item.origin === appOrigin));
+    return response.ok && !(await response.json()).pairings.some((item) => item.origin === siteOrigin);
   }, 10000);
 
   await captureSettingsScreenshot();
