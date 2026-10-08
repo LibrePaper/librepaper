@@ -60,7 +60,7 @@ app = "https://paper.example"
 docs = "https://docs.paper.example"
 ```
 
-`app` is where people use LibrePaper. `docs` serves published documents and must be a different host: a document is code, and the browser is what keeps it out of a reader's session.
+`app` is where people use LibrePaper. `docs` serves published documents and must be a different host. A published document can run its own scripts (an HTML page, an interactive figure). On a separate host the browser treats it as a different website, so those scripts cannot see a reader's LibrePaper sign-in or act on their behalf.
 
 ### Sign-in
 
@@ -98,8 +98,8 @@ Leave the files readable (0644): the containers read them through bind mounts, a
 # Everything not listed here has a default; see docs/host/advanced.md.
 
 # app is the application. docs serves published documents and must be a
-# different host, because a document is code and the browser is what keeps
-# it out of a reader's session. Both names need a DNS record pointing here.
+# different host: a document can run its own scripts, and only a separate host
+# keeps them away from a reader's sign-in. Both names need a DNS record pointing here.
 [origins]
 app = "https://paper.example"
 docs = "https://docs.paper.example"

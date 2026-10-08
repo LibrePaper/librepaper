@@ -2,8 +2,8 @@
 # Everything not listed here has a default; see docs/host/advanced.md.
 
 # app is the application. docs serves published documents and must be a
-# different host, because a document is code and the browser is what keeps
-# it out of a reader's session. Both names need a DNS record pointing here.
+# different host: a document can run its own scripts, and only a separate host
+# keeps them away from a reader's sign-in. Both names need a DNS record pointing here.
 [origins]
 app = "https://paper.example"
 docs = "https://docs.paper.example"
