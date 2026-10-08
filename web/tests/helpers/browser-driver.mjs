@@ -1,5 +1,6 @@
 // Headless Firefox (BiDi) and Chromium (CDP) for local browser checks.
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { mkdirSync, rmSync } from "node:fs";
 import { requireChromiumExecutable } from "./browser-executable.mjs";
 
@@ -100,7 +101,29 @@ function bidiValue(remote) {
   return remote.value;
 }
 
+// A port the OS has just confirmed free on loopback.
+function freeLoopbackPort() {
+  return new Promise((done, fail) => {
+    const listener = createServer();
+    listener.once("error", fail);
+    listener.listen(0, "127.0.0.1", () => {
+      const { port } = listener.address();
+      listener.close((error) => error ? fail(error) : done(port));
+    });
+  });
+}
+
 export async function browser(name, directory, port) {
+  try {
+    return await launch(name, directory, port);
+  } catch (error) {
+    // A launch that never answers on CI is the runner, not the test; try once more on a fresh port and profile.
+    if (!/ startup timed out/.test(String(error?.message))) throw error;
+    return launch(name, `${directory}-retry`, await freeLoopbackPort());
+  }
+}
+
+async function launch(name, directory, port) {
   const executable = name === "firefox" ? name : requireChromiumExecutable();
   mkdirSync(directory, { recursive: true });
   const browserArgs = name === "firefox"
