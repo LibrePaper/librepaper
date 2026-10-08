@@ -9,6 +9,7 @@
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
   import EditorSettings from "./EditorSettings.svelte";
+  import CompanionStatus from "./CompanionStatus.svelte";
   import LatexFilesSettings from "./LatexFilesSettings.svelte";
   import QuotaSettings from "./QuotaSettings.svelte";
   import BuildSettings from "./BuildSettings.svelte";
@@ -109,6 +110,7 @@
         {/each}
       {/each}
       {#if found && !nav.length}<p class="settings-nav-empty">Nothing matches.</p>{/if}
+      <div class="settings-nav-companion"><CompanionStatus id="settings-companion" /></div>
     </nav>
 
     <div class="settings-body" bind:this={body}>

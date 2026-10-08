@@ -39,9 +39,8 @@ export const CATEGORIES = [
     id: "tools", says: "Tools", offered: always,
     note: "This computer",
     entries: [
-      { id: "tools-connection", says: "Companion", terms: "companion connect install running status installer setup linux macos windows" },
       { id: "tools-approvals", says: "Waiting for your answer", terms: "allow deny approval pending requests access" },
-      { id: "tools-list", says: "Programs", terms: "tools tool status version available missing rescan scan local quarto pandoc calepin typst zotero" },
+      { id: "tools-list", says: "Programs", terms: "tools tool status version available missing rescan scan local quarto pandoc calepin typst zotero companion connect install running status installer setup linux macos windows" },
       { id: "tools-quarto", says: "Quarto", terms: "quarto executable path arguments version" },
       { id: "tools-calepin", says: "Calepin", terms: "calepin typst executable path arguments version" },
       { id: "tools-zotero", says: "Zotero", terms: "zotero citations bibliography library references local api" },

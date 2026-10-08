@@ -31,6 +31,7 @@ async function freePort() {
 
 writeFileSync(harness, `
 <script>
+  import CompanionStatus from ${JSON.stringify(join(root, "web/src/components/settings/CompanionStatus.svelte"))};
   import BackupsSettings from ${JSON.stringify(join(root, "web/src/components/settings/BackupsSettings.svelte"))};
   import { backups } from ${JSON.stringify(join(root, "web/src/lib/companion/backups.svelte.js"))};
   let account = $state({ id: "account-a", provider: "github" });
@@ -40,6 +41,7 @@ writeFileSync(harness, `
   window.refreshBackupStatus = () => backups.refresh();
   window.resetBackupStatus = () => backups.reset();
 </script>
+<CompanionStatus id="settings-companion" />
 <BackupsSettings {account} />
 `);
 
@@ -145,7 +147,7 @@ const resolveStatus = (index, value) => `window.backupRequests[${index}].resolve
 try {
   b = await browser("chromium", join(temporary, "chrome"), debugPort);
   await b.navigate(`http://127.0.0.1:${port}/`);
-  await until("backup settings mounted", () => b.evaluate("Boolean(document.querySelector('#backup-connection'))"), 10000);
+  await until("backup settings mounted", () => b.evaluate("Boolean(document.querySelector('#backup-enable'))"), 10000);
   const visibleControls = "Boolean(document.querySelector('#backup-enable [role=switch]') && document.querySelector('#backup-destination input') && document.querySelector('#backup-destination button') && document.querySelector('#backup-frequency select') && document.querySelector('.backup-status button'))";
   assert.equal(await b.evaluate(visibleControls), true, "backup settings remain visible before a companion is connected");
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled"), true, "controls are disabled while the companion is disconnected");
@@ -158,9 +160,9 @@ try {
   assert.equal(await b.evaluate(visibleControls), true, "backup settings remain visible when signed out");
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled"), true, "all account-scoped controls are disabled when signed out");
   await b.evaluate("window.setAccount({ id: 'account-a', provider: 'github' })");
-  await until("connect prompt restored", () => b.evaluate("document.querySelector('#backup-connection')?.innerText.includes('Not running')"), 5000);
+  await until("connect prompt restored", () => b.evaluate("document.querySelector('#settings-companion')?.innerText.includes('Not running')"), 5000);
 
-  await b.evaluate(click("#backup-connection button"));
+  await b.evaluate(click("#settings-companion button"));
   await until("existing companion connection flow invoked", () => b.evaluate("window.connectCalls === 1"), 5000);
   await b.evaluate("window.setPairing(true)");
   await until("paired status request", () => b.evaluate("window.backupRequests.length === 1"), 5000);
@@ -307,7 +309,7 @@ try {
   // Disconnecting after a successful load clears the account's destination and
   // disables every action while keeping the settings page visible.
   await b.evaluate("window.setPairing(false)");
-  await until("disconnected settings remain visible", () => b.evaluate("document.querySelector('#backup-connection')?.innerText.includes('Not running') && Boolean(document.querySelector('#backup-enable [role=switch]'))"), 5000);
+  await until("disconnected settings remain visible", () => b.evaluate("document.querySelector('#settings-companion')?.innerText.includes('Not running') && Boolean(document.querySelector('#backup-enable [role=switch]'))"), 5000);
   assert.equal(await b.evaluate("document.querySelector('#backup-destination input').value"), "", "disconnecting does not expose the previously loaded folder");
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled"), true, "disconnecting disables all backup actions");
 

@@ -97,11 +97,11 @@ try {
   assert.equal((await connectionState('Remote')).offline,true,'Remote pill turns red while disconnected');
   await clickPill('Local');
   await until('Tools settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Tools"'),3000);
-  assert.equal(await b.evaluate('document.querySelector("#tools-connection .setting-title")?.textContent.trim() === "Companion" && Boolean(document.querySelector("#tools-connection .setting-status-pill")?.textContent.trim())'),true,
-    'Tools settings shows the Companion row with its status');
+  assert.equal(await b.evaluate('document.querySelector("#settings-companion .companion-status-label")?.textContent.trim() === "Companion" && Boolean(document.querySelector("#settings-companion .setting-status-pill")?.textContent.trim())'),true,
+    'Tools settings shows the Companion status with its pill');
   assert.equal((await connectionState('Local')).offline,true,'Local pill is red while its app is unavailable');
   const localActions = await b.evaluate(`(() => {
-    const root=document.querySelector('#tools-connection');
+    const root=document.querySelector('#settings-companion');
     const visible=element => Boolean(element?.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
     const install=root?.querySelector('a[href="https://librepaper.org/local-app.html"]');
     const connect=[...(root?.querySelectorAll('button') || [])].find(button => button.textContent.trim() === 'Connect');

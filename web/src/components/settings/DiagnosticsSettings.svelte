@@ -1,6 +1,5 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
-  import ConnectionRow from "./ConnectionRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
@@ -154,7 +153,6 @@
 
 <p class="setting-description diagnostics-intro">Details for troubleshooting the companion on this computer.</p>
 
-<ConnectionRow id="diagnostics-connection" />
 
 {#if !view.available}
 <SettingRow id="diagnostics-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change only when using another port.` : "Change only when using another port."}>

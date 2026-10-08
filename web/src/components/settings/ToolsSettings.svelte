@@ -2,7 +2,6 @@
   import SettingRow from "./SettingRow.svelte";
   import ToolRow from "./ToolRow.svelte";
   import ToolCommand from "./ToolCommand.svelte";
-  import ConnectionRow from "./ConnectionRow.svelte";
   import { companion } from "../../lib/companion/status.svelte.js";
 
   // The page does not own the machine view; the dialog creates and starts it.
@@ -72,7 +71,6 @@
   <p class="setting-description tools-notice" role="status">{view.notice}</p>
 {/if}
 
-<ConnectionRow id="tools-connection" />
 
 {#if view.available && view.list(view.state?.approvals).length}
 <section id="tools-approvals" class="settings-subsection" aria-labelledby="tools-approvals-heading">
