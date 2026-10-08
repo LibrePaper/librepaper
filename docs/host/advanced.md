@@ -98,35 +98,33 @@ Notes:
 - A backup records the database's migration version, and `admin restore` refuses a backup whose version differs from the binary's. Take a fresh backup after upgrading to a release that changes the migration history.
 - Set up [backup alerts](#backup-alerts) so a failed backup emails you.
 
-### Restore drill
+### Inspect a backup
 
-Restore one remote Restic snapshot into a new deployment on a machine that is not the VPS. The kit publishes ports 80 and 443 and claims a fixed subnet, so two copies cannot share a host. Practice this before you need it.
+The download includes `./backups`, which reads the backup repository through the backup container. It needs only a configured `resticprofile.toml`, so it also works from another machine with a copy of that file.
 
 ```sh
-# On a machine that is not the VPS. Docker is the only requirement.
-mkdir -m 700 librepaper-recovery && cd librepaper-recovery
-curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
-cd librepaper
-cp /path/to/your/resticprofile.toml .   # the repository and RESTIC_PASSWORD are all restore needs
-# Keep the kit's own librepaper.toml: it points at the empty local database. Your copy may point at a managed database, or at secret files this kit does not mount.
-mkdir -m 700 staging
-docker compose up -d --wait postgres                                 # an empty database; do not start the app yet
-docker compose run --rm --no-deps --user 0 -v ./staging:/restore --entrypoint resticprofile backup \
-  -c /etc/resticprofile/profiles.toml -n resticprofile restore <snapshot-id> --target /restore
-docker compose run --rm --no-deps --user 0 -v ./staging:/restore:ro librepaper \
-  admin restore --config /etc/librepaper/librepaper.toml /restore/var/backups/librepaper/current /var/lib/librepaper/recovered
-docker compose run --rm --no-deps --user 0 -v ./staging:/restore:ro --entrypoint sh librepaper -c '
-  install -d -o 10001 -g 65534 /var/lib/librepaper/objects /var/lib/librepaper/secrets
-  cp -a /var/lib/librepaper/recovered/objects/. /var/lib/librepaper/objects/
-  install -o 10001 -g 65534 -m 0600 /restore/var/lib/librepaper/secrets/session.key /var/lib/librepaper/secrets/session.key
-  chown -R 10001:65534 /var/lib/librepaper/objects'
-docker compose up -d --wait
-docker compose exec librepaper wget -qO- http://127.0.0.1:8080/ready
+./backups list              # every snapshot: id, time, size
+./backups show latest       # one snapshot: when it ran, migration version, stored files, database size
 ```
 
-`admin restore` verifies the manifest and object hashes and loads the database in one transaction; it refuses a non-empty database or an existing destination. Use the session key from the same snapshot, never one from another deployment.
+`list` and `show` change nothing.
 
-Open the app through a local browser or SSH tunnel and verify rendered content, assets, and existing sessions.
+### Restore drill
+
+Restore a snapshot into a fresh copy of LibrePaper on a machine that is not the VPS, to check that your backups work. Practice this before you need it. The copy publishes ports 80 and 443, so it needs a machine of its own.
+
+```sh
+# on another machine with Docker
+curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
+cd librepaper
+cp /path/to/your/resticprofile.toml .   # the repository and its password are all a restore needs
+./backups restore latest                # or a snapshot id from ./backups list
+```
+
+- It starts an empty database, restores the snapshot, loads it with `admin restore` (which verifies every file against the backup's manifest), puts the stored files and the snapshot's own `session.key` in place, starts LibrePaper and checks `/ready`.
+- It refuses to run where LibrePaper is already running, and `admin restore` refuses a database that is not empty, so it cannot overwrite a live deployment.
+- Open the copy in a local browser or through an SSH tunnel, and check documents, figures and that existing sign-ins still work. Do not expose it under your production names.
+- Keep the kit's own `librepaper.toml` for the drill: it points at the empty local database.
 
 ## Object storage
 
@@ -158,7 +156,9 @@ Backups still include user files: the backup job reads them through the same sto
 
 The VPS cannot report its own outage, so alerts come from free outside services.
 
-### Operator graphs
+### LibrePaper admin console
+
+A password-protected page on its own hostname that graphs the server's health over the last 400 days: CPU, memory, free disk, stored bytes, open documents, live connections and database connections in use.
 
 ```sh
 # Optional. Graphs of the last 400 days at https://admin.paper.example/, behind a password.

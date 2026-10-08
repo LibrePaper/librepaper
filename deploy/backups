@@ -24,10 +24,11 @@ die() { echo "backups: $*" >&2; exit 1; }
 step() { printf '\n==> %s\n' "$*"; }
 
 # resticprofile in the backup image, with the kit's profile. Extra arguments go
-# straight to restic. -T keeps stdout clean for parsing.
+# straight to restic. -T keeps stdout clean for parsing; COMPOSE_PROGRESS and
+# --quiet hide container and profile chatter (older Compose ignores the variable).
 restic_cmd() {
-	docker compose run --rm --no-deps -T --entrypoint resticprofile backup \
-		-c /etc/resticprofile/profiles.toml -n resticprofile "$@"
+	COMPOSE_PROGRESS=quiet docker compose run --rm --no-deps -T --entrypoint resticprofile backup \
+		--quiet -c /etc/resticprofile/profiles.toml -n resticprofile "$@"
 }
 
 need_snapshot() {
