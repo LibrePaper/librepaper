@@ -108,7 +108,6 @@ RUN apk add --no-cache postgresql17-client
 # Docker invents on its own belongs to root -- and the server does not run as
 # root.
 VOLUME /var/lib/librepaper
-VOLUME /var/backups/librepaper
 USER librepaper
 
 # Both origins arrive on this one port; the server routes them by Host.
@@ -133,6 +132,8 @@ COPY --from=backup-assets /profiles.toml /etc/resticprofile/profiles.toml
 COPY --from=backup-assets /entrypoint.sh /usr/local/bin/librepaper-backup-entrypoint
 RUN chmod 0644 /etc/resticprofile/profiles.toml \
 	&& chmod 0755 /usr/local/bin/librepaper-backup-entrypoint
+# Only the backup service stages its export here; the app never writes it.
+VOLUME /var/backups/librepaper
 USER 10001:65534
 HEALTHCHECK NONE
 ENTRYPOINT ["/usr/local/bin/librepaper-backup-entrypoint"]
