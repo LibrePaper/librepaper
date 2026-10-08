@@ -1,8 +1,22 @@
 ---
-title: "Install"
+title: "The local app"
 ---
 
-Install `librepaper` to run the companion, use the CLI, or host a server. It is one binary; pick one method.
+A browser page is sandboxed: it cannot read your files, run programs or reach the software on your computer. The local app is one small program that does those things for LibrePaper, on your machine, under your account, and only for the sites and folders you approve.
+
+## What it enables
+
+- [Quarto](notebooks/quarto.html) and [Calepin](notebooks/calepin.html): run a document's code with the R, Python and TeX installed on your computer, optionally against a project folder on your disk.
+- [Agents](agents.html): start the coding agent you already have and hand it the document tools.
+- [Local backups](backups.html): every project in your account copied to ZIP files in a folder you pick.
+- Zotero: cite from your local library, read-only.
+- [The CLI](cli.html): export project snapshots, and run or host a server from the same binary.
+
+Nothing runs unasked. A site pairs with the app per origin and project, folders are granted one at a time through your system's own chooser, running a document's code is approved per document, and Settings shows what is connected and running. On a shared project, editors can change the code that runs, so it is their code too.
+
+## Install
+
+One binary; pick one method.
 
 ## Installer script
 
@@ -22,7 +36,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepa
 - To pin a version, replace `releases/latest/download/` with `releases/download/<tag>/`.
 - Update later with `librepaper-update`.
 
-## Homebrew (macOS)
+## Homebrew (macOS and Linux)
 
 ```sh
 # macOS and Linux
@@ -37,7 +51,7 @@ scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-
 scoop install librepaper
 ```
 
-## Start the companion
+## Start
 
 ```sh
 librepaper --version                 # check the install
