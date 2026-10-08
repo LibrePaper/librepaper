@@ -16,8 +16,8 @@ usage: tools/test/suite <suite>
   backup-sidecar exercise the backup sidecar against a synthetic deployment (needs Docker and prebuilt test images)
   deploy-install boot the packaged Compose kit with a local database (./manage status, check, apply) and a managed one (./manage upgrade) (needs Docker; builds the images from this checkout unless DEPLOY_SMOKE_APP_IMAGE is set)
   browser     component tests in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
-  smoke       drive the reader in headless Chromium (needs chromium; set LIBREPAPER_CHROMIUM to override)
-  e2e         run browser smoke, history and track-changes deployment scenarios (needs docker and chromium)
+  smoke       drive the reader in headless Chromium against a real server (needs docker and chromium)
+  e2e         smoke, history and track-changes deployment scenarios (needs docker and chromium)
   external    Quarto/R/Python and real local-service integration tests
   fuzz        every fuzz target for FUZZ_SECONDS (default 60) each
               (FUZZ_TARGETS overrides the target list; needs nightly and cargo-fuzz)
@@ -65,29 +65,37 @@ suite_browser() {
 	[ -z "$failed" ] || { echo "failed:$failed"; return 1; }
 }
 
-# The rendered reader. Needs the built binary and a chromium, and starts a
-# server of its own on a temporary directory and a throwaway database, so it
-# also needs LIBREPAPER_TEST_POSTGRES_URL.
+# A disposable loopback PostgreSQL, removed on every exit path, unless the caller supplies one.
+with_disposable_postgres() {
+	local name="$1"
+	export LIBREPAPER_TEST_BINARY="$BIN"
+	if [[ -n "${LIBREPAPER_TEST_POSTGRES_URL:-}" ]]; then
+		export LIBREPAPER_DATABASE_URL="$LIBREPAPER_TEST_POSTGRES_URL"
+		return 0
+	fi
+	source "$root/tools/test/postgres.sh"
+	trap postgres_stop_disposable EXIT
+	postgres_start_disposable "librepaper-$name-$$" "$name" librepaper
+	local container="$POSTGRES_CONTAINER" port="$POSTGRES_PORT"
+	export LIBREPAPER_TEST_POSTGRES_URL="postgresql://postgres:$name@127.0.0.1:$port/librepaper"
+	export LIBREPAPER_DATABASE_URL="$LIBREPAPER_TEST_POSTGRES_URL"
+	export LIBREPAPER_TEST_PSQL="docker exec -i $container psql"
+	export LIBREPAPER_TEST_PSQL_URL="postgresql://postgres:$name@127.0.0.1:5432/postgres"
+}
+
+# The rendered reader against a real server.
 suite_smoke() {
 	require_chromium
 	if [[ -z "${LIBREPAPER_TEST_BINARY:-}" ]]; then make --no-print-directory "$BIN"; fi
-	bun web/tests/e2e/browser-smoke.mjs "$BIN"
+	with_disposable_postgres smoke
+	node web/tests/e2e/browser-smoke.mjs "$BIN"
 }
 
-# Deployment-level browser scenarios share a disposable database. The helper
-# exposes PostgreSQL only on loopback and removes it on every exit path.
+# Smoke plus the history and track-changes deployment scenarios.
 suite_e2e() {
 	require_chromium
 	if [[ -z "${LIBREPAPER_TEST_BINARY:-}" ]]; then make --no-print-directory "$BIN"; fi
-	. "$root/tools/test/postgres.sh"
-	trap postgres_stop_disposable EXIT
-	postgres_start_disposable "librepaper-e2e-$$" e2e librepaper
-	local container="$POSTGRES_CONTAINER" port="$POSTGRES_PORT"
-	export LIBREPAPER_TEST_BINARY="$BIN"
-	export LIBREPAPER_TEST_POSTGRES_URL="postgresql://postgres:e2e@127.0.0.1:$port/librepaper"
-	export LIBREPAPER_DATABASE_URL="$LIBREPAPER_TEST_POSTGRES_URL"
-	export LIBREPAPER_TEST_PSQL="docker exec -i $container psql"
-	export LIBREPAPER_TEST_PSQL_URL="postgresql://postgres:e2e@127.0.0.1:5432/postgres"
+	with_disposable_postgres e2e
 	node web/tests/e2e/browser-smoke.mjs "$BIN"
 	node web/tests/e2e/history-browser.mjs "$BIN"
 	node web/tests/e2e/track-changes-browser.mjs "$BIN"
@@ -191,7 +199,7 @@ suite_backup_sidecar() {
 # volumes: with its own PostgreSQL and ./manage status, check and apply, and
 # with a managed one that survives ./manage upgrade.
 suite_deploy_install() {
-	tools/test/deploy/install.sh
+	tools/test/deploy-install.sh
 }
 
 case "${1:-help}" in

@@ -10,10 +10,6 @@ deploy/librepaper.toml.candidate*
 deploy/resticprofile.toml.candidate*
 deploy/librepaper.candidate*
 deploy/site/
-tools/dev/demo/.env
-tools/dev/demo/secrets/
-tools/dev/demo/secrets/**
-tools/dev/demo/.*.env
 
 # The reader shell is built from web/ by bun and vite, and the README is
 # copied in beside it: everything under web/dist is a build output that the

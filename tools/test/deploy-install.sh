@@ -25,18 +25,18 @@ set -Eeuo pipefail
 #   - git, for the archive of the current commit
 #   - DEPLOY_INSTALL_KEEP=1 keeps the temporary kit directories
 #
-# usage: tools/test/deploy/install.sh [local|managed|all]
+# usage: tools/test/deploy-install.sh [local|managed|all]
 #
 # Only projects, volumes, networks, containers and images named with this run's
 # random suffix are created or removed. Caddy publishes no host port here and
 # the edge network gets a random private subnet, so the test does not collide
 # with a running kit.
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 variant="${1:-all}"
 case "$variant" in
 local | managed | all) ;;
-*) echo 'usage: tools/test/deploy/install.sh [local|managed|all]' >&2; exit 2 ;;
+*) echo 'usage: tools/test/deploy-install.sh [local|managed|all]' >&2; exit 2 ;;
 esac
 
 fail() { echo "install: $*" >&2; exit 1; }
