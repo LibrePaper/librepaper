@@ -33,7 +33,7 @@ Everything is on one machine, so losing the VPS loses it all until [backups](adv
 - Docker Engine and Compose v2 on it.
 - Ports 80 and 443 open.
 - Two DNS names pointing at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`).
-- A GitHub OAuth app, a Google OAuth client, or both: see [Sign-in](#sign-in) under Configure.
+- A GitHub OAuth app, a Google OAuth client, or both: see [Sign-in](#sign-in).
 
 ### Download
 
@@ -44,25 +44,7 @@ curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/lib
 cd librepaper
 ```
 
-## Configure
-
-Everything is set in one file, `librepaper.toml`. You need your two origins and at least one sign-in provider; everything else has a working default.
-
-```sh
-$EDITOR librepaper.toml
-```
-
-### Origins
-
-```toml
-[origins]
-app = "https://paper.example"
-docs = "https://docs.paper.example"
-```
-
-`app` is where people use LibrePaper. `docs` serves published documents and must be a different host. A published document can run its own scripts (an HTML page, an interactive figure). On a separate host the browser treats it as a different website, so those scripts cannot see a reader's LibrePaper sign-in or act on their behalf.
-
-### Sign-in
+## Sign-in
 
 LibrePaper has no passwords of its own: people sign in with GitHub or Google, and the server never sees or stores a password. You register LibrePaper once with the provider, which gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required; both can be enabled.
 
@@ -85,11 +67,25 @@ client_id = "replace"
 client_secret = "replace"
 ```
 
-### Permissions
+## Configure
 
-Leave the files readable (0644): the containers read them through bind mounts, and the 700 directory is what keeps them private. Never `chmod 600 librepaper.toml`.
+Everything is set in one file, `librepaper.toml`. You need your two origins and at least one sign-in provider; everything else has a working default. Leave the files readable (0644): the containers read them through bind mounts, and the 700 directory is what keeps them private. Never `chmod 600 librepaper.toml`.
 
-### The whole file
+```sh
+$EDITOR librepaper.toml
+```
+
+### Origins
+
+```toml
+[origins]
+app = "https://paper.example"
+docs = "https://docs.paper.example"
+```
+
+`app` is where people use LibrePaper. `docs` serves published documents and must be a different host. A published document can run its own scripts (an HTML page, an interactive figure). On a separate host the browser treats it as a different website, so those scripts cannot see a reader's LibrePaper sign-in or act on their behalf.
+
+### librepaper.toml
 
 `librepaper.toml` as it comes in the download. The comments say what each setting does; the [advanced features](advanced.html) explain the optional ones.
 
@@ -162,7 +158,7 @@ trusted_networks = ["172.29.0.0/16"]
 # expire_from = "updated"            # or "created"
 ```
 
-### Changing it later
+### Update configuration
 
 After editing `librepaper.toml`, recreate the two containers that read it, the app and the backup service. Compose compares service definitions, not the bytes behind a mounted file:
 

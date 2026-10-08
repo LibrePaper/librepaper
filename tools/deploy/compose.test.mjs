@@ -35,7 +35,7 @@ test('the kit pins the application and backup images to the workspace version', 
 // docs/host/simple.md shows the kit's librepaper.toml in full; keep the copy exact.
 test('the simple deployment page shows the kit librepaper.toml as shipped', () => {
   const page = readFileSync(path.join(repo, 'docs/host/simple.md'), 'utf8');
-  const shown = page.match(/### The whole file[\s\S]*?```toml\n([\s\S]*?)\n```/)[1];
+  const shown = page.match(/### librepaper\.toml\n[\s\S]*?```toml\n([\s\S]*?)\n```/)[1];
   assert.equal(`${shown}\n`, readFileSync(path.join(deploy, 'librepaper.toml'), 'utf8'), 'copy deploy/librepaper.toml into docs/host/simple.md');
 });
 

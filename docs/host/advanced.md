@@ -251,7 +251,7 @@ The override survives upgrades.
 
 ## Limits and retention
 
-Every limit and the retention settings are listed, with their defaults, at the end of `librepaper.toml` (see [the whole file](simple.html#the-whole-file)). Uncomment a line to change it, then recreate the app.
+Every limit and the retention settings are listed, with their defaults, at the end of `librepaper.toml` (see [the whole file](simple.html#librepapertoml)). Uncomment a line to change it, then recreate the app.
 
 - Per account: storage (`publisher_storage_mib`) and uploads per hour (`publisher_uploads_per_hour`).
 - Whole server: total storage (`deployment_storage_mib`), memory for loading documents (`memory_budget_mib`), edit history per document (`log_quota_mib`), and unsaved edits in memory and on disk (`pending_mib`, `pending_scratch_mib`).
