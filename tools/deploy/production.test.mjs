@@ -49,6 +49,8 @@ const mockCredentials = {
   LIBREPAPER_RESTIC_PASSWORD: 'restic-password',
   LIBREPAPER_BACKUPS_S3_ACCESS_KEY_ID: 'backup-key-id',
   LIBREPAPER_BACKUPS_S3_SECRET_ACCESS_KEY: 'backup-secret',
+  LIBREPAPER_HEALTHCHECK_BACKUP_URL: 'https://hc-ping.example/backup-uuid',
+  LIBREPAPER_HEALTHCHECK_CHECK_URL: 'https://hc-ping.example/check-uuid',
 };
 
 // Settings that are not secret: they may appear in commands and output.
@@ -157,6 +159,8 @@ for arg do
       ;;
     *LIBREPAPER_ADMIN_PASSWORD*) cat "$ADMIN_PASSWORD_FILE"; exit ;;
     *LIBREPAPER_RESTIC_PASSWORD*) printf 'restic-password\\n'; exit ;;
+    *LIBREPAPER_HEALTHCHECK_BACKUP_URL*) printf 'https://hc-ping.example/backup-uuid\\n'; exit ;;
+    *LIBREPAPER_HEALTHCHECK_CHECK_URL*) printf 'https://hc-ping.example/check-uuid\\n'; exit ;;
     *LIBREPAPER_OBJECTS_S3_ENDPOINT*) printf 'https://objects.example\\n'; exit ;;
     *LIBREPAPER_OBJECTS_S3_REGION*) printf 'objects-region\\n'; exit ;;
     *LIBREPAPER_OBJECTS_S3_BUCKET*) printf 'objects-bucket\\n'; exit ;;
@@ -427,7 +431,7 @@ test('deploy renders the credentials into the host config files only, never in a
   try {
     const result = run(f, 'deploy', 'v0.0.22');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /18 values decrypted from keys.yaml/);
+    assert.match(result.stdout, /20 values decrypted from keys.yaml/);
 
     const values = { ...mockCredentials, ...mockSettings, LIBREPAPER_ADMIN_PASSWORD: adminPassword };
     const config = read(f.remote, 'librepaper.toml');

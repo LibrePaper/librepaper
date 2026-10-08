@@ -1,5 +1,5 @@
 # Production backup profile, merged over deploy/backup/profiles.toml by resticprofile.
-# Values in "@NAME@" (credentials, bucket, endpoint, region) are filled from
+# Values in "@NAME@" (credentials, bucket, endpoint, region, ping URLs) are filled from
 # tools/deploy/keys.yaml (SOPS) by tools/deploy/production at deploy time; the
 # rendered file is what lands on the host.
 
@@ -11,3 +11,25 @@ AWS_DEFAULT_REGION = "@LIBREPAPER_BACKUPS_S3_REGION@"
 RESTIC_PASSWORD = "@LIBREPAPER_RESTIC_PASSWORD@"
 AWS_ACCESS_KEY_ID = "@LIBREPAPER_BACKUPS_S3_ACCESS_KEY_ID@"
 AWS_SECRET_ACCESS_KEY = "@LIBREPAPER_BACKUPS_S3_SECRET_ACCESS_KEY@"
+
+# Healthchecks dead-man's switch: an alert when a run fails, or when no
+# success arrives within the check's period and grace (36 h backup, 8 days check).
+[[resticprofile.backup.send-before]]
+method = "HEAD"
+url = "@LIBREPAPER_HEALTHCHECK_BACKUP_URL@/start"
+[[resticprofile.backup.send-after]]
+method = "HEAD"
+url = "@LIBREPAPER_HEALTHCHECK_BACKUP_URL@"
+[[resticprofile.backup.send-after-fail]]
+method = "HEAD"
+url = "@LIBREPAPER_HEALTHCHECK_BACKUP_URL@/fail"
+
+[[resticprofile.check.send-before]]
+method = "HEAD"
+url = "@LIBREPAPER_HEALTHCHECK_CHECK_URL@/start"
+[[resticprofile.check.send-after]]
+method = "HEAD"
+url = "@LIBREPAPER_HEALTHCHECK_CHECK_URL@"
+[[resticprofile.check.send-after-fail]]
+method = "HEAD"
+url = "@LIBREPAPER_HEALTHCHECK_CHECK_URL@/fail"
