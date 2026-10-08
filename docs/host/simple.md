@@ -2,12 +2,30 @@
 title: "Simple deployment"
 ---
 
-One VPS, Docker only, one file to edit. PostgreSQL and all user files live on the same machine, in Docker volumes. Backups, object storage, alerts and the rest are in [Advanced features](advanced.html).
+One VPS, Docker only, one file to edit. Backups, object storage, alerts and the rest are in [Advanced features](advanced.html).
 
 > LibrePaper is experimental. Self-host only if you can maintain its database,
 > files, credentials, and recovery copies.
 
 ## Install
+
+### How it works
+
+Four programs run side by side on the VPS, each in its own Docker container:
+
+| Service | What it does |
+|---|---|
+| Caddy | Answers on ports 80 and 443, obtains HTTPS certificates automatically, and passes requests to the app. |
+| LibrePaper | The app: documents, sharing, comments, publishing, sign-in. |
+| PostgreSQL | The database. |
+| Backup | Copies the database and files to off-site storage every night, once you configure it. |
+
+Your data lives in two places, both on the VPS's disk (Docker volumes):
+
+- **The database** (`postgres` volume): accounts, sharing, comments, and each document's edit history.
+- **Files** (`data` volume): uploaded figures and compacted document snapshots, plus `session.key`, which signs sign-ins and share links.
+
+Everything is on one machine, so losing the VPS loses it all until [backups](advanced.html#backups) are set up. The same page explains how to move files to an S3 bucket or the database to a managed service.
 
 ### What you need
 
@@ -17,23 +35,9 @@ One VPS, Docker only, one file to edit. PostgreSQL and all user files live on th
 - Two DNS names pointing at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`).
 - A GitHub OAuth app, a Google OAuth client, or both: see [Sign-in](#sign-in) under Configure.
 
-### The kit
-
-LibrePaper supplies a self-hosting kit, `librepaper-deploy.tar.gz`, attached to every GitHub release. The images it pins are that release's own version.
-
-| File | What it is |
-|---|---|
-| `compose.yaml` | Four services: `postgres` (the database), `librepaper` (the app), `backup` (the restic backup sidecar, idle until configured), `caddy` (the HTTPS proxy; it obtains certificates automatically) |
-| `librepaper.toml` | The one file to edit |
-| `resticprofile.toml` | Backups, off by default |
-| `caddy/Caddyfile` | The proxy configuration |
-| `postgres/init.sql` | Creates the database and its role on first start |
-| `compose.managed-db.yaml` | For a database elsewhere, see [Database elsewhere](advanced.html#database-elsewhere) |
-| `README.md` | The quick start, and a link here |
-
 ### Download
 
-Run this on the VPS, over SSH. The kit unpacks into a `librepaper/` directory that is private to you (mode 700).
+Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. Run this on the VPS, over SSH; it unpacks into a `librepaper/` directory that is private to you (mode 700).
 
 ```sh
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
@@ -87,7 +91,7 @@ Leave the files readable (0644): the containers read them through bind mounts, a
 
 ### The whole file
 
-The kit's `librepaper.toml`, as shipped. The comments say what each setting does; the [advanced features](advanced.html) explain the optional ones.
+`librepaper.toml` as it comes in the download. The comments say what each setting does; the [advanced features](advanced.html) explain the optional ones.
 
 ```toml
 # The one file to edit: set the two origins and one [auth.*] table, then docker compose up -d.
@@ -163,19 +167,13 @@ docker compose up -d --force-recreate librepaper backup
 
 ## Deploy
 
-Docker pulls the images and starts the four services. The database is created on the first start.
+Docker pulls the four images and starts the services. The database is created on the first start.
 
 ```sh
 docker compose up -d
 ```
 
-What it creates:
-
-- PostgreSQL: the `postgres` volume.
-- User files (uploads, document snapshots): `objects/` in the `data` volume, mounted at `/var/lib/librepaper`.
-- `session.key`: `/var/lib/librepaper/secrets`. It signs sessions and share secrets. Keep it with your backups.
-
-Nothing is backed up until you configure backups. See [Backups](advanced.html#backups).
+Once it is up, everything from [How it works](#how-it-works) is running, and the data lives where that section says.
 
 ## Check
 
@@ -200,4 +198,4 @@ curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/lib
 cd librepaper && docker compose pull && docker compose up -d
 ```
 
-The server migrates the schema at startup. When a release note says the kit changed, this same procedure applies. `compose.yaml` is replaced on every upgrade: put your own changes in `compose.override.yaml`.
+The server migrates the schema at startup. The same steps apply when a release note says the download's files changed. `compose.yaml` is replaced on every upgrade: put your own changes in `compose.override.yaml`.
