@@ -52,7 +52,7 @@ docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n 
 docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup
 ```
 
-Backups contain the database dump, referenced objects, both TOML files, and `session.key`. Keep the session key to preserve existing sessions and saved share secrets. External missed-run deadlines: 36 hours for backups, 8 days for checks. See [recovery.md](recovery.html) for alert hooks and a restore drill. Practice a restore first on a machine that is not the VPS.
+Backups contain the database dump, referenced objects, both TOML files, and `session.key`. Keep the session key to preserve existing sessions and saved share secrets. Set up [alerts](#alerts) so a failed backup emails you. See [recovery.md](recovery.html) for a restore drill. Practice a restore first on a machine that is not the VPS.
 
 ## Monitoring
 
@@ -70,16 +70,35 @@ docker compose up -d --force-recreate librepaper
 - The browser asks for the password once per session. User name: anything.
 - Zoom by dragging on any graph; double-click to return to the chosen range.
 
-## Backups and alerts
+## Alerts
+
+The VPS cannot report its own outage, so both alerts come from free outside services. Each emails you the day something fails.
+
+**Uptime: UptimeRobot** ([uptimerobot.com](https://uptimerobot.com))
+
+- New monitor, type HTTP(s), URL `https://paper.example/ready`, interval 5 minutes.
+- `/ready` answers 200 only when the app serves requests; the home page alone can look fine while the app is down.
+- Add your email as an alert contact.
+
+**Backups: Healthchecks** ([healthchecks.io](https://healthchecks.io))
+
+A backup can fail while the site stays up (a revoked S3 key, a full repository). Healthchecks alerts when a run fails or when no success arrives in time.
+
+| Check | Schedule | Period | Grace |
+|---|---|---|---|
+| backup | Simple | 1 day | 12 hours |
+| repository check | Simple | 7 days | 1 day |
+
+- Copy each check's ping URL (`https://hc-ping.com/<uuid>`) into the hooks in [recovery.md](recovery.html#external-backup-alerts), add them to `resticprofile.toml`, then recreate the sidecar and take a backup:
 
 ```sh
-# Alerts come from outside the VPS, which cannot report its own outage.
-# Backups: add the ping hooks from the recovery guide to resticprofile.toml
-#   and turn on the weekly report in the Healthchecks account.
-# Uptime: point an external monitor at https://paper.example/ready.
+docker compose up -d --force-recreate backup
+docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup
+# the backup check shows a start and a success ping within seconds
 ```
 
-Backups and uptime alert by email the day they fail. The Monday report from Healthchecks is the weekly summary.
+- Keep ping URLs private: anyone with one can send a fake success.
+- Account settings: turn on the weekly report for a Monday summary of every check.
 
 ## Upgrade
 

@@ -58,4 +58,4 @@ method = "HEAD"
 url = "https://hc-ping.com/<check-id>/fail"
 ```
 
-Set missed-success deadlines to 36 hours for backups and 8 days for checks. The Healthchecks account's weekly report, sent on Mondays, lists every check's status and is the summary email.
+In Healthchecks, give the backup check a Simple schedule of 1 day with 12 hours grace, and the repository check 7 days with 1 day grace: an alert after 36 hours without a successful backup, or 8 days without a check, and at once on a failed run. The account's weekly report, sent on Mondays, lists every check's status. Uptime monitoring is in [host.md](host.html#alerts).
