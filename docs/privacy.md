@@ -60,7 +60,7 @@ embedded in a document.
 
 Signed-in readers can use their account for comments and presence. While open,
 the collaboration layer broadcasts presence and cursor position to other viewers
-of the document. Read, comment, and edit links require sign-in.
+of the document. Edit links require sign-in; comment links do unless the deployment allows anonymous comments; read links work for anyone holding them.
 
 Authorized readers receive a projected copy of shared source text, main-file
 metadata, and assets in order to render the document in the browser. They do not
@@ -104,7 +104,7 @@ Hosting, database and object-storage providers see what they store.
   (measured from last update or creation). See [storage, limits, and backup](./host/advanced.html#backups).
 - **Checkpoints and edit history:** retained by default while the document
   exists; an owner can explicitly trim history, which permanently removes
-  older history and named versions. See [history and revisions](./collaborate/history.html).
+  older history and named versions. See [history and revisions](./collaborate.html).
 - **Sessions:** session credentials expire after 30 days. Signing out clears the
   current browser's cookie; it does not invalidate a copied credential. Account
   erasure revokes the account's sessions.
