@@ -35,7 +35,7 @@ Everything is on one machine, so losing the VPS loses it all until [backups](adv
 
 ## Install
 
-Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. Run this on the VPS, over SSH; it unpacks into a `librepaper/` directory that is private to you (mode 700).
+Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. It also includes `./manage`, the helper used below. Run this on the VPS, over SSH; it unpacks into a `librepaper/` directory that is private to you (mode 700).
 
 ```sh
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
@@ -157,11 +157,17 @@ trusted_networks = ["172.29.0.0/16"]
 
 ### Update configuration
 
-After editing `librepaper.toml`, recreate the two containers that read it, the app and the backup service. Compose compares service definitions, not the bytes behind a mounted file:
+The safe way is to edit a copy. `./manage apply` checks it before anything changes:
 
 ```sh
-docker compose up -d --force-recreate librepaper backup
+cp librepaper.toml librepaper.toml.candidate
+# edit librepaper.toml.candidate, then:
+./manage apply
 ```
+
+- It validates the candidate, installs it over `librepaper.toml`, recreates the app and backup containers, reloads Caddy and waits for `/ready`.
+- If a check fails, nothing changes.
+- Editing `librepaper.toml` directly and running `./manage apply` works too.
 
 ## Deploy
 
@@ -171,29 +177,33 @@ Docker pulls the four images and starts the services. The database is created on
 docker compose up -d
 ```
 
+`./manage status` shows the result.
+
 Once it is up, everything from [How it works](#how-it-works) is running, and the data lives where that section says.
 
 ## Check
 
-Caddy obtains a certificate the first time a name is visited, so the first request can take a few seconds. A successful answer means the app is serving.
-
 ```sh
-curl -fsS https://paper.example/ready
+./manage status    # services, pinned version, /ready, free disk
+./manage check     # validates librepaper.toml, resticprofile.toml and the Caddyfile; warns if a name does not resolve
 ```
 
-Then open `https://paper.example` in a browser and sign in. If something fails:
+Caddy obtains a certificate the first time a name is visited, so the first request can take a few seconds. Open `https://paper.example` in a browser and sign in. If something fails:
 
 ```sh
-docker compose ps                 # all four services should be running
-docker compose logs librepaper    # why the app is not answering
+./manage logs librepaper    # why the app is not answering
 ```
 
 ## Upgrade
 
 ```sh
-cd ..   # the directory that contains librepaper/
-curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz --exclude='*.toml'   # keeps your settings
-cd librepaper && docker compose pull && docker compose up -d
+./manage upgrade            # the latest release
+./manage upgrade v0.0.25    # a specific release
 ```
 
-The server migrates the schema at startup. The same steps apply when a release note says the download's files changed. `compose.yaml` is replaced on every upgrade: put your own changes in `compose.override.yaml`.
+- It backs up first, when backups are configured (`--no-backup` skips this).
+- It checks your configuration with the new release before switching. If a check fails, nothing switches.
+- It keeps your `.toml` files and `caddy/local.d/`.
+- It refuses to move to an older release.
+
+The server migrates the schema at startup. `compose.yaml` is replaced on every upgrade: put your own changes in `compose.override.yaml`.

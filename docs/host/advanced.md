@@ -60,9 +60,9 @@ AWS_SECRET_ACCESS_KEY = "your-secret"
 Bring up the backup sidecar and verify:
 
 ```sh
-docker compose up -d --force-recreate backup
-docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile show
-docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup
+./manage apply
+docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile show   # the merged profile
+./manage backup now
 ```
 
 Backups contain the database dump, referenced objects, both TOML files, and `session.key`. Keep the session key to preserve existing sessions and saved share secrets.
@@ -73,7 +73,7 @@ Schedule and retention come from a base profile inside the backup image. Your `r
 - Retention: keep all snapshots from the last 48 hours, then 14 daily and 11 weekly.
 - A `restic check` of 10% of the data runs on Mondays at 06:00.
 
-To change them, add the keys you want to `resticprofile.toml`, then recreate the sidecar (it installs the schedule when it starts):
+To change them, add the keys you want to `resticprofile.toml`, then run `./manage apply` (it recreates the sidecar, which installs the schedule when it starts):
 
 ```toml
 [resticprofile.backup]
@@ -85,7 +85,7 @@ keep-weekly = 52
 ```
 
 ```sh
-docker compose up -d --force-recreate backup
+./manage apply
 docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile show   # the merged result
 ```
 
@@ -100,11 +100,11 @@ Notes:
 
 ### Inspect a backup
 
-The download includes `./backups`, which reads the backup repository through the backup container. It needs only a configured `resticprofile.toml`, so it also works from another machine with a copy of that file.
+The download includes `./manage`, which reads the backup repository through the backup container. It needs only a configured `resticprofile.toml`, so it also works from another machine with a copy of that file.
 
 ```sh
-./backups list              # every snapshot: id, time, size
-./backups show latest       # one snapshot: when it ran, migration version, stored files, database size
+./manage backup list         # every snapshot: id, time, size
+./manage backup show latest  # one snapshot: when it ran, migration version, stored files, database size
 ```
 
 `list` and `show` change nothing.
@@ -118,7 +118,7 @@ Restore a snapshot into a fresh copy of LibrePaper on a machine that is not the 
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
 cd librepaper
 cp /path/to/your/resticprofile.toml .   # the repository and its password are all a restore needs
-./backups restore latest                # or a snapshot id from ./backups list
+./manage backup restore latest        # or a snapshot id from ./manage backup list
 ```
 
 - It starts an empty database, restores the snapshot, loads it with `admin restore` (which verifies every file against the backup's manifest), puts the stored files and the snapshot's own `session.key` in place, starts LibrePaper and checks `/ready`.
@@ -167,7 +167,7 @@ head -c 24 /dev/urandom | base64         # the password
 # librepaper.toml: under [origins] add   admin = "https://admin.paper.example"
 #                  and a new table       [admin]
 #                                        password = "<the line above>"
-docker compose up -d --force-recreate librepaper
+./manage apply
 ```
 
 - One DNS record and two lines in the one file. Nothing in Caddy: it asks the server before obtaining a certificate, and the server says yes to three names.
@@ -218,11 +218,11 @@ method = "HEAD"
 url = "https://hc-ping.com/<check-id>/fail"
 ```
 
-Then recreate the sidecar and take a backup:
+Then apply the change and take a backup:
 
 ```sh
-docker compose up -d --force-recreate backup
-docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup
+./manage apply
+./manage backup now
 # the backup check shows a start and a success ping within seconds
 ```
 
@@ -250,7 +250,7 @@ The override survives upgrades.
 
 ## Limits and retention
 
-Every limit and the retention settings are listed, with their defaults, at the end of `librepaper.toml` (see [the whole file](simple.html#librepapertoml)). Uncomment a line to change it, then recreate the app.
+Every limit and the retention settings are listed, with their defaults, at the end of `librepaper.toml` (see [the whole file](simple.html#librepapertoml)). Uncomment a line to change it, then run `./manage apply`.
 
 - Per account: storage (`publisher_storage_mib`) and uploads per hour (`publisher_uploads_per_hour`).
 - Whole server: total storage (`deployment_storage_mib`), memory for loading documents (`memory_budget_mib`), edit history per document (`log_quota_mib`), and unsaved edits in memory and on disk (`pending_mib`, `pending_scratch_mib`).
