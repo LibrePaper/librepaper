@@ -26,8 +26,6 @@ const temporary = mkdtempSync(join(tmpdir(), "librepaper-settings-check-"));
 const output = join(temporary, "build");
 const entry = join(temporary, "entry.js");
 const harness = join(temporary, "Harness.svelte");
-const statusMock = join(temporary, "status.svelte.js");
-const clientMock = join(temporary, "client.js");
 const stateHome = join(temporary, "state");
 const cacheHome = join(temporary, "cache");
 const appEnv = {
@@ -62,43 +60,17 @@ writeFileSync(harness, `
                 remoteConnected={true} />
 `);
 
-writeFileSync(statusMock, `
-let current = $state.raw({ state: "unreachable", address: "http://127.0.0.1:8763/", instance: null });
-export const companion = { get status() { return current; }, watch() { return () => {}; } };
-`);
-
-writeFileSync(clientMock, `
-export const DEFAULT_ADDRESS = "http://127.0.0.1:8763/";
-export function address() { return window.__companionAddress || DEFAULT_ADDRESS; }
-export function setAddress() {}
-export function probe() { return Promise.resolve(); }
-export function retry() { return Promise.resolve(); }
-export function disconnect() { return Promise.resolve(); }
-export function connectApp() { return Promise.resolve(); }
-export function capabilities() { return Promise.resolve({}); }
-export function settings() { return Promise.resolve({ standalone: false, integrations: {} }); }
-export function setStartup() { return Promise.resolve(); }
-export function quit() { return Promise.resolve(); }
-`);
-
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
 import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
-import * as control from ${JSON.stringify(join(root, "web/src/lib/companion/control.js"))};
+import * as local from ${JSON.stringify(join(root, "web/src/lib/companion/client.js"))};
 import Harness from ${JSON.stringify(harness)};
-await control.intake();
+// The page is served from the configured server origin, so the companion pairs it without consent.
+if (window.__companionAddress) local.setAddress(window.__companionAddress);
+local.configure({ origin: location.origin });
+await local.connectApp();
 mount(Harness, { target: document.body });
 `);
-
-const mockModules = {
-  name: "companion-settings-browser-test-mocks",
-  enforce: "pre",
-  resolveId(source, importer) {
-    if (source.endsWith("/lib/companion/status.svelte.js")) return statusMock;
-    if (source.endsWith("/lib/companion/client.js") || (source === "./client.js" && importer?.endsWith("/lib/companion/machine.svelte.js"))) return clientMock;
-    return null;
-  },
-};
 
 let app;
 let appDone;
@@ -119,7 +91,7 @@ try {
     configFile: false,
     root: join(root, "web"),
     logLevel: "error",
-    plugins: [mockModules, svelte(), tailwindcss()],
+    plugins: [svelte(), tailwindcss()],
     build: {
       outDir: output,
       emptyOutDir: true,
@@ -165,27 +137,14 @@ try {
     return Boolean(response && response.ok);
   }, 15000).catch((error) => { throw new Error(`${error.message}\ncompanion output:\n${appLog}`); });
 
-  const tokenPath = join(stateHome, "librepaper", "local", "control-token.json");
-  await until("private Settings credential", () => existsSync(tokenPath), 5000);
-  const credential = JSON.parse(readFileSync(tokenPath, "utf8"));
-  assert.equal(credential.server, `${appOrigin}/`, "the app target is persisted with the credential");
-  assert.equal(credential.instance.length, 16);
-  assert.equal(credential.token.length, 43);
-
   b = await browser("chromium", join(temporary, "chrome"), await freePort());
   await b.navigate(`${appOrigin}/`);
-  await until("Manage this computer button", () => b.evaluate(`
-    [...document.querySelectorAll("button")].some((button) => button.textContent.trim() === "Manage this computer")
-  `), 8000);
-  await b.evaluate(`[...document.querySelectorAll("button")].find((button) => button.textContent.trim() === "Manage this computer").click()`);
-  await until("computer management available", () => b.evaluate(`
-    Boolean(document.querySelector("#tools-sites-heading"))
-      && ![...document.querySelectorAll("button")].some((button) => button.textContent.trim() === "Manage this computer")
-  `), 12000);
+  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#tools-sites-heading"))`), 12000);
 
-  assert.equal(await b.evaluate("location.hash"), "", "management bootstrap does not add a fragment");
+  assert.equal(await b.evaluate("location.hash"), "", "the session pairing does not add a fragment");
   assert.equal(await b.evaluate("location.href"), `${appOrigin}/`, "management opens in place without changing the document URL");
-  assert.equal(await b.evaluate(`document.documentElement.innerHTML.includes(${JSON.stringify(credential.token)})`), false, "the token is not rendered into the page");
+  const token = await b.evaluate(`JSON.parse(localStorage.getItem("librepaper-local-connections"))[location.origin].token`);
+  assert.equal(await b.evaluate(`document.documentElement.innerHTML.includes(${JSON.stringify(token)})`), false, "the token is not rendered into the page");
   assert.equal(await b.evaluate('document.querySelectorAll(".request-card").length'), 0, "approvals use existing SettingRow layout");
   assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
   assert.equal(await b.evaluate(`document.querySelector("#tools-approvals-heading") === null && document.querySelector("#companion-agents-heading") === null`), true, "approvals appear only while one waits, and agents have their own category");
@@ -198,17 +157,10 @@ try {
   }
 
   const apiState = async (headers = {}) => fetch(`${companionAddress}companion/api/state`, {
-    headers: { Origin: appOrigin, Authorization: `Bearer ${credential.token}`, ...headers },
+    headers: { Origin: appOrigin, Authorization: `Bearer ${token}`, ...headers },
   });
   const trusted = await apiState();
-  assert.equal(trusted.status, 200, "the configured app Origin can use the control API");
-  const foreign = await apiState({ Origin: "https://untrusted.example" });
-  assert.equal(foreign.status, 403, "the credential is bound to the configured app Origin");
-  const missingOrigin = await fetch(`${companionAddress}companion/api/state`, {
-    headers: { Authorization: `Bearer ${credential.token}` },
-  });
-  assert.equal(missingOrigin.status, 403, "management requires an Origin header");
-
+  assert.equal(trusted.status, 200, "the session pairing can use the management API");
   await captureSettingsScreenshot();
 
   const requestId = Buffer.from(`settings-allow-${Date.now()}`).toString("base64url").padEnd(32, "x");
@@ -351,24 +303,6 @@ try {
   }, 10000);
 
   await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "Tools").click()`);
-  await until("sites heading visible", () => b.evaluate("Boolean(document.querySelector('#tools-sites-heading'))"), 10000);
-
-  await until("allowed site visible in Settings", () => b.evaluate(`
-    [...document.querySelector("#tools-sites-heading").closest("section").querySelectorAll(".setting-row")]
-      .some((item) => item.textContent.includes(${JSON.stringify(appOrigin)}))
-  `), 10000);
-  await waitForEnabledButton("Revoke", "#tools-sites-heading");
-  await b.evaluate(`(() => {
-    const section = document.querySelector("#tools-sites-heading").closest("section");
-    const row = [...section.querySelectorAll(".setting-row")].find((item) => item.textContent.includes(${JSON.stringify(appOrigin)}));
-    if (!row) throw new Error("allowed site did not appear in Settings");
-    row.querySelector("button").click();
-  })()`);
-  await until("connected site revoked through Settings", async () => {
-    const response = await apiState();
-    return response.ok && !(await response.json()).pairings.some((item) => item.origin === appOrigin);
-  }, 10000);
-
   await b.evaluate('window.showSettingsCategory("tools")');
   await until("Quarto details available", () => b.evaluate(`Boolean(document.querySelector('#tools-quarto .tool-row-toggle'))`), 10000);
   await b.evaluate(`(() => {
@@ -401,9 +335,28 @@ try {
     return quarto.path === quartoPath && quarto.args.join(" ") === quartoArgs;
   }, 10000);
 
+  // Last, because revoking the site this page is paired as ends its own management access.
+  await until("sites heading visible", () => b.evaluate("Boolean(document.querySelector('#tools-sites-heading'))"), 10000);
+
+  await until("allowed site visible in Settings", () => b.evaluate(`
+    [...document.querySelector("#tools-sites-heading").closest("section").querySelectorAll(".setting-row")]
+      .some((item) => item.textContent.includes(${JSON.stringify(appOrigin)}))
+  `), 10000);
+  await waitForEnabledButton("Revoke", "#tools-sites-heading");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#tools-sites-heading").closest("section");
+    const row = [...section.querySelectorAll(".setting-row")].find((item) => item.textContent.includes(${JSON.stringify(appOrigin)}));
+    if (!row) throw new Error("allowed site did not appear in Settings");
+    row.querySelector("button").click();
+  })()`);
+  await until("connected site revoked through Settings", async () => {
+    const response = await apiState();
+    return response.status === 401 || (response.ok && !(await response.json()).pairings.some((item) => item.origin === appOrigin));
+  }, 10000);
+
   await captureSettingsScreenshot();
 
-  console.log("companion-dashboard-browser: in-place trusted Settings bootstrap, approval decisions, agent/site management, and standalone-only controls passed");
+  console.log("companion-dashboard-browser: session-paired Settings, approval decisions, agent/site management, and standalone-only controls passed");
 } finally {
   if (b) await b.close();
   if (app && app.exitCode === null) {

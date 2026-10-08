@@ -67,11 +67,6 @@
       {#if invalid || view.error}<p class="setting-description management-error" role="alert">{invalid || view.error}</p>{/if}
     </div>
   </section>
-{:else}
-  <SettingRow title="Agents" description="Connect to this computer to see and add agents.">
-    {#if view.connectError}<span class="setting-description management-error" role="alert">{view.connectError}</span>{/if}
-    <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.manageThisComputer()}>{view.pending === "connect" ? "Connecting…" : "Manage this computer"}</button>
-  </SettingRow>
 {/if}
 
 <style>

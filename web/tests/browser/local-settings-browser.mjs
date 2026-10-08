@@ -20,7 +20,6 @@ const entry = join(temporary, "entry.js");
 const harness = join(temporary, "Harness.svelte");
 const statusMock = join(temporary, "status.svelte.js");
 const clientMock = join(temporary, "client.js");
-const controlMock = join(temporary, "control.js");
 async function freePort() {
   const probe = createServer();
   await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
@@ -60,6 +59,9 @@ export function setAddress(value) { currentAddress = value; window.savedAddress 
 export function probe() { return Promise.resolve(); }
 export function retry() { window.retryCalls = (window.retryCalls || 0) + 1; return Promise.resolve(); }
 export function disconnect() { return Promise.resolve(); }
+export function subscribe(listener) { listener({ state: "connected", address: currentAddress, instance: "test" }); return () => {}; }
+export function canManage() { return false; }
+export function manage() { throw new Error("Management API should not be used without a manage capability."); }
 export function connectApp() { window.pairCalls = (window.pairCalls || 0) + 1; return Promise.reject(new Error("The permission window was blocked.")); }
 export function chooseFolderBinding() { return Promise.resolve({ id: "folder", entrypoint: "main.qmd" }); }
 export async function capabilities(options) {
@@ -79,16 +81,6 @@ export async function setStartup() {}
 export async function quit() {}
 `);
 
-writeFileSync(controlMock, `
-export function available() { return false; }
-export function scope() { return ""; }
-export function subscribe(listener) { listener({ available: false, scope: "" }); return () => {}; }
-export function request() { throw new Error("Management API should not be used without a credential."); }
-export function connect() { return Promise.reject(new Error("Management API should not be used without a credential.")); }
-export function showSettings() {}
-export function openSettings() {}
-`);
-
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
 import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
@@ -102,7 +94,6 @@ const mockModules = {
   resolveId(source, importer) {
     if (source.endsWith("/lib/companion/status.svelte.js")) return statusMock;
     if (source.endsWith("/lib/companion/client.js") || (source === "./client.js" && importer?.endsWith("/lib/companion/machine.svelte.js"))) return clientMock;
-    if (source.endsWith("/lib/companion/control.js") || (source === "./control.js" && importer?.endsWith("/lib/companion/machine.svelte.js"))) return controlMock;
     return null;
   },
 };

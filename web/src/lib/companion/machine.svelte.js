@@ -1,7 +1,6 @@
-// The companion control state that Settings pages share: /state loaded and
+// The companion management state that Settings pages share: /state loaded and
 // polled, and actions guarded so a reply for an older companion is dropped.
 
-import * as control from "./control.js";
 import * as localBridge from "./client.js";
 
 export function createMachineView() {
@@ -13,10 +12,12 @@ export function createMachineView() {
   let loadError = $state("");
   let notice = $state("");
   let pending = $state("");
-  let connectError = $state("");
   let epoch = 0;
   let requestId = 0;
   let currentScope = "";
+
+  // The scope names the companion this view last talked to; it holds no secret.
+  const scopeOf = (status) => `${status?.address || ""}|${status?.instance || ""}`;
 
   const list = (value) => Array.isArray(value) ? value : [];
   const id = (value) => encodeURIComponent(String(value));
@@ -25,13 +26,13 @@ export function createMachineView() {
     if (!available) return;
     const current = ++requestId;
     try {
-      const result = await control.request("/state");
-      if (current !== requestId || expectedEpoch !== epoch || expectedScope !== control.scope() || !control.available()) return;
+      const result = await localBridge.manage("/state");
+      if (current !== requestId || expectedEpoch !== epoch || expectedScope !== currentScope || !available) return;
       state = result;
       reachable = true;
       loadError = "";
     } catch (cause) {
-      if (current === requestId && expectedEpoch === epoch && expectedScope === control.scope()) {
+      if (current === requestId && expectedEpoch === epoch && expectedScope === currentScope) {
         if (cause?.name === "Unreachable") {
           reachable = false;
           state = null;
@@ -51,13 +52,13 @@ export function createMachineView() {
     error = "";
     notice = "";
     try {
-      await control.request(path, options);
-      if (expectedEpoch !== epoch || expectedScope !== control.scope() || !control.available()) return;
+      await localBridge.manage(path, options);
+      if (expectedEpoch !== epoch || expectedScope !== currentScope || !available) return;
       notice = success;
       await load(expectedScope, expectedEpoch);
       return true;
     } catch (cause) {
-      if (expectedEpoch === epoch && expectedScope === control.scope()) {
+      if (expectedEpoch === epoch && expectedScope === currentScope) {
         if (cause?.name === "Unreachable") {
           reachable = false;
           state = null;
@@ -70,29 +71,16 @@ export function createMachineView() {
     }
   }
 
-  async function manageThisComputer() {
-    if (pending) return;
-    pending = "connect";
-    connectError = "";
-    try {
-      await control.connect(localBridge.address());
-      control.showSettings();
-    } catch (cause) {
-      connectError = cause?.message || "Could not connect to this computer's companion.";
-    } finally {
-      pending = "";
-    }
-  }
-
   function start() {
     let alive = true;
 
-    const updateAccess = (access) => {
+    const updateAccess = (status) => {
       if (!alive) return;
-      const nextScope = access?.scope || control.scope();
-      if (currentScope !== nextScope || available !== Boolean(access?.available)) {
+      const nextScope = scopeOf(status);
+      const nextAvailable = localBridge.canManage();
+      if (currentScope !== nextScope || available !== nextAvailable) {
         currentScope = nextScope;
-        available = Boolean(access?.available);
+        available = nextAvailable;
         reachable = true;
         epoch++;
         requestId++;
@@ -100,13 +88,12 @@ export function createMachineView() {
         error = "";
         loadError = "";
         notice = "";
-        connectError = "";
         pending = "";
       }
       if (available) void load(currentScope, epoch);
     };
 
-    const unsubscribe = control.subscribe(updateAccess);
+    const unsubscribe = localBridge.subscribe(updateAccess);
     const timer = setInterval(() => { if (available) void load(currentScope, epoch); }, 5000);
     const visibility = () => { if (document.visibilityState === "visible" && available) void load(currentScope, epoch); };
     document.addEventListener("visibilitychange", visibility);
@@ -127,9 +114,7 @@ export function createMachineView() {
     get loadError() { return loadError; },
     get notice() { return notice; },
     get pending() { return pending; },
-    get connectError() { return connectError; },
     act,
-    manageThisComputer,
     start,
     list,
     id,

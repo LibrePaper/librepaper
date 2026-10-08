@@ -60,8 +60,8 @@ try {
   const control = JSON.parse(await readFile(join(env.XDG_STATE_HOME, "librepaper/local/control-token.json"), "utf8"));
   assert.equal(settingsFragment.get("settings"), "local");
   assert.equal(settingsFragment.get("companion_address"), `http://127.0.0.1:${port}/`);
-  assert.equal(settingsFragment.get("companion_control"), control.token);
-  assert.equal(settingsFragment.get("companion_instance"), control.instance);
+  assert.deepEqual([...settingsFragment.keys()].sort(), ["companion_address", "settings"], "the Settings link carries no credential");
+  assert.ok(!settingsTarget.includes(control.token), "the CLI file credential never reaches the browser");
   assert.ok(!settings.stdout.includes(control.token), "the control token is not printed by the CLI");
   await rm(opened, { force: true });
   await cli("--at-login");

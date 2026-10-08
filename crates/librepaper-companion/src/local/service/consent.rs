@@ -19,23 +19,6 @@ pub(super) async fn handle_pair_request(
     peer: SocketAddr,
     request: Request<Body>,
 ) -> Reply {
-    handle_pair_request_with_opener(inner, peer, request, true).await
-}
-
-pub(super) async fn handle_pair_request_inline(
-    inner: &std::sync::Arc<Inner>,
-    peer: SocketAddr,
-    request: Request<Body>,
-) -> Reply {
-    handle_pair_request_with_opener(inner, peer, request, false).await
-}
-
-async fn handle_pair_request_with_opener(
-    inner: &std::sync::Arc<Inner>,
-    peer: SocketAddr,
-    request: Request<Body>,
-    launch_opener: bool,
-) -> Reply {
     if rate_limited(inner, peer).await {
         return write_json(
             429,
@@ -167,14 +150,7 @@ async fn handle_pair_request_with_opener(
             scope: Some(origin_clone.clone()),
         };
 
-        let decision = if launch_opener {
-            inner_clone.approvals.ask(&approval, approval_ttl).await
-        } else {
-            inner_clone
-                .approvals
-                .ask_inline(&approval, approval_ttl)
-                .await
-        };
+        let decision = inner_clone.approvals.ask(&approval, approval_ttl).await;
         match decision {
             super::super::approval::Decision::Allowed => {
                 let _admission = inner_clone.pairing.admission_gate().lock().await;

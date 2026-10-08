@@ -23,11 +23,9 @@
 
 import { bytesOf, toArrayBuffer } from "../bytes.js";
 import { named } from "../latex/errors.js";
-import * as controlClient from "./control.js";
 
 /** @typedef {{ targetAddressSpace?: "loopback" } & RequestInit} LocalRequestInit */
-/** @typedef {{ connect: (address: string) => Promise<unknown>, request: (path: string, options?: { method?: string, body?: unknown }) => Promise<unknown>, showSettings: () => void }} CompanionControl */
-/** @typedef {{ fetch: (input: RequestInfo | URL, init?: LocalRequestInit) => Promise<Response>, control: CompanionControl, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, localNetworkPermission: () => Promise<PermissionState | null>, replaceHash: (hash: string) => void, launchLink: (url: string) => void }} CompanionDeps */
+/** @typedef {{ fetch: (input: RequestInfo | URL, init?: LocalRequestInit) => Promise<Response>, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, localNetworkPermission: () => Promise<PermissionState | null>, replaceHash: (hash: string) => void, launchLink: (url: string) => void }} CompanionDeps */
 /** @typedef {{ token: string }} Pairing */
 /** @typedef {{ entrypoint?: string, format?: string, profile?: string | null, parameters?: Record<string, string | number | boolean | null>, policy?: string, kind?: string, inputRevision?: string, inputDigest?: string, renderScope?: string, executionMode?: string, dataInputs?: string[], livePreview?: boolean, [key: string]: unknown }} RenderOptions */
 /** @typedef {{ entrypoint?: string, binding?: string, bindingId?: string, idempotencyKey?: string, id?: string, inputDigest?: string, inputRevision?: string, generation?: number, deadlineSeconds?: number, snapshot?: string, [key: string]: unknown }} CompanionJob */
@@ -88,7 +86,6 @@ function realWait(ms, signal) {
 function defaultDeps() {
   return {
     fetch: (input, init) => globalThis.fetch(input, init),
-    control: controlClient,
     storage: typeof localStorage !== "undefined" ? localStorage : null,
     now: () => Date.now(),
     wait: realWait,
@@ -129,12 +126,6 @@ let deps = defaultDeps();
 export const _testing = {
   inject(overrides) {
     Object.assign(deps, overrides);
-    // Existing harnesses replace the document client fetch and must never
-    // accidentally initiate a real management session against loopback.
-    if (overrides.fetch && !overrides.control) {
-      deps.control = { connect: async () => { throw new Error("No trusted control session in test"); },
-        request: async () => { throw new Error("No trusted control session in test"); }, showSettings() {} };
-    }
   },
   reset() {
     deps = defaultDeps();
@@ -823,25 +814,32 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
   // not be registered. The link, which starts it and asks it the same way, is
   // only for a companion this request cannot reach.
   // Resolves true when the companion accepted the request, false when it could
-  // not be reached, and throws when it refused the request.
+  // not be reached, and throws when it refused the request. When the companion
+  // pairs this page directly (the configured LibrePaper server needs no
+  // consent) it stores the pairing and sets `paired` to the probed status.
+  let paired = null;
   const ask = async () => {
-    // Trusted app origins can establish a management session in this user
-    // action and queue the normal approval request inside Settings.
-    let trustedControl = false;
     try {
-      await deps.control.connect(address());
-      checkScope();
-      trustedControl = true;
-    } catch {
-      checkScope();
-      // External origins and older companions retain the public compatibility flow.
-    }
-    if (trustedControl) {
-      deps.control.showSettings();
-      await deps.control.request("/pair/request", {
-        method: "POST", body: { origin, request, challenge, return: returnUrl },
+      const response = await deps.fetch(`${address()}companion/api/session`, {
+        method: "POST", mode: "cors", credentials: "omit", cache: "no-store",
+        headers: { "Content-Type": "application/json" }, body: "{}",
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
+        targetAddressSpace: "loopback",
       });
-      return true;
+      if (response.status === 200) {
+        const data = await response.json();
+        if (typeof data?.token === "string" && data.token && Number.isFinite(data.expires)) {
+          checkScope();
+          setPairing({ token: data.token, expires: data.expires, instance: data.instance || null });
+          resetNegativeCache();
+          clearPending();
+          paired = await probe({ force: true });
+          return true;
+        }
+      }
+    } catch (error) {
+      if (error?.name === "Canceled") throw error;
+      // Other origins and unreachable companions use the public flow below.
     }
     let delivered = false;
     try {
@@ -865,6 +863,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
   };
   let asked = await ask();
   checkScope();
+  if (paired) return paired;
   if (!asked) {
     deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, request, challenge, return: returnUrl })}`);
   }
@@ -899,6 +898,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
       // The companion came up after the link fired, so it never saw our request.
       asked = await ask();
       checkScope();
+      if (paired) return paired;
       continue;
     }
     if (response.status === 202 || response.status === 404) continue;
@@ -935,6 +935,76 @@ export async function disconnect() {
   dropPairing();
   resetNegativeCache();
   return probe({ force: true });
+}
+
+/** Whether this page may manage the companion: only the configured LibrePaper server is paired for it. */
+export function canManage() {
+  const now = status();
+  return Boolean(now.state === "connected" && now.capabilities?.manage);
+}
+
+/** Call a machine management route with the site pairing.
+ * @param {string} path @param {{ method?: string, body?: unknown }} [options] */
+export async function manage(path, { method = "GET", body } = {}) {
+  if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
+    throw new TypeError("Invalid companion management path");
+  }
+  const pairing = requirePairing();
+  engage();
+  const scope = pairingKey();
+  const addr = address();
+  /** @type {Record<string, string>} */
+  const headers = { Accept: "application/json", Authorization: `Bearer ${pairing.token}` };
+  let payload;
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    payload = JSON.stringify(body);
+  }
+  let response;
+  try {
+    response = await deps.fetch(`${addr}companion/api${path}`, {
+      method, mode: "cors", credentials: "omit", cache: "no-store", headers, body: payload,
+      targetAddressSpace: "loopback",
+    });
+  } catch (error) {
+    throw named("Unreachable", instructionsFor(await unreachableState(error)));
+  }
+  if (scope !== pairingKey() || addr !== address()) throw named("Canceled", "The local project changed.");
+  if (response.status === 401 || response.status === 403) {
+    dropPairing();
+    setStatus({ state: "unauthorized", capabilities: null, error: null, errorKind: null, instructions: instructionsFor("unauthorized") });
+    throw named("Unauthorized", "The companion no longer accepts this site. Connect again.");
+  }
+  if (!response.ok) {
+    let message = `The companion request failed (${response.status}).`;
+    try {
+      const data = await response.json();
+      if (typeof data?.error === "string" && data.error) message = data.error;
+    } catch { /* an empty or non-JSON error response has no detail */ }
+    throw named("RequestFailed", message, { status: response.status });
+  }
+  if (response.status === 204) return null;
+  const type = response.headers?.get?.("content-type") || "";
+  return type.includes("json") ? response.json() : response.text();
+}
+
+// Settings opens from the fragment the companion's Settings link carries. The
+// fields are stripped whatever they say, so a forged address never lingers in
+// the address bar, and only a Settings request may move the companion address.
+// Returns whether Settings was requested.
+export function intake() {
+  const loc = deps.location();
+  const hash = String(loc?.hash || "").replace(/^#/, "");
+  if (!hash) return false;
+  const params = new URLSearchParams(hash);
+  const requested = params.get("settings") === "local";
+  const carried = params.get("companion_address");
+  if (!requested && carried === null) return false;
+  for (const key of ["settings", "companion_address", "companion_control", "companion_instance"]) params.delete(key);
+  deps.replaceHash(params.toString());
+  const target = requested ? loopbackAddress(carried) : null;
+  if (target && target !== address()) setAddress(target);
+  return requested;
 }
 
 // Reads the last probed capabilities rather than fetching -- callers that

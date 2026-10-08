@@ -23,7 +23,6 @@ const entry = join(temporary, "entry.js");
 const harness = join(temporary, "Harness.svelte");
 const statusMock = join(temporary, "status.svelte.js");
 const clientMock = join(temporary, "client.js");
-const controlMock = join(temporary, "control.js");
 async function freePort() {
   const probe = createServer();
   await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
@@ -68,6 +67,9 @@ export function setAddress() {}
 export function probe() { window.probeCalls += 1; return Promise.resolve(); }
 export function retry() { return Promise.resolve(); }
 export function disconnect() { return Promise.resolve(); }
+export function subscribe(listener) { listener({ state: "connected", address: "http://127.0.0.1:8763/", instance: "test" }); return () => {}; }
+export function canManage() { return false; }
+export function manage() { throw new Error("Management API should not be used without a manage capability."); }
 export function connectApp() { return window.connectFailure ? Promise.reject(new Error(window.connectFailure)) : Promise.resolve(); }
 export function chooseFolderBinding() { return Promise.resolve({ id: "folder", entrypoint: "main.qmd" }); }
 export async function capabilities() { return {}; }
@@ -77,14 +79,6 @@ export async function settings() {
 export async function setIntegration(_name, custom) { return custom; }
 export async function setStartup() {}
 export async function quit() {}
-`);
-
-writeFileSync(controlMock, `
-export function available() { return false; }
-export function scope() { return ""; }
-export function subscribe(listener) { listener({ available: false, scope: "" }); return () => {}; }
-export function request() { throw new Error("Management API should not be used without a credential."); }
-export function openSettings() {}
 `);
 
 writeFileSync(entry, `
@@ -100,7 +94,6 @@ const mockModules = {
   resolveId(source, importer) {
     if (source.endsWith("/lib/companion/status.svelte.js")) return statusMock;
     if (source.endsWith("/lib/companion/client.js") || (source === "./client.js" && importer?.endsWith("/lib/companion/machine.svelte.js"))) return clientMock;
-    if (source.endsWith("/lib/companion/control.js") || (source === "./control.js" && importer?.endsWith("/lib/companion/machine.svelte.js"))) return controlMock;
     return null;
   },
 };
@@ -157,8 +150,8 @@ try {
     await b.resize(1280, 900);
   };
   const everything = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters",
-    "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites", "quarto-executable", "quarto-arguments",
-    "diagnostics-address", "diagnostics-startup", "diagnostics-report", "diagnostics-activity",
+    "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments",
+    "diagnostics-address", "diagnostics-startup", "diagnostics-report",
     "remote-status", "remote-address", "storage-account", "account-erase"];
   const renderingRows = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters"];
   const renderingSections = ["LaTeX", "Markdown and Quarto"];
@@ -209,9 +202,9 @@ try {
   await show("tools", "quarto", "Tools");
   await until("the program rows", () => present(["tools-zotero"]).then((found) => found.length === 1), 5000);
   await capture("tools");
-  assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites"]);
+  assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero"]);
   assert.equal(await b.evaluate('Boolean(document.querySelector("#settings-companion"))'), true, "the Companion status sits in the dialog on the Tools page");
-  assert.deepEqual(await subheads(), ["Programs", "Connected sites"]);
+  assert.deepEqual(await subheads(), ["Programs"], "Connected sites needs a managing connection");
   assert.match(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent`), /Available · 7\.0/);
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero has no command to edit");
   assert.match(await b.evaluate(`document.querySelector("#settings-companion .setting-status-pill")?.textContent`), /Running/);
@@ -219,13 +212,13 @@ try {
   assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, "the executable row starts hidden");
   await b.evaluate(`document.querySelector("#tools-quarto .tool-row-toggle").click()`);
   await until("the Quarto command rows", () => present(["quarto-executable", "quarto-arguments"]).then((found) => found.length === 2), 5000);
-  assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "tools-sites", "quarto-executable", "quarto-arguments"]);
+  assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments"]);
 
   // The Diagnostics page is the address, the machine and the setup check.
   await show("diagnostics", "quarto", "Diagnostics");
   await until("the startup row", () => present(["diagnostics-startup"]).then((found) => found.length === 1), 5000);
   await capture("diagnostics");
-  assert.deepEqual(await present(everything), ["diagnostics-address", "diagnostics-startup", "diagnostics-report", "diagnostics-activity"]);
+  assert.deepEqual(await present(everything), ["diagnostics-address", "diagnostics-startup", "diagnostics-report"]);
 
   // A visitor's Account page is the server; storage and erasure need an account.
   await show("account", "quarto", "Account");

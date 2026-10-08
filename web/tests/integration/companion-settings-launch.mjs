@@ -109,7 +109,16 @@ try {
   });
   assert.equal(pairing.status, 202, "the local app's pair request should enter the approval queue");
 
-  const apiHeaders = { Origin: appOrigin, Authorization: `Bearer ${credential.token}` };
+  // The configured server pairs without consent, and that pairing manages the companion.
+  const session = await fetch(`http://127.0.0.1:${companionPort}/companion/api/session`, {
+    method: "POST",
+    headers: { Origin: appOrigin, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(session.status, 200, "the configured server gets its pairing from the session route");
+  const { token: sessionToken } = await session.json();
+  assert.notEqual(sessionToken, credential.token, "the session pairing is not the CLI file credential");
+  const apiHeaders = { Origin: appOrigin, Authorization: `Bearer ${sessionToken}` };
   const approval = await waitFor("pending approval and Settings launch", async () => {
     let opened;
     try { opened = await readFile(openedFile, "utf8"); } catch { return null; }
@@ -125,8 +134,8 @@ try {
   assert.equal(settingsUrl.pathname, "/", "the opener targets the app root");
   const fragment = new URLSearchParams(settingsUrl.hash.slice(1));
   assert.ok(fragment.get("settings") === "local", "the opener targets Companion Settings");
-  assert.ok(fragment.get("companion_control") === credential.token, "Settings receives this instance's control credential");
-  assert.ok(fragment.get("companion_instance") === credential.instance, "Settings receives this instance id");
+  assert.equal(fragment.get("companion_control"), null, "the Settings link carries no credential");
+  assert.ok(!approval.opened.includes(credential.token), "the CLI file credential never reaches the browser");
   assert.ok(fragment.get("companion_address") === `http://127.0.0.1:${companionPort}/`, "Settings receives the running companion address");
   assert.equal(credential.server, `${appOrigin}/`, "the saved settings target is the configured local app");
 
