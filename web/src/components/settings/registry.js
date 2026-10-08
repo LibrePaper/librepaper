@@ -2,8 +2,8 @@
 // The dialog draws its navigation from this and searches it; what a category
 // shows is a component beside this file.
 //
-// Browser-scoped pages: Editor, Rendering. Computer-scoped pages: Tools, Agents,
-// Diagnostics. Account-scoped pages: Backups, Account.
+// Browser-scoped pages: Editor, Rendering. Computer-scoped pages: Tools, Companion,
+// Agents. Account-scoped pages: Backups, Account.
 
 // `offered` answers with the document's format, whether this browser may edit
 // it, and whether somebody is signed in. `terms` are the words somebody might
@@ -39,13 +39,23 @@ export const CATEGORIES = [
     id: "tools", says: "Tools", offered: always,
     note: "This computer",
     entries: [
-      { id: "tools-approvals", says: "Waiting for your answer", terms: "allow deny approval pending requests access" },
-      { id: "tools-list", says: "Programs", terms: "tools tool status version available missing rescan scan local quarto pandoc calepin typst zotero companion connect install running status installer setup linux macos windows" },
+      { id: "tools-list", says: "Programs", terms: "tools tool status version available missing rescan scan local quarto pandoc calepin typst zotero" },
       { id: "tools-quarto", says: "Quarto", terms: "quarto executable path arguments version" },
       { id: "tools-calepin", says: "Calepin", terms: "calepin typst executable path arguments version" },
       { id: "tools-zotero", says: "Zotero", terms: "zotero citations bibliography library references local api" },
-      { id: "tools-sites", says: "Connected sites", terms: "pairing revoke origin website site access" },
-      { id: "tools-folders", says: "Project folders", terms: "bindings folder grant revoke directory project access" },
+    ],
+  },
+  {
+    id: "companion", says: "Companion", offered: always,
+    note: "This computer",
+    entries: [
+      { id: "companion-connection", says: "Connection", terms: "companion connect install running status installer setup linux macos windows address port disconnect version" },
+      { id: "companion-approvals", says: "Waiting for your answer", terms: "allow deny approval pending requests access" },
+      { id: "companion-sites", says: "Connected sites", terms: "pairing revoke origin website site access" },
+      { id: "companion-folders", says: "Project folders", terms: "bindings folder grant revoke directory project access" },
+      { id: "companion-startup", says: "Start at login", terms: "startup login background quit companion" },
+      { id: "companion-report", says: "Check local setup", terms: "doctor troubleshoot diagnostics report rescan" },
+      { id: "companion-activity", says: "Activity", terms: "jobs previews sessions cancel stop output logs running" },
     ],
   },
   {
@@ -71,17 +81,6 @@ export const CATEGORIES = [
       { id: "remote-status", says: "Remote connection", terms: "connected disconnected offline online server address url sync status collaboration" },
       { id: "storage-account", says: "Account storage", terms: "quota usage space used limit bytes", offered: account },
       { id: "account-erase", says: "Erase this account", terms: "erase delete account remove close gdpr right erasure forget", offered: account },
-    ],
-  },
-  {
-    id: "diagnostics", says: "Diagnostics", offered: always,
-    note: "This computer",
-    separated: true,
-    entries: [
-      { id: "diagnostics-address", says: "Companion address", terms: "address port url localhost host version disconnect" },
-      { id: "diagnostics-startup", says: "Start at login", terms: "startup login background quit companion" },
-      { id: "diagnostics-report", says: "Check local setup", terms: "doctor troubleshoot diagnostics report rescan" },
-      { id: "diagnostics-activity", says: "Activity", terms: "jobs previews sessions cancel stop output logs running" },
     ],
   },
 ];

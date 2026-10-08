@@ -6,7 +6,7 @@
   import { backups } from "../../lib/companion/backups.svelte.js";
   import { me, post } from "../../lib/api.js";
 
-  let { account = {} } = $props();
+  let { account = {}, oncompanion = undefined } = $props();
   const accountId = $derived(typeof account.id === "string" ? account.id : "");
   const signedIn = $derived(Boolean(account.provider && accountId));
   const paired = $derived(companion.status.state === "connected");
@@ -130,6 +130,10 @@
   Your account's projects, copied as ZIP files to a folder on this computer by the companion. <a href="https://librepaper.org/backups.html" target="_blank" rel="noreferrer">Backup guide</a>
 </p>
 
+{#if !paired}
+<p class="setting-description companion-needed">Needs the companion. <button type="button" class="link-button" onclick={() => oncompanion?.()}>Open Companion settings</button></p>
+{/if}
+
 {#if !signedIn}
   <SettingRow id="backup-connection" title="Account connection" description="Sign in to load account backup settings.">
     <StatusPill label="Signed out" />
@@ -153,7 +157,7 @@
   </div>
 {/if}
 
-  <SettingRow id="backup-enable" title="Automatic backups" description={signedIn && !paired ? "Connect the companion first." : needsLogin ? "Authorize to enable backups." : !destinationSet ? "Choose a folder first." : ""}>
+  <SettingRow id="backup-enable" title="Automatic backups" description={needsLogin ? "Authorize to enable backups." : !destinationSet ? "Choose a folder first." : ""}>
     {#if !hasStatus}<StatusPill label="Unknown" />{/if}
     <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked={Boolean(data.enabled)} aria-describedby={!hasStatus ? "backup-enable-state" : undefined} data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseCompanion || (needsLogin ? !data.enabled : !destinationSet)} onclick={() => void changeSettings(!data.enabled)}>
       <span class="switch-thumb" data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"}></span>

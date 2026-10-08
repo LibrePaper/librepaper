@@ -1,5 +1,6 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
+  import CompanionConnection from "./CompanionConnection.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
@@ -151,37 +152,73 @@
   });
 </script>
 
-<p class="setting-description diagnostics-intro">Details for troubleshooting the companion on this computer.</p>
-
-
-{#if !view.available}
-<SettingRow id="diagnostics-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change only when using another port.` : "Change only when using another port."}>
-  <div class="setting-actions">
-    <input aria-label="Companion address" class="input input-sm setting-input" type="url" bind:value={addressDraft} disabled={addressSaving} />
-    <button type="button" class="btn btn-sm lp-control-outline" disabled={addressDraft === address || addressSaving} onclick={() => void saveAddress()}>{addressSaving ? "Saving…" : "Save"}</button>
-    {#if addressSaved && !addressSaving}<span id="diagnostics-address-feedback" class="setting-feedback" role="status">Saved</span>{/if}
-    <button type="button" class="btn btn-sm lp-control-outline" disabled={!connected} onclick={() => void localBridge.disconnect()}>Disconnect</button>
-  </div>
-</SettingRow>
+{#if view.error}
+  <p class="setting-description companion-error" role="alert">{view.error}</p>
+{/if}
+{#if view.loadError}
+  <p class="setting-description companion-error" role="alert">{view.loadError}</p>
+{/if}
+{#if view.notice}
+  <p class="setting-description companion-notice" role="status">{view.notice}</p>
 {/if}
 
-{#if settingsError}<p class="setting-description diagnostics-error" role="alert">{settingsError}</p>{/if}
+<section id="companion-connection" class="settings-subsection" aria-labelledby="companion-connection-heading">
+  <div class="settings-section-title"><h4 class="settings-subhead" id="companion-connection-heading">Connection</h4></div>
+  <CompanionConnection />
+  <SettingRow id="companion-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change only when using another port.` : "Change only when using another port."}>
+    <div class="setting-actions">
+      <input aria-label="Companion address" class="input input-sm setting-input" type="url" bind:value={addressDraft} disabled={addressSaving} />
+      <button type="button" class="btn btn-sm lp-control-outline" disabled={addressDraft === address || addressSaving} onclick={() => void saveAddress()}>{addressSaving ? "Saving…" : "Save"}</button>
+      {#if addressSaved && !addressSaving}<span id="companion-address-feedback" class="setting-feedback" role="status">Saved</span>{/if}
+      <button type="button" class="btn btn-sm lp-control-outline" disabled={!connected} onclick={() => void localBridge.disconnect()}>Disconnect</button>
+    </div>
+  </SettingRow>
+</section>
+
+{#if settingsError}<p class="setting-description companion-error" role="alert">{settingsError}</p>{/if}
+
+{#if view.available && view.list(view.state?.approvals).length}
+<section id="companion-approvals" class="settings-subsection" aria-labelledby="companion-approvals-heading">
+  <div class="settings-section-title"><h4 class="settings-subhead" id="companion-approvals-heading">Waiting for your answer</h4></div>
+  <p class="setting-description">Sites ask before they connect to this computer or change its settings.</p>
+  {#each view.list(view.state?.approvals) as approval (approval.id)}
+    <SettingRow title={approval.title || "Approval request"} description={approval.message || "This request has no additional details."}>
+      <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`approval-${approval.id}`, "Request denied.", `/approvals/${view.id(approval.id)}`, { method: "POST", body: { decision: "deny" } })}>Deny</button>
+      <button class="btn btn-sm lp-control-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`approval-${approval.id}`, "Request allowed.", `/approvals/${view.id(approval.id)}`, { method: "POST", body: { decision: "allow" } })}>{approval.allow_label || "Allow"}</button>
+    </SettingRow>
+  {/each}
+</section>
+{/if}
 
 {#if view.available}
-  {#if view.error}
-    <p class="setting-description management-error" role="alert">{view.error}</p>
-  {/if}
-  {#if view.loadError}
-    <p class="setting-description management-error" role="alert">{view.loadError}</p>
-  {/if}
-  {#if view.notice}
-    <p class="setting-description management-notice" role="status">{view.notice}</p>
-  {/if}
+  <section id="companion-sites" class="settings-subsection" aria-labelledby="companion-sites-heading">
+    <div class="settings-section-title"><h4 class="settings-subhead" id="companion-sites-heading">Connected sites</h4></div>
+    {#each view.list(view.state?.pairings) as pairing (pairing.id)}
+      <SettingRow title={pairing.origin || "Connected site"} description={pairing.created_at ? `Connected ${new Date(Number(pairing.created_at) * 1000).toLocaleString()}` : "This site can use the companion."}>
+        <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Revoke access for ${pairing.origin}?`)) void view.act(`pairing-${pairing.id}`, "Site access revoked.", `/pairings/${view.id(pairing.id)}`, { method: "DELETE" }); }}>Revoke</button>
+      </SettingRow>
+    {:else}
+    <p class="setting-description">None.</p>
+    {/each}
+  </section>
 
-  <section class="settings-subsection" aria-labelledby="diagnostics-companion-heading">
-    <div class="settings-section-title"><h4 class="settings-subhead" id="diagnostics-companion-heading">Companion</h4>{#if view.state?.version}<span class="setting-description">Version {view.state.version}</span>{/if}</div>
+  {#if view.list(view.state?.bindings).length}
+  <section id="companion-folders" class="settings-subsection" aria-labelledby="companion-folders-heading">
+    <div class="settings-section-title"><h4 class="settings-subhead" id="companion-folders-heading">Project folders</h4></div>
+    {#each view.list(view.state?.bindings) as binding (binding.id)}
+      <SettingRow title={binding.project || "Authorized folder"} description={`${binding.origin || "Connected site"} · ${binding.entrypoint || "project folder"}${binding.root ? ` · ${binding.root}` : ""}${binding.execution_granted === false ? " · Code execution is not authorized" : ""}`}>
+        <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Remove folder authorization for ${binding.project || "this project"}?`)) void view.act(`binding-${binding.id}`, "Folder authorization removed.", `/bindings/${view.id(binding.id)}`, { method: "DELETE" }); }}>Revoke</button>
+      </SettingRow>
+    {/each}
+  </section>
+  {/if}
+{/if}
+
+{#if view.available}
+  <section class="settings-subsection" aria-labelledby="companion-startup-heading">
+    <div class="settings-section-title"><h4 class="settings-subhead" id="companion-startup-heading">Companion</h4>{#if view.state?.version}<span class="setting-description">Version {view.state.version}</span>{/if}</div>
     {#if view.state?.standalone === true}
-    <SettingRow id="diagnostics-startup" title="Start at login" description="Open the companion when you log in.">
+    <SettingRow id="companion-startup" title="Start at login" description="Open the companion when you log in.">
       <button type="button" role="switch" class="switch" class:checked={view.state?.settings?.startup_enabled === true} data-state={view.state?.settings?.startup_enabled == null ? "unknown" : view.state.settings.startup_enabled ? "checked" : "unchecked"} aria-label="Start at login" aria-checked={view.state?.settings?.startup_enabled === true} disabled={!view.state || typeof view.state.settings?.startup_enabled !== "boolean" || Boolean(view.pending)} onclick={() => void view.act("startup", "Startup preference saved.", "/settings", { method: "PUT", body: { startup_enabled: !view.state.settings.startup_enabled } })}>
         <span class="switch-thumb" data-state={view.state?.settings?.startup_enabled == null ? "unknown" : view.state.settings.startup_enabled ? "checked" : "unchecked"}></span>
       </button>
@@ -192,8 +229,8 @@
     {/if}
   </section>
 
-  <section id="diagnostics-activity" class="settings-subsection" aria-labelledby="diagnostics-activity-heading">
-    <div class="settings-section-title"><h4 class="settings-subhead" id="diagnostics-activity-heading">Activity</h4></div>
+  <section id="companion-activity" class="settings-subsection" aria-labelledby="companion-activity-heading">
+    <div class="settings-section-title"><h4 class="settings-subhead" id="companion-activity-heading">Activity</h4></div>
     {#each view.list(view.state?.jobs) as job (job.id)}
       <SettingRow title={[job.kind, job.stage].filter(Boolean).join(" · ") || "Local job"} description={`${job.status || "running"}${job.error ? ` · ${job.error}` : ""}${job.log_tail ? `\n${Array.isArray(job.log_tail) ? job.log_tail.join("\n") : job.log_tail}` : ""}`} stacked>
         {#if active(job.status)}<button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`job-${job.id}`, "Cancellation requested.", `/jobs/${view.id(job.id)}/cancel`, { method: "POST" })}>Cancel</button>{/if}
@@ -216,7 +253,7 @@
   </section>
 {:else}
 {#if connected && companionSettings?.standalone === true}
-<SettingRow id="diagnostics-startup" title="Start at login" description="Open the companion when you log in.">
+<SettingRow id="companion-startup" title="Start at login" description="Open the companion when you log in.">
     <button type="button" role="switch" class="switch companion-startup-switch" aria-label="Start at login" aria-checked={companionSettings?.startup === true} data-state={companionSettings.startup ? "checked" : "unchecked"} disabled={companionSettings.startup == null || Boolean(pendingDialogAction)} onclick={() => void toggleStartup(!companionSettings.startup)}>
       <span class="switch-thumb" data-state={companionSettings.startup ? "checked" : "unchecked"}></span>
     </button>
@@ -235,20 +272,19 @@
   </SettingRow>
 {/if}
 
-<SettingRow id="diagnostics-report" title="Check local setup" description={!connected ? "Connect to rescan available tools." : "Rescan available tools and view the report."}>
+<SettingRow id="companion-report" title="Check local setup" description={!connected ? "Connect to rescan available tools." : "Rescan available tools and view the report."}>
   <button type="button" class="btn btn-sm lp-control-outline" disabled={!connected} onclick={() => void doctorReport()}>Check</button>
 </SettingRow>
 {#if doctor}<pre class="setting-log" role="status">{doctor}</pre>{/if}
 {/if}
 
-<p class="setting-description diagnostics-help">Still stuck? <a href="https://github.com/LibrePaper/librepaper/issues" target="_blank" rel="noreferrer">Report a problem</a> with the setup report attached.</p>
+<p class="setting-description companion-help">Still stuck? <a href="https://github.com/LibrePaper/librepaper/issues" target="_blank" rel="noreferrer">Report a problem</a> with the setup report attached.</p>
 
 <style>
-  .diagnostics-intro { max-width: 42rem; margin-block: 0 calc(var(--spacing) * 3); }
-  .diagnostics-error, .management-error { color: var(--color-error-text); }
-  .management-notice { color: var(--color-success-text); }
+    .companion-error { color: var(--color-error-text); }
+  .companion-notice { color: var(--color-success-text); }
   .companion-startup-switch { appearance: none; border: 0; padding: 0; cursor: pointer; }
   .companion-startup-switch:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
-  .diagnostics-help { margin-top: calc(var(--spacing) * 3); }
+  .companion-help { margin-top: calc(var(--spacing) * 3); }
   .setting-log { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

@@ -1,7 +1,7 @@
 // Where a setting lives, in the dialog itself. A tool that builds the
 // document is configured on the Rendering page; the Tools page holds the
-// programs on this computer and the connection to them; Diagnostics is for
-// troubleshooting the companion; and the Account page carries the server.
+// programs on this computer; the Companion page holds the connection and its
+// troubleshooting; and the Account page carries the server.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -151,7 +151,7 @@ try {
   };
   const everything = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters",
     "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments",
-    "diagnostics-address", "diagnostics-startup", "diagnostics-report",
+    "companion-connection", "companion-address", "companion-startup", "companion-report",
     "remote-status", "remote-address", "storage-account", "account-erase"];
   const renderingRows = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters"];
   const renderingSections = ["LaTeX", "Markdown and Quarto"];
@@ -160,14 +160,14 @@ try {
   await until("harness mounted", () => b.evaluate("typeof window.show === \"function\""), 10000);
   await show("rendering", "quarto", "Rendering");
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
-    ["Editor", "Rendering", "Tools", "AI agents", "Backups", "Account", "Diagnostics"]);
+    ["Editor", "Rendering", "Tools", "Companion", "AI agents", "Backups", "Account"]);
 
   // Rendering shows two sections with global build options visible for all formats.
   await until("the Quarto profile rows", () => present(["rendering-profile"]).then((found) => found.length === 1), 5000);
   assert.deepEqual(await present(everything), renderingRows);
   assert.deepEqual(await subheads(), renderingSections);
   assert.equal(await b.evaluate(`document.querySelector(".settings-group-title") === null`), true);
-  // The companion and the programs it finds live on the Tools page, not here.
+  // The companion lives on its own page and the programs it finds on the Tools page, not here.
   assert.equal(await b.evaluate(`[...document.querySelectorAll(".settings-body .setting-status-pill")].some((pill) => /Companion|Running|Not running|Needs approval|Blocked|Update needed/.test(pill.textContent))`), false, "Rendering has no companion or program status pill");
   assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, "Rendering has no executable fields");
   await capture("rendering-connected");
@@ -197,14 +197,15 @@ try {
   // browser ask for local network access just by opening.
   assert.equal(await b.evaluate("window.probeCalls"), 0, "the Rendering page does not probe for the companion");
 
-  // The Tools page is the connection and the programs on this computer. Zotero
+  // The Tools page is the programs on this computer. Zotero
   // feeds a document without building it, and has no command of its own.
   await show("tools", "quarto", "Tools");
   await until("the program rows", () => present(["tools-zotero"]).then((found) => found.length === 1), 5000);
   await capture("tools");
   assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero"]);
-  assert.equal(await b.evaluate('Boolean(document.querySelector("#settings-companion"))'), true, "the Companion status sits in the dialog on the Tools page");
-  assert.deepEqual(await subheads(), ["Programs"], "Connected sites needs a managing connection");
+  assert.equal(await b.evaluate('Boolean(document.querySelector("#settings-companion"))'), true, "the Companion status sits in the dialog sidebar on every page");
+  assert.deepEqual(await subheads(), ["Programs"], "the Tools page carries no connection controls");
+  assert.equal(await b.evaluate(`document.querySelector(".settings-body .companion-needed") === null`), true, "a running companion needs no pointer to its page");
   assert.match(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent`), /Available · 7\.0/);
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero has no command to edit");
   assert.match(await b.evaluate(`document.querySelector("#settings-companion .setting-status-pill")?.textContent`), /Running/);
@@ -214,11 +215,12 @@ try {
   await until("the Quarto command rows", () => present(["quarto-executable", "quarto-arguments"]).then((found) => found.length === 2), 5000);
   assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments"]);
 
-  // The Diagnostics page is the address, the machine and the setup check.
-  await show("diagnostics", "quarto", "Diagnostics");
-  await until("the startup row", () => present(["diagnostics-startup"]).then((found) => found.length === 1), 5000);
-  await capture("diagnostics");
-  assert.deepEqual(await present(everything), ["diagnostics-address", "diagnostics-startup", "diagnostics-report"]);
+  // The Companion page is the connection, the address, the machine and the setup check.
+  await show("companion", "quarto", "Companion");
+  await until("the startup row", () => present(["companion-startup"]).then((found) => found.length === 1), 5000);
+  await capture("companion");
+  assert.deepEqual(await present(everything), ["companion-connection", "companion-address", "companion-startup", "companion-report"]);
+  assert.deepEqual(await subheads(), ["Connection"]);
 
   // A visitor's Account page is the server; storage and erasure need an account.
   await show("account", "quarto", "Account");
@@ -241,21 +243,25 @@ try {
   assert.equal(await b.evaluate(`document.querySelector("#tools-calepin .setting-status-pill")?.textContent.trim()`), "Not checked");
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent.trim()`), "Not checked");
   assert.match(await b.evaluate(`document.querySelector("#settings-companion .setting-status-pill")?.textContent`), /Not running/);
-  assert.match(await b.evaluate(`document.querySelector("#settings-companion").textContent`), /Install|Connect/);
+  assert.match(await b.evaluate(`document.querySelector(".settings-body .companion-needed")?.textContent || ""`), /Needs the companion/, "Tools points at the Companion page while disconnected");
+  await b.evaluate(`document.querySelector(".settings-body .companion-needed .link-button").click()`);
+  await until("the Companion page from Tools", () => heading().then((text) => text === "Companion"), 5000);
+  assert.match(await b.evaluate(`document.querySelector("#companion-connection").textContent`), /Install|Connect/);
   // A failed Connect lands on its own line under the status pill instead of
   // running beside it.
   await b.resize(1280, 900);
   await b.evaluate(`window.connectFailure = "LibrePaper Companion is not running on this computer. Start it, then connect again."`);
-  await b.evaluate(`[...document.querySelectorAll("#settings-companion button")].find((button) => button.textContent.trim() === "Connect").click()`);
-  await until("the Connect failure", () => b.evaluate(`Boolean(document.querySelector("#settings-companion [role=alert]"))`), 5000);
+  await b.evaluate(`[...document.querySelectorAll("#companion-connection button")].find((button) => button.textContent.trim() === "Connect").click()`);
+  await until("the Connect failure", () => b.evaluate(`Boolean(document.querySelector("#companion-connection [role=alert]"))`), 5000);
   const placed = JSON.parse(await b.evaluate(`(() => {
-    const pill = document.querySelector("#settings-companion .setting-status-pill").getBoundingClientRect();
-    const failure = document.querySelector("#settings-companion [role=alert]").getBoundingClientRect();
+    const pill = document.querySelector("#companion-connection .setting-status-pill").getBoundingClientRect();
+    const failure = document.querySelector("#companion-connection [role=alert]").getBoundingClientRect();
     return JSON.stringify({ pillBottom: pill.bottom, failureTop: failure.top });
   })()`));
   assert.ok(placed.failureTop >= placed.pillBottom - 1, "the failure sits below the status pill");
-  assert.notEqual(await b.evaluate(`getComputedStyle(document.querySelector("#settings-companion [role=alert]")).color`),
+  assert.notEqual(await b.evaluate(`getComputedStyle(document.querySelector("#companion-connection [role=alert]")).color`),
     await b.evaluate(`getComputedStyle(document.querySelector("#settings-companion .companion-status-label")).color`), "the failure keeps its error colour, not the muted label colour");
+  await show("tools", "quarto", "Tools");
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero does not load an editable companion config");
   await b.evaluate(`document.querySelector("#tools-quarto .tool-row-toggle").click()`);
   await until("offline Quarto command rows", () => present(["quarto-executable"]).then((found) => found.length === 1), 5000);
@@ -263,12 +269,12 @@ try {
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Arguments"]')?.disabled`), true);
 
   await capture("tools-offline");
-  await show("diagnostics", "quarto", "Diagnostics");
-  await capture("diagnostics-offline");
+  await show("companion", "quarto", "Companion");
+  await capture("companion-offline");
   await show("backups", "quarto", "Backups");
   await capture("backups-offline");
 
-  console.log("settings-pages-browser: Rendering shows two sections with global format options for all documents and no companion rows, Tools lists the programs with Quarto commands behind Details, Diagnostics holds the address and setup check, Quarto settings remain editable offline, and local command fields disable without the companion");
+  console.log("settings-pages-browser: Rendering shows two sections with global format options for all documents and no companion rows, Tools lists the programs with Quarto commands behind Details, Companion holds the connection, address and setup check, Quarto settings remain editable offline, and local command fields disable without the companion");
 } finally {
   if (b) await b.close();
   server.close();

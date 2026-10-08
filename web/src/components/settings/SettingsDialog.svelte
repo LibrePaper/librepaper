@@ -2,7 +2,7 @@
   // The settings, as a preferences window rather than a form: a navigation
   // list of categories at the left, one category at a time at the right. It
   // opens from the workspace navbar or sidebar, and any entry point can open
-  // it on a given category -- connection controls can land on Tools.
+  // it on a given category -- connection controls can land on Companion.
   import { onMount, tick } from "svelte";
   import { createMachineView } from "../../lib/companion/machine.svelte.js";
   import Modal from "../Modal.svelte";
@@ -18,7 +18,7 @@
   import RemoteSettings from "./RemoteSettings.svelte";
   import BackupsSettings from "./BackupsSettings.svelte";
   import AgentSettings from "./AgentSettings.svelte";
-  import DiagnosticsSettings from "./DiagnosticsSettings.svelte";
+  import CompanionSettings from "./CompanionSettings.svelte";
 
   let {
     open = $bindable(false),
@@ -71,11 +71,6 @@
 </script>
 
 <style>
-  .settings-nav-item.separated {
-    border-top: 1px solid var(--color-divider);
-    margin-top: calc(var(--spacing) * 3);
-    padding-top: calc(var(--spacing) * 3);
-  }
   .settings-nav-badge {
     display: inline-flex;
     min-width: 1.25rem;
@@ -93,10 +88,10 @@
     <nav class="settings-nav" aria-label="Settings categories">
       <input class="input input-sm settings-search" type="search" placeholder="Search settings" aria-label="Search settings" bind:value={query} />
       {#each nav as item (item.id)}
-        <button type="button" class="settings-nav-item" class:current={shown?.id === item.id} class:separated={item.separated}
+        <button type="button" class="settings-nav-item" class:current={shown?.id === item.id}
                 aria-current={shown?.id === item.id ? "page" : undefined} onclick={() => go(item.id)}>
           {item.says}
-          {#if item.id === "tools" && approvals > 0}
+          {#if item.id === "companion" && approvals > 0}
             <span class="settings-nav-badge" aria-label={`${approvals} waiting for your answer`}>{approvals}</span>
           {/if}
         </button>
@@ -105,7 +100,7 @@
         {/each}
       {/each}
       {#if found && !nav.length}<p class="settings-nav-empty">Nothing matches.</p>{/if}
-      <div class="settings-nav-companion"><CompanionStatus id="settings-companion" /></div>
+      <div class="settings-nav-companion"><CompanionStatus onopen={() => go("companion")} /></div>
     </nav>
 
     <div class="settings-body" bind:this={body}>
@@ -129,17 +124,17 @@
             <RenderingSettings {userId} {onquartooptions} />
           </section>
         {:else if shown.id === "tools"}
-          <ToolsSettings {view} />
+          <ToolsSettings {view} oncompanion={() => go("companion")} />
         {:else if shown.id === "agents"}
-          <AgentSettings {view} />
+          <AgentSettings {view} oncompanion={() => go("companion")} />
         {:else if shown.id === "backups"}
-          <BackupsSettings {account} />
+          <BackupsSettings {account} oncompanion={() => go("companion")} />
         {:else if shown.id === "account"}
           <RemoteSettings {remoteConnected} {remoteNote} />
           {#if row("storage-account")}<QuotaSettings />{/if}
           {#if row("account-erase")}<AccountSettings {account} />{/if}
-        {:else if shown.id === "diagnostics"}
-          <DiagnosticsSettings {view} />
+        {:else if shown.id === "companion"}
+          <CompanionSettings {view} />
         {/if}
       {/if}
     </div>

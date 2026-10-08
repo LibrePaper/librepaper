@@ -1,6 +1,6 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
-  import CompanionStatus from "./CompanionStatus.svelte";
+  import CompanionConnection from "./CompanionConnection.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
@@ -38,7 +38,7 @@
 </script>
 
 {#if !connected}
-  <CompanionStatus needs="project folders" />
+  <CompanionConnection needs="project folders" />
 {/if}
 <SettingRow id="render-folder" title="Project folder" description="Folder used for live previews; one-shot builds use a temporary copy.">
   <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" bind:value={entrypoint} disabled={!canChoose} />

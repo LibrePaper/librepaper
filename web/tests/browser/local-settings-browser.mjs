@@ -30,15 +30,13 @@ async function freePort() {
 
 writeFileSync(harness, `
 <script>
-  import CompanionStatus from ${JSON.stringify(join(root, "web/src/components/settings/CompanionStatus.svelte"))};
-  import DiagnosticsSettings from ${JSON.stringify(join(root, "web/src/components/settings/DiagnosticsSettings.svelte"))};
+  import CompanionSettings from ${JSON.stringify(join(root, "web/src/components/settings/CompanionSettings.svelte"))};
   import ToolCommand from ${JSON.stringify(join(root, "web/src/components/settings/ToolCommand.svelte"))};
   import { createMachineView } from ${JSON.stringify(join(root, "web/src/lib/companion/machine.svelte.js"))};
   const view = createMachineView();
   $effect(() => view.start());
 </script>
-<CompanionStatus id="settings-companion" />
-<DiagnosticsSettings {view} />
+<CompanionSettings {view} />
 <section id="quarto-section"><ToolCommand name="quarto" /></section>
 `);
 
@@ -132,7 +130,7 @@ const clickSelector = (selector) => `(() => { const node = document.querySelecto
 try {
   b = await browser("chromium", join(temporary, "chrome"), debugPort);
   await b.navigate(`http://127.0.0.1:${port}/`);
-  await until("local settings mounted", () => b.evaluate("Boolean(document.querySelector('#settings-companion'))"), 10000);
+  await until("local settings mounted", () => b.evaluate("Boolean(document.querySelector('#companion-connection'))"), 10000);
 
   // An unreachable companion links to the install page instead of carrying
   // commands. Connection details are expanded when needed.
@@ -140,7 +138,7 @@ try {
     text: document.body.innerText,
     details: document.querySelectorAll('details').length,
     summaries: document.querySelectorAll('summary').length,
-    install: document.querySelector('#settings-companion a[href*="local-app"]')?.href,
+    install: document.querySelector('#companion-connection a[href*="local-app"]')?.href,
   })`);
   const disconnected = JSON.parse(initial);
   assert.equal(disconnected.install, "https://librepaper.org/local-app.html", "the install section links to the one install page");
@@ -148,10 +146,10 @@ try {
   assert.equal(disconnected.details, 0, "initial view has no collapsed details");
   assert.equal(disconnected.summaries, 0, "initial view has no disclosure summary");
   assert.doesNotMatch(disconnected.text, /Build presets|Current document/);
-  assert.equal(await b.evaluate("Boolean(document.querySelector('#diagnostics-startup'))"), false, "startup setting is hidden while disconnected");
+  assert.equal(await b.evaluate("Boolean(document.querySelector('#companion-startup'))"), false, "startup setting is hidden while disconnected");
   assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Quit companion'))"), false, "quit companion button is hidden while disconnected");
-  assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('#diagnostics-address button')].find((button) => button.textContent.trim() === 'Disconnect')?.disabled)"), true, "disconnect stays visible but unavailable while disconnected");
-  assert.equal(await b.evaluate("document.querySelector('#diagnostics-report button')?.disabled"), true, "setup check is unavailable while disconnected");
+  assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('#companion-address button')].find((button) => button.textContent.trim() === 'Disconnect')?.disabled)"), true, "disconnect stays visible but unavailable while disconnected");
+  assert.equal(await b.evaluate("document.querySelector('#companion-report button')?.disabled"), true, "setup check is unavailable while disconnected");
   assert.equal(await b.evaluate("Boolean(document.querySelector('#quarto-executable input')?.disabled && document.querySelector('#quarto-arguments input')?.disabled)"), true, "Quarto fields remain unavailable until connected");
 
   // A failed connection request is shown beside Connect, explaining why it happened.
@@ -163,9 +161,9 @@ try {
   // Once connected, the install link gives way to machine controls, and
   // the Quarto section offers its own command.
   await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:8763/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
-  await until("connected settings shown", () => b.evaluate("Boolean(document.querySelector('#quarto-executable')) && document.querySelector('#diagnostics-startup [role=switch]')?.disabled === false"), 5000);
+  await until("connected settings shown", () => b.evaluate("Boolean(document.querySelector('#quarto-executable')) && document.querySelector('#companion-startup [role=switch]')?.disabled === false"), 5000);
   const connectedText = await b.evaluate("document.body.innerText");
-  assert.equal(await b.evaluate("document.querySelector('#settings-companion a[href*=\"local-app\"]')"), null, "a connected companion needs no install link");
+  assert.equal(await b.evaluate("document.querySelector('#companion-connection a[href*=\"local-app\"]')"), null, "a connected companion needs no install link");
   assert.doesNotMatch(connectedText, /permission window was blocked/);
   assert.doesNotMatch(connectedText, /Build presets|Available tools/);
   assert.match(connectedText, /Quit companion/);
@@ -188,16 +186,16 @@ try {
   await b.evaluate(`(() => { const input = document.querySelector('[aria-label="Companion address"]'); input.value = 'http://127.0.0.1:9876/'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await b.evaluate(clickText("Save"));
   await until("address saved", () => b.evaluate("window.savedAddress === 'http://127.0.0.1:9876/'"), 5000);
-  await until("address save feedback shown", () => b.evaluate("document.querySelector('#diagnostics-address-feedback')?.textContent.trim() === 'Saved'"), 5000);
+  await until("address save feedback shown", () => b.evaluate("document.querySelector('#companion-address-feedback')?.textContent.trim() === 'Saved'"), 5000);
   await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:9876/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
-  await until("settings loaded at new address", () => b.evaluate("window.settingsCalls >= 2 && document.querySelector('#diagnostics-report button')?.disabled === false"), 5000);
-  await b.evaluate(clickSelector("#diagnostics-report button"));
+  await until("settings loaded at new address", () => b.evaluate("window.settingsCalls >= 2 && document.querySelector('#companion-report button')?.disabled === false"), 5000);
+  await b.evaluate(clickSelector("#companion-report button"));
   await until("diagnostic report shown", () => b.evaluate("Boolean(document.querySelector('pre[role=status]'))"), 5000);
   assert.match(await b.evaluate("document.querySelector('pre[role=status]').textContent"), /quarto/);
   assert.equal(await b.evaluate("window.capabilityCalls"), 1, "diagnostics request a fresh local capability report");
 
   await b.evaluate(`window.setLocalStatus({ state: 'unreachable', address: 'http://127.0.0.1:9876/', capabilities: null })`);
-  await until("startup and quit hidden after disconnect", () => b.evaluate("!document.querySelector('#diagnostics-startup') && ![...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Quit companion')"), 5000);
+  await until("startup and quit hidden after disconnect", () => b.evaluate("!document.querySelector('#companion-startup') && ![...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Quit companion')"), 5000);
 
   console.log("local-settings-browser: companion row install link, failed-popup fallback, inline address editor, inline diagnostics, and standalone-only startup/quit controls passed");
 } finally {

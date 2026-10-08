@@ -1015,6 +1015,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .settings-nav-item, .settings-nav-entry { display: block; width: 100%; padding: --spacing(1.5) --spacing(2); border-radius: var(--radius-base); text-align: left; font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 .settings-nav-item:hover, .settings-nav-entry:hover { background-color: var(--color-row-hover); }
 .settings-nav-item.current { background-color: var(--color-row-hover); font-weight: var(--panel-title-weight); }
+.link-button { display: inline; padding: 0; border: 0; background: none; font: inherit; color: var(--color-brand); text-decoration: underline; cursor: pointer; }
 .settings-nav-entry { padding-left: --spacing(5); font-size: var(--panel-meta-size); color: var(--panel-muted); }
 .settings-nav-empty { padding: --spacing(2); color: var(--panel-muted); }
 .settings-nav-companion { margin-top: auto; padding: --spacing(3) --spacing(2) --spacing(1); border-top: 1px solid var(--color-divider); }

@@ -13,12 +13,12 @@ const renderingComponent = await read("RenderingSettings.svelte");
 const remote = await read("RemoteSettings.svelte");
 const statusPill = await read("StatusPill.svelte");
 
-// Rendering, Tools, Agents, Diagnostics, Backups and Account remain navigable
+// Rendering, Tools, Companion, Agents, Backups and Account remain navigable
 // for every document format and editing state.
 for (const format of ["latex", "typst", "markdown", "quarto", "html", ""]) {
   for (const mayEdit of [true, false]) {
     const ids = offered({ format, mayEdit, signedIn: false }).map((item) => item.id);
-    for (const id of ["rendering", "tools", "agents", "diagnostics", "backups", "account"]) {
+    for (const id of ["rendering", "tools", "companion", "agents", "backups", "account"]) {
       assert.ok(ids.includes(id), `${format} (mayEdit=${mayEdit}) offers ${id}`);
     }
   }

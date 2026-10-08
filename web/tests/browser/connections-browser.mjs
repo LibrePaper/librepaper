@@ -96,20 +96,20 @@ try {
   await b.evaluate('window.roomConnected(false)'); await flush();
   assert.equal((await connectionState('Remote')).offline,true,'Remote pill turns red while disconnected');
   await clickPill('Local');
-  await until('Tools settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Tools"'),3000);
+  await until('Companion settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Companion"'),3000);
   assert.equal(await b.evaluate('document.querySelector("#settings-companion .companion-status-label")?.textContent.trim() === "Companion" && Boolean(document.querySelector("#settings-companion .setting-status-pill")?.textContent.trim())'),true,
-    'Tools settings shows the Companion status with its pill');
+    'the settings sidebar shows the Companion status with its pill');
   assert.equal((await connectionState('Local')).offline,true,'Local pill is red while its app is unavailable');
   const localActions = await b.evaluate(`(() => {
-    const root=document.querySelector('#settings-companion');
+    const root=document.querySelector('#companion-connection');
     const visible=element => Boolean(element?.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
     const install=root?.querySelector('a[href="https://librepaper.org/local-app.html"]');
     const connect=[...(root?.querySelectorAll('button') || [])].find(button => button.textContent.trim() === 'Connect');
     return { installVisible:visible(install), connectVisible:visible(connect), connectEnabled:Boolean(connect && !connect.disabled) };
   })()`);
-  assert.equal(localActions.installVisible,true,'Tools settings shows a visible companion Install link');
-  assert.equal(localActions.connectVisible,true,'Tools settings shows a visible Connect button');
-  assert.equal(localActions.connectEnabled,true,'Tools settings Connect button is enabled');
+  assert.equal(localActions.installVisible,true,'Companion settings shows a visible companion Install link');
+  assert.equal(localActions.connectVisible,true,'Companion settings shows a visible Connect button');
+  assert.equal(localActions.connectEnabled,true,'Companion settings Connect button is enabled');
 
   await click('[aria-label="Close"]');
   const backup = await connectionState('open backup settings');
