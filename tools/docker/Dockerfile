@@ -125,7 +125,10 @@ RUN chmod 0644 /etc/resticprofile/profiles.toml \
 # Only the backup service stages its export here; the app never writes it.
 VOLUME /var/backups/librepaper
 USER 10001:65534
-HEALTHCHECK NONE
+# Older Docker Compose fails `up --wait` on a service with no healthcheck,
+# and ./manage waits on this one. Alive is all it promises: the entrypoint
+# either sleeps with backups disabled or runs supercronic.
+HEALTHCHECK --interval=5s --timeout=3s --retries=3 CMD kill -0 1 || exit 1
 ENTRYPOINT ["/usr/local/bin/librepaper-backup-entrypoint"]
 CMD []
 
