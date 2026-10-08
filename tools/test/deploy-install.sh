@@ -255,10 +255,17 @@ app_ready() {
 
 # Admin graphs endpoint must return twelve series with basic auth.
 admin_graphs_answer() {
-	local compose="$1" count
-	# With credentials, the endpoint returns data with twelve series.
-	count=$("$compose" exec -T librepaper wget -qO- --header 'Host: admin.localhost' 'http://admin:deploy-install-test-password@127.0.0.1:8080/data?points=10' | grep -o '"name":' | wc -l)
-	[[ "$count" == 12 ]] || fail "admin graphs endpoint returned $count series, expected 12 ($compose)"
+	local compose="$1" body="" count=0 _
+	# With credentials, the endpoint returns data with twelve series. It can
+	# answer a moment after /ready, and a failed wget must not end the script
+	# silently under set -e, so retry and report what came back.
+	for _ in {1..30}; do
+		body=$("$compose" exec -T librepaper wget -qO- --header 'Host: admin.localhost' 'http://admin:deploy-install-test-password@127.0.0.1:8080/data?points=10' 2>&1) || true
+		count=$(grep -o '"name":' <<<"$body" | wc -l)
+		[[ "$count" == 12 ]] && break
+		sleep 2
+	done
+	[[ "$count" == 12 ]] || fail "admin graphs endpoint returned $count series, expected 12 ($compose): ${body:0:300}"
 	# Without credentials, it must return 401.
 	local exit_code
 	exit_code=0
