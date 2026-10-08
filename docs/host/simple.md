@@ -7,6 +7,14 @@ One VPS, Docker only, one file to edit. PostgreSQL and all user files live on th
 > LibrePaper is experimental. Self-host only if you can maintain its database,
 > files, credentials, and recovery copies.
 
+## What you need
+
+- A virtual private server (for example OVHcloud, Hetzner, DigitalOcean or Linode).
+- Docker Engine and Compose v2 on it.
+- Ports 80 and 443 open.
+- Two DNS names pointing at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`). A published document is code, so it needs its own host: the browser is what keeps it out of a reader's session.
+- A GitHub OAuth app. Callback URL: `https://paper.example/auth/callback`.
+
 ## The kit
 
 LibrePaper supplies a self-hosting kit, `librepaper-deploy.tar.gz`, attached to every GitHub release. The images it pins are that release's own version.
@@ -20,13 +28,6 @@ LibrePaper supplies a self-hosting kit, `librepaper-deploy.tar.gz`, attached to 
 | `postgres/init.sql` | Creates the database and its role on first start |
 | `compose.managed-db.yaml` | For a database elsewhere, see [Database elsewhere](advanced.html#database-elsewhere) |
 | `README.md` | The quick start, and a link here |
-
-## What you need
-
-- A VPS with Docker Engine and Compose v2.
-- Ports 80 and 443 open.
-- Two DNS names pointing at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`). A published document is code, so it needs its own host: the browser is what keeps it out of a reader's session.
-- A GitHub OAuth app. Callback URL: `https://paper.example/auth/callback`.
 
 ## Deploy
 
