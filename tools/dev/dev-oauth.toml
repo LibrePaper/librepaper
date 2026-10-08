@@ -1,7 +1,10 @@
-# Local application configuration for `make serve CONFIG=tools/dev/dev-oauth.toml`
-# when GitHub credentials are loaded from .env or tools/dev/keys.yaml. This is the
-# full config; to change a value, edit this file or copy it and pass
-# CONFIG=path/to/config.toml.
+# Local application configuration for GitHub sign-in, with the credentials
+# from tools/dev/keys.yaml:
+#
+#     sops exec-env tools/dev/keys.yaml 'make serve CONFIG=tools/dev/dev-oauth.toml'
+#
+# This is the full config; to change a value, edit this file or copy it and
+# pass CONFIG=path/to/config.toml.
 [server]
 address = "127.0.0.1:8081"
 local_companion = true

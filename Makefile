@@ -5,9 +5,7 @@
 # (from web/dist) and serves it. Browser WASM renderers are separate pinned
 # inputs fetched into web/wasm and published to the asset mirror for browsers.
 
-# Local credentials, kept out of the repository. Copy .env.example to .env and
-# fill it in. The selected TOML config names any values the application reads.
--include .env
+# Recipes see every make variable in their environment.
 export
 
 BIN     := dist/librepaper

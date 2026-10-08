@@ -57,3 +57,7 @@ web/vendor/loro-codemirror/
 .kata.local.toml
 # roborev snapshots
 /.roborev/
+
+# Local agent tooling configuration (kata, roborev).
+.kata.toml
+.roborev.toml
