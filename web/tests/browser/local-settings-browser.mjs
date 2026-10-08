@@ -31,12 +31,14 @@ async function freePort() {
 
 writeFileSync(harness, `
 <script>
+  import CompanionStatus from ${JSON.stringify(join(root, "web/src/components/settings/CompanionStatus.svelte"))};
   import DiagnosticsSettings from ${JSON.stringify(join(root, "web/src/components/settings/DiagnosticsSettings.svelte"))};
   import ToolCommand from ${JSON.stringify(join(root, "web/src/components/settings/ToolCommand.svelte"))};
   import { createMachineView } from ${JSON.stringify(join(root, "web/src/lib/companion/machine.svelte.js"))};
   const view = createMachineView();
   $effect(() => view.start());
 </script>
+<CompanionStatus id="settings-companion" />
 <DiagnosticsSettings {view} />
 <section id="quarto-section"><ToolCommand name="quarto" /></section>
 `);

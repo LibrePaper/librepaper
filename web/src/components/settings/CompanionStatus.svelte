@@ -48,9 +48,8 @@
   <span class="companion-status-label">Companion</span>
   <span title={hint}><StatusPill label={says} tone={state.tone} accessibleLabel={`LibrePaper Companion: ${says}`} /></span>
   {#if !connected}
-    {#if local?.state === "unreachable"}<a class="companion-status-link" href={INSTALL} target="_blank" rel="noreferrer">Install</a>{/if}
+    {#if local?.state !== "denied"}<a class="companion-status-link" href={INSTALL} target="_blank" rel="noreferrer">Install</a>{/if}
     {#if local?.state !== "incompatible"}<button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button>{/if}
-    {#if local?.state === "incompatible"}<a class="companion-status-link" href={INSTALL} target="_blank" rel="noreferrer">Update</a>{/if}
   {/if}
   {#if failure}<p class="companion-status-error" role="alert">{failure}</p>{:else if !connected && hint}<p class="companion-status-hint">{hint}</p>{/if}
 </div>
