@@ -190,6 +190,18 @@ assert.equal(new URL(link).hostname, "connect", "the link is still tried first")
 assert.ok(now >= 15000 && now < 30000, "gives up once the start grace has passed");
 assert.ok(!storage.has("librepaper-local-pending"));
 
+// The companion was started by hand after the link did nothing: the claim
+// answers 404 for our request, so the page asks directly and the claim succeeds.
+setup((n) => {
+  if (n === 1) throw new TypeError("Failed to fetch");
+  if (n === 2) companionUp = true;
+  if (pairBody === null) return response(404, {});
+  return response(200, { token: "late-token", expires: 1000000, instance: "restart" });
+});
+await local.connectApp({ timeoutMs: 10000 });
+assert.equal(pairBody.request, claimBody.request);
+assert.ok(now < 15000, "the late companion is asked well inside the start grace");
+
 // A blocked Local Network Access permission fails with the same text as a
 // stopped companion; the permission tells the two apart.
 setup(() => { throw new TypeError("Failed to fetch"); });

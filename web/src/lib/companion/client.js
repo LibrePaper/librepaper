@@ -822,26 +822,28 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
   // must not send an already running companion to the link handler, which may
   // not be registered. The link, which starts it and asks it the same way, is
   // only for a companion this request cannot reach.
-  let asked = false;
-  // Trusted app origins can establish a management session in this user
-  // action and queue the normal approval request inside Settings.
-  let trustedControl = false;
-  try {
-    await deps.control.connect(address());
-    checkScope();
-    trustedControl = true;
-  } catch {
-    checkScope();
-    // External origins and older companions retain the public compatibility flow.
-  }
-  if (trustedControl) {
-    deps.control.showSettings();
-    await deps.control.request("/pair/request", {
-      method: "POST", body: { origin, request, challenge, return: returnUrl },
-    });
-    asked = true;
-  }
-  if (!asked) {
+  // Resolves true when the companion accepted the request, false when it could
+  // not be reached, and throws when it refused the request.
+  const ask = async () => {
+    // Trusted app origins can establish a management session in this user
+    // action and queue the normal approval request inside Settings.
+    let trustedControl = false;
+    try {
+      await deps.control.connect(address());
+      checkScope();
+      trustedControl = true;
+    } catch {
+      checkScope();
+      // External origins and older companions retain the public compatibility flow.
+    }
+    if (trustedControl) {
+      deps.control.showSettings();
+      await deps.control.request("/pair/request", {
+        method: "POST", body: { origin, request, challenge, return: returnUrl },
+      });
+      return true;
+    }
+    let delivered = false;
     try {
       const response = await deps.fetch(`${address()}${LOCAL_BASE}pair/request`, {
         method: "POST", mode: "cors", credentials: "omit",
@@ -849,16 +851,19 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
         body: JSON.stringify({ origin, request, challenge, return: returnUrl }),
       });
-      asked = true;
+      delivered = true;
       if (response.status !== 202) {
         const data = await response.json().catch(() => null);
         throw named("Refused", data?.error || `The companion could not ask for permission (${response.status}).`);
       }
+      return true;
     } catch (error) {
-      if (asked) throw error;
-      // Unreachable after all: fall through to the link.
+      if (delivered) throw error;
+      // Unreachable after all: the caller falls through to the link.
     }
-  }
+    return false;
+  };
+  let asked = await ask();
   checkScope();
   if (!asked) {
     deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, request, challenge, return: returnUrl })}`);
@@ -890,6 +895,12 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
     }
     checkScope();
     answered = true;
+    if (response.status === 404 && !asked) {
+      // The companion came up after the link fired, so it never saw our request.
+      asked = await ask();
+      checkScope();
+      continue;
+    }
     if (response.status === 202 || response.status === 404) continue;
     if (response.status === 403) {
       let errorMessage = "This connection request expired or was refused. Try connecting again.";
