@@ -2,7 +2,9 @@
 title: "The local app"
 ---
 
-A browser page is sandboxed: it cannot read your files, run programs or reach the software on your computer. The local app is one small program that does those things for LibrePaper, on your machine, under your account, and only for the sites and folders you approve.
+Web browsers run every page in a sandbox to protect visitors: a website cannot read your local files or control your computer.
+
+In LibrePaper it is often useful to reach past that sandbox. A Quarto document needs the R or Python installed on your machine, your AI agent lives in your terminal, and a backup belongs in a folder on your disk. The local app is one small program that does these things for the website, on your machine and under your account, only for the sites and folders you approve.
 
 ## What it enables
 
