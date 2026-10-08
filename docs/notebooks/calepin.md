@@ -4,9 +4,9 @@ title: "Calepin"
 
 [Calepin](https://vincentarelbundock.github.io/calepin/) brings executable code chunks into native [Typst](https://typst.app) documents, so reports, papers and slides can compute tables, numbers and figures during rendering.
 
-## Local app
+## Companion
 
-The browser cannot run code. The LibrePaper local app runs Calepin on your computer with the tools installed there. Install [the local app](../local-app.html), then start it:
+The browser cannot run code. The LibrePaper companion runs Calepin on your computer with the tools installed there. Install [the companion](../local-app.html), then start it:
 
 ```sh
 librepaper                           # start in the background

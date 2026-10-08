@@ -4,9 +4,9 @@ title: "Quarto"
 
 [Quarto](https://quarto.org) is an open source publishing system that runs R, Python or Julia code in a Markdown document.
 
-## Local app
+## Companion
 
-The browser cannot run R, Python, or Quarto. The LibrePaper local app runs them on your computer with the tools installed there. Install [the local app](../local-app.html), then start it:
+The browser cannot run R, Python, or Quarto. The LibrePaper companion runs them on your computer with the tools installed there. Install [the companion](../local-app.html), then start it:
 
 ```sh
 librepaper                           # start in the background
