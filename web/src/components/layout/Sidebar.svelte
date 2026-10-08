@@ -34,8 +34,9 @@
     settled = false,
     // What sits at the foot of the rail, under the places: the controls that
     // belong to the page rather than to any one panel. The reader puts its
-    // layout switch, shortcuts and way home there; the landing page has no
-    // home to go to and puts only help. A snippet rather than a list of flags,
+    // layout switch, shortcuts, settings and way home there; the landing page
+    // has no home to go to and puts only settings. Help is always drawn, after
+    // whatever the page puts here. A snippet rather than a list of flags,
     // because this component has no business knowing what a layout is.
     controls = undefined,
     // Whether the column can be dragged wider, and whether a panel is even

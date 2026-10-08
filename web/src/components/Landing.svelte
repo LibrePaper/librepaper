@@ -935,7 +935,9 @@
     <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }} compactLabels={narrow}
              resizable={false} label="Projects" onselectpanel={goTo}
              badges={trashed.length ? { trash: { counts: [{ tone: "warnings", of: trashed.length }] } } : {}}>
-      {#snippet controls()}{/snippet}
+      {#snippet controls()}
+        <IconButton icon="settings" label="Settings" tone="plain" onclick={() => openSettings()} />
+      {/snippet}
     </Sidebar>
 
     <section class="projects">
