@@ -15,6 +15,7 @@
 export const nav = [
   { path: "what", label: "What is LibrePaper" },
   { path: "local-app", label: "Local app" },
+  { path: "backups", label: "Local backups" },
   {
     label: "Computational notebooks",
     pages: [
@@ -25,7 +26,6 @@ export const nav = [
   { path: "collaborate", label: "Collaborate" },
   { path: "agents", label: "Agents" },
   { path: "cli", label: "CLI" },
-  { path: "backups", label: "Local backups" },
   {
     label: "Self-hosting",
     pages: [
