@@ -6,9 +6,10 @@ librepaper.org; that is an operator command described in the private runbook
 
 ## Release a version
 
-1. Set `[workspace.package].version` in `Cargo.toml` and update the workspace
-   package entries in `Cargo.lock`. The release tag must be
-   `v<version>` (for example, version `X.Y.Z` uses tag `vX.Y.Z`).
+1. Set the version with `tools/release/version X.Y.Z`. It updates
+   `Cargo.toml`, the workspace entries in `Cargo.lock` and the image pins in
+   `deploy/compose.yaml`; a test fails when the pins and the version differ.
+   The release tag must be `vX.Y.Z`.
 2. Run the checks described in [Building and testing](architecture/building.md),
    including `make check` and `tools/dev/db test`. If the release changes
    browser assets, publish them first; see [asset mirrors](dev/asset-mirrors.md).

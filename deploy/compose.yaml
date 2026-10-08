@@ -28,7 +28,7 @@ services:
     network_mode: none
 
   librepaper:
-    image: ghcr.io/librepaper/librepaper:v0.0.21
+    image: ghcr.io/librepaper/librepaper:v0.0.24
     restart: unless-stopped
     stop_grace_period: 30s
     logging: *bounded-logs
@@ -43,7 +43,7 @@ services:
     networks: [edge, default]
 
   backup:
-    image: ghcr.io/librepaper/librepaper-backup:v0.0.21
+    image: ghcr.io/librepaper/librepaper-backup:v0.0.24
     restart: unless-stopped
     logging: *bounded-logs
     tmpfs:

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Set the release version everywhere a release names it: the workspace
+# version, the workspace entries in Cargo.lock, and the deployment kit's image
+# pins. tools/deploy/compose.test.mjs fails when the pins and the version differ.
+#
+#   tools/release/version 0.0.25
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+
+version=${1:-}
+if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+	echo "usage: tools/release/version MAJOR.MINOR.PATCH" >&2
+	exit 2
+fi
+
+# The first version line is [workspace.package].version.
+sed -i -E '0,/^version = "[^"]*"/s//version = "'"$version"'"/' Cargo.toml
+cargo update --workspace --quiet
+sed -i -E 's#(ghcr\.io/librepaper/librepaper(-backup)?):v[0-9]+\.[0-9]+\.[0-9]+#\1:v'"$version"'#' deploy/compose.yaml
+git diff --stat -- Cargo.toml Cargo.lock deploy/compose.yaml

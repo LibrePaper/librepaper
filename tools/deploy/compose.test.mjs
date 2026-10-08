@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test, { after } from 'node:test';
@@ -23,6 +23,14 @@ const env = { ...process.env, COMPOSE_DISABLE_ENV_FILE: '1' };
 for (const name of ['COMPOSE_PROFILES', 'COMPOSE_FILE', 'COMPOSE_PROJECT_NAME', 'COMPOSE_ENV_FILES']) {
   delete env[name];
 }
+
+// tools/release/version sets both; a release must not ship a kit that pins another version.
+test('the kit pins the application and backup images to the workspace version', () => {
+  const version = readFileSync(path.join(repo, 'Cargo.toml'), 'utf8').match(/^version = "([^"]+)"/m)[1];
+  const pins = [...readFileSync(path.join(deploy, 'compose.yaml'), 'utf8').matchAll(/ghcr\.io\/librepaper\/librepaper(?:-backup)?:(v\S+)/g)].map((match) => match[1]);
+  assert.equal(pins.length, 2);
+  assert.deepEqual(pins, [`v${version}`, `v${version}`], 'run tools/release/version to update the kit pins');
+});
 
 let project;
 // A copy of the kit in which files exist as in the repo.
