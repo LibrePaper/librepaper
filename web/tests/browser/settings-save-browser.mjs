@@ -70,7 +70,7 @@ let server;
 let tab;
 try {
   await build({ configFile: false, root: join(root, "web"), plugins: [svelte()], logLevel: "error",
-    build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "settings-save-check.js" } } });
+    build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "settings-save-check.js", cssFileName: "style" } } });
   server = createServer((request, response) => {
     const file = join(output, request.url.slice(1));
     if (request.url !== "/" && existsSync(file)) {

@@ -425,7 +425,7 @@ let server;
 let tab;
 try {
   await build({ configFile: false, root: join(root, "web"), plugins: [svelte()], logLevel: "error",
-    build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "history-panel-check.js" } } });
+    build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "history-panel-check.js", cssFileName: "style" } } });
   // The built shell's stylesheet carries the theme -- every colour and step
   // of spacing the panel uses is a custom property defined there.
   const built = join(root, "web/dist/assets");
