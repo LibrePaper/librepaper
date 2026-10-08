@@ -6,6 +6,8 @@ import * as localBridge from "./client.js";
 
 export function createMachineView() {
   let available = $state(false);
+  // A stored credential is not a running companion, so track whether it answers.
+  let reachable = $state(true);
   let state = $state(null);
   let error = $state("");
   let loadError = $state("");
@@ -26,10 +28,17 @@ export function createMachineView() {
       const result = await control.request("/state");
       if (current !== requestId || expectedEpoch !== epoch || expectedScope !== control.scope() || !control.available()) return;
       state = result;
+      reachable = true;
       loadError = "";
     } catch (cause) {
       if (current === requestId && expectedEpoch === epoch && expectedScope === control.scope()) {
-        loadError = cause?.message || "Could not load this computer's settings.";
+        if (cause?.name === "Unreachable") {
+          reachable = false;
+          state = null;
+          loadError = "";
+        } else {
+          loadError = cause?.message || "Could not load this computer's settings.";
+        }
       }
     }
   }
@@ -49,6 +58,10 @@ export function createMachineView() {
       return true;
     } catch (cause) {
       if (expectedEpoch === epoch && expectedScope === control.scope()) {
+        if (cause?.name === "Unreachable") {
+          reachable = false;
+          state = null;
+        }
         error = cause?.message || "The request could not be completed.";
       }
       return false;
@@ -80,6 +93,7 @@ export function createMachineView() {
       if (currentScope !== nextScope || available !== Boolean(access?.available)) {
         currentScope = nextScope;
         available = Boolean(access?.available);
+        reachable = true;
         epoch++;
         requestId++;
         state = null;
@@ -107,7 +121,7 @@ export function createMachineView() {
   }
 
   return {
-    get available() { return available; },
+    get available() { return available && reachable; },
     get state() { return state; },
     get error() { return error; },
     get loadError() { return loadError; },
