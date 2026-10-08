@@ -399,11 +399,15 @@ test('deploy fetches manage, uploads the candidates, then runs the upgrade, then
     const result = run(f, 'deploy', 'v0.0.24');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /Done: v0\.0\.24 is live/);
+    // curl and tar run as one pipe, so either may log first; both precede the uploads.
+    const list = events(f);
+    const tarAt = list.findIndex(([kind, args]) => kind === 'tar' && /^xzO librepaper\/manage$/.test(args));
+    const uploadAt = list.findIndex(([kind, args]) => kind === 'ssh' && /librepaper\.toml\.candidate\.tmp/.test(args));
+    assert.ok(tarAt >= 0 && tarAt < uploadAt, 'manage is unpacked before the candidates are uploaded');
     assertInOrder(events(f), [
       ['make', /^/],
       ['ssh', /\.manage\.tmp/],
       ['curl', /releases\/download\/v0\.0\.24\/librepaper-deploy\.tar\.gz$/],
-      ['tar', /^xzO librepaper\/manage$/],
       ['ssh', /librepaper\.toml\.candidate\.tmp/],
       ['ssh', /resticprofile\.toml\.candidate\.tmp/],
       ['rsync', /librepaper\/site\/$/],
