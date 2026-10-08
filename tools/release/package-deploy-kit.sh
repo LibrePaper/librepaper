@@ -32,7 +32,7 @@ required_files=(
 	deploy/postgres/init.sql
 	deploy/caddy/Caddyfile
 	deploy/README.md
-	deploy/backups
+	deploy/manage
 )
 for file in "${required_files[@]}"; do
 	git -C "$repository" cat-file -e "$commit:$file" 2>/dev/null || {
@@ -79,7 +79,7 @@ sed -i "s|ghcr.io/librepaper/librepaper-backup:[^ \"]*|ghcr.io/librepaper/librep
 mv "$stage/deploy" "$stage/librepaper"
 chmod 0700 "$stage/librepaper"
 find "$stage/librepaper" -type f -exec chmod 0644 {} \;
-chmod 0755 "$stage/librepaper/backups"
+chmod 0755 "$stage/librepaper/manage"
 find "$stage/librepaper" -type d -exec chmod 0755 {} \;
 chmod 0700 "$stage/librepaper"
 

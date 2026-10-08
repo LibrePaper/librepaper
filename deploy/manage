@@ -1,0 +1,460 @@
+#!/usr/bin/env bash
+# Operator helper for the LibrePaper kit. Run it from this directory.
+set -euo pipefail
+
+START_DIR=$PWD
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+BACKUP_DIR=/var/backups/librepaper/current
+APP_IMAGE_PREFIX=ghcr.io/librepaper/librepaper:
+RELEASES=https://github.com/LibrePaper/librepaper/releases
+TMP=
+
+usage() {
+	cat <<'USAGE'
+usage: ./manage <command>
+
+  status                   services, version, /ready, disk
+  check                    validate the app, backup and Caddy configs
+  apply                    validate, install *.candidate configs, restart
+  upgrade [vX.Y.Z] [--no-backup]
+                           back up, install a release kit, restart
+  logs [service]           follow logs
+  version                  print the pinned app version
+  backup now               back up now
+  backup list              list snapshots
+  backup show <snapshot|latest>
+                           summarize one snapshot and its manifest
+  backup restore <snapshot|latest>
+                           restore into a fresh download on another machine
+  help                     this text
+
+Credentials stay in resticprofile.toml; this script never reads them.
+USAGE
+}
+
+die() { echo "manage: $*" >&2; exit 1; }
+step() { printf '\n==> %s\n' "$*"; }
+
+cleanup() { [ -z "$TMP" ] || rm -rf -- "$TMP"; }
+trap cleanup EXIT
+
+# The pinned app version in a compose file, such as v0.0.24.
+pinned_version() {
+	sed -n 's|.*ghcr\.io/librepaper/librepaper:\(v[0-9][0-9.]*\).*|\1|p' "${1:-compose.yaml}" | head -n 1
+}
+
+# The image reference for a service-name prefix in a compose file.
+image_ref() {
+	sed -n "s|^[[:space:]]*image:[[:space:]]*\\($1[^[:space:]\"]*\\).*|\\1|p" "$2" | head -n 1
+}
+
+# True when $1 is older than $2; both are vMAJOR.MINOR.PATCH.
+version_older() {
+	local a_major a_minor a_patch b_major b_minor b_patch
+	IFS=. read -r a_major a_minor a_patch <<<"${1#v}"
+	IFS=. read -r b_major b_minor b_patch <<<"${2#v}"
+	[ "$a_major" -eq "$b_major" ] || { [ "$a_major" -lt "$b_major" ]; return; }
+	[ "$a_minor" -eq "$b_minor" ] || { [ "$a_minor" -lt "$b_minor" ]; return; }
+	[ "$a_patch" -lt "$b_patch" ]
+}
+
+service_running() {
+	docker compose ps --status running --services | grep -qx "$1"
+}
+
+# The live file, or its candidate when one is waiting.
+config_file() {
+	if [ -e "$1.candidate" ]; then echo "$1.candidate"; else echo "$1"; fi
+}
+
+# Retry /ready for up to 60 s.
+wait_ready() {
+	local i
+	for i in $(seq 1 30); do
+		if docker compose exec -T librepaper wget -qO- http://127.0.0.1:8080/ready >/dev/null 2>&1; then
+			echo "ready"
+			return 0
+		fi
+		sleep 2
+	done
+	die "/ready did not answer within 60 s; see ./manage logs librepaper"
+}
+
+reload_caddy() {
+	docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+}
+
+# Run a check command quietly; show its output only when it fails.
+run_check() {
+	local label=$1 out
+	shift
+	if out=$("$@" 2>&1); then
+		echo "ok      $label"
+	else
+		echo "FAILED  $label"
+		printf '%s\n' "$out" | sed 's/^/        /' >&2
+		return 1
+	fi
+}
+
+# check_app <file> [image]: app config, with the pinned image or the given one.
+check_app() {
+	local file=$1 image=${2:-}
+	if [ -n "$image" ]; then
+		run_check "app config ($file)" docker run --rm -v "$PWD/$file:/etc/librepaper/librepaper.toml:ro" \
+			"$image" admin config check --config /etc/librepaper/librepaper.toml
+	else
+		run_check "app config ($file)" docker compose run --rm --no-deps -T -v "./$file:/etc/librepaper/librepaper.toml:ro" \
+			librepaper admin config check --config /etc/librepaper/librepaper.toml
+	fi
+}
+
+# check_backup <file> <app file> [image]: the backup image's entrypoint validates.
+check_backup() {
+	local file=$1 appfile=$2 image=${3:-}
+	if [ -n "$image" ]; then
+		run_check "backup config ($file)" docker run --rm -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 \
+			--tmpfs /run/librepaper-backup:uid=10001,gid=65534,mode=0700 \
+			-v "$PWD/$appfile:/etc/librepaper/librepaper.toml:ro" \
+			-v "$PWD/$file:/etc/resticprofile/resticprofile.toml:ro" "$image"
+	else
+		run_check "backup config ($file)" docker compose run --rm --no-deps -T -e LIBREPAPER_BACKUP_VALIDATE_ONLY=1 \
+			-v "./$appfile:/etc/librepaper/librepaper.toml:ro" \
+			-v "./$file:/etc/resticprofile/resticprofile.toml:ro" backup
+	fi
+}
+
+check_caddy() {
+	run_check "caddy config" docker compose run --rm --no-deps -T caddy \
+		caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+}
+
+# Warn only: DNS may not be set up yet, or the check may run from elsewhere.
+check_dns() {
+	local file=$1 hosts host
+	hosts=$(awk '
+		/^[[:space:]]*\[/ { in_origins = ($0 ~ /^[[:space:]]*\[origins\]/) }
+		in_origins && /^[[:space:]]*(app|docs|admin)[[:space:]]*=[[:space:]]*"https?:\/\// { print }
+	' "$file" | sed -n 's|.*"https\{0,1\}://\([^/":]*\).*|\1|p')
+	[ -n "$hosts" ] || { echo "warn    no origins found in $file"; return 0; }
+	for host in $hosts; do
+		case "$host" in
+		*@* | *paper.example)
+			echo "warn    origin $host is still the sample value"
+			continue
+			;;
+		esac
+		if ! command -v getent >/dev/null 2>&1; then
+			echo "warn    cannot check DNS: getent is missing"
+			return 0
+		fi
+		if getent hosts "$host" >/dev/null 2>&1; then
+			echo "ok      DNS $host"
+		else
+			echo "warn    DNS $host does not resolve yet"
+		fi
+	done
+}
+
+# Checks 1-3; returns non-zero when any fails.
+check_configs() {
+	local failed=0
+	check_app "$(config_file librepaper.toml)" || failed=1
+	check_backup "$(config_file resticprofile.toml)" "$(config_file librepaper.toml)" || failed=1
+	check_caddy || failed=1
+	return $failed
+}
+
+# Candidates become the live files; mv keeps the candidate's mode.
+install_candidates() {
+	local f
+	for f in librepaper.toml resticprofile.toml; do
+		if [ -e "$f.candidate" ]; then
+			mv -f "$f.candidate" "$f"
+			echo "installed $f"
+		fi
+	done
+}
+
+cmd_status() {
+	docker compose ps
+	echo
+	echo "version: $(pinned_version)"
+	if service_running librepaper; then
+		printf 'ready:   '
+		docker compose exec -T librepaper wget -qO- http://127.0.0.1:8080/ready || echo "not ready"
+		echo
+	fi
+	echo
+	df -h .
+}
+
+cmd_check() {
+	local failed=0
+	check_configs || failed=1
+	check_dns "$(config_file librepaper.toml)"
+	[ "$failed" -eq 0 ] || die "a check failed"
+}
+
+cmd_apply() {
+	step "Checking"
+	check_configs || die "a check failed; nothing was changed"
+
+	step "Installing candidates"
+	install_candidates
+
+	step "Restarting"
+	# Compose does not notice a changed bind-mounted file, so force the recreate.
+	docker compose up -d --wait --force-recreate librepaper backup
+	reload_caddy
+
+	step "Checking /ready"
+	wait_ready
+}
+
+cmd_upgrade() {
+	local tag= backup=1 arg kit old new f src dest rel
+
+	for arg in "$@"; do
+		case "$arg" in
+		--no-backup) backup=0 ;;
+		v[0-9]*) tag=$arg ;;
+		*) die "unknown upgrade argument: $arg" ;;
+		esac
+	done
+	if [ -n "$tag" ]; then
+		printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || die "bad version: $tag"
+	fi
+
+	TMP=$(mktemp -d)
+
+	step "Fetching the release kit"
+	if [ -n "${LIBREPAPER_KIT:-}" ]; then
+		case "$LIBREPAPER_KIT" in
+		/*) src=$LIBREPAPER_KIT ;;
+		*) src=$START_DIR/$LIBREPAPER_KIT ;;
+		esac
+		[ -f "$src" ] || die "LIBREPAPER_KIT is not a file: $LIBREPAPER_KIT"
+		cp "$src" "$TMP/kit.tar.gz"
+	else
+		if [ -n "$tag" ]; then
+			src=$RELEASES/download/$tag/librepaper-deploy.tar.gz
+		else
+			src=$RELEASES/latest/download/librepaper-deploy.tar.gz
+		fi
+		curl -fsSL -o "$TMP/kit.tar.gz" "$src" || die "cannot download $src"
+	fi
+	mkdir "$TMP/x"
+	tar -C "$TMP/x" -xzf "$TMP/kit.tar.gz" || die "cannot extract the release kit"
+	kit=$TMP/x/librepaper
+	[ -f "$kit/compose.yaml" ] && [ -f "$kit/manage" ] || die "the release kit is missing compose.yaml or manage"
+
+	old=$(pinned_version)
+	new=$(pinned_version "$kit/compose.yaml")
+	[ -n "$new" ] || die "cannot read the app version from the release kit"
+	[ -z "$tag" ] || [ "$tag" = "$new" ] || die "the kit pins $new, not $tag"
+	if [ -n "$old" ] && version_older "$new" "$old"; then
+		die "$new is older than the current $old; nothing was changed"
+	fi
+	echo "$old -> $new"
+
+	if [ "$backup" -eq 1 ]; then
+		if service_running backup &&
+			grep -Eq '^[[:space:]]*\[resticprofile\][[:space:]]*(#.*)?$' resticprofile.toml 2>/dev/null; then
+			step "Backing up first"
+			cmd_backup_now || die "backup failed; nothing was changed"
+		else
+			echo "no active backups here; skipping the backup"
+		fi
+	fi
+
+	step "Pulling images"
+	# Pinned tags do not change, so an image already here is the right one.
+	for f in $(sed -n 's|^[[:space:]]*image:[[:space:]]*\([^[:space:]"]*\).*|\1|p' "$kit/compose.yaml"); do
+		docker image inspect "$f" >/dev/null 2>&1 || docker pull "$f" || die "cannot pull $f; nothing was changed"
+	done
+
+	step "Checking configs with the new images"
+	local failed=0 app_file
+	app_file=$(config_file librepaper.toml)
+	check_app "$app_file" "$(image_ref "$APP_IMAGE_PREFIX" "$kit/compose.yaml")" || failed=1
+	check_backup "$(config_file resticprofile.toml)" "$app_file" \
+		"$(image_ref ghcr.io/librepaper/librepaper-backup: "$kit/compose.yaml")" || failed=1
+	[ "$failed" -eq 0 ] || die "a check failed; nothing was changed"
+
+	step "Installing kit files"
+	# Every file but the configs, through a temporary name so each swap is atomic.
+	# Operator files are never touched; manage goes last.
+	(cd "$kit" && find . -type f ! -name '*.toml' ! -name manage -print) | while IFS= read -r f; do
+		rel=${f#./}
+		case "$rel" in
+		caddy/local.d/* | compose.override.yaml | site/* | staging/*) continue ;;
+		esac
+		dest=$rel
+		mkdir -p "$(dirname "$dest")"
+		cp -p "$kit/$rel" "$dest.new.$$"
+		mv -f "$dest.new.$$" "$dest"
+	done
+	cp -p "$kit/manage" "manage.new.$$"
+	mv -f "manage.new.$$" manage
+	# The old helper name is gone.
+	rm -f backups
+
+	step "Installing candidates"
+	install_candidates
+
+	step "Restarting"
+	docker compose up -d --wait --remove-orphans
+	docker compose up -d --wait --force-recreate librepaper backup
+	reload_caddy
+
+	step "Checking /ready"
+	wait_ready
+
+	echo
+	echo "upgraded: $old -> $new"
+}
+
+cmd_logs() {
+	docker compose logs -f --tail 100 "$@"
+}
+
+cmd_version() {
+	pinned_version
+}
+
+# resticprofile in the backup image, with the kit's profile. Extra arguments go
+# straight to restic. -T keeps stdout clean for parsing; COMPOSE_PROGRESS and
+# --quiet hide container and profile chatter (older Compose ignores the variable).
+restic_cmd() {
+	COMPOSE_PROGRESS=quiet docker compose run --rm --no-deps -T --entrypoint resticprofile backup \
+		--quiet -c /etc/resticprofile/profiles.toml -n resticprofile "$@"
+}
+
+need_snapshot() {
+	[ $# -eq 1 ] && [ -n "$1" ] || die "expected one snapshot id, or latest"
+}
+
+cmd_backup_now() {
+	service_running backup || die "the backup service is not running; start it with docker compose up -d"
+	docker compose exec -T backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup
+}
+
+cmd_list() {
+	restic_cmd snapshots
+}
+
+cmd_show() {
+	need_snapshot "$@"
+	local snap=$1 manifest dump_size
+	restic_cmd snapshots "$snap"
+	manifest=$(restic_cmd dump "$snap" "$BACKUP_DIR/manifest.json") ||
+		die "cannot read manifest.json from snapshot $snap"
+	dump_size=$(restic_cmd ls --long "$snap" "$BACKUP_DIR/database.dump" |
+		awk -v p="$BACKUP_DIR/database.dump" '$NF == p { print $4 }')
+	# The manifest is pretty-printed JSON with one field per line.
+	printf '%s\n' "$manifest" | awk -v dump="${dump_size:-unknown}" '
+		function value(line) {
+			sub(/^[^:]*:[ \t]*/, "", line)
+			gsub(/[",]/, "", line)
+			return line
+		}
+		/^[ \t]*"started_at":/ { started = value($0) }
+		/^[ \t]*"completed_at":/ { completed = value($0) }
+		/^[ \t]*"migration_version":/ { migration = value($0) }
+		/^[ \t]*"key":/ { files++ }
+		/^[ \t]*"bytes":/ { bytes += value($0) }
+		END {
+			print ""
+			print "started_at:          " started
+			print "completed_at:        " completed
+			print "migration_version:   " migration
+			print "stored files:        " files + 0
+			print "stored file bytes:   " bytes + 0
+			print "database dump bytes: " dump
+		}'
+}
+
+cmd_restore() {
+	need_snapshot "$@"
+	local snap=$1
+
+	grep -Eq '^[[:space:]]*\[resticprofile\][[:space:]]*(#.*)?$' resticprofile.toml 2>/dev/null ||
+		die "resticprofile.toml has no active [resticprofile] table; copy your own here first"
+	if docker compose ps --status running --services | grep -qx librepaper; then
+		die "the librepaper service is running here; restore is meant for a fresh download on another machine"
+	fi
+	[ ! -e staging ] || die "staging/ already exists; remove it and run again"
+
+	trap 'echo "manage: restore failed; staging/ is left in place" >&2' ERR
+
+	step "Creating staging/"
+	mkdir -m 700 staging
+
+	step "Starting an empty database"
+	docker compose up -d --wait postgres
+
+	step "Restoring snapshot $snap into staging/"
+	docker compose run --rm --no-deps --user 0 -v ./staging:/restore --entrypoint resticprofile backup \
+		-c /etc/resticprofile/profiles.toml -n resticprofile restore "$snap" --target /restore
+
+	# admin restore verifies the manifest and hashes, and refuses a non-empty
+	# database or an existing destination.
+	step "Loading the database"
+	docker compose run --rm --no-deps --user 0 -v ./staging:/restore:ro librepaper \
+		admin restore --config /etc/librepaper/librepaper.toml /restore/var/backups/librepaper/current /var/lib/librepaper/recovered
+
+	step "Installing stored files and the session key"
+	docker compose run --rm --no-deps --user 0 -v ./staging:/restore:ro --entrypoint sh librepaper -c '
+		install -d -o 10001 -g 65534 /var/lib/librepaper/objects /var/lib/librepaper/secrets
+		cp -a /var/lib/librepaper/recovered/objects/. /var/lib/librepaper/objects/
+		install -o 10001 -g 65534 -m 0600 /restore/var/lib/librepaper/secrets/session.key /var/lib/librepaper/secrets/session.key
+		chown -R 10001:65534 /var/lib/librepaper/objects'
+
+	step "Starting LibrePaper"
+	docker compose up -d --wait
+
+	step "Checking /ready"
+	docker compose exec -T librepaper wget -qO- http://127.0.0.1:8080/ready
+	echo
+
+	trap - ERR
+	step "Removing staging/"
+	# Restored files belong to root, so remove them from inside a container.
+	docker compose run --rm --no-deps --user 0 -v ./staging:/restore --entrypoint sh librepaper -c \
+		'rm -rf /restore/* /restore/.[!.]*'
+	rmdir staging
+
+	cat <<'DONE'
+
+Restored. Open the app in a local browser, or through an SSH tunnel to this
+machine. Do not expose this copy under the production hostnames.
+DONE
+}
+
+cmd_backup() {
+	local sub=${1:-}
+	[ $# -eq 0 ] || shift
+	case "$sub" in
+	now) cmd_backup_now ;;
+	list) cmd_list ;;
+	show) cmd_show "$@" ;;
+	restore) cmd_restore "$@" ;;
+	*) usage >&2; exit 2 ;;
+	esac
+}
+
+command=${1:-help}
+[ $# -eq 0 ] || shift
+case "$command" in
+status) cmd_status ;;
+check) cmd_check ;;
+apply) cmd_apply ;;
+upgrade) cmd_upgrade "$@" ;;
+logs) cmd_logs "$@" ;;
+version) cmd_version ;;
+backup) cmd_backup "$@" ;;
+help | -h | --help) usage ;;
+*) usage >&2; exit 2 ;;
+esac
