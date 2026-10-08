@@ -154,26 +154,6 @@ Requirements:
 
 Backups still include user files: the backup job reads them through the same store, so the `backup` container needs the same keys. With keys written in `librepaper.toml` it already has them; with `{ file = ... }` references, mount the files into `backup` too (see [Secrets](#secrets)). `session.key` and the server's own state stay in the `data` volume.
 
-### Move existing files
-
-For an install that started with the volume: stop the app and backup, copy `objects/` into the bucket with rclone, check, then switch the config and start.
-
-```sh
-docker compose stop librepaper backup
-# keys on stdin, never in the command line
-printf '%s\n%s\n' "$ACCESS_KEY_ID" "$SECRET_ACCESS_KEY" | docker run --rm -i -v librepaper_data:/data:ro --entrypoint sh rclone/rclone:1.68.2 -c 'read -r RCLONE_S3_ACCESS_KEY_ID; read -r RCLONE_S3_SECRET_ACCESS_KEY; export RCLONE_S3_ACCESS_KEY_ID RCLONE_S3_SECRET_ACCESS_KEY; rclone copy /data/objects :s3,provider=Other,endpoint=s3.region.provider.example,region=region:your-bucket --checksum && rclone check /data/objects :s3,provider=Other,endpoint=s3.region.provider.example,region=region:your-bucket --one-way --checksum'
-$EDITOR librepaper.toml   # object_store = "s3" and [storage.s3]
-docker compose up -d --force-recreate librepaper backup
-```
-
-- The endpoint in rclone's inline remote has no `https://`: a colon would end the settings. rclone uses HTTPS by default.
-- The volume is `librepaper_data` because the compose project is `librepaper`.
-- The volume copy stays as a rollback until you delete it.
-
-### Restore with object storage
-
-`admin restore` writes user files to local disk. After restoring, copy `objects/` into the bucket the same way before starting the app on S3.
-
 ## Health
 
 The VPS cannot report its own outage, so alerts come from free outside services.
