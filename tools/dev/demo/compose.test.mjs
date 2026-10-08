@@ -12,7 +12,7 @@ const make = execFileSync("/bin/sh", ["-c", "command -v make"], { encoding: "utf
 const inheritedProductionServer = "https://komodoc.example/";
 
 async function makeFixture({ running = false, port = 8081, sitePort = 8082, commandLineServer, config, upFailure = false, logsFailure = false, waitForLogs = false } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "librepaper-demo-origin-"));
+  const directory = await mkdtemp(join(tmpdir(), "librepaper-demo-compose-"));
   const mockBinDir = join(directory, "mock-bin");
   const binPath = join(directory, "dist", "librepaper");
   const recursiveMakeLog = join(directory, "recursive-make.log");
