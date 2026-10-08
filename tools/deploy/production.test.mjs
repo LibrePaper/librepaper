@@ -182,6 +182,7 @@ printf 'docker\\t%s\\n' "$*" >> "$EVENTS_FILE"
 case "$*" in
   'image prune -f') ;;
   'compose logs --tail 50') ;;
+  'compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile') ;;
   *) echo "unexpected docker command: $*" >&2; exit 99 ;;
 esac`);
   mockCommand(bin, 'curl', `
@@ -470,6 +471,35 @@ test('the site and redirect blocks go to caddy/local.d/librepaper-org.caddy, onc
     assert.equal(statSync(file).mode & 0o777, 0o644);
     assert.equal(read(f.remote, 'caddy/local.d/other.caddy'), 'another app\n');
     assert.equal(existsSync(path.join(f.remote, 'caddy/Caddyfile')), false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('site installs the Caddy site block and reloads Caddy without touching the release', () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'site');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const file = path.join(f.remote, 'caddy/local.d/librepaper-org.caddy');
+    assert.equal(read(file), [
+      'librepaper.org {',
+      '\tencode zstd gzip',
+      '\tredir /install.html /local-app.html permanent',
+      '\troot * /srv/site',
+      '\tfile_server',
+      '}',
+      '',
+      'www.librepaper.org, librepaper.com, www.librepaper.com {',
+      '\tredir https://librepaper.org{uri} permanent',
+      '}',
+      '',
+    ].join('\n'));
+    assertInOrder(events(f), [
+      ['ssh', /librepaper-org\.caddy\.tmp/],
+      ['ssh', /caddy reload --config \/etc\/caddy\/Caddyfile/],
+    ]);
+    assert.deepEqual(dockerCalls(f), ['compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'], 'site pruned or touched the release');
   } finally {
     f.cleanup();
   }
