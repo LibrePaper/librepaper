@@ -8,7 +8,7 @@ In LibrePaper it is often useful to reach past that sandbox. A Quarto document n
 
 ## What it enables
 
-- [Quarto](notebooks/quarto.html) and [Calepin](notebooks/calepin.html): run a document's code with the R, Python and TeX installed on your computer, optionally against a project folder on your disk.
+- Computational notebooks: [Quarto](notebooks/quarto.html) and [Calepin](notebooks/calepin.html) are two applications that allow users to run R, Python or Julia code inside a document, so a paper, report or slide deck computes its own tables and figures. The browser cannot run code; the local app runs it on your computer with the tools installed there, optionally against a project folder on your disk.
 - [Agents](agents.html): start the coding agent you already have and hand it the document tools.
 - [Local backups](backups.html): every project in your account copied to ZIP files in a folder you pick.
 - Zotero: cite from your local library, read-only.
