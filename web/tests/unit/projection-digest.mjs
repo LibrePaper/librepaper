@@ -3,7 +3,7 @@
 // This used to be the digest a bundle named itself by, computed from a
 // hand-rolled JSON object that included compile settings and compared
 // against a hash Rust asserted independently. That contract is gone with the
-// bundle it named (SPEC-server-is-a-log §12): a reader now renders from the
+// bundle it named: a reader now renders from the
 // projection it fetched rather than from a stored page, and the only digest
 // that crosses the wire is the projection digest `projection.js` computes
 // straight off a `LoroDoc`, covered by `web/tests/unit/projection.mjs` and

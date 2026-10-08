@@ -1,24 +1,24 @@
 //! The log: what the server actually is.
 //!
-//! "The server stores and forwards source bytes. It reads only their headers
+//! The server stores and forwards source bytes. It reads only their headers
 //! to do so. It interprets their contents only on demand, and whatever it
 //! computes from them is a cache that can be thrown away at any moment and
-//! rebuilt from the log." -- SPEC-server-is-a-log §1.
+//! rebuilt from the log.
 //!
-//! Five pieces, and the boundaries between them are the specification's own:
+//! Five pieces, and the boundaries between them are deliberate:
 //!
-//! * [`frame`] is how a flushed row carries the batches that went into it
-//!   (§4.2.1). It knows nothing about Loro.
+//! * [`frame`] is how a flushed row carries the batches that went into it.
+//!   It knows nothing about Loro.
 //! * [`budget`] is the one process-wide memory budget every decoded document
-//!   is admitted against (§9.2). It knows nothing about documents.
+//!   is admitted against. It knows nothing about documents.
 //! * [`admission`] is the other half of that bound: how many decoded
-//!   documents may be worked on at once (§9.3). Memory and CPU run out
+//!   documents may be worked on at once. Memory and CPU run out
 //!   separately, so they are counted separately.
 //! * [`sequencer`] owns one document's buffer, counter, subscribers and cache
-//!   entry, and is the only thing that decides an order (§4.1, §5, §6, §7).
+//!   entry, and is the only thing that decides an order.
 //! * [`Registry`] holds the resident sequencers and evicts them.
 //!
-//! Compaction (§8.4) and the in-process background worker (§8.6) live in
+//! Compaction and the in-process background worker live in
 //! [`crate::storage::worker`], beside the blob store they write to.
 
 pub mod admission;
@@ -66,7 +66,7 @@ pub struct Registry {
     budget: Arc<Budget>,
     /// The other deployment-wide bound, and the one this registry hands to
     /// every sequencer it admits: unsaved source bytes and the scratch that
-    /// writes them (SPEC-frugal §2). Shared by `Arc` for the life of the
+    /// writes them. Shared by `Arc` for the life of the
     /// process, so a document is charged against the same pool whichever
     /// sequencer holds it.
     pending: Arc<PendingBudget>,

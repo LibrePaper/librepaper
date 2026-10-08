@@ -87,7 +87,7 @@ class Worker2 {
     this.base = null;
     this.release = null;
     this.engines = new Map(); // kind -> engine driver
-    // SPEC-latex.md "The index": the release's `bundles.json`, fetched once
+    // The release's `bundles.json`, fetched once
     // in `configure` below. Bundle mode is the only mode a worker speaks any
     // more -- there is no per-file TeX Live snapshot mirror left to fall
     // back to -- so this is always populated once `configure` succeeds.
@@ -143,7 +143,7 @@ class Worker2 {
       throw new Error(`this LaTeX release is format ${release?.format ?? "unknown"}, but this build only speaks format 2`);
     }
 
-    // SPEC-latex.md "The index": every release fetches its `bundles.json`
+    // Every release fetches its `bundles.json`
     // once here, then verified against the digest the release entry pins -- the
     // same trust boundary `fetchVerified` gives every digested file, just
     // without Cache Storage, since this file is small. Everything under a
@@ -203,8 +203,8 @@ class Worker2 {
       assets[name] = info;
     }
     // A release with `bundles` has no separate TeX Live snapshot mirror to
-    // point the resolver at (SPEC-latex.md "The unit": the bundle tree is
-    // now part of the release payload) -- `settexliveurl` gets the
+    // point the resolver at, because the bundle tree is now part of the release
+    // payload -- `settexliveurl` gets the
     // directory `bundles.json` itself lives in instead, since bundle URLs
     // in the index are relative paths ("b/<sha256>/<slug>.tar") written by
     // `tools/build-bundles.mjs` alongside it, matching the mirror layout
@@ -243,8 +243,8 @@ class Worker2 {
       throw error;
     }
     // The worker itself preloads from Cache Storage and unpacks bundles on
-    // demand once it has this index (SPEC-latex.md "The resolver"/"Browser
-    // cache") -- the index is the only package metadata needed before a
+    // demand once it has this index -- the index is the only package metadata
+    // needed before a
     // compile; bundles are fetched lazily on demand.
     await engine.loadBundleIndex(this.bundleIndexBytes);
     // XeTeX alone needs its ICU data table: without it, in bundle mode,

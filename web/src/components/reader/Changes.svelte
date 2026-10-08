@@ -152,8 +152,8 @@
   const derivedFiles = $derived(files.length ? files.map((file) => file.path || file.id).filter(Boolean) : [...new Set(allRows.map(pathOf))]);
   /// The queue, with rival changes standing together.
   ///
-  /// Two proposals that change the same words are two answers to one question
-  /// (SPEC-loro.md §5.3), and the Reader marks them with a shared `contested`
+  /// Two proposals that change the same words are two answers to one question,
+  /// and the Reader marks them with a shared `contested`
   /// id. Here that becomes one entry holding all of them, placed where the
   /// first of them would have been -- so the reading order the queue already
   /// had is the order a reviewer keeps, and a rival change never arrives
@@ -493,7 +493,7 @@
   </div>{/if}
   <!-- One entry per decision, except where several proposals answer the same
        question: those stand together so the choice between them is visible
-       rather than spread down the queue (SPEC-loro.md §5.3). -->
+       rather than spread down the queue. -->
   {#snippet changeBody(item)}
     {@const id = rowId(item)}{@const isOpen = active === id}{@const why = blocker(item)}{@const parts = diffParts(item)}
     <!-- The change first and whoever wrote it after it, smaller: the proposed

@@ -8,7 +8,7 @@
 //!
 //! ## Document shape
 //!
-//! What the document holds is four maps (SPEC-loro.md §3.1):
+//! What the document holds is four maps:
 //!
 //! | map | keys | values |
 //! | --- | --- | --- |
@@ -28,7 +28,7 @@
 //!
 //! Loro indexes text in Unicode code points. Every call here uses the `*_utf16`
 //! family (`insert_utf16`, `delete_utf16`, `len_utf16`, etc.) to count UTF-16
-//! code units, matching what a browser counts in (SPEC-loro.md §3.2).
+//! code units, matching what a browser counts in.
 
 use std::collections::{BTreeMap, HashMap};
 

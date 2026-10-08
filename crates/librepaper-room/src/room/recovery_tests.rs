@@ -1,17 +1,16 @@
-//! SPEC-server-is-a-log §14.1: the recovery spike, run where it can actually
-//! reach what it is testing. It also holds one §14.2 test -- "source-
-//! producing commands record before and after evidence that match the row's
-//! bytes" -- because that claim is about the same `Sequencer::command`
-//! internals as §14.1 item 5, needs the same `deployment_with_document`
-//! fixture and the same `#[ignore]`d PostgreSQL gate, and an external
-//! `tests/*.rs` file could no more reach `Evidence`'s fields or
-//! `PostgresCatalog::log_rows` than it could reach anything else this
+//! The recovery spike, run where it can actually reach what it is testing.
+//! It also holds one test: source-producing commands record before and after
+//! evidence that match the row's bytes. That claim is about the same
+//! `Sequencer::command` internals as the other recovery items, needs the same
+//! `deployment_with_document` fixture and the same `#[ignore]`d PostgreSQL
+//! gate, and an external `tests/*.rs` file could no more reach `Evidence`'s
+//! fields or `PostgresCatalog::log_rows` than it could reach anything else this
 //! header already explains is crate-private. The retry half of that same
-//! bullet ("a retry by `request_id` returns the same label") is a different
+//! claim (a retry by `request_id` returns the same label) is a different
 //! agent's file.
 //!
 //! This used to live at `crates/librepaper/tests/recovery_spike.rs`, outside
-//! the crate. Every one of §14.1's seven items is a claim about
+//! the crate. Every one of the seven recovery items is a claim about
 //! `Sequencer`'s own internals -- the gap check in `ingest`, the buffer, the
 //! reply `join` computes, the transaction `command` runs under a held lock
 //! -- and an external `tests/*.rs` file sees only what `lib.rs` marks `pub`,
@@ -50,10 +49,10 @@
 //! Every test truncates the tables it uses and claims the single writer
 //! lease, so this file must run with `--test-threads=1`.
 //!
-//! §6.4's crash contract is held exactly as written and not overstated:
-//! "unacknowledged work is recoverable if a surviving client retained it and
-//! reconnects." Every test below that models offline or unsynced work keeps
-//! that work alive in its own local `Outbox` the whole time -- the
+//! The crash contract is held and not overstated: unacknowledged work is
+//! recoverable if a surviving client retained it and reconnects. Every test
+//! below that models offline or unsynced work keeps that work alive in its own
+//! local `Outbox` the whole time -- the
 //! `Outbox` standing in for the surviving client -- and never claims
 //! recovery for anything this file itself let go of.
 
@@ -1440,7 +1439,7 @@ async fn reconstruct_through(
     doc
 }
 
-/// The core claim of the whole design (SPEC-server-is-a-log §2.1): a label,
+/// The core claim of the whole design: a label,
 /// a comment anchor or a restore names a moment by `Evidence`'s fields and
 /// nothing else, so those fields had better describe the row that was
 /// actually written. This reconstructs the document from the stored log
@@ -1833,7 +1832,7 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
 }
 
 // =========================================================================
-// SPEC-frugal §2: the pending-source accounting across a real transaction.
+// The pending-source accounting across a real transaction.
 //
 // The fake catalogue in `log::tests` covers admission, the flush and
 // cancellation. What it cannot cover is a semantic command, because

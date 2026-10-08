@@ -1,11 +1,10 @@
 //! Who is writing.
 //!
 //! What used to be here -- `commit_source`, the receipt table, the revision
-//! counter, the proposal-decision transaction -- is gone. Under
-//! SPEC-server-is-a-log a write to the source is a flush of the log (§5.1)
-//! and a write whose meaning depends on the source is a semantic command
-//! (§7), and both are assembled by the sequencer rather than by one
-//! catalogue method per kind of write. What remains is the identity the
+//! counter, the proposal-decision transaction -- is gone. A write to the
+//! source is a flush of the log, and a write whose meaning depends on the
+//! source is a semantic command. Both are assembled by the sequencer rather
+//! than by one catalogue method per kind of write. What remains is the identity the
 //! authorization check at the commit boundary is made against.
 
 use uuid::Uuid;

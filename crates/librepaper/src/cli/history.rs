@@ -1,11 +1,11 @@
 //! Label lookups shared by annotation export.
 //!
-//! `document_labels` replaces checkpoints (SPEC-server-is-a-log §8.2), and
+//! `document_labels` replaces checkpoints, and
 //! `librepaper_server::server::history::label_wire` is what a client actually sees of
 //! one: `sha` (the label's id), `sequence`, `at`, `by`, `label`, `reason`,
 //! `tree_sha`, `frontier` and `archive_status`. Deliberately absent is
 //! `source_sequence` -- the `document_updates` row a label or a comment's
-//! anchor was recorded against (§7 step 4) stays server-side evidence, never
+//! anchor was recorded against stays server-side evidence, never
 //! sent to a client. That is also why this module stops short of what the
 //! old checkpoint-position `since()` did: there is no list position and no
 //! row number to compare here any more, on either side, and nothing here

@@ -11,13 +11,13 @@
 //! written again, asides that go in and come back out. The stand-in prose is
 //! lorem ipsum, because the point of it is to be cut.
 //!
-//! **The operations are real.** Under SPEC-server-is-a-log the log is the
-//! document (§1), so this writes the document's actual log, one row per
+//! **The operations are real.** The log is the document, so this writes the
+//! document's actual log, one row per
 //! step, so every state it passes through is a real head some future
 //! `fork_at` can reproduce -- there is no version or archive beside the log
 //! any more for a simulated one to imitate. Only the clock is invented, and
 //! it is invented in the one place a clock is a column that compaction does
-//! not delete: `document_labels.created_at` (§8.2, §8.3). `document_activity`
+//! not delete: `document_labels.created_at`. `document_activity`
 //! is gone -- it was a per-minute bucket index kept beside the log for a
 //! usage histogram, and nothing survives compaction to make one honestly any
 //! more, so this does not invent one. A calendar built from real, dated

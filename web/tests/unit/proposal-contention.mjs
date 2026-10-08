@@ -1,6 +1,6 @@
 // Two answers to the same question, and reading a subset as finished prose.
 //
-// Both are SPEC-loro.md §5.3, and both are computed in the browser from what
+// Both are contested choices, and both are computed in the browser from what
 // `proposal-list` already carries. What is worth pinning is where the line
 // falls: which pairs of rows are a choice between them and which are two
 // things that can both happen, and that a preview never touches the document

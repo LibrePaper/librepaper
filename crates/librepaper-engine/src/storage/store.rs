@@ -1,10 +1,10 @@
 //! Catalogue-backed document metadata, source reads, and mutations.
 //!
-//! Under SPEC-server-is-a-log the log is the document (§1): there is no
+//! The log is the document: there is no
 //! archive here any more, so "creating" a document, forking it into a new
 //! slug and publishing a whole directory over an existing "open" one are one
 //! act -- write a file set into the document at head -- expressed as the
-//! `ReplaceProject` semantic command (§7). What differs between the three is
+//! `ReplaceProject` semantic command. What differs between the three is
 //! only what the document held before the command ran: nothing, for a fresh
 //! slug; another document's files, for a fork, which reads them with
 //! `project_files` first; or whatever an "open" document already had, which
@@ -681,8 +681,7 @@ impl Store {
     /// 'deleting'` plus the `deleted_at` it already carries -- is the whole
     /// of the durable state a purge needs: there is no job queue any more,
     /// and the background worker's own startup scan finds every document in
-    /// this state without anything having to enqueue a task for it
-    /// (SPEC-server-is-a-log §8.6).
+    /// this state without anything having to enqueue a task for it.
     pub async fn begin_delete(&self, slug: &str) -> Result<Option<String>, String> {
         let catalog = &self.catalog;
         let Some(document) = catalog

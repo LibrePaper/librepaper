@@ -1,10 +1,10 @@
 //! Export an independent, immutable snapshot of a complete project. A
-//! whole-project export needs no CRDT decoder on the user's side
-//! (SPEC-server-is-a-log §2.1). The live project walks the head projection
+//! whole-project export needs no CRDT decoder on the user's side. The live
+//! project walks the head projection
 //! and fetches each file: cheap, because a projection is a pure read of the
 //! log's cache and needs nobody to build anything first. A labelled, historical
 //! project instead requests that label's archive and downloads it once the
-//! background worker has built it (§8.5).
+//! background worker has built it.
 
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -189,8 +189,8 @@ async fn fetch_asset(
 
 /// A label's project, as of when it was recorded.
 ///
-/// The archive is produced on request now, not eagerly at label time
-/// (SPEC-server-is-a-log §8.5). `GET .../history/{sha}?archive=1` both makes
+/// The archive is produced on request now, not eagerly at label time.
+/// `GET .../history/{sha}?archive=1` both makes
 /// the request, the first time it is asked, and reports where that request
 /// stands; it never blocks on the background worker itself, so this polls it
 /// until `archive_status` says "ready". The wait is printed rather than left

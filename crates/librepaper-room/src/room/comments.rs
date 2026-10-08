@@ -1,13 +1,13 @@
 //! The comments: what one is, how a submission from a reader becomes one, and
 //! the anchor that ties it to a passage.
 //!
-//! Under SPEC-server-is-a-log §7 every mutation here is a [`SequencerCommand`]:
+//! Every mutation here is a [`SequencerCommand`]:
 //! `evaluate` runs synchronously against the sequencer's cached document and
 //! decides what the write means (where a quoted passage is, whether a
 //! suggestion's branch still applies), and `transact` runs inside the fenced
 //! transaction that also wrote the log row naming the state `evaluate` saw.
 //! The comment and the source it quotes are one transaction because they are
-//! written by the same call (§7 step 4).
+//! written by the same call.
 //!
 //! `evaluate` has no database access -- it runs with the sequencer's lock
 //! held and nothing else may run meanwhile, which is precisely what makes it

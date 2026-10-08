@@ -9,14 +9,13 @@
 //! **What a document says** was `history::Tree`, with its own digest and its
 //! own canonical form. It is now `crate::document::projection::Projection`,
 //! computed by `project(&doc, &config.paths())`: the one projection
-//! algorithm of SPEC-server-is-a-log §4.4, implemented in Rust and in
-//! JavaScript and held equal by the fixtures in
-//! `web/tests/fixtures/projection.json`. Two implementations of one concept
+//! algorithm, implemented in Rust and in JavaScript and held equal by the
+//! fixtures in `web/tests/fixtures/projection.json`. Two implementations of one concept
 //! is what the cutover removes, and a digest that the browser and the server
 //! can disagree about is worse than no digest at all.
 //!
 //! One thing `Tree` carried that `Projection` does not is the LaTeX engine.
-//! That is deliberate. §4.4 defines the projection as what the document
+//! That is deliberate. The projection is defined as what the document
 //! *says*; a compile setting is a choice about how to render it. It lives in
 //! `meta` and a caller reads it with `session::latex_engine`. Folding it
 //! into the identity would mean two documents with identical text but
@@ -25,7 +24,7 @@
 //!
 //! **The version timeline** was `history::{Checkpoint, Manifest}` over
 //! `document_versions`. Both tables are gone; the timeline is
-//! `document_labels` (§8.2) and the server serializes
+//! `document_labels` and the server serializes
 //! `storage::postgres::labels::LabelRecord` directly. The fields a
 //! `Checkpoint` had that a label does not -- `tree`, `dirty`, `commit`,
 //! `ancestry_gap`, `original_parent`, `archive_status` -- described a stored

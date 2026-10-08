@@ -7,7 +7,7 @@
 // A day used to answer a third thing: whether anybody wrote on it at all,
 // even when nothing was saved. That came from `/activity`, a row per minute
 // a write landed, which the server-is-a-log cutover deleted along with the
-// table behind it (SPEC-server-is-a-log.md §8.3). There is no longer a
+// table behind it. There is no longer a
 // signal for a day worked on and not saved from, so a day is now exactly
 // what its versions say it is -- something, or nothing.
 //

@@ -2230,7 +2230,7 @@ mod automation_authority_tests {
         assert_eq!(grant_role_ceiling(3), Role::Editor);
     }
 
-    /// The property finding 6 of SPEC-security depends on. The agent reads
+    /// The property finding 6 depends on. The agent reads
     /// hostile text and acts on it, so nothing stops a document from telling it
     /// to overwrite the paper. What bounds the damage is that the agent holds
     /// only the link's authority. If an owner session on the same request ever

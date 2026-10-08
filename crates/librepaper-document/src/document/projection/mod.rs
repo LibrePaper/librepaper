@@ -1,7 +1,7 @@
 //! The projection: what a `LoroDoc` says, read as a directory.
 //!
 //! The server stores and forwards source bytes and reads only their headers
-//! to do so (SPEC-server-is-a-log §1). Whenever it does have to know what the
+//! to do so. Whenever it does have to know what the
 //! bytes *mean* -- to render for a reader, to anchor a comment, to evaluate a
 //! proposal, to export -- it asks this function, and this function is total:
 //! every `LoroDoc`, however malformed, projects to exactly one directory.
@@ -14,9 +14,9 @@
 //! `web/src/lib/projection.js`, and `tests/projection_fixtures.rs` and
 //! `web/tests/unit/projection.test.mjs` read one shared corpus.
 //!
-//! Under SPEC-server-is-a-log the server never refuses an update for its
-//! content and never repairs one: a shape the schema does not use is simply
-//! absent from the projection, with a diagnostic (§2.2, §4.4). The resource
+//! The server never refuses an update for its content and never repairs one:
+//! a shape the schema does not use is simply absent from the projection, with
+//! a diagnostic. The resource
 //! bounds that remain are on inputs -- update size, log quota, memory budget
 //! -- and live where those inputs arrive.
 

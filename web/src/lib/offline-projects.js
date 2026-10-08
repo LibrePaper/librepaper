@@ -276,7 +276,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         // coverage to confirm. The server used to send the Loro vector it
         // had durably covered on every acknowledgement, and this kept it so
         // a restart could tell which of its own updates were already safe.
-        // SPEC-server-is-a-log §6.3 removes it: nothing is persisted per
+        // The log removes it: nothing is persisted per
         // batch and no replay cursor exists, so there is no ordering between
         // cursor persistence and update persistence to get wrong. What is
         // here is the whole document, and reconnecting exports whatever the

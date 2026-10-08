@@ -2,8 +2,7 @@
 //!
 //! `web/tests/unit/projection.mjs` reads the same file and asserts the same
 //! expectations, so the two implementations are held equal by trees and
-//! digests rather than by two people reading one specification
-//! (SPEC-server-is-a-log §4.4, §14.2).
+//! digests rather than by two people reading one specification.
 //!
 //! `LIBREPAPER_REGENERATE_FIXTURES=1 cargo test -p librepaper`
 //! rewrites the `expect` blocks in place. Read the diff before committing it:

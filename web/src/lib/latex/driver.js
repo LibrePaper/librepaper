@@ -124,8 +124,8 @@ class EngineDriver {
     this.pending = new Map();
     this.madeDirs = new Set();
     // Resolver evidence for a package file (kpathsea format 26, `.sty`/
-    // `.cls`) the bundle index itself says is not in the mirror -- SPEC-latex.md
-    // "The resolver": with an index loaded, "absent" is a lookup, not a 404,
+    // `.cls`) the bundle index itself says is not in the mirror -- with an index
+    // loaded, "absent" is a lookup, not a 404,
     // so a compile can fail with nothing in the log but a LaTeX
     // "File not found" for a name a reader cannot map to a package by
     // themselves. Collected between `run()` calls (see `run()` below) so the
@@ -283,9 +283,7 @@ class EngineDriver {
     }
     if (message.cmd === "downloading") {
       // `bundle`/`size` are only present once a release ships a bundle
-      // index (SPEC-latex.md "The resolver": "the worker's downloading
-      // message gains the bundle name and size"); legacy per-file mode
-      // sends `file` alone, as before.
+      // index; legacy per-file mode sends `file` alone, as before.
       this.onDownload?.({ file: message.file, bundle: message.bundle, size: message.size });
       return;
     }
@@ -393,7 +391,7 @@ class EngineDriver {
     };
   }
 
-  /// SPEC-latex.md "The index": loads the whole-mirror bundle index once --
+  /// Loads the whole-mirror bundle index once --
   /// every release ships one now, so this runs for every kind this file
   /// serves. This command answers -- the controller awaits it so a first
   /// compile never races the worker's own Cache Storage preload.

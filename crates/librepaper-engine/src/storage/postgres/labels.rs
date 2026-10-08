@@ -5,7 +5,7 @@
 //! for names a state by vector, frontier and projection digest; a restore, an
 //! agent patch or a whole-project replacement names exactly the same three
 //! things, plus the `request_id` that makes a retry return the first answer
-//! instead of doing the work again (SPEC-server-is-a-log §7.2, §8.2).
+//! instead of doing the work again.
 //!
 //! Nothing writes one on a timer. Every row here is a deliberate act.
 

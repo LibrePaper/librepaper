@@ -1,14 +1,14 @@
 //! Proposals: a change someone has offered, and what happens when it is decided.
 //!
-//! A proposal is a branch (SPEC-loro.md §3.3). It forks the room document at a
+//! A proposal is a branch. It forks the room document at a
 //! frontier, collects ordinary edits with no protocol of its own, and is
 //! reviewed as the diff between where it forked and where it has reached.
 //! Nothing about it lives inside the shared document: the branch is a blob of
 //! operations, and whether each of its hunks was accepted is a row in Postgres
 //! that only the server writes.
 //!
-//! Under SPEC-server-is-a-log §7, opening a proposal, moving its tip and
-//! deciding a hunk are each a semantic command: `OpenProposal`, `UpdateProposal`
+//! Opening a proposal, moving its tip and deciding a hunk are each a
+//! semantic command: `OpenProposal`, `UpdateProposal`
 //! and `DecideProposalHunk` below. What used to be a Room method that acquired
 //! `command_owner` by hand is now a command the sequencer runs -- head is
 //! materialized, `evaluate` reads what it needs from it and (for a decision

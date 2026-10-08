@@ -197,7 +197,7 @@ function assetTest(url, content) {
   return { url, size: bytes.length, sha256: digest(bytes) };
 }
 
-// SPEC-latex.md "The index": two tiny bundle "tars" (any bytes; check-mirror
+// Two tiny bundle "tars" (any bytes; check-mirror
 // only hashes them) under a release's own `bundles/` directory, named by
 // digest as the real ones would be.
 function bundlesFixture() {
@@ -327,7 +327,7 @@ try {
   mirrorTest = mkdtempSync(join(directory, 'empty-'));
   checkRun(1, /no release directories/);
 
-  // SPEC-latex.md "The index": bundles.json's own digest must match what
+  // bundles.json's own digest must match what
   // the release pins, and every bundle path it names must actually be on
   // disk -- both independent of `release.files`, which only proves the
   // files the importer copied are intact, not that bundles.json still

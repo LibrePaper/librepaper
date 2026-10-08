@@ -3,7 +3,7 @@
 // This used to be one half of the activity graph: `withWork` turned a
 // server-side `/activity` row into a minute of growth, and `level` shaded
 // both that and the version calendar. The server-is-a-log cutover
-// (SPEC-server-is-a-log.md §8.3) dropped the `document_activity` table and
+// dropped the `document_activity` table and
 // the route that read it, so there is no more per-minute work to shade --
 // `withWork` and its row shape went with them.
 //

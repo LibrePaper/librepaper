@@ -1,6 +1,6 @@
 //! Hunks: the unit a reviewer accepts or declines.
 //!
-//! A proposal is a branch (SPEC-loro.md §3.3), and review is the text diff
+//! A proposal is a branch, and review is the text diff
 //! between the branch's base and its tip. Loro hands that back as a flat run
 //! of retain/insert/delete deltas with no notion of which deltas belong
 //! together. A reviewer does not decide about deltas, though: when a branch
@@ -14,7 +14,7 @@
 //! `LoroDoc::apply_diff` re-authors everything it applies as the applying peer,
 //! so applying a diff filtered to the accepted hunks would produce the right
 //! text over the wrong authorship -- the reviewer would appear to have written
-//! the author's prose. §3.4 takes the other route: merge the whole branch, then
+//! the author's prose. The other route is to merge the whole branch, then
 //! revert only the declined hunks as the reviewer. The author wrote all of it;
 //! the reviewer removed part. That is both correct and what actually happened.
 //!
@@ -26,7 +26,7 @@
 //! ## Offsets here are code points, not UTF-16
 //!
 //! Every other text path in this crate counts UTF-16 code units, because that
-//! is what a browser counts in (§3.2). The deltas here are the one exception,
+//! is what a browser counts in. The deltas here are the one exception,
 //! and not by choice: `LoroDoc::diff` indexes by the `wasm` feature of the
 //! crate that computed it -- code points off, UTF-16 on -- and offers no
 //! `*_utf16` variant to opt out of. A delta computed here and a delta computed

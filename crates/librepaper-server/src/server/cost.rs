@@ -92,11 +92,11 @@ impl Server {
         // a rebuild because entries keep evicting one another -- looked from
         // outside exactly like one that never ran short.
         snapshot["memory_budget"] = self.rooms.registry().budget().snapshot();
-        // The other half of §9.2's memory story, and the one a database
+        // The other half of the memory story, and the one a database
         // slowdown moves: unsaved source bytes, and the scratch that writes
         // them. Kept apart from `memory_budget` because they are different
         // pools with different rules -- decoded documents can be evicted to
-        // make room and pending typing cannot (SPEC-frugal §2).
+        // make room and pending typing cannot.
         snapshot["pending_budget"] = self.rooms.registry().pending().snapshot();
         // The coarse half of the owner storage check: what each owner and the
         // deployment are charged for figures, archives and logs as this

@@ -60,8 +60,8 @@ pub struct Configuration {
     pub max_path: usize,
     /// What one document's log may weigh: its compaction base plus every row
     /// since. Past this, new updates are refused with a retryable reason and
-    /// semantic commands still work against the log as it stands
-    /// (SPEC-server-is-a-log §9.1). It is the real bound on how long a build
+    /// semantic commands still work against the log as it stands.
+    /// It is the real bound on how long a build
     /// can occupy a thread, which is why it is a per-document ceiling and not
     /// a deployment-wide one. The default is what a 512 MiB memory budget can
     /// build, because a cold build reserves the resident expansion plus the
@@ -78,7 +78,7 @@ pub struct Configuration {
     pub cache_expansion: u64,
     /// One deployment-wide ceiling on unsaved source bytes: everything every
     /// document's buffer is holding while it waits for PostgreSQL, framing
-    /// included (SPEC-frugal §2). Separate from `memory_budget_bytes` because
+    /// included. Separate from `memory_budget_bytes` because
     /// pending updates are somebody's typing and cannot be evicted the way a
     /// decoded document can.
     pub pending_bytes: u64,
@@ -657,7 +657,7 @@ pub const DEFAULT_LOG_QUOTA_BYTES: usize = 32 * 1024 * 1024;
 /// the right proportion for a process whose expensive half is decoded CRDTs:
 /// the two together add at most 128 MiB above that budget rather than the
 /// several gigabytes a per-document cap alone permits across a thousand
-/// documents (SPEC-frugal §2).
+/// documents.
 pub const DEFAULT_PENDING_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Compute the default pending-scratch ceiling for a given log quota.

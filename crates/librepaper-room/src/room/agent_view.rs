@@ -1,13 +1,13 @@
 //! An immutable query capture, with no duplicate main source or file inventory.
 //!
-//! Under SPEC-server-is-a-log the source is read from the sequencer's
-//! projection (§4.4) rather than from a resident `LoroDoc` the room held
+//! The source is read from the sequencer's projection rather than from a
+//! resident `LoroDoc` the room held
 //! itself, and there is no fence to check first: `room.unreadable()` is the
-//! one "cannot serve this" signal now (§9.3), and it means the cache could
+//! one "cannot serve this" signal now, and it means the cache could
 //! not be built, not that some earlier agent transaction left the room in a
 //! state nobody had reconciled -- that apparatus no longer exists, because a
 //! command's source is prepared on a fork and only ever imported after its
-//! transaction commits (§7 step 5).
+//! transaction commits.
 use serde_json::json;
 
 use super::*;

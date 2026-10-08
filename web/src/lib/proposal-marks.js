@@ -1,13 +1,13 @@
 // A proposed change, drawn in the text it would change.
 //
 // A proposal is a branch, and reviewing one is reading the difference between
-// where it forked and where it has reached (SPEC-loro.md §3.3). This turns that
+// where it forked and where it has reached. This turns that
 // difference into something to look at: what it would add, underlined; what it
 // would take out, struck through but still legible, because a reviewer deciding
 // whether to lose a sentence needs to read the sentence.
 //
 // The text is not changed. Nothing here writes to the document -- the proposal
-// reaches it only when the server resolves it (§5.1a), and until then this is a
+// reaches it only when the server resolves it, and until then this is a
 // drawing over text that still says what it said.
 //
 // ## Two bases

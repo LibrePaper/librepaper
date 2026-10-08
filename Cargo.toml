@@ -101,7 +101,7 @@ rmcp = { version = "3.4.0", default-features = false, features = ["server", "tra
 # The plist escape is written by hand; this decodes entities in the locate
 # corpus test only.
 html-escape = "0.2"
-# The collaboration substrate (SPEC-loro.md). This version and `loro-crdt` in
+# The collaboration substrate. This version and `loro-crdt` in
 # web/package.json are one pin: see tools/dev/loro-pin.test.mjs.
 loro = "1.16.0"
 unicode-normalization = "0.1.25"

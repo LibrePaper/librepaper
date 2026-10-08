@@ -1,10 +1,10 @@
 //! MCP annotation actions.
 //!
-//! Under SPEC-server-is-a-log §7 every effect here is a semantic command
+//! Every effect here is a semantic command
 //! (`librepaper_room::room::{AddComment, AddReply, ResolveComment, DeleteComment,
 //! RefineSuggestion, RejectSuggestion}`), run through `room.command`. A
 //! comment's anchor is no longer built here and handed down: `AddComment`
-//! relocates the quoted words against head itself (§7.1), which is what
+//! relocates the quoted words against head itself, which is what
 //! makes "the passage moved" a precondition failure instead of a race this
 //! module would have to guess about.
 

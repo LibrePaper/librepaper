@@ -2,7 +2,7 @@
 //
 // `crates/librepaper-document-core/tests/projection_fixtures.rs` reads the
 // same file and asserts the same expectations. Two implementations of
-// SPEC-server-is-a-log §4.4 held equal by trees and digests: a reader's etag,
+// the projection held equal by trees and digests: a reader's etag,
 // a rendered comment's staleness check and an export all name a document by
 // this digest, so the two sides disagreeing is not a cosmetic difference.
 //

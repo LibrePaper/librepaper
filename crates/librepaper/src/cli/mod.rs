@@ -108,7 +108,7 @@ pub(crate) enum Command {
         dir: String,
         /// Export the project as it stood at this label instead of its live
         /// state; requesting a historical export waits for the server to build
-        /// it (SPEC-server-is-a-log §8.5)
+        /// it
         #[arg(long, value_name = "LABEL")]
         at: Option<String>,
         /// A share link, or the key from one: read as its holder rather than

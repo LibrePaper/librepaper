@@ -1,7 +1,7 @@
 //! One memory budget for everything that holds a decoded document.
 //!
 //! Encoded bytes bound ingress and storage; they do not bound decoded memory
-//! or CPU (SPEC-server-is-a-log §9). Synchronous Loro work cannot be
+//! or CPU. Synchronous Loro work cannot be
 //! interrupted once started, so the bound is on admission: a build, a fork or
 //! a projection reserves its estimate before it begins and releases it when
 //! it finishes, and a request that cannot reserve waits briefly and then
@@ -9,7 +9,7 @@
 //!
 //! The estimate is base bytes plus row bytes times an expansion factor. The
 //! factor is a measurement, not a constant of nature: it is configurable so a
-//! deployment can correct it, and the spike in §14.1 is what sets the
+//! deployment can correct it, and a measurement is what sets the
 //! default.
 
 use std::sync::atomic::{AtomicU64, Ordering};

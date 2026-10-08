@@ -1,4 +1,4 @@
-// SPEC-frugal §2, end to end: several documents, a stalled write path, the
+// End to end: several documents, a stalled write path, the
 // deployment-wide pending-source bound reached, and every edit eventually
 // durable without anybody typing again.
 //

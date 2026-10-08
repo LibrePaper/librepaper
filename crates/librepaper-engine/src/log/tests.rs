@@ -1,12 +1,12 @@
-//! SPEC-server-is-a-log §14.2 coverage for the pieces that are pure
-//! sequencer state: ingest, the flush triggers, acknowledgement, join, and
-//! (by way of the fixtures) the frame it all rides on.
+//! Coverage for the pieces that are pure sequencer state: ingest, the flush
+//! triggers, acknowledgement, join, and (by way of the fixtures) the frame it
+//! all rides on.
 //!
 //! None of these tests open a database connection. `Sequencer::admit` is
 //! the only production path that needs `Arc<PostgresCatalog>`, and it needs
-//! it only for the two reads in §4.1 that establish where a document's log
-//! starts. Everything a sequencer does afterward -- ingest, the flush
-//! triggers, the buffer, relay, and (mostly) join -- is answered from state
+//! it only for the two reads that establish where a document's log starts.
+//! Everything a sequencer does afterward -- ingest, the flush triggers, the
+//! buffer, relay, and (mostly) join -- is answered from state
 //! the sequencer already holds. `Sequencer::from_parts` is the seam that
 //! lets a test supply that state directly instead of reading it, and
 //! `LogCatalog` is the seam that lets a test supply a document's rows and
@@ -16,9 +16,9 @@
 //! What is deliberately NOT here, because it needs a database or a
 //! not-yet-compiling neighbour:
 //!
-//! * The compaction coverage proof (§8.4 step 4) -- already unit-tested in
+//! * The compaction coverage proof -- already unit-tested in
 //!   `storage/worker.rs` against a real snapshot.
-//! * Source-producing command evidence (§7.3/§7.4) -- `Command::transact`
+//! * Source-producing command evidence -- `Command::transact`
 //!   takes a real `sqlx::Transaction`, which cannot be faked; it needs
 //!   `LIBREPAPER_TEST_POSTGRES_URL`.
 //! * Lease loss during buffered typing -- exercises `begin_document_command`
@@ -136,7 +136,7 @@ struct FakeCatalog {
     compaction_thresholds: (i64, i64),
     /// When set, `flush_log_row` announces it has been entered and then
     /// waits to be released. This is a database that has stopped answering,
-    /// which is the whole workload SPEC-frugal §2 is about: it lets a test
+    /// which is the whole workload the pending-source bound is about: it lets a test
     /// hold a write open and look at what the buffer and the pending
     /// reservations are doing meanwhile, without a sleep anywhere.
     flush_gate: Option<(Arc<Notify>, Arc<Notify>)>,
@@ -2040,7 +2040,7 @@ async fn a_reader_on_a_cold_document_is_told_the_source_changed_without_a_digest
     );
 }
 
-// -- SPEC-server-is-a-log Priority 3: the build-peak reservation ---------
+// -- The build-peak reservation ------------------------------------------
 
 /// A sequencer admitted with no rows and no base actually to import (so
 /// `build` finishes at once), but told -- through `from_parts`' `base_bytes`
@@ -2125,7 +2125,7 @@ async fn the_transient_reservation_is_released_once_the_entry_is_cached() {
     );
 }
 
-// -- SPEC-frugal §2: the deployment-wide pending-source bound -------------
+// -- The deployment-wide pending-source bound -----------------------------
 //
 // These are about the bound itself, so none of them uses `bare_sequencer`'s
 // effectively-infinite pending budget: each builds a small one and, where the
@@ -2188,7 +2188,7 @@ async fn type_until_refused(
     panic!("nothing refused {sent} updates; the bound under test is not enforced");
 }
 
-/// The case SPEC-frugal §2 is written about: documents that are each well
+/// The case this bound is written for: documents that are each well
 /// inside their own 4 MiB buffer ceiling, which together reach a limit the
 /// deployment actually has.
 ///

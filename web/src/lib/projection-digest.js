@@ -8,7 +8,7 @@
 // One implementation of the name, reachable from every layer that has to say
 // it.
 //
-// The form is SPEC-server-is-a-log §4.4 step 7, and it is held byte-identical
+// The form is the projection's step 7, and it is held byte-identical
 // to `librepaper_document_core::Projection::canonical_bytes` by the corpus in
 // `web/tests/fixtures/projection.json`.
 

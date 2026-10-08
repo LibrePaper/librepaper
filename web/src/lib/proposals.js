@@ -1343,7 +1343,7 @@ function decodeBase64(encoded) {
 ///
 /// Two proposals that change the same words are not a conflict to be resolved
 /// -- they are two answers, and the useful presentation is side by side with
-/// one choice to make (SPEC-loro.md §5.3). This finds them.
+/// one choice to make. This finds them.
 ///
 /// The test is: same file identity, or two new files with the same destination
 /// path; different proposals; and conflicting extents. A row's

@@ -2,8 +2,8 @@
 //!
 //! There are six kinds of it -- compaction, archives, deletion, account
 //! erasure, and the two bounded storage sweeps -- and what they
-//! have in common is that none of them needs a row to remember it
-//! (SPEC-server-is-a-log §8.6). Durable state is what survives a restart:
+//! have in common is that none of them needs a row to remember it.
+//! Durable state is what survives a restart:
 //!
 //! | task | the state that remembers it |
 //! |---|---|

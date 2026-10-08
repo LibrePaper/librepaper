@@ -59,7 +59,7 @@ jobs:
       # not cover.
       - run: tools/dev/db sqlx-check
 
-  # SPEC-server-is-a-log.md §14.2: the idempotency and recovery contracts
+  # The idempotency and recovery contracts
   # (the single-writer lease, compaction coverage proof, the two
   # deployment-shaped gates) live only in these PostgreSQL-gated cases, which
   # `make test` excludes on purpose because they TRUNCATE whatever database

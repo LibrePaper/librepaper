@@ -1447,7 +1447,7 @@
       return;
     }
     if (event.type === "error") {
-      // An update the server had no room to hold (SPEC-frugal §2). It is
+      // An update the server had no room to hold. It is
       // still here, still unsaved, and the session resends it on a timer
       // from the head the refusal named -- so recovery does not wait on
       // another keystroke. Told once, quietly: the toolbar already shows

@@ -2,7 +2,7 @@
 //!
 //! `update_bytes` is `0x01`, then repeated
 //! `[peer_key_len u16][peer_key][client_seq u64][bytes_len u32][bytes]`
-//! (SPEC-server-is-a-log §4.2.1). The frame carries attribution -- which peer
+//! The frame carries attribution -- which peer
 //! wrote which batch, under which of its own sequence numbers -- and lets
 //! replay hand each batch to `LoroDoc::import_batch` rather than concatenating
 //! them into one blob whose parts can no longer be told apart.

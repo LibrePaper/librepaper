@@ -2,8 +2,8 @@
 //
 // This is the browser's half of `librepaper-document-core::projection`, and
 // the two are held equal by the corpus in `web/tests/fixtures/projection.json`
-// -- the same file the Rust test reads. Every step below is numbered after
-// SPEC-server-is-a-log §4.4, and the numbers are the contract: an
+// -- the same file the Rust test reads. The steps below are numbered, and the
+// numbers are the contract: an
 // implementation that reorders them produces a different tree for the same
 // document, and the digest of that tree is what a reader's etag and a
 // rendered comment's staleness check are both decided on.

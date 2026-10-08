@@ -56,7 +56,7 @@ pub enum KnownMessage {
         temp_id: String,
     },
     // `librepaper.room.v3` requires `protocol` before any update is
-    // accepted and has no `after` fallback (SPEC-server-is-a-log.md §6.1);
+    // accepted and has no `after` fallback;
     // `version`/`schema_version` are gone because the protocol string alone
     // now carries the handshake, and `doc-sync` no longer exists.
     #[serde(rename = "doc-open")]

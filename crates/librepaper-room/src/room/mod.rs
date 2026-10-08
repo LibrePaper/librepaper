@@ -3,15 +3,15 @@
 //! What a room used to be was the document itself -- a resident `LoroDoc`,
 //! the authority over what the bytes meant, a lease to serialize writes to
 //! it, and a per-socket bookkeeping struct beside it. All of that moved into
-//! [`librepaper_engine::log::Sequencer`] with SPEC-server-is-a-log: the server stores and
-//! forwards source bytes and reads only their headers to do so (§1), the
-//! sequencer's own lock is the order (§4.1), and what a document *says* is
-//! read on demand out of an evictable cache (§4.3).
+//! [`librepaper_engine::log::Sequencer`]. The server stores and forwards
+//! source bytes and reads only their headers to do so, the sequencer's own
+//! lock is the order, and what a document *says* is read on demand out of an
+//! evictable cache.
 //!
 //! What is left here is the half that was never about bytes: the relational
 //! state whose meaning depends on the source. A comment is a place in the
 //! text, a proposal is a branch with a decision, and both have to be written
-//! in the same transaction as the source they depend on (§7). So a room is
+//! in the same transaction as the source they depend on. So a room is
 //! now a façade: it holds the sequencer for its document, a bounded cache of
 //! where its comments are anchored, and the asset bookkeeping that has
 //! nowhere else to live.

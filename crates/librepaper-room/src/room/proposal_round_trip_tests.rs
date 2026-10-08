@@ -1,7 +1,6 @@
 //! A proposal's whole life against a real room and a real catalogue.
 //!
-//! SPEC-loro.md §8, and SPEC-server-is-a-log §7 for the command shape. Every
-//! piece of this was already tested apart -- hunk grouping in
+//! Every piece of this was already tested apart -- hunk grouping in
 //! `document::hunks`, the frontier encoding in `room::proposals::tests`, the
 //! rows in `storage::postgres::proposals`, the panel in
 //! `web/tests/browser/changes-browser.mjs` -- and the seam between them was

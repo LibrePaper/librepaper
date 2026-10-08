@@ -801,7 +801,7 @@ latex._testing.inject({ deadlineMs: latex.DEADLINE_MS });
 // never exercises it): a fake nested engine `Worker` stands in for a real
 // engine controller, and this drives worker.js's own section 2.4
 // protocol by id, the same way `latex-browser.mjs`'s in-page driver
-// does against the real thing. Checks SPEC-latex.md's bundle-mode fan-out --
+// does against the real thing. Checks the bundle-mode fan-out --
 // every bundle-capable kind receives `loadbundleindex`, and XeTeX alone also
 // receives `loadicudata` with the release's ICU table inflated from the
 // gzip it ships.

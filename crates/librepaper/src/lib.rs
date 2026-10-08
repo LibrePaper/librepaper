@@ -130,7 +130,7 @@ pub mod outgoing {
 
 // What the deployment-shaped tests in `tests/` assemble: a whole server,
 // built from the same types `server::serve` builds it from. Those tests
-// (SPEC-server-is-a-log §14.2) are about the deployment rather than about a
+// are about the deployment rather than about a
 // document -- losing the writer lease mid-buffer, an idle deployment issuing
 // no queries, and authority revoked mid-buffer over a real socket -- so a
 // hand-made subset of the server would prove nothing about the server.

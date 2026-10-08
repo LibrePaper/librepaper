@@ -1,14 +1,14 @@
-//! Applying an agent's patch as a semantic command (§7).
+//! Applying an agent's patch as a semantic command.
 //!
 //! This module deliberately keeps the patch language independent of MCP. A
 //! caller supplies a source tree identity and immutable byte ranges; the
 //! validator produces a new source without ever guessing an anchor.
 //!
-//! Under SPEC-server-is-a-log an agent patch is a command like any other: it
+//! An agent patch is a command like any other: it
 //! is evaluated against the sequencer's head, its precondition is that every
-//! patch's captured range still reads what the caller says it reads (§7.1),
+//! patch's captured range still reads what the caller says it reads,
 //! and the edit itself is prepared on a fork so a failed transaction cannot
-//! have touched the document anybody is looking at (§7.3). What used to be a
+//! have touched the document anybody is looking at. What used to be a
 //! bespoke lock-acquire-checkpoint sequence is now one call to
 //! `room.command`.
 
@@ -374,8 +374,8 @@ impl From<super::error::WriteError> for AgentError {
 }
 
 /// Turns a byte offset in `text` into the UTF-16 offset the CRDT text API
-/// wants (§3.2 of SPEC-loro.md: every offset that crosses the document layer
-/// counts UTF-16 code units).
+/// wants (every offset that crosses the document layer counts UTF-16 code
+/// units).
 fn byte_to_utf16(text: &str, byte: usize) -> usize {
     str_indices::utf16::from_byte_idx(text, byte)
 }

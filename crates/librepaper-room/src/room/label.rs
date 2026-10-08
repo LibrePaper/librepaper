@@ -1,6 +1,6 @@
 //! Labels: naming a moment of this document.
 //!
-//! A label (SPEC-server-is-a-log §7.1, §8.2) is the whole of what used to be
+//! A label is the whole of what used to be
 //! a checkpoint: no eager archive, no tree of its own, just three things that
 //! together name a state -- the vector the log held, the frontier
 //! `fork_at` reconstructs from, and the projection digest that says two

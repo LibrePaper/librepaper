@@ -2,7 +2,7 @@
 //! about it.
 //!
 //! Every write here takes a transaction the caller owns rather than opening
-//! one. A proposal is a semantic command (SPEC-server-is-a-log §7) -- what it
+//! one. A proposal is a semantic command -- what it
 //! means depends on the source it forked from and on the source accepting it
 //! produces -- so it is assembled by the sequencer, and its rows go in the
 //! same transaction as the log row that made the state it was decided

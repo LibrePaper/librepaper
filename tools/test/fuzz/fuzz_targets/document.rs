@@ -3,15 +3,14 @@
 //! Every key in the four maps is a string any editor can set, so the peer
 //! here writes through the binary's own functions and straight into the maps
 //! alike. What used to happen next was a repair pass that rewrote the
-//! document into a shape the server would accept. There is no repair now
-//! (SPEC-server-is-a-log §2.3): the server never rewrites what a peer wrote,
-//! and a shape the schema does not use is simply absent from the projection
-//! with a diagnostic.
+//! document into a shape the server would accept. There is no repair now:
+//! the server never rewrites what a peer wrote, and a shape the schema does
+//! not use is simply absent from the projection with a diagnostic.
 //!
-//! That makes this target more important rather than less. §4.4 opens with
-//! "a projection is a total, deterministic function of a `LoroDoc`", and
-//! "total" is a claim about every input, which is exactly the kind of claim
-//! a fuzzer can attack and a unit test cannot. A projection that panicked on
+//! That makes this target more important rather than less. A projection is
+//! a total, deterministic function of a `LoroDoc`, and "total" is a claim
+//! about every input, which is exactly the kind of claim a fuzzer can attack
+//! and a unit test cannot. A projection that panicked on
 //! some arrangement of the four maps would take the reader route, the
 //! comment anchoring, the export and every semantic command down with it,
 //! for a document any peer can write on purpose.

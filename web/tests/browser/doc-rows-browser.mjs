@@ -32,7 +32,7 @@ const ROWS_ADDITION = "<p>row that only doc-rows carries</p>";
 // The server builds its document in two commits: the first is what `doc-state`
 // sends as `base`, the second is what only `doc-rows` ever carries. A client
 // whose join vector covers the first commit but not the second is exactly the
-// case SPEC-server-is-a-log §6.2 describes.
+// case the join protocol describes.
 writeFileSync(room, `
 import { LoroDoc, LoroText, decodeImportBlobMeta } from "loro-crdt";
 const encode = bytes => btoa(String.fromCharCode(...bytes));

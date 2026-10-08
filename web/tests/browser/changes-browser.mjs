@@ -1,6 +1,6 @@
 // The review queue, in a real browser.
 //
-// Ordinary proposal decisions name one hunk (SPEC-loro.md §3.3, §5.1). A
+// Ordinary proposal decisions name one hunk. A
 // linked agent suggestion is one whole replacement even when legacy storage
 // associates it with several hunks. The panel must keep those paths clear.
 //
@@ -239,7 +239,7 @@ window.filterFile = async (path) => {
 };
 
 // Two proposals over the same words, which the Reader marks with a shared
-// contested id (SPEC-loro.md §5.3). The panel's job is to stand them
+// contested id. The panel's job is to stand them
 // together, and to leave an unrelated change alone.
 window.rivals = [
   { id: 'alice#0', proposal: 'alice', hunk: 0, __from: 'proposal', author: 'alice@example.org',

@@ -295,7 +295,7 @@ export function resolveEngine(tree, settingsArg = currentSettings) {
 // --- The worker RPC (section 2.4) ------------------------------------------
 
 /// "amsmath, 1.2 MB" -- the one place a byte count is put in front of a
-/// reader (SPEC-latex.md "The resolver"), so it stays a plain decimal
+/// reader, so it stays a plain decimal
 /// megabyte figure rather than binary units a document author has no reason
 /// to know.
 function formatBytes(bytes) {
@@ -311,8 +311,8 @@ function attachHandlers(target) {
       return;
     }
     if (message.cmd === "downloading") {
-      // SPEC-latex.md "The resolver": "the host's progress indicator reports
-      // 'amsmath, 1.2 MB' instead of a stream of file names" -- only present
+      // The host's progress indicator reports
+      // 'amsmath, 1.2 MB' instead of a stream of file names -- only present
       // once a release ships a bundle index; legacy per-file mode sends
       // `file` alone and stays silent here, as before.
       if (message.bundle) {

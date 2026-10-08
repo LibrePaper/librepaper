@@ -367,10 +367,9 @@ function sourceLog() {
   }
 }
 
-// SPEC-server-is-a-log.md priority-1 item: "serialize browser join
-// processing: await local hydration ... before completing doc-rows
-// catch-up." A join can be answered by `doc-rows` alone (§6.2 step 4), with
-// no preceding `doc-state`, so `rows` cannot assume `start` already awaited
+// Browser join processing is serialized: await local hydration ... before
+// completing doc-rows catch-up. A join can be answered by `doc-rows` alone,
+// with no preceding `doc-state`, so `rows` cannot assume `start` already awaited
 // hydration -- it has to await it itself. This reproduces a browser that
 // still has an offline edit sitting in IndexedDB, not yet imported into
 // `doc`, when `doc-rows` arrives: against the unfixed code (`rows` exporting
@@ -1102,7 +1101,7 @@ const gate = () => {
   assert.equal(editor.joined, false);
 }
 
-// SPEC-frugal §2: an update the server had no room to hold.
+// An update the server had no room to hold.
 //
 // The refusal is the whole failure this covers. The edit is in this browser's
 // document and nowhere else; the socket is still up, so no reconnect will

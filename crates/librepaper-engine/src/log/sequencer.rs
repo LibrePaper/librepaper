@@ -2,28 +2,27 @@
 //! the order of anything.
 //!
 //! It owns the buffer, the sequence counter, the log vector, the subscriber
-//! list and -- when there is one -- the cache entry (SPEC-server-is-a-log
-//! §4.1). Everything else asks it.
+//! list and -- when there is one -- the cache entry. Everything else asks it.
 //!
 //! ## Why a lock and not a mailbox
 //!
-//! §4.1 describes an actor with a message queue. What the rest of the
-//! specification actually depends on is narrower, and is stated in §7 step 5:
-//! while a semantic command runs, "the sequencer processes no other message".
-//! A fair `tokio::sync::Mutex` held across a command gives exactly that
-//! ordering, in FIFO, and lets every caller keep its own return type instead
+//! An actor with a message queue is the obvious design. What the rest of the
+//! system actually depends on is narrower: while a semantic command runs, the
+//! sequencer processes no other message. A fair `tokio::sync::Mutex` held
+//! across a command gives exactly that ordering, in FIFO, and lets every caller
+//! keep its own return type instead
 //! of routing it through a reply channel and a universal message enum.
 //!
 //! The one place where holding the lock would be wrong is an ordinary flush:
-//! §10 requires relay to continue while PostgreSQL is unavailable. So a flush
+//! Relay must continue while PostgreSQL is unavailable. So a flush
 //! snapshots the buffer under the lock, releases it for the round trip, and
-//! takes it again to retire what committed. That snapshot is §4.1's "flush in
-//! progress", and the count of batches it covers is the whole of its state.
+//! takes it again to retire what committed. That snapshot is the flush in
+//! progress, and the count of batches it covers is the whole of its state.
 //!
 //! ## What it never does
 //!
 //! It never decides whether an update is allowed by its content. Ingest is a
-//! header decode, a gap check, an append and a relay (§5). Meaning is read
+//! header decode, a gap check, an append and a relay. Meaning is read
 //! out of the cache, on demand, and the cache can be thrown away at any
 //! moment and rebuilt from the log.
 
@@ -902,20 +901,19 @@ pub struct Sequencer {
     config: Arc<Configuration>,
     budget: Arc<Budget>,
     /// The deployment's one pending-source authority, shared with every other
-    /// sequencer this registry admitted (SPEC-frugal §2).
+    /// sequencer this registry admitted.
     pending: Arc<super::pending::PendingBudget>,
     /// Only one flush or command transaction at a time per document.
     transaction: tokio::sync::Mutex<()>,
     /// The peer key server-authored source is written under (§7.3).
     deployment_peer_key: String,
-    /// Whether `ingest` refuses a batch whose start vector is not covered
-    /// (§5 step 4). Every ingest call reads this, in production and in a
-    /// test alike -- it is always `true` in production, because nothing
-    /// calls `set_gap_check_enforced(false)` outside
-    /// SPEC-server-is-a-log §14.1 item 1's negative control, which exists
-    /// to show what the check prevents by turning off the one production
-    /// path that enforces it, rather than by a `#[cfg(test)]` shortcut that
-    /// would let a test see something the running server cannot.
+    /// Whether `ingest` refuses a batch whose start vector is not covered.
+    /// Every ingest call reads this, in production and in a test alike -- it
+    /// is always `true` in production, because nothing calls
+    /// `set_gap_check_enforced(false)` outside the negative control, which
+    /// exists to show what the check prevents by turning off the one
+    /// production path that enforces it, rather than by a `#[cfg(test)]`
+    /// shortcut that would let a test see something the running server cannot.
     gap_check: std::sync::atomic::AtomicBool,
     /// What each principal has left of its update allowance (§5 step 2),
     /// or `None` when the configured allowance is zero and every update is
@@ -1082,9 +1080,8 @@ impl Sequencer {
     }
 
     /// Turns the gap check in `ingest` on or off. See the field doc on
-    /// `gap_check`: this is the seam SPEC-server-is-a-log §14.1 item 1's
-    /// negative control uses, and the only caller of it anywhere in this
-    /// crate is that test.
+    /// `gap_check`: this is the seam the negative control uses, and the only
+    /// caller of it anywhere in this crate is that test.
     pub fn set_gap_check_enforced(&self, enforced: bool) {
         self.gap_check
             .store(enforced, std::sync::atomic::Ordering::Relaxed);
@@ -1248,7 +1245,7 @@ impl Sequencer {
             };
         }
 
-        // SPEC-frugal §2: the deployment-wide ceiling, taken BEFORE the
+        // The deployment-wide ceiling, taken BEFORE the
         // update is accepted into the document. Order matters and is the
         // whole of what makes this a memory bound rather than a memory
         // report: the charge is held first, and only a charge that was
@@ -1450,7 +1447,7 @@ impl Sequencer {
             if take == 0 {
                 return Ok(None);
             }
-            // SPEC-frugal §2: the row about to be built, and the copy the
+            // The row about to be built, and the copy the
             // driver will make of it on the way to the wire, are reserved
             // BEFORE either exists. The size is known exactly rather than
             // estimated: a row is one version byte over the buffer's own
@@ -1913,7 +1910,7 @@ impl Sequencer {
         let take = inner.buffer.len();
         let mut acknowledged = inner.ack_prefix(take);
         let mut vector = inner.vector_through(take);
-        // SPEC-frugal §2: what this row will weigh, before it exists. The
+        // What this row will weigh, before it exists. The
         // buffered prefix is charged already and its size is known exactly;
         // the prepared batch is not in the buffer and so has to be added,
         // framing and all.
@@ -2675,7 +2672,7 @@ pub struct LogState {
     pub head_vector: Vec<u8>,
     pub buffered: usize,
     /// What the buffer costs the deployment pending pool: payload and
-    /// framing (SPEC-frugal §2).
+    /// framing.
     pub buffered_charge: usize,
     pub log_bytes: u64,
     pub subscribers: usize,

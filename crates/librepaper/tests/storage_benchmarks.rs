@@ -1,23 +1,22 @@
-//! The throughput measurement SPEC-server-is-a-log §14.1 asks for, run
-//! against a disposable database.
+//! The throughput measurement, run against a disposable database.
 //!
 //! What this used to measure was per-keystroke prepare and commit: validate
 //! the whole candidate document, then write a row, for every edit. That is
 //! the design the cutover deletes, so the old numbers no longer describe
-//! anything the server does. §14.1 names the replacement exactly: "three
-//! editors typing continuously into a 1 MiB document for ten minutes with
-//! the 30 s flush; record rows, relay latency p50/p99, server CPU and RSS,
-//! cache build time after forced eviction, projection latency for a polling
-//! reader, and the expansion factor for 9.2."
+//! anything the server does. The replacement is three editors typing
+//! continuously into a 1 MiB document for ten minutes with the 30 s flush;
+//! record rows, relay latency p50/p99, server CPU and RSS, cache build time
+//! after forced eviction, projection latency for a polling reader, and the
+//! expansion factor.
 //!
 //! Two of those are honest only if measured rather than modelled, and they
 //! are the two the design is most exposed on:
 //!
-//! * **Rows.** §5.2 claims two rows per document per minute for one
-//!   continuously typing editor, and is explicit that this is a best-case
-//!   typing figure and not a deployment cost. This measures the real rate
+//! * **Rows.** The design claims two rows per document per minute for one
+//!   continuously typing editor. That is a best-case typing figure, not a
+//!   deployment cost. This measures the real rate
 //!   with three editors, which is the number that matters.
-//! * **The expansion factor.** §9.2 estimates a resident document as its log
+//! * **The expansion factor.** A resident document is estimated as its log
 //!   bytes times a factor, and the whole memory budget rests on that factor
 //!   being roughly right. The default in `budget::DEFAULT_EXPANSION` is a
 //!   guess until this run replaces it. A single build-and-evict RSS delta
@@ -27,7 +26,7 @@
 //!   See the comment above the measurement in the test body for the numbers
 //!   that caught the original approach failing.
 //!
-//! The spike of §14.1 is a recovery-first list that must pass before any of
+//! The recovery spike is a list of checks that must pass before any of
 //! this is worth reading. This file is the "then measure" half only.
 
 use std::sync::Arc;
@@ -668,10 +667,10 @@ async fn typing_throughput_release_benchmark() {
     println!("{output}");
 }
 
-/// SPEC-server-is-a-log Priority 2: what compaction costs, stage by stage.
+/// What compaction costs, stage by stage.
 ///
-/// §8.4 is six distinct pieces of work with six different failure modes, and
-/// the remaining Priority 3 items are each conditioned on which of them
+/// Compaction is six distinct pieces of work with six different failure modes,
+/// and the open follow-up items are each conditioned on which of them
 /// dominates ("if export stalls editing", "if verification or compression
 /// blocks async workers", "if repeated full-history rewrites dominate").
 /// A single end-to-end compaction number cannot answer any of those, so this
@@ -705,18 +704,18 @@ async fn typing_throughput_release_benchmark() {
 ///   and its compressed copy are all freed before compaction returns, and
 ///   glibc hands those pages to its own arena rather than to the kernel (the
 ///   same effect documented on the expansion factor above). The peak is the
-///   number §9.2 has to reserve against.
+///   number the budget has to reserve against.
 /// * **Editing latency.** One editor types at a human rate throughout, and
 ///   its ingest latencies are split at the instant compaction starts. The
 ///   comparison is the point: `build` and `snapshot_at_log_vector` both hold
 ///   the sequencer's `inner` lock across uninterruptible Loro work, and
 ///   ingest takes that same lock, so whatever that costs shows up here as
 ///   the difference between the two distributions. This is the measurement
-///   Priority 3's first item is conditioned on.
+///   the first follow-up item is conditioned on.
 ///
 /// The document is long-lived by construction: `edits` separate committed
 /// edits accumulate on top of a 1 MiB seed, flushed every
-/// `EDITS_PER_ROW`, which is roughly what §5.2's 30 s flush produces at the
+/// `EDITS_PER_ROW`, which is roughly what the 30 s flush produces at the
 /// typing rate the throughput benchmark above uses. Several shapes are run
 /// because the interesting question is which stages scale with the op count
 /// and which only with the byte count.
@@ -1538,14 +1537,14 @@ async fn compact_seeded_document(
     }))
 }
 
-/// SPEC-server-is-a-log Priority 3: what compaction costs when several
-/// documents compact at once, not one on an otherwise idle process.
+/// What compaction costs when several documents compact at once, not one on
+/// an otherwise idle process.
 ///
 /// `compaction_cost_release_benchmark` deliberately runs one document alone
 /// so a stage's cost can be attributed to it; that is the right way to
 /// attribute a stage and the wrong way to size a deployment, which is why
 /// its numbers say nothing about what happens when a busy server has to
-/// compact several documents at the same moment. §9.3's admission semaphore
+/// compact several documents at the same moment. The admission semaphore
 /// (`log::admission`) bounds concurrent heavy work -- a build or an export --
 /// to `min(cores, 4)`; this fires N compactions at once, N taken from
 /// `LIBREPAPER_CONCURRENT_COMPACTION_N` (default "2,4,8"), so an N above the

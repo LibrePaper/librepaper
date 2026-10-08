@@ -4,9 +4,9 @@
 //! digest -- travels the ordinary edit path, like any other change to the
 //! shared Loro document. What happens here is the other half: proving the
 //! bytes behind a digest are what they claim to be, and recording that this
-//! document may keep them. That is "asset attach" from SPEC-server-is-a-log
-//! §7's list of semantic commands, even though -- unlike a comment or a
-//! restore -- it produces no source of its own.
+//! document may keep them. That is "asset attach", one of the semantic
+//! commands, even though -- unlike a comment or a restore -- it produces no
+//! source of its own.
 
 use std::sync::Arc;
 

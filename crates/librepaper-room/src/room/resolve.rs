@@ -11,7 +11,7 @@
 //! recomputed whenever the source moves. Nothing it contains is ever written
 //! back into the original anchor -- not the offsets it finds, and not the
 //! replacement cursors Loro hands back, which belong to the cache for the
-//! same reason. Under SPEC-server-is-a-log §8.3 `annotation_live_state` is
+//! same reason. `annotation_live_state` is
 //! gone: the cursor pair that used to live there now lives only in the
 //! room's bounded attachment cache (`Room::attach`, below), and a
 //! process that starts cold recomputes it from scratch rather than reading it

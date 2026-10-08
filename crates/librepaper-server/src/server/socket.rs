@@ -1083,11 +1083,11 @@ impl Server {
                         continue 'reader;
                     }
 
-                    // A proposal is a branch (SPEC-loro.md §3.3). What crosses
+                    // A proposal is a branch. What crosses
                     // this boundary is the branch's operations and a decision
                     // naming one of its hunks by index -- never a delta run and
                     // never an offset, because the server counts text in code
-                    // points where the browser counts UTF-16 (§5.2).
+                    // points where the browser counts UTF-16.
                     if incoming.kind().starts_with("proposal-") {
                         if !may_edit {
                             let _ = send_outgoing(&tx, Outgoing::Text(
