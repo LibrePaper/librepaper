@@ -251,15 +251,12 @@ The override survives upgrades.
 
 ## Limits and retention
 
-```toml
-[limits]
-publisher_storage_mib = 50       # per-publisher storage, in MiB
-publisher_uploads_per_hour = 30  # uploads per rolling hour
+Every limit and the retention settings are listed, with their defaults, at the end of `librepaper.toml` (see [the whole file](simple.html#the-whole-file)). Uncomment a line to change it, then recreate the app.
 
-[retention]
-expire_after = "30d"             # without this table, documents stay until deleted
-expire_from = "created"          # or "updated"
-```
+- Per account: storage (`publisher_storage_mib`) and uploads per hour (`publisher_uploads_per_hour`).
+- Whole server: total storage (`deployment_storage_mib`), memory for loading documents (`memory_budget_mib`), edit history per document (`log_quota_mib`), and unsaved edits in memory and on disk (`pending_mib`, `pending_scratch_mib`).
+- With [object storage](#object-storage), disk is no longer the constraint on `deployment_storage_mib`: set it to what you are willing to store.
+- `[retention]` deletes documents after `expire_after`, counted from the last update (default) or from creation.
 
 ## Without Docker
 

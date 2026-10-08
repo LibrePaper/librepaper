@@ -30,6 +30,7 @@ client_secret = "replace"
 [storage]
 directory = "/var/lib/librepaper"
 database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper"
+# database_connections = 20         # PostgreSQL connection pool size
 
 # Who may publish and comment: "any" signed-in account, a GitHub login, a
 # verified Google address, or "@example.org". "anyone" also allows
@@ -46,12 +47,20 @@ trusted_networks = ["172.29.0.0/16"]
 # [admin]
 # password = "replace"
 
-# Optional. Per-publisher storage in MiB and uploads per rolling hour.
+# Optional. Every limit, with its default; uncomment a line to change it.
 # [limits]
-# publisher_storage_mib = 50
-# publisher_uploads_per_hour = 30
+# Per account:
+# publisher_storage_mib = 50         # storage per account, in MiB
+# publisher_uploads_per_hour = 30    # projects, forks and figure uploads per rolling hour
+# Whole server:
+# deployment_storage_mib = 5120      # storage for all accounts together; uploads are refused when full
+# memory_budget_mib = 512            # memory for loading documents
+# log_quota_mib = 32                 # edit history one document holds before compaction; scale with memory_budget_mib
+# pending_mib = 64                   # unsaved edits held in memory
+# pending_scratch_mib = 161          # unsaved edits spilled to disk; the default follows log_quota_mib
+# session_peer_queue_frames = 256    # messages queued per editing connection before it is dropped
 
 # Optional. Without it, documents stay until deleted.
 # [retention]
 # expire_after = "30d"
-# expire_from = "created"
+# expire_from = "updated"            # or "created"

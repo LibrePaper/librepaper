@@ -27,7 +27,7 @@ admin = "https://admin.librepaper.org"
 directory = "/var/lib/librepaper"
 # The PostgreSQL container's Unix socket on the pgsocket volume; no password.
 database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper"
-database_connections = 20
+database_connections = 20         # PostgreSQL connection pool size
 fsync = true
 object_store = "s3"
 
@@ -56,12 +56,18 @@ client_secret = "@LIBREPAPER_GOOGLE_CLIENT_SECRET@"
 publishers = ["any"]
 commenters = ["any"]
 
-# Storage is per publisher, in MiB; uploads counts project creation, forks and
-# figure uploads per rolling hour. deployment_storage_mib caps the whole server.
+# Every limit; commented lines are at their default.
 [limits]
-publisher_storage_mib = 50
-publisher_uploads_per_hour = 30
-# deployment_storage_mib = 10240
+# Per account:
+publisher_storage_mib = 50         # storage per account, in MiB
+publisher_uploads_per_hour = 30    # projects, forks and figure uploads per rolling hour
+# Whole server:
+# deployment_storage_mib = 5120      # storage for all accounts together; uploads are refused when full
+# memory_budget_mib = 512            # memory for loading documents
+# log_quota_mib = 32                 # edit history one document holds before compaction; scale with memory_budget_mib
+# pending_mib = 64                   # unsaved edits held in memory
+# pending_scratch_mib = 161          # unsaved edits spilled to disk; the default follows log_quota_mib
+# session_peer_queue_frames = 256    # messages queued per editing connection before it is dropped
 
 # Browsers fetch pinned renderer and LaTeX assets from this mirror, which sees
 # their IP. It must allow CORS GET and HEAD from the application origins.
@@ -76,11 +82,10 @@ password = "@LIBREPAPER_ADMIN_PASSWORD@"
 [proxy]
 trusted_networks = ["172.29.0.0/16"]
 
-# Optional. Without [retention], documents stay until deleted. expire_from is
-# "created" or "updated".
+# Optional. Without it, documents stay until deleted.
 # [retention]
 # expire_after = "30d"
-# expire_from = "created"
+# expire_from = "updated"            # or "created"
 
 # Optional tracing filter for application logs.
 # [logging]
