@@ -1,6 +1,7 @@
 # Repository tools
 
-`deploy/` is the public Docker kit for self-hosting. `tools/deploy/` operates
+`deploy/` is the public Docker kit for self-hosting, exactly the download.
+`docker/` builds the app and backup images. `tools/deploy/` operates
 the official LibrePaper instance and holds its operator configuration and
 private runbook.
 

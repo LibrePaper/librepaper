@@ -23,18 +23,9 @@ if [[ ! "$commit" =~ ^[[:xdigit:]]{40}$ ]]; then
 	exit 2
 fi
 
-# Verify all required kit files exist in the release commit.
-required_files=(
-	deploy/compose.yaml
-	deploy/compose.managed-db.yaml
-	deploy/librepaper.toml
-	deploy/resticprofile.toml
-	deploy/postgres/init.sql
-	deploy/caddy/Caddyfile
-	deploy/README.md
-	deploy/manage
-)
-for file in "${required_files[@]}"; do
+# The kit is the whole deploy/ directory; check the files this script depends
+# on exist in the release commit.
+for file in deploy/compose.yaml deploy/manage; do
 	git -C "$repository" cat-file -e "$commit:$file" 2>/dev/null || {
 		echo "release commit is missing $file" >&2
 		exit 2
@@ -48,7 +39,7 @@ mkdir -p "$output_dir"
 
 # The supplied Git commit determines the bytes in the kit. This excludes local
 # edits and untracked files even when the packaging workflow checkout is dirty.
-git -C "$repository" archive --format=tar "$commit" "${required_files[@]}" | tar -C "$stage" -xf -
+git -C "$repository" archive --format=tar "$commit" deploy | tar -C "$stage" -xf -
 
 # A release commit is trusted input, but deployment data must never become a
 # public release asset if an operator accidentally committed it. Kits ship

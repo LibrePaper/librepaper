@@ -19,7 +19,7 @@ services:
     volumes:
       - postgres:/var/lib/postgresql/data
       - pgsocket:/var/run/postgresql
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/10-librepaper.sql:ro
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/10-librepaper.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U librepaper -d librepaper"]
       interval: 5s

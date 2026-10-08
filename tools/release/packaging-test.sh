@@ -121,7 +121,7 @@ grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fai
 # and untracked credentials. It pins the release tag in its image references.
 kit_source="$tmp/deploy-source"
 kit_output="$tmp/deploy-output"
-mkdir -p "$kit_source/deploy/caddy" "$kit_source/deploy/postgres" "$kit_output"
+mkdir -p "$kit_source/deploy/caddy" "$kit_output"
 for file in compose.yaml compose.managed-db.yaml librepaper.toml README.md manage; do
   printf 'committed fixture %s\n' "$file" > "$kit_source/deploy/$file"
 done
@@ -129,7 +129,7 @@ printf 'ghcr.io/librepaper/librepaper:v0.0.21\n' >> "$kit_source/deploy/compose.
 printf 'ghcr.io/librepaper/librepaper-backup:v0.0.21\n' >> "$kit_source/deploy/compose.yaml"
 printf 'committed caddy\n' > "$kit_source/deploy/caddy/Caddyfile"
 printf '# Backups are disabled until an operator configures them.\n' > "$kit_source/deploy/resticprofile.toml"
-printf 'committed init\n' > "$kit_source/deploy/postgres/init.sql"
+printf 'committed init\n' > "$kit_source/deploy/postgres-init.sql"
 "$real_git" -C "$kit_source" init -q
 "$real_git" -C "$kit_source" config user.name Fixture
 "$real_git" -C "$kit_source" config user.email fixture@example.invalid
@@ -137,18 +137,18 @@ printf 'committed init\n' > "$kit_source/deploy/postgres/init.sql"
 "$real_git" -C "$kit_source" commit -qm 'release deployment files'
 kit_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
 
-# Plant unwanted files that should be excluded: setup
-printf 'excluded\n' > "$kit_source/deploy/setup"
-"$real_git" -C "$kit_source" add deploy/setup
-"$real_git" -C "$kit_source" commit -qm 'add files that should be excluded'
-excluded_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
+# deploy/ is the download: any committed file under it ships.
+printf 'shipped\n' > "$kit_source/deploy/extra"
+"$real_git" -C "$kit_source" add deploy/extra
+"$real_git" -C "$kit_source" commit -qm 'commit another file under deploy'
+extra_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
 
 # Dirty files should not be included in archive
 printf 'dirty attacker config\n' > "$kit_source/deploy/librepaper.toml"
 printf 'operator secret\n' > "$kit_source/deploy/.env"
 printf 'untracked secret\n' > "$kit_source/deploy/leaked-backup.txt"
 
-# Test with the first commit (clean files, no excluded setup yet)
+# Test with the first commit (clean files, no extra file yet)
 PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$kit_commit"
 kit_archive="$kit_output/librepaper-deploy.tar.gz"
 kit_extract="$tmp/deploy-extracted"
@@ -177,6 +177,19 @@ compose_content=$(cat "$kit_extract/librepaper/compose.yaml")
 
 # Verify untracked files are not included
 [[ ! -e "$kit_extract/librepaper/leaked-backup.txt" ]] || fail 'archive included untracked file'
+
+# The init script sits at the top of the kit; no old subdirectory, no build files
+[[ "$(cat "$kit_extract/librepaper/postgres-init.sql")" == 'committed init' ]] || fail 'archive lost postgres-init.sql'
+[[ ! -e "$kit_extract/librepaper/postgres" && ! -e "$kit_extract/librepaper/Dockerfile" && ! -e "$kit_extract/librepaper/backup" ]] || fail 'archive carried old layout paths'
+[[ ! -e "$kit_extract/librepaper/extra" ]] || fail 'first commit archive has a file committed later'
+
+# A file committed under deploy/ ships
+extra_output="$tmp/deploy-output-extra"
+extra_extract="$tmp/deploy-extracted-extra"
+mkdir "$extra_output" "$extra_extract"
+PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$extra_output" "$extra_commit"
+tar -C "$extra_extract" -xzf "$extra_output/librepaper-deploy.tar.gz"
+[[ "$(cat "$extra_extract/librepaper/extra")" == shipped ]] || fail 'a file committed under deploy/ did not ship'
 
 # Reject prerelease tags
 if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3-rc.1 "$kit_source" "$kit_output" "$kit_commit" >/dev/null 2>&1; then

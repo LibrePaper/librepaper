@@ -1,9 +1,8 @@
 # Publish Docker image for a stable release.
 # The versioned application and backup images use the matching release
-# archive, Dockerfile, backup/entrypoint.sh and backup/profiles.toml. The
-# workflow helper runs from the trusted default-branch workflow revision; only
-# a successfully published release tag from this repository is used as the
-# build context.
+# archive and the files under docker/. The workflow helper runs from the
+# trusted default-branch workflow revision; only a successfully published
+# release tag from this repository is used as the build context.
 
 name: Publish Docker image
 
@@ -70,7 +69,8 @@ jobs:
       - uses: docker/build-push-action@v6
         if: steps.resolve.outputs.proceed == 'true'
         with:
-          context: release-source/deploy
+          context: release-source
+          file: release-source/docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           target: app
           push: true
@@ -82,7 +82,8 @@ jobs:
       - uses: docker/build-push-action@v6
         if: steps.resolve.outputs.proceed == 'true'
         with:
-          context: release-source/deploy
+          context: release-source
+          file: release-source/docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           target: backup
           push: true

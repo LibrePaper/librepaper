@@ -5,26 +5,16 @@
 # toolchain to carry and nothing to assemble at start-up. By default
 # the build fetches a release archive and checks it against the release
 # checksums. `--build-arg SOURCE=local` copies a static musl binary named
-# `librepaper` (or LIBREPAPER_BINARY) from this directory instead. For
-# `SOURCE=checkout`, use the repository root as the build context and run
+# `librepaper` (or LIBREPAPER_BINARY) from the build context instead. Every
+# build uses the repository root as its context. For `SOURCE=checkout`, run
 # `make web` first so `web/dist` is ready to embed; BuildKit skips unused stages.
 #
-#   docker build --build-arg LIBREPAPER_VERSION=<compatible-tag> -t librepaper .
-#   docker build --build-arg SOURCE=local -t librepaper .
-#   make web  # from the repository root
-#   docker build -f deploy/Dockerfile --build-arg SOURCE=checkout -t librepaper .  # root context
+#   docker build -f docker/Dockerfile --build-arg LIBREPAPER_VERSION=<compatible-tag> -t librepaper .
+#   docker build -f docker/Dockerfile --build-arg SOURCE=local -t librepaper .
+#   make web
+#   docker build -f docker/Dockerfile --build-arg SOURCE=checkout -t librepaper .
 ARG SOURCE=release
 ARG RUST_BUILDER_IMAGE=rust:1-alpine
-
-# The kit builds from deploy/; checkout and demo builds use the repository
-# root. Separate context stages let each build copy the right source tree.
-FROM scratch AS backup-assets-release
-COPY backup/ /
-FROM scratch AS backup-assets-local
-COPY backup/ /
-FROM scratch AS backup-assets-checkout
-COPY deploy/backup/ /
-FROM backup-assets-${SOURCE} AS backup-assets
 
 FROM alpine:3.21 AS base
 
@@ -128,8 +118,8 @@ RUN set -eu; \
 	apk add --no-cache openssh-client python3 restic supercronic; \
 	install -d -o 10001 -g 65534 -m 0700 /run/librepaper-backup
 COPY --from=resticprofile-binary /usr/bin/resticprofile /usr/bin/resticprofile
-COPY --from=backup-assets /profiles.toml /etc/resticprofile/profiles.toml
-COPY --from=backup-assets /entrypoint.sh /usr/local/bin/librepaper-backup-entrypoint
+COPY docker/backup-profiles.toml /etc/resticprofile/profiles.toml
+COPY docker/backup-entrypoint.sh /usr/local/bin/librepaper-backup-entrypoint
 RUN chmod 0644 /etc/resticprofile/profiles.toml \
 	&& chmod 0755 /usr/local/bin/librepaper-backup-entrypoint
 # Only the backup service stages its export here; the app never writes it.

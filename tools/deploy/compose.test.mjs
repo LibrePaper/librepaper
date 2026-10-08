@@ -14,9 +14,9 @@ const skip = !composeAvailable && 'Docker Compose is unavailable';
 const coreServices = ['backup', 'caddy', 'librepaper', 'postgres'];
 const imagePattern = /^ghcr\.io\/librepaper\/librepaper(-backup)?:v\d+\.\d+\.\d+$/;
 
-// Operator state and image build inputs never belong to a config check.
+// Operator state never belongs to a config check.
 const notCopied = new Set([
-  'compose.override.yaml', 'site', 'local.d', 'Dockerfile', 'backup',
+  'compose.override.yaml', 'site', 'local.d',
 ]);
 
 const env = { ...process.env, COMPOSE_DISABLE_ENV_FILE: '1' };

@@ -195,7 +195,7 @@ service_override() {
 		cat <<YAML
     build:
       context: $root
-      dockerfile: deploy/Dockerfile
+      dockerfile: docker/Dockerfile
       target: $target
       args:
         SOURCE: checkout

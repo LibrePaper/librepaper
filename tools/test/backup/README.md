@@ -26,7 +26,7 @@ Build the image first:
 
 ```sh
 make web
-docker build -f deploy/Dockerfile --build-arg SOURCE=checkout \
+docker build -f docker/Dockerfile --build-arg SOURCE=checkout \
   --target backup -t librepaper-backup-test:local .
 BACKUP_TEST_IMAGE=librepaper-backup-test:local \
 tools/test/suite backup-sidecar
