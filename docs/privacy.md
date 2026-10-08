@@ -104,7 +104,7 @@ Hosting, database and object-storage providers see what they store.
   (measured from last update or creation). See [storage, limits, and backup](./host/advanced.html#backups).
 - **Checkpoints and edit history:** retained by default while the document
   exists; an owner can explicitly trim history, which permanently removes
-  older history and named versions. See [history and revisions](./collaborate.html).
+  older history and named versions. See [storage and history](./architecture/document.html#storage-and-history).
 - **Sessions:** session credentials expire after 30 days. Signing out clears the
   current browser's cookie; it does not invalidate a copied credential. Account
   erasure revokes the account's sessions.
