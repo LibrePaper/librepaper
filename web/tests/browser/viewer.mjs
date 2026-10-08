@@ -15,7 +15,7 @@
 // `node tools/test/latex/texlive.mjs --pdf` is what makes it run.
 //
 // Headless Chromium over the DevTools protocol, the same way
-// `browser-smoke.mjs` and `latex-check.mjs` do it.
+// `browser-smoke.mjs` and `latex-browser.mjs` do it.
 
 import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";

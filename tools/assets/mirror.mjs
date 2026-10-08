@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 
-// Consolidated browser asset mirror tool: build, check, and publish asset mirrors.
-// This module combines the functions of four separate tools:
-// - Release shape validation and path safety
-// - LaTeX mirror consumer-side validation
-// - S3 publisher with integrity checking
-// - Mirror staging and credential resolution
+// The browser asset mirror: validates a LaTeX release tree, stages the pinned
+// wasm modules, and publishes both to S3 with integrity checks.
+// `tools/assets/mirror` is the shell front end.
 
 import { execFile } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";

@@ -1,11 +1,11 @@
-// A server for a LaTeX mirror on disk or at a URL and the harness page that drives
-// it, for the browser checks. The mirror is
-// built and deployed by the wasm-latex repository (`make mirror`, `make push`
-// there; layout in wasm-latex/docs/release.md), and this serves it the way the
-// asset mirror does -- everything under /mirror/ is immutable and cached for a
-// year -- so what a check sees here is what a browser sees there. The mirror
-// directory holds one or more release directories, `<sha256>/`; a page
-// pins one by using `/mirror/<sha256>/` as its LaTeX mirror URL.
+// A server for a LaTeX mirror on disk or at a URL, plus the harness page that
+// drives it, for the browser checks. The mirror is built by the wasm-latex
+// repository (`make mirror` there; layout in wasm-latex/docs/release.md) and
+// published by `tools/assets/mirror publish`. It is served the way the asset
+// mirror serves it: everything under /mirror/ is immutable and cached for a
+// year, so what a check sees here is what a browser sees there. The mirror
+// directory holds one or more release directories, `<sha256>/`; a page pins
+// one by using `/mirror/<sha256>/` as its LaTeX mirror URL.
 //
 // `/__bytes` reports bytes served since the last `/__reset`, by path, so a
 // check can measure what a compile downloaded.
