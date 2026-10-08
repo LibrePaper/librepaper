@@ -9,6 +9,6 @@ docker compose up -d
 curl -fsS https://paper.example/ready
 ```
 
-Backups: `./backups help` lists, inspects and restores snapshots.
+Operate it: `./manage help` (status, check, apply, upgrade, backups).
 Upgrades: https://librepaper.org/host/simple.html#upgrade
 Backups, monitoring, object storage and a database elsewhere: https://librepaper.org/host/advanced.html
