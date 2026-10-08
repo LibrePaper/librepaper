@@ -25,7 +25,7 @@ librepaper export c9k ./paper-copy --key URL    # read as share-link holder
 librepaper export c9k ./paper-copy --at "v1"    # historical version
 ```
 
-On supported desktops, starting the companion shows a tray icon. Choose **Settings** from its menu to open the Companion section in the main LibrePaper app. The tray appears automatically; there is no tray preference to configure. Closing the app page leaves the companion running; use **Quit companion** in Settings or `librepaper stop` to stop it. Start-at-login is optional. Folder selection uses the operating system's native chooser.
+On supported desktops, starting the companion shows a tray icon. Choose **Settings** from its menu to open the Companion section in the main LibrePaper app. The tray appears automatically; there is no tray preference to configure. Closing the app page leaves the companion running. Use **Quit companion** in Settings or `librepaper stop` to stop it. Start-at-login is optional. Folder selection uses the operating system's native chooser.
 
 The companion discovers document tools from the `PATH` inherited when it starts. Set a tool's executable explicitly in its Integrations settings when it is not on `PATH`.
 
@@ -35,7 +35,7 @@ For scheduled local backups, see [account backups](backups.html).
 
 ## Document commands
 
-Pass server address with flag or environment variable:
+Pass the server address by flag or environment variable:
 
 ```sh
 librepaper <COMMAND> --server https://librepaper.arelbundock.com
@@ -49,7 +49,7 @@ librepaper login      # prints code and URL to sign in (valid 90 days)
 librepaper logout     # remove the cached token from this computer
 ```
 
-Tokens copied elsewhere remain usable until they expire or are separately revoked; removing the local cached token does not revoke them.
+Tokens copied elsewhere remain usable until they expire or are separately revoked. Removing the local cached token does not revoke them.
 
 ## List
 
@@ -69,10 +69,10 @@ curl http://127.0.0.1:8080/api/status      # check operational state
 ```
 
 The application TOML file is the source for server and admin storage settings.
-`admin serve` defaults to `/etc/librepaper/librepaper.toml`; other admin
+`admin serve` defaults to `/etc/librepaper/librepaper.toml`. Other admin
 commands accept the same `--config PATH`. `config show` redacts credentials and
 database URLs. Backup configuration lives separately in
-`/etc/resticprofile/resticprofile.toml`; see the [hosting page](host/advanced.html#backups) for
+`/etc/resticprofile/resticprofile.toml`. See the [hosting page](host/advanced.html#backups) for
 scheduled backups and recovery.
 
 ## Agents

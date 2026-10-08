@@ -6,8 +6,8 @@ title: "Building from source"
 
 The binary embeds the web build. Browser renderers are fetched separately from the configured asset mirror.
 
-- `web/` (Svelte, Skeleton, CodeMirror 6, Loro): bun and vite
-- `crates/` (server, CLI and companion, as internal sub-crates): cargo
+- `web/` (Svelte, Skeleton, CodeMirror 6, Loro) uses bun and vite.
+- `crates/` (server, CLI and companion, as internal sub-crates) uses cargo.
 
 Renderer implementations live in `wasm-*` repositories. The browser uses pinned WebAssembly artifacts; the production server binary does not link native document renderers. Some renderer crates remain dev-dependencies for fixtures and tests. The web build writes to `web/dist`, which the binary embeds.
 
@@ -20,15 +20,15 @@ make test               # rustfmt, clippy and test suite
 tools/test/suite external    # Quarto/R/Python and local-service integrations
 ```
 
-Build needs [bun](https://bun.sh) and Node.js. Rust builds for `x86_64-unknown-linux-gnu` also require `mold`, configured in `.cargo/config.toml`. Browser renderers are fetched from exact tags and SHA256 digests in `assets.lock`. To update a renderer: `node tools/assets/pins.mjs update wasm --repo wasm-markdown --tag v0.2.0`, then review the lockfile diff.
+Build needs [bun](https://bun.sh) and Node.js. Rust builds for `x86_64-unknown-linux-gnu` also require `mold`, configured in `.cargo/config.toml`. Browser renderers are fetched from exact tags and SHA256 digests in `assets.lock`. Update a renderer with `node tools/assets/pins.mjs update wasm --repo wasm-markdown --tag v0.2.0`. Then review the lockfile diff.
 
-The four browser modules (markdown, bibliography, citations, typst) are not embedded. `node tools/assets/pins.mjs fetch` fetches them to `web/wasm/` (ignored). `tools/assets/mirror publish` publishes to the asset mirror at `wasm/<sha256>/<module>` (SHA256 from `assets.lock`). The same lock pins LaTeX at `latex/<sha256>/`. The server passes these URLs to browsers using `[assets].mirror` from TOML, or the built-in project mirror when omitted. See [asset mirrors](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md).
+The four browser modules (markdown, bibliography, citations, typst) are not embedded. `node tools/assets/pins.mjs fetch` fetches them to `web/wasm/`, which is ignored. `tools/assets/mirror publish` publishes to the asset mirror at `wasm/<sha256>/<module>`. The SHA256 comes from `assets.lock`. The same lock pins LaTeX at `latex/<sha256>/`. The server passes these URLs to browsers using `[assets].mirror` from TOML, or the built-in project mirror when omitted. See [asset mirrors](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md).
 
-`make demo` builds the static site and runs the deployment services from `deploy/compose.yaml` with an app image built from this checkout. It requires Docker Compose 2.24.4 or later. The demo uses the isolated `librepaper-demo` Compose project and loopback ports 8081 (app) and 8082 (site); `PORT=`, `SITE_PORT=`, and `DEMO_PROJECT=` can change these. Its named volumes persist after Ctrl-C and `make demo-stop`. Use `make demo-wipe` to explicitly delete the demo volumes. These targets do not affect native `make serve` or `make wipe`.
+`make demo` builds the static site and runs the deployment services from `deploy/compose.yaml` with an app image built from this checkout. It requires Docker Compose 2.24.4 or later. The demo uses the isolated `librepaper-demo` Compose project and loopback ports 8081 (app) and 8082 (site). `PORT=`, `SITE_PORT=`, and `DEMO_PROJECT=` can change these. Its named volumes persist after Ctrl-C and `make demo-stop`. Use `make demo-wipe` to explicitly delete the demo volumes. These targets do not affect native `make serve` or `make wipe`.
 
 The demo serves operator graphs at `http://admin.localhost:8081/` with the password `librepaper-demo-only-password`. The first run compiles both the container server and the host companion; subsequent runs reuse their build caches. Custom `DEMO_PROJECT` names must start with `librepaper-demo`.
 
-The default container-ready configs are `tools/dev/demo/config.toml` and `tools/dev/demo/config-oauth.toml`. GitHub sign-in comes from `tools/dev/keys.yaml` when `sops` can decrypt it, or from inherited GitHub client credentials; otherwise the demo starts without sign-in. That file holds only the development OAuth app, so the demo never loads production secrets. `CONFIG=path/to/config.toml` selects a config mounted unchanged into the app container, so custom files must use container paths and bind the app to `0.0.0.0:8080`. The LaTeX mirror check still runs at `MIRROR=` (default `../wasm-latex/mirror`). The host companion's `LIBREPAPER_SERVER` is pinned to the local app origin so tray Settings and approvals return to this app. A companion already running before the demo starts is left alone.
+The default container-ready configs are `tools/dev/demo/config.toml` and `tools/dev/demo/config-oauth.toml`. GitHub sign-in comes from `tools/dev/keys.yaml` when `sops` can decrypt it, or from inherited GitHub client credentials. Otherwise the demo starts without sign-in. That file holds only the development OAuth app, so the demo never loads production secrets. `CONFIG=path/to/config.toml` selects a config mounted unchanged into the app container, so custom files must use container paths and bind the app to `0.0.0.0:8080`. The LaTeX mirror check still runs at `MIRROR=` (default `../wasm-latex/mirror`). The host companion's `LIBREPAPER_SERVER` is pinned to the local app origin so tray Settings and approvals return to this app. A companion already running before the demo starts is left alone.
 
 ## Workspace
 
@@ -42,21 +42,21 @@ make test                                  # everything, before handing work bac
 
 ## Test suites
 
-`make test` runs the ordinary Rust and web checks, leaving out PostgreSQL-gated cases and benchmarks. Run `tools/dev/db test` to run the gated suite in a throwaway Docker container: this is the same command CI runs. For a focused single case, point `LIBREPAPER_TEST_POSTGRES_URL` at a dedicated disposable database and select one test by name:
+`make test` runs the ordinary Rust and web checks, leaving out PostgreSQL-gated cases and benchmarks. Run `tools/dev/db test` to run the gated suite in a throwaway Docker container. This is the same command CI runs. For a focused single case, point `LIBREPAPER_TEST_POSTGRES_URL` at a dedicated disposable database and select one test by name:
 
 ```sh
 LIBREPAPER_TEST_POSTGRES_URL='postgresql://postgres:password@127.0.0.1:5432/librepaper_test' \
   cargo test -p librepaper-server --lib server::history_frontier_tests::delegated_agent_bearer_stops_working_after_session_revocation -- --ignored --test-threads=1 --exact
 ```
 
-The log and catalogue tests live in `librepaper-engine`, the others in `librepaper-room` and `librepaper-server`; change `-p` to match.
+The log and catalogue tests live in `librepaper-engine`, the others in `librepaper-room` and `librepaper-server`. Change `-p` to match.
 
 The selected case may clear tables, so do not use a shared or production
 database. Shared PostgreSQL fixtures fail when explicitly run without their
 required database setting.
 
-Keep benchmarks opt-in by selecting one ignored test by its function name;
-do not run all ignored library tests together. For example, the release
+Keep benchmarks opt-in by selecting one ignored test by its function name.
+Do not run all ignored library tests together. For example, the release
 throughput measurement uses the destructive benchmark database setting and a
 bounded override when a short diagnostic is intended:
 
@@ -66,18 +66,18 @@ LIBREPAPER_BENCHMARK_SECONDS=30 \
   cargo test -p librepaper --test storage_benchmarks typing_throughput_release_benchmark --release -- --ignored --nocapture --test-threads=1
 ```
 
-The short run is diagnostic only; use the default 600-second run for release
+The short run is diagnostic only. Use the default 600-second run for release
 acceptance. Run the relevant benchmark before a performance release, and run
 the isolated recovery drill before a storage or recovery release. The throughput
 benchmark truncates its configured database. The socket benchmark instead
-uses `LIBREPAPER_BENCH_POSTGRES_URL`; the mixed workload and its PostgreSQL
+uses `LIBREPAPER_BENCH_POSTGRES_URL`. The mixed workload and its PostgreSQL
 setup are documented in the `frugal_mixed_bench` test at `crates/librepaper/tests/frugal_mixed_bench.rs`.
 The isolated backup/restore recovery drill has its own disposable-database
-checks and exact prerequisites in [`tools/test/backup/README.md`](../../tools/test/backup/README.md);
-run `tools/test/suite backup` for the complete end-to-end test.
+checks and exact prerequisites in [`tools/test/backup/README.md`](../../tools/test/backup/README.md).
+Run `tools/test/suite backup` for the complete end-to-end test.
 
 The real Quarto PDF preview test is still unfinished CI coverage. Its current
-symptom is repeated CI runner termination; the cause is unconfirmed. To
+symptom is repeated CI runner termination. The cause is unconfirmed. To
 reproduce it, install Quarto and a PDF engine, then run the focused ignored
 test:
 
@@ -94,13 +94,13 @@ termination cause is isolated and the test has a bounded, reliable CI run.
 - `unit/` runs isolated production modules under Node without Chromium, a local service, or a built compiler artifact.
 - `integration/` crosses module boundaries or exercises a real WASM artifact, local companion, renderer, compiler adapter, or example document.
 - `browser/` drives the built Svelte application or a real browser page with Chromium.
-- `fixtures/` holds checked-in inputs shared by tests; the Typst corpus is used by both the PDF and viewer checks.
+- `fixtures/` holds checked-in inputs shared by tests. The Typst corpus is used by both the PDF and viewer checks.
 
 Entry points are the Bun scripts in `web/package.json` and `tools/test/suite`.
 
 Browser selection:
 
-- Set `LIBREPAPER_CHROMIUM` to an executable path to select a specific browser; when unset, the resolver looks for `chromium`, `chromium-browser`, `google-chrome`, or `google-chrome-stable` on `PATH`.
+- Set `LIBREPAPER_CHROMIUM` to an executable path to pick a browser. If it is unset, the resolver looks for `chromium`, `chromium-browser`, `google-chrome`, or `google-chrome-stable` on `PATH`.
 - Running `tools/test/suite browser` or `tools/test/suite smoke` without a usable browser fails the requested suite.
 - Browser-selecting fixtures are pinned to Chromium even when `BROWSER` is set.
 - The LaTeX browser fixture can be run directly with `firefox`, `chromium`, or `both` for standalone cross-browser coverage.
@@ -110,17 +110,17 @@ Browser selection:
 - Chromium on `PATH`
 - installed web dependencies
 - built `target/debug/librepaper` or `LIBREPAPER_TEST_BINARY`
-- `LIBREPAPER_TEST_POSTGRES_URL` pointing to an administrative PostgreSQL database; the role must be able to create and drop databases
+- `LIBREPAPER_TEST_POSTGRES_URL` pointing to an administrative PostgreSQL database. The role must be able to create and drop databases
 - `LIBREPAPER_TEST_PSQL` and `LIBREPAPER_TEST_PSQL_URL` when `psql` runs in a container
 
 Run with `cd web && bun run check:recovery`.
 
 ## The interface
 
-Pages use [Skeleton](https://skeleton.dev) on Tailwind 4. Skeleton provides buttons, cards, inputs, tables, dialogs, tooltips and toasts. `web/src/styles/theme.css` colours everything from four colours (palette written once). Three rules, enforced by `make test`:
+Pages use [Skeleton](https://skeleton.dev) on Tailwind 4. Skeleton provides buttons, cards, inputs, tables, dialogs, tooltips and toasts. `web/src/styles/theme.css` colours everything from four colours. The palette is written once. `make test` enforces three rules:
 
 1. Colours and sizes come from theme, not hex values or arbitrary Tailwind sizes.
-2. A control is a component; there is one `IconButton`.
-3. Layout comes from `Page`, `Stack` and `Row`, assembled not measured.
+2. A control is a component. There is one `IconButton`.
+3. Layout comes from `Page`, `Stack` and `Row` and is assembled, not measured.
 
-Agent highlights are drawn on the document origin (outside this stylesheet). Identifying colours in shared sessions travel over the wire (not a local decision).
+Agent highlights are drawn on the document origin, not in this stylesheet. Identifying colours in shared sessions are sent over the wire, not chosen locally.
