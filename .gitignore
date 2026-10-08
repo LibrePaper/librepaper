@@ -16,7 +16,7 @@ deploy/site/
 # binary embeds.
 web/dist
 web/dist/
-web/wasm/
+web/wasm
 .claude
 
 # The docs site: docs/.build is the markdown rendered by
@@ -32,7 +32,7 @@ target/
 !Cargo.lock
 
 # Installed dependencies are generated; keep manifests and lockfiles tracked.
-node_modules/
+node_modules
 
 # The LaTeX distribution mirror is built and published by the wasm-latex
 # repository; local release payloads can be hundreds of megabytes.
@@ -54,6 +54,7 @@ tools/test/latex/corpus/article/article.bib
 # and verified against web/loro-codemirror.lock. The source lives in the fork, so
 # there is one copy of it rather than two to keep in step.
 web/vendor/loro-codemirror/
+web/vendor
 .kata.local.toml
 # roborev snapshots
 /.roborev/
