@@ -2,6 +2,13 @@
 title: "Privacy and data retention"
 ---
 
+> **Warning:** Do not store private or highly sensitive data on librepaper.org.
+> The website does not use end-to-end encryption, because the server must have
+> access to a file's content to reconcile edits made by concurrent editors, and the
+> administrators must be able to consult files to enforce the terms of service.
+> If you require private file handling, consider
+> [self-hosting](./host/simple.html).
+
 This notice describes the public LibrePaper deployment. If you run another
 instance, its operator controls the database, object storage, logs, backups,
 retention, and legal obligations. Consult that operator's notice. The server
