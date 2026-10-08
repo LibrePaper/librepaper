@@ -182,6 +182,7 @@ printf 'docker\\t%s\\n' "$*" >> "$EVENTS_FILE"
 case "$*" in
   'image prune -f') ;;
   'compose logs --tail 50') ;;
+  'compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile') ;;
   *) echo "unexpected docker command: $*" >&2; exit 99 ;;
 esac`);
   mockCommand(bin, 'curl', `
@@ -498,7 +499,7 @@ test('site installs the Caddy site block and reloads Caddy without touching the 
       ['ssh', /librepaper-org\.caddy\.tmp/],
       ['ssh', /caddy reload --config \/etc\/caddy\/Caddyfile/],
     ]);
-    assert.deepEqual(dockerCalls(f), [], 'site pruned or touched the release');
+    assert.deepEqual(dockerCalls(f), ['compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'], 'site pruned or touched the release');
   } finally {
     f.cleanup();
   }
