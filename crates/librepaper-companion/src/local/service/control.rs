@@ -1,9 +1,12 @@
 //! Authenticated machine-local control API for the main LibrePaper settings.
 //!
-//! This surface has a separate, per-instance credential. It deliberately
-//! does not reuse a website pairing token: a paired document can build only
-//! within its existing origin/project grants and cannot inspect or mutate
-//! machine-wide settings.
+//! The configured server's site pairing also carries machine management:
+//! `POST session` issues that pairing without a consent step, and every other
+//! route here accepts it only from the configured server's Origin. Pairings
+//! for other sites never reach this surface, so a paired document can build
+//! only within its own origin/project grants. The per-instance file
+//! credential is not a browser credential; only the CLI `approve` command
+//! uses it, against the loopback `approve` route.
 
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -21,7 +24,6 @@ struct TokenFile {
 
 pub(super) struct ControlAuth {
     instance: String,
-    token: String,
     token_hash: String,
     server: String,
     origin: String,
@@ -53,7 +55,6 @@ impl ControlAuth {
         Ok(Self {
             instance: instance.to_string(),
             token_hash: hex::encode(Sha256::digest(token.as_bytes())),
-            token,
             server,
             origin,
         })
@@ -66,14 +67,12 @@ impl ControlAuth {
         let fragment = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("settings", "local")
             .append_pair("companion_address", &address)
-            .append_pair("companion_control", &self.token)
-            .append_pair("companion_instance", &self.instance)
             .finish();
         target.set_fragment(Some(&fragment));
         Ok(target.to_string())
     }
 
-    fn accepts_origin(&self, origin: &str) -> bool {
+    pub(super) fn accepts_origin(&self, origin: &str) -> bool {
         origin == self.origin
     }
 
@@ -138,7 +137,6 @@ pub(super) fn settings_url_for_instance(
     ControlAuth {
         instance: instance.to_string(),
         token_hash: hex::encode(Sha256::digest(file.token.as_bytes())),
-        token: file.token,
         server: server.to_string(),
         origin,
     }
@@ -214,14 +212,19 @@ pub(super) async fn handle(
                 &json!({"error":"application/json content type required"}),
             )
         } else {
-            write_json(
-                200,
-                &json!({
-                    "token":auth.token,
-                    "instance":auth.instance,
-                    "address":service_address(headers, inner.port),
-                }),
-            )
+            let _admission = inner.pairing.admission_gate().lock().await;
+            match inner.pairing.issue(&auth.origin, "settings page") {
+                Ok((token, expires)) => write_json(
+                    200,
+                    &json!({
+                        "token":token,
+                        "expires":expires,
+                        "instance":inner.instance,
+                        "address":service_address(headers, inner.port),
+                    }),
+                ),
+                Err(error) => write_json(500, &json!({"error":error.to_string()})),
+            }
         };
         apply_api_cors(&mut response, origin, false);
         return response;
@@ -233,10 +236,9 @@ pub(super) async fn handle(
     });
     let credential_error = match credential {
         None => Some(write_json(401, &json!({"error":"authorization required"}))),
-        Some(token) if !auth.accepts(token, &inner.instance) => Some(write_json(
-            401,
-            &json!({"error":"invalid control credential"}),
-        )),
+        Some(token) if !inner.pairing.authenticate(origin, token) => {
+            Some(write_json(401, &json!({"error":"invalid credential"})))
+        }
         _ => None,
     };
     drop(control);
@@ -266,9 +268,6 @@ pub(super) async fn handle(
         }
         (Some("approvals"), Some(id), None, None) if *method == Method::POST => {
             decide_approval(inner, id, request).await
-        }
-        (Some("pair"), Some("request"), None, None) if *method == Method::POST => {
-            super::consent::handle_pair_request_inline(inner, peer, request).await
         }
         (Some("pairings"), Some(id), None, None) if *method == Method::DELETE => {
             revoke_pairing(inner, id).await
@@ -829,7 +828,7 @@ mod tests {
         let state_home = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path()).await;
         let auth = ControlAuth::create(state_home.path(), &inner.instance).unwrap();
-        let token = auth.token.clone();
+        let file_token = token_for_instance(state_home.path(), &inner.instance).unwrap();
         let origin = auth.origin.clone();
         *inner.control.lock().await = Some(auth);
         let peer = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40000));
@@ -857,7 +856,10 @@ mod tests {
             .await
             .unwrap();
         let session: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(session["token"], token);
+        let token = session["token"].as_str().unwrap();
+        assert_ne!(token, file_token);
+        assert!(inner.pairing.authenticate(&origin, token));
+        assert!(session["expires"].as_i64().unwrap() > 0);
         assert_eq!(session["instance"], inner.instance);
         assert_eq!(session["address"], "http://localhost:8765/");
 
@@ -916,7 +918,7 @@ mod tests {
             &inner,
             api_request(
                 Method::POST,
-                Some(&token),
+                Some(&file_token),
                 None,
                 "127.0.0.1:8765",
                 "/companion/api/session",
@@ -982,55 +984,140 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inline_pair_request_uses_existing_consent_queue_without_opening_browser() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
+    async fn session_pairing_carries_management_for_the_configured_origin_only() {
         let state_home = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path()).await;
         let auth = ControlAuth::create(state_home.path(), &inner.instance).unwrap();
-        let token = auth.token.clone();
         let origin = auth.origin.clone();
         *inner.control.lock().await = Some(auth);
-        let opens = Arc::new(AtomicUsize::new(0));
-        let opened = opens.clone();
-        inner.approvals.set_opener(Some(Arc::new(move || {
-            opened.fetch_add(1, Ordering::SeqCst);
-        })));
         let peer = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40000));
-        let body = json!({
-            "origin":origin.clone(),
-            "request":"0123456789abcdefghijklmnopqrstuv",
-            "challenge":"0000000000000000000000000000000000000000000000000000000000000000",
-            "return":format!("{origin}/"),
-        });
-        let request = Request::post("/companion/api/pair/request")
-            .header("host", "127.0.0.1:8765")
-            .header("origin", origin.as_str())
-            .header("authorization", format!("Bearer {token}"))
-            .header("content-type", "application/json")
-            .body(Body::from(body.to_string()))
+
+        let response = send_api(
+            &inner,
+            api_request(
+                Method::POST,
+                None,
+                Some(&origin),
+                "127.0.0.1:8765",
+                "/companion/api/session",
+                Some("application/json"),
+            ),
+            peer,
+        )
+        .await;
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
             .unwrap();
-        let response = send_api(&inner, request, peer).await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        for _ in 0..20 {
-            if !inner.approvals.list().is_empty() {
-                break;
+        let session: Value = serde_json::from_slice(&bytes).unwrap();
+        let token = session["token"].as_str().unwrap().to_string();
+
+        let capabilities_path = format!("{}/capabilities", protocol::BASE_PATH);
+        let capabilities = |token: String, origin: String| {
+            let inner = inner.clone();
+            let capabilities_path = capabilities_path.clone();
+            async move {
+                let mut request = Request::builder()
+                    .method(Method::GET)
+                    .uri(capabilities_path.as_str())
+                    .body(Body::empty())
+                    .unwrap();
+                request.headers_mut().insert(
+                    AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+                );
+                let headers = request.headers().clone();
+                super::super::handle_capabilities(&inner, &headers, Some(&origin), false).await
             }
-            tokio::time::sleep(Duration::from_millis(1)).await;
+        };
+        let own = capabilities(token.clone(), origin.clone()).await;
+        assert_eq!(own.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(own.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["manage"], true);
+
+        let (other_token, _) = inner.pairing.issue("https://site.example", "test").unwrap();
+        let other = capabilities(other_token.clone(), "https://site.example".into()).await;
+        assert_eq!(other.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(other.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["manage"], false);
+
+        for forged_origin in ["https://site.example", origin.as_str()] {
+            let state = send_api(
+                &inner,
+                api_request(
+                    Method::GET,
+                    Some(&other_token),
+                    Some(forged_origin),
+                    "127.0.0.1:8765",
+                    "/companion/api/state",
+                    None,
+                ),
+                peer,
+            )
+            .await;
+            assert!(
+                matches!(
+                    state.status(),
+                    StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+                ),
+                "{forged_origin}"
+            );
         }
-        assert_eq!(inner.approvals.list().len(), 1);
-        assert_eq!(opens.load(Ordering::SeqCst), 0);
-        inner.approvals.deny_all();
+
+        let state = send_api(
+            &inner,
+            api_request(
+                Method::GET,
+                Some(&token),
+                Some(&origin),
+                "127.0.0.1:8765",
+                "/companion/api/state",
+                None,
+            ),
+            peer,
+        )
+        .await;
+        assert_eq!(state.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn api_requires_control_token_and_denies_foreign_origins_even_with_it() {
+    async fn cli_file_token_does_not_authenticate_the_browser_api() {
+        let state_home = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path()).await;
+        let auth = ControlAuth::create(state_home.path(), &inner.instance).unwrap();
+        let file_token = token_for_instance(state_home.path(), &inner.instance).unwrap();
+        let origin = auth.origin.clone();
+        *inner.control.lock().await = Some(auth);
+        let peer = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40000));
+        let response = send_api(
+            &inner,
+            api_request(
+                Method::GET,
+                Some(&file_token),
+                Some(&origin),
+                "127.0.0.1:8765",
+                "/companion/api/state",
+                None,
+            ),
+            peer,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_requires_the_pairing_and_denies_foreign_origins_even_with_it() {
         let state_home = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path()).await;
         let auth = ControlAuth::create(state_home.path(), "control-test").unwrap();
-        let token = auth.token.clone();
         let origin = auth.origin.clone();
         *inner.control.lock().await = Some(auth);
+        let (token, _) = inner.pairing.issue(&origin, "test").unwrap();
         let peer = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40000));
 
         let no_token_request = request(Method::GET, None, Some(&origin), "127.0.0.1:8765");
@@ -1252,12 +1339,20 @@ mod tests {
     fn control_token_is_private_reused_within_instance_and_rotated_on_restart() {
         let state_home = tempfile::tempdir().unwrap();
         let first = ControlAuth::create(state_home.path(), "one").unwrap();
+        let first_token = token_for_instance(state_home.path(), "one").unwrap();
         let repeated = ControlAuth::create(state_home.path(), "one").unwrap();
+        assert_eq!(
+            first_token,
+            token_for_instance(state_home.path(), "one").unwrap()
+        );
+        assert_eq!(first.token_hash, repeated.token_hash);
         let next = ControlAuth::create(state_home.path(), "two").unwrap();
-        assert_eq!(first.token, repeated.token);
-        assert_ne!(first.token, next.token);
-        assert!(first.accepts(&first.token, "one"));
-        assert!(!first.accepts(&next.token, "one"));
+        let next_token = token_for_instance(state_home.path(), "two").unwrap();
+        assert_ne!(first_token, next_token);
+        assert!(token_for_instance(state_home.path(), "one").is_none());
+        assert!(first.accepts(&first_token, "one"));
+        assert!(!first.accepts(&next_token, "one"));
+        assert!(next.accepts(&next_token, "two"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

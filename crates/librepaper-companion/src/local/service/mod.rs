@@ -1355,7 +1355,15 @@ async fn handle_capabilities(
         return response;
     }
     let capabilities = inner.runner.capabilities(refresh).await;
-    let response = serde_json::to_value(capabilities).unwrap_or(Value::Null);
+    let mut response = serde_json::to_value(capabilities).unwrap_or(Value::Null);
+    // The configured server's pairing also carries machine management.
+    let manage = match (origin, inner.control.lock().await.as_ref()) {
+        (Some(origin), Some(auth)) => auth.accepts_origin(origin),
+        _ => false,
+    };
+    if let Some(fields) = response.as_object_mut() {
+        fields.insert("manage".into(), Value::Bool(manage));
+    }
     write_json(200, &response)
 }
 

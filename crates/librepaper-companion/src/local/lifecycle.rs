@@ -748,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_url_uses_the_persisted_trusted_server_and_fragment_credentials() {
+    fn settings_url_uses_the_persisted_trusted_server_and_carries_no_credential() {
         let state = tempfile::tempdir().unwrap();
         let path = state.path().join("librepaper/local/control-token.json");
         librepaper_base::private_files::publish(
@@ -771,8 +771,8 @@ mod tests {
                 .collect();
         assert_eq!(fields["settings"], "local");
         assert_eq!(fields["companion_address"], "http://127.0.0.1:8763/");
-        assert_eq!(fields["companion_control"], "a".repeat(64));
-        assert_eq!(fields["companion_instance"], "live");
+        assert_eq!(fields.len(), 2);
+        assert!(!target.as_str().contains(&"a".repeat(64)));
         assert!(settings_url(state.path(), 8763, "other").is_err());
     }
 
