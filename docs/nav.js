@@ -35,10 +35,10 @@ export const nav = [
   { path: "cli", label: "CLI" },
   { path: "backups", label: "Local backups" },
   {
-    path: "host",
     label: "Self-hosting",
     pages: [
-      { path: "recovery", label: "Recovery exercise" },
+      { path: "host/simple", label: "Simple deployment" },
+      { path: "host/advanced", label: "Advanced features" },
     ],
   },
   {

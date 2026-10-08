@@ -72,7 +72,7 @@ The application TOML file is the source for server and admin storage settings.
 `admin serve` defaults to `/etc/librepaper/librepaper.toml`; other admin
 commands accept the same `--config PATH`. `config show` redacts credentials and
 database URLs. Backup configuration lives separately in
-`/etc/resticprofile/resticprofile.toml`; see the [hosting page](host.html) for
+`/etc/resticprofile/resticprofile.toml`; see the [hosting page](host/advanced.html#backups) for
 scheduled backups and recovery.
 
 ## Agents

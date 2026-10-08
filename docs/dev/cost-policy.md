@@ -24,7 +24,7 @@
   `memory_budget_mib`, `pending_mib`, and `pending_scratch_mib`, plus
   `[storage].database_connections`. See the [TOML mapping](../../crates/librepaper/src/cli/server_config.rs),
   [configuration defaults](../../crates/librepaper-base/src/config/mod.rs), and
-  [hosting](../host.md) for supported settings and behavior.
+  [hosting](../host/advanced.md) for supported settings and behavior.
 
 - Storage is charged to the project owner. Logical use includes figures,
   requested archives, the current compressed base, and uncompacted update rows

@@ -1,5 +1,5 @@
 # The one file to edit: set the two origins and one [auth.*] table, then docker compose up -d.
-# Everything not listed here has a default; see docs/host.md.
+# Everything not listed here has a default; see docs/host/advanced.md.
 
 # app is the application. docs serves published documents and must be a
 # different host, because a document is code and the browser is what keeps

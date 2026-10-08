@@ -45,7 +45,7 @@ document.
 
 - [What is LibrePaper](https://librepaper.org/what.html)
 - [Install](https://librepaper.org/install.html)
-- [Self-hosting](https://librepaper.org/host.html)
+- [Self-hosting](https://librepaper.org/host/simple.html)
 - [Privacy](https://librepaper.org/privacy.html)
 - [Building from source](https://librepaper.org/architecture/building.html)
 

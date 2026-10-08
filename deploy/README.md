@@ -9,4 +9,5 @@ docker compose up -d
 curl -fsS https://paper.example/ready
 ```
 
-Backups, monitoring, upgrades and a database elsewhere: https://librepaper.org/host.html
+Upgrades: https://librepaper.org/host/simple.html#upgrade
+Backups, monitoring, object storage and a database elsewhere: https://librepaper.org/host/advanced.html
