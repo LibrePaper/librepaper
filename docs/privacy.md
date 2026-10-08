@@ -2,6 +2,13 @@
 title: "Privacy and data retention"
 ---
 
+> **Warning:** Do not store private or highly sensitive data on librepaper.org.
+> The website does not use end-to-end encryption, because the server must have
+> access to a file's content to reconcile edits made by concurrent editors, and the
+> administrators must be able to consult files to enforce the terms of service.
+> If you require private file handling, consider
+> [self-hosting](./host/simple.html).
+
 This notice describes the public LibrePaper deployment. If you run another
 instance, its operator controls the database, object storage, logs, backups,
 retention, and legal obligations. Consult that operator's notice. The server
@@ -138,5 +145,4 @@ Choose **Settings > Account > Erase this account** and confirm with your handle:
 4. The account record is deleted after its owned documents are purged
 
 Backups still hold the erased account until they expire. See
-[backups on librepaper.org](#backups-on-librepaperorg). Operators of other
-deployments should read the [operator privacy guide](./host/advanced.html#privacy).
+[backups on librepaper.org](#backups-on-librepaperorg).
