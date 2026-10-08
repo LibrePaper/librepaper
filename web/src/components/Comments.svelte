@@ -55,7 +55,7 @@
     // The id of the annotation the page has singled out, if any.
     selected = "",
     // The traversal behind `comments`, which is a prefix of the document's
-    // comments rather than all of them (docs/protocol/comments-v1.md).
+    // comments rather than all of them (docs/dev/protocol/comments-v1.md).
     // `null` for a caller that mounts this over a fixed list.
     page = null,
     onloadmore = undefined,

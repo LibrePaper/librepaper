@@ -39,7 +39,7 @@ const collaboration = createReaderCollaboration({
     else if (message.type === "doc-ack") session?.acknowledge(message.upTo || 0);
     else if (message.type === "doc-durable") session?.durable(message.vector);
     else if (message.type === "doc-presence") { presenceFrames++; session?.applyPresence(message.update); }
-    // A refused `doc-update` (room-v2.md, the `error` table). Mirrors
+    // A refused `doc-update` (room.md, the `error` table). Mirrors
     // Reader.svelte: a retryable refusal naming the server's head is back
     // pressure, and the session resends from that head on a timer -- so it is
     // recorded and handed on rather than reported as a page error. Anything

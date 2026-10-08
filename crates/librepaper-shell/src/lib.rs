@@ -1,5 +1,4 @@
 //! Internal to librepaper: no stable API, versioned in lockstep with it.
-//! See docs/dev/specs/SPEC-split-crates.md, "Workspace layout".
 //! The reader shell: the pages and the bundles they load, compiled into the
 //! binary. The renderers are not: the pages are told where to fetch them.
 //!

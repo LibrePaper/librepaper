@@ -43,7 +43,7 @@ export function captureAttachment(selection, path = "", revision = "") {
   };
 }
 
-// The wire vocabulary is fixed (see docs/protocol/chat.md), but a launcher
+// The wire vocabulary is fixed (see docs/dev/protocol/chat.md), but a launcher
 // entry is a task the user recognizes: a kind plus the request it phrases.
 // Several entries may share a kind, which is what lets the catalog grow
 // without touching the protocol.

@@ -12,9 +12,8 @@
 // that was on screen when the question was asked, and a caller that hands
 // over what it read cannot accidentally confirm against a newer one.
 //
-// A restore also carries `expected_frontier` (SPEC-server-is-a-log.md §7.1,
-// room-v2.md "restore | expected_frontier equals the head frontier"): the
-// server refuses a restore whose caller has not said what head it is
+// A restore also carries `expected_frontier` (SPEC-server-is-a-log.md §7.1).
+// The server refuses a restore whose caller has not said what head it is
 // replacing, so that a concurrent edit nobody here has seen is never
 // silently discarded. The frontier, like the signature, is the caller's to
 // read and hand over -- this module has no session to read one from.
