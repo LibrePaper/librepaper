@@ -22,7 +22,7 @@ The application origin authorizes and returns projected source and assets to the
 
 A room holds one document's comments and open sockets, in one process. Writes reach all readers without polling.
 
-The socket carries document updates, presence, comments and `source-changed {digest}` notices. Presence, who is here and where their cursor is, is ephemeral and never persisted. Editors synchronise source through the socket. Readers use it for annotations and digest notices. Both follow the same authority rules since readers see the same head as editors.
+The socket carries document updates, presence, comments and `source-changed {digest}` notices. Presence is who is here and where their cursor is. It is ephemeral and never persisted. Editors synchronise source through the socket. Readers use it for annotations and digest notices. Both follow the same authority rules since readers see the same head as editors.
 
 A dropped socket loses nothing. Comments post via HTTP. Reconnect hydrates a bounded first page, with older comments loaded through cursor pagination. Refreshes remain bounded. Silent disconnections, such as NAT expiry or sleep, are detected by periodic polling of connection liveness. Queue depth and transport writes are bounded server-side. Authority is rechecked while a socket is open.
 

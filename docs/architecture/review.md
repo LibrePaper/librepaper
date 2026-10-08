@@ -16,7 +16,7 @@ The original anchor is a checkpoint plus a UTF-16 range or the whole document. E
 
 The server bridges rendered page to source by flattening both with syntax blanked and whitespace collapsed. It looks for selection in the flattened source, mapping positions back. It refuses to locate if a passage reads identically in several places.
 
-Cursors follow characters through insertions and deletions. Resolution falls back to searching for quoted words if cursors are unusable. Two equally good candidates produce `ambiguous`. Replacement cursors are cached, never anchored. Results are attached at position, deleted, or ambiguous.
+Cursors follow characters through insertions and deletions. Resolution falls back to searching for quoted words if cursors are unusable. Two equally good candidates produce `ambiguous`. Replacement cursors are stored in the cache, never in the anchor. Results are attached at position, deleted, or ambiguous.
 
 Marks are painted in the browser. Source identity and current attachment come from the server.
 

@@ -41,7 +41,7 @@ Each value is a list of:
 - A GitHub login.
 - A verified Google address.
 - `"@example.org"` means a whole domain.
-- `"anyone"` means anonymous comments with no sign-in. Commenters only.
+- `"anyone"` means anonymous comments with no sign-in. It is valid for commenters only.
 
 ## Backups
 
@@ -170,7 +170,7 @@ head -c 24 /dev/urandom | base64         # the password
 ./manage apply
 ```
 
-- It takes one DNS record and two lines in the one file. Caddy needs no changes. It asks the server before obtaining a certificate, and the server says yes to three names.
+- It takes one DNS record and two lines in the one file. Caddy needs no changes. Caddy asks the server before obtaining a certificate, and the server says yes to three names.
 - The browser asks for the password once per session. The user name can be anything.
 - Zoom by dragging on any graph. Double-click to return to the chosen range.
 - For your own Prometheus, add `[metrics]` with `address = "0.0.0.0:9091"` to `librepaper.toml`: the server then serves `/metrics` on that port inside the Docker network. The kit publishes no host port for it, and the graphs above do not need it.
@@ -252,8 +252,8 @@ The override survives upgrades.
 
 Every limit and the retention settings are listed, with their defaults, at the end of `librepaper.toml` (see [the whole file](simple.html#librepapertoml)). Uncomment a line to change it, then run `./manage apply`.
 
-- Accounts cap storage (`publisher_storage_mib`) and uploads per hour (`publisher_uploads_per_hour`).
-- The server caps total storage (`deployment_storage_mib`), memory for loading documents (`memory_budget_mib`), edit history per document (`log_quota_mib`), and unsaved edits in memory and on disk (`pending_mib`, `pending_scratch_mib`).
+- Each account is limited in storage (`publisher_storage_mib`) and uploads per hour (`publisher_uploads_per_hour`).
+- The whole server is limited in total storage (`deployment_storage_mib`), memory for loading documents (`memory_budget_mib`), edit history per document (`log_quota_mib`), and unsaved edits in memory and on disk (`pending_mib`, `pending_scratch_mib`).
 - With [object storage](#object-storage), disk is no longer the constraint on `deployment_storage_mib`: set it to what you are willing to store.
 - `[retention]` deletes documents after `expire_after`, counted from the last update by default or from creation.
 
