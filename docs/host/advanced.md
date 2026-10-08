@@ -37,15 +37,15 @@ commenters = ["any"]
 
 Each value is a list of:
 
-- `"any"`: any signed-in account.
+- `"any"` means any signed-in account.
 - A GitHub login.
 - A verified Google address.
-- `"@example.org"`: a whole domain.
-- `"anyone"` (commenters only): anonymous comments, no sign-in.
+- `"@example.org"` means a whole domain.
+- `"anyone"` means anonymous comments with no sign-in. Commenters only.
 
 ## Backups
 
-Backups are idle until `resticprofile.toml` has a `[resticprofile]` table. Configure a remote Restic repository; the password and any S3 credentials go in the env table:
+Backups are idle until `resticprofile.toml` has a `[resticprofile]` table. Configure a remote Restic repository. The password and any S3 credentials go in the env table:
 
 ```toml
 [resticprofile]
@@ -70,10 +70,10 @@ Backups contain the database dump, referenced objects, both TOML files, and `ses
 Schedule and retention come from a base profile inside the backup image. Your `resticprofile.toml` is merged over it, so any setting you add there wins. The defaults:
 
 - A backup runs daily at midnight UTC.
-- Retention: keep all snapshots from the last 48 hours, then 14 daily and 11 weekly.
+- Retention keeps all snapshots from the last 48 hours, then 14 daily and 11 weekly.
 - A `restic check` of 10% of the data runs on Mondays at 06:00.
 
-To change them, add the keys you want to `resticprofile.toml`, then run `./manage apply` (it recreates the sidecar, which installs the schedule when it starts):
+To change them, add the keys you want to `resticprofile.toml`, then run `./manage apply`. It recreates the sidecar, which installs the schedule when it starts:
 
 ```toml
 [resticprofile.backup]
@@ -121,7 +121,7 @@ cp /path/to/your/resticprofile.toml .   # the repository and its password are al
 ./manage backup restore latest        # or a snapshot id from ./manage backup list
 ```
 
-- It starts an empty database, restores the snapshot, loads it with `admin restore` (which verifies every file against the backup's manifest), puts the stored files and the snapshot's own `session.key` in place, starts LibrePaper and checks `/ready`.
+- It starts an empty database, restores the snapshot, and loads it with `admin restore`. That command verifies every file against the backup's manifest. It then puts the stored files and the snapshot's own `session.key` in place, starts LibrePaper and checks `/ready`.
 - It refuses to run where LibrePaper is already running, and `admin restore` refuses a database that is not empty, so it cannot overwrite a live deployment.
 - Open the copy in a local browser or through an SSH tunnel, and check documents, figures and that existing sign-ins still work. Do not expose it under your production names.
 - Keep the kit's own `librepaper.toml` for the drill: it points at the empty local database.
@@ -148,9 +148,9 @@ Requirements:
 
 - A private bucket used only for this.
 - A dedicated access key that can read, write, list and delete in that bucket only.
-- Conditional writes (`If-None-Match: *` on PUT), because the server never overwrites a stored file. AWS S3, OVHcloud Object Storage and MinIO support them. Others may not: test first.
+- The store must support conditional writes: PUT sends `If-None-Match: *`, because the server never overwrites a stored file. AWS S3, OVHcloud Object Storage and MinIO support them. Others may not: test first.
 
-Backups still include user files: the backup job reads them through the same store, so the `backup` container needs the same keys. With keys written in `librepaper.toml` it already has them; with `{ file = ... }` references, mount the files into `backup` too (see [Secrets](#secrets)). `session.key` and the server's own state stay in the `data` volume.
+Backups still include user files: the backup job reads them through the same store, so the `backup` container needs the same keys. With keys written in `librepaper.toml`, it already has them. With `{ file = ... }` references, mount the files into `backup` too (see [Secrets](#secrets)). `session.key` and the server's own state stay in the `data` volume.
 
 ## Health
 
@@ -158,7 +158,7 @@ The VPS cannot report its own outage, so alerts come from free outside services.
 
 ### LibrePaper admin console
 
-A password-protected page on its own hostname that graphs the server's health over the last 400 days: CPU, memory, free disk, stored bytes, open documents, live connections and database connections in use.
+The console is a password-protected page on its own hostname. It graphs the server's health over the last 400 days: CPU, memory, free disk, stored bytes, open documents, live connections and database connections in use.
 
 ```sh
 # Optional. Graphs of the last 400 days at https://admin.paper.example/, behind a password.
@@ -170,22 +170,22 @@ head -c 24 /dev/urandom | base64         # the password
 ./manage apply
 ```
 
-- One DNS record and two lines in the one file. Nothing in Caddy: it asks the server before obtaining a certificate, and the server says yes to three names.
-- The browser asks for the password once per session. User name: anything.
-- Zoom by dragging on any graph; double-click to return to the chosen range.
+- It takes one DNS record and two lines in the one file. Caddy needs no changes. It asks the server before obtaining a certificate, and the server says yes to three names.
+- The browser asks for the password once per session. The user name can be anything.
+- Zoom by dragging on any graph. Double-click to return to the chosen range.
 - For your own Prometheus, add `[metrics]` with `address = "0.0.0.0:9091"` to `librepaper.toml`: the server then serves `/metrics` on that port inside the Docker network. The kit publishes no host port for it, and the graphs above do not need it.
 
 ### Uptime
 
-UptimeRobot ([uptimerobot.com](https://uptimerobot.com)) emails you the day the site is down.
+[UptimeRobot](https://uptimerobot.com) emails you the day the site is down.
 
-- New monitor, type HTTP(s), URL `https://paper.example/ready`, interval 5 minutes.
-- `/ready` answers 200 only when the app serves requests; the home page alone can look fine while the app is down.
+- Create an HTTP(s) monitor for `https://paper.example/ready`, checked every 5 minutes.
+- `/ready` answers 200 only when the app serves requests. The home page alone can look fine while the app is down.
 - Add your email as an alert contact.
 
 ### Backup alerts
 
-A backup can fail while the site stays up (a revoked S3 key, a full repository). Healthchecks ([healthchecks.io](https://healthchecks.io)) alerts when a run fails or when no success arrives in time.
+A backup can fail while the site stays up. Causes include a revoked S3 key and a full repository. [Healthchecks](https://healthchecks.io) alerts when a run fails or when no success arrives in time.
 
 | Check | Schedule | Period | Grace |
 |---|---|---|---|
@@ -194,7 +194,7 @@ A backup can fail while the site stays up (a revoked S3 key, a full repository).
 
 That means an alert after 36 hours without a successful backup, or 8 days without a check, and at once on a failed run.
 
-Copy each check's ping URL (`https://hc-ping.com/<uuid>`) into these hooks and add them to `resticprofile.toml`:
+Copy each check's ping URL into these hooks and add them to `resticprofile.toml`. A ping URL looks like `https://hc-ping.com/<uuid>`.
 
 ```toml
 [[resticprofile.backup.send-before]]
@@ -227,7 +227,7 @@ Then apply the change and take a backup:
 ```
 
 - Keep ping URLs private: anyone with one can send a fake success.
-- Account settings: turn on the weekly report (sent on Mondays) for a summary of every check.
+- Turn on the weekly report in account settings. It is sent on Mondays, with a summary of every check.
 
 ## Secrets
 
@@ -252,10 +252,10 @@ The override survives upgrades.
 
 Every limit and the retention settings are listed, with their defaults, at the end of `librepaper.toml` (see [the whole file](simple.html#librepapertoml)). Uncomment a line to change it, then run `./manage apply`.
 
-- Per account: storage (`publisher_storage_mib`) and uploads per hour (`publisher_uploads_per_hour`).
-- Whole server: total storage (`deployment_storage_mib`), memory for loading documents (`memory_budget_mib`), edit history per document (`log_quota_mib`), and unsaved edits in memory and on disk (`pending_mib`, `pending_scratch_mib`).
+- Accounts cap storage (`publisher_storage_mib`) and uploads per hour (`publisher_uploads_per_hour`).
+- The server caps total storage (`deployment_storage_mib`), memory for loading documents (`memory_budget_mib`), edit history per document (`log_quota_mib`), and unsaved edits in memory and on disk (`pending_mib`, `pending_scratch_mib`).
 - With [object storage](#object-storage), disk is no longer the constraint on `deployment_storage_mib`: set it to what you are willing to store.
-- `[retention]` deletes documents after `expire_after`, counted from the last update (default) or from creation.
+- `[retention]` deletes documents after `expire_after`, counted from the last update by default or from creation.
 
 ## Without Docker
 
