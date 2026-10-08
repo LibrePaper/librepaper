@@ -164,7 +164,7 @@ trusted_networks = ["172.29.0.0/16"]
 
 ### Changing it later
 
-After editing `librepaper.toml` or `resticprofile.toml`, recreate the containers that read them. Compose compares service definitions, not the bytes behind a mounted file:
+After editing `librepaper.toml`, recreate the two containers that read it, the app and the backup service. Compose compares service definitions, not the bytes behind a mounted file:
 
 ```sh
 docker compose up -d --force-recreate librepaper backup
@@ -199,7 +199,7 @@ docker compose logs librepaper    # why the app is not answering
 
 ```sh
 cd ..   # the directory that contains librepaper/
-curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz --exclude='*/librepaper.toml' --exclude='*/resticprofile.toml'
+curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz --exclude='*.toml'   # keeps your settings
 cd librepaper && docker compose pull && docker compose up -d
 ```
 
