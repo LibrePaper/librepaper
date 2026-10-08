@@ -4,6 +4,7 @@ export const STATES = {
   connected: { says: "Running", tone: "good" },
   unreachable: { says: "Not running", tone: "error", hint: "Run librepaper in a terminal, or install it." },
   denied: { says: "Blocked", tone: "error", hint: "Allow local network access for this site in the browser's site settings." },
+  asking: { says: "Needs permission", tone: "warn", hint: "Click Connect, then allow local network access when the browser asks." },
   reachable: { says: "Needs approval", tone: "warn", hint: "Connect, then approve the dialog the companion shows." },
   unauthorized: { says: "Needs approval", tone: "warn", hint: "Connect, then approve the dialog the companion shows." },
   incompatible: { says: "Update needed", tone: "warn", hint: "This companion is too old for this site. Install the latest version." },
