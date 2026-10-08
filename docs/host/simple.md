@@ -3,7 +3,7 @@ title: "Simple deployment"
 notice: "LibrePaper is experimental. Self-host only if you can maintain its database, files, credentials, and recovery copies."
 ---
 
-One VPS, Docker only, one file to edit. Backups, object storage, alerts and the rest are in [Advanced features](advanced.html).
+The setup runs on one VPS with Docker only, and you edit one file. Backups, object storage, alerts and the rest are in [Advanced features](advanced.html).
 
 ## LibrePaper
 
@@ -20,22 +20,22 @@ Four programs run side by side on the VPS, each in its own Docker container:
 
 Your data lives in two places, both on the VPS's disk (Docker volumes):
 
-- **The database** (`postgres` volume): accounts, sharing, comments, and each document's edit history.
-- **Files** (`data` volume): uploaded figures and compacted document snapshots, plus `session.key`, which signs sign-ins and share links.
+- **The database** (`postgres` volume) holds accounts, sharing, comments, and each document's edit history.
+- **Files** (`data` volume) hold uploaded figures, compacted document snapshots, and `session.key`, which signs sign-ins and share links.
 
 Everything is on one machine, so losing the VPS loses it all until [backups](advanced.html#backups) are set up. The same page explains how to move files to an S3 bucket or the database to a managed service.
 
 ### What you need
 
-- A virtual private server (for example OVHcloud, Hetzner, DigitalOcean or Linode).
-- Docker Engine and Compose v2 on it.
-- Ports 80 and 443 open.
-- Two DNS names pointing at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`).
-- A GitHub OAuth app, a Google OAuth client, or both: see [Sign-in](#sign-in).
+- Use a virtual private server (for example OVHcloud, Hetzner, DigitalOcean or Linode).
+- Install Docker Engine and Compose v2 on it.
+- Open ports 80 and 443.
+- Point two DNS names at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`).
+- Create a GitHub OAuth app, a Google OAuth client, or both. See [Sign-in](#sign-in).
 
 ## Install
 
-Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. It also includes `./manage`, the helper used below. Run this on the VPS, over SSH; it unpacks into a `librepaper/` directory that is private to you (mode 700).
+Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. It also includes `./manage`, the helper used below. Run this on the VPS, over SSH. It unpacks into a `librepaper/` directory that is private to you (mode 700).
 
 ```sh
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
@@ -44,18 +44,18 @@ cd librepaper
 
 ## Sign-in
 
-LibrePaper has no passwords of its own: people sign in with GitHub or Google, and the server never sees or stores a password. You register LibrePaper once with the provider, which gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required; both can be enabled.
+LibrePaper has no passwords of its own. People sign in with GitHub or Google, and the server never sees or stores a password. You register LibrePaper once with the provider, which gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required. Both can be enabled.
 
 **GitHub.** LibrePaper requests no scopes and receives the account's public login name.
 
-- Instructions: [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) (on GitHub: Settings, Developer settings, OAuth Apps, New OAuth App).
+- See [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app). On GitHub, the path is Settings, Developer settings, OAuth Apps, New OAuth App.
 - Homepage URL: `https://paper.example`
 - Authorization callback URL: `https://paper.example/auth/callback`
 - Copy the client ID, generate a client secret, and put both in `[auth.github]`.
 
 **Google.** LibrePaper requests the `openid`, `email` and `profile` scopes and receives the account's name and email address. A Gmail address must be verified by Google. An address at another domain signs in only if that domain uses Google Workspace.
 
-- Instructions: [Setting up OAuth 2.0](https://support.google.com/cloud/answer/6158849) (in Google Cloud Console: APIs and Services, Credentials, Create credentials, OAuth client ID, Web application). Google asks you to configure the consent screen first.
+- See [Setting up OAuth 2.0](https://support.google.com/cloud/answer/6158849). In Google Cloud Console, the path is APIs and Services, Credentials, Create credentials, OAuth client ID, Web application. Google asks you to configure the consent screen first.
 - Authorized redirect URI: `https://paper.example/auth/callback/google`
 - Put the client ID and secret in `[auth.google]`:
 
@@ -67,7 +67,7 @@ client_secret = "replace"
 
 ## Configure
 
-Everything is set in one file, `librepaper.toml`. You need your two origins and at least one sign-in provider; everything else has a working default. Leave the files readable (0644): the containers read them through bind mounts, and the 700 directory is what keeps them private. Never `chmod 600 librepaper.toml`.
+Everything is set in one file, `librepaper.toml`. You need your two origins and at least one sign-in provider. Everything else has a working default. Leave the files readable (0644). The containers read them through bind mounts, and the 700 directory is what keeps them private. Never `chmod 600 librepaper.toml`.
 
 ```sh
 $EDITOR librepaper.toml
@@ -85,7 +85,7 @@ docs = "https://docs.paper.example"
 
 ### librepaper.toml
 
-`librepaper.toml` as it comes in the download. The comments say what each setting does; the [advanced features](advanced.html) explain the optional ones.
+This is `librepaper.toml` as it comes in the download. The comments say what each setting does. The [advanced features](advanced.html) explain the optional ones.
 
 ```toml
 # The one file to edit: set the two origins and one [auth.*] table, then docker compose up -d.
@@ -201,9 +201,9 @@ Caddy obtains a certificate the first time a name is visited, so the first reque
 ./manage upgrade v0.0.25    # a specific release
 ```
 
-- It backs up first, when backups are configured (`--no-backup` skips this).
+- It backs up first when backups are configured. `--no-backup` skips this.
 - It checks your configuration with the new release before switching. If a check fails, nothing switches.
 - It keeps your `.toml` files and `caddy/local.d/`.
 - It refuses to move to an older release.
 
-The server migrates the schema at startup. `compose.yaml` is replaced on every upgrade: put your own changes in `compose.override.yaml`.
+The server migrates the schema at startup. `compose.yaml` is replaced on every upgrade. Put your own changes in `compose.override.yaml`.
