@@ -131,4 +131,4 @@ retention periods above. Separate backup copies may still contain deleted data
 until the operator's backup-retention process removes them. Restoring a backup
 does not automatically replay an independent deletion ledger. Operators must
 review and reapply applicable deletion requests after restore. See the
-[operator privacy guide](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/privacy-operators.md).
+[operator privacy guide](host/advanced.html#privacy).
