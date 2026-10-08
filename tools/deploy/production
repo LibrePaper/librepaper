@@ -16,19 +16,6 @@ ADMIN_NAME=admin.librepaper.org  # hostname extracted from ADMIN
 HTTP_CONNECT_TIMEOUT=5
 HTTP_REQUEST_TIMEOUT=15
 HEALTH_DEADLINE_SECONDS=120
-CADDY_RELOAD_TIMEOUT_SECONDS=30
-
-# Paths on the host that the kit archive never contains and a deploy never replaces.
-OPERATOR_PATHS=(
-	'/librepaper.toml*'
-	/resticprofile.toml
-	'/compose.override.yaml*'
-	'/caddy/Caddyfile*'
-	/caddy/local.d
-	/site
-)
-# The image build context: in the repository, not needed on the host.
-BUILD_ONLY_PATHS=(/Dockerfile /backup)
 
 if [ -t 1 ]; then bold=$'\e[1m' green=$'\e[32m' red=$'\e[31m' dim=$'\e[2m' reset=$'\e[0m'; else bold='' green='' red='' dim='' reset=''; fi
 step() { printf '\n%s==> %s%s\n' "$bold" "$*" "$reset"; }
@@ -80,33 +67,25 @@ services:
 OVERRIDE
 }
 
-write_config() {
-	# The rendered file holds credentials. ~/librepaper is 0700 and keeps it
-	# private; 444 lets the containers read it as uid 10001. Stage it separately
-	# so the candidate binary can validate it before the installed configuration
-	# is replaced.
+fetch_manage() {
+	# The release's helper, so a host whose kit predates it can upgrade and the
+	# helper always matches the release.
+	local version="$1"
+	ssh "$HOST" "cd librepaper && curl -fsSL https://github.com/LibrePaper/librepaper/releases/download/$version/librepaper-deploy.tar.gz | tar xzO librepaper/manage > .manage.tmp && chmod 755 .manage.tmp && mv -f .manage.tmp manage"
+}
+
+write_candidates() {
+	# The rendered files hold credentials. ~/librepaper is 0700 and keeps them
+	# private; 444 lets the containers read them as uid 10001. ./manage upgrade
+	# validates them with the new images before it swaps them into place.
 	printf '%s' "$DEPLOY_CONFIG" | ssh "$HOST" 'umask 077; cat > librepaper/librepaper.toml.candidate.tmp && chmod 444 librepaper/librepaper.toml.candidate.tmp && mv -f librepaper/librepaper.toml.candidate.tmp librepaper/librepaper.toml.candidate'
+	printf '%s' "$DEPLOY_RESTICPROFILE" | ssh "$HOST" 'umask 077; cat > librepaper/resticprofile.toml.candidate.tmp && chmod 444 librepaper/resticprofile.toml.candidate.tmp && mv -f librepaper/resticprofile.toml.candidate.tmp librepaper/resticprofile.toml.candidate'
 }
 
-write_resticprofile() {
-	# The rendered profile holds the restic and S3 credentials; 444 and the 0700
-	# directory work as for librepaper.toml.
-	printf '%s' "$DEPLOY_RESTICPROFILE" | ssh "$HOST" 'umask 077; tmp=librepaper/.resticprofile.toml.tmp; cat > "$tmp" && chmod 444 "$tmp" && mv -f "$tmp" librepaper/resticprofile.toml'
-}
-
-install_config() {
-	ssh "$HOST" 'cd librepaper && mv -f librepaper.toml.candidate librepaper.toml'
-}
-
-stage_caddy_config() {
-	{
-		cat deploy/caddy/Caddyfile
-		printf '\n%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE"
-	} | ssh "$HOST" 'umask 022; mkdir -p librepaper/caddy; cat > librepaper/caddy/Caddyfile.candidate.tmp && chmod 644 librepaper/caddy/Caddyfile.candidate.tmp && mv -f librepaper/caddy/Caddyfile.candidate.tmp librepaper/caddy/Caddyfile.candidate'
-}
-
-install_caddy_config() {
-	ssh "$HOST" 'cd librepaper && mv -f caddy/Caddyfile.candidate caddy/Caddyfile'
+write_site_caddy() {
+	# Operator site blocks live in caddy/local.d, which upgrades never overwrite.
+	printf '%s {\n\tencode zstd gzip\n\troot * /srv/site\n\tfile_server\n}\n\n%s {\n\tredir https://%s{uri} permanent\n}\n' "$SITE" "$REDIRECTS" "$SITE" |
+		ssh "$HOST" 'umask 022; mkdir -p librepaper/caddy/local.d; cat > librepaper/caddy/local.d/librepaper-org.caddy.tmp && chmod 644 librepaper/caddy/local.d/librepaper-org.caddy.tmp && mv -f librepaper/caddy/local.d/librepaper-org.caddy.tmp librepaper/caddy/local.d/librepaper-org.caddy'
 }
 
 site_build() {
@@ -155,31 +134,6 @@ render() {
 	printf -v "$target" '%s' "$text"
 }
 
-sync_deployment_files() {
-	# Refresh the kit while leaving everything the operator owns alone. --delete
-	# makes files the kit dropped disappear from the host; the P rules say, in
-	# the command itself, that the operator paths are never deleted.
-	local path args=()
-	for path in "${OPERATOR_PATHS[@]}"; do
-		args+=(--exclude="$path" --filter="P $path")
-	done
-	for path in "${BUILD_ONLY_PATHS[@]}"; do
-		args+=(--exclude="$path")
-	done
-	rsync -a --delete "${args[@]}" --out-format='    %n' deploy/ "$HOST:librepaper/"
-	# The archive's top directory is private; files inside stay readable for the containers.
-	ssh "$HOST" 'chmod 700 librepaper'
-}
-
-pin_image_tag() {
-	local version="$1"
-	ssh "$HOST" "cd librepaper && sed -i -E 's#(ghcr.io/librepaper/librepaper(-backup)?):v[0-9]+\.[0-9]+\.[0-9]+#\1:$version#' compose.yaml" ||
-		die "could not edit compose.yaml on $HOST"
-	ssh "$HOST" "cd librepaper && test \"\$(grep -c -F -e 'ghcr.io/librepaper/librepaper:$version' -e 'ghcr.io/librepaper/librepaper-backup:$version' compose.yaml)\" = 2" ||
-		die "compose.yaml on $HOST does not pin both images to $version"
-	ok "compose.yaml pins both images to $version"
-}
-
 prepare_local() {
 	check_production_dns
 
@@ -193,44 +147,20 @@ prepare_local() {
 
 stage_host() {
 	local version="$1"
-	step "Kit: deploy/ -> $HOST:librepaper/"
-	sync_deployment_files
-	ok "synced"
-	site_sync
-	pin_image_tag "$version"
+	step "Helper: manage $version -> $HOST:librepaper/"
+	fetch_manage "$version" || die "could not fetch manage from release $version"
+	ok "fetched"
 
-	step "Compose override and resticprofile.toml on the VPS"
-	write_resticprofile
-	write_compose_files
-	ok "wrote resticprofile.toml (files 444) and compose.override.yaml"
-
-	step "Candidates: librepaper.toml, and Caddy with the site and the redirects"
-	write_config
+	step "Candidates: librepaper.toml and resticprofile.toml"
+	write_candidates
 	unset DEPLOY_CONFIG DEPLOY_RESTICPROFILE
-	stage_caddy_config
-	ok "staged librepaper.toml.candidate; $SITE serves docs/_site; $REDIRECTS -> https://$SITE"
+	ok "staged both candidates (files 444)"
 
-	step "Candidates: check them with the image that will run them"
-	validate_candidates
-}
-
-validate_candidates() {
-	# Nothing here touches the installed files or the running stack. The
-	# candidate holds its values itself, so it needs no mounts.
-	if ! ssh "$HOST" 'cd librepaper && docker compose run --rm --no-deps -v ./librepaper.toml.candidate:/etc/librepaper/librepaper.toml:ro librepaper admin config check --config /etc/librepaper/librepaper.toml'; then
-		die "the candidate binary cannot load librepaper.toml; the installed configuration and the running deployment were not touched"
-	fi
-	if ! ssh "$HOST" 'cd librepaper && docker compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile.candidate --adapter caddyfile'; then
-		die "the candidate Caddy configuration is invalid; the installed configuration and the running deployment were not touched"
-	fi
-	ok "both candidates are valid"
-}
-
-install_candidates() {
-	step "Install the checked configuration"
-	install_config
-	install_caddy_config
-	ok "installed librepaper.toml and caddy/Caddyfile"
+	step "Site, compose override and Caddy site blocks"
+	site_sync
+	write_compose_files
+	write_site_caddy
+	ok "$SITE serves docs/_site; $REDIRECTS -> https://$SITE"
 }
 
 usage() {
@@ -410,19 +340,11 @@ deploy() {
 
 	prepare_local
 	stage_host "$version"
-	install_candidates
 
-	step "Containers: pull and start $version"
-	note "the server migrates the schema at startup; nothing is stopped by hand"
-	ssh "$HOST" 'cd librepaper && docker compose pull'
-	ssh "$HOST" 'cd librepaper && docker compose up -d --wait --wait-timeout 180 --remove-orphans'
-	# Compose compares service definitions, not the bytes behind a bind mount: a
-	# same-version deploy that only changed librepaper.toml, resticprofile.toml or
-	# other files would otherwise leave the old inode in use.
-	ssh "$HOST" 'cd librepaper && docker compose up -d --force-recreate --no-deps --wait --wait-timeout 180 librepaper backup'
-	if ! timeout "$CADDY_RELOAD_TIMEOUT_SECONDS" ssh "$HOST" 'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'; then
-		die "Caddy configuration reload failed"
-	fi
+	step "Upgrade: ./manage upgrade $version"
+	note "backs up, checks the candidates with the new images, then switches"
+	ssh "$HOST" "cd librepaper && ./manage upgrade $version" ||
+		die "upgrade to $version failed; if validation failed nothing was switched; run ./manage status on $HOST"
 	ok "running"
 
 	step "Cleanup"
