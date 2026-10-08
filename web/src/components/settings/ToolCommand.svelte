@@ -1,7 +1,6 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
-  import * as control from "../../lib/companion/control.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import { splitArgs, joinArgs } from "../../lib/companion/args.js";
 
@@ -16,28 +15,14 @@
   let settingsLoaded = $state(false);
   let savedFeedback = $state(false);
   let loadId = 0;
-  let managedAvailable = $state(control.available());
   let managedState = $state(null);
-  let managedScope = "";
   let managedRequest = 0;
 
   const local = $derived(companion.status);
   $effect(() => companion.watch());
-
-  $effect(() => {
-    const unsubscribe = control.subscribe((access) => {
-      const nextScope = access?.scope || control.scope();
-      if (managedScope !== nextScope || managedAvailable !== Boolean(access?.available)) {
-        managedScope = nextScope;
-        managedAvailable = Boolean(access?.available);
-        managedState = null;
-        managedRequest++;
-        settingsLoaded = false;
-      }
-      if (managedAvailable) void loadManagedSettings(++managedRequest, name, nextScope);
-    });
-    return unsubscribe;
-  });
+  // Only the configured LibrePaper server may manage the companion; any other site uses the paired routes.
+  const managedAvailable = $derived(local ? localBridge.canManage() : false);
+  const managedScope = $derived(`${local?.address || ""}|${local?.instance || ""}`);
 
   $effect(() => {
     const connected = local?.state === "connected";
@@ -45,11 +30,15 @@
     const instance = local?.instance || "";
     const requestedName = name;
     const requestId = ++loadId;
+    const managed = managedAvailable;
+    const scope = managedScope;
     settingsLoaded = false;
     pendingDialogAction = false;
     settingsError = "";
     savedFeedback = false;
-    if (managedAvailable) void loadManagedSettings(++managedRequest, requestedName, managedScope);
+    managedState = null;
+    managedRequest++;
+    if (managed) void loadManagedSettings(++managedRequest, requestedName, scope);
     else if (connected) void loadSettings(requestId, requestedName, address, instance);
     else {
       savedPath = "";
@@ -75,18 +64,18 @@
 
   async function loadManagedState(requestId, expectedScope) {
     try {
-      const result = await control.request("/state");
-      if (requestId !== managedRequest || expectedScope !== control.scope() || !control.available()) return;
+      const result = await localBridge.manage("/state");
+      if (requestId !== managedRequest || expectedScope !== managedScope || !managedAvailable) return;
       managedState = result;
       settingsError = "";
     } catch (error) {
-      if (requestId === managedRequest && expectedScope === control.scope()) settingsError = error?.message || "Could not load companion settings.";
+      if (requestId === managedRequest && expectedScope === managedScope) settingsError = error?.message || "Could not load companion settings.";
     }
   }
 
   async function loadManagedSettings(requestId, requestedName, expectedScope) {
     await loadManagedState(requestId, expectedScope);
-    if (requestId !== managedRequest || requestedName !== name || expectedScope !== control.scope() || !control.available()) return;
+    if (requestId !== managedRequest || requestedName !== name || expectedScope !== managedScope || !managedAvailable) return;
     const integration = managedState?.settings?.integrations?.[requestedName];
     if (integration) show(integration);
     settingsLoaded = Boolean(integration);
@@ -112,8 +101,8 @@
       if (managedAvailable) {
         const scope = managedScope;
         const managedId = managedRequest;
-        await control.request("/settings", { method: "PUT", body: { integrations: { [name]: { path, args } } } });
-        if (managedId !== managedRequest || scope !== control.scope() || !control.available()) return;
+        await localBridge.manage("/settings", { method: "PUT", body: { integrations: { [name]: { path, args } } } });
+        if (managedId !== managedRequest || scope !== managedScope || !managedAvailable) return;
         integration = { path, args };
         managedState = { ...managedState, settings: { ...managedState?.settings, integrations: { ...managedState?.settings?.integrations, [name]: integration } } };
       } else integration = await localBridge.setIntegration(name, { path, args });

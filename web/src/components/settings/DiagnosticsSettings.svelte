@@ -239,11 +239,6 @@
   <button type="button" class="btn btn-sm lp-control-outline" disabled={!connected} onclick={() => void doctorReport()}>Check</button>
 </SettingRow>
 {#if doctor}<pre class="setting-log" role="status">{doctor}</pre>{/if}
-
-<SettingRow id="diagnostics-activity" title="Activity" description="Connect to see and stop what is running on this computer.">
-  {#if view.connectError}<span class="setting-description management-error" role="alert">{view.connectError}</span>{/if}
-  <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.manageThisComputer()}>{view.pending === "connect" ? "Connecting…" : "Manage this computer"}</button>
-</SettingRow>
 {/if}
 
 <p class="setting-description diagnostics-help">Still stuck? <a href="https://github.com/LibrePaper/librepaper/issues" target="_blank" rel="noreferrer">Report a problem</a> with the setup report attached.</p>

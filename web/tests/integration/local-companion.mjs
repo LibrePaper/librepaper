@@ -5,7 +5,7 @@ import * as local from "../../src/lib/companion/client.js";
 const response = (status, body) => ({ status, ok: status >= 200 && status < 300,
   json: async () => body, clone() { return response(status, body); } });
 
-let now, link, storage, claimBody, pairBody, attempts, companionUp, healthUp, permission, staleCapabilities;
+let now, link, storage, claimBody, pairBody, attempts, companionUp, healthUp, permission, staleCapabilities, session, sessionCalls;
 function inject(claim) {
   local._testing.inject({
     storage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) },
@@ -15,6 +15,10 @@ function inject(claim) {
     launchLink: (url) => { link = url; },
     localNetworkPermission: async () => permission,
     fetch: async (url, init) => {
+      if (url.includes("companion/api/session")) {
+        sessionCalls++;
+        return typeof session === "function" ? session() : session ? response(200, session) : response(403, { error: "not the configured server" });
+      }
       if (url.includes("pair/request")) {
         if (!companionUp) throw new TypeError("Failed to fetch");
         pairBody = JSON.parse(init.body); return response(202, { request: pairBody.request }); }
@@ -38,7 +42,7 @@ function inject(claim) {
 // ask fails, so `connectApp` falls back to the `librepaper://connect` link.
 function setup(claim) {
   local._testing.reset();
-  now = 0; link = ""; pairBody = null; storage = new Map(); attempts = 0; companionUp = false; healthUp = true; permission = "prompt"; staleCapabilities = null;
+  now = 0; link = ""; pairBody = null; storage = new Map(); attempts = 0; companionUp = false; healthUp = true; permission = "prompt"; staleCapabilities = null; session = null; sessionCalls = 0;
   inject(claim);
   local.configure({ origin: "https://papers.example", project: "paper" });
 }
@@ -62,40 +66,40 @@ assert.equal(attempts, 4);
 assert.equal(local.status().state, "connected");
 const workingPairStorage = new Map(storage);
 
-// The trusted app uses an in-app control session and requests explicit
-// approval in Settings; it does not issue a public pair request or URL link.
+// The configured server origin is paired directly by the session endpoint:
+// no pair request, no consent, no claim loop and no launch link.
+setup(() => { throw new Error("connect/claim must not be called"); });
+session = { token: "session-token", expires: 1000000, instance: "restart", address: local.address() };
+companionUp = true;
+const direct = await local.connectApp({ timeoutMs: 10000 });
+assert.equal(direct.state, "connected");
+assert.equal(sessionCalls, 1);
+assert.equal(pairBody, null);
+assert.equal(attempts, 0);
+assert.equal(link, "");
+assert.equal(local.hasPairing(), true);
+
+// Another origin is refused by the session endpoint and uses the public flow.
 setup((n) => n === 1 ? response(202, {}) : response(200, { token: "inline-token", expires: 1000000, instance: "restart" }));
-let openedSettings = 0;
-let privilegedPair = null;
-local._testing.inject({ control: {
-  connect: async (address) => { assert.equal(address, local.address()); },
-  request: async (path, options) => { privilegedPair = { path, options }; return { accepted: true }; },
-  showSettings: () => { openedSettings++; },
-} });
 companionUp = true;
 await local.connectApp({ timeoutMs: 10000 });
-assert.equal(openedSettings, 1);
-assert.equal(privilegedPair.path, "/pair/request");
-assert.equal(privilegedPair.options.body.origin, "https://papers.example");
+assert.equal(sessionCalls, 1);
+assert.ok(pairBody, "a refused session falls through to pair/request");
 assert.equal(attempts, 2);
-assert.equal(link, "");
 
-// A document/origin change while trusted session setup is in flight aborts
-// the old attempt without falling back to an approval request or URL link.
+// A document/origin change while the session request is in flight aborts the
+// old attempt without pairing, asking for approval or opening a URL link.
 setup(() => response(202, {}));
 companionUp = true;
-let finishControl;
-local._testing.inject({ control: {
-  connect: () => new Promise((resolve) => { finishControl = resolve; }),
-  request: async () => { throw new Error("must not request for a stale document"); },
-  showSettings() {},
-} });
+let finishSession;
+session = () => new Promise((resolve) => { finishSession = resolve; });
 const staleAttempt = local.connectApp({ timeoutMs: 10000 });
-for (let wait = 0; !finishControl && wait < 50; wait++) await new Promise((resolve) => setTimeout(resolve, 0));
-assert.equal(typeof finishControl, "function");
+for (let wait = 0; !finishSession && wait < 50; wait++) await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(typeof finishSession, "function");
 local.configure({ origin: "https://other.example", project: "other" });
-finishControl();
+finishSession(response(200, { token: "late-token", expires: 1000000, instance: "restart" }));
 await assert.rejects(staleAttempt, (error) => error.name === "Canceled");
+assert.equal(local.hasPairing(), false);
 assert.equal(pairBody, null);
 assert.equal(link, "");
 

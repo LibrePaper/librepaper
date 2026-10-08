@@ -4,7 +4,6 @@
   // opens from the workspace navbar or sidebar, and any entry point can open
   // it on a given category -- connection controls can land on Tools.
   import { onMount, tick } from "svelte";
-  import * as companionControl from "../../lib/companion/control.js";
   import { createMachineView } from "../../lib/companion/machine.svelte.js";
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
@@ -63,10 +62,6 @@
   const approvals = $derived(view.list(view.state?.approvals).length);
 
   let body = $state(null);
-  $effect(() => companionControl.onSettingsRequested(() => {
-    category = "tools";
-    open = true;
-  }));
   async function go(id, entry = "") {
     category = id;
     if (!entry) return;

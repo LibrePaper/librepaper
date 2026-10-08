@@ -121,14 +121,6 @@
     {/each}
   </section>
   {/if}
-{:else}
-  <section id="tools-sites" class="settings-subsection" aria-labelledby="tools-sites-heading">
-    <div class="settings-section-title"><h4 class="settings-subhead" id="tools-sites-heading">Connected sites</h4></div>
-    <SettingRow title="Site access" description="See and revoke the sites and folders this computer has allowed.">
-      {#if view.connectError}<span class="setting-description tools-error" role="alert">{view.connectError}</span>{/if}
-      <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.manageThisComputer()}>{view.pending === "connect" ? "Connecting…" : "Manage this computer"}</button>
-    </SettingRow>
-  </section>
 {/if}
 
 <style>

@@ -4,7 +4,7 @@ import { watchForUnhandled } from "../lib/crash.js";
 import "../styles/app.css";
 import Landing from "../components/Landing.svelte";
 import { registerOfflineShell } from "../lib/offline-shell.js";
-import { intake } from "../lib/companion/control.js";
+import { intake } from "../lib/companion/client.js";
 
 // Mounted into <body> rather than into a wrapper: the stylesheet addresses
 // the bar as `body > nav`, and an element in between would silently stop every
