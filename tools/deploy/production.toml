@@ -68,10 +68,6 @@ publisher_uploads_per_hour = 30
 [assets]
 mirror = "https://@LIBREPAPER_MIRROR_S3_BUCKET@.s3.@LIBREPAPER_MIRROR_S3_REGION@.io.cloud.ovh.net/"
 
-# Private listener for your own Prometheus. Nothing in the kit scrapes it and no host port is published.
-[metrics]
-address = "0.0.0.0:9091"
-
 # Operator graphs: read-only page served on the admin origin, behind a password from SOPS.
 [admin]
 password = "@LIBREPAPER_ADMIN_PASSWORD@"

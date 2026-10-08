@@ -138,10 +138,6 @@ commenters = ["any"]
 [proxy]
 trusted_networks = ["172.29.0.0/16"]
 
-# Private listener for your own Prometheus. Nothing in the kit scrapes it and no host port is published.
-[metrics]
-address = "0.0.0.0:9091"
-
 # Optional, with origins.admin. Paste 24 random bytes in base64 (head -c 24 /dev/urandom | base64).
 # [admin]
 # password = "replace"

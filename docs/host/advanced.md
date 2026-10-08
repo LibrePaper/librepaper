@@ -174,7 +174,7 @@ docker compose up -d --force-recreate librepaper
 - One DNS record and two lines in the one file. Nothing in Caddy: it asks the server before obtaining a certificate, and the server says yes to three names.
 - The browser asks for the password once per session. User name: anything.
 - Zoom by dragging on any graph; double-click to return to the chosen range.
-- For your own Prometheus, the server has a private `[metrics]` listener (`address = "0.0.0.0:9091"`). Nothing in the kit scrapes it and no host port is published.
+- For your own Prometheus, add `[metrics]` with `address = "0.0.0.0:9091"` to `librepaper.toml`: the server then serves `/metrics` on that port inside the Docker network. The kit publishes no host port for it, and the graphs above do not need it.
 
 ### Uptime
 
