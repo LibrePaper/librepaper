@@ -103,7 +103,7 @@ try {
   const localActions = await b.evaluate(`(() => {
     const root=document.querySelector('#tools-connection');
     const visible=element => Boolean(element?.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
-    const install=root?.querySelector('a[href="https://librepaper.org/install.html"]');
+    const install=root?.querySelector('a[href="https://librepaper.org/local-app.html"]');
     const connect=[...(root?.querySelectorAll('button') || [])].find(button => button.textContent.trim() === 'Connect');
     return { installVisible:visible(install), connectVisible:visible(connect), connectEnabled:Boolean(connect && !connect.disabled) };
   })()`);

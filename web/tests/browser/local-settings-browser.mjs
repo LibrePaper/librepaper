@@ -150,7 +150,7 @@ try {
     install: document.querySelector('#diagnostics-connection a[href*="install"]')?.href,
   })`);
   const disconnected = JSON.parse(initial);
-  assert.equal(disconnected.install, "https://librepaper.org/install.html", "the install section links to the one install page");
+  assert.equal(disconnected.install, "https://librepaper.org/local-app.html", "the install section links to the one install page");
   assert.doesNotMatch(disconnected.text, /curl|librepaper-installer/, "the settings page carries no install command of its own");
   assert.equal(disconnected.details, 0, "initial view has no collapsed details");
   assert.equal(disconnected.summaries, 0, "initial view has no disclosure summary");

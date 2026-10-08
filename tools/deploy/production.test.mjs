@@ -457,6 +457,7 @@ test('the site and redirect blocks go to caddy/local.d/librepaper-org.caddy, onc
     assert.equal(read(file), [
       'librepaper.org {',
       '\tencode zstd gzip',
+      '\tredir /install.html /local-app.html permanent',
       '\troot * /srv/site',
       '\tfile_server',
       '}',
