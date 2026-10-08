@@ -6,7 +6,7 @@ title: "Quarto"
 
 ## Local app
 
-The browser cannot run R, Python, or Quarto; the LibrePaper local app runs them on your computer with the tools installed there. Install from the [install page](../install.html), then start it:
+The browser cannot run R, Python, or Quarto; the LibrePaper local app runs them on your computer with the tools installed there. Install [the local app](../local-app.html), then start it:
 
 ```sh
 librepaper                           # start in the background

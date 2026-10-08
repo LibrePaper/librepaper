@@ -52,7 +52,7 @@ librepaper.org; that is an operator command described in the private runbook
 - Homebrew uses the Linux and macOS x86_64 and ARM64 archives. Scoop uses the
   x86_64 Windows archive. Both install the released binary, which includes the
   browser application.
-- User install commands live on the [install page](install.md). Update it when
+- User install commands live on the [local app page](local-app.md). Update it when
   a distribution channel changes.
 
 ## Repository secrets
