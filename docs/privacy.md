@@ -145,5 +145,4 @@ Choose **Settings > Account > Erase this account** and confirm with your handle:
 4. The account record is deleted after its owned documents are purged
 
 Backups still hold the erased account until they expire. See
-[backups on librepaper.org](#backups-on-librepaperorg). Operators of other
-deployments should read the [operator privacy guide](./host/advanced.html#privacy).
+[backups on librepaper.org](#backups-on-librepaperorg).

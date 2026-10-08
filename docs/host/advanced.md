@@ -260,12 +260,3 @@ Every limit and the retention settings are listed, with their defaults, at the e
 ## Without Docker
 
 Run one `librepaper admin serve` process against durable PostgreSQL and file storage, behind an HTTPS proxy that preserves `Host` and forwards the client address. Configure LibrePaper to trust only that proxy's network. The server applies migrations at startup, so its database role must own the schema. See the [CLI guide](../cli.html) for config commands.
-
-## Privacy
-
-- Publish a privacy notice with your identity and contact, your retention settings, your storage and hosting providers, and how your proxy handles logs.
-- LibrePaper does not log visitor requests or store visitor IP addresses. Your reverse proxy, CDN and hosting provider may keep their own logs.
-- Accounts and documents are stored in plaintext.
-- `librepaper export ID DIR` exports one project. There is no account-wide export.
-- An account owner erases their account in **Settings > Account > Erase this account**.
-- Restoring a backup can bring back data erased after that backup was taken. Keep a list of erasure requests outside the backups and apply it again after a restore.
