@@ -4,7 +4,7 @@ title: "The CLI"
 
 ## The companion
 
-After [installing LibrePaper](install.html), run `librepaper` in a terminal to start it in the background.
+After installing [the local app](local-app.html), run `librepaper` in a terminal to start it in the background.
 
 ```sh
 librepaper                                      # start in background

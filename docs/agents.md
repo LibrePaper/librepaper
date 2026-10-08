@@ -8,7 +8,7 @@ The [Agent Client Protocol](https://agentclientprotocol.com) (ACP) starts your a
 
 ## Local app
 
-The LibrePaper local app finds agents installed on your computer, starts the one you pick, and hands it the document tools. See the [install page](install.html).
+The LibrePaper local app finds agents installed on your computer, starts the one you pick, and hands it the document tools. See [the local app](local-app.html).
 
 ```sh
 librepaper                           # start in the background

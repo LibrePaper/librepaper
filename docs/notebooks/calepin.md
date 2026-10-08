@@ -6,7 +6,7 @@ title: "Calepin"
 
 ## Local app
 
-The browser cannot run code; the LibrePaper local app runs Calepin on your computer with the tools installed there. Install from the [install page](../install.html), then start it:
+The browser cannot run code; the LibrePaper local app runs Calepin on your computer with the tools installed there. Install [the local app](../local-app.html), then start it:
 
 ```sh
 librepaper                           # start in the background

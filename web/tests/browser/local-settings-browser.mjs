@@ -147,10 +147,10 @@ try {
     text: document.body.innerText,
     details: document.querySelectorAll('details').length,
     summaries: document.querySelectorAll('summary').length,
-    install: document.querySelector('#diagnostics-connection a[href*="install"]')?.href,
+    install: document.querySelector('#diagnostics-connection a[href*="local-app"]')?.href,
   })`);
   const disconnected = JSON.parse(initial);
-  assert.equal(disconnected.install, "https://librepaper.org/install.html", "the install section links to the one install page");
+  assert.equal(disconnected.install, "https://librepaper.org/local-app.html", "the install section links to the one install page");
   assert.doesNotMatch(disconnected.text, /curl|librepaper-installer/, "the settings page carries no install command of its own");
   assert.equal(disconnected.details, 0, "initial view has no collapsed details");
   assert.equal(disconnected.summaries, 0, "initial view has no disclosure summary");
@@ -172,7 +172,7 @@ try {
   await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:8763/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
   await until("connected settings shown", () => b.evaluate("Boolean(document.querySelector('#quarto-executable')) && document.querySelector('#diagnostics-startup [role=switch]')?.disabled === false"), 5000);
   const connectedText = await b.evaluate("document.body.innerText");
-  assert.equal(await b.evaluate("document.querySelector('#diagnostics-connection a[href*=\"install\"]')"), null, "a connected companion needs no install link");
+  assert.equal(await b.evaluate("document.querySelector('#diagnostics-connection a[href*=\"local-app\"]')"), null, "a connected companion needs no install link");
   assert.doesNotMatch(connectedText, /permission window was blocked/);
   assert.doesNotMatch(connectedText, /Build presets|Available tools/);
   assert.match(connectedText, /Quit companion/);

@@ -30,7 +30,7 @@
          by the companion is the safety net. -->
     <div class="signin-warning" role="note">
       <p><strong>LibrePaper is experimental.</strong> The website and service may change at any time.</p>
-      <p>We recommend you use the <a href="https://librepaper.org/install.html">companion app</a> to make automatic local backups of your projects as you edit them.</p>
+      <p>We recommend you use the <a href="https://librepaper.org/local-app.html">companion app</a> to make automatic local backups of your projects as you edit them.</p>
     </div>
     <div class="signin-providers">
       {#each providers.filter((provider) => (me.providers ?? []).includes(provider)) as provider (provider)}
