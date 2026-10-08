@@ -1,9 +1,12 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import ToolRow from "./ToolRow.svelte";
+  import { companion } from "../../lib/companion/status.svelte.js";
   import { splitArgs } from "../../lib/companion/args.js";
 
-  let { view } = $props();
+  let { view, oncompanion = undefined } = $props();
+
+  $effect(() => companion.watch());
 
   let adding = $state(false);
   let invalid = $state("");
@@ -34,6 +37,10 @@
     command = "";
   }
 </script>
+
+{#if companion.status.state !== "connected"}
+<p class="setting-description companion-needed">Needs the companion. <button type="button" class="link-button" onclick={() => oncompanion?.()}>Open Companion settings</button></p>
+{/if}
 
 {#if view.available}
   <section class="settings-subsection" id="agents-list" aria-labelledby="companion-agents-heading">

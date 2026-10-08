@@ -12,6 +12,6 @@ import { intake } from "../lib/companion/client.js";
 // Started inside a boundary, so a throw anywhere below is a notice rather
 // than an empty page. See src/components/Boundary.svelte.
 watchForUnhandled();
-const initialSettings = intake() ? "tools" : "";
+const initialSettings = intake() ? "companion" : "";
 mount(Boundary, { target: document.body, props: { component: Landing, props: { initialSettings }, name: "the project list" } });
 void registerOfflineShell();

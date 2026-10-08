@@ -31,7 +31,7 @@ async function freePort() {
 
 writeFileSync(harness, `
 <script>
-  import CompanionStatus from ${JSON.stringify(join(root, "web/src/components/settings/CompanionStatus.svelte"))};
+  import CompanionConnection from ${JSON.stringify(join(root, "web/src/components/settings/CompanionConnection.svelte"))};
   import BackupsSettings from ${JSON.stringify(join(root, "web/src/components/settings/BackupsSettings.svelte"))};
   import { backups } from ${JSON.stringify(join(root, "web/src/lib/companion/backups.svelte.js"))};
   let account = $state({ id: "account-a", provider: "github" });
@@ -41,7 +41,7 @@ writeFileSync(harness, `
   window.refreshBackupStatus = () => backups.refresh();
   window.resetBackupStatus = () => backups.reset();
 </script>
-<CompanionStatus id="settings-companion" />
+<CompanionConnection id="settings-companion" />
 <BackupsSettings {account} />
 `);
 

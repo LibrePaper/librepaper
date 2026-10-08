@@ -53,7 +53,7 @@ writeFileSync(harness, `
 <script>
   import SettingsDialog from ${JSON.stringify(join(root, "web/src/components/settings/SettingsDialog.svelte"))};
   let open = $state(true);
-  let category = $state("tools");
+  let category = $state("companion");
   window.showSettingsCategory = (next) => category = next;
 </script>
 <SettingsDialog bind:open bind:category sourceFormat="quarto" mayEdit={true} userId="browser-check"
@@ -139,7 +139,7 @@ try {
 
   b = await browser("chromium", join(temporary, "chrome"), await freePort());
   await b.navigate(`${appOrigin}/`);
-  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#tools-sites-heading"))`), 12000);
+  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#companion-sites-heading"))`), 12000);
 
   assert.equal(await b.evaluate("location.hash"), "", "the session pairing does not add a fragment");
   assert.equal(await b.evaluate("location.href"), `${appOrigin}/`, "management opens in place without changing the document URL");
@@ -147,9 +147,9 @@ try {
   assert.equal(await b.evaluate(`document.documentElement.innerHTML.includes(${JSON.stringify(token)})`), false, "the token is not rendered into the page");
   assert.equal(await b.evaluate('document.querySelectorAll(".request-card").length'), 0, "approvals use existing SettingRow layout");
   assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
-  assert.equal(await b.evaluate(`document.querySelector("#tools-approvals-heading") === null && document.querySelector("#companion-agents-heading") === null`), true, "approvals appear only while one waits, and agents have their own category");
+  assert.equal(await b.evaluate(`document.querySelector("#companion-approvals-heading") === null && document.querySelector("#companion-agents-heading") === null`), true, "approvals appear only while one waits, and agents have their own category");
   assert.equal(await b.evaluate('document.body.innerText.includes("Tool search folders")'), false, "tool search folders are not configurable");
-  assert.equal(await b.evaluate('document.querySelector("#tools-folders-heading") === null'), true, "empty project-folder grants have no heading");
+  assert.equal(await b.evaluate('document.querySelector("#companion-folders-heading") === null'), true, "empty project-folder grants have no heading");
 
   for (const path of ["/companion", "/companion/", "/companion/index.html", "/companion/app.js", "/companion/style.css"]) {
     const response = await fetch(`${companionAddress.replace(/\/$/, "")}${path}`);
@@ -187,7 +187,7 @@ try {
   }
   async function waitForApproval() {
     await until("approval visible in Settings", () => b.evaluate(`
-      [...document.querySelector("#tools-approvals-heading").closest("section").querySelectorAll(".setting-title")]
+      [...document.querySelector("#companion-approvals-heading").closest("section").querySelectorAll(".setting-title")]
         .some((node) => /Connect|Pair/i.test(node.textContent))
     `), 10000);
   }
@@ -206,9 +206,9 @@ try {
     const id = `${requestId.slice(0, 26)}${label.padEnd(6, "x")}`;
     await askForPair(id);
     await waitForApproval();
-    await waitForEnabledButton(decision === "allow" ? "Connect" : "Deny", "#tools-approvals-heading");
+    await waitForEnabledButton(decision === "allow" ? "Connect" : "Deny", "#companion-approvals-heading");
     await b.evaluate(`(() => {
-      const section = document.querySelector("#tools-approvals-heading").closest("section");
+      const section = document.querySelector("#companion-approvals-heading").closest("section");
       const row = [...section.querySelectorAll(".setting-row")].find((item) => /Connect|Pair/i.test(item.textContent));
       const labels = ${JSON.stringify(decision === "allow" ? ["Allow", "Connect"] : ["Deny"])};
       const action = [...row.querySelectorAll("button")].find((item) => labels.includes(item.textContent.trim()));
@@ -219,7 +219,7 @@ try {
     if (decision === "allow") {
       await until("approved request removed from Settings", () => b.evaluate(`
         (() => {
-          const section = document.querySelector("#tools-approvals-heading")?.closest("section");
+          const section = document.querySelector("#companion-approvals-heading")?.closest("section");
           if (!section) return true;
           return ![...section.querySelectorAll(".setting-title")]
             .some((node) => /Connect|Pair/i.test(node.textContent));
@@ -232,9 +232,9 @@ try {
   const deniedId = `${requestId.slice(0, 26)}denyxx`;
   await askForPair(deniedId);
   await waitForApproval();
-  await waitForEnabledButton("Deny", "#tools-approvals-heading");
+  await waitForEnabledButton("Deny", "#companion-approvals-heading");
   await b.evaluate(`(() => {
-    const section = document.querySelector("#tools-approvals-heading").closest("section");
+    const section = document.querySelector("#companion-approvals-heading").closest("section");
     const row = [...section.querySelectorAll(".setting-row")].find((item) => /Connect|Pair/i.test(item.textContent));
     [...row.querySelectorAll("button")].find((item) => item.textContent.trim() === "Deny").click();
   })()`);
@@ -339,15 +339,16 @@ try {
   }, 10000);
 
   // Revoking the other site leaves this page's own pairing and its management in place.
-  await until("sites heading visible", () => b.evaluate("Boolean(document.querySelector('#tools-sites-heading'))"), 10000);
+  await b.evaluate('window.showSettingsCategory("companion")');
+  await until("sites heading visible", () => b.evaluate("Boolean(document.querySelector('#companion-sites-heading'))"), 10000);
 
   await until("allowed site visible in Settings", () => b.evaluate(`
-    [...document.querySelector("#tools-sites-heading").closest("section").querySelectorAll(".setting-row")]
+    [...document.querySelector("#companion-sites-heading").closest("section").querySelectorAll(".setting-row")]
       .some((item) => item.textContent.includes(${JSON.stringify(siteOrigin)}))
   `), 10000);
-  await waitForEnabledButton("Revoke", "#tools-sites-heading");
+  await waitForEnabledButton("Revoke", "#companion-sites-heading");
   await b.evaluate(`(() => {
-    const section = document.querySelector("#tools-sites-heading").closest("section");
+    const section = document.querySelector("#companion-sites-heading").closest("section");
     const row = [...section.querySelectorAll(".setting-row")].find((item) => item.textContent.includes(${JSON.stringify(siteOrigin)}));
     if (!row) throw new Error("allowed site did not appear in Settings");
     row.querySelector("button").click();

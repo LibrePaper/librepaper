@@ -40,7 +40,7 @@
   import * as localBridge from "../lib/companion/client.js";
 
   let { initialSettings = "" } = $props();
-  let settingsOpen = $state(untrack(() => initialSettings === "tools"));
+  let settingsOpen = $state(untrack(() => initialSettings === "companion"));
   let settingsCategory = $state(untrack(() => initialSettings || "editor"));
   function openSettings(category = "editor") {
     settingsCategory = category;
@@ -886,7 +886,7 @@
     localBridge.configure({ project: null, origin: location.origin, active: true });
     // The companion opened Settings, usually to show a site waiting for an
     // answer. This server pairs without a consent step, so connect at once.
-    if (untrack(() => initialSettings === "tools")) void localBridge.connectApp().catch(() => {});
+    if (untrack(() => initialSettings === "companion")) void localBridge.connectApp().catch(() => {});
     get("/api/config").then((answer) => {
       if (answer?.local_app?.address) localBridge.setAdvertisedAddress(answer.local_app.address);
     }).catch(() => {});

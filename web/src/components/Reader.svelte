@@ -2681,7 +2681,7 @@
 
   // Settings open as a dialog from the navbar menu or the sidebar. Every entry
   // point opens the same dialog on the category it is about.
-  let settingsOpen = $state(untrack(() => initialSettings === "tools"));
+  let settingsOpen = $state(untrack(() => initialSettings === "companion"));
   let settingsCategory = $state(untrack(() => initialSettings || "editor"));
   let projectFolderOpen = $state(false);
   let savingTemplate = $state(false);
@@ -3995,7 +3995,7 @@
            by Diagnostics, so the bar only carries the local execution switch. -->
       {@render localExecutionControl()}
       <div class="connection-settings" role="group" aria-label="Connection settings">
-        <button class="connection-pill local-pill" type="button" onclick={() => openSettings("tools")}
+        <button class="connection-pill local-pill" type="button" onclick={() => openSettings("companion")}
                 aria-label={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}; open local settings`}
                 title={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}. Open local settings`}>
           <span class="connection-dot" class:offline={localAppStatus.state !== "connected"} aria-hidden="true"></span>
@@ -4314,7 +4314,7 @@
             {:else}
               <button class="btn btn-sm lp-control-brand" onclick={() => void ensureLocalApp()}>Connect the local app</button>
             {/if}
-            <button class="btn btn-sm lp-control-outline" onclick={() => openSettings("tools")}>Install or configure companion</button>
+            <button class="btn btn-sm lp-control-outline" onclick={() => openSettings("companion")}>Install or configure companion</button>
             <button class="btn btn-sm lp-control-outline" onclick={previewAsHtml}>Preview as HTML instead</button>
           </div>
         {:else}
