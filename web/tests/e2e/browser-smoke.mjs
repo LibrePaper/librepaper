@@ -238,6 +238,8 @@ async function selectPdf(tab, slug, { waitFrame = true } = {}) {
       if (!element) return null;
       const rect = element.getBoundingClientRect();
       if (!rect.width || !rect.height || getComputedStyle(element).visibility === "hidden") return null;
+      // An unplaced menu parks off screen until Zag positions it.
+      if (rect.left < 0 || rect.top < 0 || rect.right > innerWidth || rect.bottom > innerHeight) return null;
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     `));
     for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
