@@ -32,6 +32,7 @@ required_files=(
 	deploy/postgres/init.sql
 	deploy/caddy/Caddyfile
 	deploy/README.md
+	deploy/backups
 )
 for file in "${required_files[@]}"; do
 	git -C "$repository" cat-file -e "$commit:$file" 2>/dev/null || {
@@ -59,7 +60,7 @@ if [[ -f "$stage/deploy/resticprofile.toml" ]] &&
 fi
 
 # Remove operator files and directories even though git archive only ships tracked files.
-rm -rf -- "$stage/deploy/secrets" "$stage/deploy/backups"
+rm -rf -- "$stage/deploy/secrets"
 rm -f -- \
 	"$stage/deploy/.env" \
 	"$stage/deploy"/.env.* \
@@ -94,6 +95,7 @@ sed -i "s|ghcr.io/librepaper/librepaper-backup:[^ \"]*|ghcr.io/librepaper/librep
 mv "$stage/deploy" "$stage/librepaper"
 chmod 0700 "$stage/librepaper"
 find "$stage/librepaper" -type f -exec chmod 0644 {} \;
+chmod 0755 "$stage/librepaper/backups"
 find "$stage/librepaper" -type d -exec chmod 0755 {} \;
 chmod 0700 "$stage/librepaper"
 

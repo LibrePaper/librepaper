@@ -122,7 +122,7 @@ grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fai
 kit_source="$tmp/deploy-source"
 kit_output="$tmp/deploy-output"
 mkdir -p "$kit_source/deploy/caddy" "$kit_source/deploy/postgres" "$kit_output"
-for file in compose.yaml compose.managed-db.yaml librepaper.toml README.md; do
+for file in compose.yaml compose.managed-db.yaml librepaper.toml README.md backups; do
   printf 'committed fixture %s\n' "$file" > "$kit_source/deploy/$file"
 done
 printf 'ghcr.io/librepaper/librepaper:v0.0.21\n' >> "$kit_source/deploy/compose.yaml"
@@ -173,6 +173,9 @@ compose_content=$(cat "$kit_extract/librepaper/compose.yaml")
 [[ "$compose_content" == *'ghcr.io/librepaper/librepaper:v1.2.3'* ]] || fail 'deploy kit did not rewrite app image tag'
 [[ "$compose_content" == *'ghcr.io/librepaper/librepaper-backup:v1.2.3'* ]] || fail 'deploy kit did not rewrite backup image tag'
 [[ "$compose_content" != *'v0.0.21'* ]] || fail 'deploy kit did not replace original version tag'
+
+# The backup helper ships and stays executable
+[[ -x "$kit_extract/librepaper/backups" ]] || fail 'archive lost the backups helper or its executable bit'
 
 # Verify only allowed files are present
 [[ ! -e "$kit_extract/librepaper/secrets" ]] || fail 'archive included secrets directory'

@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Backup helper for the LibrePaper kit. Run it from this directory.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+BACKUP_DIR=/var/backups/librepaper/current
+
+usage() {
+	cat <<'USAGE'
+usage: ./backups <command>
+
+  list                     list snapshots
+  show <snapshot|latest>   summarize one snapshot and its manifest
+  restore <snapshot|latest>
+                           restore into a fresh download on another machine
+  help                     this text
+
+Credentials stay in resticprofile.toml; this script never reads them.
+USAGE
+}
+
+die() { echo "backups: $*" >&2; exit 1; }
+step() { printf '\n==> %s\n' "$*"; }
+
+# resticprofile in the backup image, with the kit's profile. Extra arguments go
+# straight to restic. -T keeps stdout clean for parsing.
+restic_cmd() {
+	docker compose run --rm --no-deps -T --entrypoint resticprofile backup \
+		-c /etc/resticprofile/profiles.toml -n resticprofile "$@"
+}
+
+need_snapshot() {
+	[ $# -eq 1 ] && [ -n "$1" ] || die "expected one snapshot id, or latest"
+}
+
+cmd_list() {
+	restic_cmd snapshots
+}
+
+cmd_show() {
+	need_snapshot "$@"
+	local snap=$1 manifest dump_size
+	restic_cmd snapshots "$snap"
+	manifest=$(restic_cmd dump "$snap" "$BACKUP_DIR/manifest.json") ||
+		die "cannot read manifest.json from snapshot $snap"
+	dump_size=$(restic_cmd ls --long "$snap" "$BACKUP_DIR/database.dump" |
+		awk -v p="$BACKUP_DIR/database.dump" '$NF == p { print $4 }')
+	# The manifest is pretty-printed JSON with one field per line.
+	printf '%s\n' "$manifest" | awk -v dump="${dump_size:-unknown}" '
+		function value(line) {
+			sub(/^[^:]*:[ \t]*/, "", line)
+			gsub(/[",]/, "", line)
+			return line
+		}
+		/^[ \t]*"started_at":/ { started = value($0) }
+		/^[ \t]*"completed_at":/ { completed = value($0) }
+		/^[ \t]*"migration_version":/ { migration = value($0) }
+		/^[ \t]*"key":/ { files++ }
+		/^[ \t]*"bytes":/ { bytes += value($0) }
+		END {
+			print ""
+			print "started_at:          " started
+			print "completed_at:        " completed
+			print "migration_version:   " migration
+			print "stored files:        " files + 0
+			print "stored file bytes:   " bytes + 0
+			print "database dump bytes: " dump
+		}'
+}
+
+cmd_restore() {
+	need_snapshot "$@"
+	local snap=$1
+
+	grep -Eq '^[[:space:]]*\[resticprofile\][[:space:]]*(#.*)?$' resticprofile.toml 2>/dev/null ||
+		die "resticprofile.toml has no active [resticprofile] table; copy your own here first"
+	if docker compose ps --status running --services | grep -qx librepaper; then
+		die "the librepaper service is running here; restore is meant for a fresh download on another machine"
+	fi
+	[ ! -e staging ] || die "staging/ already exists; remove it and run again"
+
+	trap 'echo "backups: restore failed; staging/ is left in place" >&2' ERR
+
+	step "Creating staging/"
+	mkdir -m 700 staging
+
+	step "Starting an empty database"
+	docker compose up -d --wait postgres
+
+	step "Restoring snapshot $snap into staging/"
+	docker compose run --rm --no-deps --user 0 -v ./staging:/restore --entrypoint resticprofile backup \
+		-c /etc/resticprofile/profiles.toml -n resticprofile restore "$snap" --target /restore
+
+	# admin restore verifies the manifest and hashes, and refuses a non-empty
+	# database or an existing destination.
+	step "Loading the database"
+	docker compose run --rm --no-deps --user 0 -v ./staging:/restore:ro librepaper \
+		admin restore --config /etc/librepaper/librepaper.toml /restore/var/backups/librepaper/current /var/lib/librepaper/recovered
+
+	step "Installing stored files and the session key"
+	docker compose run --rm --no-deps --user 0 -v ./staging:/restore:ro --entrypoint sh librepaper -c '
+		install -d -o 10001 -g 65534 /var/lib/librepaper/objects /var/lib/librepaper/secrets
+		cp -a /var/lib/librepaper/recovered/objects/. /var/lib/librepaper/objects/
+		install -o 10001 -g 65534 -m 0600 /restore/var/lib/librepaper/secrets/session.key /var/lib/librepaper/secrets/session.key
+		chown -R 10001:65534 /var/lib/librepaper/objects'
+
+	step "Starting LibrePaper"
+	docker compose up -d --wait
+
+	step "Checking /ready"
+	docker compose exec -T librepaper wget -qO- http://127.0.0.1:8080/ready
+	echo
+
+	trap - ERR
+	step "Removing staging/"
+	# Restored files belong to root, so remove them from inside a container.
+	docker compose run --rm --no-deps --user 0 -v ./staging:/restore --entrypoint sh librepaper -c \
+		'rm -rf /restore/* /restore/.[!.]*'
+	rmdir staging
+
+	cat <<'DONE'
+
+Restored. Open the app in a local browser, or through an SSH tunnel to this
+machine. Do not expose this copy under the production hostnames.
+DONE
+}
+
+command=${1:-help}
+[ $# -eq 0 ] || shift
+case "$command" in
+list) cmd_list ;;
+show) cmd_show "$@" ;;
+restore) cmd_restore "$@" ;;
+help | -h | --help) usage ;;
+*) usage >&2; exit 2 ;;
+esac
