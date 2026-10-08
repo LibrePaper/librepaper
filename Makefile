@@ -209,13 +209,13 @@ demo-run: CONFIG := $(if $(CONFIG_WAS_SUPPLIED),$(CONFIG),tools/dev/demo/config.
 demo-run: $(BIN)
 	@tools/assets/mirror check
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
-	@CONFIG="$(CONFIG)" PORT="$(PORT)" SITE_PORT="$(SITE_PORT)" BIN="$(abspath $(BIN))" OPEN="$(OPEN)" tools/dev/demo-compose run
+	@CONFIG="$(CONFIG)" PORT="$(PORT)" SITE_PORT="$(SITE_PORT)" BIN="$(abspath $(BIN))" OPEN="$(OPEN)" tools/dev/demo/compose run
 
 demo-stop:  ## Stop the demo containers and retain their named volumes
-	@tools/dev/demo-compose stop
+	@tools/dev/demo/compose stop
 
 demo-wipe:  ## Stop the demo and explicitly delete its named volumes
-	@tools/dev/demo-compose wipe
+	@tools/dev/demo/compose wipe
 
 # --- the web app -----------------------------------------------------------
 #

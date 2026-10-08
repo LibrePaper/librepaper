@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+const root = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const makefile = join(root, "Makefile");
 const make = execFileSync("/bin/sh", ["-c", "command -v make"], { encoding: "utf8" }).trim();
 const inheritedProductionServer = "https://komodoc.example/";
@@ -31,8 +31,8 @@ async function makeFixture({ running = false, port = 8081, sitePort = 8082, comm
     mkdir(mockBinDir, { recursive: true }),
   ]);
 
-  await writeFile(join(directory, "tools", "dev", "demo-compose"),
-    await readFile(join(root, "tools", "dev", "demo-compose")), { mode: 0o755 });
+  await writeFile(join(directory, "tools", "dev", "demo", "compose"),
+    await readFile(join(root, "tools", "dev", "demo", "compose")), { mode: 0o755 });
   await writeFile(join(directory, "tools", "dev", "demo", "config.toml"),
     await readFile(join(root, "tools", "dev", "demo", "config.toml")));
   await writeFile(join(directory, "deploy", "librepaper.toml"),
@@ -175,7 +175,7 @@ function startDemoRun(fixture) {
     SITE_PORT: String(fixture.sitePort),
     OPEN: "0",
   };
-  return spawn(join(fixture.directory, "tools", "dev", "demo-compose"), ["run"], {
+  return spawn(join(fixture.directory, "tools", "dev", "demo", "compose"), ["run"], {
     cwd: fixture.directory,
     stdio: "ignore", env: environment,
   });

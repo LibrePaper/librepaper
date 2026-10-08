@@ -8,7 +8,7 @@ REPO_ROOT=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
 cd "$REPO_ROOT" || exit 1
 . "$REPO_ROOT/tools/test/postgres.sh"
 
-# Database configuration (from Makefile)
+# The persistent development database; make serve and make wipe use it.
 DEV_POSTGRES_CONTAINER="${DEV_POSTGRES_CONTAINER:-librepaper-postgres}"
 DEV_POSTGRES_PORT="${DEV_POSTGRES_PORT:-55432}"
 DEV_POSTGRES_VOLUME="${DEV_POSTGRES_VOLUME:-librepaper-postgres-data}"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 PROJECT="${DEMO_PROJECT:-librepaper-demo}"
 COMPOSE_FILES=(
   -f "$ROOT/deploy/compose.yaml"
@@ -112,6 +112,6 @@ case "$ACTION" in
     compose down --remove-orphans --volumes
     ;;
   *)
-    die 'usage: tools/dev/demo-compose {run|stop|wipe}'
+    die 'usage: tools/dev/demo/compose {run|stop|wipe}'
     ;;
 esac
