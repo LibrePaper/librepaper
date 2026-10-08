@@ -385,12 +385,6 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
         }
         Ok(())
     }
-    if v.get("backup").is_some() {
-        return Err(
-            "[backup] is no longer supported; configure backup settings in /etc/resticprofile/resticprofile.toml"
-                .into(),
-        );
-    }
     if v.get("resticprofile").is_some() {
         return Err("[resticprofile] belongs in /etc/resticprofile/resticprofile.toml; move backup settings out of the application configuration".into());
     }
@@ -1396,7 +1390,7 @@ mod tests {
     }
 
     #[test]
-    fn backup_settings_are_rejected_from_application_config() {
+    fn resticprofile_settings_are_rejected_from_application_config() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
 
@@ -1414,10 +1408,6 @@ mod tests {
             );
             assert!(!error.contains("profile-secret"));
         }
-
-        std::fs::write(&path, "[backup]\nwarning_count = 2\n").unwrap();
-        let error = load(&path).unwrap_err();
-        assert!(error.contains("[backup] is no longer supported"), "{error}");
     }
     #[test]
     fn file_refs_are_relative_and_trim_crlf() {
