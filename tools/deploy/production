@@ -89,6 +89,11 @@ write_site_caddy() {
 		ssh "$HOST" 'umask 022; mkdir -p librepaper/caddy/local.d; cat > librepaper/caddy/local.d/librepaper-org.caddy.tmp && chmod 644 librepaper/caddy/local.d/librepaper-org.caddy.tmp && mv -f librepaper/caddy/local.d/librepaper-org.caddy.tmp librepaper/caddy/local.d/librepaper-org.caddy'
 }
 
+reload_caddy() {
+	# The Caddyfile imports caddy/local.d/*.caddy; a reload picks up a new site block without a restart.
+	ssh "$HOST" 'cd librepaper && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile'
+}
+
 site_build() {
 	step "Site: make site (app links point at https://$APP)"
 	LIBREPAPER_APP_ORIGIN="https://$APP" make site
@@ -364,6 +369,10 @@ case "${1:-help}" in
 	site)
 		site_build
 		site_sync
+		step "Caddy site block"
+		write_site_caddy
+		reload_caddy || die "caddy reload failed on $HOST; the uploaded pages are live under the previous block"
+		ok "$SITE block installed and Caddy reloaded"
 		step "Site: https://$SITE"
 		http_request -fs -o /dev/null "https://$SITE/what.html" || die "https://$SITE/what.html did not answer: is the site uploaded?"
 		ok "landing page and manual answer"

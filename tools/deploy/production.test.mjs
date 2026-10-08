@@ -475,6 +475,35 @@ test('the site and redirect blocks go to caddy/local.d/librepaper-org.caddy, onc
   }
 });
 
+test('site installs the Caddy site block and reloads Caddy without touching the release', () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'site');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const file = path.join(f.remote, 'caddy/local.d/librepaper-org.caddy');
+    assert.equal(read(file), [
+      'librepaper.org {',
+      '\tencode zstd gzip',
+      '\tredir /install.html /local-app.html permanent',
+      '\troot * /srv/site',
+      '\tfile_server',
+      '}',
+      '',
+      'www.librepaper.org, librepaper.com, www.librepaper.com {',
+      '\tredir https://librepaper.org{uri} permanent',
+      '}',
+      '',
+    ].join('\n'));
+    assertInOrder(events(f), [
+      ['ssh', /librepaper-org\.caddy\.tmp/],
+      ['ssh', /caddy reload --config \/etc\/caddy\/Caddyfile/],
+    ]);
+    assert.deepEqual(dockerCalls(f), [], 'site pruned or touched the release');
+  } finally {
+    f.cleanup();
+  }
+});
+
 test('a failing manage upgrade stops the deploy before verify and says what to do', () => {
   const f = fixture({ manageFailure: true });
   try {
