@@ -44,5 +44,5 @@ export const nav = [
       { path: "architecture/building", label: "Building from source" },
     ],
   },
-  { path: "privacy", label: "Privacy" },
+  { path: "privacy", label: "Privacy and data retention" },
 ];
