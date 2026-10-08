@@ -1,8 +1,9 @@
 # Publish Docker image for a stable release.
 # The versioned application and backup images use the matching release
-# archive, Dockerfile, and backup hooks. The workflow helper runs from the
-# trusted default-branch workflow revision; only a successfully published
-# release tag from this repository is used as the build context.
+# archive, Dockerfile, backup/entrypoint.sh and backup/profiles.toml. The
+# workflow helper runs from the trusted default-branch workflow revision; only
+# a successfully published release tag from this repository is used as the
+# build context.
 
 name: Publish Docker image
 
@@ -76,7 +77,6 @@ jobs:
           build-args: LIBREPAPER_VERSION=${{ steps.resolve.outputs.tag }}
           tags: |
             ghcr.io/librepaper/librepaper:${{ steps.resolve.outputs.tag }}
-            ghcr.io/librepaper/librepaper:latest
           provenance: false
 
       - uses: docker/build-push-action@v6
@@ -89,7 +89,6 @@ jobs:
           build-args: LIBREPAPER_VERSION=${{ steps.resolve.outputs.tag }}
           tags: |
             ghcr.io/librepaper/librepaper-backup:${{ steps.resolve.outputs.tag }}
-            ghcr.io/librepaper/librepaper-backup:latest
           provenance: false
 
       # Publish the kit only after both release-matched images succeeded.

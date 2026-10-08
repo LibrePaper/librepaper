@@ -1,5 +1,5 @@
 # Caddy obtains a certificate for a name the first time a client asks for it,
-# after the server confirms it is one of the two configured origins. Host
+# after the server confirms it is one of the configured origins. Host
 # passes through unchanged; the server answers 421 to names it does not serve.
 # No ACME email is configured: Let's Encrypt does not need one.
 {

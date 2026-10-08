@@ -49,8 +49,6 @@ compose() (
   export LIBREPAPER_DEMO_SITE_ORIGIN="http://localhost:$SITE_PORT"
   export LIBREPAPER_DEMO_ADMIN_ORIGIN="http://admin.localhost:$PORT"
   export PORT SITE_PORT
-  # A deploy/.env left by a real install must not reach the demo.
-  export COMPOSE_DISABLE_ENV_FILE=1
   exec docker compose --project-name "$PROJECT" --project-directory "$ROOT/deploy" "${COMPOSE_FILES[@]}" "$@"
 )
 

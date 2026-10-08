@@ -3,7 +3,7 @@
 Proves that a backup taken by `admin backup`, encrypted with age and restored
 by `admin restore` into an empty database recovers the PostgreSQL rows, object
 bytes, and the original `session.key`. The drill signs in against the source
-before backup, then starts the restored app with a restricted runtime role
+before backup, then starts the restored app against the restored database
 and confirms that the original session cookie still authenticates to the
 recovered account. It also replays to the same document heads and labeled
 versions. The source is synthetic: five tutorial projects, each compacted to
@@ -15,12 +15,11 @@ tools/test/suite backup   # everything: database, key, drill, replay check
 
 The sidecar integration suite uses the same synthetic five-project fixture,
 then starts the locally built backup image with disposable PostgreSQL and
-temporary repositories. It connects to PostgreSQL with a generated SELECT-only
-backup role, covers disabled/enabled startup, a real profile-merged backup and
-check, failed backup recovery, after-backup retention, and restore into a fresh
-database. The restore is run without the source backup role, then the test
-starts the restored app with a restricted DML role and verifies the original
-signed-in session. Status is reported by resticprofile's status.json file and
+temporary repositories. It connects to PostgreSQL with the fixture's own URL,
+covers disabled/enabled startup, a real profile-merged backup and check, failed
+backup recovery, after-backup retention, and restore into a fresh database.
+The restore then starts the restored app against that database and verifies
+the original signed-in session. Status is reported by resticprofile's status.json file and
 Healthchecks hooks. By default it also runs SFTP, MinIO S3-compatible, and
 authenticated REST backends using generated keys and synthetic credentials.
 Build the image first:
@@ -65,4 +64,4 @@ Without matching PostgreSQL 17 clients, symlink `postgres-tool.sh` as `psql`,
 
 - A recovery-path check, not a measurement of recovery time, cost or size.
 - Deleting staging files is not secure erasure on SSDs or snapshotting filesystems.
-- It installs no backup scheduler, retention policy or key management.
+- The drill installs no backup scheduler, retention policy or key management.
