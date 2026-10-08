@@ -78,7 +78,6 @@ test('the kit resolves and starts only the four core services', { skip }, () => 
   const config = composeConfig();
   assert.deepEqual(names(config.services), coreServices);
   assert.equal(config.name, 'librepaper');
-  assert.equal(config.services.migrate, undefined, 'the server migrates at startup; there is no migrate service');
   const { postgres } = config.services;
   assert.equal(postgres.network_mode, 'none');
   assert.ok(isEmpty(postgres.networks), 'postgres has no networks');
@@ -88,12 +87,7 @@ test('the kit resolves and starts only the four core services', { skip }, () => 
   assert.deepEqual(names(librepaper.networks), ['default', 'edge']);
   // No ports on librepaper
   assert.ok(isEmpty(librepaper.ports), 'librepaper has no ports; Caddy is the reverse proxy');
-  // No monitoring network exists
-  assert.ok(!names(config.networks).includes('monitoring'), 'no monitoring network');
-  // No prometheus or grafana services
-  for (const name of ['prometheus', 'grafana', 'node-exporter', 'postgres-exporter']) {
-    assert.equal(config.services[name], undefined, `${name} service removed`);
-  }
+  assert.deepEqual(names(config.networks), ['default', 'edge']);
 });
 
 test('both published image tags are literals, equal and versioned', { skip }, () => {

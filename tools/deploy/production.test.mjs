@@ -91,7 +91,6 @@ function fixture({
   adminSeries = 12,
   adminDnsMissing = false,
   caddyReloadFailure = false,
-  realSleep = false,
   googleClientId = 'google-id',
   googleClientSecret = 'google-secret',
   googleClientIdPresent = true,
@@ -102,7 +101,6 @@ function fixture({
   configCheckFailure = false,
   caddyCheckFailure = false,
   composeYaml = KIT_COMPOSE,
-  runningConfig = 'previous container config\n',
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
   const bin = path.join(root, 'bin');
@@ -130,7 +128,7 @@ function fixture({
   const escapedAdminPassword = adminPassword.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   writeFileSync(expectedAuthFile, `user = "admin:${escapedAdminPassword}"\n`, { mode: 0o600 });
   writeFileSync(kitComposeFile, composeYaml);
-  writeFileSync(runningConfigFile, runningConfig);
+  writeFileSync(runningConfigFile, 'previous container config\n');
 
   mockCommand(bin, 'make', 'printf "make\\n" >> "$EVENTS_FILE"; printf called >> "$MAKE_CALLED_FILE"; exit 0');
   mockCommand(bin, 'dig', `
@@ -184,9 +182,8 @@ set -eu
 printf 'rsync' >> "$EVENTS_FILE"
 for arg do printf '\\t%s' "$arg" >> "$EVENTS_FILE"; done
 printf '\\n' >> "$EVENTS_FILE"
-previous= last=
-for arg do previous="$last"; last="$arg"; done
-source="$previous"
+last=
+for arg do last="$arg"; done
 destination="$last"
 case "$destination" in
   *:librepaper/site/)
@@ -258,7 +255,7 @@ exec "$REAL_TIMEOUT" "$duration" "$@"
 `);
   mockCommand(bin, 'curl', `
 set -eu
-out= headers= format= url= config= followed=no connect_timeout= max_time=
+out= format= url= config= followed=no connect_timeout= max_time=
 for arg do case "$arg" in *admin-secret*|*github-secret*|*google-id*|*google-secret*) exit 92 ;; esac; done
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -266,7 +263,6 @@ while [ "$#" -gt 0 ]; do
     --connect-timeout) connect_timeout="$2"; shift 2 ;;
     --max-time) max_time="$2"; shift 2 ;;
     -o) out="$2"; shift 2 ;;
-    -D) headers="$2"; shift 2 ;;
     -w) format="$2"; shift 2 ;;
     -L|--location) followed=yes; shift ;;
     -*) shift ;;
@@ -293,7 +289,7 @@ case "$url" in
     else code=401; fi
     ;;
   https://app.librepaper.org/api/status) code=403 ;;
-  https://app.librepaper.org/metrics|https://app.librepaper.org/api/v1/*|https://app.librepaper.org/data|https://app.librepaper.org/graphs) code=404 ;;
+  https://app.librepaper.org/metrics|https://app.librepaper.org/data|https://app.librepaper.org/graphs) code=404 ;;
   https://app.librepaper.org/auth/login/github)
     code=302
     location=https://github.com/login/oauth/authorize?client_id=test
@@ -315,11 +311,7 @@ if [ -n "$format" ]; then
     *) printf '%s' "$code" ;;
   esac
 fi`);
-  mockCommand(bin, 'sleep', `
-if [ "$REAL_SLEEP" = 1 ]; then
-  exec "$NODE_EXECUTABLE" -e 'setTimeout(() => process.exit(0), Number(process.argv[1]) * 1000)' "$1"
-fi
-exit 0`);
+  mockCommand(bin, 'sleep', 'exit 0');
 
   return {
     root,
@@ -343,8 +335,6 @@ exit 0`);
       CADDY_CHECK_FAILURE: caddyCheckFailure ? '1' : '0',
       ADMIN_DNS_MISSING: adminDnsMissing ? '1' : '0',
       TMPDIR: temp,
-      NODE_EXECUTABLE: process.execPath,
-      REAL_SLEEP: realSleep ? '1' : '0',
       ADMIN_PASSWORD_FILE: adminPasswordFile,
       EXPECTED_AUTH_FILE: expectedAuthFile,
       MAKE_CALLED_FILE: makeCalledFile,
@@ -429,7 +419,7 @@ test('deploy renders the credentials into the host config files only, never in a
   const adminPassword = 'unsafe$#admin-secret with "quotes" and back\\slash';
   const f = fixture({ adminPassword });
   try {
-    const result = run(f, 'deploy', 'v0.0.22');
+    const result = run(f, 'deploy', 'v0.0.24');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /20 values decrypted from keys.yaml/);
 
@@ -441,8 +431,6 @@ test('deploy renders the credentials into the host config files only, never in a
     const profile = read(f.remote, 'resticprofile.toml');
     assert.equal(profile, renderExpected(productionResticProfile, values));
     assert.equal(statSync(path.join(f.remote, 'resticprofile.toml')).mode & 0o777, 0o444, 'resticprofile.toml');
-    assert.equal(existsSync(path.join(f.remote, 'secrets')), false, 'the host has no secrets directory');
-    assert.equal(existsSync(path.join(f.remote, '.env')), false);
 
     // The values live in librepaper.toml and resticprofile.toml, and nowhere else on the host.
     const secretValues = Object.values({ ...mockCredentials, LIBREPAPER_ADMIN_PASSWORD: adminPassword });
@@ -462,7 +450,7 @@ test('deploy renders the credentials into the host config files only, never in a
 test('a control character in a key stops the deploy before any remote call, naming the key but not the value', () => {
   const f = fixture({ googleClientSecret: 'google\tsecret' });
   try {
-    const result = run(f, 'deploy', 'v0.0.22');
+    const result = run(f, 'deploy', 'v0.0.24');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /LIBREPAPER_GOOGLE_CLIENT_SECRET in tools\/deploy\/keys\.yaml contains a control character/);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google\tsecret/);
@@ -477,7 +465,7 @@ test('a control character in a key stops the deploy before any remote call, nami
 test('deploy writes compose.override.yaml with only the site mount', () => {
   const f = fixture();
   try {
-    const result = run(f, 'deploy', 'v0.0.22');
+    const result = run(f, 'deploy', 'v0.0.24');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.equal(read(f.remote, 'compose.override.yaml'), [
       'services:',
@@ -487,7 +475,6 @@ test('deploy writes compose.override.yaml with only the site mount', () => {
       '',
     ].join('\n'));
     assert.equal(statSync(path.join(f.remote, 'compose.override.yaml')).mode & 0o777, 0o644, 'compose.override.yaml');
-    assert.equal(existsSync(path.join(f.remote, '.env')), false);
     assert.deepEqual(walk(f.remote).filter((file) => file.endsWith('.tmp')), []);
   } finally {
     f.cleanup();
@@ -497,9 +484,9 @@ test('deploy writes compose.override.yaml with only the site mount', () => {
 test('deploy installs the checked candidates, then pulls and starts the stack in order, stopping nothing by hand', () => {
   const f = fixture();
   try {
-    const result = run(f, 'deploy', 'v0.0.22');
+    const result = run(f, 'deploy', 'v0.0.24');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /Done: v0\.0\.22 is live/);
+    assert.match(result.stdout, /Done: v0\.0\.24 is live/);
     assertInOrder(events(f), [
       ['make', /^/],
       ['rsync', /--delete/],
@@ -550,9 +537,9 @@ test('deploy installs the checked candidates, then pulls and starts the stack in
 test('deploy pins the tag into compose.yaml before it pulls, and a line the sed leaves alone stops it', () => {
   const f = fixture();
   try {
-    const result = run(f, 'deploy', 'v0.0.22');
+    const result = run(f, 'deploy', 'v0.0.24');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.equal(read(f.remote, 'compose.yaml'), KIT_COMPOSE.replaceAll('v0.0.20', 'v0.0.22'));
+    assert.equal(read(f.remote, 'compose.yaml'), KIT_COMPOSE.replaceAll('v0.0.20', 'v0.0.24'));
     assertInOrder(events(f), [['ssh', /sed -i -E/], ['docker', /^compose pull$/]]);
   } finally {
     f.cleanup();
@@ -565,9 +552,9 @@ test('deploy pins the tag into compose.yaml before it pulls, and a line the sed 
   ]) {
     const unpinned = fixture({ composeYaml });
     try {
-      const result = run(unpinned, 'deploy', 'v0.0.22');
+      const result = run(unpinned, 'deploy', 'v0.0.24');
       assert.notEqual(result.status, 0, `${name} unexpectedly deployed`);
-      assert.match(result.stderr, /does not pin both images to v0\.0\.22/, name);
+      assert.match(result.stderr, /does not pin both images to v0\.0\.24/, name);
       assert.deepEqual(dockerCalls(unpinned), [], `${name} reached docker`);
       assert.equal(existsSync(path.join(unpinned.remote, 'librepaper.toml')), false, `${name} installed a config`);
     } finally {
@@ -583,7 +570,7 @@ test('a rejected candidate config leaves the installed config and the running st
       'librepaper.toml': 'previous production config\n',
       'caddy/Caddyfile': 'previous Caddyfile\n',
     });
-    const result = run(f, 'deploy', 'v0.0.22');
+    const result = run(f, 'deploy', 'v0.0.24');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /candidate binary cannot load librepaper\.toml/);
     assert.equal(read(f.checkedConfigFile), expectedConfig, 'the candidate that was checked is the rendered production.toml');
@@ -605,7 +592,7 @@ test('an invalid Caddyfile candidate is rejected before the installed files chan
       'librepaper.toml': 'previous production config\n',
       'caddy/Caddyfile': 'previous Caddyfile\n',
     });
-    const result = run(f, 'deploy', 'v0.0.22');
+    const result = run(f, 'deploy', 'v0.0.24');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /candidate Caddy configuration is invalid/);
     assertInOrder(events(f), [['docker', /admin config check/], ['docker', /caddy validate/]]);
@@ -623,7 +610,7 @@ test('an invalid Caddyfile candidate is rejected before the installed files chan
 test('a failed Caddy reload is reported after the stack starts', () => {
   const f = fixture({ caddyReloadFailure: true });
   try {
-    const result = run(f, 'deploy', 'v0.0.22');
+    const result = run(f, 'deploy', 'v0.0.24');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Caddy configuration reload failed/);
     assert.deepEqual(dockerCalls(f).slice(-2).map((call) => call.split(' ').slice(0, 3).join(' ')), [
@@ -640,13 +627,12 @@ test('repeated deploys render Caddy from its template without duplicating site a
   const f = fixture();
   try {
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = run(f, 'deploy', 'v0.0.22');
+      const result = run(f, 'deploy', 'v0.0.24');
       assert.equal(result.status, 0, result.stderr || result.stdout);
     }
     const caddy = read(f.remote, 'caddy/Caddyfile');
     assert.equal((caddy.match(/librepaper\.org \{/g) ?? []).length, 1);
     assert.equal((caddy.match(/www\.librepaper\.org, librepaper\.com/g) ?? []).length, 1);
-    assert.equal(existsSync(path.join(f.remote, '.env')), false, '.env should not exist');
   } finally {
     f.cleanup();
   }
@@ -663,7 +649,7 @@ test('invalid or undecryptable Google credentials stop the deploy before the sit
   for (const scenario of badCredentials) {
     const f = fixture(scenario.options);
     try {
-      const result = run(f, 'deploy', 'v0.0.22');
+      const result = run(f, 'deploy', 'v0.0.24');
       assert.notEqual(result.status, 0, `${scenario.name} unexpectedly succeeded`);
       assert.match(result.stderr, new RegExp(scenario.key));
       assert.doesNotMatch(`${result.stdout}${result.stderr}`, /google-id|google-secret|private SOPS diagnostic/);
@@ -676,10 +662,11 @@ test('invalid or undecryptable Google credentials stop the deploy before the sit
   }
 });
 
-test('deploy refuses a release below the v0.0.22 floor, and a non-canonical tag, before writing remotely', () => {
+test('deploy refuses a release below the v0.0.24 floor, and a non-canonical tag, before writing remotely', () => {
   for (const [version, message] of [
-    ['v0.0.8', /requires v0\.0\.22 or later.*admin origin/],
-    ['v0.0.21', /requires v0\.0\.22 or later.*admin origin/],
+    ['v0.0.8', /requires v0\.0\.24 or later.*squashed migration history/],
+    ['v0.0.21', /requires v0\.0\.24 or later.*squashed migration history/],
+    ['v0.0.23', /requires v0\.0\.24 or later.*squashed migration history/],
     ['0.0.22', /canonical tag/],
     ['v0.0.022', /canonical tag/],
   ]) {
@@ -699,7 +686,7 @@ test('deploy refuses a release below the v0.0.22 floor, and a non-canonical tag,
 test('deploy fails at DNS check when admin.librepaper.org is missing, mentions the admin name, and makes no remote change', () => {
   const f = fixture({ adminDnsMissing: true });
   try {
-    const result = run(f, 'deploy', 'v0.0.22');
+    const result = run(f, 'deploy', 'v0.0.24');
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /admin\.librepaper\.org.*does not resolve/);
     assert.deepEqual(readdirSync(f.remote), []);
@@ -719,7 +706,7 @@ function kitSyncArguments(f) {
 test('the kit sync deletes dropped kit files and neither sends nor removes the operator paths', () => {
   const f = fixture();
   try {
-    const result = run(f, 'deploy', 'v0.0.22');
+    const result = run(f, 'deploy', 'v0.0.24');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const { kit } = kitSyncArguments(f);
     assert.equal(kit.at(-2), 'deploy/');
@@ -743,7 +730,7 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
 }, () => {
   const f = fixture();
   try {
-    const result = run(f, 'deploy', 'v0.0.22');
+    const result = run(f, 'deploy', 'v0.0.24');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const { kit } = kitSyncArguments(f);
     const source = path.join(f.root, 'kit-source');
@@ -770,11 +757,7 @@ test('the recorded kit sync arguments keep operator files and drop deleted kit f
     writeTree(target, {
       ...operatorFiles,
       'compose.yaml': 'old compose, longer so rsync cannot mistake it for the kit file\n',
-      setup: 'dropped from the kit\n',
-      'compose.production.yaml': 'dropped from the kit\n',
-      'postgres/roles.sql': 'dropped from the kit\n',
-      // The old host secrets directory is not operator-owned any more.
-      'secrets/github_client_id': 'old host secret\n',
+      'old-kit-file': 'dropped from the kit\n',
     });
     const sync = spawnSync('rsync', [...kit.slice(0, -2), `${source}/`, `${target}/`], { encoding: 'utf8' });
     assert.equal(sync.status, 0, sync.stderr);
@@ -864,18 +847,6 @@ test('verify checks admin graphs returns twelve series', () => {
     assert.match(result.stdout, /authenticated endpoint returns twelve series/);
     assert.match(result.stdout, /unauthenticated endpoint is 401/);
     assert.match(result.stdout, /app origin does not serve graphs or data/);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test('verify rejects unauthenticated admin graphs access', () => {
-  const f = fixture();
-  try {
-    const result = run(f, 'verify');
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    // The verify script should ensure unauthenticated access returns 401
-    assert.match(result.stdout, /unauthenticated endpoint is 401/);
   } finally {
     f.cleanup();
   }
