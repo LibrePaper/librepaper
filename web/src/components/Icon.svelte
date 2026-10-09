@@ -124,6 +124,8 @@
     ],
     lock: [["rect", { width: 18, height: 11, x: 3, y: 11, rx: 2, ry: 2 }], ["path", "M7 11V7a5 5 0 0 1 10 0v4"]],
     unlock: [["rect", { width: 18, height: 11, x: 3, y: 11, rx: 2, ry: 2 }], ["path", "M7 11V7a5 5 0 0 1 9.9-1"]],
+    "log-out": [["path", "m16 17 5-5-5-5"], ["path", "M21 12H9"], ["path", "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"]],
+    "log-in": [["path", "m10 17 5-5-5-5"], ["path", "M15 12H3"], ["path", "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"]],
     help: [
       ["circle", { cx: 12, cy: 12, r: 10 }],
       ["path", "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"],
