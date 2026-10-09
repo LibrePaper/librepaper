@@ -2,12 +2,11 @@
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import Menubar from "./Menubar.svelte";
-  import Logo from "./Logo.svelte";
   import Avatar from "./Avatar.svelte";
   import { signInHref, signOut } from "../lib/api.js";
 
-  // The bar every page wears: the logo, whatever the page puts in the middle,
-  // and who you are.
+  // The bar every page wears: whatever the page puts in the middle, and who
+  // you are.
   //
   // One row, centred, with a gap: the vertical rhythm is decided here and
   // nowhere else, so a control added later cannot land half a line above its
@@ -20,23 +19,16 @@
 </script>
 
 <!-- The way past the bar. Every page puts twenty-odd controls between the
-     top of the document and the first thing on the page -- the logo, the
-     menus, the title, presence, the account -- and this is one Tab and one
-     Enter over all of them. It shows itself when it takes the focus and is
+     top of the document and the first thing on the page -- the menus, the
+     title, presence, the account -- and this is one Tab and one Enter over
+     all of them. It shows itself when it takes the focus and is
      invisible otherwise, which is the only time anyone needs it. -->
 <a class="skip-link" href="#main">Skip to content</a>
 
 <nav class="flex items-center justify-between gap-4" class:reader-nav={reader} class:bar-hidden={hidden}>
   <div class="nav-identity flex min-w-0 items-center gap-3">
-    <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
-      <Logo />
-    </a>
-    <!-- The separator and the name it separates are one thing, so a bar too
-         narrow to show the name drops the slash with it rather than leaving
-         it standing on its own. -->
     {#if children}
       <span class="nav-trail flex min-w-0 items-center gap-3">
-        <span class="nav-divider" aria-hidden="true">/</span>
         {@render children()}
       </span>
     {/if}
@@ -49,21 +41,24 @@
          nothing else: the name itself waits in the menu behind it. A GitHub
          account is its login, and the @ is what says so. A Google account is a
          profile name, which is not a handle and does not wear one; its email
-         is its handle and is shown to nobody, here least of all. -->
-    {#if me.name}
-      {@const shown = me.provider === "github" ? `@${me.name}` : me.name}
-      <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(me.site); }}>
-        <Menu.Trigger class="account icon-control" aria-label={`Account menu, signed in as ${shown}`} title={shown}>
-          <Avatar name={me.name} key={me.handle || me.name} size={7} title="" />
-        </Menu.Trigger>
-        <ExplorerMenu>
-          <div class="account-who" aria-hidden="true">{shown}</div>
-          <Menu.Item value="signout" class="menuitem">Sign out</Menu.Item>
-        </ExplorerMenu>
-      </Menu>
-    {:else if me.providers?.length}
-      <a class="btn btn-sm lp-control-brand" href={signInHref()}>Sign in</a>
-    {/if}
+         is its handle and is shown to nobody, here least of all. The Reader
+         moves the account into its menu on a phone, so this hides there. -->
+    <span class="nav-account flex items-center">
+      {#if me.name}
+        {@const shown = me.provider === "github" ? `@${me.name}` : me.name}
+        <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(me.site); }}>
+          <Menu.Trigger class="account icon-control" aria-label={`Account menu, signed in as ${shown}`} title={shown}>
+            <Avatar name={me.name} key={me.handle || me.name} size={7} title="" />
+          </Menu.Trigger>
+          <ExplorerMenu>
+            <div class="account-who" aria-hidden="true">{shown}</div>
+            <Menu.Item value="signout" class="menuitem">Sign out</Menu.Item>
+          </ExplorerMenu>
+        </Menu>
+      {:else if me.providers?.length}
+        <a class="btn btn-sm lp-control-brand" href={signInHref()}>Sign in</a>
+      {/if}
+    </span>
   </div>
 </nav>
 
@@ -79,20 +74,19 @@
   :global(.account:hover), :global(.account[data-state="open"]) { box-shadow: 0 0 0 2px var(--color-border); }
   /* Who the menu belongs to: a label above the one action, not an action. */
   .account-who { padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2) calc(var(--spacing) * 0.5); font-size: var(--text-xs); color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .nav-divider { color: var(--color-text-muted); user-select: none; flex: none; }
-  /* The logo is not allowed to shrink, so without this it paints over
-     whatever the bar puts beside it as soon as the row runs out of room.
-     Clipping is the floor; the rules below are what keep it from being
-     reached. */
+  /* The identity group is clipped so that a menubar or page name too wide
+     for the row cannot paint over the tools beside it. The rules below keep
+     it from being reached. */
   .nav-identity { overflow: hidden; }
   .nav-trail { flex: 0 1 auto; }
   @media (max-width: 760px) {
     .nav-identity { flex: 0 1 auto; }
     .nav-actions { gap: var(--spacing); }
+    .reader-nav .nav-account { display: none; }
   }
-  /* Narrower than this the bar carries the logo and the tools and nothing
-     else: the file name is squeezed to nothing here anyway, and both the
-     Files panel and the mobile bar still name it. */
+  /* Narrower than this the bar carries the tools and nothing else: the file
+     name is squeezed to nothing here anyway, and both the Files panel and the
+     mobile bar still name it. */
   @media (max-width: 600px) {
     nav { gap: var(--spacing); padding-inline: calc(var(--spacing) * 2); }
     /* Let the two groups share the narrow bar. Keeping both at their
@@ -105,12 +99,12 @@
   }
   @media (max-width: 760px) {
     .nav-trail { display: none; }
-    /* The same 8px between the hamburger, the two faces and the account as
-       between the two faces themselves: one row of thumb-sized controls. */
+    /* The same 8px between the hamburger and the two faces as between the
+       two faces themselves: one row of thumb-sized controls. */
     .reader-nav .nav-actions { gap: calc(var(--spacing) * 2); }
     /* At compact widths the menubar is kept mounted for keyboard navigation
        and the menu logic but rendered invisible and kept out of the flow;
-       where its menus open is not decided here, a menu chosen from the Panels
+       where its menus open is not decided here, a menu chosen from the Menu
        trigger hangs from that trigger (lib/menubar.svelte.js). */
     .reader-nav :global(.menubar) {
       position: absolute;

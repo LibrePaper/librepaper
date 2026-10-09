@@ -135,8 +135,8 @@ try {
   const panelId = (name) => ({ Files:'files', Outline:'outline', Agent:'agent', Collaboration:'collaboration', Changes:'changes', Share:'share', Diagnostics:'diagnostics', History:'history' })[name];
   const panelMenu = '.explorer-menu[data-state="open"]';
   const nav = async (name) => {
-    await click('.compact-panels-trigger[aria-label="Panels"]');
-    await until('Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
+    await click('.compact-panels-trigger[aria-label="Menu"]');
+    await until('Menu menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
     await click(`${panelMenu} [data-panel-id="${panelId(name)}"]`);
   };
   // Narrow windows put the face switch beside the bottom menu; an adapted
@@ -363,7 +363,7 @@ try {
   // assertions above ran at the desktop width, so this one changes the width
   // itself and puts it back before going on.
   await b.resize(390,844); await flush();
-  await click(face('Document'));
+  await click(face('Preview'));
   assert.equal(await visible('.viewport'), true, 'the document face is showing, so there is a frame to select in');
   const measureBar = () => b.evaluate(`(() => {
     const frame=document.querySelector('.viewport').getBoundingClientRect();
@@ -430,7 +430,7 @@ try {
     const header = await b.evaluate(`(() => {
       const toolbar=document.querySelector('nav');
       const menuItems=[...document.querySelectorAll('.menubar-item')];
-      const account=toolbar?.querySelector('.account');
+      const account=[...(toolbar?.querySelectorAll('.account')||[])].find(node=>node.getClientRects().length);
       const pills=[...toolbar?.querySelectorAll('.connection-pill')||[]];
       const presence=toolbar?.querySelector('.presence');
       const face=document.querySelector('.face-switch');
@@ -455,11 +455,12 @@ try {
   }
   await b.resize(900,900); await flush();
   assert.equal(await b.evaluate('Boolean(document.querySelector(".face-switch")?.closest("nav"))'),true,'the source/document switch stays in the top toolbar above 760px');
+  assert.equal(await visible('nav.reader-nav .account'),true,'the account avatar stays in the top bar above 760px');
   await b.resize(390,844); await flush();
-  await click(face('Document'));
+  await click(face('Preview'));
   const compactNav = await b.evaluate(`(() => {
     const navbar = document.querySelector('nav.reader-nav');
-    const trigger = navbar?.querySelector('.compact-panels-trigger[aria-label="Panels"]');
+    const trigger = navbar?.querySelector('.compact-panels-trigger[aria-label="Menu"]');
     const faceSwitch = navbar?.querySelector('.face-switch');
     const triggerRect = trigger?.getBoundingClientRect();
     const faceRect = faceSwitch?.getBoundingClientRect();
@@ -470,6 +471,7 @@ try {
     return { triggers: navbar?.querySelectorAll('.compact-panels-trigger').length || 0,
       face: Boolean(navbar?.querySelector('.face-switch')),
       faceLabels: [...navbar?.querySelectorAll('.face-switch button')||[]].map(button=>button.getAttribute('aria-label')),
+      captions: controls.map(control => control?.innerText.trim()),
       height: triggerRect?.height || 0,
       sizes: rects.map(rect => [rect?.width || 0, rect?.height || 0]),
       radii: styles.map(style => style.borderRadius),
@@ -482,17 +484,30 @@ try {
       immediatelyLeft: Boolean(trigger && faceSwitch && trigger.compareDocumentPosition(faceSwitch) & Node.DOCUMENT_POSITION_FOLLOWING
         && triggerRect.right <= faceRect.left && faceRect.left - triggerRect.right <= parseFloat(getComputedStyle(trigger.parentElement).gap) + 1) };
   })()`);
-  assert.equal(compactNav.triggers,1,'top bar has one Panels trigger');
-  assert.equal(compactNav.face,true,'top bar includes the source/document switch beside Panels');
-  assert.deepEqual(compactNav.faceLabels,['Document','Source'],'both mobile workspace faces remain available');
-  assert.equal(compactNav.height,44,'Panels trigger is 44px tall');
-  assert.deepEqual(compactNav.sizes,[[44,44],[44,44],[44,44]],'all three top bar controls are 44px square');
+  assert.equal(compactNav.triggers,1,'top bar has one Menu trigger');
+  assert.equal(compactNav.face,true,'top bar includes the source/document switch beside Menu');
+  assert.deepEqual(compactNav.faceLabels,['Preview','Source'],'both mobile workspace faces remain available');
+  assert.ok(compactNav.sizes.every(([width,height]) => height === 44 && width >= 56),'all three top bar controls are 44px tall and at least 56px wide');
+  assert.deepEqual(compactNav.captions,['Menu','Preview','Source'],'each top bar control shows its visible caption');
   assert.equal(new Set(compactNav.radii).size,1,'all three controls share a corner radius');
   assert.equal(new Set(compactNav.borders.map(border => border.join('|'))).size,1,'all three controls share a border');
   assert.equal(new Set(compactNav.iconSizes.map(size => size?.join('|'))).size,1,'all three controls share an icon size');
   assert.deepEqual(compactNav.gaps,[8,8],'the three controls are separated by equal 8px gaps');
-  assert.equal(compactNav.immediatelyLeft,true,'the Panels trigger sits immediately left of the face switch');
-  assert.equal(await b.evaluate('document.querySelector(".compact-panels-trigger[aria-label=Panels]").innerText.trim()'),'','the Panels trigger is icon only');
+  assert.equal(compactNav.immediatelyLeft,true,'the Menu trigger sits immediately left of the face switch');
+  assert.equal(await visible('nav.reader-nav .account'),false,'the account avatar leaves the phone top bar');
+  await until('top bar at rest before the sign out check', () => b.evaluate(barAtRest), 3000);
+  await click('.compact-panels-trigger[aria-label="Menu"]');
+  await until('Menu with sign out', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(`${panelMenu} [data-workspace-action="signout"]`)}))`), 3000);
+  const signOutMenu = await b.evaluate(`(() => {
+    const menu=document.querySelector(${JSON.stringify(panelMenu)});
+    const signOut=menu.querySelector('[data-workspace-action="signout"]');
+    return {text:menu.textContent, signOut:signOut?.textContent.trim()};
+  })()`);
+  assert.ok(signOutMenu.text.includes('@Very Long Tester Account Name'),'the Menu shows the signed-in user name');
+  assert.equal(signOutMenu.signOut,'Sign out','the Menu ends with a Sign out item');
+  await b.command("Input.dispatchKeyEvent", {type:"keyDown",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+  await b.command("Input.dispatchKeyEvent", {type:"keyUp",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+  await until('sign out menu closed', () => b.evaluate('!document.querySelector(".explorer-menu[data-state=open]")'), 3000);
   // The menu bar is hidden on a phone; its menus open from the Panels trigger in
   // the Panels panel's own box, the frame is deaf while they are open, and a press
   // on the pane around it closes them.
@@ -502,7 +517,7 @@ try {
   for (const [id, item] of [["file", "Settings…"], ["view", "Preview this file"]]) {
     await b.evaluate('document.querySelector(".compact-panels-trigger").focus()');
     await until(`top bar at rest before ${id}`, () => b.evaluate(barAtRest), 3000);
-    await click('.compact-panels-trigger[aria-label="Panels"]');
+    await click('.compact-panels-trigger[aria-label="Menu"]');
     await until(`Panels menu before ${id}`, () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(`${panelMenu} [data-menu-id="${id}"]`)}))`), 3000);
     // Measured once the panel hangs from its trigger, 8px below its right edge.
     const panels = await until(`Panels panel settled before ${id}`, () => b.evaluate(`(() => {
@@ -541,7 +556,7 @@ try {
     const framePointerEventsAfter = await b.evaluate('getComputedStyle(document.querySelector(".viewport iframe")).pointerEvents');
     assert.equal(framePointerEventsAfter, 'auto', 'the frame hears presses again once the menus are closed');
   }
-  await click('.compact-panels-trigger[aria-label="Panels"]');
+  await click('.compact-panels-trigger[aria-label="Menu"]');
   await until('compact Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
   // The Panels menu now starts with File/Edit/Insert/View menu items, then has a
   // separator, then the panel items.
@@ -563,20 +578,20 @@ try {
   assert.ok(workspaceActions[1].tag==='A' && workspaceActions[1].href==='/','Home remains a native link');
   assert.ok(workspaceActions[2].tag==='A' && workspaceActions[2].href==='/documentation','Docs remains a native link');
   const workspaceOrder = await b.evaluate(`(() => [...document.querySelector(${JSON.stringify(panelMenu)}).querySelectorAll('[data-panel-id],[data-workspace-action]')].map(node=>node.dataset.panelId||node.dataset.workspaceAction))()`);
-  assert.deepEqual(workspaceOrder.slice(-3),['settings','home','docs'],'workspace links are below the panels in order');
+  assert.deepEqual(workspaceOrder.slice(-4),['settings','home','docs','signout'],'workspace links, then Sign out, are below the panels in order');
   assert.equal(await b.evaluate(`(() => {const menu=document.querySelector(${JSON.stringify(panelMenu)});const settings=menu.querySelector('[data-workspace-action=settings]');return settings?.previousElementSibling?.matches('[role=separator]')})()`),true,'a separator divides panel controls from workspace links');
   await click(`${panelMenu} [data-workspace-action="settings"]`);
   await until('Settings dialog opened from Panels',()=>b.evaluate('Boolean(document.querySelector("[role=dialog]"))'),3000);
   await b.evaluate('document.querySelector("[role=dialog]")?.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
   await flush();
-  await click('.compact-panels-trigger[aria-label="Panels"]');
+  await click('.compact-panels-trigger[aria-label="Menu"]');
   await until('Panels reopened after Settings',()=>b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`),3000);
   await click(`${panelMenu} [data-panel-id="files"]`);
-  await click('.compact-panels-trigger[aria-label="Panels"]');
+  await click('.compact-panels-trigger[aria-label="Menu"]');
   await until('reopened Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
   assert.equal(await b.evaluate(`document.querySelector(${JSON.stringify(`${panelMenu} [data-panel-id="files"]`)})?.getAttribute('aria-current')`), 'true', 'the selected panel is marked current');
   // Exercise the menu through actual keyboard input on the browser protocol.
-  await b.evaluate('document.querySelector(\'.compact-panels-trigger[aria-label="Panels"]\').focus()');
+  await b.evaluate('document.querySelector(\'.compact-panels-trigger[aria-label="Menu"]\').focus()');
   const key = async (key, code, virtual) => {
     await b.command('Input.dispatchKeyEvent', {type:'keyDown',key,code,windowsVirtualKeyCode:virtual});
     await b.command('Input.dispatchKeyEvent', {type:'keyUp',key,code,windowsVirtualKeyCode:virtual});
@@ -584,7 +599,7 @@ try {
   };
   await key('Escape','Escape',27);
   await until('pre-keyboard menu closed', () => b.evaluate(`!document.querySelector(${JSON.stringify(panelMenu)})`), 3000);
-  assert.equal(await b.evaluate('document.activeElement?.matches(\'.compact-panels-trigger[aria-label="Panels"]\')'), true, 'closing the menu restores focus to Panels');
+  assert.equal(await b.evaluate('document.activeElement?.matches(\'.compact-panels-trigger[aria-label="Menu"]\')'), true, 'closing the menu restores focus to Panels');
   await key('Enter','Enter',13);
   await until('keyboard opened Panels menu', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
   await key('ArrowDown','ArrowDown',40);
@@ -592,18 +607,18 @@ try {
   assert.equal(await b.evaluate('(() => { const items=[...document.querySelectorAll(".explorer-menu[data-state=open] [role=menuitem]")]; return items.findIndex(item => item.hasAttribute("data-highlighted")); })()'), 1, 'ArrowDown highlights the next item');
   await key('Escape','Escape',27);
   await until('keyboard closed Panels menu', () => b.evaluate(`!document.querySelector(${JSON.stringify(panelMenu)})`), 3000);
-  assert.equal(await b.evaluate('document.activeElement?.matches(\'.compact-panels-trigger[aria-label="Panels"]\')'), true, 'Escape restores focus to Panels');
-  await click('.compact-panels-trigger[aria-label="Panels"]');
+  assert.equal(await b.evaluate('document.activeElement?.matches(\'.compact-panels-trigger[aria-label="Menu"]\')'), true, 'Escape restores focus to Panels');
+  await click('.compact-panels-trigger[aria-label="Menu"]');
   await until('Panels menu for active selection', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
   await click(`${panelMenu} [data-panel-id="files"]`);
   assert.equal(await visible('.filelist'), true, 'choosing the active Files panel keeps it open');
   assert.equal(await b.evaluate(`!document.querySelector(${JSON.stringify(panelMenu)})`),true,'choosing a panel closes the menu');
-  await click(face('Document'));
+  await click(face('Preview'));
   assert.equal(await visible('.filelist'), false, 'the face switch returns from Files to the document');
   assert.equal(await visible('.viewport'), true, 'the document face is visible after leaving Files');
   for (const [width,height] of [[320,844],[760,844],[320,420],[390,844]]) {
     await b.resize(width, height); await flush();
-    await click('.compact-panels-trigger[aria-label="Panels"]');
+    await click('.compact-panels-trigger[aria-label="Menu"]');
     await until(`Panels menu at ${width}px`, () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(panelMenu)}))`), 3000);
     if (process.env.LIBREPAPER_COMPACT_SCREENSHOT) {
       const screenshot = await b.command('Page.captureScreenshot', {format:'png'});
@@ -640,7 +655,7 @@ try {
     await click('body');
   }
   await b.resize(390,844); await flush();
-  await click(face('Document'));
+  await click(face('Preview'));
   assert.equal(await visible('.viewport'),true);
   assert.equal(await visible('.editorpane'),false);
   assert.equal(await visible('.sidebar'),false);
@@ -694,7 +709,7 @@ try {
   assert.equal(await visible('.editorpane'),false);
   await click('.explorer-row[title="chapter-1.html"]');
   assert.equal(await visible('.editorpane'),true, 'choosing a file opens its source');
-  await click(face('Document'));
+  await click(face('Preview'));
   assert.equal(await b.evaluate('document.querySelector(".viewport iframe") === window.savedFrame'), true);
   assert.equal(await b.evaluate('window.savedFrame.contentWindow.scrollY'),800);
 
@@ -733,7 +748,7 @@ try {
   await until('bar shows at the top', () => b.evaluate(`!${hidden}`), 5000);
 
   await b.resize(900,900); await flush();
-  await click(face('Document'));
+  await click(face('Preview'));
   assert.equal(await visible('.viewport'),true);
   assert.equal(await visible('.editorpane'),false);
   assert.equal(await visible('.sidebar'),true);
@@ -751,7 +766,7 @@ try {
     await b.evaluate(`localStorage.setItem('librepaper-layout', JSON.stringify(${JSON.stringify(saved)}))`);
     await b.navigate(url);
     await until('reader remount',()=>b.evaluate('document.querySelector(".cm-editor") !== null'),10000);
-    await click(face('Document')); assert.equal(await visible('.viewport'), true);
+    await click(face('Preview')); assert.equal(await visible('.viewport'), true);
     await click(face('Source')); assert.equal(await visible('.editorpane'), true);
     await bounded();
   }

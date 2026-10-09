@@ -3966,10 +3966,10 @@
 
 {#snippet faceSwitch()}
   <div class="face-switch" role="group" aria-label="Workspace view">
-    <IconButton icon="eye" label="Document" pressed={shown.document}
+    <IconButton icon="eye" label="Preview" visibleLabel={compact ? "Preview" : null} pressed={shown.document}
                 onclick={() => showMobileView("document")} />
     {#if editing || panel === "history"}
-      <IconButton icon="writing-hand" label="Source" pressed={shown.source}
+      <IconButton icon="writing-hand" label="Source" visibleLabel={compact ? "Source" : null} pressed={shown.source}
                   onclick={() => showMobileView("source")} />
     {/if}
   </div>
@@ -3983,12 +3983,11 @@
 <Nav {me} reader hidden={barHidden}>
   {#snippet tools()}
     {#if compact}
-      <!-- At compact widths (≤760px), the top bar contains only the hamburger
-           menu trigger (to open the Panels menu and access File/Edit/Insert/View)
-           and the face switch (Document/Source). The menubar stays mounted but is
-           invisible; a menu chosen from the hamburger opens in the hamburger panel's
-           own box. -->
-      <CompactPanelMenu tabs={tabs} {panel} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
+      <!-- At compact widths (≤760px), the top bar holds the Menu trigger (the
+           panels, File/Edit/Insert/View and the account) and the Preview/Source
+           switch. Each carries a caption. The menubar stays mounted but is
+           invisible; a menu chosen from Menu opens in the menu's own box. -->
+      <CompactPanelMenu tabs={tabs} {panel} {me} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
     {:else}
@@ -4525,11 +4524,12 @@
   }
   .execution-short { display: none; }
   /* Adapted widths keep the two faces grouped. Compact widths put them in the
-     top bar beside the hamburger, with the same sizing as the Panels trigger. */
+     top bar beside the Menu trigger, with the same column sizing and captions. */
   .face-switch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--radius-container); background: var(--color-subtle); }
   @media (max-width: 760px) {
     .face-switch { gap: calc(var(--spacing) * 2); padding: 0; border-radius: 0; background: none; }
-    .face-switch :global(.icon-control) { width: 2.75rem; height: 2.75rem; }
+    .face-switch :global(.icon-control) { flex-direction: column; gap: 2px; width: auto; min-width: 3.5rem; height: 2.75rem; padding-inline: 0; }
+    .face-switch :global(.compact-label) { font-size: 11px; }
   }
   .connection-settings { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); }
   .connection-pill { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .75); min-height: 1.75rem; padding: 0 calc(var(--spacing) * 2); border: 1px solid var(--color-border); border-radius: 999px; background: var(--color-subtle); color: var(--color-text-secondary); font: inherit; font-size: var(--text-xs); cursor: pointer; }
