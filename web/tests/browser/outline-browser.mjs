@@ -203,7 +203,7 @@ try {
   const click = async (selector) => { await tab.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); node?.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'})); node?.click(); })()`); await flush(); };
   const mobileNav = async (label) => {
     const id = ({Files:'files',Outline:'outline',Agent:'agent',Collaboration:'collaboration',Changes:'changes',Share:'share',Diagnostics:'diagnostics',History:'history'})[label];
-    await click('.compact-panels-trigger[aria-label="Panels"]');
+    await click('.compact-panels-trigger[aria-label="Menu"]');
     await until('Panels menu', () => tab.evaluate('Boolean(document.querySelector(\'.explorer-menu[data-state="open"]\'))'), 3000);
     await click(`.explorer-menu[data-state="open"] [data-panel-id="${id}"]`);
   };
