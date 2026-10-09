@@ -2,7 +2,10 @@
 <html lang="en" data-theme="librepaper">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <!-- The interface is not what a reader zooms, so the page is not zoomable.
+         Safari also zooms the page when an input smaller than 16px is focused,
+         and maximum-scale=1 stops that too. -->
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
     <title>LibrePaper</title>
     <meta name="description" content="Read, comment on and edit a LibrePaper document: the source, the rendered paper and the conversation about it, side by side." />
     <meta property="og:type" content="website" />
