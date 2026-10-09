@@ -761,15 +761,6 @@ try {
   assert.equal(await visible('.editorpane'),true, 'widening restores the split');
   assert.equal(await b.evaluate('document.querySelector(".cm-editor") === window.savedEditor'), true);
 
-  for (const saved of ['source','document']) {
-    await b.resize(390,844);
-    await b.evaluate(`localStorage.setItem('librepaper-layout', JSON.stringify(${JSON.stringify(saved)}))`);
-    await b.navigate(url);
-    await until('reader remount',()=>b.evaluate('document.querySelector(".cm-editor") !== null'),10000);
-    await click(face('Preview')); assert.equal(await visible('.viewport'), true);
-    await click(face('Source')); assert.equal(await visible('.editorpane'), true);
-    await bounded();
-  }
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds, tap to top, the hiding bar and saved layouts passed');
+  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds, tap to top and the hiding bar passed');
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }

@@ -1151,8 +1151,8 @@ async function run() {
 
   // `:q<Enter>`: the source pane closes, to the document alone.
   await vimKeys(vimTab, ":q<Enter>");
-  const closed = await until("the layout closes to the document alone", async () =>
-    (await vimTab.eval(`return JSON.parse(localStorage.getItem("librepaper-layout") || "null")`)) === "document"
+  const closed = await until("the source pane closes", async () =>
+    (await vimTab.eval(`return getComputedStyle(document.querySelector(".editorpane")).display === "none"`))
       ? true
       : null,
   );
