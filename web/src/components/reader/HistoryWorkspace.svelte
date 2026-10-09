@@ -1,4 +1,6 @@
 <script>
+  import { loadMergeEditor } from "../../lib/merge-editor.js";
+
   // The comparison editor is fetched when there is something to compare, not
   // when the reader is built. A static import here would undo the dynamic one
   // Reader.svelte makes for the same component: it puts CodeMirror and the
@@ -15,11 +17,13 @@
   const binary = $derived(Boolean(result?.binary?.[path]));
   // Asked for once. A failure is remembered rather than retried on every
   // redraw: an import that failed because the chunk is not there will fail
-  // the same way a moment later, and the reader is told instead.
+  // the same way a moment later, and the reader is told instead. The effect
+  // can run again before the first load finishes. The shared loader keeps
+  // that to one import.
   $effect(() => {
     if (MergeEditor || mergeFailed || !result || binary) return;
-    import("../MergeEditor.svelte").then(
-      (module) => (MergeEditor = module.default),
+    loadMergeEditor().then(
+      (component) => (MergeEditor = component),
       () => (mergeFailed = true),
     );
   });

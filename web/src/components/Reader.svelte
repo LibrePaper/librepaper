@@ -10,6 +10,7 @@
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
   import { MOMENT } from "../lib/moment.js";
+  import { loadMergeEditor } from "../lib/merge-editor.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import * as passages from "../lib/passages.js";
   import * as suggestions from "../lib/suggestions.js";
@@ -987,7 +988,7 @@
       const oldText = suggestions.applyProposal(baseText, target, comment.proposed ?? "");
       const tree = treeNow();
       const id = session.idOf(path);
-      const component = (await import("./MergeEditor.svelte")).default;
+      const component = await loadMergeEditor();
       MergeEditor = component;
       mergeTarget = {
         path,
@@ -1239,7 +1240,7 @@
     const path = session.paths?.get(id) || "";
     const live = session.textOf?.(id);
     try {
-      MergeEditor = (await import("./MergeEditor.svelte")).default;
+      MergeEditor = await loadMergeEditor();
       mergeTarget = {
         path,
         oldText: live ? live.toString() : "",
