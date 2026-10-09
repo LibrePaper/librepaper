@@ -159,7 +159,7 @@ watchPinch(document, {
       const page = document.elementFromPoint(x, y)?.closest(".page");
       if (page) {
         const r = page.getBoundingClientRect();
-        pinchAnchor = { page: Number(page.dataset.page), fx: (x - r.left) / r.width, fy: (y - r.top) / r.height };
+        pinchAnchor = { page: Number(page.getAttribute("data-page")), fx: (x - r.left) / r.width, fy: (y - r.top) / r.height };
       }
     }
     stage.style.transformOrigin = `${x - rect.left}px ${y - rect.top}px`;

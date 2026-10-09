@@ -19,6 +19,7 @@ function distance(a, b) {
 /// `onchange(factor, x, y)` runs on every move and `onend(factor, x, y)` runs
 /// once the gesture is over. `factor` is relative to the start of the gesture
 /// and is not clamped. `(x, y)` is where the gesture started. Returns `stop()`.
+/** @param {Document | Element} target @param {{ onchange?: (factor: number, x: number, y: number) => void, onend?: (factor: number, x: number, y: number) => void }} [callbacks] */
 export function watchPinch(target, { onchange = () => {}, onend = () => {} } = {}) {
   let start = null; // { distance, x, y } while a pinch is active
   let factor = 1;
@@ -73,6 +74,7 @@ export function watchPinch(target, { onchange = () => {}, onend = () => {} } = {
     wheel.timer = setTimeout(endWheel, WHEEL_IDLE_MS);
   };
 
+  /** @type {[string, (event: any) => void, AddEventListenerOptions][]} */
   const listeners = [
     ["touchstart", onTouchStart, { passive: true }],
     ["touchmove", onTouchMove, { passive: false }],
