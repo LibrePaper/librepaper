@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until, pause, removeTemporary } from "../helpers/browser-driver.mjs";
+import { assertFreshDist } from "../helpers/fresh-dist.mjs";
 
 process.env.TZ = "UTC";
 
@@ -217,6 +218,7 @@ let tab;
 try {
   await build({ configFile: false, root: join(root, "web"), plugins: [svelte()], logLevel: "error",
     build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "share-panel-check.js", cssFileName: "style" } } });
+  assertFreshDist("share-panel-browser");
   // The built shell's stylesheet carries the theme -- every colour and step of
   // spacing the panel uses is a custom property defined there.
   const built = join(root, "web/dist/assets");

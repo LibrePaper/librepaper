@@ -9,10 +9,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
+import { assertFreshDist } from "../helpers/fresh-dist.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const dist = join(root, "dist");
 assert.ok(existsSync(join(dist, "frame.js")), "run `bun run build` first");
+assertFreshDist("math-browser");
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-math-browser-"));
 
 const types = { js: "text/javascript", css: "text/css", woff2: "font/woff2", html: "text/html" };

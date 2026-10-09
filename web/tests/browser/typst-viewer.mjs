@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { call, handOver } from "../../src/lib/renderer-wasm.js";
 import { browser, removeTemporary } from "../helpers/browser-driver.mjs";
+import { assertFreshDist } from "../helpers/fresh-dist.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
@@ -21,6 +22,7 @@ if (!existsSync(join(SHELL, "viewer.html"))) {
   console.log("typst-viewer: no built viewer at web/dist; skipping (run `bun run build` from web/)");
   process.exit(0);
 }
+assertFreshDist("typst-viewer");
 if (!existsSync(WASM)) {
   console.log("typst-viewer: no pinned Typst WASM at web/wasm; skipping (run `node tools/assets/pins.mjs fetch` from the repository root)");
   process.exit(0);

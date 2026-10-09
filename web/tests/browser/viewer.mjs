@@ -23,6 +23,7 @@ import { dirname, join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { browser, removeTemporary } from "../helpers/browser-driver.mjs";
+import { assertFreshDist } from "../helpers/fresh-dist.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(dirname(dirname(HERE)));
@@ -36,6 +37,7 @@ if (!existsSync(join(SHELL, "viewer.html"))) {
   console.log("viewer: no built shell at web/dist; skipping (run `make web`)");
   process.exit(0);
 }
+assertFreshDist("viewer");
 if (!existsSync(ARTICLE) || !existsSync(PAPER)) {
   console.log("viewer: no corpus PDFs; skipping (run `node tools/test/latex/texlive.mjs --pdf`)");
   process.exit(0);
