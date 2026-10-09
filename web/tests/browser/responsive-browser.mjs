@@ -578,7 +578,7 @@ try {
   assert.ok(workspaceActions[1].tag==='A' && workspaceActions[1].href==='/','Home remains a native link');
   assert.ok(workspaceActions[2].tag==='A' && workspaceActions[2].href==='/documentation','Docs remains a native link');
   const workspaceOrder = await b.evaluate(`(() => [...document.querySelector(${JSON.stringify(panelMenu)}).querySelectorAll('[data-panel-id],[data-workspace-action]')].map(node=>node.dataset.panelId||node.dataset.workspaceAction))()`);
-  assert.deepEqual(workspaceOrder.slice(-3),['settings','home','docs'],'workspace links are below the panels in order');
+  assert.deepEqual(workspaceOrder.slice(-4),['settings','home','docs','signout'],'workspace links, then Sign out, are below the panels in order');
   assert.equal(await b.evaluate(`(() => {const menu=document.querySelector(${JSON.stringify(panelMenu)});const settings=menu.querySelector('[data-workspace-action=settings]');return settings?.previousElementSibling?.matches('[role=separator]')})()`),true,'a separator divides panel controls from workspace links');
   await click(`${panelMenu} [data-workspace-action="settings"]`);
   await until('Settings dialog opened from Panels',()=>b.evaluate('Boolean(document.querySelector("[role=dialog]"))'),3000);
