@@ -306,6 +306,27 @@
         border-top: 1px solid var(--color-divider);
       }
 
+      /* Credits and copyright, small and out of the way. */
+      .site-footer {
+        border-top: 1px solid var(--color-divider);
+        padding: 1.5rem 0;
+        font-size: 0.875rem;
+        color: var(--sage-11);
+      }
+
+      .site-footer p {
+        margin: 0;
+      }
+
+      .site-footer a {
+        color: inherit;
+        text-decoration: underline;
+      }
+
+      .site-footer-name {
+        white-space: nowrap;
+      }
+
       /* Screenshot sections. The copy comes first in the source, so a
          stacked layout reads heading, list, picture; on a wide window
          Write puts its picture on the left by ordering, not by markup. */
@@ -721,6 +742,12 @@
         </div>
       </section>
     </main>
+
+    <footer class="site-footer">
+      <div class="story-inner">
+        <p>Thanks to Annie Spratt for the typewriter photograph, from <a href="https://pixabay.com/">Pixabay</a>. © 2026 <span class="site-footer-name">Vincent Arel-Bundock</span>.</p>
+      </div>
+    </footer>
 
     <!-- The lightbox container. It sits outside the hero so the overlay is not
          inside a centered, padded column when it covers the window. -->
