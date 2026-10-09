@@ -734,7 +734,7 @@
     selectedAnnotation = String(comment.id);
     const suggestion = comment.motivation === "editing";
     const plainHighlight = comment.motivation === "highlighting" && !comment.body && !comment.replies?.length;
-    if (!suggestion) prefs.collaborationTab = plainHighlight ? "highlights" : "comments";
+    if (!suggestion) collaborationTab = plainHighlight ? "highlights" : "comments";
     void showPanel(suggestion ? "changes" : "collaboration");
     const targetPanel = panel;
     await tick();
@@ -853,7 +853,7 @@
       id: crypto.randomUUID(),
       pending,
     };
-    prefs.collaborationTab = "comments";
+    collaborationTab = "comments";
     if (panel !== "collaboration") void showPanel("collaboration");
     if (compact) showMobileView("sidebar");
   }
@@ -2667,14 +2667,20 @@
 
   /* ------------------------------------------------------------------ panes */
 
-  // The arrangement a project opens in (files, main file, its preview; the
-  // project view on a phone) is fixed and not remembered. Which side the
-  // source is on, which keys the editor answers to and how wide the panes are
-  // are the reader's habits, and the preferences write those down as they
-  // change. See `reader/preferences.svelte.js` for why those are one act.
+  // Which side the source is on, which keys the editor answers to and how
+  // wide the panes are: one reader's habits rather than anything about a
+  // document. The preferences own them, and own writing them down -- see
+  // `reader/preferences.svelte.js` for why those are one act and not two.
   const preferences = createPreferences();
   const prefs = preferences.state;
-  const layout = $derived(prefs.layout);
+  // Every project opens the same way: the files, the main file and its
+  // preview, or the files alone on a phone. Where the last visit ended is
+  // not kept.
+  let layout = $state("split");
+  let panel = $state("files");
+  let mobileView = $state("sidebar");
+  let preferredPane = $state("document");
+  let collaborationTab = $state("comments");
   const sourceSide = $derived(prefs.sourceSide);
   const keys = $derived(prefs.keys);
   const sizes = $derived(prefs.sizes);
@@ -2702,15 +2708,13 @@
 
   // The column at the left, and what is in it: the files, the comments or the
   // history, or "" for closed. One value rather than a switch per panel,
-  // because the column shows one thing at a time. An editor's first visit
-  // opens on the files -- the shape of the project is what a project space
-  // starts with -- and every visit after that opens where they left it.
+  // because the column shows one thing at a time. An editor opens on the
+  // files: the shape of the project is what a project space starts with.
   //
   // Somebody who came by a read or a comment link is shown the document and
   // its comments first. History is available to compare review rounds; files
   // and editor settings remain in the editor workspace.
-  const panel = $derived(prefs.panel);
-  const chatVisible = $derived.by(() => panel === "collaboration" && prefs.collaborationTab === "chat" && shown.comments);
+  const chatVisible = $derived.by(() => panel === "collaboration" && collaborationTab === "chat" && shown.comments);
   $effect(() => { if (chatVisible) unreadChat = false; });
   // Mount panels on their first visit and retain them across view changes.
   // This preserves scroll positions, expanded folders and unsent chat drafts.
@@ -2727,13 +2731,11 @@
       ? [...visitedPanels, "collaboration"]
       : visitedPanels,
   );
-  const mobileView = $derived(prefs.mobileView);
-  const preferredPane = $derived(prefs.preferredPane);
   function showMobileView(view) {
     if (view === "source" && !editing && panel !== "history") view = "document";
-    preferences.setMobileView(view);
-    if (view !== "sidebar") prefs.preferredPane = view;
-    if (!compact && view !== "sidebar" && layout !== "split") preferences.setLayout(view);
+    mobileView = view;
+    if (view !== "sidebar") preferredPane = view;
+    if (!compact && view !== "sidebar" && layout !== "split") layout = view;
     if (view === "sidebar" && !panel) showPanel(home);
   }
   function selectPanel(name) {
@@ -2791,7 +2793,7 @@
     if (panel === "history" && name !== "history") historySource.close();
     // Reopening starts at the current source.
     const enteringHistory = name === "history" && panel !== "history";
-    preferences.setPanel(name);
+    panel = name;
     if (enteringHistory) void historySource.select("");
     // Changes is a source-review queue. On desktop, opening it establishes a
     // source-only workspace; on compact screens the sidebar remains visible
@@ -2801,9 +2803,7 @@
         if (panel === "changes") showMobileView("source");
       });
     }
-    // A panel opening the sidebar on a narrow screen is what this visit is
-    // doing. The view is not written down, so a reload opens the project view.
-    if (compact) prefs.mobileView = name ? "sidebar" : "document";
+    if (compact) mobileView = name ? "sidebar" : "document";
     if (name !== "history") return Promise.resolve();
     return loadHistory();
   }
@@ -2911,7 +2911,7 @@
   }
 
   function cycleLayout() {
-    preferences.setLayout(ARRANGEMENTS[layout].next);
+    layout = ARRANGEMENTS[layout].next;
     if (compact) showMobileView(layout === "source" ? "source" : "document");
   }
 
@@ -2920,15 +2920,15 @@
   const setKeys = (next) => preferences.setKeys(next);
 
   // What ":q" in Vim mode asks for: the document alone, set directly rather
-  // than reached by cycling. The arrangement lasts for this visit only.
-  const showDocumentAlone = () => preferences.setLayout("document");
+  // than reached by cycling.
+  const showDocumentAlone = () => { layout = "document"; };
 
   // Everything the layout menu offers, named by what was chosen. The menu
   // reports the value of the line rather than each line calling back, so this
   // is the one place those names are read.
   function chose(what) {
     if (what.startsWith("layout-")) {
-      preferences.setLayout(what.slice(7));
+      layout = what.slice(7);
       if (compact) showMobileView(layout === "source" ? "source" : "document");
       return;
     }
@@ -3185,7 +3185,7 @@
     if (!canPreviewFile) return;
     previewFile = openFile;
     updatePreviewTarget();
-    if (!compact && layout === "source") preferences.setLayout("split");
+    if (!compact && layout === "source") layout = "split";
     if (compact) showMobileView("document");
   }
 
@@ -3214,8 +3214,8 @@
     if (openFile !== file.id) outlineActiveFrom = null;
     workspace.show(file);
     // Choosing a file is asking to see it, so an arrangement with no source
-    // pane makes room for one. The arrangement lasts for this visit only.
-    if (mayEdit && !compact && layout === "document") preferences.setLayout("split");
+    // pane makes room for one.
+    if (mayEdit && !compact && layout === "document") layout = "split";
     if (mayEdit) showMobileView("source");
   }
 
@@ -4094,7 +4094,7 @@
 
   {#snippet collaborationPanel()}
     <Collaboration messages={liveChat} {connected} canPost={mayChat} onsend={sendLiveChat}
-      {unreadChat} bind:tab={prefs.collaborationTab} {comments} {identity}
+      {unreadChat} bind:tab={collaborationTab} {comments} {identity}
       commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {went} {replacements}
       canComment={mayChat}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}

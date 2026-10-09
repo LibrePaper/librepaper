@@ -215,7 +215,8 @@ try {
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="Files"]').click()`);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
   await tab.navigate(`${origin}/docs/paper?slowjoin=1`);
-  await until('remembered history opens current source after connecting', () => tab.evaluate(`document.querySelector('.history-workspace .cm-content')?.textContent === ${JSON.stringify(current + addition)}`), 10000);
+  // A reload lands on the files and the live source, never back in history.
+  await until('reload opens the files and the current source', () => tab.evaluate(`!document.querySelector('.history-workspace') && document.getElementById('sidebar-panel-files')?.hidden === false && document.querySelector('.cm-content')?.textContent === ${JSON.stringify(current + addition)}`), 10000);
   console.log('history reader: paged history and preview isolation passed');
   assert.deepEqual(await tab.evaluate("window.testErrors"), []);
 } catch (error) {

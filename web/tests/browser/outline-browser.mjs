@@ -300,6 +300,7 @@ try {
 
   // A document-only desktop layout still exposes the outline and a heading
   // jump brings the source back when a person asks to inspect it.
+  await openFile("main.html");
   await tab.evaluate(`(() => {
     const button = document.querySelector('button[aria-label^="Layout"]');
     if (!button) throw new Error("no Layout control");
