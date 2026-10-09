@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-librepaper-zoom="pdf">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -23,7 +23,9 @@
         `color-scheme: light`, and when that becomes `light dark` this is the
         other half of the change.
       */
-      html { background: #f6f6f4; color-scheme: light; }
+      html { background: #f6f6f4; color-scheme: light;
+             /* A pinch zooms the PDF in viewer.js, not the whole frame. */
+             touch-action: pan-x pan-y; }
       body { margin: 0; }
       .grab-to-pan-grab, .grab-to-pan-grab .textLayer span { cursor: grab !important; }
       .grab-to-pan-grabbing { position: fixed; inset: 0; z-index: 50000; cursor: grabbing !important; }

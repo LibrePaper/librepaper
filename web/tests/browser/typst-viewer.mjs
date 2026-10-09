@@ -230,6 +230,43 @@ async function run() {
   `);
   check("PDF controls fit, zoom, pan, and restore selection without changing text",
     Object.values(controls).every(Boolean), JSON.stringify(controls));
+  // A pinch on a phone zooms the page, not the application around the frame:
+  // the frame refuses the browser's zoom and redraws at the pinched scale.
+  const pinch = await tab.eval(`
+    const doc = frame.contentDocument;
+    const win = frame.contentWindow;
+    const drawnScale = () => Number(doc.querySelector('.pages').dataset.scale);
+    async function redrawn(old) {
+      for (let i = 0; i < 100 && old === doc.querySelector('.pages'); i++)
+        await new Promise(r => setTimeout(r, 50));
+      return old !== doc.querySelector('.pages');
+    }
+    const before = drawnScale();
+    const target = doc.querySelector('.page');
+    const touch = (identifier, x, y) => new win.Touch({ identifier, target, clientX: x, clientY: y });
+    const fire = (type, touches) => {
+      const event = new win.TouchEvent(type, { bubbles: true, cancelable: true, touches, changedTouches: touches });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    let old = doc.querySelector('.pages');
+    fire('touchstart', [touch(1, 150, 200), touch(2, 250, 200)]);
+    const refused = fire('touchmove', [touch(1, 100, 200), touch(2, 300, 200)]);
+    const previewed = doc.querySelector('main').style.transform.includes('scale(2)');
+    fire('touchend', []);
+    const touchRedraw = await redrawn(old);
+    const touched = drawnScale();
+    old = doc.querySelector('.pages');
+    const wheel = new win.WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -50, clientX: 200, clientY: 200 });
+    doc.querySelector('.page').dispatchEvent(wheel);
+    const wheelRedraw = await redrawn(old);
+    return { refused, previewed, touchRedraw, doubled: Math.abs(touched - 2 * before) < 0.02,
+      wheelRefused: wheel.defaultPrevented, wheelRedraw, wheelLarger: drawnScale() > touched,
+      cleared: doc.querySelector('main').style.transform === '' };
+  `);
+  check("a pinch or ctrl+wheel on the PDF redraws the page larger instead of zooming the page around it",
+    Object.values(pinch).every(Boolean), JSON.stringify(pinch));
+  await tab.eval("frame.contentWindow.postMessage({ librepaper: true, type: 'viewer-scale', mode: 'auto' }, '*'); await new Promise(r => setTimeout(r, 1000));");
   const workers = await tab.eval("return frame.contentWindow.workerStats");
   check("PDF previews and zoom redraws reuse one worker", workers.created === 1 && workers.terminated === 0,
     JSON.stringify(workers));
