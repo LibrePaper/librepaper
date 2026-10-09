@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { previewNotes } from "../../src/lib/reader/preview-notes.js";
+import { previewNotes, unrenderableMain } from "../../src/lib/reader/preview-notes.js";
 
 // --- no notes when file is previewable ----------------------------------------
 
@@ -234,5 +234,30 @@ assert.match(
   /of their own\.$/,
   "note ends after 'of their own' when mainPath is empty"
 );
+
+// --- unrenderableMain names the main file when it has no format ----------------
+
+let message = unrenderableMain({
+  mainPath: "data.json",
+  formatOf: () => null,
+});
+assert.match(message, /not a format LibrePaper renders/, "unrenderable main gives a message");
+assert.match(message, /data\.json/, "message names the main file");
+
+// --- unrenderableMain is empty when the main file renders ----------------------
+
+message = unrenderableMain({
+  mainPath: "main.tex",
+  formatOf: (path) => (path.endsWith(".tex") ? "latex" : null),
+});
+assert.equal(message, "", "no message when main file renders");
+
+// --- unrenderableMain is empty when there is no main file ----------------------
+
+message = unrenderableMain({
+  mainPath: "",
+  formatOf: () => null,
+});
+assert.equal(message, "", "no message when main path is empty");
 
 console.log("preview notes tests passed");
