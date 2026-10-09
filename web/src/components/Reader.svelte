@@ -86,7 +86,7 @@
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
   import { createSteadyBusy } from "../lib/reader/steady-busy.js";
   import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
-  import { previewNotes } from "../lib/reader/preview-notes.js";
+  import { previewNotes, unrenderableMain } from "../lib/reader/preview-notes.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
   import { recenteredLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
   import { VERBS, motivationFor } from "../lib/annotating.js";
@@ -3127,6 +3127,12 @@
     mainPath: previewMain || session?.mainPath?.() || "",
     formatOf: renderers.formatOf,
   }));
+  // session.mainPath() is not reactive on its own, so read files to recompute
+  // when the directory changes.
+  const mainUnrenderable = $derived.by(() => {
+    void files;
+    return unrenderableMain({ mainPath: previewMain || session?.mainPath?.() || "", formatOf: renderers.formatOf });
+  });
   const editorFormat = $derived(renderers.formatOf(toolbarPath) || sourceFormat);
   const canPreviewFile = $derived(files.some((file) =>
     file.id === openFile && file.kind === "text" && Boolean(renderers.formatOf(file.path))));
@@ -4278,6 +4284,13 @@
         </div>
       </div>
     </section>
+  {:else if shown.document && mainUnrenderable}
+    <section class="latexpane">
+      <div class="notyet">
+        <h2 class="h4">Nothing to preview</h2>
+        <p class="lp-text-secondary text-sm">{mainUnrenderable}</p>
+      </div>
+    </section>
   {:else if shown.document && failedBeforeRender}
     <section class="latexpane">
       <div class="notyet">
@@ -4354,7 +4367,7 @@
            controls={previewControls}
            busy={previewBusy}
            progress={sourceFormat === "latex" && !latexHtmlPreview && latexState.progress?.total ? latexState.progress : null}
-           away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || Boolean(projectUnreadable)} />
+           away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || Boolean(projectUnreadable) || Boolean(mainUnrenderable)} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every

@@ -18,6 +18,18 @@ const labels = {
 };
 
 /**
+ * The message shown when the main file cannot be rendered, or "" when it can.
+ * @param {{ mainPath: string | null, formatOf: (path: string) => string | null }} options
+ * @returns {string}
+ */
+export function unrenderableMain({ mainPath, formatOf }) {
+  if (mainPath && !formatOf(mainPath)) {
+    return `${mainPath} is not a format LibrePaper renders. Make a .tex, .typ, .qmd or .md file the main file.`;
+  }
+  return "";
+}
+
+/**
  * Produce diagnostics for files that have no preview of their own.
  * @param {{ openPath: string | null, openIsText: boolean, mainPath: string | null, formatOf: (path: string) => string | null }} options
  * @returns {PreviewNote[]}
@@ -28,12 +40,9 @@ export function previewNotes({ openPath, openIsText, mainPath, formatOf }) {
 
   // The warning says all there is to say: a note that the preview shows the
   // main file would point at a preview that does not exist.
-  if (mainPath && !formatOf(mainPath)) {
-    return [{
-      severity: "warning",
-      message: `Nothing to preview: ${mainPath} is not a format LibrePaper renders. Make a .tex, .typ, .qmd or .md file the main file.`,
-      source: "preview",
-    }];
+  const mainMessage = unrenderableMain({ mainPath, formatOf });
+  if (mainMessage) {
+    return [{ severity: "warning", message: `Nothing to preview: ${mainMessage}`, source: "preview" }];
   }
 
   if (
