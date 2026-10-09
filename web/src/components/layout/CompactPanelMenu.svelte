@@ -165,7 +165,7 @@
     height: 2.75rem;
     align-items: center;
     justify-content: center;
-    padding-inline: 0;
+    padding: 0;
   }
 
   .compact-label {

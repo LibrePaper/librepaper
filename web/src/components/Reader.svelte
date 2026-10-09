@@ -4528,7 +4528,7 @@
   .face-switch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--radius-container); background: var(--color-subtle); }
   @media (max-width: 760px) {
     .face-switch { gap: calc(var(--spacing) * 2); padding: 0; border-radius: 0; background: none; }
-    .face-switch :global(.icon-control) { flex-direction: column; gap: 2px; width: auto; min-width: 3.5rem; height: 2.75rem; padding-inline: 0; }
+    .face-switch :global(.icon-control) { flex-direction: column; gap: 2px; width: auto; min-width: 3.5rem; height: 2.75rem; padding: 0; }
     .face-switch :global(.compact-label) { font-size: 11px; }
   }
   .connection-settings { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); }
