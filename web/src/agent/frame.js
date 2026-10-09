@@ -12,6 +12,7 @@
 
 import { createMathTypesetter } from "../lib/math.js";
 import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
+import { watchPinch } from "../lib/pinch.js";
 
 (() => {
   // Where this agent is allowed to speak. It is injected into a document on
@@ -746,6 +747,40 @@ import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
     document.addEventListener("touchstart", beginTouchDrag, { passive: true });
     document.addEventListener("touchend", endTouchDrag, { passive: true });
     document.addEventListener("touchcancel", endTouchDrag, { passive: true });
+  }
+
+  // A document in a frame cannot be pinch-zoomed by the browser on its own, so
+  // left alone a pinch magnifies the whole application around it. CSS zoom on
+  // the document's root makes the text larger and lets it reflow to the frame
+  // instead. The MutationObserver watches document.body only, so this style
+  // change on documentElement does not trigger a republish. The PDF frame
+  // zooms itself and is left alone.
+  if (!document.documentElement.hasAttribute("data-librepaper-zoom")) {
+    let zoom = 1;
+    let pendingFrame = null;
+    const clamp = (v) => Math.min(3, Math.max(0.5, v));
+    watchPinch(document, {
+      onchange(factor) {
+        if (pendingFrame !== null) return;
+        pendingFrame = requestAnimationFrame(() => {
+          pendingFrame = null;
+          document.documentElement.style.zoom = String(clamp(zoom * factor));
+        });
+      },
+      onend(factor) {
+        if (pendingFrame !== null) {
+          cancelAnimationFrame(pendingFrame);
+          pendingFrame = null;
+        }
+        zoom = clamp(zoom * factor);
+        if (Math.abs(zoom - 1) < 0.02) {
+          zoom = 1;
+          document.documentElement.style.removeProperty("zoom");
+        } else {
+          document.documentElement.style.zoom = String(zoom);
+        }
+      },
+    });
   }
   document.addEventListener("selectionchange", () => {
     if (!dragging) scheduleSelection(80);
