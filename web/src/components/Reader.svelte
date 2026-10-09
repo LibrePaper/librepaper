@@ -2667,12 +2667,12 @@
 
   /* ------------------------------------------------------------------ panes */
 
-  // How the window is divided, which side the source is on, which keys the
-  // editor answers to, which panel is open and how wide the panes are: one
-  // reader's habits rather than anything about a document. The preferences
-  // own them, and own writing them down -- see `reader/preferences.svelte.js`
-  // for why those are one act and not two.
-  const preferences = createPreferences(SLUG);
+  // The arrangement a project opens in (files, main file, its preview; the
+  // project view on a phone) is fixed and not remembered. Which side the
+  // source is on, which keys the editor answers to and how wide the panes are
+  // are the reader's habits, and the preferences write those down as they
+  // change. See `reader/preferences.svelte.js` for why those are one act.
+  const preferences = createPreferences();
   const prefs = preferences.state;
   const layout = $derived(prefs.layout);
   const sourceSide = $derived(prefs.sourceSide);
@@ -2802,7 +2802,7 @@
       });
     }
     // A panel opening the sidebar on a narrow screen is what this visit is
-    // doing, not a view to come back to, so it is set rather than remembered.
+    // doing. The view is not written down, so a reload opens the project view.
     if (compact) prefs.mobileView = name ? "sidebar" : "document";
     if (name !== "history") return Promise.resolve();
     return loadHistory();
@@ -2920,7 +2920,7 @@
   const setKeys = (next) => preferences.setKeys(next);
 
   // What ":q" in Vim mode asks for: the document alone, set directly rather
-  // than reached by cycling, and remembered like any other choice of layout.
+  // than reached by cycling. The arrangement lasts for this visit only.
   const showDocumentAlone = () => preferences.setLayout("document");
 
   // Everything the layout menu offers, named by what was chosen. The menu
@@ -3214,7 +3214,7 @@
     if (openFile !== file.id) outlineActiveFrom = null;
     workspace.show(file);
     // Choosing a file is asking to see it, so an arrangement with no source
-    // pane makes room for one. Remembered like any other choice of layout.
+    // pane makes room for one. The arrangement lasts for this visit only.
     if (mayEdit && !compact && layout === "document") preferences.setLayout("split");
     if (mayEdit) showMobileView("source");
   }
@@ -3542,11 +3542,6 @@
     // A document its author may edit opens ready to be worked on: that is what
     // they came for.
     if (mayEdit) startEditing();
-    if (panel === "history") {
-      // The column reopened where it was left, and this panel has to fetch
-      // what it shows.
-      loadHistory();
-    }
   }
 
   $effect(() => {

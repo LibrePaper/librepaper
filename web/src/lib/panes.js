@@ -55,8 +55,6 @@ export const GRIP = 0.375; // rem
 // part with the words in, and the rail is added to it.
 export const ACTIVITY_WIDTH = 3; // rem
 
-export const LAYOUTS = ["split", "source", "document"];
-
 // The ratios a drag sticks to, and the ones the menu offers by name. The two
 // are the same list on purpose: what the pointer finds and what the menu says
 // should not be different places.

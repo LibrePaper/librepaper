@@ -72,9 +72,6 @@ export const PROJECT_TABS = [
 
 export const PROJECT_TAB_IDS = PROJECT_TABS.map((tab) => tab.id);
 
-// The values the stored panel preference may take, "" being the closed column.
-export const PANEL_IDS = ["", ...TABS.map((tab) => tab.id)];
-
 // The element a rail button controls, named the same way wherever it is drawn
 // so the two rails point at the one panel rather than at two guesses.
 export const slotId = (id) => `sidebar-panel-${id}`;
