@@ -15,6 +15,8 @@
 // are fetched on the first PDF and never by the reader shell, which has no
 // use for them.
 
+import { watchPinch } from "../lib/pinch.js";
+
 let viewer = null; // the render module, once something has needed it
 let stage = null;
 let pan = null;
@@ -136,6 +138,52 @@ addEventListener("resize", () => {
     lastWidth = width;
     void paint(drawn);
   }, 150);
+});
+
+// A pinch on a phone zooms the whole application around the frame, which is
+// the wrong thing to zoom. Here it zooms the page instead: the gesture is
+// previewed with a transform while the fingers move, and committed as a
+// redraw at the new scale when they lift, the same as the zoom buttons.
+let pinchAnchor = null; // { page, fx, fy } for the page under the fingers at the start
+function clearPinchPreview() {
+  if (!stage) return;
+  stage.style.transform = "";
+  stage.style.transformOrigin = "";
+}
+watchPinch(document, {
+  onchange(factor, x, y) {
+    if (!stage?.firstElementChild) return;
+    const rect = stage.getBoundingClientRect();
+    if (!pinchAnchor) {
+      pinchAnchor = { page: null, fx: 0, fy: 0 };
+      const page = document.elementFromPoint(x, y)?.closest(".page");
+      if (page) {
+        const r = page.getBoundingClientRect();
+        pinchAnchor = { page: Number(page.getAttribute("data-page")), fx: (x - r.left) / r.width, fy: (y - r.top) / r.height };
+      }
+    }
+    stage.style.transformOrigin = `${x - rect.left}px ${y - rect.top}px`;
+    stage.style.transform = `scale(${factor})`;
+  },
+  async onend(factor, x, y) {
+    const anchor = pinchAnchor;
+    pinchAnchor = null;
+    const current = stage?.firstElementChild ? Number(stage.firstElementChild.dataset.scale) : NaN;
+    const next = Math.min(10, Math.max(0.1, Number((current * factor).toFixed(2))));
+    if (!drawn || !Number.isFinite(current) || Math.abs(next - current) < 0.01) {
+      clearPinchPreview();
+      return;
+    }
+    scaleMode = String(next);
+    await paint(drawn);
+    clearPinchPreview();
+    // Keep the same spot of the page under the fingers at the new scale.
+    const page = anchor?.page != null && stage?.querySelector(`.page[data-page="${anchor.page}"]`);
+    if (page) {
+      const r = page.getBoundingClientRect();
+      window.scrollBy(r.left + anchor.fx * r.width - x, r.top + anchor.fy * r.height - y);
+    }
+  },
 });
 
 // Report scroll position changes so the Reader can hide its top bar on
