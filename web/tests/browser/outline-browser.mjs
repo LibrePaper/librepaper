@@ -300,8 +300,12 @@ try {
 
   // A document-only desktop layout still exposes the outline and a heading
   // jump brings the source back when a person asks to inspect it.
-  await tab.evaluate("localStorage.setItem('librepaper-layout', JSON.stringify('document'))");
-  await tab.navigate(url);
+  await tab.evaluate(`(() => {
+    const button = document.querySelector('button[aria-label^="Layout"]');
+    if (!button) throw new Error("no Layout control");
+    button.click();
+    return true;
+  })()`);
   await until("document-only layout", () => tab.evaluate("document.querySelector('main.reader')?.classList.contains('no-preview') === false"), 10000);
   await until("hidden source", () => tab.evaluate("getComputedStyle(document.querySelector('.editorpane')).display === 'none'"), 5000);
   await openOutline();
