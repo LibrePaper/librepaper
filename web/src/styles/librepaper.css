@@ -813,6 +813,12 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
       transition: none;
     }
   }
+  /* On a phone the gutter and the margins are narrower, so the text keeps the width. */
+  .cm-editor .cm-content { padding: --spacing(3) --spacing(2) --spacing(3) --spacing(1); }
+  .cm-editor .cm-gutters { padding-left: --spacing(1); }
+  .cm-editor .cm-lineNumbers .cm-gutterElement { padding-inline: --spacing(1) 2px; }
+  .cm-editor .cm-gutter-lint { width: 0.9em; }
+  .cm-editor .cm-gutter-lint .cm-gutterElement { padding: 0; }
 }
 
 /* --------------------------------------------------------------- menus */
