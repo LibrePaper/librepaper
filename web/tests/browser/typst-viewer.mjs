@@ -262,6 +262,10 @@ async function run() {
     const wheel = new win.WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -50, clientX: 200, clientY: 200 });
     doc.querySelector('.page').dispatchEvent(wheel);
     const wheelRedraw = await redrawn(old);
+    // The preview transform is cleared once paint() returns, a moment after
+    // the new pages are in.
+    for (let i = 0; i < 20 && doc.querySelector('main').style.transform !== ''; i++)
+      await new Promise(r => setTimeout(r, 50));
     return { refused, previewed, touchRedraw, doubled: Math.abs(touched - 2 * before) < 0.02,
       wheelRefused: wheel.defaultPrevented, wheelRedraw, wheelLarger: drawnScale() > touched,
       cleared: doc.querySelector('main').style.transform === '' };
