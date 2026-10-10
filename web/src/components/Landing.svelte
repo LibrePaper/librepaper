@@ -935,7 +935,7 @@
          choose fills the page rather than a column. `shown.comments` false is
          what the reader's own collapsed column is, so the width here and the
          width there are the same width. -->
-    <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }} compactLabels={narrow}
+    <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }} bar={narrow}
              resizable={false} label="Projects" onselectpanel={goTo}
              badges={trashed.length ? { trash: { counts: [{ tone: "warnings", of: trashed.length }] } } : {}}>
       {#snippet controls()}
