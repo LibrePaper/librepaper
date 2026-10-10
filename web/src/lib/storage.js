@@ -36,6 +36,9 @@ export const KEYS = "librepaper-keys";
 // person typing rather than of the document, so it lives here rather than on
 // the shared text, and a coauthor on the other end keeps whichever they chose.
 export const KEYMAP = "librepaper-keymap";
+// The source text size in pixels. Like the keymap, a habit of the person
+// looking at the source rather than of the document.
+export const EDITOR_SIZE = "librepaper-editor-size";
 
 // A page can keep using a link key even when persistent storage is denied. The
 // value lasts only for this page, which is the same lifetime as the fragment

@@ -166,6 +166,7 @@
   import { proposalMarks, setProposalMarks } from "../lib/proposal-marks.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { projectDirectory } from "../lib/projection.js";
+  import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { untrack } from "svelte";
 
   // Whether what is typed here goes into a proposal rather than into the paper
@@ -1182,6 +1183,12 @@
   export function openFile() {
     return showing;
   }
+
+  // A pinch over the source sizes its text, and nothing else on the page.
+  $effect(() => {
+    if (!host) return;
+    return attachEditorZoom(host, () => view);
+  });
 
   $effect(() => {
     if (!host || !session || view) return;

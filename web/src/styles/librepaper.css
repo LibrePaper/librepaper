@@ -560,7 +560,7 @@ main.reader.source-right .editorpane {
   background: var(--color-shell);
   color: var(--color-text);
   font-family: var(--font-editor);
-  font-size: 14px;
+  font-size: var(--editor-font-size, 14px);
   line-height: 1.6;
 }
 /* The pane already has a border, and the focus ring belongs to the window
