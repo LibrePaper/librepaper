@@ -5,7 +5,7 @@
 
   let { current, choices, onchoose } = $props();
 
-  let name = $derived(current.slice(current.lastIndexOf("/") + 1));
+  const name = $derived(current.slice(current.lastIndexOf("/") + 1));
 </script>
 
 <Menu
