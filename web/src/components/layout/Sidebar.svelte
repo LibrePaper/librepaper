@@ -45,8 +45,8 @@
     resizable = true,
     label = "Sidebar",
     compact = false,
-    // The rail is laid out as a bar along the bottom of a narrow window: the
-    // landing page asks for it, and reader rails keep their column shape.
+    // On a narrow window the landing page spreads its tabs evenly across the
+    // bottom row and marks the open one with an underline.
     bar = false,
     panes = undefined,
     sidebarPane = undefined,
@@ -69,7 +69,7 @@
 <aside class="sidebar" class:collapsed={!shown.comments} aria-label={label}
        ondragover={(event) => event.preventDefault()} ondrop={ondrop}>
   <div class="sidebar-activity">
-    <div class="activity-sections" class:bar={bar} role="group" aria-label="{label} sections">
+    <div class="activity-sections" class:bar role="group" aria-label="{label} sections">
       <PanelRail {tabs} {panel} {badges} open={shown.comments} marksWhenClosed
         onselect={(id) => onselectpanel?.(id)} />
     </div>
