@@ -45,9 +45,9 @@
     resizable = true,
     label = "Sidebar",
     compact = false,
-    // The landing page can ask for visible destination names in its compact
-    // bottom rail. Reader rails keep their icon-only shape.
-    compactLabels = false,
+    // The rail is laid out as a bar along the bottom of a narrow window: the
+    // landing page asks for it, and reader rails keep their column shape.
+    bar = false,
     panes = undefined,
     sidebarPane = undefined,
     onsize = undefined,
@@ -69,8 +69,8 @@
 <aside class="sidebar" class:collapsed={!shown.comments} aria-label={label}
        ondragover={(event) => event.preventDefault()} ondrop={ondrop}>
   <div class="sidebar-activity">
-    <div class="activity-sections" class:compact-labels={compactLabels} role="group" aria-label="{label} sections">
-      <PanelRail {tabs} {panel} {badges} {compactLabels} open={shown.comments} marksWhenClosed
+    <div class="activity-sections" class:bar={bar} role="group" aria-label="{label} sections">
+      <PanelRail {tabs} {panel} {badges} open={shown.comments} marksWhenClosed
         onselect={(id) => onselectpanel?.(id)} />
     </div>
     <div class="activity-bottom" role="group" aria-label="Workspace controls">
@@ -113,10 +113,9 @@
   .activity-sections :global(.icon-control) { position: relative; width: 2rem; height: 2rem; border-radius: var(--radius-base); }
   .activity-sections :global(.icon-control[aria-pressed="true"]) { background: var(--color-row-selected); color: var(--color-link); }
   .activity-sections :global(.icon-control[aria-pressed="true"]::before) { content: ""; position: absolute; left: calc((2rem - var(--librepaper-activity)) / 2 + 1px); top: .375rem; bottom: .375rem; width: 3px; border-radius: 0 2px 2px 0; background: var(--color-brand); }
-  .activity-sections.compact-labels :global(.rail-item) { flex: 1 1 0; align-self: flex-start; min-width: 0; }
-  .activity-sections.compact-labels :global(.icon-control.has-compact-label) { box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: 1px; width: 100%; height: auto; min-height: 2.75rem; padding: 2px 0; }
-  .activity-sections.compact-labels :global(.icon-control[aria-pressed="true"]::before) { left: .4rem; right: .4rem; top: auto; bottom: 1px; width: auto; height: 3px; border-radius: 2px; }
-  :global(main.workspace .activity-sections.compact-labels .rail-item:last-child) { margin-top: 0; }
+  .activity-sections.bar :global(.rail-item) { flex: 1 1 0; align-self: flex-start; min-width: 0; }
+  .activity-sections.bar :global(.icon-control[aria-pressed="true"]::before) { left: .4rem; right: .4rem; top: auto; bottom: 1px; width: auto; height: 3px; border-radius: 2px; }
+  :global(main.workspace .activity-sections.bar .rail-item:last-child) { margin-top: 0; }
   .sidebar-content { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
   .panel-slot { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
   .panel-slot[hidden] { display: none; }

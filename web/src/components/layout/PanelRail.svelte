@@ -18,7 +18,6 @@
     open = false,
     marksWhenClosed = false,
     badges = {},
-    compactLabels = false,
     onselect,
   } = $props();
 </script>
@@ -27,7 +26,6 @@
   {@const badge = badges[tab.id] ?? {}}
   <div class="rail-item">
     <IconButton icon={tab.icon} label={badge.says || tab.says}
-      visibleLabel={compactLabels ? (tab.compactLabel || tab.says) : null}
       pressed={panel === tab.id && (open || marksWhenClosed)}
       controls={slotId(tab.id)} expanded={panel === tab.id && open}
       onclick={() => onselect?.(tab.id)} />
