@@ -71,6 +71,7 @@
   import { archive, availableDownloads, docxFile, entryDownload, projectFiles, renderingFile, saveBlob } from "../lib/reader/downloads.js";
   import Preview from "./Preview.svelte";
   import PreviewControls from "./PreviewControls.svelte";
+  import PreviewTarget from "./PreviewTarget.svelte";
   import Grip from "./Grip.svelte";
   import { parseRenderOptions } from "../lib/quarto-options.js";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
@@ -2951,7 +2952,6 @@
     }
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
     if (value === "preview-latex-html") return void setLatexOutput("html");
-    if (value === "preview-file") return previewThisFile();
     if (value === "local-execution") return toggleLocalExecution();
     if (value === "preview-typst-pdf") return void setTypstOutput("pdf");
     if (value === "preview-typst-html") return void setTypstOutput("html");
@@ -3135,8 +3135,10 @@
     return unrenderableMain({ mainPath: previewMain || session?.mainPath?.() || "", formatOf: renderers.formatOf });
   });
   const editorFormat = $derived(renderers.formatOf(toolbarPath) || sourceFormat);
-  const canPreviewFile = $derived(files.some((file) =>
-    file.id === openFile && file.kind === "text" && Boolean(renderers.formatOf(file.path))));
+  const previewChoices = $derived(files
+    .filter((file) => file.kind === "text" && renderers.formatOf(file.path))
+    .map((file) => ({ id: file.id, path: file.path }))
+    .sort((a, b) => a.path.localeCompare(b.path)));
   loadConfig()
     .then((answer) => {
       workspace.setRules(answer || {});
@@ -3182,9 +3184,11 @@
     });
   }
 
-  function previewThisFile() {
-    if (!canPreviewFile) return;
-    previewFile = openFile;
+  function previewTheFile(id) {
+    const file = files.find((entry) => entry.id === id);
+    if (!file || file.kind !== "text" || !renderers.formatOf(file.path)) return;
+    // Choosing the main file goes back to following it, so a later change of main still shows.
+    previewFile = file.path === session?.mainPath?.() ? "" : id;
     updatePreviewTarget();
     if (!compact && layout === "source") layout = "split";
     if (compact) showMobileView("document");
@@ -3734,7 +3738,6 @@
     panels: tabs.map((tab) => tab.id),
     preview: shown.document,
     compilable: mayEdit && sourceFormat === "latex" && compilesHere,
-    canPreviewFile,
     downloads: {
       pdf: previewOutputKind === "pdf" && Boolean(downloads.pdf),
       html: previewOutputKind !== "pdf" && Boolean(downloads.html),
@@ -3770,7 +3773,6 @@
     if (id === "focus-preview") return focusPreview();
     if (id === "layout-cycle") return cycleLayout();
     if (LAYOUT_COMMANDS.includes(id)) return chose(id);
-    if (id === "preview-file") return chooseViewCommand(id);
     return chooseFileCommand(id);
   }
 
@@ -3942,8 +3944,6 @@
 {/snippet}
 
 {#snippet viewItems()}
-  <Menu.Item value="preview-file" class="menuitem" disabled={!can["preview-file"]}>Preview this file</Menu.Item>
-  <hr class="hr my-1" />
   {@render previewItems()}
   {#if localExecutionRelevant}
     <!-- Permission is per (origin, user, document slug), remembered in this
@@ -4077,7 +4077,8 @@
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
       onmain={makeMain} onfigure={addFigure} ontext={addDroppedText}
-      ondownload={downloadTree} ondownloaditem={downloadEntry} />
+      ondownload={downloadTree} ondownloaditem={downloadEntry}
+      previewable={(path) => Boolean(renderers.formatOf(path))} onpreview={(entry) => previewTheFile(entry.id)} />
   {/snippet}
 
   {#snippet outlinePanel()}
@@ -4344,6 +4345,9 @@
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
        would reload the document and lose the reader's place in it. -->
   {#snippet previewControls()}
+    {#if previewChoices.length > 1}
+      <PreviewTarget current={previewMain || session?.mainPath?.() || ""} choices={previewChoices} onchoose={previewTheFile} />
+    {/if}
     {#if viewerView}
       <PreviewControls mode={viewerView.mode} scale={viewerView.scale} tool={viewerTool}
         onmode={(mode) => {
