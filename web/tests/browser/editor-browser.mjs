@@ -312,6 +312,41 @@ window.sourceHighlightingCheck = async () => {
   value.leave();
   return result;
 };
+window.editorZoomCheck = async () => {
+  localStorage.removeItem("librepaper-editor-size");
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const textId = value.addText("zoom.md", "alpha");
+  const host = document.createElement("section");
+  document.body.append(host);
+  const zoom = createClassComponent({
+    component: Editor, target: host,
+    props: { session: value, format: "markdown", file: textId },
+  });
+  for (let attempt = 0; attempt < 100 && !host.querySelector(".cm-content"); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const editor = host.querySelector(".cm-editor");
+  const content = host.querySelector(".cm-content");
+  const before = getComputedStyle(editor).fontSize;
+  const box = content.getBoundingClientRect();
+  const wheel = (deltaY) => content.dispatchEvent(new WheelEvent("wheel", {
+    deltaY, ctrlKey: true, bubbles: true, cancelable: true,
+    clientX: box.left + box.width / 2, clientY: box.top + 20,
+  }));
+  const prevented = !wheel(-100);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const grown = getComputedStyle(editor).fontSize;
+  const storedGrown = localStorage.getItem("librepaper-editor-size");
+  wheel(200);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const shrunk = getComputedStyle(editor).fontSize;
+  const storedShrunk = localStorage.getItem("librepaper-editor-size");
+  zoom.$destroy();
+  host.remove();
+  value.leave();
+  localStorage.removeItem("librepaper-editor-size");
+  return { before, prevented, grown, storedGrown, shrunk, storedShrunk };
+};
 window.vimUndoCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const textId = value.addText("vim-undo.md", "alpha");
@@ -1122,6 +1157,9 @@ try {
   assert.equal(retainedRecovery.liveImmediately, "alpha", "typing after the old recovery warning reached live text");
   assert.equal(retainedRecovery.finalText, "alpha", "the next tracked edit leaked into live text");
   console.log("editor-browser: an old retained recovery warning does not block fresh tracked resolution");
+  const zoom = await evaluate("editorZoomCheck()");
+  assert.deepEqual(zoom, { before: "14px", prevented: true, grown: "28px", storedGrown: "28", shrunk: "10px", storedShrunk: "10" }, "ctrl+wheel over the source sizes its text and remembers it");
+  console.log("editor-browser: ctrl+wheel over the source sizes its text and remembers it");
 } finally {
   socket?.close();
   await stopBrowserProcess(browser);
