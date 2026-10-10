@@ -455,7 +455,7 @@ console.log("reader-races: all checks passed");
     readQuartoBinding: () => {},
     configureLatex: () => configured++,
   });
-  vm.runInContext(body("  function updatePreviewTarget()", "  function previewThisFile()"), ctx);
+  vm.runInContext(body("  function updatePreviewTarget()", "  // A file added"), ctx);
   vm.runInContext("updatePreviewTarget()", ctx);
   assert.equal(configured, 1);
   assert.equal(ctx.previewMain, "paper.tex");
@@ -1193,7 +1193,7 @@ for (const latest of [
   const ctx = context({
     session: { mainPath: () => 'paper.qmd', paths: new Map(files.map(f => [f.id, f.path])) },
     files, openFile: 'paper.qmd', previewMain: 'paper.qmd', sourceFormat: 'quarto',
-    previewFile: '', canPreviewFile: true, compact: false, layout: 'split',
+    previewFile: '', compact: false, layout: 'split',
     viewing: null, editing: true, editor: { text: () => null },
     liveTreeNow: () => ({main:'paper.qmd',texts,digests:{}}),
     renderers: { formatOf: p => p.endsWith('.typ') ? 'typst' : 'quarto', warm: () => {} },
@@ -1211,7 +1211,7 @@ for (const latest of [
     ctx.openFile = path;
     vm.runInContext('updatePreviewTarget()', ctx);
     assert.equal(ctx.previewMain, previous, 'opening a file does not change the preview');
-    vm.runInContext('previewThisFile()', ctx);
+    vm.runInContext(`previewTheFile(${JSON.stringify(path)})`, ctx);
     assert.equal(ctx.previewMain, path);
     assert.equal(ctx.sourceFormat, path.endsWith('.typ') ? 'typst' : 'quarto');
     assert.equal(vm.runInContext('treeNow().main', ctx), path);
@@ -1221,10 +1221,10 @@ for (const latest of [
   assert.deepEqual(configured, ['typst','typst','quarto']);
   assert.equal(cleared, 3);
   assert.equal(painted, 3);
+  assert.equal(ctx.previewFile, '', 'choosing the main file follows the main again');
   assert.equal(texts['paper.qmd'], '# Quarto');
-  ctx.canPreviewFile = false;
   ctx.openFile = 'data.csv';
-  vm.runInContext('previewThisFile()', ctx);
+  vm.runInContext('previewTheFile("data.csv")', ctx);
   assert.equal(ctx.previewMain, 'paper.qmd', 'unsupported files cannot become preview targets');
 
   // A selected file keeps its identity through a rename and falls back to
@@ -1246,19 +1246,18 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
 {
   const commands = [];
   const ctx = context({
-    previewThisFile: () => commands.push('file'),
     toggleLocalExecution: () => commands.push('local-execution'),
     setLatexOutput: mode => commands.push(`latex-${mode}`),
     chose: value => commands.push(value),
   });
   vm.runInContext(body('  function chooseViewCommand(value)', '  // The File menu.'), ctx);
-  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("local-execution"); chooseViewCommand("layout-split")', ctx);
-  assert.deepEqual(commands, ['file','local-execution','layout-split']);
+  vm.runInContext('chooseViewCommand("local-execution"); chooseViewCommand("layout-split")', ctx);
+  assert.deepEqual(commands, ['local-execution','layout-split']);
   vm.runInContext('chooseViewCommand("preview-latex-html"); chooseViewCommand("preview-latex-pdf")', ctx);
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
   const view = body('{#snippet viewItems()}', '{/snippet}');
   const file = body('{#snippet fileItems()}', '{/snippet}');
-  assert.match(view, /Preview this file/);
+  assert.doesNotMatch(view, /Preview this file/);
   assert.match(view, /@render previewItems\(\)/);
   // Local execution is its own section of the View menu, not another engine.
   assert.match(view, /menu-section-label">Local execution<\/div>/);

@@ -13,7 +13,8 @@
   import { retargetElementAttributes } from "../element-attributes.js";
 
   let { files = [], folders = [], open = "", preview = "", mayEdit = false, rules = {},
-    onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onmain, onfigure, ontext, ondownload, ondownloaditem } = $props();
+    onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onmain, onfigure, ontext, ondownload, ondownloaditem,
+    previewable = () => false, onpreview = undefined } = $props();
 
   let selected = $state([]);
   let expanded = $state([]);
@@ -112,6 +113,7 @@
     const targets = selectionFor(node);
     if (!entry) return;
     if (value === "download") { ondownloaditem?.(entry); return; }
+    if (value === "preview") { onpreview?.(entry); return; }
     if (!mayEdit) return;
     if (value === "rename") start("rename", entry, parentPath(entry.path));
     if (value === "move" || value === "delete") ask(value, targets);
@@ -346,6 +348,7 @@
       {#if node.kind !== "folder"}<Menu.Item value="duplicate" class="menuitem">Duplicate</Menu.Item>{/if}
       {#if node.kind === "text" && !node.main}<Menu.Item value="main" class="menuitem">Set as main file</Menu.Item>{/if}
     {/if}
+    {#if node.kind === "text" && node.path !== preview && previewable(node.path)}<Menu.Item value="preview" class="menuitem">Preview this file</Menu.Item>{/if}
     <Menu.Item value="download" class="menuitem">Download</Menu.Item>
     {#if mayEdit}<Menu.Item value="delete" class="menuitem" disabled={node.main}>Delete…</Menu.Item>{/if}
   </ExplorerMenu>
