@@ -3978,7 +3978,7 @@
   {/if}
 {/snippet}
 
-<Nav {me} reader hidden={barHidden}>
+<Nav {me} phoneMenu hidden={barHidden}>
   {#snippet tools()}
     {#if compact}
       <!-- At compact widths (≤760px), the top bar holds the Menu trigger (the

@@ -420,7 +420,7 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".explorer-scroll").scrollTop'), filesTop);
   assert.equal(await b.evaluate('document.querySelector(".filelist .panel-actions").getBoundingClientRect().bottom <= document.querySelector(".explorer-scroll").getBoundingClientRect().top'), true);
 
-  const barAtRest = `(() => { const nav = document.querySelector("nav.reader-nav").getBoundingClientRect(); return nav.top === 0 && document.documentElement.scrollHeight <= innerHeight ? true : null; })()`;
+  const barAtRest = `(() => { const nav = document.querySelector("nav.phone-menu").getBoundingClientRect(); return nav.top === 0 && document.documentElement.scrollHeight <= innerHeight ? true : null; })()`;
   for (const width of [320,390,600,760]) {
     await b.evaluate('window.refreshTestPresence()');
     await flush();
@@ -442,7 +442,7 @@ try {
       const overlaps=boxes.some((a,i)=>boxes.slice(i+1).some(b=>a.left < b.right-1 && b.left < a.right-1 && a.top < b.bottom-1 && b.top < a.bottom-1));
       return {width:innerWidth,items:boxes,overlaps,presenceAvatars:presence?.querySelectorAll('.avatar').length||0,presenceMore:presence?.querySelector('.presence-more')?.textContent.trim()||'',
         menus:menuItems.map(n=>{const r=n.getBoundingClientRect();return {text:n.textContent.trim(),visible:!!n.getClientRects().length && getComputedStyle(n).display!=='none' && getComputedStyle(n).visibility!=='hidden' && r.width>0 && r.height>0 && r.left>=0 && r.right<=innerWidth};}),
-        faceInTop:!!face?.closest('nav.reader-nav'), faceVisible:!!face?.getClientRects().length, mobileNavExists:!!mobileNav, panelsInTop:!!panels?.closest('nav.reader-nav')};
+        faceInTop:!!face?.closest('nav.phone-menu'), faceVisible:!!face?.getClientRects().length, mobileNavExists:!!mobileNav, panelsInTop:!!panels?.closest('nav.phone-menu')};
     })()`);
     assert.equal(header.overlaps,false,`toolbar controls do not overlap at ${width}px: ${JSON.stringify(header)}`);
     assert.ok(header.items.every(item=>item.width>0 && item.height>0 && item.left>=-1 && item.right<=width+1 && item.top>=0 && item.bottom<=844),`top bar controls stay visible and inside the viewport at ${width}px: ${JSON.stringify(header)}`);
@@ -455,11 +455,11 @@ try {
   }
   await b.resize(900,900); await flush();
   assert.equal(await b.evaluate('Boolean(document.querySelector(".face-switch")?.closest("nav"))'),true,'the source/document switch stays in the top toolbar above 760px');
-  assert.equal(await visible('nav.reader-nav .account'),true,'the account avatar stays in the top bar above 760px');
+  assert.equal(await visible('nav.phone-menu .account'),true,'the account avatar stays in the top bar above 760px');
   await b.resize(390,844); await flush();
   await click(face('Preview'));
   const compactNav = await b.evaluate(`(() => {
-    const navbar = document.querySelector('nav.reader-nav');
+    const navbar = document.querySelector('nav.phone-menu');
     const trigger = navbar?.querySelector('.compact-panels-trigger[aria-label="Menu"]');
     const faceSwitch = navbar?.querySelector('.face-switch');
     const triggerRect = trigger?.getBoundingClientRect();
@@ -494,7 +494,7 @@ try {
   assert.equal(new Set(compactNav.iconSizes.map(size => size?.join('|'))).size,1,'all three controls share an icon size');
   assert.deepEqual(compactNav.gaps,[8,8],'the three controls are separated by equal 8px gaps');
   assert.equal(compactNav.immediatelyLeft,true,'the Menu trigger sits immediately left of the face switch');
-  assert.equal(await visible('nav.reader-nav .account'),false,'the account avatar leaves the phone top bar');
+  assert.equal(await visible('nav.phone-menu .account'),false,'the account avatar leaves the phone top bar');
   await until('top bar at rest before the sign out check', () => b.evaluate(barAtRest), 3000);
   await click('.compact-panels-trigger[aria-label="Menu"]');
   await until('Menu with sign out', () => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(`${panelMenu} [data-workspace-action="signout"]`)}))`), 3000);
@@ -539,7 +539,7 @@ try {
       const menu = node.closest(".explorer-menu");
       const frame = document.querySelector('.viewport iframe');
       const menuRect = menu.getBoundingClientRect();
-      return { top: menuRect.top, left: menuRect.left, width: menuRect.width, bar: document.querySelector("nav.reader-nav").getBoundingClientRect().bottom, panels: Boolean(menu.querySelector(".compact-panels-items")), right: menuRect.right, pointerEvents: frame ? getComputedStyle(frame).pointerEvents : 'missing' };
+      return { top: menuRect.top, left: menuRect.left, width: menuRect.width, bar: document.querySelector("nav.phone-menu").getBoundingClientRect().bottom, panels: Boolean(menu.querySelector(".compact-panels-items")), right: menuRect.right, pointerEvents: frame ? getComputedStyle(frame).pointerEvents : 'missing' };
     })()`), 3000);
     assert.ok(opened.top >= opened.bar, `the ${id} menu opens below the top bar: ${JSON.stringify(opened)}`);
     assert.equal(opened.panels, false, `the Panels menu closes when ${id} opens`);
@@ -625,7 +625,7 @@ try {
       writeFileSync(process.env.LIBREPAPER_COMPACT_SCREENSHOT, Buffer.from(screenshot.data,'base64'));
     }
     const menuBounds = await b.evaluate(`(() => { const menu=document.querySelector(${JSON.stringify(panelMenu)}); const items=document.querySelector('.compact-panels-items'); const rect=menu.getBoundingClientRect();
-      const topBar=document.querySelector('nav.reader-nav').getBoundingClientRect();
+      const topBar=document.querySelector('nav.phone-menu').getBoundingClientRect();
       return {left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,width:innerWidth,height:innerHeight,topBarBottom:topBar?.bottom,
         itemScrollHeight:items?.scrollHeight||0,itemClientHeight:items?.clientHeight||0}; })()`);
     assert.ok(menuBounds.left >= -1 && menuBounds.right <= width + 1, `menu fits horizontally at ${width}px: ${JSON.stringify(menuBounds)}`);

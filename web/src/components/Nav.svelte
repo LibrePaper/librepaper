@@ -15,7 +15,7 @@
   // Page-specific tools may include compact global state, such as the
   // Reader's connection and presence indicator. Pane-specific state stays
   // with the pane it describes.
-  let { me = {}, children = undefined, menus = undefined, tools = undefined, reader = false, hidden = false } = $props();
+  let { me = {}, children = undefined, menus = undefined, tools = undefined, phoneMenu = false, hidden = false } = $props();
 </script>
 
 <!-- The way past the bar. Every page puts twenty-odd controls between the
@@ -25,7 +25,7 @@
      invisible otherwise, which is the only time anyone needs it. -->
 <a class="skip-link" href="#main">Skip to content</a>
 
-<nav class="flex items-center justify-between gap-4" class:reader-nav={reader} class:bar-hidden={hidden}>
+<nav class="flex items-center justify-between gap-4" class:phone-menu={phoneMenu} class:bar-hidden={hidden}>
   <div class="nav-identity flex min-w-0 items-center gap-3">
     {#if children}
       <span class="nav-trail flex min-w-0 items-center gap-3">
@@ -41,8 +41,8 @@
          nothing else: the name itself waits in the menu behind it. A GitHub
          account is its login, and the @ is what says so. A Google account is a
          profile name, which is not a handle and does not wear one; its email
-         is its handle and is shown to nobody, here least of all. The Reader
-         moves the account into its menu on a phone, so this hides there. -->
+         is its handle and is shown to nobody, here least of all. A page with
+         its own phone Menu moves the account into it, so this hides there. -->
     <span class="nav-account flex items-center">
       {#if me.name}
         {@const shown = me.provider === "github" ? `@${me.name}` : me.name}
@@ -82,7 +82,7 @@
   @media (max-width: 760px) {
     .nav-identity { flex: 0 1 auto; }
     .nav-actions { gap: var(--spacing); }
-    .reader-nav .nav-account { display: none; }
+    .phone-menu .nav-account { display: none; }
   }
   /* Narrower than this the bar carries the tools and nothing else: the file
      name is squeezed to nothing here anyway, and both the Files panel and the
@@ -93,7 +93,7 @@
        intrinsic width can make the document itself wider than the phone once
        a page adds its own view and status controls. */
     .nav-actions { gap: var(--spacing); flex-shrink: 1; min-width: 0; }
-    .reader-nav .nav-actions { flex-shrink: 0; }
+    .phone-menu .nav-actions { flex-shrink: 0; }
     .nav-identity { gap: var(--spacing); flex-shrink: 1; min-width: 0; }
     .nav-trail { display: none; }
   }
@@ -101,12 +101,12 @@
     .nav-trail { display: none; }
     /* The same 8px between the hamburger and the two faces as between the
        two faces themselves: one row of thumb-sized controls. */
-    .reader-nav .nav-actions { gap: calc(var(--spacing) * 2); }
+    .phone-menu .nav-actions { gap: calc(var(--spacing) * 2); }
     /* At compact widths the menubar is kept mounted for keyboard navigation
        and the menu logic but rendered invisible and kept out of the flow;
        where its menus open is not decided here, a menu chosen from the Menu
        trigger hangs from that trigger (lib/menubar.svelte.js). */
-    .reader-nav :global(.menubar) {
+    .phone-menu :global(.menubar) {
       position: absolute;
       top: 100%;
       left: calc(var(--spacing) * 2);

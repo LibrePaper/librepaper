@@ -26,6 +26,8 @@
   import Hero from "./Hero.svelte";
   import Toasts from "./Toasts.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
+  import CompactPanelMenu from "./layout/CompactPanelMenu.svelte";
+  import { barHiddenAfter, watchScrolls, revealOnNavFocus } from "../lib/bar-scroll.js";
   import Page from "./layout/Page.svelte";
   import Stack from "./layout/Stack.svelte";
   import Row from "./layout/Row.svelte";
@@ -45,6 +47,9 @@
   function openSettings(category = "editor") {
     settingsCategory = category;
     settingsOpen = true;
+  }
+  function focusOnMount(node) {
+    node.focus();
   }
 
   /** @type {{can_publish?: boolean; name?: string; handle?: string; publishers?: string}} */
@@ -158,6 +163,14 @@
     query.addEventListener("change", watch);
     return () => query.removeEventListener("change", watch);
   });
+  // The phone bar, as in a project. Its search field opens on demand there.
+  let barHidden = $state(false);
+  let searching = $state(false);
+  // The bar steps aside while the list scrolls down on a phone, as in a project.
+  $effect(() => watchScrolls("#main", (delta, top) => { barHidden = narrow ? barHiddenAfter(barHidden, delta, top) : false; }));
+  $effect(() => revealOnNavFocus(() => { barHidden = false; }));
+  $effect(() => { narrow; place; barHidden = false; });
+  $effect(() => { if (!narrow) searching = false; });
 
   const columns = $derived.by(() => {
     const trash = place === "trash";
@@ -913,14 +926,27 @@
   <!-- The workspace half. The trail says where in the account this is, which
        is the same slot a project's title takes when one is open: going in
        replaces the last segment and nothing else in the bar. -->
-  <Nav {me}>
+  <Nav {me} phoneMenu={narrow} hidden={barHidden}>
     {#snippet children()}
       <span class="nav-place">{PLACE_NAMES[place]}</span>
     {/snippet}
     {#snippet tools()}
-      <input class="input project-search" type="search" placeholder="Search projects"
-             aria-label="Search projects by title or file" bind:value={search} />
-      <button type="button" class="btn btn-sm lp-control-outline" onclick={() => openSettings()}>Settings</button>
+      {#if narrow}
+        <CompactPanelMenu tabs={PROJECT_TABS} panel={place} open {me} onselect={goTo} onsettings={() => openSettings()}
+                          counts={trashed.length ? { trash: trashed.length } : {}} />
+        {#if searching}
+          <input class="input project-search" type="search" placeholder="Search projects"
+                 aria-label="Search projects by title or file" bind:value={search} use:focusOnMount
+                 onkeydown={(event) => { if (event.key === "Escape") { search = ""; searching = false; } }} />
+          <IconButton icon="x" label="Close search" onclick={() => { search = ""; searching = false; }} />
+        {:else}
+          <IconButton icon="search" label="Search projects" onclick={() => (searching = true)} />
+        {/if}
+      {:else}
+        <input class="input project-search" type="search" placeholder="Search projects"
+               aria-label="Search projects by title or file" bind:value={search} />
+        <button type="button" class="btn btn-sm lp-control-outline" onclick={() => openSettings()}>Settings</button>
+      {/if}
       {#if me.can_publish}
         <button type="button" class="btn btn-sm nav-new lp-control-brand" aria-label="New project" onclick={() => askName()}>
           <Icon name="file-plus" size={16} />
@@ -930,18 +956,20 @@
     {/snippet}
   </Nav>
 
-  <main id="main" tabindex="-1" class="workspace">
+  <main id="main" tabindex="-1" class="workspace" class:bar-hidden={barHidden}>
     <!-- The rail. Nothing beside it: these are places, and the place you
          choose fills the page rather than a column. `shown.comments` false is
          what the reader's own collapsed column is, so the width here and the
-         width there are the same width. -->
-    <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }} bar={narrow}
-             resizable={false} label="Projects" onselectpanel={goTo}
-             badges={trashed.length ? { trash: { counts: [{ tone: "warnings", of: trashed.length }] } } : {}}>
-      {#snippet controls()}
-        <IconButton icon="settings" label="Settings" tone="plain" onclick={() => openSettings()} />
-      {/snippet}
-    </Sidebar>
+         width there are the same width. A phone has its places in the Menu. -->
+    {#if !narrow}
+      <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }}
+               resizable={false} label="Projects" onselectpanel={goTo}
+               badges={trashed.length ? { trash: { counts: [{ tone: "warnings", of: trashed.length }] } } : {}}>
+        {#snippet controls()}
+          <IconButton icon="settings" label="Settings" tone="plain" onclick={() => openSettings()} />
+        {/snippet}
+      </Sidebar>
+    {/if}
 
     <section class="projects">
       <h1 class="place-heading">{PLACE_NAMES[place]}</h1>
@@ -1462,18 +1490,10 @@
     .compact-sort label { font-size: var(--text-sm); font-weight: 600; }
     .compact-sort select { width: auto; min-width: 0; max-width: 100%; }
     :global(.projects-table td.col-actions) { padding-inline: 0; padding-block: var(--spacing); overflow: visible; }
-    /* The landing rail is navigation, not the Reader's collapsible panel.
-       Put its five destinations in a compact row below the list, while the
-       list keeps the remaining workspace height and its own vertical scroll. */
     .workspace { flex-direction: column; overflow-x: hidden; }
-    .workspace :global(.sidebar),
-    .workspace :global(.sidebar.collapsed) { order: 2; flex: 0 0 auto; width: 100%; border-right: 0; }
-    .workspace :global(.sidebar .sidebar-activity) { flex-direction: row; align-items: center; gap: calc(var(--spacing) * 2); min-height: var(--librepaper-activity); padding-inline: calc(var(--spacing) * 2); }
-    .workspace :global(.sidebar .activity-sections) { display: flex; flex: 1 1 auto; flex-direction: row; justify-content: space-between; overflow-x: auto; overflow-y: hidden; }
-    .workspace :global(.sidebar .activity-bottom) { flex: none; flex-direction: row; margin-top: 0; }
 
     .projects { width: 100%; max-width: 100%; padding-inline: calc(var(--spacing) * 3); }
-    .project-search { width: min(9rem, 32vw); }
+    .project-search { width: min(14rem, 52vw); }
     .nav-new { width: 2rem; padding-inline: 0; }
     .nav-new-label { display: none; }
 
