@@ -325,7 +325,10 @@ try {
   await tab.evaluate("localStorage.removeItem('librepaper:table-widths')");
 
   // Between the phone and tablet widths Owner and Files go, so the title keeps
-  // room for more than a word. The Projects place is the one on screen here.
+  // room for more than a word. The table keeps the widths it read on mount, so
+  // the page loads again without the ones seeded above.
+  await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
+  await until("project list without stored widths", () => tab.evaluate("document.querySelectorAll('.projects-table tbody tr').length > 0"));
   await tab.resize(820, 850);
   await flush();
   await flush();
