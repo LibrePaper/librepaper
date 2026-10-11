@@ -972,25 +972,29 @@
     {/if}
 
     <section class="projects">
-      <h1 class="place-heading">{PLACE_NAMES[place]}</h1>
+      <div class="place-line">
+        <h1 class="place-heading">{PLACE_NAMES[place]}</h1>
 
-      {#if narrow && ["projects", "shared", "favorites", "templates"].includes(place)}
-        <div class="compact-sort">
-          <label for="project-sort">Sort</label>
-          <select id="project-sort" class="select" value={compactSort}
-                  onchange={(event) => chooseCompactSort(event.currentTarget.value)}>
-            <option value="updated:desc">Updated: newest first</option>
-            <option value="updated:asc">Updated: oldest first</option>
-            <option value="title:asc">Title: A–Z</option>
-            <option value="title:desc">Title: Z–A</option>
-            {#if sortBy === "owner"}
-              <option value={`owner:${ascending ? "asc" : "desc"}`}>Owner: {ascending ? "A–Z" : "Z–A"}</option>
-            {:else if sortBy === "files"}
-              <option value={`files:${ascending ? "asc" : "desc"}`}>Files: {ascending ? "fewest first" : "most first"}</option>
-            {/if}
-          </select>
-        </div>
-      {/if}
+        {#if narrow && ["projects", "shared", "favorites", "templates"].includes(place)}
+          <span class="compact-sort">
+            <Icon name="arrow-up-down" />
+            <select id="project-sort" class="select" value={compactSort} aria-label="Sort" title="Sort"
+                    onchange={(event) => chooseCompactSort(event.currentTarget.value)}>
+              <option value="updated:desc">Updated: newest first</option>
+              <option value="updated:asc">Updated: oldest first</option>
+              <option value="title:asc">Title: A–Z</option>
+              <option value="title:desc">Title: Z–A</option>
+              {#if sortBy === "owner"}
+                <option value={`owner:${ascending ? "asc" : "desc"}`}>Owner: {ascending ? "A–Z" : "Z–A"}</option>
+              {:else if sortBy === "files"}
+                <option value={`files:${ascending ? "asc" : "desc"}`}>Files: {ascending ? "fewest first" : "most first"}</option>
+              {/if}
+            </select>
+          </span>
+        {/if}
+
+        {#if narrow && place !== "trash" && !selected.size}<span class="place-count">({shown.length})</span>{/if}
+      </div>
 
       <!-- Where a project comes from, for an account that has not made one
            yet. It is above the list rather than in it: a template is
@@ -1030,9 +1034,11 @@
           <IconButton icon="x" label="Clear the selection" onclick={() => (selected = new Set())} />
         </div>
       {:else if place !== "trash"}
-        <div class="toolbar">
-          <span class="row-count">{shown.length}{place === "templates" ? (shown.length === 1 ? " template" : " templates") : shown.length === 1 ? " project" : " projects"}</span>
-        </div>
+        {#if !narrow}
+          <div class="toolbar">
+            <span class="row-count">{shown.length}{place === "templates" ? (shown.length === 1 ? " template" : " templates") : shown.length === 1 ? " project" : " projects"}</span>
+          </div>
+        {/if}
       {:else}
         <div class="toolbar">
           <span class="row-count">Projects here are deleted for good seven days after they were put in the trash.</span>
@@ -1400,6 +1406,7 @@
 
   .projects { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto; padding: calc(var(--spacing) * 6) calc(var(--spacing) * 6) calc(var(--spacing) * 10); gap: calc(var(--spacing) * 4); }
   .place-heading { font-size: var(--text-2xl); font-weight: 600; margin: 0; }
+  .place-line { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
 
   .starters { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); }
   .starters-say { color: var(--color-text-secondary); font-size: var(--text-sm); margin-right: calc(var(--spacing)); }
@@ -1486,9 +1493,11 @@
      to find a project, and neither how many files it has, who owns it, nor
      when it changed belongs in the compact row. */
   @media (max-width: 760px) {
-    .compact-sort { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
-    .compact-sort label { font-size: var(--text-sm); font-weight: 600; }
-    .compact-sort select { width: auto; min-width: 0; max-width: 100%; }
+    .place-heading { font-size: var(--text-lg); }
+    .compact-sort { display: inline-grid; position: relative; place-items: center; width: 2rem; height: 2rem; color: var(--color-text-secondary); }
+    .compact-sort :global(svg) { width: 1.125rem; height: 1.125rem; }
+    .compact-sort select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+    .place-count { color: var(--color-text-secondary); font-size: var(--text-sm); }
     :global(.projects-table td.col-actions) { padding-inline: 0; padding-block: var(--spacing); overflow: visible; }
     .workspace { flex-direction: column; overflow-x: hidden; }
 

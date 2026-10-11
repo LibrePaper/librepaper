@@ -48,6 +48,8 @@
     "chevron-down": [["path", "m6 9 6 6 6-6"]],
     "chevron-up": [["path", "m18 15-6-6-6 6"]],
     "list-filter": [["path", "M3 6h18"], ["path", "M7 12h10"], ["path", "M10 18h4"]],
+    // Lucide's arrow-up-down, for the phone's sort control.
+    "arrow-up-down": [["path", "m21 16-4 4-4-4"], ["path", "M17 20V4"], ["path", "m3 8 4-4 4 4"], ["path", "M7 4v16"]],
     // Lucide's diff, for "compare since this label" in the timeline.
     diff: [["path", "M12 3v14"], ["path", "M5 10h14"], ["path", "M5 21h14"]],
     "chevron-right": [["path", "m9 6 6 6-6 6"]],
