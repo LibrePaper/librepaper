@@ -71,7 +71,6 @@
   import { archive, availableDownloads, docxFile, entryDownload, projectFiles, renderingFile, saveBlob } from "../lib/reader/downloads.js";
   import Preview from "./Preview.svelte";
   import PreviewControls from "./PreviewControls.svelte";
-  import PreviewTarget from "./PreviewTarget.svelte";
   import Grip from "./Grip.svelte";
   import { parseRenderOptions } from "../lib/quarto-options.js";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
@@ -3135,10 +3134,6 @@
     return unrenderableMain({ mainPath: previewMain || session?.mainPath?.() || "", formatOf: renderers.formatOf });
   });
   const editorFormat = $derived(renderers.formatOf(toolbarPath) || sourceFormat);
-  const previewChoices = $derived(files
-    .filter((file) => file.kind === "text" && renderers.formatOf(file.path))
-    .map((file) => ({ id: file.id, path: file.path }))
-    .sort((a, b) => a.path.localeCompare(b.path)));
   loadConfig()
     .then((answer) => {
       workspace.setRules(answer || {});
@@ -4345,9 +4340,6 @@
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
        would reload the document and lose the reader's place in it. -->
   {#snippet previewControls()}
-    {#if previewChoices.length > 1}
-      <PreviewTarget current={previewMain || session?.mainPath?.() || ""} choices={previewChoices} onchoose={previewTheFile} />
-    {/if}
     {#if viewerView}
       <PreviewControls mode={viewerView.mode} scale={viewerView.scale} tool={viewerTool}
         onmode={(mode) => {
