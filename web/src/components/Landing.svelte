@@ -1494,7 +1494,8 @@
 
     .projects { width: 100%; max-width: 100%; padding-inline: calc(var(--spacing) * 3); }
     .project-search { width: min(14rem, 52vw); }
-    .nav-new { width: 2rem; padding-inline: 0; }
+    .nav-new { width: 2.625rem; height: 2.625rem; padding-inline: 0; }
+    .nav-new :global(svg) { width: 1.375rem; height: 1.375rem; }
     .nav-new-label { display: none; }
 
     /* One 44px menu trigger keeps the action column small and the title row

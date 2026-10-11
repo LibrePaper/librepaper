@@ -940,6 +940,11 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 
 /* Shared controls use the same shape; ordinary icon actions stay quiet. */
 .icon-standard { --btn-size: 1.0625rem; }
+/* A finger needs more than a pointer: on a phone the icons are 22px in 42px
+   buttons, near the 24px icon and 44-48px target both platforms ask for. */
+@media (max-width: 760px) {
+  .icon-standard { --btn-size: 1.375rem; }
+}
 .icon-plain:hover:not(:disabled) { background: var(--color-row-hover); }
 .icon-control:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 
