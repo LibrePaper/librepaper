@@ -1193,7 +1193,7 @@ for (const latest of [
   const ctx = context({
     session: { mainPath: () => 'paper.qmd', paths: new Map(files.map(f => [f.id, f.path])) },
     files, openFile: 'paper.qmd', previewMain: 'paper.qmd', sourceFormat: 'quarto',
-    previewFile: '', compact: false, layout: 'split',
+    previewFile: '', canPreviewFile: true, compact: false, layout: 'split',
     viewing: null, editing: true, editor: { text: () => null },
     liveTreeNow: () => ({main:'paper.qmd',texts,digests:{}}),
     renderers: { formatOf: p => p.endsWith('.typ') ? 'typst' : 'quarto', warm: () => {} },
@@ -1246,18 +1246,19 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
 {
   const commands = [];
   const ctx = context({
+    previewTheFile: id => commands.push(`file:${id}`), openFile: 'paper.tex',
     toggleLocalExecution: () => commands.push('local-execution'),
     setLatexOutput: mode => commands.push(`latex-${mode}`),
     chose: value => commands.push(value),
   });
   vm.runInContext(body('  function chooseViewCommand(value)', '  // The File menu.'), ctx);
-  vm.runInContext('chooseViewCommand("local-execution"); chooseViewCommand("layout-split")', ctx);
-  assert.deepEqual(commands, ['local-execution','layout-split']);
+  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("local-execution"); chooseViewCommand("layout-split")', ctx);
+  assert.deepEqual(commands, ['file:paper.tex','local-execution','layout-split']);
   vm.runInContext('chooseViewCommand("preview-latex-html"); chooseViewCommand("preview-latex-pdf")', ctx);
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
   const view = body('{#snippet viewItems()}', '{/snippet}');
   const file = body('{#snippet fileItems()}', '{/snippet}');
-  assert.doesNotMatch(view, /Preview this file/);
+  assert.match(view, /Preview this file/);
   assert.match(view, /@render previewItems\(\)/);
   // Local execution is its own section of the View menu, not another engine.
   assert.match(view, /menu-section-label">Local execution<\/div>/);

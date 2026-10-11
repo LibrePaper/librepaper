@@ -514,7 +514,7 @@ try {
   // The bar may be stepping aside after the resize above, and its slide briefly
   // gives the page a scrollbar that moves the trigger. Bring it back the way
   // focus does and let it come to rest before opening anything from it.
-  for (const [id, item] of [["file", "Settings…"], ["view", "HTML"]]) {
+  for (const [id, item] of [["file", "Settings…"], ["view", "Preview this file"]]) {
     await b.evaluate('document.querySelector(".compact-panels-trigger").focus()');
     await until(`top bar at rest before ${id}`, () => b.evaluate(barAtRest), 3000);
     await click('.compact-panels-trigger[aria-label="Menu"]');

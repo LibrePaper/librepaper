@@ -116,7 +116,7 @@ const dialog = element({}, '[role="dialog"], [role="menu"], [role="alertdialog"]
 const workspace = {
   mayEdit: true, editing: true, compact: false,
   panels: ["files", "outline", "collaboration", "history", "share"],
-  preview: true, compilable: true,
+  preview: true, compilable: true, canPreviewFile: true,
   downloads: { pdf: true, html: false, docx: false },
   edit: { undo: true, redo: true, cut: true, copy: true, paste: true, "select-all": true, find: true, replace: true },
 };

@@ -2951,6 +2951,7 @@
     }
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
     if (value === "preview-latex-html") return void setLatexOutput("html");
+    if (value === "preview-file") return previewTheFile(openFile);
     if (value === "local-execution") return toggleLocalExecution();
     if (value === "preview-typst-pdf") return void setTypstOutput("pdf");
     if (value === "preview-typst-html") return void setTypstOutput("html");
@@ -3134,6 +3135,8 @@
     return unrenderableMain({ mainPath: previewMain || session?.mainPath?.() || "", formatOf: renderers.formatOf });
   });
   const editorFormat = $derived(renderers.formatOf(toolbarPath) || sourceFormat);
+  const canPreviewFile = $derived(files.some((file) =>
+    file.id === openFile && file.kind === "text" && Boolean(renderers.formatOf(file.path))));
   loadConfig()
     .then((answer) => {
       workspace.setRules(answer || {});
@@ -3733,6 +3736,7 @@
     panels: tabs.map((tab) => tab.id),
     preview: shown.document,
     compilable: mayEdit && sourceFormat === "latex" && compilesHere,
+    canPreviewFile,
     downloads: {
       pdf: previewOutputKind === "pdf" && Boolean(downloads.pdf),
       html: previewOutputKind !== "pdf" && Boolean(downloads.html),
@@ -3768,6 +3772,7 @@
     if (id === "focus-preview") return focusPreview();
     if (id === "layout-cycle") return cycleLayout();
     if (LAYOUT_COMMANDS.includes(id)) return chose(id);
+    if (id === "preview-file") return chooseViewCommand(id);
     return chooseFileCommand(id);
   }
 
@@ -3939,6 +3944,8 @@
 {/snippet}
 
 {#snippet viewItems()}
+  <Menu.Item value="preview-file" class="menuitem" disabled={!can["preview-file"]}>Preview this file</Menu.Item>
+  <hr class="hr my-1" />
   {@render previewItems()}
   {#if localExecutionRelevant}
     <!-- Permission is per (origin, user, document slug), remembered in this

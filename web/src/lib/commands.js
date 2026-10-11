@@ -225,6 +225,7 @@ export const COMMANDS = [
 
   // The preview.
   { id: "compile", label: "Compile now", category: "Preview", scope: "preview", menu: "file", keys: ["Mod+Alt+B"], available: (c) => Boolean(c.compilable), note: "Compiled document" },
+  { id: "preview-file", label: "Preview this file", category: "Preview", scope: "preview", menu: "view", keys: [], available: (c) => Boolean(c.canPreviewFile) },
 
   // The project. None of these is bound to anything: they are here so the
   // palette can offer them by name and so the one list stays the one list.
