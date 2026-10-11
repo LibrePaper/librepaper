@@ -932,7 +932,7 @@
     {/snippet}
     {#snippet tools()}
       {#if narrow}
-        <CompactPanelMenu tabs={PROJECT_TABS} panel={place} open {me} onselect={goTo} onsettings={() => openSettings()}
+        <CompactPanelMenu tabs={PROJECT_TABS} panel={place} open pressed={false} {me} onselect={goTo} onsettings={() => openSettings()}
                           counts={trashed.length ? { trash: trashed.length } : {}} />
         {#if searching}
           <input class="input project-search" type="search" placeholder="Search projects"

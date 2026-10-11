@@ -6,7 +6,9 @@
   import { PANEL_POSITIONING } from "../../lib/menubar.svelte.js";
   import { signInHref, signOut } from "../../lib/api.js";
 
-  let { tabs = [], panel = "", open = false, onselect, onsettings, menus = [], onmenu, me = {}, counts = {} } = $props();
+  // `open` marks the current tab and, by default, tints the trigger; a page
+  // whose places are always open passes `pressed={false}` to keep it plain.
+  let { tabs = [], panel = "", open = false, pressed = open, onselect, onsettings, menus = [], onmenu = undefined, me = {}, counts = {} } = $props();
 
   // The menu is portalled so it cannot inherit a height; measure the room
   // between the top bar and the visual viewport and let the scrolling region
@@ -73,7 +75,7 @@
   positioning={PANEL_POSITIONING}
 >
   <Menu.Trigger
-    class={`btn-icon icon-control icon-standard compact-panels-trigger ${open ? "lp-control-tonal-brand" : "icon-plain"}`}
+    class={`btn-icon icon-control icon-standard compact-panels-trigger ${pressed ? "lp-control-tonal-brand" : "icon-plain"}`}
     aria-label="Menu"
   >
     <Icon name="menu" />

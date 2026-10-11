@@ -128,7 +128,7 @@ try {
     assert.equal(await tab.evaluate(`Boolean(document.querySelector('body > nav button[aria-label="Search projects"]'))`), true, `${width}px: the top bar has the search button`);
     assert.equal(await tab.evaluate(`Boolean(document.querySelector('body > nav input.project-search'))`), false, `${width}px: no search field until the button is pressed`);
     assert.equal(await tab.evaluate(`(() => { const node = document.querySelector('.nav-actions .account'); return !node || node.getClientRects().length === 0; })()`), true, `${width}px: the account avatar is hidden (it lives in the Menu)`);
-    assert.equal(await tab.evaluate("getComputedStyle(document.querySelector('.nav-actions')).columnGap"), "4px", `${width}px: the nav actions keep a 4px column gap`);
+    assert.equal(await tab.evaluate("getComputedStyle(document.querySelector('.nav-actions')).columnGap"), "8px", `${width}px: the nav actions keep the editor's 8px gap`);
     await click(searchButton);
     await until("search field open", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(searchField)}))`));
     assert.equal(await tab.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(searchField)})`), true, `${width}px: the search field is focused`);
@@ -170,9 +170,14 @@ try {
     writeFileSync(process.env.LIBREPAPER_LANDING_SCREENSHOT, Buffer.from(data, "base64"));
   }
 
-  // The Menu's Trash item shows how many projects are in the trash.
+  // The Menu's Trash item shows how many projects are in the trash, once the
+  // trash has been read: like the desktop rail's badge, it is fetched on a visit.
   await tab.resize(390, 850);
   await flush();
+  await goPlace("trash");
+  await until("trash place", () => tab.evaluate(`document.querySelector('.place-heading')?.textContent.trim() === "Trash"`));
+  await goPlace("projects");
+  await until("projects place", () => tab.evaluate(`document.querySelector('.place-heading')?.textContent.trim() === "Projects"`));
   await click("body > nav .compact-panels-trigger");
   await until("places menu for the trash count", () => tab.evaluate(`Boolean(document.querySelector('.explorer-menu[data-state="open"] [data-panel-id="trash"]'))`));
   await until("trash count in the Menu", () => tab.evaluate(`document.querySelector('.explorer-menu[data-state="open"] [data-panel-id="trash"] .menuitem-count')?.textContent.trim() === "1"`));
