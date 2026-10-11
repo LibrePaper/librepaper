@@ -308,6 +308,22 @@ try {
   await click('.explorer-menu[data-state="open"] [data-project-action="restore"]');
   await until("project restored", () => tab.evaluate("testCalls.some(call => call.path === '/api/documents/gone/untrash')"));
 
+  // Widths stored by a desktop drag must not reach the phone layout. The
+  // actions column is not resizable, and the title takes the row up to the menu.
+  // The table reads its stored widths on mount, so seed them, then load the
+  // Projects place again at desktop width before going to phone width.
+  await tab.resize(1100, 850);
+  await tab.evaluate(`localStorage.setItem('librepaper:table-widths', JSON.stringify({ 'projects:projects': { mark: 44, title: 120, owner: 210, files: 90, updated: 130, actions: 150 } }))`);
+  await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
+  await until("project list after seeding widths", () => tab.evaluate("document.querySelectorAll('.projects-table tbody tr').length > 0"));
+  await tab.resize(390, 850);
+  await flush();
+  await flush();
+  const phoneWidths = await tab.evaluate(`(() => { const width = (selector) => document.querySelector(selector)?.getBoundingClientRect().width ?? 0; return { actions: width('th[data-column=actions]'), title: width('th[data-column=title]'), table: width('.projects-table') }; })()`);
+  assert.ok(Math.abs(phoneWidths.actions - 48) <= 1, "390px: a stored desktop width does not widen the menu column");
+  assert.ok(phoneWidths.title >= phoneWidths.table - 44 - 48 - 2, "390px: the title takes the row up to the menu");
+  await tab.evaluate("localStorage.removeItem('librepaper:table-widths')");
+
   console.log("landing-browser: compact project actions, row density, responsive metadata, keyboard access and project operations passed");
 } finally {
   await tab?.close();

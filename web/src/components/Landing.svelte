@@ -155,6 +155,8 @@
   // On a narrow window the two widest columns of metadata go. They are
   // dropped from the list rather than hidden in CSS, because a column that is
   // still in the table still has a width, and the table would keep its room.
+  // Nothing can be dragged there either, so the title takes whatever
+  // the checkbox and the menu leave.
   let narrow = $state(false);
   $effect(() => {
     const query = window.matchMedia("(max-width: 760px)");
@@ -178,7 +180,7 @@
     // literal inferred from its first two entries refuses every later one.
     const list = /** @type {Record<string, any>[]} */ ([
       { key: "mark", label: "", width: 44, resizable: false },
-      { key: "title", label: "Project", sortable: true, min: 160 },
+      { key: "title", label: "Project", sortable: true, min: 160, resizable: !narrow },
     ]);
     if (!narrow) list.push({ key: "owner", label: "Owner", sortable: true, width: 210, min: 120 });
     if (!trash && !narrow) list.push({ key: "files", label: "Files", sortable: true, width: 90, min: 60 });

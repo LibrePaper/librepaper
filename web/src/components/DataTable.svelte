@@ -75,7 +75,10 @@
   });
 
   const floor = (column) => Math.max(FLOOR, column.min || FLOOR);
-  const sized = (column) => widths[column.key] ?? column.width ?? null;
+  // A column that cannot be dragged keeps the width its caller gives it, which
+  // can change with the layout. A width stored by a wider layout must not pin it.
+  const dragged = (column) => (column.resizable === false ? undefined : widths[column.key]);
+  const sized = (column) => dragged(column) ?? column.width ?? null;
   // The grip's aria-valuenow: what the column is actually set to, or its
   // floor when nothing has set it yet -- never null, because a focusable
   // separator with no value fails axe's aria-required-attr check.
@@ -83,7 +86,7 @@
   // A table whose columns have been pinned wider than the page scrolls rather
   // than squeezing them back to where they were.
   const least = $derived(
-    columns.reduce((total, column) => total + (widths[column.key] ?? column.min ?? 0), 0),
+    columns.reduce((total, column) => total + (dragged(column) ?? column.min ?? 0), 0),
   );
 
   /// Drag from the edge of a heading.
