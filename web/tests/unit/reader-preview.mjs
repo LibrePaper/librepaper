@@ -112,8 +112,7 @@ assert.match(readerSource, /tell\(\{ type: "viewer-scale", mode \}\)/);
 assert.match(readerSource, /tell\(\{ type: "viewer-tool", tool: next \}\)/);
 // No PDF in the frame, no paged controls in the header: that is what keeps
 // the row honest for a flowing document, which has none of them.
-// The file picker comes first and is drawn for every format.
-assert.match(readerSource, /\{#snippet previewControls\(\)\}\s*\{#if previewChoices\.length > 1\}\s*<PreviewTarget [^>]*\/>\s*\{\/if\}\s*\{#if viewerView\}\s*<PreviewControls/);
+assert.match(readerSource, /\{#snippet previewControls\(\)\}\s*\{#if viewerView\}/);
 const viewerSource = await readFile(new URL("../../src/entries/viewer.js", import.meta.url), "utf8");
 // Nothing of the frame's own is drawn over the page any more.
 assert.doesNotMatch(viewerSource, /createToolbar/);
