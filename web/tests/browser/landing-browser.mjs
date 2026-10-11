@@ -136,8 +136,8 @@ try {
     await until("search field closed", () => tab.evaluate(`!document.querySelector(${JSON.stringify(searchField)})`));
     assert.equal(await tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(searchButton)}))`), true, `${width}px: closing search brings the search button back`);
     // The list scrolls itself; the bar hides on scrolling down and returns on scrolling up.
-    // The padding keeps these scrolls far from the end, where the bar holds still.
-    await tab.evaluate(`document.querySelector('.projects').style.paddingBottom = '2000px'`);
+    // The spacer keeps these scrolls far from the end, where the bar holds still.
+    await tab.evaluate(`(() => { const spacer = document.createElement('div'); spacer.id = 'scroll-spacer'; spacer.style.cssText = 'flex: none; height: 2000px'; document.querySelector('.projects').append(spacer); })()`);
     await scrollList(10);
     await flush();
     await scrollList(300);
@@ -147,7 +147,7 @@ try {
     await flush();
     assert.deepEqual(await barState(), { nav: false, main: false }, `${width}px: scrolling the list up shows the bar`);
     await tab.evaluate("document.querySelector('.projects').scrollTop = 0");
-    await tab.evaluate("document.querySelector('.projects').style.paddingBottom = ''");
+    await tab.evaluate("document.querySelector('#scroll-spacer').remove()");
     await click(trigger("owned"));
     await until("owned actions menu", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(openActions)}))`));
     const bounds = await tab.evaluate(`(() => { const menu=document.querySelector('.explorer-menu[data-state="open"]'); const rect=menu?.getBoundingClientRect(); return rect && {left:rect.left,right:rect.right,width:innerWidth,text:menu.innerText}; })()`);
