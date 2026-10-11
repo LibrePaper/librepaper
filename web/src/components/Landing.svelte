@@ -152,12 +152,12 @@
   // Only the two columns that hold controls rather than content are fixed --
   // there is nothing in them to make room for.
   //
-  // On a narrow window the metadata columns go. They are
-  // dropped from the list rather than hidden in CSS, because a column that is
-  // still in the table still has a width, and the table would keep its room.
-  // Nothing can be dragged there either, so the title takes whatever
-  // the checkbox and the menu leave. Below 1024px Owner and Files go too,
-  // because the four fixed columns would otherwise leave the title one word wide.
+  // Below 1024px Owner and Files go, because the four fixed columns would
+  // otherwise leave the title one word wide. On a narrow window the date goes
+  // too. They are dropped from the list rather than hidden in CSS, because a
+  // column that is still in the table still has a width, and the table would
+  // keep its room. Nothing can be dragged on a narrow window either, so the
+  // title takes whatever the checkbox and the menu leave.
   let narrow = $state(false);
   $effect(() => {
     const query = window.matchMedia("(max-width: 760px)");
