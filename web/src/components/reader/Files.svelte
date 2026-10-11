@@ -58,12 +58,16 @@
   });
   // The selection follows a file opened elsewhere too (the preview eye, the
   // outline), so choosing the file that was open before is still a change the
-  // tree reports. A selection of several items is left alone.
+  // tree reports. It moves only when the open file changes, and a selection of
+  // several items is left alone.
   $effect(() => {
-    const file = files.find((entry) => entry.id === open);
-    if (!file) return;
-    const key = nodeKey(file);
-    untrack(() => { if (selected.length <= 1 && selected[0] !== key) selected = [key]; });
+    const id = open;
+    untrack(() => {
+      const file = files.find((entry) => entry.id === id);
+      if (!file) return;
+      const key = nodeKey(file);
+      if (selected.length <= 1 && selected[0] !== key) selected = [key];
+    });
   });
 
   function entryOf(node) { return node.kind === "folder" ? { kind: "folder", id: node.path, path: node.path } : files.find((file) => file.id === node.fileId && file.kind === node.kind); }
