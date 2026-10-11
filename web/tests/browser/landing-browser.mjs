@@ -104,6 +104,17 @@ try {
   const row = (slug) => `document.querySelector(${JSON.stringify(trigger(slug))})?.closest('tr')`;
   const rowHeight = (slug) => tab.evaluate(`${row(slug)}?.getBoundingClientRect().height || 0`);
   const visible = (selector) => tab.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); return !!node?.getClientRects().length && getComputedStyle(node).visibility !== 'hidden'; })()`);
+  const searchButton = 'body > nav button[aria-label="Search projects"]';
+  const searchField = 'body > nav input.project-search';
+  const closeSearch = 'body > nav button[aria-label="Close search"]';
+  const scrollList = (top) => tab.evaluate(`(() => { const list = document.querySelector('.projects'); list.scrollTop = ${top}; list.dispatchEvent(new Event('scroll')); })()`);
+  const barState = () => tab.evaluate(`({ nav: document.querySelector('body > nav').classList.contains('bar-hidden'), main: document.querySelector('main#main').classList.contains('bar-hidden') })`);
+  // At phone width the places live in the Menu, not on the rail.
+  const goPlace = async (id) => {
+    await click("body > nav .compact-panels-trigger");
+    await until("places menu", () => tab.evaluate(`Boolean(document.querySelector('.explorer-menu[data-state="open"]'))`));
+    await click(`.explorer-menu[data-state="open"] [data-panel-id="${id}"]`);
+  };
 
   for (const width of [320, 390, 760]) {
     await tab.resize(width, 850);
@@ -112,11 +123,30 @@ try {
     assert.equal(await tab.evaluate("document.querySelectorAll('.mobile-updated').length"), 0, `${width}px: no inline relative dates`);
     assert.equal(await tab.evaluate("Boolean(document.querySelector('th[data-column=updated]'))"), false, `${width}px: updated column is hidden`);
     assert.ok(await rowHeight("owned") <= 65, `${width}px: ordinary rows stay compact (${await rowHeight("owned")}px)`);
-    assert.equal(await tab.evaluate("document.querySelectorAll('.activity-sections .icon-control').length"), 6, `${width}px: six bottom rail icons`);
-    assert.equal(await tab.evaluate("document.querySelectorAll('.activity-sections .compact-label').length"), 0, `${width}px: the bottom rail has no words under its icons`);
-    assert.equal(await tab.evaluate("(() => { const rail = document.querySelector('.activity-sections'); return rail.scrollWidth <= rail.clientWidth; })()"), true, `${width}px: the bottom rail fits without scrolling`);
-    const navGap = await tab.evaluate(`(() => { const actions=document.querySelector('.nav-actions'); const project=document.querySelector('.nav-new'); const account=document.querySelector('.nav-actions .account'); return { gap:getComputedStyle(actions).columnGap, between:Math.round(account.getBoundingClientRect().left-project.getBoundingClientRect().right) }; })()`);
-    assert.deepEqual(navGap, { gap: "4px", between: 4 }, `${width}px: new-project and account controls keep a 4px gap`);
+    assert.equal(await tab.evaluate("document.querySelectorAll('.activity-sections').length"), 0, `${width}px: there is no bottom rail`);
+    assert.equal(await tab.evaluate(`Boolean(document.querySelector('body > nav .compact-panels-trigger[aria-label="Menu"]'))`), true, `${width}px: the top bar has the Menu button`);
+    assert.equal(await tab.evaluate(`Boolean(document.querySelector('body > nav button[aria-label="Search projects"]'))`), true, `${width}px: the top bar has the search button`);
+    assert.equal(await tab.evaluate(`Boolean(document.querySelector('body > nav input.project-search'))`), false, `${width}px: no search field until the button is pressed`);
+    assert.equal(await tab.evaluate(`(() => { const node = document.querySelector('.nav-actions .account'); return !node || node.getClientRects().length === 0; })()`), true, `${width}px: the account avatar is hidden (it lives in the Menu)`);
+    assert.equal(await tab.evaluate("getComputedStyle(document.querySelector('.nav-actions')).columnGap"), "4px", `${width}px: the nav actions keep a 4px column gap`);
+    await click(searchButton);
+    await until("search field open", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(searchField)}))`));
+    assert.equal(await tab.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(searchField)})`), true, `${width}px: the search field is focused`);
+    await click(closeSearch);
+    await until("search field closed", () => tab.evaluate(`!document.querySelector(${JSON.stringify(searchField)})`));
+    assert.equal(await tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(searchButton)}))`), true, `${width}px: closing search brings the search button back`);
+    // The list scrolls itself; the bar hides on scrolling down and returns on scrolling up.
+    const padded = await tab.evaluate(`(() => { const list = document.querySelector('.projects'); if (list.scrollHeight > list.clientHeight) return false; list.style.paddingBottom = '2000px'; return true; })()`);
+    await scrollList(10);
+    await flush();
+    await scrollList(300);
+    await flush();
+    assert.deepEqual(await barState(), { nav: true, main: true }, `${width}px: scrolling the list down hides the bar`);
+    await scrollList(100);
+    await flush();
+    assert.deepEqual(await barState(), { nav: false, main: false }, `${width}px: scrolling the list up shows the bar`);
+    await tab.evaluate("document.querySelector('.projects').scrollTop = 0");
+    if (padded) await tab.evaluate("document.querySelector('.projects').style.paddingBottom = ''");
     await click(trigger("owned"));
     await until("owned actions menu", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(openActions)}))`));
     const bounds = await tab.evaluate(`(() => { const menu=document.querySelector('.explorer-menu[data-state="open"]'); const rect=menu?.getBoundingClientRect(); return rect && {left:rect.left,right:rect.right,width:innerWidth,text:menu.innerText}; })()`);
@@ -139,6 +169,15 @@ try {
     const { data } = await tab.command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     writeFileSync(process.env.LIBREPAPER_LANDING_SCREENSHOT, Buffer.from(data, "base64"));
   }
+
+  // The Menu's Trash item shows how many projects are in the trash.
+  await tab.resize(390, 850);
+  await flush();
+  await click("body > nav .compact-panels-trigger");
+  await until("places menu for the trash count", () => tab.evaluate(`Boolean(document.querySelector('.explorer-menu[data-state="open"] [data-panel-id="trash"]'))`));
+  await until("trash count in the Menu", () => tab.evaluate(`document.querySelector('.explorer-menu[data-state="open"] [data-panel-id="trash"] .menuitem-count')?.textContent.trim() === "1"`));
+  await key("Escape");
+  await flush();
 
   // Desktop retains the metadata and its full action row.
   await tab.resize(1100, 850);
@@ -164,7 +203,7 @@ try {
   // but cannot be renamed or trashed.
   await tab.resize(390, 850);
   await flush();
-  await click('.rail-item button[aria-label="Shared with me"]');
+  await goPlace("shared");
   await until("shared projects", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(trigger("shared"))}))`));
   await click(trigger("shared"));
   const sharedActions = await menuActions();
@@ -197,7 +236,7 @@ try {
 
   // The desktop row action removes the same document. Its preference survives
   // a reload, and All projects offers a direct way to show it in Shared again.
-  await click('.rail-item button[aria-label="Projects"]');
+  await goPlace("projects");
   await until("all projects after undo", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(trigger("owned"))}))`));
   await tab.resize(1100, 850);
   await flush();
@@ -255,7 +294,7 @@ try {
 
   // Trash rows keep restore and permanent-delete reachable through the same
   // narrow menu; restore leaves the trash after its request succeeds.
-  await tab.evaluate("[...document.querySelectorAll('.rail-item button')].find(button => button.getAttribute('aria-label') === 'Trash').click()");
+  await goPlace("trash");
   await until("trash loaded", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(trigger("gone"))}))`));
   await click('.project-actions-trigger[data-project-slug="gone"]');
   const trashActions = await menuActions();
