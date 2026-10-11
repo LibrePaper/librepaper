@@ -767,6 +767,9 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
     --librepaper-bar-visible: 0px;
     margin-top: calc(-1 * var(--librepaper-bar));
   }
+  /* The project list does the same: it rises into the space the bar leaves. */
+  main.workspace { transition: margin-top 200ms ease, height 200ms ease; }
+  main.workspace.bar-hidden { margin-top: calc(-1 * var(--librepaper-bar)); height: 100dvh; }
   body > nav {
     transition: transform 200ms ease;
   }

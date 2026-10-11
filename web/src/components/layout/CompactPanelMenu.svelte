@@ -6,7 +6,7 @@
   import { PANEL_POSITIONING } from "../../lib/menubar.svelte.js";
   import { signInHref, signOut } from "../../lib/api.js";
 
-  let { tabs = [], panel = "", open = false, onselect, onsettings, menus = [], onmenu, me = {} } = $props();
+  let { tabs = [], panel = "", open = false, onselect, onsettings, menus = [], onmenu, me = {}, counts = {} } = $props();
 
   // The menu is portalled so it cannot inherit a height; measure the room
   // between the top bar and the visual viewport and let the scrolling region
@@ -103,6 +103,7 @@
           <span class="menuitem-check" aria-hidden="true">{selected ? "✓" : ""}</span>
           <Icon name={tab.icon} size="1rem" />
           <span class="menuitem-label">{tab.says}</span>
+          {#if counts[tab.id]}<span class="menuitem-count">{counts[tab.id]}</span>{/if}
         </Menu.Item>
       {/each}
       <div class="compact-panels-divider" role="separator"></div>
@@ -167,6 +168,8 @@
     justify-content: center;
     padding: 0;
   }
+
+  .menuitem-count { margin-inline-start: auto; color: var(--color-text-secondary); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
 
   .compact-label {
     display: block;
