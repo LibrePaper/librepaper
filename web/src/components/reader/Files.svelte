@@ -113,7 +113,6 @@
     const targets = selectionFor(node);
     if (!entry) return;
     if (value === "download") { ondownloaditem?.(entry); return; }
-    if (value === "preview") { onpreview?.(entry); return; }
     if (!mayEdit) return;
     if (value === "rename") start("rename", entry, parentPath(entry.path));
     if (value === "move" || value === "delete") ask(value, targets);
@@ -327,11 +326,16 @@
   {:else}
     <span class="explorer-name">{node.name}</span>
   {/if}
-  <!-- Which file the preview is rendering, marked where the files are rather
-       than only in the View menu: the name pushes it to the far end, so the
-       column of eyes reads as one mark down the tree and not as a control. -->
+  <!-- The eye marks the file in the preview. On any other file that can be
+       previewed it is the button that moves the preview there, on a phone as
+       on a desktop. -->
   {#if node.kind !== "folder" && node.path === preview}
-    <span class="explorer-preview" role="img" aria-label="Shown in the preview"><Icon name="eye" /></span>
+    <span class="explorer-preview shown" role="img" aria-label="Shown in the preview"><Icon name="eye" /></span>
+  {:else if node.kind === "text" && previewable(node.path)}
+    <button type="button" class="explorer-preview" aria-label="Preview {node.name}" title="Preview this file"
+      onclick={(event) => { event.stopPropagation(); const entry = entryOf(node); if (entry) onpreview?.(entry); }}
+      ondblclick={(event) => event.stopPropagation()}
+      onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
   {/if}
 {/snippet}
 
@@ -348,7 +352,6 @@
       {#if node.kind !== "folder"}<Menu.Item value="duplicate" class="menuitem">Duplicate</Menu.Item>{/if}
       {#if node.kind === "text" && !node.main}<Menu.Item value="main" class="menuitem">Set as main file</Menu.Item>{/if}
     {/if}
-    {#if node.kind === "text" && node.path !== preview && previewable(node.path)}<Menu.Item value="preview" class="menuitem">Preview this file</Menu.Item>{/if}
     <Menu.Item value="download" class="menuitem">Download</Menu.Item>
     {#if mayEdit}<Menu.Item value="delete" class="menuitem" disabled={node.main}>Delete…</Menu.Item>{/if}
   </ExplorerMenu>
@@ -436,7 +439,10 @@
   .filelist > :global(.panel-actions) { margin-bottom: calc(var(--spacing) * 1.5); }
   .explorer-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   /* Pushed to the far end by the name, which takes the free width. */
-  .explorer-preview { display: flex; flex: none; color: var(--color-text-secondary); }
+  .explorer-preview { display: flex; flex: none; align-items: center; justify-content: center; width: calc(var(--spacing) * 7); height: calc(var(--spacing) * 7); margin-inline-end: calc(var(--spacing) * -1.5); padding: 0; border: 0; border-radius: var(--radius-base); background: none; color: var(--color-text-secondary); }
+  button.explorer-preview { color: var(--color-text-muted); opacity: 0.45; cursor: pointer; }
+  button.explorer-preview:hover, button.explorer-preview:focus-visible { opacity: 1; color: var(--color-text-secondary); background: var(--color-row-hover); }
+  button.explorer-preview:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
   .explorer-actions {
     display: flex;
     align-items: center;

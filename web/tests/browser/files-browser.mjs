@@ -58,6 +58,8 @@ const component = createClassComponent({ component: Files, target: document.body
   onopen: (file) => component.$set({ open: file.id }),
   ontext: async (file, path) => session.addText(path, await file.text()),
   onfigure: async (file, path) => session.addText(path, String((await file.arrayBuffer()).byteLength)),
+  previewable: (path) => /\.(tex|md|qmd)$/.test(path),
+  onpreview: (file) => { window.previewed = file.path; component.$set({ preview: file.path }); },
 } });
 session.onFiles(() => component.$set({ files: session.list(), folders: session.folders() }));
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 80)); await tick(); };
@@ -129,6 +131,15 @@ window.filesCheck = async () => {
   check(chevron('chapters')?.dataset.state === 'closed', 'a shut folder points its chevron aside');
   row('chapters').click(); await flush();
   check(chevron('chapters')?.dataset.state === 'open', 'an open folder turns it down');
+  // Any other file that can be previewed carries a faint eye that moves the preview there.
+  const previewOne = row('chapters/one.tex').querySelector('button[aria-label="Preview one.tex"]');
+  check(previewOne, 'a previewable file offers its eye as a button');
+  previewOne.click(); await flush();
+  check(window.previewed === 'chapters/one.tex', 'the eye moves the preview to its file');
+  check(document.querySelector('.explorer-open')?.getAttribute('title') !== 'chapters/one.tex', 'the eye does not open the file');
+  check(row('chapters/one.tex').querySelector('[aria-label="Shown in the preview"]'), 'the eye is solid on the newly previewed file');
+  check(row('main.tex').querySelector('button[aria-label="Preview main.tex"]'), 'the old file offers its eye again');
+  component.$set({ preview: 'main.tex' }); await flush();
   const guide = document.querySelector('.explorer-guide');
   check(guide && guide.dataset.depth === '1', 'an open folder draws the guide at its own depth');
   row('chapters').click(); await flush();
