@@ -313,10 +313,28 @@ try {
   await clickHeading("HTML heading");
   assert.equal(await visible('.editorpane'), true, "outline jump reveals source from document-only layout");
 
+  // The eye in the file list opens the file in the source and previews it.
+  await openFile("notes.md");
+  await openFiles();
+  await until("paper.typ preview eye", () => tab.evaluate(`Boolean(document.querySelector('.explorer-row[title="paper.typ"] button.explorer-preview'))`), 5000);
+  await click('.explorer-row[title="paper.typ"] button.explorer-preview');
+  await until("the eye opens paper.typ in the source", () => tab.evaluate(`window.editorState().text.includes("Typst")`), 5000);
+  assert.equal(await tab.evaluate(`Boolean(document.querySelector('.explorer-row[title="paper.typ"] .explorer-preview.shown'))`), true, "the eye marks paper.typ as previewed");
+  // The tree follows the eye, so the file that was open before opens again.
+  await openFile("notes.md");
+
   // On a phone the outline is a workspace tab, and choosing a heading reveals
   // the source tab instead of leaving the user in the sidebar.
   await tab.resize(390, 844);
   await flush();
+  await openFile("notes.md");
+  // On a phone the eye opens the file and shows its preview, not its source.
+  await mobileNav("Files");
+  await until("chapter.qmd preview eye", () => visible('.explorer-row[title="chapter.qmd"] button.explorer-preview'), 5000);
+  await click('.explorer-row[title="chapter.qmd"] button.explorer-preview');
+  await until("the eye opens chapter.qmd on a phone", () => tab.evaluate(`window.editorState().text.includes("Quarto")`), 5000);
+  await flush();
+  assert.equal(await tab.evaluate("document.querySelector('main.reader')?.classList.contains('mobile-document')"), true, "the eye on a phone shows the preview");
   await openFile("notes.md");
   await mobileNav("Outline");
   await waitOutline();

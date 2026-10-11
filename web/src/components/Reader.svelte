@@ -3189,6 +3189,14 @@
     if (compact) showMobileView("document");
   }
 
+  // The eye in the file list opens the file as well as previewing it, so the
+  // source and the preview show the same file.
+  function openAndPreview(file) {
+    if (openFile !== file.id) outlineActiveFrom = null;
+    workspace.show(file);
+    previewTheFile(file.id);
+  }
+
   // A file added, renamed, removed, or made the main one: the list is redrawn
   // and the document is rendered again, because every one of those changes
   // what a compiler would produce. Main-text edits also arrive through the
@@ -4055,7 +4063,7 @@
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
       onmain={makeMain} onfigure={addFigure} ontext={addDroppedText}
       ondownload={downloadTree} ondownloaditem={downloadEntry}
-      previewable={(path) => Boolean(renderers.formatOf(path))} onpreview={(entry) => previewTheFile(entry.id)} />
+      previewable={(path) => Boolean(renderers.formatOf(path))} onpreview={openAndPreview} />
   {/snippet}
 
   {#snippet outlinePanel()}

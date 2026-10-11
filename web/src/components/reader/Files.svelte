@@ -1,6 +1,6 @@
 <script>
   import PanelHeader from "../PanelHeader.svelte";
-  import { tick, onDestroy } from "svelte";
+  import { tick, onDestroy, untrack } from "svelte";
   import { TreeView, createTreeViewCollection, Menu } from "@skeletonlabs/skeleton-svelte";
   import Icon from "../Icon.svelte";
   import IconButton from "../IconButton.svelte";
@@ -55,6 +55,15 @@
     while (path) { parents.push(`folder:${path}`); path = parentPath(path); }
     // untracked state is read in the scheduled callback to avoid an expansion loop.
     if (parents.length) queueMicrotask(() => { expanded = [...new Set([...expanded, ...parents])]; });
+  });
+  // The selection follows a file opened elsewhere too (the preview eye, the
+  // outline), so choosing the file that was open before is still a change the
+  // tree reports. A selection of several items is left alone.
+  $effect(() => {
+    const file = files.find((entry) => entry.id === open);
+    if (!file) return;
+    const key = nodeKey(file);
+    untrack(() => { if (selected.length <= 1 && selected[0] !== key) selected = [key]; });
   });
 
   function entryOf(node) { return node.kind === "folder" ? { kind: "folder", id: node.path, path: node.path } : files.find((file) => file.id === node.fileId && file.kind === node.kind); }
@@ -327,8 +336,8 @@
     <span class="explorer-name">{node.name}</span>
   {/if}
   <!-- The eye marks the file in the preview. On any other file that can be
-       previewed it is the button that moves the preview there, on a phone as
-       on a desktop. -->
+       previewed it is the button that opens the file and moves the preview
+       there, on a phone as on a desktop. -->
   {#if node.kind !== "folder" && node.path === preview}
     <span class="explorer-preview shown" role="img" aria-label="Shown in the preview"><Icon name="eye" /></span>
   {:else if node.kind === "text" && previewable(node.path)}
