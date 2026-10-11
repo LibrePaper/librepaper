@@ -3,6 +3,7 @@
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
+  import { barHiddenAfter, revealOnNavFocus, watchScrolls } from "../lib/bar-scroll.js";
   import * as renderers from "../lib/renderers.js";
   import * as sync from "../lib/sync.js";
   import * as quarto from "../lib/engines/quarto.js";
@@ -552,15 +553,7 @@
   // frame scroll messages. Hide the bar when scrolling down past threshold,
   // show it when scrolling up or at top.
   function noteScroll(delta, top) {
-    if (!compact || top <= 0) {
-      barHidden = false;
-    } else if (Math.abs(delta) < 4) {
-      return;
-    } else if (delta > 0 && top > 48) {
-      barHidden = true;
-    } else if (delta < 0) {
-      barHidden = false;
-    }
+    barHidden = compact ? barHiddenAfter(barHidden, delta, top) : false;
   }
 
   function fromFrame(message) {
@@ -3827,23 +3820,7 @@
   // Track scrolls on elements inside the main reader pane. Ignore scrolls on
   // menus, popovers, and the nav itself. Store the last scrollTop per element
   // in a WeakMap to detect scroll direction and magnitude.
-  $effect(() => {
-    const scrollTops = new WeakMap();
-    function onScroll(event) {
-      const target = event.target;
-      if (!(target instanceof Element) || !target.closest("#main")) return;
-      const scrollTop = target.scrollTop || 0;
-      if (!scrollTops.has(target)) {
-        scrollTops.set(target, scrollTop);
-        return;
-      }
-      const prev = scrollTops.get(target);
-      scrollTops.set(target, scrollTop);
-      noteScroll(scrollTop - prev, scrollTop);
-    }
-    document.addEventListener("scroll", onScroll, { capture: true, passive: true });
-    return () => document.removeEventListener("scroll", onScroll, { capture: true });
-  });
+  $effect(() => watchScrolls("#main", noteScroll));
 
   // Reveal the bar when transitioning out of compact mode, or when switching
   // panes (each pane has its own scroll position).
@@ -3856,15 +3833,9 @@
 
   // Reveal the bar when keyboard focus enters the nav element, so off-screen
   // controls are never focused invisibly.
-  $effect(() => {
-    function onNavFocus(event) {
-      if (event.target.closest("body > nav")) {
-        barHidden = false;
-      }
-    }
-    document.addEventListener("focusin", onNavFocus);
-    return () => document.removeEventListener("focusin", onNavFocus);
-  });
+  $effect(() => revealOnNavFocus(() => {
+    barHidden = false;
+  }));
 </script>
 
 <svelte:window bind:innerWidth={width} onresize={() => (unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
