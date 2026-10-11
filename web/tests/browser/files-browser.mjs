@@ -146,7 +146,7 @@ window.filesCheck = async () => {
   // Opening a folder also selects it, and a new folder is made inside the
   // selection; drop it so the next one is made at the root as before.
   key(row('chapters'), 'Escape'); await flush();
-  // A file-list change leaves a selected folder selected: the selection moves
+  // A file-list change leaves a selected folder selected. The selection moves
   // only when the open file changes, not whenever the tree reports a change.
   row('chapters').click(); await flush();
   check(row('chapters').hasAttribute('data-selected'), 'a folder row is selected when clicked');
