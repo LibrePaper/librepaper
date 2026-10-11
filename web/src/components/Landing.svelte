@@ -152,15 +152,24 @@
   // Only the two columns that hold controls rather than content are fixed --
   // there is nothing in them to make room for.
   //
-  // On a narrow window the two widest columns of metadata go. They are
+  // On a narrow window the metadata columns go. They are
   // dropped from the list rather than hidden in CSS, because a column that is
   // still in the table still has a width, and the table would keep its room.
   // Nothing can be dragged there either, so the title takes whatever
-  // the checkbox and the menu leave.
+  // the checkbox and the menu leave. Below 1024px Owner and Files go too,
+  // because the four fixed columns would otherwise leave the title one word wide.
   let narrow = $state(false);
   $effect(() => {
     const query = window.matchMedia("(max-width: 760px)");
     const watch = () => (narrow = query.matches);
+    watch();
+    query.addEventListener("change", watch);
+    return () => query.removeEventListener("change", watch);
+  });
+  let cramped = $state(false);
+  $effect(() => {
+    const query = window.matchMedia("(max-width: 1023px)");
+    const watch = () => (cramped = query.matches);
     watch();
     query.addEventListener("change", watch);
     return () => query.removeEventListener("change", watch);
@@ -182,8 +191,8 @@
       { key: "mark", label: "", width: 44, resizable: false },
       { key: "title", label: "Project", sortable: true, min: 160, resizable: !narrow },
     ]);
-    if (!narrow) list.push({ key: "owner", label: "Owner", sortable: true, width: 210, min: 120 });
-    if (!trash && !narrow) list.push({ key: "files", label: "Files", sortable: true, width: 90, min: 60 });
+    if (!narrow && !cramped) list.push({ key: "owner", label: "Owner", sortable: true, width: 210, min: 120 });
+    if (!trash && !narrow && !cramped) list.push({ key: "files", label: "Files", sortable: true, width: 90, min: 60 });
     if (!narrow) {
       list.push({
         key: "updated",

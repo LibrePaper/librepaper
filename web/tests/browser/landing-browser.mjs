@@ -324,6 +324,21 @@ try {
   assert.ok(phoneWidths.title >= phoneWidths.table - 44 - 48 - 2, "390px: the title takes the row up to the menu");
   await tab.evaluate("localStorage.removeItem('librepaper:table-widths')");
 
+  // Between the phone and tablet widths Owner and Files go, so the title keeps
+  // room for more than a word. The Projects place is the one on screen here.
+  await tab.resize(820, 850);
+  await flush();
+  await flush();
+  assert.equal(await visible("th[data-column=owner]"), false, "820px: Owner and Files give the title room");
+  assert.equal(await visible("th[data-column=files]"), false, "820px: Owner and Files give the title room");
+  assert.equal(await visible("th[data-column=updated]"), true, "820px: the date stays");
+  const titleWidth = await tab.evaluate("document.querySelector('th[data-column=title]')?.getBoundingClientRect().width ?? 0");
+  assert.ok(titleWidth >= 250, `820px: the title is wider than a word (${titleWidth}px)`);
+  await tab.resize(1100, 850);
+  await flush();
+  await flush();
+  assert.equal(await visible("th[data-column=owner]"), true, "1100px: Owner comes back");
+
   console.log("landing-browser: compact project actions, row density, responsive metadata, keyboard access and project operations passed");
 } finally {
   await tab?.close();
