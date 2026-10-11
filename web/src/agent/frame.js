@@ -797,13 +797,18 @@ import { watchPinch } from "../lib/pinch.js";
   let scrollRAFHandle = null;
   let pendingScrollDelta = 0;
   let pendingScrollTop = 0;
+  let pendingScrollBottom = Infinity;
   function onScroll(event) {
     const target = event.target;
     let top = null;
+    let bottom = Infinity;
     if (target === document) {
-      top = (document.scrollingElement || document.documentElement).scrollTop;
+      const el = document.scrollingElement || document.documentElement;
+      top = el.scrollTop;
+      bottom = el.scrollHeight - el.clientHeight - el.scrollTop;
     } else if (target instanceof Element) {
       top = target.scrollTop;
+      bottom = target.scrollHeight - target.clientHeight - target.scrollTop;
     }
     if (top === null) return;
 
@@ -815,6 +820,7 @@ import { watchPinch } from "../lib/pinch.js";
 
     pendingScrollDelta += delta;
     pendingScrollTop = top;
+    pendingScrollBottom = bottom;
     if (scrollRAFHandle === null) {
       scrollRAFHandle = requestAnimationFrame(() => {
         scrollRAFHandle = null;
@@ -822,6 +828,7 @@ import { watchPinch } from "../lib/pinch.js";
           type: "scroll",
           delta: Math.round(pendingScrollDelta),
           top: Math.round(pendingScrollTop),
+          bottom: Math.round(pendingScrollBottom),
         });
         pendingScrollDelta = 0;
       });

@@ -18,4 +18,11 @@ assert.equal(barHiddenAfter(false, 10, 100), true);
 // Scrolling up shows it again.
 assert.equal(barHiddenAfter(true, -10, 100), false);
 
+// Near the bottom the bar holds still: hiding it grows the page, the browser pulls the scroll back, and that must not read as a scroll up.
+assert.equal(barHiddenAfter(true, -48, 500, 0), true);
+assert.equal(barHiddenAfter(false, 10, 500, 20), false);
+assert.equal(barHiddenAfter(true, -10, 500, -30), true);
+assert.equal(barHiddenAfter(true, -10, 500, 200), false);
+assert.equal(barHiddenAfter(true, -10, 0, 0), false);
+
 console.log("bar-scroll: ok");

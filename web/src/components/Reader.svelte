@@ -552,8 +552,8 @@
   // Scroll tracking for mobile bar hide/show: called by scroll listeners and
   // frame scroll messages. Hide the bar when scrolling down past threshold,
   // show it when scrolling up or at top.
-  function noteScroll(delta, top) {
-    barHidden = compact ? barHiddenAfter(barHidden, delta, top) : false;
+  function noteScroll(delta, top, bottom) {
+    barHidden = compact ? barHiddenAfter(barHidden, delta, top, bottom) : false;
   }
 
   function fromFrame(message) {
@@ -600,7 +600,11 @@
         void focusAnnotation(message.id);
         break;
       case "scroll":
-        noteScroll(Number(message.delta) || 0, Number(message.top) || 0);
+        noteScroll(
+          Number(message.delta) || 0,
+          Number(message.top) || 0,
+          Number.isFinite(Number(message.bottom)) ? Number(message.bottom) : Infinity,
+        );
         break;
     }
   }

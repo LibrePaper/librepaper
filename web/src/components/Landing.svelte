@@ -167,7 +167,7 @@
   let barHidden = $state(false);
   let searching = $state(false);
   // The bar steps aside while the list scrolls down on a phone, as in a project.
-  $effect(() => watchScrolls("#main", (delta, top) => { barHidden = narrow ? barHiddenAfter(barHidden, delta, top) : false; }));
+  $effect(() => watchScrolls("#main", (delta, top, bottom) => { barHidden = narrow ? barHiddenAfter(barHidden, delta, top, bottom) : false; }));
   $effect(() => revealOnNavFocus(() => { barHidden = false; }));
   $effect(() => { narrow; place; barHidden = false; });
   $effect(() => { if (!narrow) searching = false; });

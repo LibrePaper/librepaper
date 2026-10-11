@@ -194,14 +194,19 @@ const scrollOffsets = new WeakMap();
 let scrollRAFHandle = null;
 let pendingScrollDelta = 0;
 let pendingScrollTop = 0;
+let pendingScrollBottom = Infinity;
 function onScroll(event) {
   if (!readerOrigin) return;
   const target = event.target;
   let top = null;
+  let bottom = Infinity;
   if (target === document) {
-    top = (document.scrollingElement || document.documentElement).scrollTop;
+    const el = document.scrollingElement || document.documentElement;
+    top = el.scrollTop;
+    bottom = el.scrollHeight - el.clientHeight - el.scrollTop;
   } else if (target instanceof Element) {
     top = target.scrollTop;
+    bottom = target.scrollHeight - target.clientHeight - target.scrollTop;
   }
   if (top === null) return;
 
@@ -213,6 +218,7 @@ function onScroll(event) {
 
   pendingScrollDelta += delta;
   pendingScrollTop = top;
+  pendingScrollBottom = bottom;
   if (scrollRAFHandle === null) {
     scrollRAFHandle = requestAnimationFrame(() => {
       scrollRAFHandle = null;
@@ -221,6 +227,7 @@ function onScroll(event) {
         type: "scroll",
         delta: Math.round(pendingScrollDelta),
         top: Math.round(pendingScrollTop),
+        bottom: Math.round(pendingScrollBottom),
       }, readerOrigin);
       pendingScrollDelta = 0;
     });
