@@ -155,11 +155,17 @@ pub(crate) enum AdminCommand {
     Backup {
         #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
         config: PathBuf,
-        /// New directory to create
+        /// New directory to create, or - to write a tar archive to stdout
         directory: String,
         /// Identifier to record for this backup; generated when omitted
         #[arg(long, value_name = "ID")]
         id: Option<String>,
+        /// Path inside the archive that holds the recovery point (with -)
+        #[arg(long, value_name = "PREFIX", default_value = "backup")]
+        prefix: String,
+        /// Absolute file or directory to add to the archive at its own path (with -)
+        #[arg(long = "include", value_name = "PATH")]
+        include: Vec<String>,
     },
     /// Restore a verified backup into a new deployment directory.
     Restore {
@@ -407,17 +413,32 @@ async fn run_admin(
             config,
             directory,
             id,
+            prefix,
+            include,
         } => {
             let (storage, filter) =
                 server_config::load_storage_with_log_filter_and_env(&config, postgres_env)
                     .unwrap_or_else(|error| die(error));
             install_subscriber(Some(&filter));
-            librepaper_engine::storage::backup::backup_cli(
-                storage,
-                directory,
-                id.unwrap_or_default(),
-            )
-            .await
+            if directory == "-" {
+                librepaper_engine::storage::backup::backup_archive_cli(
+                    storage,
+                    id.unwrap_or_default(),
+                    prefix,
+                    include,
+                )
+                .await
+            } else {
+                if !include.is_empty() || prefix != "backup" {
+                    die("--prefix and --include are only valid with - (tar archive to stdout)");
+                }
+                librepaper_engine::storage::backup::backup_cli(
+                    storage,
+                    directory,
+                    id.unwrap_or_default(),
+                )
+                .await
+            }
         }
         AdminCommand::Restore {
             config,
