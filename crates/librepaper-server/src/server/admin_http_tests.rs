@@ -286,7 +286,10 @@ async fn the_admin_host_sends_a_stranger_to_github_and_answers_nothing_else() {
         location.starts_with("https://github.com/login/oauth/authorize?"),
         "{location}"
     );
-    assert!(location.contains("client_id=admin-test-client"), "{location}");
+    assert!(
+        location.contains("client_id=admin-test-client"),
+        "{location}"
+    );
     assert!(
         location.contains("redirect_uri=https%3A%2F%2Fadmin.paper.example%2Fauth%2Fcallback"),
         "{location}"
@@ -307,7 +310,10 @@ async fn the_admin_host_sends_a_stranger_to_github_and_answers_nothing_else() {
     let operator = f.operator_cookie();
     for (what, cookie) in [
         ("no cookie", None),
-        ("an unlisted account", Some(f.session_cookie_for(999, now + 3600))),
+        (
+            "an unlisted account",
+            Some(f.session_cookie_for(999, now + 3600)),
+        ),
         (
             "an expired session",
             Some(f.session_cookie_for(OPERATOR_ID, now - 60)),

@@ -871,12 +871,12 @@ mod admin_github_tests {
         let error = validate_admin_github(None, &ids, true).unwrap_err();
         assert!(error.contains("admin.github_ids"), "{error}");
 
-        let error = validate_admin_github(Some("https://admin.paper.example"), &[0], true)
-            .unwrap_err();
+        let error =
+            validate_admin_github(Some("https://admin.paper.example"), &[0], true).unwrap_err();
         assert!(error.contains("admin.github_ids"), "{error}");
 
-        let error = validate_admin_github(Some("https://admin.paper.example"), &ids, false)
-            .unwrap_err();
+        let error =
+            validate_admin_github(Some("https://admin.paper.example"), &ids, false).unwrap_err();
         assert!(error.contains("auth.github"), "{error}");
     }
 }

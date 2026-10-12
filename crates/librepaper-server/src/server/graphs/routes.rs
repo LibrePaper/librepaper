@@ -122,9 +122,9 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
         let expected = cookie(&parts.headers, &cookie_name(https, STATE_COOKIE));
         let supplied = query_value(parts, "state");
         return match (expected, supplied) {
-            (Some(expected), Some(supplied)) if expected == supplied => Decision::Callback(
-                query_value(parts, "code").unwrap_or_default(),
-            ),
+            (Some(expected), Some(supplied)) if expected == supplied => {
+                Decision::Callback(query_value(parts, "code").unwrap_or_default())
+            }
             _ => Decision::Reply(refused_state(https)),
         };
     }
@@ -139,7 +139,11 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
         let state = random_token();
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::FOUND;
-        set(&mut response, "location", &server.app.authorize_url(&callback, &state));
+        set(
+            &mut response,
+            "location",
+            &server.app.authorize_url(&callback, &state),
+        );
         append_cookie(
             &mut response,
             &set_cookie(

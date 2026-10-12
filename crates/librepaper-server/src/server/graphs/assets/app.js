@@ -404,12 +404,12 @@
   }
 
   // Sends one POST. A failure carries the server's message, or the text, or the status.
-  async function post(request) {
+  async function post(change) {
     const response = await request("/moderation", {
       method: "POST",
       cache: "no-store",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(request),
+      body: JSON.stringify(change),
     });
     const body = await response.text();
     if (!response.ok) {
