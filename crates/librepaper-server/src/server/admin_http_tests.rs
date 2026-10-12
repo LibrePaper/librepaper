@@ -116,6 +116,20 @@ async fn github_stand_in(user_id: i64, login: &str) -> (String, Arc<AtomicUsize>
 
 /// The fixture with GitHub answering for the given account.
 async fn fixture_for(user_id: i64, login: &str) -> Option<Fixture> {
+    fixture_full(vec![OPERATOR_ID], true, user_id, login).await
+}
+
+/// The fixture with another list of operators, or no GitHub app at all.
+async fn fixture_with(ids: Vec<i64>, github_configured: bool) -> Option<Fixture> {
+    fixture_full(ids, github_configured, OPERATOR_ID, "operator").await
+}
+
+async fn fixture_full(
+    ids: Vec<i64>,
+    github_configured: bool,
+    user_id: i64,
+    login: &str,
+) -> Option<Fixture> {
     let (github, exchanges) = github_stand_in(user_id, login).await;
     let deployment = deployment(
         DocumentInput {
@@ -145,13 +159,17 @@ async fn fixture_for(user_id: i64, login: &str) -> Option<Fixture> {
         .unwrap()
         .with_admin(Some(ADMIN))
         .unwrap();
-    server.admin_github_ids = vec![OPERATOR_ID];
-    server.app = librepaper_base::auth::GithubApp {
-        client_id: "admin-test-client".into(),
-        client_secret: "admin-test-secret".into(),
-        token_url: format!("{github}/token"),
-        user_url: format!("{github}/user"),
-        ..Default::default()
+    server.admin_github_ids = ids;
+    server.app = if github_configured {
+        librepaper_base::auth::GithubApp {
+            client_id: "admin-test-client".into(),
+            client_secret: "admin-test-secret".into(),
+            token_url: format!("{github}/token"),
+            user_url: format!("{github}/user"),
+            ..Default::default()
+        }
+    } else {
+        librepaper_base::auth::GithubApp::default()
     };
     server.graphs = Some(Arc::new(
         super::graphs::Graphs::open(history.path()).unwrap(),
@@ -1141,4 +1159,543 @@ async fn the_moderation_endpoint_blocks_bans_hides_and_lists_each_change() {
     assert!(document["banned_handles"].as_array().unwrap().is_empty());
     assert!(document["hidden_projects"].as_array().unwrap().is_empty());
     assert_eq!(document["recent"].as_array().unwrap().len(), 6);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn no_admin_response_grants_cross_origin_access() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+
+    // A same-site fetch from the docs origin carries an Origin header too.
+    for origin in [None, Some(DOCS)] {
+        let sent = if origin.is_some() {
+            "with an origin"
+        } else {
+            "without an origin"
+        };
+        for (path, signed_in, expected) in [
+            ("/", false, 302),
+            ("/data?points=10", false, 401),
+            ("/data?points=10", true, 200),
+            ("/accounts", true, 200),
+            ("/session", true, 200),
+            ("/moderation", true, 200),
+            ("/other", true, 404),
+        ] {
+            let request = if signed_in {
+                f.get_as_operator(ADMIN_HOST, path)
+            } else {
+                f.get(ADMIN_HOST, path)
+            };
+            let request = match origin {
+                Some(origin) => request.header("origin", origin),
+                None => request,
+            };
+            let response = request.send().await.unwrap();
+            let what = format!("{path} {sent}");
+            assert_eq!(response.status().as_u16(), expected, "{what}");
+            for name in [
+                "access-control-allow-origin",
+                "access-control-allow-credentials",
+                "access-control-expose-headers",
+                "access-control-allow-methods",
+                "access-control-allow-headers",
+                "timing-allow-origin",
+            ] {
+                assert!(
+                    !response.headers().contains_key(name),
+                    "{what}: {name} is present"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_moderation_change_from_any_other_origin_spelling_is_refused() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+    let body =
+        serde_json::to_vec(&json!({"action": "hide", "target": SLUG, "reason": "probe"})).unwrap();
+    let raw = |origin: &str| {
+        f.client
+            .post(format!("{}/moderation", f.base))
+            .header("host", ADMIN_HOST)
+            .header("origin", origin)
+            .header("content-type", "application/json")
+            .header("cookie", f.operator_cookie())
+            .body(body.clone())
+    };
+
+    for origin in [
+        "https://docs.paper.example",
+        "https://paper.example",
+        "https://admin.paper.example/",
+        "https://ADMIN.paper.example",
+        "http://admin.paper.example",
+        "https://admin.paper.example:443",
+        "https://admin.paper.example.evil.example",
+        "null",
+        "",
+    ] {
+        let response = raw(origin).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 403, "origin {origin:?}");
+    }
+    let document = listing(&f).await;
+    assert!(document["hidden_projects"].as_array().unwrap().is_empty());
+
+    // Control: the same change from the admin page's own origin goes through.
+    let response = raw(ADMIN).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let document = listing(&f).await;
+    assert_eq!(document["hidden_projects"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn path_and_method_variants_do_not_slip_past_the_gate() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+
+    // Without a session, every spelling of a path gets the gate's refusal.
+    for path in [
+        "/moderation/",
+        "//moderation",
+        "/%6Doderation",
+        "/MODERATION",
+        "/auth/callback/",
+        "/auth%2Fcallback",
+        "/session/",
+        "/accounts?x=1&x=2",
+        "/data?points=10#frag",
+    ] {
+        let response = f.get(ADMIN_HOST, path).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 401, "{path}");
+    }
+    let response = f
+        .client
+        .request(reqwest::Method::HEAD, format!("{}/data?points=10", f.base))
+        .header("host", ADMIN_HOST)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 401, "HEAD /data");
+    let response = f
+        .client
+        .request(reqwest::Method::OPTIONS, format!("{}/moderation", f.base))
+        .header("host", ADMIN_HOST)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 401, "OPTIONS /moderation");
+    let response = f
+        .client
+        .request(reqwest::Method::OPTIONS, format!("{}/", f.base))
+        .header("host", ADMIN_HOST)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 401, "OPTIONS /");
+    let response = f
+        .client
+        .request(reqwest::Method::HEAD, format!("{}/", f.base))
+        .header("host", ADMIN_HOST)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 302, "HEAD /");
+    let set_cookie = header(&response, "set-cookie").unwrap_or_default();
+    assert!(
+        set_cookie.starts_with("__Host-librepaper_admin_state="),
+        "{set_cookie:?}"
+    );
+    let response = f
+        .post(ADMIN_HOST, "/auth/callback?code=x&state=y")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 405, "POST /auth/callback");
+    let response = f
+        .client
+        .request(
+            reqwest::Method::HEAD,
+            format!("{}/auth/callback?code=x&state=y", f.base),
+        )
+        .header("host", ADMIN_HOST)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 405, "HEAD /auth/callback");
+
+    // With a session, the same spellings reach no page either.
+    for path in [
+        "/moderation/",
+        "//moderation",
+        "/%6Doderation",
+        "/MODERATION",
+    ] {
+        let response = f.get_as_operator(ADMIN_HOST, path).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 404, "{path}");
+    }
+    let response = f
+        .client
+        .request(reqwest::Method::OPTIONS, format!("{}/moderation", f.base))
+        .header("host", ADMIN_HOST)
+        .header("cookie", f.operator_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 405, "OPTIONS /moderation");
+    let response = f
+        .client
+        .request(reqwest::Method::OPTIONS, format!("{}/", f.base))
+        .header("host", ADMIN_HOST)
+        .header("cookie", f.operator_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 405, "OPTIONS /");
+    let response = f
+        .client
+        .request(reqwest::Method::HEAD, format!("{}/session", f.base))
+        .header("host", ADMIN_HOST)
+        .header("cookie", f.operator_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200, "HEAD /session");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn host_spellings_that_name_the_admin_origin_are_the_admin_side() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+
+    for host in [
+        "Admin.Paper.Example",
+        "admin.paper.example.",
+        "admin.paper.example:443",
+    ] {
+        let response = f.get(host, "/").send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 302, "{host}");
+        let location = header(&response, "location").unwrap_or_default();
+        assert!(
+            location.starts_with("https://github.com/"),
+            "{host}: {location:?}"
+        );
+    }
+    for host in [
+        "admin.paper.example:8443",
+        "xadmin.paper.example",
+        "admin.paper.example.evil.example",
+        "docs.admin.paper.example",
+    ] {
+        let response = f.get(host, "/").send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 421, "{host}");
+    }
+
+    // Forwarded headers do not move the app host onto the admin side.
+    for (name, value) in [
+        ("x-forwarded-host", ADMIN_HOST),
+        ("x-forwarded-proto", "https"),
+        ("forwarded", "host=admin.paper.example"),
+    ] {
+        let response = f
+            .get(READER_HOST, "/data?points=10")
+            .header(name, value)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 404, "{name}: {value}");
+    }
+}
+
+/// Start a sign-in and return the state it issued. The state cookie is the
+/// state, a bar and the PKCE verifier; its state half must match the query,
+/// and the state must be 32 lowercase hex characters.
+async fn issued_state(f: &Fixture) -> String {
+    let response = f.get(ADMIN_HOST, "/").send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 302);
+    let location = header(&response, "location").unwrap_or_default();
+    assert!(
+        location.contains("redirect_uri=https%3A%2F%2Fadmin.paper.example%2Fauth%2Fcallback"),
+        "{location}"
+    );
+    let url = url::Url::parse(location).unwrap();
+    assert!(
+        !url.query_pairs().any(|(key, _)| key == "code"),
+        "{location}"
+    );
+    let state = url
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .unwrap_or_default();
+
+    let set_cookie = header(&response, "set-cookie").unwrap_or_default();
+    assert!(set_cookie.contains("Max-Age=600"), "{set_cookie:?}");
+    assert!(set_cookie.contains("Path=/"), "{set_cookie:?}");
+    let cookie_value = set_cookie
+        .strip_prefix("__Host-librepaper_admin_state=")
+        .unwrap_or_else(|| panic!("{set_cookie:?}"))
+        .split(';')
+        .next()
+        .unwrap_or_default();
+    let (cookie_state, verifier) = cookie_value
+        .split_once('|')
+        .unwrap_or_else(|| panic!("{cookie_value:?} has no verifier"));
+    assert_eq!(cookie_state, state.as_str(), "the cookie and the query");
+    assert!(!verifier.is_empty(), "{cookie_value:?}");
+    assert_eq!(state.len(), 32, "{state:?}");
+    assert!(
+        state
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "{state:?} is not lowercase hex"
+    );
+    state
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_state_in_the_redirect_is_the_cookie_and_differs_each_time() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+    let first = issued_state(&f).await;
+    let second = issued_state(&f).await;
+    assert_ne!(first, second);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_callback_refusals_set_no_session_and_need_both_halves() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+
+    let cases: [(&str, &str, Option<&str>); 4] = [
+        ("no state cookie", "/auth/callback?code=x&state=abc", None),
+        (
+            "another state cookie",
+            "/auth/callback?code=x&state=abc",
+            Some("__Host-librepaper_admin_state=other"),
+        ),
+        (
+            "no state in the query",
+            "/auth/callback?code=x",
+            Some("__Host-librepaper_admin_state=abc"),
+        ),
+        (
+            "no query at all",
+            "/auth/callback",
+            Some("__Host-librepaper_admin_state=abc"),
+        ),
+    ];
+    for (what, path, cookie) in cases {
+        let mut request = f.get(ADMIN_HOST, path);
+        if let Some(cookie) = cookie {
+            request = request.header("cookie", cookie);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 400, "{what}");
+        for value in response.headers().get_all("set-cookie") {
+            let value = value.to_str().unwrap_or_default();
+            assert!(
+                !value.starts_with("__Host-librepaper_admin="),
+                "{what}: {value:?}"
+            );
+        }
+        assert_private_headers(&response, what);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_moderation_body_over_the_limit_is_refused() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+    let payload =
+        json!({"action": "hide", "target": SLUG, "reason": "x".repeat(20_000)}).to_string();
+
+    let response = f
+        .client
+        .post(format!("{}/moderation", f.base))
+        .header("host", ADMIN_HOST)
+        .header("origin", ADMIN)
+        .header("content-type", "application/json")
+        .header("cookie", f.operator_cookie())
+        .body(payload.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 413, "a declared length");
+    let document = listing(&f).await;
+    assert!(document["hidden_projects"].as_array().unwrap().is_empty());
+
+    // The same body with no declared length meets the same limit.
+    let address: SocketAddr = f.base.trim_start_matches("http://").parse().unwrap();
+    let request = format!(
+        "POST /moderation HTTP/1.1\r\nHost: {ADMIN_HOST}\r\nCookie: {}\r\nOrigin: {ADMIN}\r\n\
+         Content-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\
+         \r\n{:x}\r\n{payload}\r\n0\r\n\r\n",
+        f.operator_cookie(),
+        payload.len(),
+    );
+    assert_eq!(raw_status(address, &request).await, 413, "a chunked body");
+    let document = listing(&f).await;
+    assert!(document["hidden_projects"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_admin_origin_with_no_listed_ids_or_no_github_app_serves_nothing() {
+    {
+        let Some(f) = fixture_with(vec![], true).await else {
+            return;
+        };
+        let response = f.get(ADMIN_HOST, "/").send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 404, "no listed ids: /");
+        assert!(
+            !response.headers().contains_key("set-cookie"),
+            "no listed ids: /"
+        );
+        assert!(
+            !response.headers().contains_key("location"),
+            "no listed ids: /"
+        );
+        for path in ["/data?points=10", "/auth/callback?code=x&state=y"] {
+            let response = f.get(ADMIN_HOST, path).send().await.unwrap();
+            assert_eq!(response.status().as_u16(), 404, "no listed ids: {path}");
+        }
+    }
+    {
+        let Some(f) = fixture_with(vec![OPERATOR_ID], false).await else {
+            return;
+        };
+        let response = f.get(ADMIN_HOST, "/").send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 404, "no GitHub app: /");
+        assert!(
+            !response.headers().contains_key("set-cookie"),
+            "no GitHub app: /"
+        );
+        let response = f
+            .get_as_operator(ADMIN_HOST, "/data?points=10")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 404, "no GitHub app: /data");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_empty_state_on_both_sides_is_not_a_match() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+    // Every provider slot is taken, so the callback cannot reach GitHub. A
+    // callback that passes the state check answers "busy" instead.
+    let permits: Vec<_> = std::iter::from_fn(librepaper_base::auth::try_provider_request).collect();
+    assert_eq!(permits.len(), 16);
+
+    // An empty state in the query and an empty state cookie are not a match.
+    let response = f
+        .get(ADMIN_HOST, "/auth/callback?state=&code=x")
+        .header("cookie", "__Host-librepaper_admin_state=")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        400,
+        "an empty state on both sides"
+    );
+    let body = response.text().await.unwrap();
+    assert!(body.contains("sign-in state did not match"), "{body:?}");
+
+    // No state in the query at all, with the same empty cookie.
+    let response = f
+        .get(ADMIN_HOST, "/auth/callback?code=x")
+        .header("cookie", "__Host-librepaper_admin_state=")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 400, "no state in the query");
+    let body = response.text().await.unwrap();
+    assert!(body.contains("sign-in state did not match"), "{body:?}");
+
+    drop(permits);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn only_the_prefixed_cookie_name_is_read_and_junk_around_it_does_not_hide_it() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+
+    // Case 1: the operator's cookie comes after a long junk pair and a planted
+    // unprefixed session.
+    let junk = format!(
+        "a=1; ; b=; =c; librepaper_admin=planted; __Host-librepaper_admin_state=x; \
+         j={}; {}; z=end",
+        "x".repeat(60_000),
+        f.operator_cookie()
+    );
+    let response = f
+        .get(ADMIN_HOST, "/data?points=10")
+        .header("cookie", junk)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "case 1: the operator cookie after junk"
+    );
+
+    // Case 2: an unprefixed cookie with a valid token for an unlisted account
+    // comes first. It is not the name the admin origin reads.
+    let unlisted = super::graphs::routes::admin_session_token(
+        &f.server.key,
+        999,
+        "intruder",
+        librepaper_base::util::now_unix() + 3600,
+    );
+    let value = format!("librepaper_admin={unlisted}; {}", f.operator_cookie());
+    let response = f
+        .get(ADMIN_HOST, "/data?points=10")
+        .header("cookie", value)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "case 2: an unlisted unprefixed cookie first"
+    );
+
+    // Case 3: a valid operator token under the unprefixed name opens nothing.
+    let operator = f.operator_cookie();
+    let planted = operator.strip_prefix("__Host-").unwrap();
+    let response = f
+        .get(ADMIN_HOST, "/data?points=10")
+        .header("cookie", planted)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        401,
+        "case 3: the operator token under the unprefixed name"
+    );
 }
