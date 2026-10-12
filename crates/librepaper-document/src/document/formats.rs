@@ -1,7 +1,10 @@
 //! What a figure's bytes must look like. The file name says what a figure
 //! claims to be; these checks decide whether the bytes agree, so a zip
-//! renamed to `.png` is refused. Every check reads only through `get` and
-//! checked arithmetic, so no input can make them panic.
+//! renamed to `.png` is refused. Each check asks only whether the file starts
+//! as its format. Data after a format's end is allowed because real tools
+//! append it, and the account quota bounds what it can carry. Every check
+//! reads only through `get` and checked arithmetic, so no input can make them
+//! panic.
 
 const REFUSED: &str = "that file is not a PNG, JPEG, GIF, WebP, SVG, PDF or font";
 
@@ -74,29 +77,18 @@ fn png(bytes: &[u8]) -> bool {
             return false;
         }
         if kind == b"IEND" {
-            return end == bytes.len();
+            return true;
         }
         at = end;
     }
 }
 
 fn jpeg(bytes: &[u8]) -> bool {
-    if !bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        return false;
-    }
-    let body_end = bytes
-        .iter()
-        .rposition(|&byte| byte != 0)
-        .map_or(0, |last| last + 1);
-    bytes
-        .get(..body_end)
-        .is_some_and(|body| body.ends_with(&[0xFF, 0xD9]))
+    bytes.starts_with(&[0xFF, 0xD8, 0xFF])
 }
 
 fn gif(bytes: &[u8]) -> bool {
-    (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"))
-        && bytes.len() >= 14
-        && bytes.last() == Some(&0x3B)
+    (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) && bytes.len() >= 13
 }
 
 fn webp(bytes: &[u8]) -> bool {
@@ -105,17 +97,18 @@ fn webp(bytes: &[u8]) -> bool {
     else {
         return false;
     };
+    let Some(end) = u64::from(size).checked_add(8) else {
+        return false;
+    };
     riff == b"RIFF"
         && form == b"WEBP"
-        && u64::from(size).checked_add(8) == u64::try_from(bytes.len()).ok()
+        && size >= 4
+        && usize::try_from(end).is_ok_and(|end| end <= bytes.len())
 }
 
 fn pdf(bytes: &[u8]) -> bool {
     let head = bytes.get(..1024).unwrap_or(bytes);
-    let tail = bytes
-        .get(bytes.len().saturating_sub(1024)..)
-        .unwrap_or_default();
-    contains(head, b"%PDF-") && contains(tail, b"%%EOF")
+    contains(head, b"%PDF-")
 }
 
 fn svg(bytes: &[u8]) -> bool {
@@ -123,9 +116,8 @@ fn svg(bytes: &[u8]) -> bool {
     std::str::from_utf8(text).is_ok_and(|text| text.contains("<svg"))
 }
 
-/// TrueType or OpenType: the table directory must fit, every table must lie
-/// inside the file, and the file may carry at most the padding to a multiple
-/// of four after the last table.
+/// TrueType or OpenType: the table directory must fit and every table must
+/// lie inside the file.
 fn sfnt(bytes: &[u8]) -> bool {
     let tag_ok = bytes.starts_with(&[0x00, 0x01, 0x00, 0x00])
         || bytes.starts_with(b"true")
@@ -154,13 +146,7 @@ fn sfnt(bytes: &[u8]) -> bool {
         };
         end = end.max(stop);
     }
-    if end > bytes.len() {
-        return false;
-    }
-    let Some(padded_end) = end.checked_add(3).map(|n| n & !3) else {
-        return false;
-    };
-    bytes.len() <= padded_end
+    end <= bytes.len()
 }
 
 fn woff(bytes: &[u8]) -> bool {
@@ -246,6 +232,27 @@ mod tests {
     }
 
     #[test]
+    fn accepts_data_after_each_format_end() {
+        let mut png_file = minimal_png(1);
+        png_file.extend_from_slice(b"PK\x03\x04 appended zip");
+        let mut jpeg_file = vec![0xFF, 0xD8, 0xFF, 0xE0, 0, 0];
+        jpeg_file.extend_from_slice(&[0x12, 0x34, 0x56]);
+        let mut gif_file = b"GIF89a".to_vec();
+        gif_file.extend_from_slice(&[0; 7]);
+        let mut webp_file = webp(b"VP8L\x00\x00\x00\x00");
+        webp_file.extend_from_slice(&[0xAA; 16]);
+        let pdf_file = b"%PDF-1.4\n".to_vec();
+        let mut font_file = font(&[0, 1, 0, 0], 28, 4, 32);
+        font_file.extend_from_slice(&[0xAB; 8]);
+        let samples: Vec<Vec<u8>> = vec![
+            png_file, jpeg_file, gif_file, webp_file, pdf_file, font_file,
+        ];
+        for sample in samples {
+            assert!(check_asset(&sample).is_ok(), "refused {sample:?}");
+        }
+    }
+
+    #[test]
     fn accepts_the_tutorial_icon() {
         let icon = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -267,16 +274,15 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_png_with_extra_bytes() {
+    fn refuses_a_png_cut_inside_a_chunk() {
         let mut bytes = minimal_png(1);
-        bytes.push(0);
+        bytes.truncate(bytes.len() - 6);
         assert!(check_asset(&bytes).is_err());
     }
 
     #[test]
-    fn refuses_a_png_cut_inside_a_chunk() {
-        let mut bytes = minimal_png(1);
-        bytes.truncate(bytes.len() - 6);
+    fn refuses_a_png_without_iend() {
+        let bytes = png(&[(b"IHDR", ihdr(1))]);
         assert!(check_asset(&bytes).is_err());
     }
 
@@ -290,12 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn accepts_a_jpeg_with_trailing_zeros() {
-        let bytes = vec![0xFF, 0xD8, 0xFF, 0xE0, 0xFF, 0xD9, 0, 0, 0];
-        assert!(check_asset(&bytes).is_ok());
-    }
-
-    #[test]
     fn refuses_a_webp_with_a_wrong_riff_size() {
         let mut bytes = webp(b"VP8L\x00\x00\x00\x00");
         bytes[4] = bytes[4].wrapping_add(1);
@@ -303,9 +303,11 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_pdf_without_eof() {
-        let bytes = b"%PDF-1.4\n1 0 obj\nendobj\n".to_vec();
-        assert!(check_asset(&bytes).is_err());
+    fn refuses_a_pdf_without_its_header() {
+        assert!(check_asset(b"hello world %%EOF").is_err());
+        let mut late = vec![b' '; 2000];
+        late.extend_from_slice(b"%PDF-1.4");
+        assert!(check_asset(&late).is_err());
     }
 
     #[test]
