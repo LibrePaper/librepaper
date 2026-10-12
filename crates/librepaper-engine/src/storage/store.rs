@@ -398,6 +398,9 @@ pub enum PutError {
     Quota { status: u16, message: &'static str },
     #[error("{message}")]
     Authorization { status: u16, message: &'static str },
+    /// The upload itself was refused; the string is a sentence for the uploader.
+    #[error("{0}")]
+    Invalid(String),
     #[error("{0}")]
     Storage(String),
 }
@@ -1288,11 +1291,17 @@ impl Store {
         for (path, bytes) in files {
             match check(&rules, &path) {
                 Ok(Kind::Text) => texts.push((path, String::from_utf8_lossy(&bytes).into_owned())),
-                Ok(Kind::Asset) => asset_files.push(crate::storage::source::ProjectFile {
-                    path,
-                    bytes,
-                    media_type: "application/octet-stream".into(),
-                }),
+                Ok(Kind::Asset) => {
+                    if let Err(error) = librepaper_document::document::formats::check_asset(&bytes)
+                    {
+                        return Err(PutError::Invalid(format!("{path}: {error}")));
+                    }
+                    asset_files.push(crate::storage::source::ProjectFile {
+                        path,
+                        bytes,
+                        media_type: "application/octet-stream".into(),
+                    });
+                }
                 Err(_) => {}
             }
         }

@@ -6,6 +6,7 @@ START_DIR=$PWD
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 BACKUP_DIR=/var/backups/librepaper/current
+ARCHIVE=/librepaper-backup.tar
 RELEASES=https://github.com/LibrePaper/librepaper/releases
 TMP=
 
@@ -342,6 +343,12 @@ need_snapshot() {
 	[ $# -eq 1 ] && [ -n "$1" ] || die "expected one snapshot id, or latest"
 }
 
+# Snapshots from before the stream export hold a directory, not one archive.
+# grep reads the whole listing, since -q could close the pipe on restic first.
+is_archive_snapshot() {
+	restic_cmd ls "$1" | grep -x "$ARCHIVE" >/dev/null
+}
+
 cmd_backup_now() {
 	service_running backup || die "the backup service is not running; start it with docker compose up -d"
 	docker compose exec -T backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile backup
@@ -353,14 +360,26 @@ cmd_list() {
 
 cmd_show() {
 	need_snapshot "$@"
-	local snap=$1 manifest dump_size
+	local snap=$1 manifest dump_size dump_path label
 	restic_cmd snapshots "$snap"
-	manifest=$(restic_cmd dump "$snap" "$BACKUP_DIR/manifest.json") ||
-		die "cannot read manifest.json from snapshot $snap"
-	dump_size=$(restic_cmd ls --long "$snap" "$BACKUP_DIR/database.dump" |
-		awk -v p="$BACKUP_DIR/database.dump" '$NF == p { print $4 }')
+	if is_archive_snapshot "$snap"; then
+		# The manifest is the first entry, so tar stops reading there. restic may
+		# then fail on a closed pipe, which is why its status is ignored.
+		manifest=$({ restic_cmd dump "$snap" "$ARCHIVE" 2>/dev/null || true; } |
+			tar -xOf - --occurrence=1 "${BACKUP_DIR#/}/manifest.json") || true
+		[ -n "$manifest" ] || die "cannot read manifest.json from snapshot $snap"
+		dump_path=$ARCHIVE
+		label="archive bytes:       "
+	else
+		manifest=$(restic_cmd dump "$snap" "$BACKUP_DIR/manifest.json") ||
+			die "cannot read manifest.json from snapshot $snap"
+		dump_path=$BACKUP_DIR/database.dump
+		label="database dump bytes: "
+	fi
+	dump_size=$(restic_cmd ls --long "$snap" "$dump_path" |
+		awk -v p="$dump_path" '$NF == p { print $4 }')
 	# The manifest is pretty-printed JSON with one field per line.
-	printf '%s\n' "$manifest" | awk -v dump="${dump_size:-unknown}" '
+	printf '%s\n' "$manifest" | awk -v dump="${dump_size:-unknown}" -v label="$label" '
 		function value(line) {
 			sub(/^[^:]*:[ \t]*/, "", line)
 			gsub(/[",]/, "", line)
@@ -378,7 +397,7 @@ cmd_show() {
 			print "migration_version:   " migration
 			print "stored files:        " files + 0
 			print "stored file bytes:   " bytes + 0
-			print "database dump bytes: " dump
+			print label dump
 		}'
 }
 
@@ -402,8 +421,12 @@ cmd_restore() {
 	docker compose up -d --wait postgres
 
 	step "Restoring snapshot $snap into staging/"
-	docker compose run --rm --no-deps --user 0 -v ./staging:/restore --entrypoint resticprofile backup \
-		-c /etc/resticprofile/profiles.toml -n resticprofile restore "$snap" --target /restore
+	if is_archive_snapshot "$snap"; then
+		restic_cmd dump "$snap" "$ARCHIVE" | tar -x -C staging
+	else
+		docker compose run --rm --no-deps --user 0 -v ./staging:/restore --entrypoint resticprofile backup \
+			-c /etc/resticprofile/profiles.toml -n resticprofile restore "$snap" --target /restore
+	fi
 
 	# admin restore verifies the manifest and hashes, and refuses a non-empty
 	# database or an existing destination.

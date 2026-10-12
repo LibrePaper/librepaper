@@ -18,12 +18,17 @@ schedule-permission = "user"
 extended-status = true
 host = "librepaper"
 tag = ["librepaper"]
-source = ["/var/backups/librepaper/current", "/etc/librepaper/librepaper.toml", "/etc/resticprofile/resticprofile.toml", "/var/lib/librepaper/secrets"]
-run-before = "set -eu; rm -rf /var/backups/librepaper/current; librepaper admin backup --config /etc/librepaper/librepaper.toml /var/backups/librepaper/current"
-run-finally = "rm -rf /var/backups/librepaper/current"
+source = ["/usr/local/bin/librepaper-backup-export"]
+# restic runs the export and stores its stdout. It saves no snapshot when the export fails.
+stdin-from-command = true
+stdin-filename = "librepaper-backup.tar"
 
 [resticprofile.retention]
 after-backup = true
+# Snapshots from before the stream export have other paths. Grouping by path would keep them forever.
+group-by = "host,tags"
+# The source is the export command, not a snapshot path, so a path filter would match nothing.
+path = false
 keep-within = "48h"
 keep-daily = 14
 keep-weekly = 11

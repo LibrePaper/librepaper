@@ -1,6 +1,8 @@
 //! Snapshot-consistent PostgreSQL and immutable-object recovery points.
 
 use super::{
+    blob::BlobStore,
+    maintenance::BlobLifecycleLock,
     postgres::{PostgresCatalog, PostgresOptions},
     StorageOptions,
 };
@@ -8,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsStr,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -42,14 +44,19 @@ pub async fn backup_cli(options: StorageOptions, directory: String, id: String) 
     }
 }
 
-async fn create(options: StorageOptions, destination: &Path, id: String) -> Result<(), String> {
-    if destination.exists() {
-        return Err(format!(
-            "backup destination already exists: {}",
-            destination.display()
-        ));
-    }
-    super::create_private_dir(destination, "backup destination")?;
+/// What the snapshot-consistent part of a backup yields: the reference list,
+/// the open catalogue, and the lock that keeps those objects from deletion.
+struct StartedBackup {
+    started_at: String,
+    migration_version: i64,
+    references: Vec<Reference>,
+    catalog: PostgresCatalog,
+    lifecycle_lock: BlobLifecycleLock,
+}
+
+/// The part both modes share. The caller copies the objects while the returned
+/// lock is held, then releases it with `release_backup()`.
+async fn start_backup(options: &StorageOptions, dump: &Path) -> Result<StartedBackup, String> {
     let started_at = now()?;
     let catalog = PostgresCatalog::connect(PostgresOptions::new(&options.database_url))
         .await
@@ -120,11 +127,10 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         }
     }
     let references = by_key.into_values().collect::<Vec<_>>();
-    let dump = destination.join("database.dump");
-    write_private_file(&dump, &[])?;
     let status = postgres_tool("pg_dump", &options.database_url)?
         .args(["--format=custom", "--snapshot", &snapshot, "--file"])
-        .arg(&dump)
+        .arg(dump)
+        .stdout(std::process::Stdio::null())
         .status()
         .await
         .map_err(|e| format!("could not run pg_dump: {e}"))?;
@@ -136,6 +142,32 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         .execute(lifecycle_lock.connection_mut())
         .await
         .map_err(|e| e.to_string())?;
+    Ok(StartedBackup {
+        started_at,
+        migration_version,
+        references,
+        catalog,
+        lifecycle_lock,
+    })
+}
+
+async fn create(options: StorageOptions, destination: &Path, id: String) -> Result<(), String> {
+    if destination.exists() {
+        return Err(format!(
+            "backup destination already exists: {}",
+            destination.display()
+        ));
+    }
+    super::create_private_dir(destination, "backup destination")?;
+    let dump = destination.join("database.dump");
+    write_private_file(&dump, &[])?;
+    let StartedBackup {
+        started_at,
+        migration_version,
+        references,
+        catalog: _catalog,
+        lifecycle_lock,
+    } = start_backup(&options, &dump).await?;
     let blobs = super::open_storage(options).await?;
     let object_root = destination.join("objects");
     let mut verified_references = Vec::with_capacity(references.len());
@@ -163,7 +195,244 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         });
     }
     lifecycle_lock.release_backup().await?;
-    let manifest = Manifest {
+    let manifest = build_manifest(
+        id,
+        started_at,
+        migration_version,
+        hash_file(&dump)?,
+        &verified_references,
+    )?;
+    write_private_file(
+        &destination.join("manifest.json"),
+        &serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
+    )?;
+    println!("created verified backup {}", destination.display());
+    Ok(())
+}
+
+/// Streams the recovery point as one tar archive. Only the archive may reach
+/// `out`; in the CLI that is stdout.
+async fn create_archive(
+    options: StorageOptions,
+    id: String,
+    prefix: String,
+    includes: Vec<PathBuf>,
+    out: impl std::io::Write,
+) -> Result<(), String> {
+    validate_archive_prefix(&prefix)?;
+    let files = expand_includes(&includes)?;
+    let dump =
+        tempfile::NamedTempFile::new().map_err(|e| format!("could not create dump file: {e}"))?;
+    let StartedBackup {
+        started_at,
+        migration_version,
+        mut references,
+        catalog: _catalog,
+        lifecycle_lock,
+    } = start_backup(&options, dump.path()).await?;
+    let blobs = super::open_storage(options).await?;
+    // The manifest is written first, so any object the database left unmeasured
+    // is read here to record its length and digest.
+    for reference in &mut references {
+        if reference.sha256.is_empty() || reference.bytes == 0 {
+            let bytes = blobs
+                .get(&reference.key)
+                .await
+                .map_err(|e| format!("backup object {}: {e}", reference.key))?;
+            reference.bytes = bytes.len() as i64;
+            reference.sha256 = hex::encode(Sha256::digest(&bytes));
+        }
+    }
+    let manifest = build_manifest(
+        id,
+        started_at,
+        migration_version,
+        hash_file(dump.path())?,
+        &references,
+    )?;
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
+    write_archive(
+        out,
+        &prefix,
+        &manifest_bytes,
+        dump.path(),
+        blobs.as_ref(),
+        &references,
+        Some(lifecycle_lock),
+        &files,
+    )
+    .await?;
+    eprintln!("created verified backup {}", manifest.id);
+    Ok(())
+}
+
+/// Writes the archive from the manifest onward. The lock is released after the
+/// last object and before the includes are read.
+#[allow(clippy::too_many_arguments)]
+async fn write_archive(
+    out: impl std::io::Write,
+    prefix: &str,
+    manifest: &[u8],
+    dump: &Path,
+    blobs: &dyn BlobStore,
+    references: &[Reference],
+    lock: Option<BlobLifecycleLock>,
+    includes: &[PathBuf],
+) -> Result<(), String> {
+    let mut builder = tar::Builder::new(out);
+    append_entry(
+        &mut builder,
+        format!("{prefix}/manifest.json"),
+        manifest.len() as u64,
+        manifest,
+    )?;
+    let dump_file = std::fs::File::open(dump).map_err(|e| e.to_string())?;
+    let dump_length = dump_file.metadata().map_err(|e| e.to_string())?.len();
+    append_entry(
+        &mut builder,
+        format!("{prefix}/database.dump"),
+        dump_length,
+        dump_file,
+    )?;
+    // One object is held in memory at a time.
+    for reference in references {
+        let bytes = blobs
+            .get(&reference.key)
+            .await
+            .map_err(|e| format!("backup object {}: {e}", reference.key))?;
+        if reference.bytes != bytes.len() as i64 {
+            return Err(format!("backup object length mismatch: {}", reference.key));
+        }
+        if reference.sha256 != hex::encode(Sha256::digest(&bytes)) {
+            return Err(format!("backup object digest mismatch: {}", reference.key));
+        }
+        append_entry(
+            &mut builder,
+            format!("{prefix}/objects/{}", reference.key),
+            bytes.len() as u64,
+            bytes.as_slice(),
+        )?;
+    }
+    if let Some(lock) = lock {
+        lock.release_backup().await?;
+    }
+    for file in includes {
+        let name = file.strip_prefix("/").map_err(|e| e.to_string())?;
+        let input =
+            std::fs::File::open(file).map_err(|e| format!("include {}: {e}", file.display()))?;
+        let length = input.metadata().map_err(|e| e.to_string())?.len();
+        append_entry(&mut builder, name, length, input)?;
+    }
+    let mut out = builder.into_inner().map_err(|e| e.to_string())?;
+    std::io::Write::flush(&mut out).map_err(|e| e.to_string())
+}
+
+/// Every entry uses the same header so that unchanged content gives the same
+/// archive bytes from run to run.
+fn append_entry<W: std::io::Write>(
+    builder: &mut tar::Builder<W>,
+    path: impl AsRef<Path>,
+    size: u64,
+    data: impl std::io::Read,
+) -> Result<(), String> {
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_size(size);
+    header.set_mode(0o600);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(0);
+    header.set_username("").map_err(|e| e.to_string())?;
+    header.set_groupname("").map_err(|e| e.to_string())?;
+    builder
+        .append_data(&mut header, path, data)
+        .map_err(|e| e.to_string())
+}
+
+fn validate_archive_prefix(prefix: &str) -> Result<(), String> {
+    let path = Path::new(prefix);
+    if prefix.is_empty()
+        || path.is_absolute()
+        || path.components().any(|part| part == Component::ParentDir)
+    {
+        return Err(format!(
+            "archive prefix must be a non-empty relative path without '..': {prefix:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Resolves each include to the regular files it names, in option order. A
+/// directory contributes its files in ascending path order.
+fn expand_includes(includes: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    for include in includes {
+        if !include.is_absolute() {
+            return Err(format!(
+                "include must be an absolute path: {}",
+                include.display()
+            ));
+        }
+        let metadata = std::fs::symlink_metadata(include)
+            .map_err(|e| format!("include {}: {e}", include.display()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "include must not be a symlink: {}",
+                include.display()
+            ));
+        }
+        if metadata.is_file() {
+            files.push(include.clone());
+        } else if metadata.is_dir() {
+            let mut found = Vec::new();
+            collect_files(include, &mut found)?;
+            found.sort();
+            files.extend(found);
+        } else {
+            return Err(format!(
+                "include is not a regular file or directory: {}",
+                include.display()
+            ));
+        }
+    }
+    Ok(files)
+}
+
+fn collect_files(directory: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(directory)
+        .map_err(|e| format!("include {}: {e}", directory.display()))?;
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|e| format!("include {}: {e}", path.display()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "include must not contain a symlink: {}",
+                path.display()
+            ));
+        }
+        if metadata.is_dir() {
+            collect_files(&path, found)?;
+        } else if metadata.is_file() {
+            found.push(path);
+        } else {
+            return Err(format!(
+                "include is not a regular file or directory: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn build_manifest(
+    id: String,
+    started_at: String,
+    migration_version: i64,
+    database_sha256: String,
+    references: &[Reference],
+) -> Result<Manifest, String> {
+    Ok(Manifest {
         format: "librepaper-postgres-backup-v1".into(),
         id: if id.is_empty() {
             uuid::Uuid::now_v7().to_string()
@@ -174,17 +443,24 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         completed_at: now()?,
         migration_version,
         database: "database.dump".into(),
-        database_sha256: hash_file(&dump)?,
+        database_sha256,
         objects: "objects".into(),
-        references: verified_references,
+        references: references.to_vec(),
         verified: true,
-    };
-    write_private_file(
-        &destination.join("manifest.json"),
-        &serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
-    )?;
-    println!("created verified backup {}", destination.display());
-    Ok(())
+    })
+}
+
+pub async fn backup_archive_cli(
+    options: StorageOptions,
+    id: String,
+    prefix: String,
+    includes: Vec<String>,
+) {
+    let includes = includes.into_iter().map(PathBuf::from).collect();
+    let out = std::io::BufWriter::with_capacity(1 << 16, std::io::stdout().lock());
+    if let Err(e) = create_archive(options, id, prefix, includes, out).await {
+        librepaper_base::util::die(e)
+    }
 }
 
 pub async fn restore_cli(options: StorageOptions, backup: String, directory: String) {
@@ -508,5 +784,179 @@ mod connection_tests {
             .as_std()
             .get_args()
             .all(|arg| !arg.to_string_lossy().contains("explicit secret")));
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::{expand_includes, validate_archive_prefix, write_archive, Reference};
+    use crate::storage::blob::{BlobStore, FsStore};
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    use std::path::PathBuf;
+
+    const PREFIX: &str = "var/backups/librepaper/current";
+    const MANIFEST: &[u8] = br#"{"format":"librepaper-postgres-backup-v1"}"#;
+    const DUMP: &[u8] = b"fake pg_dump custom-format bytes";
+
+    /// Keys are in ascending order. With the prefix each entry path is longer
+    /// than 100 bytes, so the tar long-name records are exercised.
+    fn objects() -> Vec<(&'static str, &'static [u8])> {
+        vec![
+            (
+                "archives/0190c2f0-0000-7000-8000-000000000003/plain-source.tar.zst",
+                b"archive bytes",
+            ),
+            (
+                "assets/0190c2f0-0000-7000-8000-000000000002/figure-with-long-name.png",
+                b"figure bytes",
+            ),
+            (
+                "documents/0190c2f0-0000-7000-8000-000000000001/snapshots/first.bin",
+                b"snapshot bytes",
+            ),
+        ]
+    }
+
+    fn reference(key: &str, body: &[u8]) -> Reference {
+        Reference {
+            key: key.into(),
+            bytes: body.len() as i64,
+            sha256: hex::encode(Sha256::digest(body)),
+        }
+    }
+
+    struct Fixture {
+        _root: tempfile::TempDir,
+        blobs: FsStore,
+        references: Vec<Reference>,
+        dump: PathBuf,
+        includes: Vec<PathBuf>,
+    }
+
+    async fn fixture() -> Fixture {
+        let root = tempfile::tempdir().unwrap();
+        let blobs = FsStore::new(root.path(), false);
+        let mut references = Vec::new();
+        for (key, body) in objects() {
+            blobs
+                .put_new(key, body.to_vec(), "application/octet-stream")
+                .await
+                .unwrap();
+            references.push(reference(key, body));
+        }
+        let dump = root.path().join("database.dump");
+        std::fs::write(&dump, DUMP).unwrap();
+        let include = root.path().join("include");
+        std::fs::create_dir(&include).unwrap();
+        std::fs::write(include.join("zeta.toml"), b"zeta = 1\n").unwrap();
+        std::fs::write(include.join("alpha.toml"), b"alpha = 1\n").unwrap();
+        Fixture {
+            _root: root,
+            blobs,
+            references,
+            dump,
+            includes: vec![include],
+        }
+    }
+
+    async fn archive(fixture: &Fixture, references: &[Reference]) -> Result<Vec<u8>, String> {
+        let files = expand_includes(&fixture.includes)?;
+        let mut out = Vec::new();
+        write_archive(
+            &mut out,
+            PREFIX,
+            MANIFEST,
+            &fixture.dump,
+            &fixture.blobs,
+            references,
+            None,
+            &files,
+        )
+        .await?;
+        Ok(out)
+    }
+
+    /// Path, body and header of every entry, in archive order.
+    fn entries(archive: &[u8]) -> Vec<(String, Vec<u8>, tar::Header)> {
+        let mut reader = tar::Archive::new(archive);
+        reader
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                let mut entry = entry.unwrap();
+                let path = entry.path().unwrap().to_string_lossy().into_owned();
+                let header = entry.header().clone();
+                let mut body = Vec::new();
+                entry.read_to_end(&mut body).unwrap();
+                (path, body, header)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn archive_entries_come_in_the_contract_order() {
+        let fixture = fixture().await;
+        let bytes = archive(&fixture, &fixture.references).await.unwrap();
+        let entries = entries(&bytes);
+        let names: Vec<String> = entries.iter().map(|(path, _, _)| path.clone()).collect();
+        let include = &fixture.includes[0];
+        let mut expected = vec![
+            format!("{PREFIX}/manifest.json"),
+            format!("{PREFIX}/database.dump"),
+        ];
+        for (key, _) in objects() {
+            expected.push(format!("{PREFIX}/objects/{key}"));
+        }
+        for name in ["alpha.toml", "zeta.toml"] {
+            let stored = include.join(name);
+            expected.push(
+                stored
+                    .strip_prefix("/")
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        assert_eq!(names, expected);
+        assert_eq!(entries[0].1, MANIFEST);
+        assert_eq!(entries[1].1, DUMP);
+        for (key, body) in objects() {
+            let path = format!("{PREFIX}/objects/{key}");
+            let found = entries.iter().find(|(name, _, _)| *name == path).unwrap();
+            assert_eq!(found.1, body);
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_headers_are_deterministic() {
+        let fixture = fixture().await;
+        let first = archive(&fixture, &fixture.references).await.unwrap();
+        let second = archive(&fixture, &fixture.references).await.unwrap();
+        assert_eq!(first, second);
+        for (path, _, header) in entries(&first) {
+            assert_eq!(header.mode().unwrap(), 0o600, "{path}");
+            assert_eq!(header.mtime().unwrap(), 0, "{path}");
+            assert_eq!(header.uid().unwrap(), 0, "{path}");
+            assert_eq!(header.gid().unwrap(), 0, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_refuses_an_object_whose_digest_disagrees() {
+        let fixture = fixture().await;
+        let mut references = fixture.references.clone();
+        references[1].sha256 = "0".repeat(64);
+        let error = archive(&fixture, &references).await.unwrap_err();
+        assert!(error.contains(&references[1].key), "{error}");
+    }
+
+    #[test]
+    fn archive_prefix_and_includes_are_validated() {
+        assert!(validate_archive_prefix("").is_err());
+        assert!(validate_archive_prefix("var/../etc").is_err());
+        assert!(validate_archive_prefix("/var/backups").is_err());
+        assert!(validate_archive_prefix(PREFIX).is_ok());
+        assert!(expand_includes(&[PathBuf::from("etc/librepaper/librepaper.toml")]).is_err());
     }
 }

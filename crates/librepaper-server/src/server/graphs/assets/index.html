@@ -21,6 +21,27 @@
   <span id="status" role="status"></span>
 </header>
 <main id="grid"></main>
+<section id="accounts" class="panel">
+  <h2>Largest accounts</h2>
+  <p id="accounts-total"></p>
+  <p id="accounts-expiry"></p>
+  <div class="table">
+    <table>
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Status</th>
+          <th class="num">Storage</th>
+          <th class="num">Documents</th>
+          <th>Last sign-in</th>
+          <th>Created</th>
+          <th>ID</th>
+        </tr>
+      </thead>
+      <tbody id="accounts-rows"></tbody>
+    </table>
+  </div>
+</section>
 <script src="/uplot.js"></script>
 <script src="/app.js"></script>
 </body>

@@ -1,9 +1,37 @@
 //! Reversible operator moderation and its durable audit trail.
 
 use sqlx::Row;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{new_id, Error, PostgresCatalog, Result};
+
+/// One account as the operator's largest-accounts list shows it.
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct AccountUsage {
+    pub id: Uuid,
+    pub handle: String,
+    pub provider: Option<String>,
+    pub kind: String,
+    pub status: String,
+    pub created_at: OffsetDateTime,
+    pub last_seen_at: OffsetDateTime,
+    pub documents: i64,
+    pub bytes: i64,
+}
+
+/// Per-owner bytes: the same five sources `owner_usage_bytes` charges each owner.
+const OWNER_USAGE: &str = "SELECT owner_id, COALESCE(sum(bytes),0)::bigint AS bytes FROM (
+                 SELECT d.owner_id, x.byte_length AS bytes FROM document_archives x
+                   JOIN documents d ON d.id=x.document_id
+                 UNION ALL SELECT d.owner_id, x.byte_length FROM document_assets x
+                   JOIN documents d ON d.id=x.document_id
+                 UNION ALL SELECT d.owner_id, s.snapshot_bytes FROM document_snapshots s
+                   JOIN documents d ON d.id=s.document_id WHERE s.delete_after IS NULL
+                 UNION ALL SELECT d.owner_id, d.uncompacted_update_bytes FROM documents d
+                 UNION ALL SELECT d.owner_id, r.bytes FROM pending_log_reservations r
+                   JOIN documents d ON d.id=r.document_id
+               ) usage GROUP BY owner_id";
 
 #[derive(Clone, Copy, Debug)]
 pub enum ModerationAction {
@@ -168,6 +196,36 @@ impl PostgresCatalog {
         .bind(document_id)
         .fetch_one(&self.pool)
         .await?)
+    }
+
+    /// The accounts holding the most stored bytes, largest first. Each byte
+    /// count is what `owner_usage_bytes` charges that owner.
+    pub async fn largest_accounts(&self, limit: i64) -> Result<Vec<AccountUsage>> {
+        let sql = format!(
+            "SELECT a.id, a.handle, a.provider, a.kind, a.status, a.created_at, a.last_seen_at,
+                    (SELECT count(*) FROM documents d WHERE d.owner_id=a.id)::bigint AS documents,
+                    u.bytes
+             FROM ({OWNER_USAGE}) u JOIN accounts a ON a.id=u.owner_id
+             ORDER BY u.bytes DESC, a.id
+             LIMIT $1"
+        );
+        Ok(sqlx::query_as::<_, AccountUsage>(&sql)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
+    /// How many accounts the inactivity sweep would erase for this cutoff, and the bytes they hold.
+    pub async fn inactive_summary(&self, seen_before: OffsetDateTime) -> Result<(i64, i64)> {
+        let sql = format!(
+            "SELECT count(*)::bigint, COALESCE(sum(u.bytes),0)::bigint
+               FROM accounts a LEFT JOIN ({OWNER_USAGE}) u ON u.owner_id=a.id
+              WHERE a.kind='registered' AND a.status='active' AND a.last_seen_at < $1"
+        );
+        Ok(sqlx::query_as::<_, (i64, i64)>(&sql)
+            .bind(seen_before)
+            .fetch_one(&self.pool)
+            .await?)
     }
 
     pub async fn project_is_hidden_by_slug(&self, slug: &str) -> Result<bool> {
@@ -517,6 +575,176 @@ mod tests {
             .unwrap();
         assert_eq!(status, "deleting");
         drop(_writer);
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn largest_accounts_orders_by_owner_usage_and_skips_accounts_without_documents() {
+        let catalog = test_catalog().await;
+        crate::testing::reset(&catalog).await;
+        let big = Uuid::now_v7();
+        let medium = Uuid::now_v7();
+        let small = Uuid::now_v7();
+        let empty = Uuid::now_v7();
+        for owner in [big, medium, small, empty] {
+            sqlx::query(
+                "INSERT INTO accounts(id,kind,handle,display_name,status)
+                 VALUES($1,'anonymous',$2,'Largest accounts test','active')",
+            )
+            .bind(owner)
+            .bind(format!("largest-{owner}"))
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        }
+        let mut documents = Vec::new();
+        for (owner, count) in [(big, 3), (medium, 1), (small, 2)] {
+            for _ in 0..count {
+                let document = Uuid::now_v7();
+                sqlx::query(
+                    "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
+                     VALUES($1,$2,$3,'owned','Largest accounts test','active','markdown','main.md')",
+                )
+                .bind(document)
+                .bind(format!("largest-document-{document}"))
+                .bind(owner)
+                .execute(catalog.pool())
+                .await
+                .unwrap();
+                documents.push((owner, document));
+            }
+        }
+        let bytes_by_document = [
+            (documents[0].1, 1000_i64),
+            (documents[3].1, 400),
+            (documents[4].1, 100),
+        ];
+        for (document, bytes) in bytes_by_document {
+            sqlx::query("UPDATE documents SET uncompacted_update_bytes=$2 WHERE id=$1")
+                .bind(document)
+                .bind(bytes)
+                .execute(catalog.pool())
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO document_assets(id,document_id,storage_key,digest,byte_length,media_type)
+             VALUES($1,$2,$3,$4,500,'image/png')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(documents[0].1)
+        .bind(format!("largest-asset-{}", documents[0].1))
+        .bind(vec![7_u8; 32])
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+
+        let all = catalog.largest_accounts(10).await.unwrap();
+        let order: Vec<Uuid> = all.iter().map(|row| row.id).collect();
+        assert_eq!(order, vec![big, medium, small]);
+        let totals: Vec<(i64, i64)> = all.iter().map(|row| (row.documents, row.bytes)).collect();
+        assert_eq!(totals, vec![(3, 1500), (1, 400), (2, 100)]);
+        for row in &all {
+            let charged =
+                crate::storage::postgres::repository::owner_usage_bytes(catalog.pool(), row.id)
+                    .await
+                    .unwrap();
+            assert_eq!(row.bytes, charged);
+        }
+
+        let two = catalog.largest_accounts(2).await.unwrap();
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[0].id, big);
+        assert_eq!(two[1].id, medium);
+        catalog.close().await;
+    }
+
+    /// Inserts an account last seen `days_ago` days back. Registered accounts
+    /// get a provider identity; every other kind must have none.
+    async fn insert_account(
+        catalog: &PostgresCatalog,
+        kind: &str,
+        status: &str,
+        days_ago: i32,
+    ) -> Uuid {
+        let id = Uuid::now_v7();
+        let (provider, subject) = if kind == "registered" {
+            (Some("github".to_owned()), Some(format!("inactive-{id}")))
+        } else {
+            (None, None)
+        };
+        sqlx::query(
+            "INSERT INTO accounts(id,kind,handle,provider,provider_subject,display_name,status,last_seen_at)
+             VALUES($1,$2,$3,$4,$5,'Inactive accounts test',$6,now() - make_interval(days => $7))",
+        )
+        .bind(id)
+        .bind(kind)
+        .bind(format!("inactive-{id}"))
+        .bind(provider)
+        .bind(subject)
+        .bind(status)
+        .bind(days_ago)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        id
+    }
+
+    async fn insert_document_with_bytes(catalog: &PostgresCatalog, owner: Uuid, bytes: i64) {
+        let document = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
+             VALUES($1,$2,$3,'owned','Inactive accounts test','active','markdown','main.md')",
+        )
+        .bind(document)
+        .bind(format!("inactive-document-{document}"))
+        .bind(owner)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        sqlx::query("UPDATE documents SET uncompacted_update_bytes=$2 WHERE id=$1")
+            .bind(document)
+            .bind(bytes)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn inactive_accounts_are_registered_active_accounts_not_seen_since_the_cutoff() {
+        let catalog = test_catalog().await;
+        crate::testing::reset(&catalog).await;
+        let a = insert_account(&catalog, "registered", "active", 400).await;
+        let b = insert_account(&catalog, "registered", "active", 500).await;
+        let _c = insert_account(&catalog, "registered", "active", 10).await;
+        let _d = insert_account(&catalog, "registered", "blocked", 400).await;
+        let _e = insert_account(&catalog, "anonymous", "active", 400).await;
+        let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(365);
+
+        assert_eq!(
+            catalog.inactive_accounts(cutoff, 10).await.unwrap(),
+            vec![b, a]
+        );
+        assert_eq!(catalog.inactive_accounts(cutoff, 1).await.unwrap(), vec![b]);
+        assert!(catalog.inactive_accounts(cutoff, 0).await.is_err());
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn inactive_summary_counts_inactive_accounts_and_their_bytes() {
+        let catalog = test_catalog().await;
+        crate::testing::reset(&catalog).await;
+        let a = insert_account(&catalog, "registered", "active", 400).await;
+        let _b = insert_account(&catalog, "registered", "active", 400).await;
+        let c = insert_account(&catalog, "registered", "active", 10).await;
+        insert_document_with_bytes(&catalog, a, 700).await;
+        insert_document_with_bytes(&catalog, c, 300).await;
+        let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(365);
+
+        assert_eq!(catalog.inactive_summary(cutoff).await.unwrap(), (2, 700));
         catalog.close().await;
     }
 }

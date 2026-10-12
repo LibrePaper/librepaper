@@ -8,6 +8,8 @@ title: "Privacy and data retention"
 > also be able to read files to moderate them. If you need private file
 > handling, [host your own server](./host/simple.html).
 
+> **Warning:** librepaper.org erases an account that has not signed in for 365 days. Every document the account owns is deleted with it, including documents shared with other people. No email is sent first. Sign in at least once a year to keep your account, and keep your own copy of work that matters with [local backups](backups.html).
+
 ## What librepaper.org stores
 
 librepaper.org and your files are hosted in Canada.
@@ -52,7 +54,8 @@ The browser also keeps data of its own on your device.
 
 ## Data retention
 
-- **Documents** stay until their owner deletes them.
+- **Accounts** that have not signed in for 365 days are erased. Every sign-in resets the clock. See [erasing an account](#erasing-an-account).
+- **Documents** stay until their owner deletes them or the owner's account is erased.
 - **Deleted projects** stay in the trash for seven days. Then the project is purged with its files, comments, replies, history and share links. Emptying the trash purges it at once.
 - **Edit history and named versions** stay as long as the document exists. An owner can trim history, which permanently removes older history and named versions. See [storage and history](./architecture/document.html#storage-and-history).
 - **Share links** expire after seven days unless the owner picks a longer time or no expiry.
@@ -75,6 +78,8 @@ Choose **Settings > Account > Erase this account** and confirm with your handle.
 2. Owned documents are marked for deletion and purged after seven days.
 3. Comments, replies and labels on other people's documents stay, shown as "Deleted user".
 4. The account record is deleted once its documents are purged.
+
+librepaper.org also erases an account that has not signed in for 365 days, in the same four steps. Signing in again later creates a new, empty account.
 
 The account stays in [backups](#backups) until they expire.
 

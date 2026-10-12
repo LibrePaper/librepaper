@@ -67,6 +67,8 @@ docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n 
 
 Backups contain the database dump, referenced objects, both TOML files, and `session.key`. Keep the session key to preserve existing sessions and saved share secrets.
 
+Each backup streams the database and every stored file straight into restic as one archive. Only the database dump is written to a temporary file first, so the server needs free disk space for the database, not for the stored files.
+
 Schedule and retention come from a base profile inside the backup image. Your `resticprofile.toml` is merged over it, so any setting you add there wins. The defaults:
 
 - A backup runs daily at midnight UTC.
@@ -90,7 +92,7 @@ keep-weekly = 52
 docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile show   # the merged result
 ```
 
-- Leave `source`, `run-before` and `run-finally` alone: they produce the database export that every snapshot contains.
+- Leave `source` alone: it streams the database export that every snapshot contains.
 - If you change the schedule, change the Healthchecks period to match (see [backup alerts](#backup-alerts)).
 
 Notes:
@@ -161,6 +163,8 @@ The VPS cannot report its own outage, so alerts come from free outside services.
 
 The console is a password-protected page on its own hostname. It graphs the server's health over the last 400 days: CPU, memory, free disk, stored bytes, open documents, live connections and database connections in use.
 
+The page also lists the 50 accounts holding the most storage.
+
 ```sh
 # Optional. Graphs of the last 400 days at https://admin.paper.example/, behind a password.
 # DNS: admin.paper.example -> this VPS, like the other two names.
@@ -175,6 +179,11 @@ head -c 24 /dev/urandom | base64         # the password
 - The browser asks for the password once per session. The user name can be anything.
 - Zoom by dragging on any graph. Double-click to return to the chosen range.
 - For your own Prometheus, add `[metrics]` with `address = "0.0.0.0:9091"` to `librepaper.toml`: the server then serves `/metrics` on that port inside the Docker network. The kit publishes no host port for it, and the graphs above do not need it.
+
+```sh
+# Block an account found on the console. The ID column is the UUID.
+docker compose exec librepaper librepaper admin moderate block-account <uuid> --actor <you> --reason "<why>"
+```
 
 ### Uptime
 
@@ -257,6 +266,7 @@ Every limit and the retention settings are listed, with their defaults, at the e
 - The whole server is limited in total storage (`deployment_storage_mib`), memory for loading documents (`memory_budget_mib`), edit history per document (`log_quota_mib`), and unsaved edits in memory and on disk (`pending_mib`, `pending_scratch_mib`).
 - With [object storage](#object-storage), disk is no longer the constraint on `deployment_storage_mib`: set it to what you are willing to store.
 - `[retention]` deletes documents after `expire_after`, counted from the last update by default or from creation.
+- `erase_inactive_after` in `[retention]` erases accounts that have not signed in for that long, with every document they own. It is off by default and must be at least 60 days. The admin console shows how many accounts it will erase in the next 30 days.
 
 ## Without Docker
 

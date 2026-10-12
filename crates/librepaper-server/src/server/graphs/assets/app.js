@@ -207,5 +207,74 @@
     load();
   });
 
+  // The fifty accounts holding the most storage. Handles are chosen by users,
+  // so every cell is filled with textContent, never markup.
+  function day(seconds) {
+    return new Date(seconds * 1000).toISOString().slice(0, 10);
+  }
+
+  function cell(text, className) {
+    const td = document.createElement("td");
+    if (className) td.className = className;
+    td.textContent = text;
+    return td;
+  }
+
+  // `dueBefore` is the last sign-in, in seconds, below which an account is due for erasure within 30 days, or null when the sweep is off.
+  function accountRow(account, dueBefore) {
+    const row = document.createElement("tr");
+    const name = document.createElement("td");
+    name.append(account.handle);
+    if (account.provider) {
+      const provider = document.createElement("span");
+      provider.className = "muted";
+      provider.textContent = account.provider;
+      name.append(" ", provider);
+    }
+    const lastSeen = cell(day(account.last_seen_at));
+    if (dueBefore != null && account.last_seen_at < dueBefore) lastSeen.className = "due";
+    const id = document.createElement("td");
+    const code = document.createElement("code");
+    code.textContent = account.id;
+    id.append(code);
+    row.append(
+      name,
+      cell(account.status),
+      cell(format(account.bytes, "bytes"), "num"),
+      cell(String(account.documents), "num"),
+      lastSeen,
+      cell(day(account.created_at)),
+      id
+    );
+    return row;
+  }
+
+  async function loadAccounts() {
+    const total = document.getElementById("accounts-total");
+    const expiry = document.getElementById("accounts-expiry");
+    const rows = document.getElementById("accounts-rows");
+    try {
+      const response = await fetch("/accounts", { cache: "no-store" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const data = await response.json();
+      total.textContent = "Stored: " + format(data.total_bytes, "bytes") + " of " + format(data.limit_bytes, "bytes");
+      let dueBefore = null;
+      if (data.erase_inactive_after > 0) {
+        const days = Math.round(data.erase_inactive_after / 86400);
+        const soon = data.erasing_soon;
+        expiry.textContent = "Accounts with no sign-in for " + days + " days are erased. Within 30 days: " +
+          soon.accounts + " accounts holding " + format(soon.bytes, "bytes") + ".";
+        dueBefore = Date.now() / 1000 - data.erase_inactive_after + 30 * 86400;
+      } else {
+        expiry.textContent = "Accounts with no sign-in are kept.";
+      }
+      rows.replaceChildren(...data.accounts.map((account) => accountRow(account, dueBefore)));
+    } catch (error) {
+      total.classList.add("failed");
+      total.textContent = "The accounts could not be loaded.";
+    }
+  }
+
   load();
+  loadAccounts();
 })();

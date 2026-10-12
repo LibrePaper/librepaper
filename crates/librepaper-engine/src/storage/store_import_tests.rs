@@ -9,6 +9,23 @@ use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::postgres::{Authority, NewAccount, NewDocument};
 use librepaper_base::config::Configuration;
 
+/// A valid PNG of `size` bytes, or the 57 bytes a PNG needs when `size` is
+/// smaller. The padding is a tEXt chunk, so distinct sizes give distinct digests.
+fn png(size: usize) -> Vec<u8> {
+    let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    png_chunk(&mut out, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    png_chunk(&mut out, b"tEXt", &vec![b' '; size.saturating_sub(57)]);
+    png_chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+fn png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    out.extend_from_slice(&[0; 4]);
+}
+
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes_them() {
@@ -58,7 +75,7 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
         automation: false,
         unowned_publisher: false,
     };
-    let bytes = b"figure bytes".to_vec();
+    let bytes = png(64);
     let digest = hex::encode(Sha256::digest(&bytes));
 
     sqlx::query("UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1")
@@ -231,8 +248,8 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
         unowned_publisher: false,
     };
 
-    let bytes_a = b"figure A bytes".to_vec();
-    let bytes_b = b"figure B bytes".to_vec();
+    let bytes_a = png(64);
+    let bytes_b = png(65);
     let digest_a_raw = Sha256::digest(&bytes_a).to_vec();
 
     // Step 1: Create a document with figures A and B

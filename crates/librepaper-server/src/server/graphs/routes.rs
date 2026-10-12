@@ -37,6 +37,7 @@ const MAX_POINTS: i64 = 1000;
 enum Decision {
     Reply(Response<Body>),
     Data(Option<String>),
+    Accounts,
 }
 
 /// Answer one request on the admin origin. The password is checked before
@@ -56,6 +57,7 @@ pub fn admin<'a>(
         let mut response = match decision {
             Decision::Reply(response) => response,
             Decision::Data(query) => data(server, query.as_deref()).await,
+            Decision::Accounts => accounts(server).await,
         };
         for (name, value) in [
             ("cache-control", "no-store"),
@@ -95,6 +97,7 @@ fn decide(server: &Server, request: &Request<Body>) -> Decision {
         "/app.css" => asset("text/css", APP_CSS),
         "/uplot.css" => asset("text/css", UPLOT_CSS),
         "/data" => return Decision::Data(request.uri().query().map(str::to_owned)),
+        "/accounts" => return Decision::Accounts,
         _ => text(StatusCode::NOT_FOUND, "not found"),
     })
 }
@@ -205,6 +208,60 @@ async fn data(server: &Server, query: Option<&str>) -> Response<Body> {
             )
         }
     }
+}
+
+/// The fifty accounts holding the most storage, with the deployment total and
+/// the configured cap. Sizes are the bytes each owner is charged.
+async fn accounts(server: &Server) -> Response<Body> {
+    let listed = server.store.catalog.largest_accounts(50).await;
+    let total = server.store.catalog.usage_bytes(None).await;
+    // The accounts the sweep will erase within the next 30 days, when it runs at all.
+    let soon = match server.erase_inactive_after {
+        0 => Ok(None),
+        after => {
+            let cutoff = time::OffsetDateTime::now_utc() + time::Duration::days(30)
+                - time::Duration::seconds(after);
+            server
+                .store
+                .catalog
+                .inactive_summary(cutoff)
+                .await
+                .map(Some)
+        }
+    };
+    let (accounts, total, soon) = match (listed, total, soon) {
+        (Ok(accounts), Ok(total), Ok(soon)) => (accounts, total, soon),
+        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+            tracing::warn!("accounts read failed: {error}");
+            return text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the accounts could not be read",
+            );
+        }
+    };
+    let accounts: Vec<Value> = accounts
+        .iter()
+        .map(|account| {
+            json!({
+                "id": account.id.to_string(),
+                "handle": account.handle,
+                "provider": account.provider,
+                "kind": account.kind,
+                "status": account.status,
+                "documents": account.documents,
+                "bytes": account.bytes,
+                "created_at": account.created_at.unix_timestamp(),
+                "last_seen_at": account.last_seen_at.unix_timestamp(),
+            })
+        })
+        .collect();
+    json_reply(&json!({
+        "total_bytes": total,
+        "limit_bytes": server.config.storage.total,
+        "accounts": accounts,
+        "erase_inactive_after": server.erase_inactive_after,
+        "erasing_soon": soon.map(|(accounts, bytes)| json!({"accounts": accounts, "bytes": bytes})),
+    }))
 }
 
 /// Run a blocking read once the one read slot is free. There is one operator:

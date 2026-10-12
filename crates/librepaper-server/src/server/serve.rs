@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
-use librepaper_base::auth::{session_key_file, GithubApp, GoogleApp, Policy};
+use librepaper_base::auth::{session_key_file, GithubApp, GoogleApp, Policy, SESSION_MAX_AGE};
 use librepaper_base::config::Configuration;
 use librepaper_base::shell::ShellFile;
 use librepaper_base::util::die;
@@ -74,6 +74,7 @@ pub struct ServeOptions {
     pub admin_password: Option<String>,
     pub expire_after: Option<String>,
     pub expire_from: Option<String>,
+    pub erase_inactive_after: Option<String>,
     /// HTTPS static mirror URL published to browsers. Renderer and LaTeX
     /// distribution bytes are fetched directly by the browser and never pass
     /// through this process.
@@ -301,6 +302,17 @@ fn storage_policy(config: &Configuration) -> librepaper_engine::storage::postgre
     }
 }
 
+/// Seconds without a sign-in after which an account is erased; zero keeps them.
+/// A window under two session lifetimes would erase people who still sign in.
+pub(crate) fn parse_inactive_after(value: &str) -> Result<i64, String> {
+    let seconds = parse_retention(value)?;
+    let floor = 2 * SESSION_MAX_AGE.as_secs() as i64;
+    if seconds != 0 && seconds < floor {
+        return Err(format!("must be at least {}", describe_seconds(floor)));
+    }
+    Ok(seconds)
+}
+
 /// Validate every server setting before the server creates directories,
 /// claims sockets, or connects to PostgreSQL. `admin config check` calls this
 /// same pure preflight.
@@ -313,6 +325,8 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
         .map_err(|error| format!("retention.expire_after: {error}"))?;
     parse_expire_from(options.expire_from.as_deref().unwrap_or(""))
         .map_err(|error| format!("retention.expire_from: {error}"))?;
+    parse_inactive_after(options.erase_inactive_after.as_deref().unwrap_or(""))
+        .map_err(|error| format!("retention.erase_inactive_after: {error}"))?;
     configured_origins(options)?;
     validate_admin_password(
         options.admin_origin.as_deref(),
@@ -353,6 +367,22 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
     Ok(())
 }
 
+/// One pass of the janitor: expired documents, then inactive accounts.
+async fn retention_pass(
+    server: &Server,
+    now: i64,
+    retention: i64,
+    expire_from: &str,
+    inactive_after: i64,
+) {
+    if retention > 0 {
+        server.delete_expired(now, retention, expire_from).await;
+    }
+    if inactive_after > 0 {
+        server.erase_inactive_accounts(now, inactive_after).await;
+    }
+}
+
 pub async fn serve(options: ServeOptions) {
     validate_serve_options(&options).unwrap_or_else(|error| die(error));
     options
@@ -364,6 +394,9 @@ pub async fn serve(options: ServeOptions) {
     let deployment_paths = storage.paths().unwrap_or_else(|err| die(err));
     let retention = parse_retention(options.expire_after.as_deref().unwrap_or(""))
         .unwrap_or_else(|err| die(format!("{err}; use a duration such as 24h or 30d")));
+    let inactive_after =
+        parse_inactive_after(options.erase_inactive_after.as_deref().unwrap_or(""))
+            .unwrap_or_else(|err| die(format!("retention.erase_inactive_after: {err}")));
     // The origin pair is settled before storage is opened or a port claimed.
     // Two origins that share a host are not a deployment with a weaker
     // boundary; they are a deployment with none, so this refuses to start
@@ -553,6 +586,7 @@ pub async fn serve(options: ServeOptions) {
     instance.origins = origins.clone();
     instance.paths = Some(deployment_paths.clone());
     instance.admin_password = options.admin_password;
+    instance.erase_inactive_after = inactive_after;
     // The history behind the graphs page opens only when the page has a name.
     // A file that cannot be opened costs the graphs and nothing else: the
     // server never refuses to start over disposable measurements.
@@ -645,9 +679,23 @@ pub async fn serve(options: ServeOptions) {
             "  expiry: {expire_from} after {}",
             describe_seconds(retention)
         );
-        instance
-            .delete_expired(librepaper_base::util::now_unix(), retention, &expire_from)
-            .await;
+    }
+    if inactive_after > 0 {
+        println!(
+            "  inactive accounts: erased after {} without a sign-in",
+            describe_seconds(inactive_after)
+        );
+    }
+    // One hourly janitor serves both settings; a deployment with neither runs no timer.
+    if retention > 0 || inactive_after > 0 {
+        retention_pass(
+            &instance,
+            librepaper_base::util::now_unix(),
+            retention,
+            &expire_from,
+            inactive_after,
+        )
+        .await;
         let janitor = instance.clone();
         let from = expire_from.clone();
         tokio::spawn(async move {
@@ -655,9 +703,14 @@ pub async fn serve(options: ServeOptions) {
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                janitor
-                    .delete_expired(librepaper_base::util::now_unix(), retention, &from)
-                    .await;
+                retention_pass(
+                    &janitor,
+                    librepaper_base::util::now_unix(),
+                    retention,
+                    &from,
+                    inactive_after,
+                )
+                .await;
             }
         });
     }
@@ -773,6 +826,22 @@ mod site_origin_tests {
                 "{refused:?} is not an origin this deployment should send anyone to"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod inactive_account_tests {
+    use super::*;
+
+    #[test]
+    fn the_inactive_account_window_is_off_or_at_least_two_sessions() {
+        assert_eq!(parse_inactive_after("").unwrap(), 0);
+        assert_eq!(parse_inactive_after("off").unwrap(), 0);
+        assert_eq!(parse_inactive_after("365d").unwrap(), 365 * 86_400);
+        assert_eq!(parse_inactive_after("60d").unwrap(), 60 * 86_400);
+        assert!(parse_inactive_after("59d").is_err());
+        assert!(parse_inactive_after("30d").is_err());
+        assert!(parse_inactive_after("soon").is_err());
     }
 }
 

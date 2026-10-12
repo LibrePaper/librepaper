@@ -72,6 +72,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) simulate_activity: Option<u32>,
     pub(crate) expire_after: Option<String>,
     pub(crate) expire_from: Option<String>,
+    pub(crate) erase_inactive_after: Option<String>,
     pub(crate) asset_mirror: String,
     pub(crate) typst_fonts: Option<String>,
     pub(crate) metrics_address: Option<SocketAddr>,
@@ -116,6 +117,7 @@ impl fmt::Debug for ResolvedConfig {
             .field("simulate_activity", &self.simulate_activity)
             .field("expire_after", &self.expire_after)
             .field("expire_from", &self.expire_from)
+            .field("erase_inactive_after", &self.erase_inactive_after)
             .field("asset_mirror", &self.asset_mirror)
             .field("typst_fonts", &self.typst_fonts)
             .field("metrics_address", &self.metrics_address)
@@ -229,6 +231,7 @@ struct Limits {
 struct Retention {
     expire_after: Option<Input<String>>,
     expire_from: Option<Input<String>>,
+    erase_inactive_after: Option<Input<String>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -460,7 +463,11 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "memory_budget_mib",
         ],
     )?;
-    section(v, "retention", &["expire_after", "expire_from"])?;
+    section(
+        v,
+        "retention",
+        &["expire_after", "expire_from", "erase_inactive_after"],
+    )?;
     section(v, "assets", &["mirror", "typst_fonts"])?;
     section(v, "metrics", &["address"])?;
     section(v, "proxy", &["trusted_networks"])?;
@@ -631,6 +638,10 @@ pub(crate) fn load_with_postgres_env(
         .map_err(|e| format!("access.publishers: {e}"))?;
     let _ = Policy::parse(&commenters.join(","));
     let expire_after = r.optional("retention.expire_after", raw.retention.expire_after)?;
+    let erase_inactive_after = r.optional(
+        "retention.erase_inactive_after",
+        raw.retention.erase_inactive_after,
+    )?;
     let expire_from = Some(r.value(
         "retention.expire_from",
         raw.retention.expire_from,
@@ -770,6 +781,7 @@ pub(crate) fn load_with_postgres_env(
         simulate_activity,
         expire_after,
         expire_from,
+        erase_inactive_after,
         asset_mirror,
         typst_fonts,
         metrics_address,
@@ -1169,6 +1181,13 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "retention.expire_from",
         "expire_from",
         c.expire_from.as_deref(),
+    );
+    optional(
+        &mut out,
+        &c.sources,
+        "retention.erase_inactive_after",
+        "erase_inactive_after",
+        c.erase_inactive_after.as_deref(),
     );
     section(&mut out, "assets");
     value(
@@ -1747,6 +1766,15 @@ client_secret = { file = "missing-oauth-secret" }
             loaded.config.pending_scratch_bytes,
             old_default_mb * 1024 * 1024
         );
+    }
+    #[test]
+    fn the_inactive_account_window_is_read_from_retention() {
+        let loaded = load_text("[retention]\nerase_inactive_after = \"365d\"\n").unwrap();
+        assert_eq!(loaded.erase_inactive_after, Some("365d".into()));
+        let shown = show_resolved(&loaded);
+        assert!(shown.contains("erase_inactive_after = \"365d\""));
+        let unset = load_text("").unwrap();
+        assert_eq!(unset.erase_inactive_after, None);
     }
     #[test]
     fn display_redacts_database_and_auth_and_is_toml() {
