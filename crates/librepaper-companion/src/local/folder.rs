@@ -17,10 +17,37 @@ pub async fn choose_backup_directory(origin: &str) -> Result<PathBuf, String> {
 }
 
 async fn choose_directory_with_title(title: &str) -> Result<PathBuf, String> {
-    if cfg!(target_os = "macos") || cfg!(windows) {
+    #[cfg(target_os = "macos")]
+    {
+        return choose_directory_macos(title).await;
+    }
+    #[cfg(windows)]
+    {
         choose_directory_rfd(title).await
-    } else {
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
         choose_directory_portal(title).await
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn choose_directory_macos(title: &str) -> Result<PathBuf, String> {
+    super::cli::choose_directory_in_helper(title).await
+}
+
+/// Synchronous picker used only by the private helper process. It must run on
+/// that process's main thread, before its async runtime is created.
+#[cfg(target_os = "macos")]
+pub(crate) fn choose_directory_sync(title: &str) -> Result<Option<PathBuf>, String> {
+    let selected = rfd::FileDialog::new().set_title(title).pick_folder();
+    if let Some(path) = selected {
+        if !path.is_absolute() || !path.is_dir() {
+            return Err("Select an existing project folder.".into());
+        }
+        Ok(Some(path))
+    } else {
+        Ok(None)
     }
 }
 
