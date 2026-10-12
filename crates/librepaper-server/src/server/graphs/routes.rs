@@ -150,10 +150,9 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
             {
                 match query_value(parts, "code").filter(|code| !code.is_empty()) {
                     Some(code) => Decision::Callback(code, verifier.to_string()),
-                    None => Decision::Reply(refused(
-                        https,
-                        "GitHub sent no code; start again at /",
-                    )),
+                    None => {
+                        Decision::Reply(refused(https, "GitHub sent no code; start again at /"))
+                    }
                 }
             }
             _ => Decision::Reply(refused(
