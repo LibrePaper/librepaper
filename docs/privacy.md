@@ -64,7 +64,7 @@ The browser also keeps data of its own on your device.
 
 ## Backups
 
-- A backup runs every day at midnight UTC. It holds the database and every stored file.
+- A backup runs every hour. It holds the database and every stored file.
 - Backups are encrypted and stored in Canada, away from the server.
 - Every backup from the last 48 hours is kept, plus the last backup of each of the last 14 days and of each of the last 11 weeks. The oldest backup is therefore about ten weeks old.
 - A deleted project is purged seven days after you delete it, so it can stay in backups for about eleven weeks. An erased account stays about as long.
