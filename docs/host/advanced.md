@@ -70,7 +70,8 @@ Backups contain the database dump, referenced objects, both TOML files, and `ses
 Schedule and retention come from a base profile inside the backup image. Your `resticprofile.toml` is merged over it, so any setting you add there wins. The defaults:
 
 - A backup runs daily at midnight UTC.
-- Retention keeps all snapshots from the last 48 hours, then 14 daily and 11 weekly.
+- Retention keeps every snapshot from the last 48 hours, plus the last snapshot of each of the last 14 days and of each of the last 11 weeks. The rules overlap, so the oldest snapshot is about ten weeks old.
+- Days and weeks without a snapshot do not count, so a run of failed backups keeps older snapshots longer.
 - A `restic check` of 10% of the data runs on Mondays at 06:00.
 
 To change them, add the keys you want to `resticprofile.toml`, then run `./manage apply`. It recreates the sidecar, which installs the schedule when it starts:
