@@ -376,7 +376,10 @@ fn expand_includes(includes: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
         let metadata = std::fs::symlink_metadata(include)
             .map_err(|e| format!("include {}: {e}", include.display()))?;
         if metadata.file_type().is_symlink() {
-            return Err(format!("include must not be a symlink: {}", include.display()));
+            return Err(format!(
+                "include must not be a symlink: {}",
+                include.display()
+            ));
         }
         if metadata.is_file() {
             files.push(include.clone());
@@ -396,14 +399,17 @@ fn expand_includes(includes: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
 }
 
 fn collect_files(directory: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries =
-        std::fs::read_dir(directory).map_err(|e| format!("include {}: {e}", directory.display()))?;
+    let entries = std::fs::read_dir(directory)
+        .map_err(|e| format!("include {}: {e}", directory.display()))?;
     for entry in entries {
         let path = entry.map_err(|e| e.to_string())?.path();
-        let metadata =
-            std::fs::symlink_metadata(&path).map_err(|e| format!("include {}: {e}", path.display()))?;
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|e| format!("include {}: {e}", path.display()))?;
         if metadata.file_type().is_symlink() {
-            return Err(format!("include must not contain a symlink: {}", path.display()));
+            return Err(format!(
+                "include must not contain a symlink: {}",
+                path.display()
+            ));
         }
         if metadata.is_dir() {
             collect_files(&path, found)?;

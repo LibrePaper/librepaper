@@ -67,7 +67,7 @@ docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n 
 
 Backups contain the database dump, referenced objects, both TOML files, and `session.key`. Keep the session key to preserve existing sessions and saved share secrets.
 
-Each backup streams the database and every stored file straight into restic as one archive. The server needs no free disk space for a copy.
+Each backup streams the database and every stored file straight into restic as one archive. Only the database dump is written to a temporary file first, so the server needs free disk space for the database, not for the stored files.
 
 Schedule and retention come from a base profile inside the backup image. Your `resticprofile.toml` is merged over it, so any setting you add there wins. The defaults:
 

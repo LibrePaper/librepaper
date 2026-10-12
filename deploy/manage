@@ -344,8 +344,9 @@ need_snapshot() {
 }
 
 # Snapshots from before the stream export hold a directory, not one archive.
+# grep reads the whole listing, since -q could close the pipe on restic first.
 is_archive_snapshot() {
-	restic_cmd ls "$1" | grep -qx "$ARCHIVE"
+	restic_cmd ls "$1" | grep -x "$ARCHIVE" >/dev/null
 }
 
 cmd_backup_now() {
