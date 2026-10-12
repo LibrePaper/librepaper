@@ -293,8 +293,16 @@ fn install_subscriber(server_filter: Option<&str>) {
 /// runtime. SQLx reads libpq-style PG* variables while constructing
 /// PostgreSQL options, so this must remain a synchronous process-startup path.
 pub fn main() {
+    if librepaper_companion::local::folder::run_folder_picker_helper() {
+        return;
+    }
     let cli = Cli::parse();
     let command = cli.command.unwrap_or(Command::Start(cli.launch));
+    if needs_local_environment(&command) {
+        // SAFETY: this runs synchronously before Tokio creates worker threads,
+        // and the environment module documents the same process-startup contract.
+        unsafe { librepaper_companion::local::environment::initialize() };
+    }
     let postgres_env = if matches!(&command, Command::Admin { .. }) {
         let snapshot = server_config::PostgresEnvSnapshot::capture();
         snapshot.scrub_process_environment();
@@ -307,6 +315,21 @@ pub fn main() {
         .build()
         .unwrap_or_else(|error| die(format!("could not start async runtime: {error}")));
     runtime.block_on(run(command, postgres_env.as_ref()));
+}
+
+fn needs_local_environment(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Start(_) | Command::Status | Command::Agent { .. }
+    ) || matches!(
+        command,
+        Command::Local {
+            command: LocalCommand::Start(_)
+                | LocalCommand::Status
+                | LocalCommand::Open { .. }
+                | LocalCommand::Agent { .. }
+        }
+    )
 }
 
 async fn run(command: Command, postgres_env: Option<&server_config::PostgresEnvSnapshot>) {
