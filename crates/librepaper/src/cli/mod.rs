@@ -602,6 +602,8 @@ async fn moderate(
                     )
                 })
         }
+        // Names are refused before sign-in on the admin page, never here.
+        ModerationAction::BanHandle | ModerationAction::UnbanHandle => unreachable!(),
     };
     match outcome {
         Ok(message) => println!("{message}"),

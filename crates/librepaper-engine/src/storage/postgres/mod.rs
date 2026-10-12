@@ -38,7 +38,10 @@ mod deployment_setup_tests;
 pub use commit::Authority;
 pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCoverage};
 pub use labels::{ArchiveAttach, ArchiveObject, LabelRecord, NewLabel, TrimOutcome};
-pub use moderation::{AccountUsage, ModerationAction};
+pub use moderation::{
+    AccountUsage, AuditEntry, BannedHandle, BlockOutcome, BlockedAccount, HiddenProject,
+    ModerationAction, ModerationOverview,
+};
 pub use ownership::WriterLease;
 pub use proposals::{NewProposal, StoredDecision, StoredProposal, StoredProposalOutcome};
 pub use repository::{

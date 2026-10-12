@@ -1,14 +1,17 @@
-//! What the admin origin answers: a password first, then the page, its assets
-//! and `/data`. Nothing else is served there, and nothing here is served on
+//! What the admin origin answers: a password first, then the page, its assets,
+//! `/data`, `/accounts` and `/moderation`. `/moderation` is the one route that
+//! takes a POST. Nothing else is served there, and nothing here is served on
 //! the app or docs origins.
 
 use std::future::Future;
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::response::Response;
 use base64::Engine;
+use librepaper_engine::storage::postgres::{BlockOutcome, Error};
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
@@ -38,26 +41,32 @@ enum Decision {
     Reply(Response<Body>),
     Data(Option<String>),
     Accounts,
+    Moderation,
+    /// A moderation change, with the operator's name for the audit trail.
+    Moderate(String),
 }
 
 /// Answer one request on the admin origin. The password is checked before
 /// anything else, including the 404, and every response carries the headers
 /// that keep it out of caches, indexes and referrers.
 ///
-/// This is not an `async fn` on purpose: a `&Request<Body>` is not `Send`,
-/// and an async fn's future holds its arguments for as long as it lives. The
-/// request is read here, before the future exists, and the future owns only
-/// what `/data` needs.
+/// This is not an `async fn` on purpose: the request is split before the
+/// future exists. The headers are read there, and the future owns only the
+/// body, which is Send. An async fn would hold the whole request for as long
+/// as it runs, and a borrowed request is not Send.
 pub fn admin<'a>(
     server: &'a Server,
-    request: &Request<Body>,
+    request: Request<Body>,
 ) -> impl Future<Output = Response<Body>> + Send + 'a {
-    let decision = decide(server, request);
+    let (parts, body) = request.into_parts();
+    let decision = decide(server, &parts);
     async move {
         let mut response = match decision {
             Decision::Reply(response) => response,
             Decision::Data(query) => data(server, query.as_deref()).await,
             Decision::Accounts => accounts(server).await,
+            Decision::Moderation => moderation(server).await,
+            Decision::Moderate(actor) => moderate(server, &actor, body).await,
         };
         for (name, value) in [
             ("cache-control", "no-store"),
@@ -71,22 +80,33 @@ pub fn admin<'a>(
     }
 }
 
-fn decide(server: &Server, request: &Request<Body>) -> Decision {
+fn decide(server: &Server, parts: &Parts) -> Decision {
     // An admin origin with no password configured serves nothing at all.
     let Some(password) = server.admin_password.as_deref() else {
         return Decision::Reply(text(StatusCode::NOT_FOUND, "not found"));
     };
-    if !authorized(request.headers(), password) {
+    if !authorized(&parts.headers, password) {
         let mut response = text(StatusCode::UNAUTHORIZED, "authentication required");
         set(&mut response, "www-authenticate", CHALLENGE);
         return Decision::Reply(response);
     }
-    if !matches!(*request.method(), Method::GET | Method::HEAD) {
+    if parts.uri.path() == "/moderation" {
+        if matches!(parts.method, Method::GET | Method::HEAD) {
+            return Decision::Moderation;
+        }
+        if parts.method != Method::POST {
+            let mut response = text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+            set(&mut response, "allow", "GET, HEAD, POST");
+            return Decision::Reply(response);
+        }
+        return moderation_change(server, parts);
+    }
+    if !matches!(parts.method, Method::GET | Method::HEAD) {
         let mut response = text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
         set(&mut response, "allow", "GET, HEAD");
         return Decision::Reply(response);
     }
-    Decision::Reply(match request.uri().path() {
+    Decision::Reply(match parts.uri.path() {
         "/" => {
             let mut response = asset("text/html; charset=utf-8", PAGE);
             set(&mut response, "content-security-policy", PAGE_CSP);
@@ -96,7 +116,7 @@ fn decide(server: &Server, request: &Request<Body>) -> Decision {
         "/uplot.js" => asset("text/javascript", UPLOT_JS),
         "/app.css" => asset("text/css", APP_CSS),
         "/uplot.css" => asset("text/css", UPLOT_CSS),
-        "/data" => return Decision::Data(request.uri().query().map(str::to_owned)),
+        "/data" => return Decision::Data(parts.uri.query().map(str::to_owned)),
         "/accounts" => return Decision::Accounts,
         _ => text(StatusCode::NOT_FOUND, "not found"),
     })
@@ -105,12 +125,14 @@ fn decide(server: &Server, request: &Request<Body>) -> Decision {
 /// Whether the request carries `Authorization: Basic` with this password. The
 /// user name is whatever the browser sent and is not compared.
 fn authorized(headers: &HeaderMap, password: &str) -> bool {
-    basic_password(headers).is_some_and(|supplied| password_matches(&supplied, password.as_bytes()))
+    basic_credentials(headers)
+        .is_some_and(|(_, supplied)| password_matches(&supplied, password.as_bytes()))
 }
 
-/// The bytes after the first colon of the decoded credentials. A missing
-/// header, another scheme, bad base64 or no colon is `None`.
-fn basic_password(headers: &HeaderMap) -> Option<Vec<u8>> {
+/// The decoded `Authorization: Basic` credentials, split at the first colon
+/// into the user name and the password. A missing header, another scheme,
+/// bad base64 or no colon is `None`.
+fn basic_credentials(headers: &HeaderMap) -> Option<(Vec<u8>, Vec<u8>)> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let (scheme, encoded) = value.split_once(' ')?;
     if !scheme.eq_ignore_ascii_case("basic") {
@@ -120,7 +142,53 @@ fn basic_password(headers: &HeaderMap) -> Option<Vec<u8>> {
         .decode(encoded.trim())
         .ok()?;
     let colon = decoded.iter().position(|byte| *byte == b':')?;
-    Some(decoded[colon + 1..].to_vec())
+    Some((decoded[..colon].to_vec(), decoded[colon + 1..].to_vec()))
+}
+
+/// The user name the browser sent, trimmed and cut to 64 characters, or
+/// `admin` when nothing is left. It names the operator in the audit trail.
+fn basic_user(headers: &HeaderMap) -> String {
+    let user = basic_credentials(headers)
+        .map(|(user, _)| String::from_utf8_lossy(&user).trim().to_string())
+        .unwrap_or_default();
+    let user: String = user.chars().take(64).collect();
+    if user.is_empty() {
+        "admin".to_string()
+    } else {
+        user
+    }
+}
+
+/// The checks a moderation change passes before its body is read, then the
+/// change with the operator's name. The browser sends saved Basic credentials
+/// with a request another site starts, so a change must come from this page,
+/// and it must be JSON.
+fn moderation_change(server: &Server, parts: &Parts) -> Decision {
+    let origin = parts
+        .headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    let admin = server.origins.admin().map(|origin| origin.as_str());
+    match (origin, admin) {
+        (Some(origin), Some(admin)) if origin == admin => {}
+        _ => return Decision::Reply(text(StatusCode::FORBIDDEN, "cross-origin request refused")),
+    }
+    let json = parts
+        .headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .eq_ignore_ascii_case("application/json")
+        });
+    if !json {
+        return Decision::Reply(text(StatusCode::UNSUPPORTED_MEDIA_TYPE, "send JSON"));
+    }
+    Decision::Moderate(basic_user(&parts.headers))
 }
 
 fn password_matches(supplied: &[u8], configured: &[u8]) -> bool {
@@ -310,6 +378,166 @@ fn body(window: &Window, series: &[SeriesData]) -> Value {
         "step": window.step(),
         "series": series,
     })
+}
+
+/// The moderation lists: blocked accounts, banned handles, hidden projects and
+/// the recent audit trail.
+async fn moderation(server: &Server) -> Response<Body> {
+    let overview = match server.store.catalog.moderation_overview().await {
+        Ok(overview) => overview,
+        Err(error) => {
+            tracing::warn!("moderation read failed: {error}");
+            return text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the moderation lists could not be read",
+            );
+        }
+    };
+    let blocked_accounts: Vec<Value> = overview
+        .blocked_accounts
+        .iter()
+        .map(|account| {
+            json!({
+                "id": account.id.to_string(),
+                "handle": account.handle,
+                "provider": account.provider,
+                "kind": account.kind,
+                "blocked_at": account.blocked_at.map(|at| at.unix_timestamp()),
+                "actor": account.actor,
+                "reason": account.reason,
+            })
+        })
+        .collect();
+    let banned_handles: Vec<Value> = overview
+        .banned_handles
+        .iter()
+        .map(|ban| {
+            json!({
+                "id": ban.id.to_string(),
+                "provider": ban.provider,
+                "handle": ban.handle,
+                "actor": ban.actor,
+                "reason": ban.reason,
+                "created_at": ban.created_at.unix_timestamp(),
+            })
+        })
+        .collect();
+    let hidden_projects: Vec<Value> = overview
+        .hidden_projects
+        .iter()
+        .map(|project| {
+            json!({
+                "id": project.id.to_string(),
+                "slug": project.slug,
+                "title": project.title,
+                "owner": project.owner,
+                "hidden_at": project.hidden_at.unix_timestamp(),
+                "actor": project.actor,
+                "reason": project.reason,
+            })
+        })
+        .collect();
+    let recent: Vec<Value> = overview
+        .recent
+        .iter()
+        .map(|entry| {
+            json!({
+                "at": entry.occurred_at.unix_timestamp(),
+                "actor": entry.actor,
+                "action": entry.action,
+                "target_kind": entry.target_kind,
+                "target": entry.target_label,
+                "reason": entry.reason,
+            })
+        })
+        .collect();
+    json_reply(&json!({
+        "blocked_accounts": blocked_accounts,
+        "banned_handles": banned_handles,
+        "hidden_projects": hidden_projects,
+        "recent": recent,
+    }))
+}
+
+/// A moderation body is a few short fields. Anything larger is refused.
+const MODERATION_BODY_LIMIT: usize = 16 * 1024;
+
+#[derive(serde::Deserialize)]
+struct ModerationRequest {
+    action: String,
+    target: String,
+    #[serde(default)]
+    provider: String,
+    reason: String,
+}
+
+/// Apply one moderation change. The catalog writes the audit entry.
+async fn moderate(server: &Server, actor: &str, body: Body) -> Response<Body> {
+    let bytes = match axum::body::to_bytes(body, MODERATION_BODY_LIMIT).await {
+        Ok(bytes) => bytes,
+        Err(_) => return json_status(StatusCode::PAYLOAD_TOO_LARGE, "the request is too large"),
+    };
+    let request: ModerationRequest = match serde_json::from_slice(&bytes) {
+        Ok(request) => request,
+        Err(_) => {
+            return json_status(
+                StatusCode::BAD_REQUEST,
+                "the request is not a moderation request",
+            )
+        }
+    };
+    let catalog = &server.store.catalog;
+    let result = match request.action.as_str() {
+        "block" => catalog
+            .block_or_ban(&request.provider, &request.target, actor, &request.reason)
+            .await
+            .map(|outcome| match outcome {
+                BlockOutcome::Blocked { label, .. } => ("blocked", label),
+                BlockOutcome::Banned { label, .. } => ("banned", label),
+            }),
+        "unblock" => catalog
+            .moderate_account(&request.target, false, actor, &request.reason)
+            .await
+            .map(|(_, label)| ("unblocked", label)),
+        "unban" => match uuid::Uuid::parse_str(request.target.trim()) {
+            Ok(id) => catalog
+                .unban_handle(id, actor, &request.reason)
+                .await
+                .map(|label| ("unbanned", label)),
+            Err(_) => return json_status(StatusCode::BAD_REQUEST, "unban needs a ban ID"),
+        },
+        "hide" => catalog
+            .moderate_project(&request.target, true, actor, &request.reason)
+            .await
+            .map(|_| ("hidden", request.target.trim().to_string())),
+        "unhide" => catalog
+            .moderate_project(&request.target, false, actor, &request.reason)
+            .await
+            .map(|_| ("unhidden", request.target.trim().to_string())),
+        _ => return json_status(StatusCode::BAD_REQUEST, "unknown action"),
+    };
+    match result {
+        Ok((outcome, label)) => {
+            tracing::info!(actor, action = %request.action, label = %label, "moderation");
+            json_reply(&json!({"outcome": outcome, "label": label}))
+        }
+        Err(Error::Invalid(message)) => json_status(StatusCode::BAD_REQUEST, &message),
+        Err(Error::NotFound) => json_status(StatusCode::NOT_FOUND, "nothing has that name"),
+        Err(Error::Conflict(message)) => json_status(StatusCode::CONFLICT, &message),
+        Err(error) => {
+            tracing::warn!("moderation failed: {error}");
+            json_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the change could not be saved",
+            )
+        }
+    }
+}
+
+fn json_status(status: StatusCode, message: &str) -> Response<Body> {
+    let mut response = json_reply(&json!({"error": message}));
+    *response.status_mut() = status;
+    response
 }
 
 fn json_reply(value: &Value) -> Response<Body> {

@@ -10,7 +10,7 @@ Everything here is optional. Start with the [simple deployment](simple.html).
 |---|---|---|
 | App | yes | `paper.example` |
 | Published documents | yes | `docs.paper.example` |
-| Admin graphs | no | `admin.paper.example` |
+| Admin console | no | `admin.paper.example` |
 
 - Caddy obtains a certificate for a name on its first visit, after asking the server (`/api/tls/ask`) whether it is a configured origin. No Caddy edits are needed for the three names.
 - Publish an AAAA record only if the VPS has IPv6.
@@ -161,12 +161,14 @@ The VPS cannot report its own outage, so alerts come from free outside services.
 
 ### LibrePaper admin console
 
-The console is a password-protected page on its own hostname. It graphs the server's health over the last 400 days: CPU, memory, free disk, stored bytes, open documents, live connections and database connections in use.
+The console is a password-protected page on its own hostname. It has three tabs:
 
-The page also lists the 50 accounts holding the most storage.
+- **Resources** graphs the server's health over the last 400 days: CPU, memory, free disk, stored bytes, open documents, live connections and database connections in use.
+- **Accounts** lists the 50 accounts holding the most storage.
+- **Moderation** blocks an account, refuses a name before its first sign-in, and hides a project. It lists what is blocked, refused and hidden, and the last 50 actions with their reasons.
 
 ```sh
-# Optional. Graphs of the last 400 days at https://admin.paper.example/, behind a password.
+# Optional. The admin console at https://admin.paper.example/, behind a password.
 # DNS: admin.paper.example -> this VPS, like the other two names.
 head -c 24 /dev/urandom | base64         # the password
 # librepaper.toml: under [origins] add   admin = "https://admin.paper.example"
@@ -176,7 +178,9 @@ head -c 24 /dev/urandom | base64         # the password
 ```
 
 - It takes one DNS record and two lines in the one file. Caddy needs no changes. Caddy asks the server before obtaining a certificate, and the server says yes to three names.
-- The browser asks for the password once per session. The user name can be anything.
+- The browser asks for the password once per session. The user name can be anything. Moderation records it as the person who acted.
+- A blocked account is signed out at once. Its block follows the account, so changing the name does not lift it.
+- A refused name covers only that name. Someone who renames their GitHub account before signing in is not caught.
 - Zoom by dragging on any graph. Double-click to return to the chosen range.
 - For your own Prometheus, add `[metrics]` with `address = "0.0.0.0:9091"` to `librepaper.toml`: the server then serves `/metrics` on that port inside the Docker network. The kit publishes no host port for it, and the graphs above do not need it.
 
