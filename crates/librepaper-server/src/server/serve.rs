@@ -67,11 +67,11 @@ pub struct ServeOptions {
     /// out goes there; a deployment without one sends a signed-out reader to
     /// its own front page.
     pub site_origin: Option<String>,
-    /// The origin of the operator's graphs page, and the password that
-    /// guards it. They are configured together: a page with no password would
-    /// be open, and a password with no page guards nothing.
+    /// The origin of the operator's admin console, and the GitHub user IDs
+    /// allowed to sign in there. They are configured together.
     pub admin_origin: Option<String>,
-    pub admin_password: Option<String>,
+    /// Numeric GitHub user IDs allowed to sign in on the admin origin.
+    pub admin_github_ids: Vec<i64>,
     pub expire_after: Option<String>,
     pub expire_from: Option<String>,
     pub erase_inactive_after: Option<String>,
@@ -172,16 +172,21 @@ fn configured_origins(options: &ServeOptions) -> Result<Origins, String> {
     origins.with_admin(non_blank(options.admin_origin.as_deref()))
 }
 
-/// The page is guarded by Basic auth, which has no lockout, so the password is
-/// the whole defence and it comes with the origin or not at all.
-fn validate_admin_password(origin: Option<&str>, password: Option<&str>) -> Result<(), String> {
-    if non_blank(origin).is_some() != password.is_some() {
-        return Err("origins.admin and admin.password must be configured together".into());
+/// The admin console signs in with GitHub and admits only the listed user IDs,
+/// so the origin and the IDs come together, and GitHub sign-in must be set up.
+fn validate_admin_github(
+    origin: Option<&str>,
+    ids: &[i64],
+    github_configured: bool,
+) -> Result<(), String> {
+    if non_blank(origin).is_some() != !ids.is_empty() {
+        return Err("origins.admin and admin.github_ids must be configured together".into());
     }
-    if password.is_some_and(|password| password.trim().chars().count() < 16) {
-        return Err(
-            "admin.password must be at least 16 characters: Basic auth has no lockout".into(),
-        );
+    if ids.iter().any(|id| *id <= 0) {
+        return Err("admin.github_ids holds numeric GitHub user IDs, which are positive".into());
+    }
+    if non_blank(origin).is_some() && !github_configured {
+        return Err("the admin console signs in with GitHub; configure [auth.github]".into());
     }
     Ok(())
 }
@@ -328,9 +333,12 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
     parse_inactive_after(options.erase_inactive_after.as_deref().unwrap_or(""))
         .map_err(|error| format!("retention.erase_inactive_after: {error}"))?;
     configured_origins(options)?;
-    validate_admin_password(
+    let github_configured = non_blank(options.github_client_id.as_deref()).is_some()
+        && non_blank(options.github_client_secret.as_deref()).is_some();
+    validate_admin_github(
         options.admin_origin.as_deref(),
-        options.admin_password.as_deref(),
+        &options.admin_github_ids,
+        github_configured,
     )?;
     validate_asset_mirror(&options.asset_mirror)?;
     if let Some(site) = options.site_origin.as_deref() {
@@ -585,7 +593,7 @@ pub async fn serve(options: ServeOptions) {
     instance.simulate_activity = options.simulate_activity;
     instance.origins = origins.clone();
     instance.paths = Some(deployment_paths.clone());
-    instance.admin_password = options.admin_password;
+    instance.admin_github_ids = options.admin_github_ids;
     instance.erase_inactive_after = inactive_after;
     // The history behind the graphs page opens only when the page has a name.
     // A file that cannot be opened costs the graphs and nothing else: the
@@ -846,35 +854,30 @@ mod inactive_account_tests {
 }
 
 #[cfg(test)]
-mod admin_password_tests {
+mod admin_github_tests {
     use super::*;
 
     #[test]
-    fn the_admin_origin_and_password_come_together_and_the_password_is_long() {
-        let password = Some("0123456789abcdef");
-        assert!(validate_admin_password(None, None).is_ok());
-        assert!(validate_admin_password(Some(" "), None).is_ok());
-        assert!(validate_admin_password(Some("https://admin.paper.example"), password).is_ok());
-
-        for (origin, password) in [
-            (Some("https://admin.paper.example"), None),
-            (None, password),
-            (Some(" "), password),
-        ] {
-            let error = validate_admin_password(origin, password).unwrap_err();
-            assert!(error.contains("origins.admin"), "{error}");
-            assert!(error.contains("admin.password"), "{error}");
-            assert!(error.contains("together"), "{error}");
-        }
+    fn the_admin_origin_and_ids_come_together_with_github_sign_in() {
+        let ids = [987057];
+        assert!(validate_admin_github(None, &[], false).is_ok());
+        assert!(validate_admin_github(Some(" "), &[], false).is_ok());
+        assert!(validate_admin_github(Some("https://admin.paper.example"), &ids, true).is_ok());
 
         let error =
-            validate_admin_password(Some("https://admin.paper.example"), Some("0123456789abcde"))
-                .unwrap_err();
-        assert!(
-            error.contains("admin.password must be at least 16"),
-            "{error}"
-        );
-        assert!(!error.contains("0123456789abcde"), "{error}");
+            validate_admin_github(Some("https://admin.paper.example"), &[], true).unwrap_err();
+        assert!(error.contains("admin.github_ids"), "{error}");
+
+        let error = validate_admin_github(None, &ids, true).unwrap_err();
+        assert!(error.contains("admin.github_ids"), "{error}");
+
+        let error = validate_admin_github(Some("https://admin.paper.example"), &[0], true)
+            .unwrap_err();
+        assert!(error.contains("admin.github_ids"), "{error}");
+
+        let error = validate_admin_github(Some("https://admin.paper.example"), &ids, false)
+            .unwrap_err();
+        assert!(error.contains("auth.github"), "{error}");
     }
 }
 

@@ -216,9 +216,9 @@ pub struct Server {
     /// The deployment's directories, or nothing in a server built without
     /// them. Background tasks find the state directory here.
     pub paths: Option<librepaper_base::config::DeploymentPaths>,
-    /// The password of the operator graphs page, which is served on the
-    /// admin origin.
-    pub admin_password: Option<String>,
+    /// Numeric GitHub user IDs allowed to sign in on the admin origin. Empty
+    /// means the admin origin serves nothing.
+    pub admin_github_ids: Vec<i64>,
     /// Seconds without a sign-in after which an account is erased. Zero keeps accounts.
     pub erase_inactive_after: i64,
     /// The history behind the graphs page, open only when the admin origin
@@ -876,7 +876,7 @@ impl Server {
             config,
             origins: origins::Origins::loopback_only(),
             paths: None,
-            admin_password: None,
+            admin_github_ids: Vec::new(),
             erase_inactive_after: 0,
             graphs: None,
             publishers,

@@ -59,7 +59,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) docs_origin: Option<String>,
     pub(crate) site_origin: Option<String>,
     pub(crate) admin_origin: Option<String>,
-    pub(crate) admin_password: Option<String>,
+    pub(crate) admin_github_ids: Vec<i64>,
     pub(crate) local_companion: bool,
     pub(crate) migrate: bool,
     pub(crate) storage: StorageOptions,
@@ -95,10 +95,7 @@ impl fmt::Debug for ResolvedConfig {
             .field("docs_origin", &self.docs_origin)
             .field("site_origin", &self.site_origin)
             .field("admin_origin", &self.admin_origin)
-            .field(
-                "admin_password",
-                &self.admin_password.as_ref().map(|_| "<redacted>"),
-            )
+            .field("admin_github_ids", &self.admin_github_ids)
             .field("local_companion", &self.local_companion)
             .field("migrate", &self.migrate)
             .field("storage", &"<redacted>")
@@ -173,7 +170,7 @@ struct Origins {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Admin {
-    password: Option<Input<String>>,
+    github_ids: Option<Input<Vec<i64>>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -412,7 +409,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
     )?;
     section(v, "server", &["address", "local_companion", "migrate"])?;
     section(v, "origins", &["app", "docs", "site", "admin"])?;
-    section(v, "admin", &["password"])?;
+    section(v, "admin", &["github_ids"])?;
     section(
         v,
         "storage",
@@ -616,7 +613,7 @@ pub(crate) fn load_with_postgres_env(
     let docs_origin = r.optional("origins.docs", raw.origins.docs)?;
     let site_origin = r.optional("origins.site", raw.origins.site)?;
     let admin_origin = r.optional("origins.admin", raw.origins.admin)?;
-    let admin_password = r.optional("admin.password", raw.admin.password)?;
+    let admin_github_ids = r.value("admin.github_ids", raw.admin.github_ids, Vec::new())?;
     let storage = resolve_storage(raw.storage, &mut r)?;
     let github_client_id = r.optional("auth.github.client_id", raw.auth.github.client_id)?;
     let github_client_secret =
@@ -756,9 +753,12 @@ pub(crate) fn load_with_postgres_env(
         admin_origin.as_deref(),
         &asset_mirror,
     )?;
+    let github_configured = non_blank(github_client_id.as_deref()).is_some()
+        && non_blank(github_client_secret.as_deref()).is_some();
     validate_admin(
         admin_origin.as_deref(),
-        admin_password.as_deref(),
+        &admin_github_ids,
+        github_configured,
         app_origin.as_deref(),
         docs_origin.as_deref(),
     )?;
@@ -768,7 +768,7 @@ pub(crate) fn load_with_postgres_env(
         docs_origin,
         site_origin,
         admin_origin,
-        admin_password,
+        admin_github_ids,
         local_companion,
         migrate,
         storage,
@@ -815,22 +815,28 @@ fn host_of(origin: &str) -> Option<String> {
         .and_then(|parsed| parsed.host_str().map(str::to_lowercase))
 }
 
-/// The graphs page is behind a password that rides on every request, so it
-/// has a host of its own, https off loopback, and a password nobody can guess
-/// by hand: Basic auth has no lockout.
+/// The admin console signs in with GitHub and admits only the listed GitHub
+/// user IDs. It has a host of its own, and https off loopback.
 fn validate_admin(
     admin_origin: Option<&str>,
-    admin_password: Option<&str>,
+    github_ids: &[i64],
+    github_configured: bool,
     app_origin: Option<&str>,
     docs_origin: Option<&str>,
 ) -> Result<(), String> {
-    let (admin, password) = match (non_blank(admin_origin), admin_password) {
-        (None, None) => return Ok(()),
-        (Some(admin), Some(password)) => (admin, password),
+    let admin = match (non_blank(admin_origin), github_ids.is_empty()) {
+        (None, true) => return Ok(()),
+        (Some(admin), false) => admin,
         _ => {
-            return Err("origins.admin and admin.password must be configured together".into());
+            return Err("origins.admin and admin.github_ids must be configured together".into());
         }
     };
+    if github_ids.iter().any(|id| *id <= 0) {
+        return Err("admin.github_ids holds numeric GitHub user IDs, which are positive".into());
+    }
+    if !github_configured {
+        return Err("the admin console signs in with GitHub; configure [auth.github]".into());
+    }
     let parsed =
         url::Url::parse(admin).map_err(|_| "origins.admin must be an absolute URL".to_string())?;
     let loopback = match parsed.host() {
@@ -861,11 +867,6 @@ fn validate_admin(
         return Err(
             "origins.admin must be a different host from origins.docs: the page must not share a host with documents"
                 .into(),
-        );
-    }
-    if password.trim().chars().count() < 16 {
-        return Err(
-            "admin.password must be at least 16 characters: Basic auth has no lockout".into(),
         );
     }
     Ok(())
@@ -965,12 +966,19 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     );
 
     section(&mut out, "admin");
-    redacted(
+    value(
         &mut out,
         &c.sources,
-        "admin.password",
-        "password",
-        c.admin_password.is_some(),
+        "admin.github_ids",
+        "github_ids",
+        &format!(
+            "[{}]",
+            c.admin_github_ids
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     );
 
     section(&mut out, "storage");
@@ -1443,8 +1451,6 @@ mod tests {
             Some("secret")
         );
     }
-    const ADMIN_PASSWORD: &str = "0123456789abcdefghijklmn";
-
     fn load_text(text: &str) -> Result<ResolvedConfig, String> {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
@@ -1452,64 +1458,73 @@ mod tests {
         load(&path)
     }
 
-    fn admin_config(origins: &str, password: Option<&str>) -> String {
-        match password {
-            Some(password) => {
-                format!("[origins]\n{origins}\n[admin]\npassword = {password:?}\n")
-            }
-            None => format!("[origins]\n{origins}\n"),
+    fn admin_config(origins: &str, ids: Option<&str>, github: bool) -> String {
+        let mut text = format!("[origins]\n{origins}\n");
+        if let Some(ids) = ids {
+            text.push_str(&format!("[admin]\ngithub_ids = {ids}\n"));
         }
+        if github {
+            text.push_str("[auth.github]\nclient_id = \"id\"\nclient_secret = \"secret\"\n");
+        }
+        text
     }
 
     #[test]
-    fn the_admin_origin_and_password_are_accepted_on_loopback_and_on_https() {
+    fn the_admin_origin_and_github_ids_are_accepted_on_loopback_and_on_https() {
         let loaded = load_text(&admin_config(
             "app = \"http://localhost:8080\"\nadmin = \"http://admin.localhost:8080\"",
-            Some(ADMIN_PASSWORD),
+            Some("[987057]"),
+            true,
         ))
         .unwrap();
         assert_eq!(
             loaded.admin_origin.as_deref(),
             Some("http://admin.localhost:8080")
         );
-        assert_eq!(loaded.admin_password.as_deref(), Some(ADMIN_PASSWORD));
+        assert_eq!(loaded.admin_github_ids, vec![987057]);
 
         let loaded = load_text(&admin_config(
             "app = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"",
-            Some(ADMIN_PASSWORD),
+            Some("[987057]"),
+            true,
         ))
         .unwrap();
         assert_eq!(
             loaded.admin_origin.as_deref(),
             Some("https://admin.paper.example")
         );
+        assert_eq!(loaded.admin_github_ids, vec![987057]);
+
         let loaded = load_text("").unwrap();
-        assert!(loaded.admin_origin.is_none() && loaded.admin_password.is_none());
+        assert!(loaded.admin_origin.is_none() && loaded.admin_github_ids.is_empty());
     }
 
     #[test]
-    fn the_admin_origin_and_password_are_refused_unless_they_come_together() {
+    fn the_admin_origin_and_github_ids_are_refused_unless_they_come_together() {
         let error = load_text(&admin_config(
             "app = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"",
             None,
+            true,
         ))
         .unwrap_err();
         assert!(error.contains("origins.admin"), "{error}");
-        assert!(error.contains("admin.password"), "{error}");
+        assert!(error.contains("admin.github_ids"), "{error}");
         assert!(error.contains("together"), "{error}");
 
         let error = load_text(&admin_config(
             "app = \"https://paper.example\"",
-            Some(ADMIN_PASSWORD),
+            Some("[987057]"),
+            true,
         ))
         .unwrap_err();
         assert!(error.contains("origins.admin"), "{error}");
+        assert!(error.contains("admin.github_ids"), "{error}");
         assert!(error.contains("together"), "{error}");
-        assert!(!error.contains(ADMIN_PASSWORD), "{error}");
 
         let error = load_text(&admin_config(
             "admin = \"https://admin.paper.example\"",
-            Some(ADMIN_PASSWORD),
+            Some("[987057]"),
+            true,
         ))
         .unwrap_err();
         assert!(
@@ -1519,17 +1534,27 @@ mod tests {
     }
 
     #[test]
-    fn a_short_admin_password_is_refused_without_echoing_it() {
-        let short = "0123456789abcde";
-        assert_eq!(short.len(), 15);
+    fn the_admin_github_ids_need_github_sign_in() {
         let error = load_text(&admin_config(
             "app = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"",
-            Some(short),
+            Some("[987057]"),
+            false,
         ))
         .unwrap_err();
-        assert!(error.contains("admin.password"), "{error}");
-        assert!(error.contains("at least 16"), "{error}");
-        assert!(!error.contains(short), "{error}");
+        assert!(error.contains("auth.github"), "{error}");
+    }
+
+    #[test]
+    fn the_admin_github_ids_must_be_positive() {
+        for ids in ["[0]", "[-7]", "[987057, 0]"] {
+            let error = load_text(&admin_config(
+                "app = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"",
+                Some(ids),
+                true,
+            ))
+            .unwrap_err();
+            assert!(error.contains("admin.github_ids"), "{ids}: {error}");
+        }
     }
 
     #[test]
@@ -1548,7 +1573,7 @@ mod tests {
                 "origins.docs",
             ),
         ] {
-            let error = load_text(&admin_config(origins, Some(ADMIN_PASSWORD))).unwrap_err();
+            let error = load_text(&admin_config(origins, Some("[987057]"), true)).unwrap_err();
             assert!(error.contains("origins.admin"), "{origins}: {error}");
             assert!(error.contains(key), "{origins}: {error}");
             assert!(error.contains("different host"), "{origins}: {error}");
@@ -1564,7 +1589,8 @@ mod tests {
         ] {
             let error = load_text(&admin_config(
                 &format!("app = \"https://paper.example\"\nadmin = \"{admin}\""),
-                Some(ADMIN_PASSWORD),
+                Some("[987057]"),
+                true,
             ))
             .unwrap_err();
             assert!(
@@ -1579,37 +1605,31 @@ mod tests {
         ] {
             let result = load_text(&admin_config(
                 &format!("app = \"http://app.example\"\nadmin = \"{admin}\""),
-                Some(ADMIN_PASSWORD),
+                Some("[987057]"),
+                true,
             ));
             assert!(result.is_ok(), "{admin}: {result:?}");
         }
     }
 
     #[test]
-    fn the_admin_password_resolves_from_a_file_and_stays_out_of_the_display() {
+    fn the_admin_github_ids_resolve_and_show_in_the_display() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
         std::fs::write(
-            directory.path().join("admin_password"),
-            format!("{ADMIN_PASSWORD}\n"),
-        )
-        .unwrap();
-        std::fs::write(
             &path,
-            "[origins]\napp = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"\n[admin]\npassword = { file = \"admin_password\" }\n",
+            "[origins]\napp = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"\n[admin]\ngithub_ids = [987057, 42]\n[auth.github]\nclient_id = \"id\"\nclient_secret = \"secret\"\n",
         )
         .unwrap();
         let loaded = load(&path).unwrap();
-        assert_eq!(loaded.admin_password.as_deref(), Some(ADMIN_PASSWORD));
+        assert_eq!(loaded.admin_github_ids, vec![987057, 42]);
         let shown = show_resolved(&loaded);
-        assert!(!shown.contains(ADMIN_PASSWORD), "{shown}");
-        assert!(shown.contains("password = \"<redacted>\""), "{shown}");
+        assert!(shown.contains("github_ids = [987057, 42]"), "{shown}");
         assert!(
             shown.contains("admin = \"https://admin.paper.example\""),
             "{shown}"
         );
         assert!(toml::from_str::<toml::Value>(&shown).is_ok());
-        assert!(!format!("{loaded:?}").contains(ADMIN_PASSWORD));
 
         std::fs::write(&path, "[admin]\nwat = 1\n").unwrap();
         assert!(load(&path).unwrap_err().contains("admin.wat"));

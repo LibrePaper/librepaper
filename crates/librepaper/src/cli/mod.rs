@@ -493,7 +493,7 @@ fn serve_options(
         docs_origin: resolved.docs_origin,
         site_origin: resolved.site_origin,
         admin_origin: resolved.admin_origin,
-        admin_password: resolved.admin_password,
+        admin_github_ids: resolved.admin_github_ids,
         expire_after: resolved.expire_after,
         expire_from: resolved.expire_from,
         erase_inactive_after: resolved.erase_inactive_after,
