@@ -27,6 +27,8 @@ stdin-filename = "librepaper-backup.tar"
 after-backup = true
 # Snapshots from before the stream export have other paths. Grouping by path would keep them forever.
 group-by = "host,tags"
+# The source is the export command, not a snapshot path, so a path filter would match nothing.
+path = false
 keep-within = "48h"
 keep-daily = 14
 keep-weekly = 11
