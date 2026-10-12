@@ -44,11 +44,15 @@ fn home_directory() -> Option<PathBuf> {
 fn shell_path() -> Option<OsString> {
     let configured = std::env::var_os("SHELL");
     let account = account_login_shell();
-    let shell = select_shell(configured.as_deref(), account.as_deref(), &[
-        Path::new("/bin/zsh"),
-        Path::new("/bin/bash"),
-        Path::new("/bin/sh"),
-    ])?;
+    let shell = select_shell(
+        configured.as_deref(),
+        account.as_deref(),
+        &[
+            Path::new("/bin/zsh"),
+            Path::new("/bin/bash"),
+            Path::new("/bin/sh"),
+        ],
+    )?;
     login_shell_path(&shell, std::time::Duration::from_secs(2))
 }
 
@@ -61,7 +65,11 @@ fn account_login_shell() -> Option<OsString> {
         if record.is_null() || (*record).pw_shell.is_null() {
             return None;
         }
-        Some(OsString::from(std::ffi::CStr::from_ptr((*record).pw_shell).to_string_lossy().into_owned()))
+        Some(OsString::from(
+            std::ffi::CStr::from_ptr((*record).pw_shell)
+                .to_string_lossy()
+                .into_owned(),
+        ))
     }
 }
 
@@ -95,7 +103,10 @@ fn resolve_path(inherited: &OsStr, home: Option<PathBuf>, shell: Option<OsString
     }
     dirs.extend(path_file_entries(Path::new("/etc/paths")));
     if let Ok(entries) = std::fs::read_dir("/etc/paths.d") {
-        let mut files = entries.flatten().map(|entry| entry.path()).collect::<Vec<_>>();
+        let mut files = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
         files.sort();
         for file in files {
             dirs.extend(path_file_entries(&file));
@@ -163,7 +174,11 @@ fn login_shell_path(shell: &Path, timeout: std::time::Duration) -> Option<OsStri
     use std::process::{Command, Stdio};
     use std::time::Instant;
 
-    let marker = format!("__LIBREPAPER_PATH_{}_{}__", std::process::id(), unique_marker());
+    let marker = format!(
+        "__LIBREPAPER_PATH_{}_{}__",
+        std::process::id(),
+        unique_marker()
+    );
     let script = format!("printf '\\n{marker}_BEGIN\\n%s\\n{marker}_END\\n' \"$PATH\"");
     let mut child = Command::new(shell)
         .args(["-l", "-i", "-c", &script])
@@ -177,7 +192,8 @@ fn login_shell_path(shell: &Path, timeout: std::time::Duration) -> Option<OsStri
     let fd = stdout.as_raw_fd();
     // SAFETY: fcntl only reads/updates flags on this live pipe descriptor.
     let old_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if old_flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, old_flags | libc::O_NONBLOCK) } < 0 {
+    if old_flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, old_flags | libc::O_NONBLOCK) } < 0
+    {
         let pid = child.id();
         crate::local::native::kill_tree(Some(pid));
         let _ = child.wait();
@@ -303,7 +319,12 @@ mod tests {
         assert_eq!(dirs[2], PathBuf::from("/shell/bin"));
         assert_eq!(dirs[3], PathBuf::from("/Users/example/.local/bin"));
         assert_eq!(dirs[4], PathBuf::from("/Users/example/.cargo/bin"));
-        assert_eq!(dirs.iter().filter(|path| **path == Path::new("/usr/local/bin")).count(), 1);
+        assert_eq!(
+            dirs.iter()
+                .filter(|path| **path == Path::new("/usr/local/bin"))
+                .count(),
+            1
+        );
         assert!(!dirs.contains(&PathBuf::from("relative")));
     }
 
@@ -362,7 +383,10 @@ mod tests {
         let noisy = fake_shell(directory.path(), "noisy", "echo profile-noise; eval \"$4\"");
         assert!(login_shell_path(&noisy, std::time::Duration::from_secs(1)).is_some());
         let failing = fake_shell(directory.path(), "failing", "exit 3");
-        assert_eq!(login_shell_path(&failing, std::time::Duration::from_secs(1)), None);
+        assert_eq!(
+            login_shell_path(&failing, std::time::Duration::from_secs(1)),
+            None
+        );
     }
 
     #[cfg(unix)]
@@ -374,7 +398,10 @@ mod tests {
             "oversized",
             "head -c 70000 /dev/zero; eval \"$4\"",
         );
-        assert_eq!(login_shell_path(&oversized, std::time::Duration::from_secs(1)), None);
+        assert_eq!(
+            login_shell_path(&oversized, std::time::Duration::from_secs(1)),
+            None
+        );
 
         let hanging = fake_shell(directory.path(), "hanging", "sleep 10 & wait");
         assert_eq!(

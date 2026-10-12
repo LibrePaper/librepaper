@@ -18,7 +18,7 @@ Nothing runs unasked. A site pairs with the companion per origin and project, fo
 
 ## Browser compatibility
 
-Safari may block a secure LibrePaper page from reaching the companion over local HTTP as mixed content. The browser option used for loopback access can address option-validation compatibility, but it does not remove mixed-content blocking. If this happens, use Chrome or Firefox for companion features. WebKit tracks the related behavior in [issue 171934](https://bugs.webkit.org/show_bug.cgi?id=171934); behavior can vary by Safari and macOS version.
+Safari may block a secure LibrePaper page from reaching the companion over local HTTP as mixed content. If this happens, use Chrome or Firefox for companion features. WebKit tracks the related behavior in [issue 171934](https://bugs.webkit.org/show_bug.cgi?id=171934); behavior can vary by Safari and macOS version.
 
 ## Install
 

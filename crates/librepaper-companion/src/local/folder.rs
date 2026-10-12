@@ -335,11 +335,7 @@ mod picker_protocol_tests {
 
     fn fake_sleep_child(pid_file: &std::path::Path) -> tokio::process::Command {
         let mut command = tokio::process::Command::new("/bin/sh");
-        command.args([
-            "-c",
-            "echo $$ > \"$1\"; exec sleep 30",
-            "picker-test",
-        ]);
+        command.args(["-c", "echo $$ > \"$1\"; exec sleep 30", "picker-test"]);
         command.arg(pid_file);
         command
     }
@@ -353,7 +349,11 @@ mod picker_protocol_tests {
     }
 
     fn read_pid(path: &std::path::Path) -> u32 {
-        std::fs::read_to_string(path).unwrap().trim().parse().unwrap()
+        std::fs::read_to_string(path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
     }
 
     async fn wait_until_process_exits(pid: u32) {
