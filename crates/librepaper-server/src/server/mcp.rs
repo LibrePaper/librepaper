@@ -144,6 +144,9 @@ const INSTRUCTIONS: &str = "Read bounded source, then reuse view and range handl
 fn mac_of(key: &[u8], context: &str, payload: &str) -> Hmac<Sha256> {
     let mut mac =
         <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts arbitrary key lengths");
+    // A fixed prefix keeps an mcp signature from ever matching one made under
+    // another purpose with the same key.
+    mac.update(b"mcp:");
     mac.update(context.as_bytes());
     mac.update(&[0]);
     mac.update(payload.as_bytes());

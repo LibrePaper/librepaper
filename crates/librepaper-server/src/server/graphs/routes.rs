@@ -48,6 +48,11 @@ const STATE_COOKIE: &str = "librepaper_admin_state";
 const SESSION_PURPOSE: &str = "admin-session-v1";
 const SESSION_SECONDS: i64 = 12 * 60 * 60;
 const STATE_SECONDS: i64 = 600;
+/// A random value drawn when the process starts and signed into every session,
+/// so a restart ends every admin session, and a copy of the server key alone
+/// cannot mint one that outlives the process.
+static ADMIN_EPOCH: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(librepaper_base::util::random_token);
 
 const DEFAULT_SPAN_SECONDS: i64 = 24 * 60 * 60;
 const DEFAULT_POINTS: i64 = 600;
@@ -143,12 +148,18 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
             (Some((state, verifier)), Some(supplied))
                 if !state.is_empty() && !verifier.is_empty() && state == supplied =>
             {
-                Decision::Callback(
-                    query_value(parts, "code").unwrap_or_default(),
-                    verifier.to_string(),
-                )
+                match query_value(parts, "code").filter(|code| !code.is_empty()) {
+                    Some(code) => Decision::Callback(code, verifier.to_string()),
+                    None => Decision::Reply(refused(
+                        https,
+                        "GitHub sent no code; start again at /",
+                    )),
+                }
             }
-            _ => Decision::Reply(refused_state(https)),
+            _ => Decision::Reply(refused(
+                https,
+                "sign-in state did not match; start again at /",
+            )),
         };
     }
     let session = cookie(&parts.headers, &cookie_name(https, SESSION_COOKIE))
@@ -223,13 +234,10 @@ fn query_value(parts: &Parts, key: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-/// The answer when the sign-in state does not match. The state cookie is
-/// cleared, so the next attempt starts from the top.
-fn refused_state(https: bool) -> Response<Body> {
-    let mut response = text(
-        StatusCode::BAD_REQUEST,
-        "sign-in state did not match; start again at /",
-    );
+/// A sign-in that cannot go on, with the reason. The state cookie is cleared,
+/// so the next attempt starts from the top.
+fn refused(https: bool, message: &str) -> Response<Body> {
+    let mut response = text(StatusCode::BAD_REQUEST, message);
     append_cookie(
         &mut response,
         &clear_cookie(&cookie_name(https, STATE_COOKIE), https),
@@ -321,17 +329,27 @@ pub(crate) fn admin_session_token(
     login: &str,
     expires_at: i64,
 ) -> String {
+    mint(key, &ADMIN_EPOCH, github_id, login, expires_at)
+}
+
+fn mint(key: &[u8], epoch: &str, github_id: i64, login: &str, expires_at: i64) -> String {
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(format!("{github_id}|{expires_at}|{login}"));
-    format!("v1.{payload}.{}", sign(key, SESSION_PURPOSE, &payload))
+    let purpose = format!("{SESSION_PURPOSE}:{epoch}");
+    format!("v1.{payload}.{}", sign(key, &purpose, &payload))
 }
 
 /// The operator a session token names, if its signature holds and it has not
 /// expired. Whether that account is still listed is checked by the caller.
 fn read_admin_session(key: &[u8], token: &str, now: i64) -> Option<Operator> {
+    read(key, &ADMIN_EPOCH, token, now)
+}
+
+fn read(key: &[u8], epoch: &str, token: &str, now: i64) -> Option<Operator> {
     let rest = token.strip_prefix("v1.")?;
     let (payload, signature) = rest.rsplit_once('.')?;
-    if !verifies(key, SESSION_PURPOSE, payload, signature) {
+    let purpose = format!("{SESSION_PURPOSE}:{epoch}");
+    if !verifies(key, &purpose, payload, signature) {
         return None;
     }
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -342,7 +360,8 @@ fn read_admin_session(key: &[u8], token: &str, now: i64) -> Option<Operator> {
     let github_id: i64 = fields.next()?.parse().ok()?;
     let expires_at: i64 = fields.next()?.parse().ok()?;
     let login = fields.next()?.to_string();
-    (expires_at > now).then_some(Operator {
+    // No session this server issued lasts longer than SESSION_SECONDS.
+    (expires_at > now && expires_at <= now + SESSION_SECONDS).then_some(Operator {
         github_id,
         login,
         expires_at,
@@ -790,6 +809,21 @@ mod tests {
         assert!(read_admin_session(KEY, &token, NOW).is_none());
         let at_expiry = admin_session_token(KEY, 42, "operator", NOW);
         assert!(read_admin_session(KEY, &at_expiry, NOW).is_none());
+    }
+
+    #[test]
+    fn a_token_from_another_epoch_is_refused() {
+        let token = mint(KEY, "epoch-a", 42, "operator", NOW + 60);
+        assert!(read(KEY, "epoch-a", &token, NOW).is_some());
+        assert!(read(KEY, "epoch-b", &token, NOW).is_none());
+    }
+
+    #[test]
+    fn a_token_past_the_session_ceiling_is_refused() {
+        let late = admin_session_token(KEY, 42, "operator", NOW + SESSION_SECONDS + 60);
+        assert!(read_admin_session(KEY, &late, NOW).is_none());
+        let within = admin_session_token(KEY, 42, "operator", NOW + SESSION_SECONDS - 60);
+        assert!(read_admin_session(KEY, &within, NOW).is_some());
     }
 
     #[test]
