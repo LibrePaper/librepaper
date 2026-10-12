@@ -87,6 +87,14 @@ pub(crate) async fn version_line(path: &Path, probe: Probe) -> Option<String> {
 
 /// The raw streams, bounded and with the child cleaned up however it ends.
 pub(crate) async fn version_output(path: &Path, probe: Probe) -> Option<(String, String)> {
+    version_output_with_path(path, probe, std::env::var_os("PATH")).await
+}
+
+async fn version_output_with_path(
+    path: &Path,
+    probe: Probe,
+    inherited_path: Option<std::ffi::OsString>,
+) -> Option<(String, String)> {
     let mut command = Command::new(path);
     // Held for the life of the call: dropping it removes the directory, and
     // the child's working directory has to outlive the child.
@@ -94,8 +102,10 @@ pub(crate) async fn version_output(path: &Path, probe: Probe) -> Option<(String,
     if let Some(directory) = &isolation {
         // Keep the startup-resolved PATH so wrappers can find their helper
         // programs even though discovery otherwise runs with a clean env.
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        command.current_dir(directory.path()).env_clear().env("PATH", path);
+        command.current_dir(directory.path()).env_clear();
+        if let Some(path) = inherited_path {
+            command.env("PATH", path);
+        }
     }
     command
         .arg("--version")
@@ -306,6 +316,25 @@ mod tests {
             "kept {} bytes of a tool's banner",
             stdout.len()
         );
+    }
+
+    /// Isolated wrapper probes keep the startup-resolved PATH so the wrapper
+    /// can find an installed helper while all other ambient variables vanish.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_isolated_probe_preserves_path_for_wrapper_helpers() {
+        let directory = tempfile::tempdir().unwrap();
+        let helper = script(directory.path(), "helper", "echo helper-version");
+        let wrapper = script(directory.path(), "wrapper", "helper --version");
+        let (stdout, _) = version_output_with_path(
+            &wrapper,
+            Probe::isolated(Duration::from_secs(5)),
+            Some(directory.path().as_os_str().to_owned()),
+        )
+        .await
+        .expect("the wrapper can find its helper on the preserved PATH");
+        assert!(stdout.contains("helper-version"), "{stdout}");
+        assert!(helper.is_file());
     }
 
     /// An override that names a file wins over anything on `PATH`.

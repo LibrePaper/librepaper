@@ -554,7 +554,7 @@ pub fn tray_available() -> bool {
 }
 
 /// The five characters XML text cannot hold verbatim.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn xml_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
@@ -570,7 +570,7 @@ fn xml_escape(text: &str) -> String {
     out
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn launch_agent_plist(executable: &Path, log_path: &Path) -> String {
     let executable = xml_escape(&executable.to_string_lossy());
     let log_path = xml_escape(&log_path.to_string_lossy());
@@ -604,9 +604,23 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
             return remove_startup(&file);
         }
         let executable = super::paths::current_executable()?;
-        let local_dir = super::paths::state_home_or_die().join("librepaper/local");
+        let local_dir = super::paths::state_home()?.join("librepaper/local");
         std::fs::create_dir_all(&local_dir).map_err(|error| error.to_string())?;
         let log_path = local_dir.join("companion.log");
+        let mut log = std::fs::OpenOptions::new();
+        log.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            log.mode(0o600);
+        }
+        let _log = log.open(&log_path).map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|error| error.to_string())?;
+        }
         write_startup_file(&file, launch_agent_plist(&executable, &log_path))
     }
     #[cfg(windows)]
@@ -794,7 +808,6 @@ mod tests {
         assert!(quoted.contains("\\\\$draft"));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn launch_agent_runs_foreground_with_persistent_logs_and_escaped_paths() {
         let plist = launch_agent_plist(

@@ -1,77 +1,95 @@
 //! Resolve a useful PATH before the companion starts its async runtime.
 //!
-//! Finder and LaunchAgents do not read the user's interactive shell setup.
-//! Resolve that environment once, at synchronous process startup, then let
-//! every child inherit the same PATH.
+//! Finder and LaunchAgents do not read shell startup files. Resolve the
+//! login-shell PATH once, synchronously, then let children inherit it.
 
+#[cfg(any(target_os = "macos", test))]
 use std::ffi::{OsStr, OsString};
+#[cfg(any(target_os = "macos", test))]
 use std::path::{Path, PathBuf};
 
-/// Initialize the process PATH on macOS. This must run before Tokio or any
-/// other threads are started because changing the process environment later
-/// is unsafe when other threads may read it.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(unix, test)))]
+const MAX_SHELL_OUTPUT: usize = 64 * 1024;
+
+/// Initialize the process PATH on macOS. This must run before threads start.
+///
 /// # Safety
-/// Call only during synchronous process startup, before Tokio or any other
-/// threads are started. Mutating the process environment while other threads
-/// can read it is unsafe.
+/// Call only during synchronous startup before Tokio or any other threads are
+/// started. Changing the process environment while other threads may read it
+/// is unsafe.
+#[cfg(target_os = "macos")]
 pub unsafe fn initialize() {
     let inherited = std::env::var_os("PATH").unwrap_or_default();
     let dirs = resolve_path(&inherited, home_directory(), shell_path());
     if let Ok(path) = std::env::join_paths(dirs) {
-        // Called synchronously before the runtime and its worker threads.
         unsafe { std::env::set_var("PATH", path) };
     }
 }
 
-/// Other platforms already receive PATH from their normal launch context.
-#[cfg(not(target_os = "macos"))]
+/// The PATH initializer is a no-op outside macOS.
+///
 /// # Safety
-/// Call only during synchronous process startup, before any threads are
-/// started. This implementation is a no-op outside macOS.
+/// Call only during synchronous startup before any threads are started.
+#[cfg(not(target_os = "macos"))]
 pub unsafe fn initialize() {}
 
 #[cfg(target_os = "macos")]
 fn home_directory() -> Option<PathBuf> {
-    std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from)
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
 }
 
 #[cfg(target_os = "macos")]
 fn shell_path() -> Option<OsString> {
-    let inherited = std::env::var_os("PATH").unwrap_or_default();
-    let dirs = std::env::split_paths(&inherited).collect::<Vec<_>>();
-    if has_user_tool_path(&dirs) {
-        return None;
+    let configured = std::env::var_os("SHELL");
+    let account = account_login_shell();
+    let shell = select_shell(configured.as_deref(), account.as_deref(), &[
+        Path::new("/bin/zsh"),
+        Path::new("/bin/bash"),
+        Path::new("/bin/sh"),
+    ])?;
+    login_shell_path(&shell, std::time::Duration::from_secs(2))
+}
+
+#[cfg(target_os = "macos")]
+fn account_login_shell() -> Option<OsString> {
+    // SAFETY: getpwuid returns a process-global record; copy its shell before
+    // making any other libc calls. Initialization is synchronous and single-threaded.
+    unsafe {
+        let record = libc::getpwuid(libc::getuid());
+        if record.is_null() || (*record).pw_shell.is_null() {
+            return None;
+        }
+        Some(OsString::from(std::ffi::CStr::from_ptr((*record).pw_shell).to_string_lossy().into_owned()))
     }
-    let shell = std::env::var_os("SHELL").filter(|value| !value.is_empty())?;
-    let shell = PathBuf::from(shell);
-    let shell = if shell.is_absolute() {
-        shell
-    } else {
-        which::which(&shell).ok()?
-    };
-    shell.is_file().then(|| login_shell_path(&shell)).flatten()
 }
 
-fn has_user_tool_path(dirs: &[PathBuf]) -> bool {
-    dirs.iter().any(|dir| {
-        matches!(
-            dir.to_string_lossy().as_ref(),
-            "/opt/homebrew/bin" | "/usr/local/bin"
-        ) || dir.ends_with(".local/bin")
-            || dir.ends_with(".cargo/bin")
-            || dir.ends_with("/texbin")
-    })
+#[cfg(any(target_os = "macos", test))]
+fn select_shell(
+    configured: Option<&OsStr>,
+    account: Option<&OsStr>,
+    fallbacks: &[&Path],
+) -> Option<PathBuf> {
+    configured
+        .into_iter()
+        .chain(account)
+        .map(PathBuf::from)
+        .chain(fallbacks.iter().map(|path| path.to_path_buf()))
+        .find(|path| path.is_absolute() && path.is_file())
 }
 
-/// Build a stable search path. Existing PATH entries remain first so explicit
-/// user choices keep precedence; shell and system path-file entries follow.
+/// Merge PATH sources while preserving inherited precedence and dropping
+/// relative entries, which would otherwise make discovery depend on CWD.
+#[cfg(any(target_os = "macos", test))]
 fn resolve_path(inherited: &OsStr, home: Option<PathBuf>, shell: Option<OsString>) -> Vec<PathBuf> {
-    let mut dirs = std::env::split_paths(inherited).collect::<Vec<_>>();
+    let mut dirs = std::env::split_paths(inherited)
+        .filter(|dir| dir.is_absolute())
+        .collect::<Vec<_>>();
     if let Some(shell) = shell {
-        dirs.extend(std::env::split_paths(&shell));
+        dirs.extend(std::env::split_paths(&shell).filter(|dir| dir.is_absolute()));
     }
-    if let Some(home) = home {
+    if let Some(home) = home.filter(|home| home.is_absolute()) {
         dirs.push(home.join(".local/bin"));
         dirs.push(home.join(".cargo/bin"));
     }
@@ -99,13 +117,14 @@ fn resolve_path(inherited: &OsStr, home: Option<PathBuf>, shell: Option<OsString
 
     let mut unique = Vec::with_capacity(dirs.len());
     for dir in dirs {
-        if !dir.as_os_str().is_empty() && !unique.contains(&dir) {
+        if !unique.contains(&dir) {
             unique.push(dir);
         }
     }
     unique
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn path_file_entries(path: &Path) -> Vec<PathBuf> {
     if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 16 * 1024) {
         return Vec::new();
@@ -119,77 +138,108 @@ fn path_file_entries(path: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-#[cfg(target_os = "macos")]
-fn login_shell_path(shell: &Path) -> Option<OsString> {
-    use std::io::Read;
+/// Run only a fixed PATH-printing snippet in the user's interactive login
+/// shell. stdout is read without blocking and retained up to 64 KiB. On
+/// timeout the shell process group is killed before the child is reaped.
+#[cfg(any(target_os = "macos", all(unix, test)))]
+fn login_shell_path(shell: &Path, timeout: std::time::Duration) -> Option<OsString> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
-    use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     let marker = format!("__LIBREPAPER_PATH_{}_{}__", std::process::id(), unique_marker());
     let script = format!("printf '\\n{marker}_BEGIN\\n%s\\n{marker}_END\\n' \"$PATH\"");
-    let mut command = Command::new(shell);
-    command
-        .args(["-l", "-c", &script])
+    let mut child = Command::new(shell)
+        .args(["-l", "-i", "-c", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
-    let reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            let Ok(count) = stdout.read(&mut chunk) else { break };
-            if count == 0 {
-                break;
-            }
-            if bytes.len() < MAX_SHELL_OUTPUT {
-                let remaining = MAX_SHELL_OUTPUT - bytes.len();
-                bytes.extend_from_slice(&chunk[..count.min(remaining)]);
-            }
-        }
-        bytes
-    });
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let status = loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            break Some(status);
-        }
-        if Instant::now() >= deadline {
-            crate::local::native::kill_tree(child.id());
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = reader.join();
-            return None;
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-    crate::local::native::kill_tree(child.id());
-    if !status.is_some_and(|status| status.success()) {
-        let _ = reader.join();
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.as_ref()?;
+    let fd = stdout.as_raw_fd();
+    // SAFETY: fcntl only reads/updates flags on this live pipe descriptor.
+    let old_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if old_flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, old_flags | libc::O_NONBLOCK) } < 0 {
+        let pid = child.id();
+        crate::local::native::kill_tree(Some(pid));
+        let _ = child.wait();
         return None;
     }
-    let output = reader.join().ok()?;
+
+    let pid = child.id();
+    let deadline = Instant::now() + timeout;
+    let mut output = Vec::with_capacity(MAX_SHELL_OUTPUT);
+    let mut chunk = [0u8; 4096];
+    let mut status = None;
+    loop {
+        // SAFETY: fd remains owned by child.stdout and chunk is writable.
+        let count = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+        if count > 0 {
+            let count = count as usize;
+            let remaining = MAX_SHELL_OUTPUT.saturating_sub(output.len());
+            if remaining > 0 {
+                output.extend_from_slice(&chunk[..count.min(remaining)]);
+            }
+        } else if count < 0 {
+            let error = std::io::Error::last_os_error();
+            if !matches!(error.raw_os_error(), Some(libc::EAGAIN | libc::EWOULDBLOCK)) {
+                crate::local::native::kill_tree(Some(pid));
+                let _ = child.wait();
+                return None;
+            }
+        }
+
+        match child.try_wait() {
+            Ok(Some(exit)) => {
+                status = Some(exit);
+                // Drain bytes already in the pipe, but never wait for EOF:
+                // a shell profile may leave a detached descendant holding it.
+                loop {
+                    // SAFETY: same live, nonblocking pipe and writable buffer.
+                    let count = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
+                    if count <= 0 {
+                        break;
+                    }
+                    let count = count as usize;
+                    let remaining = MAX_SHELL_OUTPUT.saturating_sub(output.len());
+                    if remaining > 0 {
+                        output.extend_from_slice(&chunk[..count.min(remaining)]);
+                    }
+                }
+                break;
+            }
+            Ok(None) => {}
+            Err(_) => {
+                crate::local::native::kill_tree(Some(pid));
+                let _ = child.wait();
+                return None;
+            }
+        }
+        if Instant::now() >= deadline {
+            crate::local::native::kill_tree(Some(pid));
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    if !status.is_some_and(|exit| exit.success()) {
+        return None;
+    }
     parse_marked_path(&output, &marker)
 }
 
-#[cfg(target_os = "macos")]
-const MAX_SHELL_OUTPUT: usize = 64 * 1024;
-
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(unix, test)))]
 fn unique_marker() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_marked_path(output: &[u8], marker: &str) -> Option<OsString> {
     let text = std::str::from_utf8(output).ok()?;
     let begin = format!("{marker}_BEGIN");
@@ -210,9 +260,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inherited_entries_keep_precedence_and_duplicates_are_removed() {
+    fn inherited_entries_keep_precedence_absolute_paths_only_and_deduplicate() {
         let dirs = resolve_path(
-            OsStr::new("/custom/bin:/usr/local/bin:/custom/bin"),
+            OsStr::new("relative:/custom/bin:/usr/local/bin:/custom/bin"),
             Some(PathBuf::from("/Users/example")),
             Some(OsString::from("/shell/bin:/usr/local/bin")),
         );
@@ -222,10 +272,11 @@ mod tests {
         assert_eq!(dirs[3], PathBuf::from("/Users/example/.local/bin"));
         assert_eq!(dirs[4], PathBuf::from("/Users/example/.cargo/bin"));
         assert_eq!(dirs.iter().filter(|path| **path == Path::new("/usr/local/bin")).count(), 1);
+        assert!(!dirs.contains(&PathBuf::from("relative")));
     }
 
     #[test]
-    fn sparse_path_gets_deterministic_macos_fallbacks() {
+    fn sparse_path_gets_deterministic_fallbacks() {
         let dirs = resolve_path(OsStr::new("/usr/bin:/bin"), None, None);
         for expected in [
             "/opt/homebrew/bin",
@@ -239,7 +290,19 @@ mod tests {
     }
 
     #[test]
-    fn parser_ignores_noisy_shell_output_and_uses_last_complete_marker() {
+    fn absent_shell_uses_account_shell_then_fallback() {
+        assert_eq!(
+            select_shell(None, Some(OsStr::new("/bin/sh")), &[Path::new("/bin/bash")]),
+            Some(PathBuf::from("/bin/sh"))
+        );
+        assert_eq!(
+            select_shell(None, None, &[Path::new("/bin/sh")]),
+            Some(PathBuf::from("/bin/sh"))
+        );
+    }
+
+    #[test]
+    fn parser_handles_noisy_shell_output_and_rejects_incomplete_markers() {
         let marker = "__LIBREPAPER_PATH_test__";
         let output = format!(
             "profile noise\n{marker}_BEGIN\nwrong\n{marker}_END\n{marker}_BEGIN\n/opt/homebrew/bin:/custom/bin\n{marker}_END\n"
@@ -248,13 +311,43 @@ mod tests {
             parse_marked_path(output.as_bytes(), marker),
             Some(OsString::from("/opt/homebrew/bin:/custom/bin"))
         );
+        assert_eq!(parse_marked_path(b"no marker", marker), None);
     }
 
+    #[cfg(unix)]
+    fn fake_shell(directory: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = directory.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn incomplete_or_empty_markers_are_rejected() {
-        let marker = "__LIBREPAPER_PATH_test__";
-        assert_eq!(parse_marked_path(b"no marker", marker), None);
-        let empty = format!("{marker}_BEGIN\n\n{marker}_END");
-        assert_eq!(parse_marked_path(empty.as_bytes(), marker), None);
+    fn login_shell_lookup_accepts_noisy_success_and_rejects_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let noisy = fake_shell(directory.path(), "noisy", "echo profile-noise; eval \"$4\"");
+        assert!(login_shell_path(&noisy, std::time::Duration::from_secs(1)).is_some());
+        let failing = fake_shell(directory.path(), "failing", "exit 3");
+        assert_eq!(login_shell_path(&failing, std::time::Duration::from_secs(1)), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn login_shell_lookup_caps_output_and_times_out_without_waiting_for_pipe_eof() {
+        let directory = tempfile::tempdir().unwrap();
+        let oversized = fake_shell(
+            directory.path(),
+            "oversized",
+            "/usr/bin/head -c 70000 /dev/zero; eval \"$4\"",
+        );
+        assert_eq!(login_shell_path(&oversized, std::time::Duration::from_secs(1)), None);
+
+        let hanging = fake_shell(directory.path(), "hanging", "sleep 10 & wait");
+        assert_eq!(
+            login_shell_path(&hanging, std::time::Duration::from_millis(100)),
+            None
+        );
     }
 }
