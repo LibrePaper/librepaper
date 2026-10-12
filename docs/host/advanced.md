@@ -128,6 +128,7 @@ cp /path/to/your/resticprofile.toml .   # the repository and its password are al
 - It refuses to run where LibrePaper is already running, and `admin restore` refuses a database that is not empty, so it cannot overwrite a live deployment.
 - Open the copy in a local browser or through an SSH tunnel, and check documents, figures and that existing sign-ins still work. Do not expose it under your production names.
 - Keep the kit's own `librepaper.toml` for the drill: it points at the empty local database.
+- The copy's backup service stays off, so it never writes to your repository. When you are done, remove the copy with `docker compose down -v` and delete `resticprofile.toml`. Both hold real data or keys.
 
 ## Object storage
 
