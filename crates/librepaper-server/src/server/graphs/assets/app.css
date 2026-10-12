@@ -38,3 +38,12 @@ main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12p
 .plot { width: 100%; }
 .u-legend { color: var(--muted); font-size: 12px; }
 .u-select { background: var(--fill); }
+#accounts { margin: 0 16px 16px; }
+#accounts-total { margin: 0 0 8px; color: var(--muted); }
+#accounts-total.failed { color: var(--alert); }
+.table { overflow-x: auto; }
+.table table { width: 100%; border-collapse: collapse; }
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; }
+.num { text-align: right; }
+.muted { color: var(--muted); }

@@ -207,5 +207,60 @@
     load();
   });
 
+  // The fifty accounts holding the most storage. Handles are chosen by users,
+  // so every cell is filled with textContent, never markup.
+  function day(seconds) {
+    return new Date(seconds * 1000).toISOString().slice(0, 10);
+  }
+
+  function cell(text, className) {
+    const td = document.createElement("td");
+    if (className) td.className = className;
+    td.textContent = text;
+    return td;
+  }
+
+  function accountRow(account) {
+    const row = document.createElement("tr");
+    const name = document.createElement("td");
+    name.append(account.handle);
+    if (account.provider) {
+      const provider = document.createElement("span");
+      provider.className = "muted";
+      provider.textContent = account.provider;
+      name.append(" ", provider);
+    }
+    const id = document.createElement("td");
+    const code = document.createElement("code");
+    code.textContent = account.id;
+    id.append(code);
+    row.append(
+      name,
+      cell(account.status),
+      cell(format(account.bytes, "bytes"), "num"),
+      cell(String(account.documents), "num"),
+      cell(day(account.last_seen_at)),
+      cell(day(account.created_at)),
+      id
+    );
+    return row;
+  }
+
+  async function loadAccounts() {
+    const total = document.getElementById("accounts-total");
+    const rows = document.getElementById("accounts-rows");
+    try {
+      const response = await fetch("/accounts", { cache: "no-store" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const data = await response.json();
+      total.textContent = "Stored: " + format(data.total_bytes, "bytes") + " of " + format(data.limit_bytes, "bytes");
+      rows.replaceChildren(...data.accounts.map(accountRow));
+    } catch (error) {
+      total.classList.add("failed");
+      total.textContent = "The accounts could not be loaded.";
+    }
+  }
+
   load();
+  loadAccounts();
 })();
