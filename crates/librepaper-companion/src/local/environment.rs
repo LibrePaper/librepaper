@@ -3,9 +3,9 @@
 //! Finder and LaunchAgents do not read shell startup files. Resolve the
 //! login-shell PATH once, synchronously, then let children inherit it.
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 use std::ffi::{OsStr, OsString};
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 use std::path::{Path, PathBuf};
 
 #[cfg(any(target_os = "macos", all(unix, test)))]
@@ -65,7 +65,7 @@ fn account_login_shell() -> Option<OsString> {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn select_shell(
     configured: Option<&OsStr>,
     account: Option<&OsStr>,
@@ -81,7 +81,7 @@ fn select_shell(
 
 /// Merge PATH sources while preserving inherited precedence and dropping
 /// relative entries, which would otherwise make discovery depend on CWD.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn resolve_path(inherited: &OsStr, home: Option<PathBuf>, shell: Option<OsString>) -> Vec<PathBuf> {
     let mut dirs = std::env::split_paths(inherited)
         .filter(|dir| dir.is_absolute())
@@ -124,12 +124,27 @@ fn resolve_path(inherited: &OsStr, home: Option<PathBuf>, shell: Option<OsString
     unique
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn path_file_entries(path: &Path) -> Vec<PathBuf> {
-    if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 16 * 1024) {
+    use std::io::Read;
+
+    const MAX_PATH_FILE_BYTES: usize = 16 * 1024;
+    if !std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
         return Vec::new();
     }
-    std::fs::read_to_string(path)
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take((MAX_PATH_FILE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() > MAX_PATH_FILE_BYTES
+    {
+        return Vec::new();
+    }
+    String::from_utf8(bytes)
         .unwrap_or_default()
         .lines()
         .map(str::trim)
@@ -173,43 +188,49 @@ fn login_shell_path(shell: &Path, timeout: std::time::Duration) -> Option<OsStri
     let deadline = Instant::now() + timeout;
     let mut output = Vec::with_capacity(MAX_SHELL_OUTPUT);
     let mut chunk = [0u8; 4096];
-    let mut status = None;
-    loop {
-        // SAFETY: fd remains owned by child.stdout and chunk is writable.
-        let count = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
-        if count > 0 {
-            let count = count as usize;
-            let remaining = MAX_SHELL_OUTPUT.saturating_sub(output.len());
-            if remaining > 0 {
-                output.extend_from_slice(&chunk[..count.min(remaining)]);
-            }
-        } else if count < 0 {
-            let error = std::io::Error::last_os_error();
-            if !matches!(error.raw_os_error(), Some(libc::EAGAIN | libc::EWOULDBLOCK)) {
+    let status = loop {
+        let count = match read_nonblocking(fd, &mut chunk) {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => 0,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
                 crate::local::native::kill_tree(Some(pid));
                 let _ = child.wait();
                 return None;
             }
+        };
+        if count > 0 {
+            let remaining = MAX_SHELL_OUTPUT.saturating_sub(output.len());
+            if count > remaining {
+                crate::local::native::kill_tree(Some(pid));
+                let _ = child.wait();
+                return None;
+            }
+            output.extend_from_slice(&chunk[..count]);
         }
 
         match child.try_wait() {
             Ok(Some(exit)) => {
-                status = Some(exit);
                 // Drain bytes already in the pipe, but never wait for EOF:
                 // a shell profile may leave a detached descendant holding it.
                 loop {
-                    // SAFETY: same live, nonblocking pipe and writable buffer.
-                    let count = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
-                    if count <= 0 {
-                        break;
+                    if Instant::now() >= deadline {
+                        return None;
                     }
-                    let count = count as usize;
+                    let count = match read_nonblocking(fd, &mut chunk) {
+                        Ok(0) => break,
+                        Ok(count) => count,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => return None,
+                    };
                     let remaining = MAX_SHELL_OUTPUT.saturating_sub(output.len());
-                    if remaining > 0 {
-                        output.extend_from_slice(&chunk[..count.min(remaining)]);
+                    if count > remaining {
+                        return None;
                     }
+                    output.extend_from_slice(&chunk[..count]);
                 }
-                break;
+                break exit;
             }
             Ok(None) => {}
             Err(_) => {
@@ -224,12 +245,23 @@ fn login_shell_path(shell: &Path, timeout: std::time::Duration) -> Option<OsStri
             return None;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    };
 
-    if !status.is_some_and(|exit| exit.success()) {
+    if !status.success() {
         return None;
     }
     parse_marked_path(&output, &marker)
+}
+
+#[cfg(any(target_os = "macos", all(unix, test)))]
+fn read_nonblocking(fd: std::os::fd::RawFd, buffer: &mut [u8]) -> std::io::Result<usize> {
+    // SAFETY: caller keeps the descriptor open and buffer points to writable memory.
+    let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+    if count >= 0 {
+        Ok(count as usize)
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 #[cfg(any(target_os = "macos", all(unix, test)))]
@@ -239,7 +271,7 @@ fn unique_marker() -> u128 {
         .map_or(0, |duration| duration.as_nanos())
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn parse_marked_path(output: &[u8], marker: &str) -> Option<OsString> {
     let text = std::str::from_utf8(output).ok()?;
     let begin = format!("{marker}_BEGIN");
@@ -255,7 +287,7 @@ fn parse_marked_path(output: &[u8], marker: &str) -> Option<OsString> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -340,7 +372,7 @@ mod tests {
         let oversized = fake_shell(
             directory.path(),
             "oversized",
-            "/usr/bin/head -c 70000 /dev/zero; eval \"$4\"",
+            "head -c 70000 /dev/zero; eval \"$4\"",
         );
         assert_eq!(login_shell_path(&oversized, std::time::Duration::from_secs(1)), None);
 
@@ -349,5 +381,19 @@ mod tests {
             login_shell_path(&hanging, std::time::Duration::from_millis(100)),
             None
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn login_shell_lookup_does_not_wait_for_detached_stdout_descendants() {
+        let directory = tempfile::tempdir().unwrap();
+        let detached = fake_shell(
+            directory.path(),
+            "detached",
+            "setsid sleep 3 & eval \"$4\"; exit 0",
+        );
+        let started = std::time::Instant::now();
+        assert!(login_shell_path(&detached, std::time::Duration::from_secs(2)).is_some());
+        assert!(started.elapsed() < std::time::Duration::from_millis(1500));
     }
 }
