@@ -442,7 +442,9 @@ cmd_restore() {
 		chown -R 10001:65534 /var/lib/librepaper/objects'
 
 	step "Starting LibrePaper"
-	docker compose up -d --wait
+	# Not the backup service: it would back this copy up into the production
+	# repository and apply retention there, from another machine.
+	docker compose up -d --wait postgres librepaper caddy
 
 	step "Checking /ready"
 	docker compose exec -T librepaper wget -qO- http://127.0.0.1:8080/ready
