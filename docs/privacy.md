@@ -3,146 +3,78 @@ title: "Privacy and data retention"
 ---
 
 > **Warning:** Do not store private or highly sensitive data on librepaper.org.
-> The website does not use end-to-end encryption, because the server must have
-> access to a file's content to reconcile edits made by concurrent editors, and the
-> administrators must be able to consult files to enforce the terms of service.
-> If you require private file handling, consider
-> [self-hosting](./host/simple.html).
+> Documents are not end-to-end encrypted. The server reads every file so it can
+> merge edits from people who write at the same time. The administrators must
+> also be able to read files to moderate them. If you need private file
+> handling, [host your own server](./host/simple.html).
 
-This notice describes the public LibrePaper deployment. If you run another
-instance, its operator controls the database, object storage, logs, backups,
-retention, and legal obligations. Consult that operator's notice. The server
-can read document contents and account data in plaintext.
+## What librepaper.org stores
 
-An operator's reverse proxy, backups and hosting provider keep their own logs.
+librepaper.org runs on OVHcloud in Canada. The server, its database and your files are in Beauharnois, Quebec.
 
-## Security and encryption
+- **Accounts** keep the sign-in provider and account ID, a handle, a display name, an email address (Google only), and when the account was created and last used.
+- **Documents** keep the title, format, owner, dates, every file and the edit history.
+- **Comments, highlights, suggestions and replies** keep their author and the passage they refer to.
+- **Sharing** records who each document is shared with. A share link is stored as a hash and as an encrypted copy that lets the owner copy it again.
+- **Operational numbers** count requests, response times, memory, disk and CPU once a minute. They carry no user, document or network identifiers. Only the administrators can see them.
 
-Content is not end-to-end encrypted. The server and database can read drafts, comments,
-identities and presence in the clear.
+librepaper.org keeps no access log and does not store IP addresses.
 
-## What a deployment stores
+## Who sees what
 
-- **Accounts** store the provider, identifier, handle, display name, email (Google only),
-  and created and last-seen times
-- **Documents** store the title, format, owner, timestamps, and every file
-- **Annotations** are comments, highlights and suggestions, stored with author and passage
-- **Checkpoints** hold collaborative editing state
-- **Shares** record who documents are shared with and store hashed share links
+- Your handle is your GitHub login or your Google email. Only you see it. Other people see your display name.
+- While you have a document open, other people viewing it see that you are there and where your cursor is.
+- Edit and comment links require sign-in. Read links work for anyone who has them.
+- Anyone who can read a document can also read its source files in the browser. Keep confidential inputs out of the project. The [local app](local-app.html) can supply local files to a build without uploading them.
 
-The application does not log visitor requests or persist IP addresses. Its
-monitoring endpoint exports aggregate counts without user or document identifiers.
+## What leaves librepaper.org
 
-The server keeps aggregate operational numbers (request counts, latency, memory,
-disk, CPU, socket and document counts) in one SQLite file on the data volume for
-400 days. The numbers carry no user, document or network identifiers. The file is
-not in backups. It is readable only with the admin password on the admin origin,
-which the operator may leave unconfigured.
-These controls describe this deployment's data handling. They do not by themselves
-determine an operator's legal obligations.
-
-Handles are visible only to their owner. GitHub handles are logins. Google
-handles are verified emails, shown to no one else.
+- **Sign-in:** GitHub or Google sees your sign-in and tells librepaper.org who you are. Neither one sees your documents.
+- **LaTeX mirror:** Your browser downloads the typesetting engines and LaTeX packages from the LibrePaper mirror on OVHcloud. The mirror sees your IP address and the files you request, which can reveal the packages a document uses. It never sees the source.
+- **Local app:** The [local app](local-app.html) runs on your computer, and the browser talks to it directly. The browser contacts it when you use a local feature. Once you have paired it, the browser also asks it for backup status.
+- **Writing assistant:** An assistant you start runs on your computer through the local app. Its access covers one document and expires after five minutes. The browser renews it while the page is open. The AI service behind the assistant sees what the assistant reads.
+- **Local backups:** The local app downloads your projects, including those shared with you, and writes ZIP files to a folder you choose. The browser never learns where that folder is. The ZIP files stay on your computer when you turn backups off or delete a project. See [local backups](backups.html).
+- **Embedded resources:** A document can load images, fonts, scripts or data from other websites. Those sites see your IP address, your browser and when you opened the document, so an author can learn who read it. Authors can avoid this with PDFs or `embed-resources: true` in Quarto.
 
 ## Cookies and browser storage
 
-Three cookies are set:
-- `librepaper_session` is signed, lasts 30 days, and is HttpOnly and SameSite. Over HTTPS, it is also Secure and uses the __Host- prefix.
-- `librepaper_state` ties sign-in to the browser that started it.
-- `librepaper_visitor` is a signed visitor credential that keeps legacy visitor activity tied to the same browser.
+librepaper.org sets three cookies. Each one is HttpOnly, Secure and SameSite=Lax, and carries the `__Host-` prefix.
 
-Browser storage is never sent to the server:
-- `librepaper-viewed` and `librepaper-favorites` store documents.
-- `librepaper-layout`, `librepaper-source-side` and `librepaper-panel` store layout.
-- `librepaper-keymap` stores editor settings.
+- `librepaper_session` keeps you signed in for 30 days.
+- `librepaper_state` ties a sign-in to the browser that started it. It lasts ten minutes.
+- `librepaper_visitor` is a random identifier for this browser. It lasts one year and is not linked to your account.
 
-Browser storage is sent to the deployment:
-- `librepaper-keys` stores share secrets, which are sent as the X-LibrePaper-Key header.
+The browser also keeps data of its own on your device.
 
-These browser-storage descriptions cover the application keys and purposes
-listed above. They are not a general statement about third-party content
-embedded in a document.
-
-## Reading and visibility
-
-Signed-in readers can use their account for comments and presence. While open,
-the collaboration layer broadcasts presence and cursor position to other viewers
-of the document. Edit links require sign-in. Comment links also require sign-in
-unless the deployment allows anonymous comments. Read links work for anyone holding them.
-
-Authorized readers receive a projected copy of shared source text, main-file
-metadata, and assets in order to render the document in the browser. They do not
-join source CRDT synchronization or receive its operation history, but shared
-source is readable in the browser and should not be treated as private. Keep
-confidential inputs outside the shared project. A local companion folder can
-provide local build inputs without uploading that folder.
-
-Pseudonymous comments hide identity from other readers, not the operator.
-
-## What leaves the deployment
-
-- **Sign-in:** GitHub or Google sees the request and returns identity. No documents are sent.
-- **LaTeX mirror:** Compilers and packages come from the project mirror, which sees
-  browser address and files requested. It never sees source. Package choices are
-  fingerprintable. Operators can avoid this by [hosting their own mirror](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md#host-a-copy).
-- **Local companion:** The writing assistant runs on your computer. The server relays
-  messages. When you start an agent from an open document page, the browser silently
-  renews a document- and link-scoped five-minute token. The headless CLI uses the
-  separate `librepaper login` flow. Other companion requests begin when you use
-  local execution, choose a local build tool, look up Zotero items, open Local
-  settings, or enable account backups. While already paired and signed in, the
-  page also polls the companion for backup status; it does not probe for a
-  companion on first visit just for backups.
-- **Local backups:** When paired and signed in, the browser polls the companion for
-  account-wide backup status and sends the account ID with backup settings and run
-  requests. The companion uses its CLI login to fetch projects available to the
-  account, including shared projects, and writes ZIPs into the folder you chose
-  with its native picker. The browser never receives that folder's absolute
-  path. ZIP files remain on your computer
-  when backups are disabled or a project is deleted. See [local backups](backups.html).
-- **Embedded resources:** Published documents fetch images and data from any host
-  named, which learns your address, browser and open time. To avoid requests to
-  those hosts, use PDFs or `embed-resources: true` in Quarto.
-
-Hosting, database and object-storage providers see what they store.
+- **Settings** remember your recent documents, layout, editor keys and local app pairing.
+- **Caches** hold the typesetting engines, LaTeX packages, figures and your last preview.
+- **Projects you open as an editor** are saved in the browser, so your edits survive a lost connection. Clear the site's data to remove them from a shared computer.
+- **Share link keys** keep a link working in this browser. The browser sends the key with each request for its document.
 
 ## Data retention
 
-- **Documents** are kept until deleted or the configured `[retention].expire_after` period passes. The period is measured from the last update or creation. See [storage, limits, and backup](./host/advanced.html#backups).
-- **Checkpoints and edit history** are retained by default while the document
-  exists. An owner can explicitly trim history, which permanently removes
-  older history and named versions. See [storage and history](./architecture/document.html#storage-and-history).
-- **Sessions:** session credentials expire after 30 days. Signing out clears the
-  current browser's cookie. It does not invalidate a copied credential. Account
-  erasure revokes the account's sessions.
-- **Backups** keep deleted data until the backup that holds it expires. See
-  [backups on librepaper.org](#backups-on-librepaperorg).
+- **Documents** stay until their owner deletes them.
+- **Deleted projects** stay in the trash for seven days. Then the project is purged with its files, comments, replies, history and share links. Emptying the trash purges it at once.
+- **Edit history and named versions** stay as long as the document exists. An owner can trim history, which permanently removes older history and named versions. See [storage and history](./architecture/document.html#storage-and-history).
+- **Share links** expire after seven days unless the owner picks a longer time or no expiry.
+- **Sessions** end after 30 days. Signing out clears this browser's cookie but does not cancel a copied one. Erasing the account ends every session.
+- **Operational numbers** are kept for 400 days and are not backed up.
 
-Deleting a document deletes files, comments, replies, checkpoints and share links.
+## Backups
 
-## Backups on librepaper.org
-
-- Documents on librepaper.org do not expire. They stay until their owner deletes them.
-- A backup runs every day at midnight UTC. It holds the database, every stored
-  file, the server configuration and the session key.
-- Backups are encrypted and stored in object storage, away from the server.
-- Every backup from the last 48 hours is kept. After that, one backup per day is
-  kept for 14 days and one per week for 11 weeks.
-- A deleted document or an erased account therefore stays in backups for about
-  three months.
-- After a restore, erasure requests made since that backup are applied again.
-
-Another deployment sets its own schedule and retention. The defaults are in
-[backups](./host/advanced.html#backups).
+- A backup runs every day at midnight UTC. It holds the database and every stored file.
+- Backups are encrypted and stored with OVHcloud in Toronto, away from the server.
+- Every backup from the last 48 hours is kept. After that, one backup per day is kept for 14 days and one per week for 11 weeks.
+- Deleted documents and erased accounts therefore stay in backups for about three months.
+- After a restore, erasures made since that backup are applied again.
 
 ## Erasing an account
 
-Choose **Settings > Account > Erase this account** and confirm with your handle:
+Choose **Settings > Account > Erase this account** and confirm with your handle.
 
-1. Account sessions are revoked. The account cannot sign in again. Erasure is irreversible from the browser
-2. Owned documents are marked for deletion and purged after seven days
-3. Comments, replies and labels on others' documents remain as "Deleted user"
-4. The account record is deleted after its owned documents are purged
+1. The account's sessions end, and the account can never sign in again. You cannot undo this from the browser.
+2. Owned documents are marked for deletion and purged after seven days.
+3. Comments, replies and labels on other people's documents stay, shown as "Deleted user".
+4. The account record is deleted once its documents are purged.
 
-Backups still hold the erased account until they expire. See
-[backups on librepaper.org](#backups-on-librepaperorg).
+The account stays in [backups](#backups) until they expire.
