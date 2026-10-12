@@ -81,7 +81,7 @@ pub async fn choose_backup_directory(origin: &str) -> Result<PathBuf, String> {
 async fn choose_directory_with_title(title: &str) -> Result<PathBuf, String> {
     #[cfg(target_os = "macos")]
     {
-        return choose_directory_macos(title).await;
+        choose_directory_macos(title).await
     }
     #[cfg(windows)]
     {
@@ -115,6 +115,24 @@ pub(crate) fn choose_directory_sync(title: &str) -> Result<Option<PathBuf>, Stri
     } else {
         Ok(None)
     }
+}
+
+#[cfg(windows)]
+async fn choose_directory_rfd(title: &str) -> Result<PathBuf, String> {
+    let handle = rfd::AsyncFileDialog::new()
+        .set_title(title)
+        .pick_folder()
+        .await;
+
+    let Some(handle) = handle else {
+        return Err("Folder selection was cancelled.".into());
+    };
+
+    let path = handle.path().to_path_buf();
+    if !path.is_absolute() || !path.is_dir() {
+        return Err("Select an existing project folder.".into());
+    }
+    Ok(path)
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -234,6 +252,22 @@ mod picker_protocol_tests {
             "path_b64": base64::engine::general_purpose::STANDARD.encode(b"relative")
         });
         assert!(decode_picker_response(&serde_json::to_vec(&relative).unwrap()).is_err());
+
+        use std::os::unix::ffi::OsStringExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let non_utf8 = directory
+            .path()
+            .join(std::ffi::OsString::from_vec(b"folder-\xff".to_vec()));
+        std::fs::create_dir(&non_utf8).unwrap();
+        let response = serde_json::json!({
+            "result": "selected",
+            "path_b64": base64::engine::general_purpose::STANDARD
+                .encode(non_utf8.as_os_str().as_bytes())
+        });
+        assert_eq!(
+            decode_picker_response(&serde_json::to_vec(&response).unwrap()).unwrap(),
+            non_utf8
+        );
     }
 
     #[test]
@@ -250,14 +284,32 @@ mod picker_protocol_tests {
 
     #[tokio::test]
     async fn fake_child_timeout_cancels_the_picker_process() {
-        let mut command = tokio::process::Command::new("/bin/sh");
-        command.args(["-c", "exec /bin/sleep 5"]);
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("timeout.pid");
+        let command = fake_sleep_child(&pid_file);
         assert_eq!(
-            run_picker_process(command, Duration::from_millis(25))
+            run_picker_process(command, Duration::from_secs(2))
                 .await
                 .unwrap_err(),
             "The folder chooser timed out."
         );
+        wait_until_pid_file_exists(&pid_file).await;
+        wait_until_process_exits(read_pid(&pid_file)).await;
+    }
+
+    #[tokio::test]
+    async fn dropping_picker_future_kills_its_child() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("cancelled.pid");
+        let task = tokio::spawn(run_picker_process(
+            fake_sleep_child(&pid_file),
+            Duration::from_secs(30),
+        ));
+        wait_until_pid_file_exists(&pid_file).await;
+        let pid = read_pid(&pid_file);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        wait_until_process_exits(pid).await;
     }
 
     #[tokio::test]
@@ -280,8 +332,48 @@ mod picker_protocol_tests {
             "The folder chooser process failed."
         );
     }
+
+    fn fake_sleep_child(pid_file: &std::path::Path) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "echo $$ > \"$1\"; exec sleep 30",
+            "picker-test",
+        ]);
+        command.arg(pid_file);
+        command
+    }
+
+    async fn wait_until_pid_file_exists(path: &std::path::Path) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !path.exists() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(path.exists(), "fake child did not write its PID");
+    }
+
+    fn read_pid(path: &std::path::Path) -> u32 {
+        std::fs::read_to_string(path).unwrap().trim().parse().unwrap()
+    }
+
+    async fn wait_until_process_exits(pid: u32) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            let status = std::process::Command::new("/bin/sh")
+                .args(["-c", "kill -0 \"$1\"", "kill-check", &pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            if !status.success() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("picker child {pid} remained alive after cancellation");
+    }
 }
 
+#[cfg(not(any(target_os = "macos", windows)))]
 async fn choose_directory_portal(_title: &str) -> Result<PathBuf, String> {
     #[cfg(target_os = "linux")]
     {
