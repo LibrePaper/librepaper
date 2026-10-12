@@ -423,10 +423,16 @@ async fn the_admin_host_sends_a_stranger_to_github_and_answers_nothing_else() {
     // The sign-in redirect and a refusal are not framed either.
     let redirect = f.get(ADMIN_HOST, "/").send().await.unwrap();
     assert_eq!(redirect.status().as_u16(), 302);
-    assert!(csp(&redirect).contains("frame-ancestors 'none'"), "the redirect");
+    assert!(
+        csp(&redirect).contains("frame-ancestors 'none'"),
+        "the redirect"
+    );
     let refusal = f.get(ADMIN_HOST, "/session").send().await.unwrap();
     assert_eq!(refusal.status().as_u16(), 401);
-    assert!(csp(&refusal).contains("frame-ancestors 'none'"), "the refusal");
+    assert!(
+        csp(&refusal).contains("frame-ancestors 'none'"),
+        "the refusal"
+    );
 }
 
 #[tokio::test]
@@ -464,7 +470,11 @@ async fn the_callback_refuses_a_state_it_did_not_issue() {
     assert_eq!(response.status().as_u16(), 400);
     assert_private_headers(&response, "a callback with no verifier");
 
-    assert_eq!(f.exchanges.load(Ordering::SeqCst), 0, "no exchange happened");
+    assert_eq!(
+        f.exchanges.load(Ordering::SeqCst),
+        0,
+        "no exchange happened"
+    );
 }
 
 /// The state cookie a sign-in start sets, as the `name=value` pair the browser
@@ -502,7 +512,10 @@ async fn a_listed_account_signs_in_through_github() {
     assert_eq!(start.status().as_u16(), 302);
     let location = header(&start, "location").unwrap_or_default();
     assert!(location.contains("code_challenge="), "{location}");
-    assert!(location.contains("code_challenge_method=S256"), "{location}");
+    assert!(
+        location.contains("code_challenge_method=S256"),
+        "{location}"
+    );
     let (state, state_pair) = sign_in_start(&start);
 
     let callback = f
@@ -529,9 +542,10 @@ async fn a_listed_account_signs_in_through_github() {
         assert!(session.contains(attribute), "{session:?}");
     }
     assert!(
-        cookies.iter().any(|cookie| cookie
-            .starts_with("__Host-librepaper_admin_state=")
-            && cookie.contains("Max-Age=0")),
+        cookies.iter().any(
+            |cookie| cookie.starts_with("__Host-librepaper_admin_state=")
+                && cookie.contains("Max-Age=0")
+        ),
         "the state cookie is cleared: {cookies:?}"
     );
     assert_private_headers(&callback, "the sign-in callback");

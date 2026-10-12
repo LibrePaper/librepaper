@@ -18,14 +18,14 @@ use librepaper_engine::storage::postgres::{BlockOutcome, Error};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
+use super::{unix_seconds, Bucket, SeriesData, HISTORY_RETENTION};
+use crate::server::signin::{clear_cookie, cookie, set_cookie};
+use crate::server::{set, Server};
+
 /// How many admin sign-in callbacks may be exchanging codes at once. The
 /// console has its own cap, so it can never take all of the app's sign-in
 /// capacity, which is the provider pool.
 static ADMIN_CALLBACKS: Semaphore = Semaphore::const_new(2);
-
-use super::{unix_seconds, Bucket, SeriesData, HISTORY_RETENTION};
-use crate::server::signin::{clear_cookie, cookie, set_cookie};
-use crate::server::{set, Server};
 
 const PAGE: &str = include_str!("assets/index.html");
 const APP_JS: &str = include_str!("assets/app.js");
