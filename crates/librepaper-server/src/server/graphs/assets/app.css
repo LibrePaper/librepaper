@@ -41,6 +41,8 @@ main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12p
 #accounts { margin: 0 16px 16px; }
 #accounts-total { margin: 0 0 8px; color: var(--muted); }
 #accounts-total.failed { color: var(--alert); }
+#accounts-expiry { margin: 0 0 8px; color: var(--muted); }
+td.due { color: var(--alert); }
 .table { overflow-x: auto; }
 .table table { width: 100%; border-collapse: collapse; }
 th, td { padding: 6px 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; white-space: nowrap; }

@@ -220,7 +220,8 @@
     return td;
   }
 
-  function accountRow(account) {
+  // `dueBefore` is the last sign-in, in seconds, below which an account is due for erasure within 30 days, or null when the sweep is off.
+  function accountRow(account, dueBefore) {
     const row = document.createElement("tr");
     const name = document.createElement("td");
     name.append(account.handle);
@@ -230,6 +231,8 @@
       provider.textContent = account.provider;
       name.append(" ", provider);
     }
+    const lastSeen = cell(day(account.last_seen_at));
+    if (dueBefore != null && account.last_seen_at < dueBefore) lastSeen.className = "due";
     const id = document.createElement("td");
     const code = document.createElement("code");
     code.textContent = account.id;
@@ -239,7 +242,7 @@
       cell(account.status),
       cell(format(account.bytes, "bytes"), "num"),
       cell(String(account.documents), "num"),
-      cell(day(account.last_seen_at)),
+      lastSeen,
       cell(day(account.created_at)),
       id
     );
@@ -248,13 +251,24 @@
 
   async function loadAccounts() {
     const total = document.getElementById("accounts-total");
+    const expiry = document.getElementById("accounts-expiry");
     const rows = document.getElementById("accounts-rows");
     try {
       const response = await fetch("/accounts", { cache: "no-store" });
       if (!response.ok) throw new Error("HTTP " + response.status);
       const data = await response.json();
       total.textContent = "Stored: " + format(data.total_bytes, "bytes") + " of " + format(data.limit_bytes, "bytes");
-      rows.replaceChildren(...data.accounts.map(accountRow));
+      let dueBefore = null;
+      if (data.erase_inactive_after > 0) {
+        const days = Math.round(data.erase_inactive_after / 86400);
+        const soon = data.erasing_soon;
+        expiry.textContent = "Accounts with no sign-in for " + days + " days are erased. Within 30 days: " +
+          soon.accounts + " accounts holding " + format(soon.bytes, "bytes") + ".";
+        dueBefore = Date.now() / 1000 - data.erase_inactive_after + 30 * 86400;
+      } else {
+        expiry.textContent = "Accounts with no sign-in are kept.";
+      }
+      rows.replaceChildren(...data.accounts.map((account) => accountRow(account, dueBefore)));
     } catch (error) {
       total.classList.add("failed");
       total.textContent = "The accounts could not be loaded.";
