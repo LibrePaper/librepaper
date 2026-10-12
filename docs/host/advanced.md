@@ -161,24 +161,28 @@ The VPS cannot report its own outage, so alerts come from free outside services.
 
 ### LibrePaper admin console
 
-The console is a password-protected page on its own hostname. It has three tabs:
+The console is a page on its own hostname. You sign in with GitHub. It has three tabs:
 
 - **Resources** graphs the server's health over the last 400 days: CPU, memory, free disk, stored bytes, open documents, live connections and database connections in use.
 - **Accounts** lists the 50 accounts holding the most storage.
 - **Moderation** blocks an account, refuses a name before its first sign-in, and hides a project. It lists what is blocked, refused and hidden, and the last 50 actions with their reasons.
 
 ```sh
-# Optional. The admin console at https://admin.paper.example/, behind a password.
+# Optional. The admin console at https://admin.paper.example/, signed in with GitHub.
 # DNS: admin.paper.example -> this VPS, like the other two names.
-head -c 24 /dev/urandom | base64         # the password
+# GitHub: in the OAuth app, add https://admin.paper.example/auth/callback to its callback URLs.
+gh api users/<login> --jq .id            # your numeric GitHub ID
 # librepaper.toml: under [origins] add   admin = "https://admin.paper.example"
 #                  and a new table       [admin]
-#                                        password = "<the line above>"
+#                                        github_ids = [123456]
 ./manage apply
 ```
 
 - It takes one DNS record and two lines in the one file. Caddy needs no changes. Caddy asks the server before obtaining a certificate, and the server says yes to three names.
-- The browser asks for the password once per session. The user name can be anything. Moderation records it as the person who acted.
+- You sign in with GitHub, so your GitHub two-factor authentication protects the console. A session lasts 12 hours.
+- Only the listed GitHub IDs get in. Remove an ID and restart the server to lock that person out at once.
+- Moderation records your GitHub login as the person who acted.
+- The console needs GitHub sign-in. A deployment with only Google sign-in has no console.
 - A blocked account is signed out at once. Its block follows the account, so changing the name does not lift it.
 - A refused name covers only that name. Someone who renames their GitHub account before signing in is not caught.
 - Zoom by dragging on any graph. Double-click to return to the chosen range.

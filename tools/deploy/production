@@ -11,7 +11,7 @@ APP=app.librepaper.org    # the application: origin in tools/deploy/production.t
 DOCS=docs.librepaper.org  # published documents: origin in tools/deploy/production.toml
 REDIRECTS='www.librepaper.org, librepaper.com, www.librepaper.com'
 ASSET=librepaper-x86_64-unknown-linux-musl.tar.xz
-ADMIN=https://admin.librepaper.org/  # operator graphs: origin in tools/deploy/production.toml
+ADMIN=https://admin.librepaper.org/  # operator console: origin in tools/deploy/production.toml
 ADMIN_NAME=admin.librepaper.org  # hostname extracted from ADMIN
 HTTP_CONNECT_TIMEOUT=5
 HTTP_REQUEST_TIMEOUT=15
@@ -49,11 +49,6 @@ validate_release_version() {
 	if (( major == 0 && minor == 0 && patch < 24 )); then
 		die "production deployment requires v0.0.24 or later: older releases do not know the squashed migration history production now records"
 	fi
-}
-
-VERIFY_TMP_FILES=()
-cleanup_verify_tmp() {
-	if [ "${#VERIFY_TMP_FILES[@]}" -gt 0 ]; then rm -f -- "${VERIFY_TMP_FILES[@]}"; fi
 }
 
 write_compose_files() {
@@ -176,7 +171,7 @@ usage: tools/deploy/production <command>
   deploy [VERSION]   deploy a published release (canonical vMAJOR.MINOR.PATCH)
                      (VERSION defaults to v + the version in Cargo.toml)
   site               rebuild and upload the landing page and manual only (no release, no restart)
-  verify             app, admin graphs, site, documents, redirect, operator URLs, and logs
+  verify             app, admin console, site, documents, redirect, operator URLs, and logs
   logs               follow the container logs
   help, -h, --help   show this message
 
@@ -223,45 +218,35 @@ verify() {
 	verify_oauth_redirect github 'https://github.com/login/oauth/authorize?'
 	verify_oauth_redirect google 'https://accounts.google.com/o/oauth2/v2/auth?'
 
-	step "Admin graphs: ${ADMIN}data?points=10"
-	local password config body api_code
-	password=$(required_key LIBREPAPER_ADMIN_PASSWORD)
-	config=$(mktemp)
-	body=$(mktemp)
-	VERIFY_TMP_FILES=("$config" "$body")
-	trap cleanup_verify_tmp EXIT
-	chmod 600 "$config" "$body"
-	local escaped_password
-	escaped_password=$(printf '%s' "$password" | sed 's/\\/\\\\/g; s/"/\\"/g')
-	printf 'user = "admin:%s"\n' "$escaped_password" > "$config"
-	unset password escaped_password
-	local api_deadline=$((SECONDS + 90)) api_remaining waiting_note=false
+	step "Admin console: ${ADMIN}"
+	local admin_deadline=$((SECONDS + 90)) admin_remaining admin_result admin_code admin_location waiting_note=false
 	while :; do
-		api_remaining=$((api_deadline - SECONDS))
-		[ "$api_remaining" -gt 0 ] || break
-		api_code=$(http_request --connect-timeout "$api_remaining" --max-time "$api_remaining" --config "$config" -sS -o "$body" -w '%{http_code}' "${ADMIN}data?points=10" || true)
-		[ "$api_code" = 200 ] && break
-		case "$api_code" in
+		admin_remaining=$((admin_deadline - SECONDS))
+		[ "$admin_remaining" -gt 0 ] || break
+		admin_result=$(http_request --connect-timeout "$admin_remaining" --max-time "$admin_remaining" -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$ADMIN" || true)
+		admin_code="${admin_result%% *}"
+		case "$admin_code" in
 			000|502|503)
 				if [ "$waiting_note" = false ]; then
-					note "waiting for the admin certificate and the first answer (up to 90 seconds)"
+					note "waiting for the admin certificate (up to 90 seconds)"
 					waiting_note=true
 				fi
 				;;
-			*) die "admin graphs endpoint returned HTTP $api_code" ;;
+			*) break ;;
 		esac
-		api_remaining=$((api_deadline - SECONDS))
-		if [ "$api_remaining" -gt 0 ]; then sleep "$((api_remaining < 2 ? api_remaining : 2))"; fi
+		admin_remaining=$((admin_deadline - SECONDS))
+		if [ "$admin_remaining" -gt 0 ]; then sleep "$((admin_remaining < 2 ? admin_remaining : 2))"; fi
 	done
-	[ "$api_code" = 200 ] || die "admin graphs endpoint returned HTTP $api_code"
-	local series_count
-	series_count=$(grep -o '"name":' "$body" | wc -l)
-	[ "$series_count" = 12 ] || die "admin graphs endpoint returned $series_count series, expected 12"
-	ok "authenticated endpoint returns twelve series"
+	admin_location=""
+	if [[ "$admin_result" == *" "* ]]; then admin_location="${admin_result#* }"; fi
+	if [ "$admin_code" != 302 ] || [[ "$admin_location" != "https://github.com/login/oauth/authorize?"* || "$admin_location" != *"redirect_uri=https%3A%2F%2F${ADMIN_NAME}%2Fauth%2Fcallback"* ]]; then
+		die "admin console answered HTTP $admin_code redirecting to '$admin_location', expected 302 to GitHub sign-in with redirect_uri for https://$ADMIN_NAME/auth/callback"
+	fi
+	ok "a visitor is sent to GitHub sign-in"
 	local unauthenticated_code
 	unauthenticated_code=$(http_request -sS -o /dev/null -w '%{http_code}' "${ADMIN}data?points=10" || true)
 	[ "$unauthenticated_code" = 401 ] || die "unauthenticated admin endpoint returned HTTP $unauthenticated_code, expected 401"
-	ok "unauthenticated endpoint is 401"
+	ok "unauthenticated data endpoint is 401"
 	for path in /api/status /metrics /data /graphs; do
 		local private_code
 		private_code=$(http_request -sS -o /dev/null -w '%{http_code}' "https://$APP$path" || true)
@@ -273,10 +258,7 @@ verify() {
 			[ "$private_code" = 404 ] || die "https://$APP$path returned HTTP $private_code, expected 404"
 		fi
 	done
-	ok "app origin does not serve graphs or data, admin endpoint is 401, metrics and status are private"
-	cleanup_verify_tmp
-	VERIFY_TMP_FILES=()
-	trap - EXIT
+	ok "app origin does not serve graphs or data, metrics and status are private"
 
 	step "Site: https://$SITE"
 	http_request -fs -o /dev/null "https://$SITE/what.html" || die "https://$SITE/what.html did not answer: is the site uploaded?"

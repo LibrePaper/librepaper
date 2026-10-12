@@ -18,7 +18,6 @@ const mockCredentials = {
   LIBREPAPER_GITHUB_CLIENT_SECRET: 'github-secret',
   LIBREPAPER_GOOGLE_CLIENT_ID: 'google-id',
   LIBREPAPER_GOOGLE_CLIENT_SECRET: 'google-secret',
-  LIBREPAPER_ADMIN_PASSWORD: 'admin-secret',
   LIBREPAPER_OBJECTS_S3_ACCESS_KEY_ID: 'objects-key-id',
   LIBREPAPER_OBJECTS_S3_SECRET_ACCESS_KEY: 'objects-secret',
   LIBREPAPER_RESTIC_PASSWORD: 'restic-password',
@@ -62,8 +61,9 @@ function mockCommand(dir, name, contents) {
 // appended to one events file, tab separated:
 // kind, then the arguments.
 function fixture({
-  adminPassword = 'admin-secret',
-  adminSeries = 12,
+  githubClientSecret = 'github-secret',
+  adminRootStatus = '302',
+  adminRootLocation = 'https://github.com/login/oauth/authorize?client_id=x&redirect_uri=https%3A%2F%2Fadmin.librepaper.org%2Fauth%2Fcallback&scope=&state=y',
   adminDnsMissing = false,
   googleClientId = 'google-id',
   googleClientSecret = 'google-secret',
@@ -82,15 +82,10 @@ function fixture({
   mkdirSync(bin);
   mkdirSync(remote, { recursive: true });
   mkdirSync(temp);
-  const adminPasswordFile = path.join(root, 'admin-password');
-  const expectedAuthFile = path.join(root, 'expected-curl-auth');
   const makeCalledFile = path.join(root, 'make-called');
   const oauthCallsFile = path.join(root, 'oauth-calls');
   const curlCallsFile = path.join(root, 'curl-calls');
   const eventsFile = path.join(root, 'events');
-  writeFileSync(adminPasswordFile, adminPassword);
-  const escapedAdminPassword = adminPassword.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  writeFileSync(expectedAuthFile, `user = "admin:${escapedAdminPassword}"\n`, { mode: 0o600 });
 
   mockCommand(bin, 'make', 'printf "make\\n" >> "$EVENTS_FILE"; printf called >> "$MAKE_CALLED_FILE"; exit 0');
   mockCommand(bin, 'dig', `
@@ -104,7 +99,7 @@ printf "192.0.2.7\\n"
 for arg do
   case "$arg" in
     *LIBREPAPER_GITHUB_CLIENT_ID*) printf 'github-id\\n'; exit ;;
-    *LIBREPAPER_GITHUB_CLIENT_SECRET*) printf 'github-secret\\n'; exit ;;
+    *LIBREPAPER_GITHUB_CLIENT_SECRET*) printf '%s' "$GITHUB_CLIENT_SECRET"; exit ;;
     *LIBREPAPER_GOOGLE_CLIENT_ID*)
       if [ "$SOPS_FAILURE_KEY" = LIBREPAPER_GOOGLE_CLIENT_ID ]; then printf 'private SOPS diagnostic\\n' >&2; exit 1; fi
       [ "$GOOGLE_CLIENT_ID_PRESENT" = 1 ] || exit 0
@@ -117,7 +112,6 @@ for arg do
       printf '%s' "$GOOGLE_CLIENT_SECRET"
       exit
       ;;
-    *LIBREPAPER_ADMIN_PASSWORD*) cat "$ADMIN_PASSWORD_FILE"; exit ;;
     *LIBREPAPER_RESTIC_PASSWORD*) printf 'restic-password\\n'; exit ;;
     *LIBREPAPER_HEALTHCHECK_BACKUP_URL*) printf 'https://hc-ping.example/backup-uuid\\n'; exit ;;
     *LIBREPAPER_HEALTHCHECK_CHECK_URL*) printf 'https://hc-ping.example/check-uuid\\n'; exit ;;
@@ -170,7 +164,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 command="$2"
-case "$*" in *admin-secret*|*github-id*|*github-secret*|*google-id*|*google-secret*|*restic-password*|*backup-key-id*|*backup-secret*|*objects-key-id*|*objects-secret*) exit 91 ;; esac
+case "$*" in *github-id*|*github-secret*|*google-id*|*google-secret*|*restic-password*|*backup-key-id*|*backup-secret*|*objects-key-id*|*objects-secret*) exit 91 ;; esac
 printf 'ssh\\t%s\\n' "$command" >> "$EVENTS_FILE"
 cd "$FAKE_HOME"
 exec bash -c "$command"`);
@@ -187,11 +181,10 @@ case "$*" in
 esac`);
   mockCommand(bin, 'curl', `
 set -eu
-out= format= url= config= followed=no connect_timeout= max_time=
-for arg do case "$arg" in *admin-secret*|*github-secret*|*google-id*|*google-secret*) exit 92 ;; esac; done
+out= format= url= followed=no connect_timeout= max_time=
+for arg do case "$arg" in *github-secret*|*google-id*|*google-secret*) exit 92 ;; esac; done
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --config) config="$2"; shift 2 ;;
     --connect-timeout) connect_timeout="$2"; shift 2 ;;
     --max-time) max_time="$2"; shift 2 ;;
     -o) out="$2"; shift 2 ;;
@@ -205,24 +198,10 @@ printf '%s\t%s\t%s\n' "$url" "$connect_timeout" "$max_time" >> "$CURL_CALLS_FILE
 case "$url" in
   */librepaper-deploy.tar.gz) printf 'curl\\t%s\\n' "$url" >> "$EVENTS_FILE"; printf 'tarball'; exit 0 ;;
 esac
-if [ -n "$config" ]; then
-  [ "$(stat -c %a "$config")" = 600 ]
-  grep -Fxq -f "$EXPECTED_AUTH_FILE" "$config"
-fi
 code=200 body='' location= provider=
 case "$url" in
-  https://admin.librepaper.org/data?points=*)
-    if [ -n "$config" ]; then
-      [ "$(stat -c %a "$config")" = 600 ]
-      grep -Fxq -f "$EXPECTED_AUTH_FILE" "$config"
-      series=
-      for i in $(seq 1 "$ADMIN_SERIES"); do
-        entry='{"name":"series'"$i"'","label":"Series '"$i"'","unit":"count","values":[0.0]}'
-        if [ -z "$series" ]; then series="$entry"; else series="$series,$entry"; fi
-      done
-      body='{"from":1791300000,"to":1791386400,"step":144.0,"series":['"$series"']}'
-    else code=401; fi
-    ;;
+  https://admin.librepaper.org/) code="$ADMIN_ROOT_STATUS"; location="$ADMIN_ROOT_LOCATION" ;;
+  https://admin.librepaper.org/data?points=*) code=401 ;;
   https://app.librepaper.org/api/status) code=403 ;;
   https://app.librepaper.org/metrics|https://app.librepaper.org/data|https://app.librepaper.org/graphs) code=404 ;;
   https://app.librepaper.org/auth/login/github)
@@ -242,7 +221,9 @@ if [ -n "$out" ] && [ "$out" != /dev/null ]; then printf '%s' "$body" > "$out"; 
 if [ -n "$provider" ]; then printf '%s\\t%s\\n' "$provider" "$followed" >> "$OAUTH_CALLS_FILE"; fi
 if [ -n "$format" ]; then
   case "$format" in
-    *'%{redirect_url}'*) printf '%s\\t%s' "$code" "$location" ;;
+    *'%{redirect_url}'*)
+      if [ "$url" = https://admin.librepaper.org/ ]; then printf '%s %s' "$code" "$location"; else printf '%s\\t%s' "$code" "$location"; fi
+      ;;
     *) printf '%s' "$code" ;;
   esac
 fi`);
@@ -262,8 +243,6 @@ fi`);
       MANAGE_FAILURE: manageFailure ? '1' : '0',
       ADMIN_DNS_MISSING: adminDnsMissing ? '1' : '0',
       TMPDIR: temp,
-      ADMIN_PASSWORD_FILE: adminPasswordFile,
-      EXPECTED_AUTH_FILE: expectedAuthFile,
       MAKE_CALLED_FILE: makeCalledFile,
       OAUTH_CALLS_FILE: oauthCallsFile,
       CURL_CALLS_FILE: curlCallsFile,
@@ -274,7 +253,9 @@ fi`);
       GOOGLE_HTTP_STATUS: String(googleHttpStatus),
       GOOGLE_LOCATION: googleLocation,
       SOPS_FAILURE_KEY: sopsFailureKey,
-      ADMIN_SERIES: String(adminSeries),
+      GITHUB_CLIENT_SECRET: String(githubClientSecret),
+      ADMIN_ROOT_STATUS: String(adminRootStatus),
+      ADMIN_ROOT_LOCATION: adminRootLocation,
     },
     eventsFile,
     makeCalledFile,
@@ -332,21 +313,21 @@ function read(...parts) {
 }
 
 test('deploy renders the credentials into the candidates only, never in argv or output', () => {
-  const adminPassword = 'unsafe$#admin-secret with "quotes" and back\\slash';
-  const f = fixture({ adminPassword });
+  const githubSecret = 'unsafe$#github-secret with "quotes" and back\\slash';
+  const f = fixture({ githubClientSecret: githubSecret });
   try {
     const result = run(f, 'deploy', 'v0.0.24');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /20 values decrypted from keys.yaml/);
+    assert.match(result.stdout, /19 values decrypted from keys.yaml/);
 
-    const values = { ...mockCredentials, ...mockSettings, LIBREPAPER_ADMIN_PASSWORD: adminPassword };
+    const values = { ...mockCredentials, ...mockSettings, LIBREPAPER_GITHUB_CLIENT_SECRET: githubSecret };
     const config = read(f.remote, 'librepaper.toml.candidate');
     assert.equal(config, renderExpected(productionToml, values));
-    assert.ok(config.includes('password = "unsafe$#admin-secret with \\"quotes\\" and back\\\\slash"\n'), 'the admin password is escaped for TOML');
+    assert.ok(config.includes('client_secret = "unsafe$#github-secret with \\"quotes\\" and back\\\\slash"\n'), 'the GitHub client secret is escaped for TOML');
     assert.equal(read(f.remote, 'resticprofile.toml.candidate'), renderExpected(productionResticProfile, values));
 
     // The values live in the two candidates and nowhere else on the host.
-    const secretValues = Object.values({ ...mockCredentials, LIBREPAPER_ADMIN_PASSWORD: adminPassword });
+    const secretValues = Object.values({ ...mockCredentials, LIBREPAPER_GITHUB_CLIENT_SECRET: githubSecret });
     for (const file of walk(f.remote)) {
       if (file.endsWith('.candidate')) continue;
       const text = read(f.remote, file);
@@ -643,26 +624,31 @@ test('verify checks the operator URLs listed in caddy/local.d/check-urls', () =>
   }
 });
 
-test('verify checks admin graphs returns twelve series', () => {
+test('verify checks the admin console sends visitors to GitHub sign-in and its data endpoint is 401 without a session', () => {
   const f = fixture();
   try {
     const result = run(f, 'verify');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /authenticated endpoint returns twelve series/);
-    assert.match(result.stdout, /unauthenticated endpoint is 401/);
+    assert.match(result.stdout, /a visitor is sent to GitHub sign-in/);
+    assert.match(result.stdout, /unauthenticated data endpoint is 401/);
     assert.match(result.stdout, /app origin does not serve graphs or data/);
   } finally {
     f.cleanup();
   }
 });
 
-test('verify fails when admin graphs returns fewer than twelve series', () => {
-  const f = fixture({ adminSeries: 11 });
-  try {
-    const result = run(f, 'verify');
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /admin graphs endpoint returned 11 series, expected 12/);
-  } finally {
-    f.cleanup();
+test('verify fails when the admin console does not redirect to GitHub sign-in for its own callback', () => {
+  for (const scenario of [
+    { name: 'answers 200', adminRootStatus: '200', adminRootLocation: '' },
+    { name: 'redirects to another callback', adminRootStatus: '302', adminRootLocation: 'https://github.com/login/oauth/authorize?client_id=x&redirect_uri=https%3A%2F%2Fother.example%2Fauth%2Fcallback' },
+  ]) {
+    const f = fixture(scenario);
+    try {
+      const result = run(f, 'verify');
+      assert.notEqual(result.status, 0, `${scenario.name} unexpectedly passed`);
+      assert.match(result.stderr, /admin console answered HTTP/, scenario.name);
+    } finally {
+      f.cleanup();
+    }
   }
 });

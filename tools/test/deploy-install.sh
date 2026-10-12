@@ -183,9 +183,9 @@ set_origins() {
 	mv "$toml.new" "$toml"
 	chmod 0644 "$toml"
 	grep -qxF 'admin = "http://admin.localhost"' "$toml" || fail "could not set admin in the kit's librepaper.toml"
-	# Append the [admin] section with password
+	# Append the [admin] section with the numeric GitHub ID allowed to sign in
 	echo '[admin]' >>"$toml"
-	echo 'password = "deploy-install-test-password"' >>"$toml"
+	echo 'github_ids = [1]' >>"$toml"
 }
 
 service_override() {
@@ -253,27 +253,24 @@ app_ready() {
 	fail "the app did not answer /ready ($compose)"
 }
 
-# Admin graphs endpoint must return twelve series with basic auth.
-admin_graphs_answer() {
-	local compose="$1" body="" count=0 _
-	# With credentials, the endpoint returns data with twelve series. It can
-	# answer a moment after /ready, and a failed wget must not end the script
-	# silently under set -e, so retry and report what came back.
+# The admin console refuses a data request without a session and a callback
+# with a state the server did not issue.
+admin_console_answers() {
+	local compose="$1" output="" _
+	# The data endpoint must answer 401 without a session. It can answer a
+	# moment after /ready, and a failed wget must not end the script silently
+	# under set -e, so retry and report what came back. BusyBox wget prints the
+	# status in its error output.
 	for _ in {1..30}; do
-		body=$("$compose" exec -T librepaper wget -qO- --header 'Host: admin.localhost' 'http://admin:deploy-install-test-password@127.0.0.1:8080/data?points=10' 2>&1) || true
-		count=$(grep -o '"name":' <<<"$body" | wc -l)
-		[[ "$count" == 12 ]] && break
+		output=$("$compose" exec -T librepaper wget -qO- --header 'Host: admin.localhost' 'http://127.0.0.1:8080/data?points=10' 2>&1) || true
+		grep -q ' 401' <<<"$output" && break
 		sleep 2
 	done
-	[[ "$count" == 12 ]] || fail "admin graphs endpoint returned $count series, expected 12 ($compose): ${body:0:300}"
-	# Without credentials, it must return 401.
-	local exit_code
-	exit_code=0
-	"$compose" exec -T librepaper wget -qO- --header 'Host: admin.localhost' 'http://127.0.0.1:8080/data?points=10' >/dev/null 2>&1 || exit_code=$?
-	if [[ $exit_code -eq 0 ]]; then
-		fail "admin graphs endpoint without credentials should fail ($compose)"
-	fi
-	echo "admin graphs: authenticated endpoint returns twelve series and unauthenticated returns 401"
+	grep -q ' 401' <<<"$output" || fail "admin data endpoint without a session did not answer 401 ($compose): ${output:0:300}"
+	# A callback with a state the server did not issue must answer 400.
+	output=$("$compose" exec -T librepaper wget -qO- --header 'Host: admin.localhost' 'http://127.0.0.1:8080/auth/callback?code=x&state=y' 2>&1) || true
+	grep -q ' 400' <<<"$output" || fail "admin callback with an unknown state did not answer 400 ($compose): ${output:0:300}"
+	echo "admin console: data without a session answers 401 and a callback with an unknown state answers 400"
 }
 
 # The override is in effect when neither the configuration nor the containers
@@ -326,7 +323,7 @@ run_local() {
 	build_images local_compose
 	local_compose up -d --wait --wait-timeout 240
 	app_ready local_compose
-	admin_graphs_answer local_compose
+	admin_console_answers local_compose
 
 	local migrations superuser mode
 	migrations=$(local_compose exec -T postgres psql -U librepaper -d librepaper -XAtc 'select count(*) from _sqlx_migrations')
@@ -372,7 +369,7 @@ run_managed() {
 	build_images managed_compose
 	managed_compose up -d --wait --wait-timeout 240
 	app_ready managed_compose
-	admin_graphs_answer managed_compose
+	admin_console_answers managed_compose
 	assert_no_local_postgres "after the first start"
 	migrations=$(docker exec "$POSTGRES_CONTAINER" psql -U librepaper -d librepaper -XAtc 'select count(*) from _sqlx_migrations')
 	[[ "$migrations" =~ ^[0-9]+$ ]] && (( migrations > 0 )) || fail "the app migrated nothing on the managed database (count: $migrations)"
