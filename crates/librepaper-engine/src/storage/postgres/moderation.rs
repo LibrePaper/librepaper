@@ -631,12 +631,10 @@ mod tests {
         let totals: Vec<(i64, i64)> = all.iter().map(|row| (row.documents, row.bytes)).collect();
         assert_eq!(totals, vec![(3, 1500), (1, 400), (2, 100)]);
         for row in &all {
-            let charged = crate::storage::postgres::repository::owner_usage_bytes(
-                catalog.pool(),
-                row.id,
-            )
-            .await
-            .unwrap();
+            let charged =
+                crate::storage::postgres::repository::owner_usage_bytes(catalog.pool(), row.id)
+                    .await
+                    .unwrap();
             assert_eq!(row.bytes, charged);
         }
 

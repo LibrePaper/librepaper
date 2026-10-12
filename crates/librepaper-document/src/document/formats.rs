@@ -45,7 +45,9 @@ fn le_u32(bytes: &[u8], at: usize) -> Option<u32> {
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 fn png(bytes: &[u8]) -> bool {
@@ -110,7 +112,9 @@ fn webp(bytes: &[u8]) -> bool {
 
 fn pdf(bytes: &[u8]) -> bool {
     let head = bytes.get(..1024).unwrap_or(bytes);
-    let tail = bytes.get(bytes.len().saturating_sub(1024)..).unwrap_or_default();
+    let tail = bytes
+        .get(bytes.len().saturating_sub(1024)..)
+        .unwrap_or_default();
     contains(head, b"%PDF-") && contains(tail, b"%%EOF")
 }
 
