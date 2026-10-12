@@ -453,7 +453,11 @@ impl PostgresCatalog {
                 .bind(&input.email)
                 .execute(&mut *tx)
                 .await?;
-            let label = format!("{}:{}", input.provider.as_deref().unwrap_or_default(), input.handle);
+            let label = format!(
+                "{}:{}",
+                input.provider.as_deref().unwrap_or_default(),
+                input.handle
+            );
             super::moderation::insert_audit(
                 &mut tx,
                 &actor,

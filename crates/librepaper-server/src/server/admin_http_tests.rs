@@ -676,8 +676,8 @@ async fn a_moderation_change_must_come_from_the_admin_page_as_json() {
     let Some(f) = fixture().await else {
         return;
     };
-    let body = serde_json::to_vec(&json!({"action": "hide", "target": SLUG, "reason": "probe"}))
-        .unwrap();
+    let body =
+        serde_json::to_vec(&json!({"action": "hide", "target": SLUG, "reason": "probe"})).unwrap();
     let raw = || {
         f.client
             .post(format!("{}/moderation", f.base))
