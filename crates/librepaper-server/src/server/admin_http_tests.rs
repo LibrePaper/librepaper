@@ -1,6 +1,6 @@
 //! HTTP regressions for the operator graphs page on its own origin: the
-//! password gate, the privacy headers, the six routes, and what the app and
-//! document hosts do not serve.
+//! GitHub sign-in gate, the privacy headers, the page routes, and what the app
+//! and document hosts do not serve.
 //!
 //! These exercise the production router and request middleware. They need
 //! `LIBREPAPER_TEST_POSTGRES_URL`, like the other server HTTP fixtures.
@@ -30,9 +30,8 @@ const ADMIN: &str = "https://admin.paper.example";
 const READER_HOST: &str = "paper.example";
 const DOCS_HOST: &str = "docs.paper.example";
 const ADMIN_HOST: &str = "admin.paper.example";
-const PASSWORD: &str = "correct-horse-battery-staple";
-/// `anything:` and the password, base64 encoded, for a request written by hand.
-const BASIC_CREDENTIALS: &str = "YW55dGhpbmc6Y29ycmVjdC1ob3JzZS1iYXR0ZXJ5LXN0YXBsZQ==";
+/// The one GitHub account listed for the admin console.
+const OPERATOR_ID: i64 = 4242;
 
 /// The twelve series, in the order the page draws them.
 const SERIES: [&str; 12] = [
@@ -50,7 +49,7 @@ const SERIES: [&str; 12] = [
     "db_connections_in_use",
 ];
 
-/// A server on a loopback port with the three origins, the admin password and
+/// A server on a loopback port with the three origins, the listed operator and
 /// an empty history file, plus the handles that keep it alive.
 struct Fixture {
     server: Arc<Server>,
@@ -93,7 +92,12 @@ async fn fixture() -> Option<Fixture> {
         .unwrap()
         .with_admin(Some(ADMIN))
         .unwrap();
-    server.admin_password = Some(PASSWORD.into());
+    server.admin_github_ids = vec![OPERATOR_ID];
+    server.app = librepaper_base::auth::GithubApp {
+        client_id: "admin-test-client".into(),
+        client_secret: "admin-test-secret".into(),
+        ..Default::default()
+    };
     server.graphs = Some(Arc::new(
         super::graphs::Graphs::open(history.path()).unwrap(),
     ));
@@ -117,12 +121,24 @@ async fn fixture() -> Option<Fixture> {
     Some(Fixture {
         server,
         base: format!("http://{address}"),
-        client: reqwest::Client::new(),
+        // Redirects are not followed: a sign-in redirect must never reach GitHub.
+        client: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap(),
         owner,
         _stop: stop,
         _writer: writer,
         _history: history,
     })
+}
+
+/// The same cookie with its last character changed, so its signature fails.
+fn with_last_character_changed(cookie: &str) -> String {
+    let mut changed = cookie.to_string();
+    let last = changed.pop().unwrap();
+    changed.push(if last == 'A' { 'B' } else { 'A' });
+    changed
 }
 
 impl Fixture {
@@ -132,9 +148,10 @@ impl Fixture {
             .header("host", host)
     }
 
-    /// The right password under a user name the server must not care about.
+    /// A request carrying the listed operator's signed-in session.
     fn get_as_operator(&self, host: &str, path: &str) -> reqwest::RequestBuilder {
-        self.get(host, path).basic_auth("anything", Some(PASSWORD))
+        self.get(host, path)
+            .header("cookie", self.operator_cookie())
     }
 
     /// A delegated-agent bearer the app would accept for the owner on their
@@ -160,6 +177,23 @@ impl Fixture {
         format!("__Host-librepaper_session={token}")
     }
 
+    /// An operator session for any GitHub account ID and expiry, as the admin
+    /// origin's own cookie.
+    fn session_cookie_for(&self, github_id: i64, expires_at: i64) -> String {
+        let token = super::graphs::routes::admin_session_token(
+            &self.server.key,
+            github_id,
+            "operator",
+            expires_at,
+        );
+        format!("__Host-librepaper_admin={token}")
+    }
+
+    /// The listed operator's session, valid for an hour.
+    fn operator_cookie(&self) -> String {
+        self.session_cookie_for(OPERATOR_ID, librepaper_base::util::now_unix() + 3600)
+    }
+
     fn post(&self, host: &str, path: &str) -> reqwest::RequestBuilder {
         self.client
             .post(format!("{}{path}", self.base))
@@ -173,7 +207,7 @@ impl Fixture {
             .header("host", ADMIN_HOST)
             .header("origin", ADMIN)
             .header("content-type", "application/json")
-            .basic_auth("operator", Some(PASSWORD))
+            .header("cookie", self.operator_cookie())
             .body(serde_json::to_vec(&value).unwrap())
     }
 }
@@ -185,7 +219,7 @@ async fn moderate(f: &Fixture, value: Value) -> (u16, Value) {
     (status, response.json().await.unwrap())
 }
 
-/// The moderation listing, read with the password.
+/// The moderation listing, read as the operator.
 async fn listing(f: &Fixture) -> Value {
     let response = f
         .get_as_operator(ADMIN_HOST, "/moderation")
@@ -240,44 +274,59 @@ fn inline_scripts(html: &str) -> usize {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn the_admin_host_asks_for_a_password_before_anything_else() {
+async fn the_admin_host_sends_a_stranger_to_github_and_answers_nothing_else() {
     let Some(f) = fixture().await else {
         return;
     };
 
     let response = f.get(ADMIN_HOST, "/").send().await.unwrap();
-    assert_eq!(response.status().as_u16(), 401);
-    let challenge = header(&response, "www-authenticate").unwrap_or_default();
-    assert!(challenge.starts_with("Basic realm="), "{challenge:?}");
-    assert_private_headers(&response, "401 without credentials");
-
-    let wrong = f
-        .get(ADMIN_HOST, "/")
-        .basic_auth("anything", Some("not-the-password-at-all"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(wrong.status().as_u16(), 401);
-    assert_private_headers(&wrong, "401 with a wrong password");
-
-    // The right password under any user name, and the user name alone is not
-    // a credential.
-    for user in ["anything", "", "admin"] {
-        let response = f
-            .get(ADMIN_HOST, "/")
-            .basic_auth(user, Some(PASSWORD))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status().as_u16(), 200, "user {user:?}");
+    assert_eq!(response.status().as_u16(), 302);
+    let location = header(&response, "location").unwrap_or_default();
+    assert!(
+        location.starts_with("https://github.com/login/oauth/authorize?"),
+        "{location}"
+    );
+    assert!(location.contains("client_id=admin-test-client"), "{location}");
+    assert!(
+        location.contains("redirect_uri=https%3A%2F%2Fadmin.paper.example%2Fauth%2Fcallback"),
+        "{location}"
+    );
+    let state_cookie = header(&response, "set-cookie").unwrap_or_default();
+    assert!(
+        state_cookie.starts_with("__Host-librepaper_admin_state="),
+        "{state_cookie:?}"
+    );
+    for attribute in ["HttpOnly", "Secure", "SameSite=Lax"] {
+        assert!(state_cookie.contains(attribute), "{state_cookie:?}");
     }
-    let user_only = f
-        .get(ADMIN_HOST, "/")
-        .basic_auth(PASSWORD, None::<&str>)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(user_only.status().as_u16(), 401);
+    assert_private_headers(&response, "the sign-in redirect");
+
+    // Without a listed operator's session, every other path is refused, with
+    // no challenge to answer.
+    let now = librepaper_base::util::now_unix();
+    let operator = f.operator_cookie();
+    for (what, cookie) in [
+        ("no cookie", None),
+        ("an unlisted account", Some(f.session_cookie_for(999, now + 3600))),
+        (
+            "an expired session",
+            Some(f.session_cookie_for(OPERATOR_ID, now - 60)),
+        ),
+        (
+            "a changed signature",
+            Some(with_last_character_changed(&operator)),
+        ),
+    ] {
+        let request = f.get(ADMIN_HOST, "/data?points=10");
+        let request = match cookie {
+            Some(cookie) => request.header("cookie", cookie),
+            None => request,
+        };
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 401, "{what}");
+        assert!(header(&response, "www-authenticate").is_none(), "{what}");
+        assert_private_headers(&response, what);
+    }
 
     let page = f.get_as_operator(ADMIN_HOST, "/").send().await.unwrap();
     assert_eq!(page.status().as_u16(), 200);
@@ -299,6 +348,32 @@ async fn the_admin_host_asks_for_a_password_before_anything_else() {
     );
     assert!(!html.contains("style="), "no inline style attribute");
     assert!(!html.contains("<style"), "no inline style element");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_callback_refuses_a_state_it_did_not_issue() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+    let path = "/auth/callback?code=x&state=abc";
+
+    // No state cookie at all.
+    let response = f.get(ADMIN_HOST, path).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+    assert_private_headers(&response, "a callback with no state cookie");
+
+    // A state cookie that does not match the one in the query.
+    let response = f
+        .get(ADMIN_HOST, path)
+        .header("cookie", "__Host-librepaper_admin_state=other")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+    let cleared = header(&response, "set-cookie").unwrap_or_default();
+    assert!(cleared.contains("Max-Age=0"), "{cleared:?}");
+    assert_private_headers(&response, "a callback with another state");
 }
 
 #[tokio::test]
@@ -336,29 +411,34 @@ async fn the_admin_host_does_nothing_with_application_credentials() {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status().as_u16(), 401, "{what} on {path}");
-            let challenge = header(&response, "www-authenticate").unwrap_or_default();
-            assert!(
-                challenge.starts_with("Basic realm="),
-                "{what} on {path}: {challenge:?}"
-            );
+            if path == "/" {
+                assert_eq!(response.status().as_u16(), 302, "{what} on {path}");
+                let location = header(&response, "location").unwrap_or_default();
+                assert!(
+                    location.starts_with("https://github.com/"),
+                    "{what} on {path}: {location:?}"
+                );
+            } else {
+                assert_eq!(response.status().as_u16(), 401, "{what} on {path}");
+            }
             assert_private_headers(&response, what);
         }
     }
 
-    // With the password, the application credential changes nothing either.
+    // The owner's application session is not an operator session, so it opens
+    // nothing on this origin.
     let response = f
-        .get_as_operator(ADMIN_HOST, "/data?points=10")
+        .get(ADMIN_HOST, "/data?points=10")
         .header("cookie", &owner_cookie)
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(response.status().as_u16(), 401);
 }
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn only_the_six_routes_exist_and_every_other_answer_is_behind_the_password() {
+async fn only_the_page_routes_exist_and_every_other_answer_is_behind_sign_in() {
     let Some(f) = fixture().await else {
         return;
     };
@@ -372,15 +452,15 @@ async fn only_the_six_routes_exist_and_every_other_answer_is_behind_the_password
     assert_private_headers(&unknown, "404");
     let post = f
         .post(ADMIN_HOST, "/")
-        .basic_auth("anything", Some(PASSWORD))
+        .header("cookie", f.operator_cookie())
         .send()
         .await
         .unwrap();
     assert_eq!(post.status().as_u16(), 405);
     assert_private_headers(&post, "405");
 
-    // A client that does not know the password learns nothing about which
-    // paths exist or which methods they take.
+    // A client that is not signed in learns nothing about which paths exist or
+    // which methods they take.
     for path in [
         "/other",
         "/api/status",
@@ -389,6 +469,7 @@ async fn only_the_six_routes_exist_and_every_other_answer_is_behind_the_password
         "/ready",
         "/health",
         "/moderation",
+        "/session",
     ] {
         let response = f.get(ADMIN_HOST, path).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 401, "{path}");
@@ -396,12 +477,11 @@ async fn only_the_six_routes_exist_and_every_other_answer_is_behind_the_password
     let post = f.post(ADMIN_HOST, "/").send().await.unwrap();
     assert_eq!(post.status().as_u16(), 401);
 
-    // Liveness and readiness are not answered on the admin name before the
-    // password: without it the challenge, with it the path is just unknown.
+    // Liveness and readiness are not answered on the admin name before sign-in:
+    // without it the refusal, with it the path is just unknown.
     let ready = f.get(ADMIN_HOST, "/ready").send().await.unwrap();
     assert_eq!(ready.status().as_u16(), 401);
-    let challenge = header(&ready, "www-authenticate").unwrap_or_default();
-    assert!(challenge.starts_with("Basic realm="), "{challenge:?}");
+    assert!(header(&ready, "www-authenticate").is_none());
     for path in ["/ready", "/health"] {
         let response = f.get_as_operator(ADMIN_HOST, path).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 404, "{path}");
@@ -409,6 +489,17 @@ async fn only_the_six_routes_exist_and_every_other_answer_is_behind_the_password
     // The app host still answers liveness without credentials.
     let health = f.get(READER_HOST, "/health").send().await.unwrap();
     assert_eq!(health.status().as_u16(), 200);
+
+    let session = f
+        .get_as_operator(ADMIN_HOST, "/session")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(session.status().as_u16(), 200);
+    assert_private_headers(&session, "/session");
+    let session: Value = session.json().await.unwrap();
+    assert_eq!(session["login"], "operator");
+    assert_eq!(session["github_id"], OPERATOR_ID);
 
     for (path, kind) in [
         ("/", "html"),
@@ -490,7 +581,7 @@ async fn the_app_and_document_hosts_serve_nothing_of_the_admin_page() {
     };
 
     // The fixture has no shell, so the app host's own answer to a path it does
-    // not have is its plain 404. The password does not open it either.
+    // not have is its plain 404. The operator's session does not open it either.
     for host in [READER_HOST, DOCS_HOST] {
         for path in [
             "/data",
@@ -549,22 +640,21 @@ async fn the_proxy_is_told_to_obtain_a_certificate_for_the_admin_name() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn the_certificate_question_is_not_answered_on_the_admin_host_before_the_password() {
+async fn the_certificate_question_is_not_answered_on_the_admin_host_before_sign_in() {
     let Some(f) = fixture().await else {
         return;
     };
 
     // The proxy's own question arrives with the internal authority. Put to the
-    // admin name it is an ordinary request: challenged, then an unknown path.
+    // admin name it is an ordinary request: refused, then an unknown path.
     let path = "/api/tls/ask?domain=paper.example";
     let response = f.get(ADMIN_HOST, path).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 401);
-    let challenge = header(&response, "www-authenticate").unwrap_or_default();
-    assert!(challenge.starts_with("Basic realm="), "{challenge:?}");
-    assert_private_headers(&response, "tls ask without credentials");
+    assert!(header(&response, "www-authenticate").is_none());
+    assert_private_headers(&response, "tls ask without a session");
     let response = f.get_as_operator(ADMIN_HOST, path).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 404);
-    assert_private_headers(&response, "tls ask with the password");
+    assert_private_headers(&response, "tls ask with a session");
 
     let response = f.get(READER_HOST, path).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 200);
@@ -597,23 +687,23 @@ async fn raw_status(address: SocketAddr, request: &str) -> u16 {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn a_body_of_unknown_length_waits_for_the_password_on_the_admin_host() {
+async fn a_body_of_unknown_length_waits_for_sign_in_on_the_admin_host() {
     let Some(f) = fixture().await else {
         return;
     };
     let address: SocketAddr = f.base.trim_start_matches("http://").parse().unwrap();
 
-    let chunked = |authorization: &str| {
+    let chunked = |header_line: &str| {
         format!(
-            "POST / HTTP/1.1\r\nHost: {ADMIN_HOST}\r\n{authorization}Transfer-Encoding: chunked\r\n\
+            "POST / HTTP/1.1\r\nHost: {ADMIN_HOST}\r\n{header_line}Transfer-Encoding: chunked\r\n\
              Connection: close\r\n\r\n0\r\n\r\n"
         )
     };
     // A mutation elsewhere must declare its length; here nothing is read, so
     // the answer is the gate's, then the method's.
     assert_eq!(raw_status(address, &chunked("")).await, 401);
-    let authorization = format!("Authorization: Basic {BASIC_CREDENTIALS}\r\n");
-    assert_eq!(raw_status(address, &chunked(&authorization)).await, 405);
+    let cookie = format!("Cookie: {}\r\n", f.operator_cookie());
+    assert_eq!(raw_status(address, &chunked(&cookie)).await, 405);
 
     // The app host still refuses an undeclared length.
     let app = format!(
@@ -687,7 +777,7 @@ async fn a_moderation_change_must_come_from_the_admin_page_as_json() {
 
     let no_origin = raw()
         .header("content-type", "application/json")
-        .basic_auth("operator", Some(PASSWORD))
+        .header("cookie", f.operator_cookie())
         .send()
         .await
         .unwrap();
@@ -696,7 +786,7 @@ async fn a_moderation_change_must_come_from_the_admin_page_as_json() {
     let evil = raw()
         .header("origin", "https://evil.example")
         .header("content-type", "application/json")
-        .basic_auth("operator", Some(PASSWORD))
+        .header("cookie", f.operator_cookie())
         .send()
         .await
         .unwrap();
@@ -705,7 +795,7 @@ async fn a_moderation_change_must_come_from_the_admin_page_as_json() {
     let plain = raw()
         .header("origin", ADMIN)
         .header("content-type", "text/plain")
-        .basic_auth("operator", Some(PASSWORD))
+        .header("cookie", f.operator_cookie())
         .send()
         .await
         .unwrap();
@@ -723,7 +813,7 @@ async fn a_moderation_change_must_come_from_the_admin_page_as_json() {
         .client
         .put(format!("{}/moderation", f.base))
         .header("host", ADMIN_HOST)
-        .basic_auth("operator", Some(PASSWORD))
+        .header("cookie", f.operator_cookie())
         .send()
         .await
         .unwrap();
