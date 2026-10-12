@@ -588,6 +588,29 @@
     }
   }
 
+  // Ends the session, then replaces the page with a message. The text is
+  // built with DOM calls, not innerHTML.
+  document.getElementById("sign-out").addEventListener("click", async () => {
+    try {
+      const response = await fetch("/auth/logout", { method: "POST" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+    } catch (error) {
+      document.getElementById("operator").textContent = "Sign-out failed. Try again.";
+      return;
+    }
+    const panel = document.createElement("div");
+    panel.className = "stack";
+    const message = document.createElement("p");
+    message.textContent = "Signed out.";
+    const link = document.createElement("a");
+    link.href = "/";
+    link.textContent = "Sign in again";
+    const again = document.createElement("p");
+    again.appendChild(link);
+    panel.append(message, again);
+    document.body.replaceChildren(panel);
+  });
+
   show(tabFromHash());
   loadOperator();
 })();
