@@ -37,6 +37,7 @@ const mockSettings = {
   LIBREPAPER_BACKUPS_S3_BUCKET: 'backups-bucket',
   LIBREPAPER_MIRROR_S3_REGION: 'mirror-region',
   LIBREPAPER_MIRROR_S3_BUCKET: 'mirror-bucket',
+  LIBREPAPER_ADMIN_GITHUB_IDS: '987057',
 };
 
 // Fills each @NAME@ the way the deploy does: values escaped for a TOML basic string.
@@ -123,6 +124,7 @@ for arg do
     *LIBREPAPER_BACKUPS_S3_BUCKET*) printf 'backups-bucket\\n'; exit ;;
     *LIBREPAPER_MIRROR_S3_REGION*) printf 'mirror-region\\n'; exit ;;
     *LIBREPAPER_MIRROR_S3_BUCKET*) printf 'mirror-bucket\\n'; exit ;;
+    *LIBREPAPER_ADMIN_GITHUB_IDS*) printf '987057\\n'; exit ;;
     *LIBREPAPER_BACKUPS_S3_ACCESS_KEY_ID*) printf 'backup-key-id\\n'; exit ;;
     *LIBREPAPER_BACKUPS_S3_SECRET_ACCESS_KEY*) printf 'backup-secret\\n'; exit ;;
     *LIBREPAPER_OBJECTS_S3_ACCESS_KEY_ID*) printf 'objects-key-id\\n'; exit ;;
@@ -318,7 +320,7 @@ test('deploy renders the credentials into the candidates only, never in argv or 
   try {
     const result = run(f, 'deploy', 'v0.0.24');
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /19 values decrypted from keys.yaml/);
+    assert.match(result.stdout, /20 values decrypted from keys.yaml/);
 
     const values = { ...mockCredentials, ...mockSettings, LIBREPAPER_GITHUB_CLIENT_SECRET: githubSecret };
     const config = read(f.remote, 'librepaper.toml.candidate');

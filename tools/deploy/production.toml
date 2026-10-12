@@ -76,11 +76,10 @@ mirror = "https://@LIBREPAPER_MIRROR_S3_BUCKET@.s3.@LIBREPAPER_MIRROR_S3_REGION@
 
 # Who may sign in to the admin console, by numeric GitHub user ID. A login
 # can be renamed and then taken by someone else; an ID cannot. Look one up
-# with: gh api users/<login> --jq .id
+# with: gh api users/<login> --jq .id. The list lives in keys.yaml as
+# LIBREPAPER_ADMIN_GITHUB_IDS, written like "987057" or "987057, 12345".
 [admin]
-github_ids = [
-  987057, # vincentarelbundock
-]
+github_ids = [@LIBREPAPER_ADMIN_GITHUB_IDS@]
 
 # Keep in sync with the `edge` network in compose.yaml.
 [proxy]
