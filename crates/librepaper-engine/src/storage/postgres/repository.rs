@@ -1593,7 +1593,8 @@ fn validate_document(input: &NewDocument) -> Result<()> {
 ///
 /// Callers holding a document row pass its `owner_id` from whatever lock they
 /// already took, so the sum is measured against the owner the document has
-/// under that lock.
+/// under that lock. `largest_accounts` in moderation.rs sums the same five
+/// sources per owner, and a test holds the two together.
 pub(super) async fn owner_usage_bytes<'e, E>(executor: E, account_id: Uuid) -> Result<i64>
 where
     E: sqlx::Executor<'e, Database = sqlx::Postgres>,

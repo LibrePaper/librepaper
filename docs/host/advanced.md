@@ -161,6 +161,8 @@ The VPS cannot report its own outage, so alerts come from free outside services.
 
 The console is a password-protected page on its own hostname. It graphs the server's health over the last 400 days: CPU, memory, free disk, stored bytes, open documents, live connections and database connections in use.
 
+The page also lists the 50 accounts holding the most storage.
+
 ```sh
 # Optional. Graphs of the last 400 days at https://admin.paper.example/, behind a password.
 # DNS: admin.paper.example -> this VPS, like the other two names.
@@ -175,6 +177,11 @@ head -c 24 /dev/urandom | base64         # the password
 - The browser asks for the password once per session. The user name can be anything.
 - Zoom by dragging on any graph. Double-click to return to the chosen range.
 - For your own Prometheus, add `[metrics]` with `address = "0.0.0.0:9091"` to `librepaper.toml`: the server then serves `/metrics` on that port inside the Docker network. The kit publishes no host port for it, and the graphs above do not need it.
+
+```sh
+# Block an account found on the console. The ID column is the UUID.
+docker compose exec librepaper librepaper admin moderate block-account <uuid> --actor <you> --reason "<why>"
+```
 
 ### Uptime
 
