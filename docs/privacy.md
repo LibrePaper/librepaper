@@ -10,7 +10,7 @@ title: "Privacy and data retention"
 
 ## What librepaper.org stores
 
-librepaper.org runs on OVHcloud in Canada. The server, its database and your files are in Beauharnois, Quebec.
+librepaper.org and your files are hosted in Canada.
 
 - **Accounts** keep the sign-in provider and account ID, a handle, a display name, an email address (Google only), and when the account was created and last used.
 - **Documents** keep the title, format, owner, dates, every file and the edit history.
@@ -30,7 +30,7 @@ librepaper.org keeps no access log and does not store IP addresses.
 ## What leaves librepaper.org
 
 - **Sign-in:** GitHub or Google sees your sign-in and tells librepaper.org who you are. Neither one sees your documents.
-- **LaTeX mirror:** Your browser downloads the typesetting engines and LaTeX packages from the LibrePaper mirror on OVHcloud. The mirror sees your IP address and the files you request, which can reveal the packages a document uses. It never sees the source.
+- **LaTeX mirror:** Your browser downloads the typesetting engines and LaTeX packages from the LibrePaper mirror. The mirror sees your IP address and the files you request, which can reveal the packages a document uses. It never sees the source.
 - **Local app:** The [local app](local-app.html) runs on your computer, and the browser talks to it directly. The browser contacts it when you use a local feature. Once you have paired it, the browser also asks it for backup status.
 - **Writing assistant:** An assistant you start runs on your computer through the local app. Its access covers one document and expires after five minutes. The browser renews it while the page is open. The AI service behind the assistant sees what the assistant reads.
 - **Local backups:** The local app downloads your projects, including those shared with you, and writes ZIP files to a folder you choose. The browser never learns where that folder is. The ZIP files stay on your computer when you turn backups off or delete a project. See [local backups](backups.html).
@@ -63,7 +63,7 @@ The browser also keeps data of its own on your device.
 ## Backups
 
 - A backup runs every day at midnight UTC. It holds the database and every stored file.
-- Backups are encrypted and stored with OVHcloud in Toronto, away from the server.
+- Backups are encrypted and stored in Canada, away from the server.
 - Every backup from the last 48 hours is kept. After that, one backup per day is kept for 14 days and one per week for 11 weeks.
 - Deleted documents and erased accounts therefore stay in backups for about three months.
 - After a restore, erasures made since that backup are applied again.
