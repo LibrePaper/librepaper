@@ -475,6 +475,7 @@ fn serve_options(
         admin_password: resolved.admin_password,
         expire_after: resolved.expire_after,
         expire_from: resolved.expire_from,
+        erase_inactive_after: resolved.erase_inactive_after,
         asset_mirror: resolved.asset_mirror,
         typst_fonts: resolved.typst_fonts,
         start_local,
