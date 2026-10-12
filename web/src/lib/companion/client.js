@@ -516,6 +516,27 @@ function noteNegative(nowMs) {
 
 let addressSpaceSupported = true;
 
+function isAddressSpaceValidationError(error) {
+  if (!(error instanceof TypeError)) return false;
+  const message = String(error.message || "");
+  return /targetAddressSpace/i.test(message)
+    && /invalid|unsupported|not supported|not recognized|unrecognized|unknown|not a valid|must be/i.test(message);
+}
+
+// Keep the browser-specific option in one place. A validation error happens
+// before fetch sends the request, so that one error is safe to retry without
+// the option, including for POSTs. Network failures never replay a request.
+async function localFetch(input, init) {
+  if (!addressSpaceSupported) return deps.fetch(input, init);
+  try {
+    return await deps.fetch(input, { ...init, targetAddressSpace: "loopback" });
+  } catch (error) {
+    if (!isAddressSpaceValidationError(error)) throw error;
+    addressSpaceSupported = false;
+    return deps.fetch(input, init);
+  }
+}
+
 async function healthFetch(addr) {
   const url = addr + LOCAL_BASE + "health";
   /** @type {LocalRequestInit} */
@@ -525,21 +546,7 @@ async function healthFetch(addr) {
     credentials: "omit",
     signal: typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(HEALTH_TIMEOUT_MS) : undefined,
   };
-  if (addressSpaceSupported) {
-    try {
-      return await deps.fetch(url, { ...init, targetAddressSpace: "loopback" });
-    } catch (error) {
-      // Chrome's Local Network Access option is not yet universal; a
-      // `TypeError` naming the option means this browser predates it, and we
-      // fall back below rather than treat every browser as unsupported.
-      if (error instanceof TypeError && /targetAddressSpace/i.test(String(error?.message || ""))) {
-        addressSpaceSupported = false;
-      } else {
-        throw error;
-      }
-    }
-  }
-  return deps.fetch(url, init);
+  return localFetch(url, init);
 }
 
 async function sha256hex(bytes) {
@@ -604,7 +611,7 @@ async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
   }
   let response;
   try {
-    response = await deps.fetch(url, { method, mode: "cors", credentials: "omit", headers, body, signal });
+    response = await localFetch(url, { method, mode: "cors", credentials: "omit", headers, body, signal });
   } catch (error) {
     if (signal?.aborted) {
       throw named("Canceled", "Canceled");
@@ -826,11 +833,10 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
   let paired = null;
   const ask = async () => {
     try {
-      const response = await deps.fetch(`${address()}companion/api/session`, {
+      const response = await localFetch(`${address()}companion/api/session`, {
         method: "POST", mode: "cors", credentials: "omit", cache: "no-store",
         headers: { "Content-Type": "application/json" }, body: "{}",
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
-        targetAddressSpace: "loopback",
       });
       if (response.status === 200) {
         const data = await response.json();
@@ -849,7 +855,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
     }
     let delivered = false;
     try {
-      const response = await deps.fetch(`${address()}${LOCAL_BASE}pair/request`, {
+      const response = await localFetch(`${address()}${LOCAL_BASE}pair/request`, {
         method: "POST", mode: "cors", credentials: "omit",
         headers: { "Content-Type": "application/json" },
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
@@ -881,7 +887,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
     checkScope();
     let response;
     try {
-      response = await deps.fetch(`${address()}${LOCAL_BASE}connect/claim`, {
+      response = await localFetch(`${address()}${LOCAL_BASE}connect/claim`, {
         method: "POST", mode: "cors", credentials: "omit",
         headers: { "Content-Type": "application/json" },
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
@@ -972,9 +978,8 @@ export async function manage(path, { method = "GET", body } = {}) {
   }
   let response;
   try {
-    response = await deps.fetch(`${addr}companion/api${path}`, {
+    response = await localFetch(`${addr}companion/api${path}`, {
       method, mode: "cors", credentials: "omit", cache: "no-store", headers, body: payload,
-      targetAddressSpace: "loopback",
     });
   } catch (error) {
     throw named("Unreachable", instructionsFor(await unreachableState(error)));
@@ -1620,7 +1625,7 @@ export async function localPreviewPage(id, { etag } = {}) {
   if (etag) headers["If-None-Match"] = etag;
   let response;
   try {
-    response = await deps.fetch(url, { method: "GET", mode: "cors", credentials: "omit", headers });
+    response = await localFetch(url, { method: "GET", mode: "cors", credentials: "omit", headers });
   } catch (error) {
     throw named("Unreachable", instructionsFor(await unreachableState(error)));
   }
