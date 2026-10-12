@@ -293,7 +293,7 @@ fn install_subscriber(server_filter: Option<&str>) {
 /// runtime. SQLx reads libpq-style PG* variables while constructing
 /// PostgreSQL options, so this must remain a synchronous process-startup path.
 pub fn main() {
-    if librepaper_companion::local::cli::run_folder_picker_helper() {
+    if librepaper_companion::local::folder::run_folder_picker_helper() {
         return;
     }
     let cli = Cli::parse();
