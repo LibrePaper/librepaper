@@ -35,6 +35,7 @@
 //! [`retention`] is a different thing that is still live: whole-document
 //! expiry by age, which has nothing to do with the version timeline.
 
+pub mod formats;
 pub mod html;
 pub mod hunks;
 

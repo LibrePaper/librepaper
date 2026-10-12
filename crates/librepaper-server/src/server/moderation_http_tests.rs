@@ -38,6 +38,23 @@ const READER: &str = "https://paper.example";
 const DOCS: &str = "https://docs.paper.example";
 const SOURCE: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";
 
+/// A valid PNG of `size` bytes, or the 57 bytes a PNG needs when `size` is
+/// smaller. The padding is a tEXt chunk, so the bytes stay a real image.
+fn png(size: usize) -> Vec<u8> {
+    let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    png_chunk(&mut out, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    png_chunk(&mut out, b"tEXt", &vec![b' '; size.saturating_sub(57)]);
+    png_chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+fn png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    out.extend_from_slice(&[0; 4]);
+}
+
 struct Deployment {
     server: Arc<Server>,
     catalog: Arc<PostgresCatalog>,
@@ -157,7 +174,7 @@ async fn deployment_mode_with_policy(
         automation: false,
         unowned_publisher: open,
     };
-    let asset_bytes = b"moderation figure bytes".to_vec();
+    let asset_bytes = png(64);
     let asset_sha = librepaper_engine::storage::store::digest_of_bytes(&asset_bytes);
     store
         .put_directory_as_actor(
@@ -223,7 +240,7 @@ async fn deployment_mode_with_policy(
     let room = server.documents.rooms.get(slug).await.unwrap();
     let _unreferenced_asset = tokio::time::timeout(
         Duration::from_secs(10),
-        room.put_asset_authorized(b"asset-attach lock regression".to_vec(), &actor),
+        room.put_asset_authorized(png(64), &actor),
     )
     .await
     .expect("asset attachment must finish without waiting on its own document lock")
@@ -760,7 +777,7 @@ async fn quota_rejected_replacement_keeps_its_hourly_upload_admission() {
     let client = reqwest::Client::new();
     let url = format!("{base}/api/documents");
     let bearer = bearer(&deployment);
-    let figure = vec![0x5a; 16 * 1024];
+    let figure = png(16 * 1024);
 
     let first = client
         .post(&url)
@@ -890,7 +907,7 @@ async fn empty_figure_upload_does_not_spend_the_hourly_admission() {
         .header("sec-fetch-site", "same-origin")
         .header("x-librepaper-client", "web")
         .header("authorization", format!("Bearer {}", bearer(&deployment)))
-        .body(b"valid figure bytes".to_vec())
+        .body(png(64))
         .send()
         .await
         .unwrap();

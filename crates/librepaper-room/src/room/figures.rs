@@ -126,6 +126,7 @@ impl Room {
         if size == 0 {
             return Err(WriteError::Invalid("that file is empty".into()));
         }
+        librepaper_document::document::formats::check_asset(&body).map_err(WriteError::Invalid)?;
         // Validate the actor before writing a blob. Once `put_new` has been
         // attempted, an error can leave an uncatalogued immutable object and
         // callers must treat the upload admission as spent.

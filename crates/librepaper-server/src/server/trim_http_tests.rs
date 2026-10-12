@@ -23,9 +23,18 @@ use librepaper_engine::storage::store::{DocumentInput, MutationActor};
 use super::http_test_support::{deployment as http_deployment, owner_bearer};
 
 const PAPER: &str = "# Figure test\n\nA document with figures.\n";
-const FIGURE_A: &[u8] = b"figure A bytes";
-const FIGURE_B: &[u8] = b"figure B bytes";
-const FIGURE_C: &[u8] = b"figure C bytes";
+/// A valid PNG whose IHDR width is `width`, so each figure has its own digest.
+fn figure(width: u8) -> Vec<u8> {
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    out.extend_from_slice(&[0, 0, 0, 13]);
+    out.extend_from_slice(b"IHDR");
+    out.extend_from_slice(&[0, 0, 0, width, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(b"IEND");
+    out.extend_from_slice(&[0; 4]);
+    out
+}
 
 async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> {
     http_deployment(
@@ -36,7 +45,7 @@ async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> 
             source_format: "markdown".into(),
             main: "paper.md".into(),
         },
-        vec![("figure-a.png".into(), FIGURE_A.to_vec())],
+        vec![("figure-a.png".into(), figure(1))],
         "owner",
         "",
     )
@@ -122,14 +131,14 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
                 source_format: "markdown".into(),
                 main: "paper.md".into(),
             },
-            vec![("figure-b.png".into(), FIGURE_B.to_vec())],
+            vec![("figure-b.png".into(), figure(2))],
             actor,
         )
         .await
         .unwrap();
 
     // Step 4: manually add unreferenced figure-c (fresh) via catalog.
-    let figure_c_digest_bytes = Sha256::digest(FIGURE_C).to_vec();
+    let figure_c_digest_bytes = Sha256::digest(figure(3)).to_vec();
     let (_assets, staged_c) = librepaper_engine::storage::source::SourceStorage::new(
         deployment.catalog.clone(),
         deployment.server.documents.store.blobs.clone(),
@@ -138,7 +147,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         room.document_id,
         std::iter::once(&librepaper_engine::storage::source::ProjectFile {
             path: "figure-c.png".into(),
-            bytes: FIGURE_C.to_vec(),
+            bytes: figure(3),
             media_type: "application/octet-stream".into(),
         }),
     )
@@ -162,7 +171,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
          WHERE document_id=$1 AND digest=$2",
     )
     .bind(room.document_id)
-    .bind(Sha256::digest(FIGURE_A).to_vec())
+    .bind(Sha256::digest(figure(1)).to_vec())
     .execute(deployment.catalog.pool())
     .await
     .unwrap();
@@ -171,13 +180,13 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
          WHERE document_id=$1 AND digest=$2",
     )
     .bind(room.document_id)
-    .bind(Sha256::digest(FIGURE_B).to_vec())
+    .bind(Sha256::digest(figure(2)).to_vec())
     .execute(deployment.catalog.pool())
     .await
     .unwrap();
 
     // Prepare digest hex for figure-b for later reference checks.
-    let figure_b_digest_hex = hex::encode(Sha256::digest(FIGURE_B));
+    let figure_b_digest_hex = hex::encode(Sha256::digest(figure(2)));
 
     // Every label goes, not only the named one: creating and replacing the
     // project each leave a retry record in `document_labels` as well.
@@ -252,7 +261,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
     let figure_bytes = body["figureBytes"].as_i64().unwrap();
     assert_eq!(
         figure_bytes,
-        FIGURE_A.len() as i64,
+        figure(1).len() as i64,
         "figure bytes should be exactly figure-a size"
     );
     let history_after = body["historyBytes"].as_i64().unwrap();
@@ -278,7 +287,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         "SELECT EXISTS(SELECT 1 FROM document_assets WHERE document_id=$1 AND digest=$2)",
     )
     .bind(room.document_id)
-    .bind(Sha256::digest(FIGURE_A).to_vec())
+    .bind(Sha256::digest(figure(1)).to_vec())
     .fetch_one(deployment.catalog.pool())
     .await
     .unwrap();
@@ -291,7 +300,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         "SELECT EXISTS(SELECT 1 FROM document_assets WHERE document_id=$1 AND digest=$2)",
     )
     .bind(room.document_id)
-    .bind(Sha256::digest(FIGURE_B).to_vec())
+    .bind(Sha256::digest(figure(2)).to_vec())
     .fetch_one(deployment.catalog.pool())
     .await
     .unwrap();

@@ -559,6 +559,9 @@ impl Server {
                 // Authorization can fail after staging too.
                 return write_json(status, &json!({"error": message}));
             }
+            Err(PutError::Invalid(message)) => {
+                return write_json(415, &json!({"error": message}));
+            }
             Err(PutError::Storage(_)) => {
                 return write_json(500, &json!({"error": "could not store the document"}))
             }
@@ -1684,6 +1687,7 @@ impl Server {
             Err(PutError::Authorization { status, message }) => {
                 write_json(status, &json!({"error": message}))
             }
+            Err(PutError::Invalid(message)) => write_json(415, &json!({"error": message})),
             Err(PutError::Storage(error)) => {
                 // The command may have committed before this ambiguous
                 // storage error reached the request, so keep the admission.
