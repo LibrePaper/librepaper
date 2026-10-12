@@ -45,4 +45,5 @@ export const nav = [
     ],
   },
   { path: "privacy", label: "Privacy and data retention" },
+  { path: "contact", label: "Contact" },
 ];

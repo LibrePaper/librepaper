@@ -77,3 +77,7 @@ Choose **Settings > Account > Erase this account** and confirm with your handle.
 4. The account record is deleted once its documents are purged.
 
 The account stays in [backups](#backups) until they expire.
+
+## Contact
+
+Email [admin@librepaper.org](mailto:admin@librepaper.org) with questions about your data.
