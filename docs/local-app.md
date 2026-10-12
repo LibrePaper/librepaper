@@ -16,6 +16,10 @@ In LibrePaper it is often useful to reach past that sandbox. A Quarto document n
 
 Nothing runs unasked. A site pairs with the companion per origin and project, folders are granted one at a time through your system's own chooser, running a document's code is approved per document, and Settings shows what is connected and running. On a shared project, editors can change the code that runs, so it is their code too.
 
+## Browser compatibility
+
+Safari may block a secure LibrePaper page from reaching the companion over local HTTP as mixed content. The browser option used for loopback access can address option-validation compatibility, but it does not remove mixed-content blocking. If this happens, use Chrome or Firefox for companion features. WebKit tracks the related behavior in [issue 171934](https://bugs.webkit.org/show_bug.cgi?id=171934); behavior can vary by Safari and macOS version.
+
 ## Install
 
 LibrePaper is one binary. Pick one install method.
