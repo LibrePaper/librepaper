@@ -178,6 +178,13 @@ impl Server {
             // so no page has to know which providers this deployment has.
             "/auth/login" => {
                 let next = query.get("next").cloned().unwrap_or_default();
+                // Somebody already signed in, for example from the marketing
+                // site's Sign in button, goes straight to where they were headed.
+                if let Ok(who) = self.authenticated_identity(headers, arrival).await {
+                    if who.is_signed_in() {
+                        return Some(redirect(&local_path(&next)));
+                    }
+                }
                 match self.providers()[..] {
                     // Nothing to sign in to: this deployment is open to
                     // everyone and was started without any OAuth app.
@@ -333,6 +340,14 @@ impl Server {
                 }
                 if cross_site_refused(headers, arrival) {
                     return Some(write_json(403, &cross_site_refusal()));
+                }
+                // Signing out of the app also signs the same GitHub account out
+                // of the admin console, which keeps its own cookie on its own
+                // origin. A failed lookup still clears the cookie below.
+                if let Ok(who) = self.authenticated_identity(headers, arrival).await {
+                    if who.provider == PROVIDER_GITHUB {
+                        crate::server::graphs::routes::end_admin_sessions(&who.handle);
+                    }
                 }
                 let mut response = write_json(200, &json!({"logged_out": true}));
                 add_cookie(

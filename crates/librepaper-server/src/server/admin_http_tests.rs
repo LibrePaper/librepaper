@@ -254,10 +254,16 @@ impl Fixture {
     /// An operator session for any GitHub account ID and expiry, as the admin
     /// origin's own cookie.
     fn session_cookie_for(&self, github_id: i64, expires_at: i64) -> String {
+        self.session_cookie_as(github_id, "operator", expires_at)
+    }
+
+    /// An operator session under its own login. Signing a login out ends its
+    /// sessions in the whole test process, so a sign-out test uses its own.
+    fn session_cookie_as(&self, github_id: i64, login: &str, expires_at: i64) -> String {
         let token = super::graphs::routes::admin_session_token(
             &self.server.key,
             github_id,
-            "operator",
+            login,
             expires_at,
         );
         format!("__Host-librepaper_admin={token}")
@@ -368,6 +374,7 @@ async fn the_admin_host_sends_a_stranger_to_github_and_answers_nothing_else() {
         location.contains("redirect_uri=https%3A%2F%2Fadmin.paper.example%2Fauth%2Fcallback"),
         "{location}"
     );
+    assert!(location.contains("prompt=select_account"), "{location}");
     let state_cookie = header(&response, "set-cookie").unwrap_or_default();
     assert!(
         state_cookie.starts_with("__Host-librepaper_admin_state="),
@@ -578,6 +585,126 @@ async fn a_listed_account_signs_in_through_github() {
     assert_eq!(page.status().as_u16(), 200);
     let body: Value = page.json().await.unwrap();
     assert_eq!(body["login"], "operator");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn signing_out_ends_the_admin_session() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+    let cookie = f.session_cookie_as(
+        OPERATOR_ID,
+        "signing-out",
+        librepaper_base::util::now_unix() + 3600,
+    );
+    let before = f
+        .get(ADMIN_HOST, "/session")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(before.status().as_u16(), 200);
+
+    let out = f
+        .post(ADMIN_HOST, "/auth/logout")
+        .header("origin", ADMIN)
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert!(out.status().is_success(), "{}", out.status());
+    assert_private_headers(&out, "the sign-out");
+    let cookies = set_cookies(&out);
+    assert!(
+        cookies
+            .iter()
+            .any(|line| line.starts_with("__Host-librepaper_admin=") && line.contains("Max-Age=0")),
+        "the session cookie is cleared: {cookies:?}"
+    );
+
+    let after = f
+        .get(ADMIN_HOST, "/session")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(after.status().as_u16(), 401);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn sign_out_needs_a_post_from_the_admin_origin() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+    let cookie = f.operator_cookie();
+
+    let get = f
+        .get(ADMIN_HOST, "/auth/logout")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get.status().as_u16(), 405);
+    assert_eq!(header(&get, "allow"), Some("POST"));
+
+    let no_origin = f
+        .post(ADMIN_HOST, "/auth/logout")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(no_origin.status().as_u16(), 403);
+
+    let reader = f
+        .post(ADMIN_HOST, "/auth/logout")
+        .header("origin", READER)
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reader.status().as_u16(), 403);
+
+    // A refused sign-out leaves the session working.
+    let still = f
+        .get(ADMIN_HOST, "/session")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(still.status().as_u16(), 200);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn app_sign_out_ends_the_admin_session() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+    let cookie = f.session_cookie_as(
+        OPERATOR_ID,
+        "app-sign-out",
+        librepaper_base::util::now_unix() + 3600,
+    );
+    let before = f
+        .get(ADMIN_HOST, "/session")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(before.status().as_u16(), 200);
+
+    // The operator fixture signs in as "operator".
+    crate::server::graphs::routes::end_admin_sessions("app-sign-out");
+
+    let after = f
+        .get(ADMIN_HOST, "/session")
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(after.status().as_u16(), 401);
 }
 
 #[tokio::test]

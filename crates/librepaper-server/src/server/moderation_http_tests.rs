@@ -417,6 +417,49 @@ async fn websocket_closes(
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_signed_in_reader_skips_the_sign_in_door() {
+    let Some(deployment) = deployment("signin-door-http").await else {
+        return;
+    };
+    let (base, _address, stop) = serve(deployment.server.clone()).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let signed_in = client
+        .get(format!("{base}/auth/login?next=/somewhere"))
+        .header("host", "paper.example")
+        .header("cookie", cookie(&deployment))
+        .send()
+        .await
+        .unwrap();
+    assert!(signed_in.status().is_redirection());
+    assert_eq!(
+        signed_in
+            .headers()
+            .get("location")
+            .map(|value| value.to_str().unwrap()),
+        Some("/somewhere")
+    );
+    let anonymous = client
+        .get(format!("{base}/auth/login?next=/somewhere"))
+        .header("host", "paper.example")
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        anonymous
+            .headers()
+            .get("location")
+            .map(|value| value.to_str().unwrap()),
+        Some("/somewhere")
+    );
+    let _ = stop.send(());
+    close_deployment(deployment).await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn hiding_a_project_closes_public_and_bearer_routes_until_unhidden() {
     let Some(deployment) = deployment("moderation-project-http").await else {
         return;

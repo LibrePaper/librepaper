@@ -53,6 +53,10 @@ const STATE_SECONDS: i64 = 600;
 /// cannot mint one that outlives the process.
 static ADMIN_EPOCH: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(librepaper_base::util::random_token);
+/// Sign-outs per GitHub login, keyed in lowercase. The count is signed into
+/// every session, so a session minted before a sign-out no longer verifies.
+static SIGN_OUTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+    std::sync::LazyLock::new(Default::default);
 
 const DEFAULT_SPAN_SECONDS: i64 = 24 * 60 * 60;
 const DEFAULT_POINTS: i64 = 600;
@@ -161,10 +165,10 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
             )),
         };
     }
-    let session = cookie(&parts.headers, &cookie_name(https, SESSION_COOKIE))
-        .and_then(|token| read_admin_session(&server.key, &token, unix_seconds()));
-    let operator = session.filter(|operator| server.admin_github_ids.contains(&operator.github_id));
-    let Some(operator) = operator else {
+    if parts.uri.path() == "/auth/logout" {
+        return Decision::Reply(logout(server, parts, admin, https));
+    }
+    let Some(operator) = signed_in(server, parts, https) else {
         if !matches!(parts.method, Method::GET | Method::HEAD) || parts.uri.path() != "/" {
             return Decision::Reply(text(StatusCode::UNAUTHORIZED, "sign in at /"));
         }
@@ -173,11 +177,14 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
         let verifier = pkce_verifier();
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::FOUND;
-        set(
-            &mut response,
-            "location",
-            &server.app.authorize_url(&callback, &state, &verifier),
+        // GitHub otherwise approves an already-authorized app silently, so a
+        // signed-out operator would be let straight back in without choosing an
+        // account.
+        let url = format!(
+            "{}&prompt=select_account",
+            server.app.authorize_url(&callback, &state, &verifier)
         );
+        set(&mut response, "location", &url);
         append_cookie(
             &mut response,
             &set_cookie(
@@ -249,6 +256,42 @@ fn append_cookie(response: &mut Response<Body>, value: &str) {
     response
         .headers_mut()
         .append(header::SET_COOKIE, HeaderValue::from_str(value).unwrap());
+}
+
+/// The operator behind the session cookie, if the token holds and the account
+/// is still listed.
+fn signed_in(server: &Server, parts: &Parts, https: bool) -> Option<Operator> {
+    cookie(&parts.headers, &cookie_name(https, SESSION_COOKIE))
+        .and_then(|token| read_admin_session(&server.key, &token, unix_seconds()))
+        .filter(|operator| server.admin_github_ids.contains(&operator.github_id))
+}
+
+/// Sign the operator out. Every session for their login ends, and the cookie
+/// is cleared whether or not the request had a live session. Only a POST from
+/// this page counts, so another site cannot sign the operator out.
+fn logout(server: &Server, parts: &Parts, admin: &str, https: bool) -> Response<Body> {
+    if parts.method != Method::POST {
+        let mut response = text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+        set(&mut response, "allow", "POST");
+        return response;
+    }
+    let origin = parts
+        .headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    if origin != Some(admin) {
+        return text(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    if let Some(operator) = signed_in(server, parts, https) {
+        end_admin_sessions(&operator.login);
+    }
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::NO_CONTENT;
+    append_cookie(
+        &mut response,
+        &clear_cookie(&cookie_name(https, SESSION_COOKIE), https),
+    );
+    response
 }
 
 /// The GitHub sign-in comes back here. The code is exchanged for the account,
@@ -334,8 +377,42 @@ pub(crate) fn admin_session_token(
 fn mint(key: &[u8], epoch: &str, github_id: i64, login: &str, expires_at: i64) -> String {
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(format!("{github_id}|{expires_at}|{login}"));
-    let purpose = format!("{SESSION_PURPOSE}:{epoch}");
+    let generation = sign_outs(login);
+    let purpose = format!("{SESSION_PURPOSE}:{epoch}:{generation}");
     format!("v1.{payload}.{}", sign(key, &purpose, &payload))
+}
+
+/// How many times this GitHub login has been signed out. Logins are matched
+/// without regard to case.
+fn sign_outs(login: &str) -> u64 {
+    let counts = SIGN_OUTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    counts
+        .get(&login.to_ascii_lowercase())
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Ends every admin session for this GitHub login.
+pub(crate) fn end_admin_sessions(login: &str) {
+    let mut counts = SIGN_OUTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *counts.entry(login.to_ascii_lowercase()).or_insert(0) += 1;
+}
+
+/// The fields of a session payload: GitHub ID, expiry and login.
+fn decode_payload(payload: &str) -> Option<(i64, i64, String)> {
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    let mut fields = text.splitn(3, '|');
+    let github_id: i64 = fields.next()?.parse().ok()?;
+    let expires_at: i64 = fields.next()?.parse().ok()?;
+    let login = fields.next()?.to_string();
+    Some((github_id, expires_at, login))
 }
 
 /// The operator a session token names, if its signature holds and it has not
@@ -347,18 +424,14 @@ fn read_admin_session(key: &[u8], token: &str, now: i64) -> Option<Operator> {
 fn read(key: &[u8], epoch: &str, token: &str, now: i64) -> Option<Operator> {
     let rest = token.strip_prefix("v1.")?;
     let (payload, signature) = rest.rsplit_once('.')?;
-    let purpose = format!("{SESSION_PURPOSE}:{epoch}");
+    // The login picks the sign-out count the signature is checked under, so
+    // the payload is read first. Its fields are trusted only once the
+    // signature holds.
+    let (github_id, expires_at, login) = decode_payload(payload)?;
+    let purpose = format!("{SESSION_PURPOSE}:{epoch}:{}", sign_outs(&login));
     if !verifies(key, &purpose, payload, signature) {
         return None;
     }
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()?;
-    let text = String::from_utf8(decoded).ok()?;
-    let mut fields = text.splitn(3, '|');
-    let github_id: i64 = fields.next()?.parse().ok()?;
-    let expires_at: i64 = fields.next()?.parse().ok()?;
-    let login = fields.next()?.to_string();
     // No session this server issued lasts longer than SESSION_SECONDS.
     (expires_at > now && expires_at <= now + SESSION_SECONDS).then_some(Operator {
         github_id,
@@ -815,6 +888,16 @@ mod tests {
         let token = mint(KEY, "epoch-a", 42, "operator", NOW + 60);
         assert!(read(KEY, "epoch-a", &token, NOW).is_some());
         assert!(read(KEY, "epoch-b", &token, NOW).is_none());
+    }
+
+    #[test]
+    fn a_token_minted_before_a_sign_out_is_refused() {
+        let token = mint(KEY, "epoch-sign-out", 77, "Someone", NOW + 60);
+        assert!(read(KEY, "epoch-sign-out", &token, NOW).is_some());
+        end_admin_sessions("someone");
+        assert!(read(KEY, "epoch-sign-out", &token, NOW).is_none());
+        let fresh = mint(KEY, "epoch-sign-out", 77, "Someone", NOW + 60);
+        assert!(read(KEY, "epoch-sign-out", &fresh, NOW).is_some());
     }
 
     #[test]
