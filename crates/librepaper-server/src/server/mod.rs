@@ -85,6 +85,8 @@ pub use librepaper_base::config::socket_budget;
 mod suggestions;
 #[cfg(test)]
 mod trim_http_tests;
+#[cfg(test)]
+mod visitor_http_tests;
 
 pub use reply::*;
 pub use routes::*;

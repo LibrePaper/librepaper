@@ -34,8 +34,8 @@ pub const PROVIDER_GOOGLE: &str = "google";
 
 pub const SESSION_COOKIE: &str = "librepaper_session";
 pub const STATE_COOKIE: &str = "librepaper_state";
-/// Names the browser itself, so an upload made without signing in still
-/// belongs to whoever made it.
+/// Names the browser of an anonymous commenter. The server sets it only where
+/// the deployment lets anyone comment.
 pub const VISITOR_COOKIE: &str = "librepaper_visitor";
 pub const SESSION_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 

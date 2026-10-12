@@ -567,6 +567,19 @@ impl Server {
             return;
         }
         let https = arrival.is_https();
+        // The visitor cookie only names anonymous commenters. Where commenting
+        // needs sign-in, the server neither sets it nor keeps one a browser
+        // already holds.
+        if !self.commenters.public {
+            if cookie(headers, &cookie_name(https, VISITOR_COOKIE)).is_some() {
+                add_cookie(
+                    response,
+                    &clear_cookie(&cookie_name(https, VISITOR_COOKIE), https),
+                );
+                set(response, "cache-control", "private, no-store");
+            }
+            return;
+        }
         // An unsigned cookie -- from before this server signed them, or forged
         // -- verifies as absent, so it is simply replaced with a signed one.
         if let Some(value) = cookie(headers, &cookie_name(https, VISITOR_COOKIE)) {

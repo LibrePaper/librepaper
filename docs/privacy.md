@@ -38,11 +38,10 @@ librepaper.org keeps no access log and does not store IP addresses.
 
 ## Cookies and browser storage
 
-librepaper.org sets three cookies. Each one is HttpOnly, Secure and SameSite=Lax, and carries the `__Host-` prefix.
+librepaper.org sets two cookies. Each one is HttpOnly, Secure and SameSite=Lax, and carries the `__Host-` prefix.
 
 - `librepaper_session` keeps you signed in for 30 days.
 - `librepaper_state` ties a sign-in to the browser that started it. It lasts ten minutes.
-- `librepaper_visitor` is a random identifier for this browser. It lasts one year and is not linked to your account.
 
 The browser also keeps data of its own on your device.
 
