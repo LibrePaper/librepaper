@@ -570,6 +570,15 @@ fn xml_escape(text: &str) -> String {
     out
 }
 
+#[cfg(target_os = "macos")]
+fn launch_agent_plist(executable: &Path, log_path: &Path) -> String {
+    let executable = xml_escape(&executable.to_string_lossy());
+    let log_path = xml_escape(&log_path.to_string_lossy());
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>Label</key><string>com.librepaper.local</string><key>ProgramArguments</key><array><string>{executable}</string><string>start</string><string>--foreground</string></array><key>RunAtLoad</key><true/><key>StandardOutPath</key><string>{log_path}</string><key>StandardErrorPath</key><string>{log_path}</string></dict></plist>"
+    )
+}
+
 pub fn set_startup(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
@@ -595,11 +604,10 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
             return remove_startup(&file);
         }
         let executable = super::paths::current_executable()?;
-        let path = xml_escape(&executable.to_string_lossy());
-        write_startup_file(
-            &file,
-            format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>Label</key><string>com.librepaper.local</string><key>ProgramArguments</key><array><string>{path}</string><string>start</string></array><key>RunAtLoad</key><true/></dict></plist>"),
-        )
+        let local_dir = super::paths::state_home_or_die().join("librepaper/local");
+        std::fs::create_dir_all(&local_dir).map_err(|error| error.to_string())?;
+        let log_path = local_dir.join("companion.log");
+        write_startup_file(&file, launch_agent_plist(&executable, &log_path))
     }
     #[cfg(windows)]
     {
@@ -784,6 +792,21 @@ mod tests {
         assert!(quoted.contains("Libre Paper"));
         assert!(quoted.contains("%%2"));
         assert!(quoted.contains("\\\\$draft"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launch_agent_runs_foreground_with_persistent_logs_and_escaped_paths() {
+        let plist = launch_agent_plist(
+            Path::new("/Applications/Libre & Paper/librepaper"),
+            Path::new("/Users/example/Library/Logs/Libre <Paper>.log"),
+        );
+        assert!(plist.contains("<string>start</string><string>--foreground</string>"));
+        assert!(plist.contains("<key>StandardOutPath</key>"));
+        assert!(plist.contains("<key>StandardErrorPath</key>"));
+        assert!(plist.contains("Libre &amp; Paper"));
+        assert!(plist.contains("Libre &lt;Paper&gt;.log"));
+        assert!(!plist.contains("<key>KeepAlive</key>"));
     }
     #[test]
     fn connect_links_carry_only_validated_pair_fields() {

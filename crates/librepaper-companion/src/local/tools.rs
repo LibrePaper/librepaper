@@ -92,7 +92,10 @@ pub(crate) async fn version_output(path: &Path, probe: Probe) -> Option<(String,
     // the child's working directory has to outlive the child.
     let isolation = probe.isolated.then(tempfile::tempdir).transpose().ok()?;
     if let Some(directory) = &isolation {
-        command.current_dir(directory.path()).env_clear();
+        // Keep the startup-resolved PATH so wrappers can find their helper
+        // programs even though discovery otherwise runs with a clean env.
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        command.current_dir(directory.path()).env_clear().env("PATH", path);
     }
     command
         .arg("--version")
