@@ -723,7 +723,10 @@ mod tests {
         let _e = insert_account(&catalog, "anonymous", "active", 400).await;
         let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(365);
 
-        assert_eq!(catalog.inactive_accounts(cutoff, 10).await.unwrap(), vec![b, a]);
+        assert_eq!(
+            catalog.inactive_accounts(cutoff, 10).await.unwrap(),
+            vec![b, a]
+        );
         assert_eq!(catalog.inactive_accounts(cutoff, 1).await.unwrap(), vec![b]);
         assert!(catalog.inactive_accounts(cutoff, 0).await.is_err());
         catalog.close().await;

@@ -463,7 +463,11 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "memory_budget_mib",
         ],
     )?;
-    section(v, "retention", &["expire_after", "expire_from", "erase_inactive_after"])?;
+    section(
+        v,
+        "retention",
+        &["expire_after", "expire_from", "erase_inactive_after"],
+    )?;
     section(v, "assets", &["mirror", "typst_fonts"])?;
     section(v, "metrics", &["address"])?;
     section(v, "proxy", &["trusted_networks"])?;
