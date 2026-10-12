@@ -259,16 +259,16 @@ admin_console_answers() {
 	local compose="$1" output="" _
 	# The data endpoint must answer 401 without a session. It can answer a
 	# moment after /ready, and a failed wget must not end the script silently
-	# under set -e, so retry and report what came back. BusyBox wget prints the
+	# under set -e, so retry and report what came back. BusyBox wget -S prints the
 	# status in its error output.
 	for _ in {1..30}; do
-		output=$("$compose" exec -T librepaper wget -qO- --header 'Host: admin.localhost' 'http://127.0.0.1:8080/data?points=10' 2>&1) || true
+		output=$("$compose" exec -T librepaper wget -S -O /dev/null --header 'Host: admin.localhost' 'http://127.0.0.1:8080/data?points=10' 2>&1) || true
 		grep -q ' 401' <<<"$output" && break
 		sleep 2
 	done
 	grep -q ' 401' <<<"$output" || fail "admin data endpoint without a session did not answer 401 ($compose): ${output:0:300}"
 	# A callback with a state the server did not issue must answer 400.
-	output=$("$compose" exec -T librepaper wget -qO- --header 'Host: admin.localhost' 'http://127.0.0.1:8080/auth/callback?code=x&state=y' 2>&1) || true
+	output=$("$compose" exec -T librepaper wget -S -O /dev/null --header 'Host: admin.localhost' 'http://127.0.0.1:8080/auth/callback?code=x&state=y' 2>&1) || true
 	grep -q ' 400' <<<"$output" || fail "admin callback with an unknown state did not answer 400 ($compose): ${output:0:300}"
 	echo "admin console: data without a session answers 401 and a callback with an unknown state answers 400"
 }
