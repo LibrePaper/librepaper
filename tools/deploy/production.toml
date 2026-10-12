@@ -62,7 +62,7 @@ commenters = ["any"]
 publisher_storage_mib = 50         # storage per account, in MiB
 publisher_uploads_per_hour = 30    # projects, forks and figure uploads per rolling hour
 # Whole server:
-deployment_storage_mib = 20480     # storage for all accounts together; uploads are refused when full
+deployment_storage_mib = 102400    # storage for all accounts together; uploads are refused when full
 # memory_budget_mib = 512            # memory for loading documents
 # log_quota_mib = 32                 # edit history one document holds before compaction; scale with memory_budget_mib
 # pending_mib = 64                   # unsaved edits held in memory
