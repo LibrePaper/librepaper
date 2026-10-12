@@ -267,7 +267,7 @@ impl PostgresCatalog {
         reason: &str,
     ) -> Result<BlockOutcome> {
         validate_operator_fields(actor, reason)?;
-        if let Ok(id) = Uuid::parse_str(name.trim()) {
+        if Uuid::parse_str(name.trim()).is_ok() {
             let (id, label) = self
                 .moderate_account(name.trim(), true, actor, reason)
                 .await?;
@@ -508,7 +508,7 @@ pub(super) async fn insert_audit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
+    use crate::storage::postgres::{NewAccount, PostgresCatalog, PostgresOptions};
 
     async fn test_catalog() -> PostgresCatalog {
         let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")

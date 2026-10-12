@@ -282,8 +282,8 @@ async fn middleware_inner(
     // declared length is reserved from the memory budget -- the same budget
     // decoded documents live in -- and released when the request ends. The
     // admin side reads at most a small moderation request, and only after the
-    // password, so it reserves nothing and is not refused before the password is
-    // checked.
+    // password, so it reserves nothing and is not refused before the password
+    // is checked.
     let mutation = matches!(method, Method::POST | Method::PUT | Method::PATCH);
     let _incoming = if mutation && !admin_side {
         let Some(length) = request.body().size_hint().exact() else {

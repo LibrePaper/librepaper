@@ -300,9 +300,8 @@
     }
   }
 
-  // The moderation lists and their actions. This reads and changes the
-  // moderation lists. Every name comes from users, so it only ever goes in as
-  // text.
+  // The moderation lists and the actions that change them. Every name comes
+  // from users, so it only ever goes in as text.
   const RECENT_ACTIONS = {
     block_account: "Blocked",
     unblock_account: "Unblocked",
