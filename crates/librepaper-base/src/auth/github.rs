@@ -36,6 +36,11 @@ pub struct GithubApp {
     /// The base URL for public account lookups. It is configurable so tests
     /// can use a local stand-in instead of GitHub.
     pub users_url: String,
+    /// Where the browser's code is exchanged for a token. A test stands in
+    /// for GitHub here, as it does for the other endpoints.
+    pub token_url: String,
+    /// Where the token's account is read. A test stands in for GitHub here.
+    pub user_url: String,
 }
 
 impl fmt::Debug for GithubApp {
@@ -46,6 +51,8 @@ impl fmt::Debug for GithubApp {
             .field("client_secret", &"[REDACTED]")
             .field("check_url", &self.check_url)
             .field("users_url", &self.users_url)
+            .field("token_url", &self.token_url)
+            .field("user_url", &self.user_url)
             .finish()
     }
 }
@@ -57,6 +64,8 @@ impl Default for GithubApp {
             client_secret: String::new(),
             check_url: GITHUB_CHECK.to_string(),
             users_url: GITHUB_USERS.to_string(),
+            token_url: GITHUB_TOKEN.to_string(),
+            user_url: GITHUB_USER.to_string(),
         }
     }
 }
@@ -74,20 +83,28 @@ impl GithubApp {
 
     /// Where a browser is sent to sign in. No scopes are asked for: the default
     /// gives the account's public profile, which is the login name, and
-    /// nothing else.
-    pub fn authorize_url(&self, redirect: &str, state: &str) -> String {
+    /// nothing else. The PKCE challenge binds the code exchange to this
+    /// redirect, as it does for Google.
+    pub fn authorize_url(&self, redirect: &str, state: &str, verifier: &str) -> String {
         let mut target = url::Url::parse(GITHUB_AUTHORIZE).expect("a constant URL");
         target
             .query_pairs_mut()
             .append_pair("client_id", &self.client_id)
             .append_pair("redirect_uri", redirect)
             .append_pair("scope", "")
-            .append_pair("state", state);
+            .append_pair("state", state)
+            .append_pair("code_challenge", &crate::auth::pkce_challenge(verifier))
+            .append_pair("code_challenge_method", "S256");
         target.to_string()
     }
 
     /// Turns the code GitHub redirected back with into an access token.
-    pub async fn exchange(&self, code: &str, redirect: &str) -> Result<String, String> {
+    pub async fn exchange(
+        &self,
+        code: &str,
+        redirect: &str,
+        verifier: &str,
+    ) -> Result<String, String> {
         let _permit = crate::auth::try_provider_request()
             .ok_or_else(|| "authentication service is busy; retry shortly".to_string())?;
         #[derive(Deserialize, Default)]
@@ -98,13 +115,13 @@ impl GithubApp {
             error_description: String,
         }
         let response = client()
-            .post(GITHUB_TOKEN)
+            .post(&self.token_url)
             .timeout(PROVIDER_HTTP_TIMEOUT)
             .header("user-agent", USER_AGENT)
             .header("accept", "application/json")
             .json(&serde_json::json!({
                 "client_id": self.client_id, "client_secret": self.client_secret,
-                "code": code, "redirect_uri": redirect,
+                "code": code, "redirect_uri": redirect, "code_verifier": verifier,
             }))
             .send()
             .await
@@ -226,34 +243,36 @@ pub enum ProviderError {
     MalformedResponse { status: u16 },
 }
 
-/// Asks GitHub who a token belongs to, via the browser OAuth flow's own token:
-/// the code exchange already proves it was issued to this app, so the plain
-/// /user endpoint is enough here. It reads the numeric id as well as the
-/// login, since both go into the session cookie.
-pub async fn login_for(token: &str) -> Result<Identity, String> {
-    let _permit = crate::auth::try_provider_request()
-        .ok_or_else(|| "authentication service is busy; retry shortly".to_string())?;
-    let response = client()
-        .get(GITHUB_USER)
-        .timeout(PROVIDER_HTTP_TIMEOUT)
-        .header("user-agent", USER_AGENT)
-        .header("authorization", format!("Bearer {token}"))
-        .header("accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
-    let status = response.status().as_u16();
-    if status != 200 {
-        return Err(format!("github returned {status}"));
+impl GithubApp {
+    /// Asks GitHub who a token belongs to, via the browser OAuth flow's own
+    /// token: the code exchange already proves it was issued to this app, so
+    /// the plain /user endpoint is enough here. It reads the numeric id as
+    /// well as the login, since both go into the session cookie.
+    pub async fn login(&self, token: &str) -> Result<Identity, String> {
+        let _permit = crate::auth::try_provider_request()
+            .ok_or_else(|| "authentication service is busy; retry shortly".to_string())?;
+        let response = client()
+            .get(&self.user_url)
+            .timeout(PROVIDER_HTTP_TIMEOUT)
+            .header("user-agent", USER_AGENT)
+            .header("authorization", format!("Bearer {token}"))
+            .header("accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|err| err.to_string())?;
+        let status = response.status().as_u16();
+        if status != 200 {
+            return Err(format!("github returned {status}"));
+        }
+        let user: GithubUser = response
+            .json()
+            .await
+            .map_err(|_| "github returned no login".to_string())?;
+        if user.login.is_empty() {
+            return Err("github returned no login".to_string());
+        }
+        Ok(Identity::github(&user.login, &user.id.to_string()))
     }
-    let user: GithubUser = response
-        .json()
-        .await
-        .map_err(|_| "github returned no login".to_string())?;
-    if user.login.is_empty() {
-        return Err("github returned no login".to_string());
-    }
-    Ok(Identity::github(&user.login, &user.id.to_string()))
 }
 
 /// Turns a GitHub login into the account behind it. A grant by name is keyed

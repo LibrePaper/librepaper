@@ -6,9 +6,12 @@
 //! `LIBREPAPER_TEST_POSTGRES_URL`, like the other server HTTP fixtures.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use axum::Router;
+use axum::extract::State;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -58,12 +61,62 @@ struct Fixture {
     /// The fixture's owner, whose application credentials the admin origin
     /// must ignore.
     owner: Identity,
+    /// How many code exchanges the GitHub stand-in has answered.
+    exchanges: Arc<AtomicUsize>,
     _stop: tokio::sync::oneshot::Sender<()>,
     _writer: WriterLease,
     _history: tempfile::TempDir,
 }
 
 async fn fixture() -> Option<Fixture> {
+    fixture_for(OPERATOR_ID, "operator").await
+}
+
+/// A GitHub stand-in for the code exchange and the account read. A token is
+/// issued only when the exchange carries a PKCE verifier, and every exchange
+/// is counted, so a test can see whether one happened at all.
+async fn github_stand_in(user_id: i64, login: &str) -> (String, Arc<AtomicUsize>) {
+    #[derive(Clone)]
+    struct Stand {
+        exchanges: Arc<AtomicUsize>,
+        user_id: i64,
+        login: String,
+    }
+    async fn token(State(stand): State<Stand>, Json(body): Json<Value>) -> Json<Value> {
+        stand.exchanges.fetch_add(1, Ordering::SeqCst);
+        let verified = body["code_verifier"]
+            .as_str()
+            .is_some_and(|verifier| !verifier.is_empty());
+        if verified {
+            Json(json!({"access_token": "t"}))
+        } else {
+            Json(json!({"error_description": "no verifier"}))
+        }
+    }
+    async fn user(State(stand): State<Stand>) -> Json<Value> {
+        Json(json!({"login": stand.login, "id": stand.user_id}))
+    }
+    let exchanges = Arc::new(AtomicUsize::new(0));
+    let stand = Stand {
+        exchanges: exchanges.clone(),
+        user_id,
+        login: login.to_string(),
+    };
+    let router = Router::new()
+        .route("/token", post(token))
+        .route("/user", get(user))
+        .with_state(stand);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    (format!("http://{address}"), exchanges)
+}
+
+/// The fixture with GitHub answering for the given account.
+async fn fixture_for(user_id: i64, login: &str) -> Option<Fixture> {
+    let (github, exchanges) = github_stand_in(user_id, login).await;
     let deployment = deployment(
         DocumentInput {
             slug: SLUG.into(),
@@ -96,6 +149,8 @@ async fn fixture() -> Option<Fixture> {
     server.app = librepaper_base::auth::GithubApp {
         client_id: "admin-test-client".into(),
         client_secret: "admin-test-secret".into(),
+        token_url: format!("{github}/token"),
+        user_url: format!("{github}/user"),
         ..Default::default()
     };
     server.graphs = Some(Arc::new(
@@ -127,6 +182,7 @@ async fn fixture() -> Option<Fixture> {
             .build()
             .unwrap(),
         owner,
+        exchanges,
         _stop: stop,
         _writer: writer,
         _history: history,
@@ -337,6 +393,10 @@ async fn the_admin_host_sends_a_stranger_to_github_and_answers_nothing_else() {
     let page = f.get_as_operator(ADMIN_HOST, "/").send().await.unwrap();
     assert_eq!(page.status().as_u16(), 200);
     assert_private_headers(&page, "the page");
+    let page_csp = header(&page, "content-security-policy")
+        .unwrap_or_default()
+        .to_string();
+    assert!(page_csp.contains("frame-ancestors 'none'"), "{page_csp:?}");
     assert!(header(&page, "content-type")
         .unwrap_or_default()
         .starts_with("text/html"));
@@ -354,6 +414,19 @@ async fn the_admin_host_sends_a_stranger_to_github_and_answers_nothing_else() {
     );
     assert!(!html.contains("style="), "no inline style attribute");
     assert!(!html.contains("<style"), "no inline style element");
+    let csp = |response: &reqwest::Response| {
+        header(response, "content-security-policy")
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // The sign-in redirect and a refusal are not framed either.
+    let redirect = f.get(ADMIN_HOST, "/").send().await.unwrap();
+    assert_eq!(redirect.status().as_u16(), 302);
+    assert!(csp(&redirect).contains("frame-ancestors 'none'"), "the redirect");
+    let refusal = f.get(ADMIN_HOST, "/session").send().await.unwrap();
+    assert_eq!(refusal.status().as_u16(), 401);
+    assert!(csp(&refusal).contains("frame-ancestors 'none'"), "the refusal");
 }
 
 #[tokio::test]
@@ -380,6 +453,126 @@ async fn the_callback_refuses_a_state_it_did_not_issue() {
     let cleared = header(&response, "set-cookie").unwrap_or_default();
     assert!(cleared.contains("Max-Age=0"), "{cleared:?}");
     assert_private_headers(&response, "a callback with another state");
+
+    // A matching state with no verifier part did not start this flow.
+    let response = f
+        .get(ADMIN_HOST, path)
+        .header("cookie", "__Host-librepaper_admin_state=abc")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+    assert_private_headers(&response, "a callback with no verifier");
+
+    assert_eq!(f.exchanges.load(Ordering::SeqCst), 0, "no exchange happened");
+}
+
+/// The state cookie a sign-in start sets, as the `name=value` pair the browser
+/// sends back, and the state it carries.
+fn sign_in_start(response: &reqwest::Response) -> (String, String) {
+    let location = header(response, "location").unwrap_or_default().to_string();
+    let url = url::Url::parse(&location).unwrap();
+    let state = url
+        .query_pairs()
+        .find(|(name, _)| name == "state")
+        .map(|(_, value)| value.into_owned())
+        .expect("the authorize URL carries a state");
+    let set_cookie = header(response, "set-cookie").unwrap_or_default();
+    let pair = set_cookie.split(';').next().unwrap_or_default().to_string();
+    (state, pair)
+}
+
+/// The Set-Cookie lines a reply carries, one per cookie.
+fn set_cookies(response: &reqwest::Response) -> Vec<String> {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok().map(str::to_owned))
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_listed_account_signs_in_through_github() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+    let start = f.get(ADMIN_HOST, "/").send().await.unwrap();
+    assert_eq!(start.status().as_u16(), 302);
+    let location = header(&start, "location").unwrap_or_default();
+    assert!(location.contains("code_challenge="), "{location}");
+    assert!(location.contains("code_challenge_method=S256"), "{location}");
+    let (state, state_pair) = sign_in_start(&start);
+
+    let callback = f
+        .get(ADMIN_HOST, &format!("/auth/callback?code=c&state={state}"))
+        .header("cookie", &state_pair)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(callback.status().as_u16(), 302);
+    assert_eq!(header(&callback, "location"), Some("/"));
+    assert_eq!(f.exchanges.load(Ordering::SeqCst), 1);
+    let cookies = set_cookies(&callback);
+    let session = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("__Host-librepaper_admin="))
+        .unwrap_or_else(|| panic!("no session cookie in {cookies:?}"));
+    for attribute in [
+        "HttpOnly",
+        "Secure",
+        "SameSite=Lax",
+        "Path=/",
+        "Max-Age=43200",
+    ] {
+        assert!(session.contains(attribute), "{session:?}");
+    }
+    assert!(
+        cookies.iter().any(|cookie| cookie
+            .starts_with("__Host-librepaper_admin_state=")
+            && cookie.contains("Max-Age=0")),
+        "the state cookie is cleared: {cookies:?}"
+    );
+    assert_private_headers(&callback, "the sign-in callback");
+    let session_pair = session.split(';').next().unwrap_or_default().to_string();
+
+    let page = f
+        .get(ADMIN_HOST, "/session")
+        .header("cookie", &session_pair)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status().as_u16(), 200);
+    let body: Value = page.json().await.unwrap();
+    assert_eq!(body["login"], "operator");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_unlisted_account_is_refused_at_the_callback() {
+    let Some(f) = fixture_for(999, "stranger").await else {
+        return;
+    };
+    let start = f.get(ADMIN_HOST, "/").send().await.unwrap();
+    let (state, state_pair) = sign_in_start(&start);
+
+    let callback = f
+        .get(ADMIN_HOST, &format!("/auth/callback?code=c&state={state}"))
+        .header("cookie", &state_pair)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(callback.status().as_u16(), 403);
+    assert_eq!(f.exchanges.load(Ordering::SeqCst), 1);
+    let cookies = set_cookies(&callback);
+    assert!(
+        !cookies
+            .iter()
+            .any(|cookie| cookie.starts_with("__Host-librepaper_admin=")),
+        "no session cookie for an unlisted account: {cookies:?}"
+    );
+    assert_private_headers(&callback, "an unlisted callback");
 }
 
 #[tokio::test]

@@ -12,11 +12,16 @@ use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
 use base64::Engine;
-use librepaper_base::auth::{cookie_name, login_for, sign, verifies, Identity};
+use librepaper_base::auth::{cookie_name, pkce_verifier, sign, verifies, Identity};
 use librepaper_base::util::random_token;
 use librepaper_engine::storage::postgres::{BlockOutcome, Error};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
+
+/// How many admin sign-in callbacks may be exchanging codes at once. The
+/// console has its own cap, so it can never take all of the app's sign-in
+/// capacity, which is the provider pool.
+static ADMIN_CALLBACKS: Semaphore = Semaphore::const_new(2);
 
 use super::{unix_seconds, Bucket, SeriesData, HISTORY_RETENTION};
 use crate::server::signin::{clear_cookie, cookie, set_cookie};
@@ -52,8 +57,9 @@ const MAX_POINTS: i64 = 1000;
 /// What deciding a request found out without waiting on anything.
 enum Decision {
     Reply(Response<Body>),
-    /// The GitHub sign-in comes back with this code.
-    Callback(String),
+    /// The GitHub sign-in comes back with this code and the PKCE verifier
+    /// that started it.
+    Callback(String, String),
     Data(Option<String>),
     Accounts,
     Moderation,
@@ -85,7 +91,7 @@ pub fn admin<'a>(
     async move {
         let mut response = match decision {
             Decision::Reply(response) => response,
-            Decision::Callback(code) => callback(server, &code).await,
+            Decision::Callback(code, verifier) => callback(server, &code, &verifier).await,
             Decision::Data(query) => data(server, query.as_deref()).await,
             Decision::Accounts => accounts(server).await,
             Decision::Moderation => moderation(server).await,
@@ -98,6 +104,15 @@ pub fn admin<'a>(
             ("x-robots-tag", "noindex, nofollow, noarchive"),
         ] {
             set(&mut response, name, value);
+        }
+        // The page sets its own policy, which already has frame-ancestors.
+        // Every other reply gets this one, so nothing here can be framed.
+        if !response.headers().contains_key("content-security-policy") {
+            set(
+                &mut response,
+                "content-security-policy",
+                "frame-ancestors 'none'",
+            );
         }
         response
     }
@@ -119,11 +134,19 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
             set(&mut response, "allow", "GET");
             return Decision::Reply(response);
         }
+        // The cookie is `state|verifier`. Both halves must be present, and
+        // the state must be the one the query brings back.
         let expected = cookie(&parts.headers, &cookie_name(https, STATE_COOKIE));
         let supplied = query_value(parts, "state");
-        return match (expected, supplied) {
-            (Some(expected), Some(supplied)) if expected == supplied => {
-                Decision::Callback(query_value(parts, "code").unwrap_or_default())
+        let parsed = expected.as_deref().and_then(|value| value.split_once('|'));
+        return match (parsed, supplied) {
+            (Some((state, verifier)), Some(supplied))
+                if !state.is_empty() && !verifier.is_empty() && state == supplied =>
+            {
+                Decision::Callback(
+                    query_value(parts, "code").unwrap_or_default(),
+                    verifier.to_string(),
+                )
             }
             _ => Decision::Reply(refused_state(https)),
         };
@@ -137,18 +160,19 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
         }
         let callback = format!("{admin}/auth/callback");
         let state = random_token();
+        let verifier = pkce_verifier();
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::FOUND;
         set(
             &mut response,
             "location",
-            &server.app.authorize_url(&callback, &state),
+            &server.app.authorize_url(&callback, &state, &verifier),
         );
         append_cookie(
             &mut response,
             &set_cookie(
                 &cookie_name(https, STATE_COOKIE),
-                &state,
+                &format!("{state}|{verifier}"),
                 STATE_SECONDS,
                 https,
             ),
@@ -223,7 +247,7 @@ fn append_cookie(response: &mut Response<Body>, value: &str) {
 /// The GitHub sign-in comes back here. The code is exchanged for the account,
 /// and only a listed account gets a session. Either way the state cookie is
 /// spent.
-async fn callback(server: &Server, code: &str) -> Response<Body> {
+async fn callback(server: &Server, code: &str, verifier: &str) -> Response<Body> {
     let admin = server.origins.admin().map_or("", |origin| origin.as_str());
     let https = admin.starts_with("https://");
     let state_cookie = cookie_name(https, STATE_COOKIE);
@@ -231,8 +255,16 @@ async fn callback(server: &Server, code: &str) -> Response<Body> {
         append_cookie(&mut response, &clear_cookie(&state_cookie, https));
         response
     };
+    // A permit for the whole callback. When the cap is full, the answer is
+    // a refusal rather than a wait, so a burst cannot queue behind itself.
+    let Ok(_permit) = ADMIN_CALLBACKS.try_acquire() else {
+        return refuse(text(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many sign-ins at once; try again",
+        ));
+    };
     let redirect = format!("{admin}/auth/callback");
-    let token = match server.app.exchange(code, &redirect).await {
+    let token = match server.app.exchange(code, &redirect, verifier).await {
         Ok(token) => token,
         Err(message) => {
             return refuse(text(
@@ -241,7 +273,7 @@ async fn callback(server: &Server, code: &str) -> Response<Body> {
             ))
         }
     };
-    let who = match login_for(&token).await {
+    let who = match server.app.login(&token).await {
         Ok(who) => who,
         Err(_) => {
             return refuse(text(

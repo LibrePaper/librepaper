@@ -203,9 +203,15 @@ impl Server {
                 // URL-encoded before it rides beside the state token in one
                 // cookie value.
                 let next = query.get("next").cloned().unwrap_or_default();
-                let value = format!("{state}|{}", url_escape(&next));
-                let mut response =
-                    redirect(&self.app.authorize_url(&arrival.callback_url(), &state));
+                // The PKCE verifier rides in the state cookie as the third
+                // field, as it does for Google.
+                let verifier = pkce_verifier();
+                let value = format!("{state}|{}|{verifier}", url_escape(&next));
+                let mut response = redirect(&self.app.authorize_url(
+                    &arrival.callback_url(),
+                    &state,
+                    &verifier,
+                ));
                 add_cookie(
                     &mut response,
                     &set_cookie(&cookie_name(https, STATE_COOKIE), &value, 600, https),
@@ -240,22 +246,34 @@ impl Server {
                 let Some(value) = cookie(headers, &cookie_name(https, STATE_COOKIE)) else {
                     return Some(plain(400, "sign-in expired; try again"));
                 };
-                let (state, encoded_next) = value.split_once('|').unwrap_or((&value, ""));
+                // Three fields, as in the Google callback: the verifier is the
+                // third, and a cookie without it did not start this flow.
+                let mut fields = value.splitn(3, '|');
+                let state = fields.next().unwrap_or_default();
+                let encoded_next = fields.next().unwrap_or_default();
+                let verifier = fields.next().unwrap_or_default();
                 // The state ties this callback to the redirect that started
                 // it, so a link someone else crafted cannot sign you in as
                 // them.
-                if state.is_empty() || query.get("state").map(String::as_str) != Some(state) {
+                if state.is_empty()
+                    || verifier.is_empty()
+                    || query.get("state").map(String::as_str) != Some(state)
+                {
                     return Some(plain(400, "sign-in state did not match; try again"));
                 }
                 let next = url_unescape(encoded_next);
                 let code = query.get("code").cloned().unwrap_or_default();
-                let token = match self.app.exchange(&code, &arrival.callback_url()).await {
+                let token = match self
+                    .app
+                    .exchange(&code, &arrival.callback_url(), verifier)
+                    .await
+                {
                     Ok(token) => token,
                     Err(err) => {
                         return Some(plain(400, &format!("github refused the sign-in: {err}")))
                     }
                 };
-                let who = match librepaper_base::auth::login_for(&token).await {
+                let who = match self.app.login(&token).await {
                     Ok(who) => who,
                     Err(_) => return Some(plain(502, "github would not say who you are")),
                 };
