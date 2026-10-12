@@ -14,7 +14,7 @@ local_companion = false
 
 # app is the application and its API (other Host headers get 421); docs
 # isolates rendered documents; site is the project site used for sign-out
-# links; admin is the operator graphs origin, behind a password below.
+# links; admin is the operator console, behind GitHub sign-in below.
 [origins]
 app = "https://app.librepaper.org"
 docs = "https://docs.librepaper.org"
@@ -74,9 +74,13 @@ deployment_storage_mib = 102400    # storage for all accounts together; uploads 
 [assets]
 mirror = "https://@LIBREPAPER_MIRROR_S3_BUCKET@.s3.@LIBREPAPER_MIRROR_S3_REGION@.io.cloud.ovh.net/"
 
-# Operator graphs: read-only page served on the admin origin, behind a password from SOPS.
+# Who may sign in to the admin console, by numeric GitHub user ID. A login
+# can be renamed and then taken by someone else; an ID cannot. Look one up
+# with: gh api users/<login> --jq .id
 [admin]
-password = "@LIBREPAPER_ADMIN_PASSWORD@"
+github_ids = [
+  987057, # vincentarelbundock
+]
 
 # Keep in sync with the `edge` network in compose.yaml.
 [proxy]

@@ -8,8 +8,8 @@
 app = "https://paper.example"
 docs = "https://docs.paper.example"
 
-# Optional. The operator page (graphs, accounts, moderation) at this name,
-# behind the password in [admin].
+# Optional. The operator console (graphs, accounts, moderation) at this name.
+# People sign in with GitHub; list who may in [admin] below.
 # One more DNS record pointing here; Caddy obtains its certificate on first visit.
 # admin = "https://admin.paper.example"
 
@@ -43,9 +43,11 @@ commenters = ["any"]
 [proxy]
 trusted_networks = ["172.29.0.0/16"]
 
-# Optional, with origins.admin. Paste 24 random bytes in base64 (head -c 24 /dev/urandom | base64).
+# Optional, with origins.admin and [auth.github]. Numeric GitHub user IDs that
+# may sign in (gh api users/<login> --jq .id). Also add
+# https://admin.paper.example/auth/callback to the GitHub OAuth app's callback URLs.
 # [admin]
-# password = "replace"
+# github_ids = [123456]
 
 # Optional. Every limit, with its default; uncomment a line to change it.
 # [limits]

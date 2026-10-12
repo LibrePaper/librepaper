@@ -31,6 +31,21 @@
 
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
+  // The session ended, so loading the page signs in again through GitHub.
+  function signInAgain() {
+    location.assign("/");
+  }
+
+  // A fetch that sends the operator to sign in again when the session has ended.
+  async function request(url, options) {
+    const response = await fetch(url, options);
+    if (response.status === 401) {
+      signInAgain();
+      throw new Error("Signed out");
+    }
+    return response;
+  }
+
   function round(value, digits) {
     const scale = Math.pow(10, digits);
     return Math.round(value * scale) / scale;
@@ -177,7 +192,7 @@
     // between gaps and draw nothing.
     const points = Math.min(MAX_POINTS, Math.max(MIN_POINTS, Math.floor((to - from) / RECORD)));
     try {
-      const response = await fetch("/data?from=" + from + "&to=" + to + "&points=" + points, { cache: "no-store" });
+      const response = await request("/data?from=" + from + "&to=" + to + "&points=" + points, { cache: "no-store" });
       if (!response.ok) throw new Error("HTTP " + response.status);
       const data = await response.json();
       if (id !== latest) return;
@@ -279,7 +294,7 @@
     const expiry = document.getElementById("accounts-expiry");
     const rows = document.getElementById("accounts-rows");
     try {
-      const response = await fetch("/accounts", { cache: "no-store" });
+      const response = await request("/accounts", { cache: "no-store" });
       if (!response.ok) throw new Error("HTTP " + response.status);
       const data = await response.json();
       total.textContent = "Stored: " + format(data.total_bytes, "bytes") + " of " + format(data.limit_bytes, "bytes");
@@ -390,7 +405,7 @@
 
   // Sends one POST. A failure carries the server's message, or the text, or the status.
   async function post(request) {
-    const response = await fetch("/moderation", {
+    const response = await request("/moderation", {
       method: "POST",
       cache: "no-store",
       headers: { "content-type": "application/json" },
@@ -431,7 +446,7 @@
   async function loadModeration() {
     const note = document.getElementById("moderation-status");
     try {
-      const response = await fetch("/moderation", { cache: "no-store" });
+      const response = await request("/moderation", { cache: "no-store" });
       if (!response.ok) throw new Error("HTTP " + response.status);
       const data = await response.json();
       fill(document.getElementById("blocked-rows"), data.blocked_accounts, 5, (account) => {
@@ -560,5 +575,19 @@
 
   window.addEventListener("hashchange", () => show(tabFromHash()));
 
+  // Names the signed-in operator. On any failure the line stays empty.
+  async function loadOperator() {
+    const operator = document.getElementById("operator");
+    try {
+      const response = await request("/session", { cache: "no-store" });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const session = await response.json();
+      operator.textContent = "Signed in as " + session.login;
+    } catch (error) {
+      operator.textContent = "";
+    }
+  }
+
   show(tabFromHash());
+  loadOperator();
 })();

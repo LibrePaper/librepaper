@@ -25,7 +25,7 @@ publishers = ["any"]
 commenters = ["anyone"]
 
 [admin]
-password = "librepaper-demo-only-password"
+github_ids = [987057] # the demo operator; put your own numeric GitHub ID here
 
 [demo]
 simulate_activity_days = 21
