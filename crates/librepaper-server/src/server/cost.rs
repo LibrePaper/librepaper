@@ -281,8 +281,9 @@ async fn middleware_inner(
     // would be a ceiling, and there is no ceiling any more. Four times the
     // declared length is reserved from the memory budget -- the same budget
     // decoded documents live in -- and released when the request ends. The
-    // admin side reads no body, so it reserves nothing and is not refused
-    // before the password is checked.
+    // admin side reads at most a small moderation request, and only after the
+    // password, so it reserves nothing and is not refused before the password is
+    // checked.
     let mutation = matches!(method, Method::POST | Method::PUT | Method::PATCH);
     let _incoming = if mutation && !admin_side {
         let Some(length) = request.body().size_hint().exact() else {
@@ -339,7 +340,7 @@ async fn middleware_inner(
             server.metrics.record_refusal("request_budget");
             return refusal("request_budget", "network");
         }
-        return super::graphs::routes::admin(&server, &request).await;
+        return super::graphs::routes::admin(&server, request).await;
     }
     // Authenticate before request-budget admission so the budget can be
     // keyed on the authenticated principal rather than only the network.
