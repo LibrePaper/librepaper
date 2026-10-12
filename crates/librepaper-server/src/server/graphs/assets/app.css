@@ -1,4 +1,4 @@
-/* The graphs page. Colors come from variables so the dark scheme is one block. */
+/* The admin page. Colors come from variables so the dark scheme is one block. */
 :root {
   color-scheme: light dark;
   --bg: #f4f5f3;
@@ -23,29 +23,40 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
 header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 16px; }
 h1 { margin: 0 auto 0 0; font-size: 16px; }
 nav { display: flex; gap: 4px; }
+#tabs { display: flex; flex-wrap: wrap; gap: 4px; }
 button { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 button.active { color: var(--bg); background: var(--line); border-color: var(--line); }
+button.danger { border-color: var(--alert); color: var(--alert); }
+button:disabled { opacity: 0.6; cursor: default; }
+input, select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 8px; min-width: 0; }
+input.reason { flex: 1 1 220px; }
 #status { color: var(--muted); }
 #status.failed { color: var(--alert); }
-main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0 16px 16px; }
-@media (max-width: 800px) { main { grid-template-columns: minmax(0, 1fr); } }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 0 16px 12px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0 16px 16px; }
+@media (max-width: 800px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.stack { display: grid; gap: 12px; padding: 0 16px 16px; }
+.form-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 8px; }
 .panel { min-width: 0; padding: 8px 10px; background: var(--card); border: 1px solid var(--rule); border-radius: 8px; }
 .panel h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
 .plot { width: 100%; }
 .u-legend { color: var(--muted); font-size: 12px; }
 .u-select { background: var(--fill); }
-#accounts { margin: 0 16px 16px; }
 #accounts-total { margin: 0 0 8px; color: var(--muted); }
 #accounts-total.failed { color: var(--alert); }
 #accounts-expiry { margin: 0 0 8px; color: var(--muted); }
+#moderation-status { margin: 0; color: var(--muted); }
+#moderation-status.failed { color: var(--alert); }
 td.due { color: var(--alert); }
 .table { overflow-x: auto; }
 .table table { width: 100%; border-collapse: collapse; }
 th, td { padding: 6px 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; white-space: nowrap; }
+td.reason { white-space: normal; min-width: 200px; }
 th { color: var(--muted); font-weight: 600; }
 .num { text-align: right; }
 .muted { color: var(--muted); }
