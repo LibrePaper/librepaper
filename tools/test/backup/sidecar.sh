@@ -149,9 +149,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 const snapshots = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 assert.equal(snapshots.length, 1, 'successful export creates one repository snapshot');
-assert.ok(snapshots[0].paths.includes('/var/backups/librepaper/current'));
-assert.ok(snapshots[0].paths.includes('/etc/librepaper/librepaper.toml'), 'snapshot includes app config');
-assert.ok(snapshots[0].paths.includes('/etc/resticprofile/resticprofile.toml'), 'snapshot includes backup config');
+assert.deepEqual(snapshots[0].paths, ['/librepaper-backup.tar'], 'snapshot stores the streamed archive');
 console.log('backup sidecar exported the verified application bundle and created a snapshot');
 JS
 
@@ -198,9 +196,10 @@ wait "$backup_pid"
 # Restore the actual sidecar snapshot into a fresh database and directory.
 docker exec "${POSTGRES_CONTAINER:?}" createdb -U postgres backup_restored
 mkdir -m 0777 "$work/restic-restore"
-docker exec "$sidecar" restic -r /var/backups/librepaper/repository \
-	--password-file /test/repository-password restore latest --target /test/restic-restore
+docker exec "$sidecar" sh -c 'restic -r /var/backups/librepaper/repository --password-file /test/repository-password dump latest /librepaper-backup.tar | tar -x -C /test/restic-restore'
 docker exec -u 0 "$sidecar" chown -R "$(id -u):$(id -g)" /var/lib/librepaper /test/restic-restore
+test -s "$work/restic-restore/etc/librepaper/librepaper.toml"
+test -s "$work/restic-restore/etc/resticprofile/resticprofile.toml"
 restic_session_key="$work/restic-restore/var/lib/librepaper/secrets/session.key"
 test -s "$restic_session_key"
 cmp "$work/source-session-key" "$restic_session_key"

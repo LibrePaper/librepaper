@@ -120,9 +120,11 @@ RUN set -eu; \
 COPY --from=resticprofile-binary /usr/bin/resticprofile /usr/bin/resticprofile
 COPY tools/docker/backup-profiles.toml /etc/resticprofile/profiles.toml
 COPY tools/docker/backup-entrypoint.sh /usr/local/bin/librepaper-backup-entrypoint
+COPY tools/docker/backup-export.sh /usr/local/bin/librepaper-backup-export
 RUN chmod 0644 /etc/resticprofile/profiles.toml \
-	&& chmod 0755 /usr/local/bin/librepaper-backup-entrypoint
-# Only the backup service stages its export here; the app never writes it.
+	&& chmod 0755 /usr/local/bin/librepaper-backup-entrypoint /usr/local/bin/librepaper-backup-export
+# Only the backup service uses this volume, for restic's cache and status file.
+# The app never writes it.
 VOLUME /var/backups/librepaper
 USER 10001:65534
 # Older Docker Compose fails `up --wait` on a service with no healthcheck,
