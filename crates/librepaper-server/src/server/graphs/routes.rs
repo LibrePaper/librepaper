@@ -99,10 +99,7 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
             set(&mut response, "allow", "GET, HEAD, POST");
             return Decision::Reply(response);
         }
-        return match moderation_actor(server, parts) {
-            Ok(actor) => Decision::Moderate(actor),
-            Err(response) => Decision::Reply(response),
-        };
+        return moderation_change(server, parts);
     }
     if !matches!(parts.method, Method::GET | Method::HEAD) {
         let mut response = text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
@@ -162,11 +159,11 @@ fn basic_user(headers: &HeaderMap) -> String {
     }
 }
 
-/// The checks a moderation change passes before its body is read, and the
-/// operator's name. The browser sends saved Basic credentials with a request
-/// another site starts, so a change must come from this page, and it must be
-/// JSON.
-fn moderation_actor(server: &Server, parts: &Parts) -> Result<String, Response<Body>> {
+/// The checks a moderation change passes before its body is read, then the
+/// change with the operator's name. The browser sends saved Basic credentials
+/// with a request another site starts, so a change must come from this page,
+/// and it must be JSON.
+fn moderation_change(server: &Server, parts: &Parts) -> Decision {
     let origin = parts
         .headers
         .get(header::ORIGIN)
@@ -174,7 +171,7 @@ fn moderation_actor(server: &Server, parts: &Parts) -> Result<String, Response<B
     let admin = server.origins.admin().map(|origin| origin.as_str());
     match (origin, admin) {
         (Some(origin), Some(admin)) if origin == admin => {}
-        _ => return Err(text(StatusCode::FORBIDDEN, "cross-origin request refused")),
+        _ => return Decision::Reply(text(StatusCode::FORBIDDEN, "cross-origin request refused")),
     }
     let json = parts
         .headers
@@ -189,9 +186,9 @@ fn moderation_actor(server: &Server, parts: &Parts) -> Result<String, Response<B
                 .eq_ignore_ascii_case("application/json")
         });
     if !json {
-        return Err(text(StatusCode::UNSUPPORTED_MEDIA_TYPE, "send JSON"));
+        return Decision::Reply(text(StatusCode::UNSUPPORTED_MEDIA_TYPE, "send JSON"));
     }
-    Ok(basic_user(&parts.headers))
+    Decision::Moderate(basic_user(&parts.headers))
 }
 
 fn password_matches(supplied: &[u8], configured: &[u8]) -> bool {
