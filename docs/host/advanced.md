@@ -67,6 +67,8 @@ docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n 
 
 Backups contain the database dump, referenced objects, both TOML files, and `session.key`. Keep the session key to preserve existing sessions and saved share secrets.
 
+Each backup streams the database and every stored file straight into restic as one archive. The server needs no free disk space for a copy.
+
 Schedule and retention come from a base profile inside the backup image. Your `resticprofile.toml` is merged over it, so any setting you add there wins. The defaults:
 
 - A backup runs daily at midnight UTC.
@@ -90,7 +92,7 @@ keep-weekly = 52
 docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n resticprofile show   # the merged result
 ```
 
-- Leave `source`, `run-before` and `run-finally` alone: they produce the database export that every snapshot contains.
+- Leave `source` alone: it streams the database export that every snapshot contains.
 - If you change the schedule, change the Healthchecks period to match (see [backup alerts](#backup-alerts)).
 
 Notes:
