@@ -8,7 +8,7 @@
 app = "https://paper.example"
 docs = "https://docs.paper.example"
 
-# Optional. Operational graphs at this name, behind the password in [admin].
+# Optional. The operator page (graphs, accounts, moderation) at this name, behind the password in [admin].
 # One more DNS record pointing here; Caddy obtains its certificate on first visit.
 # admin = "https://admin.paper.example"
 

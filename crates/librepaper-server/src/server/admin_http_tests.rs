@@ -166,6 +166,34 @@ impl Fixture {
             .header("host", host)
             .body("")
     }
+
+    fn post_moderation(&self, value: Value) -> reqwest::RequestBuilder {
+        self.client
+            .post(format!("{}/moderation", self.base))
+            .header("host", ADMIN_HOST)
+            .header("origin", ADMIN)
+            .header("content-type", "application/json")
+            .basic_auth("operator", Some(PASSWORD))
+            .body(serde_json::to_vec(&value).unwrap())
+    }
+}
+
+/// Send one moderation change and return its status and JSON answer.
+async fn moderate(f: &Fixture, value: Value) -> (u16, Value) {
+    let response = f.post_moderation(value).send().await.unwrap();
+    let status = response.status().as_u16();
+    (status, response.json().await.unwrap())
+}
+
+/// The moderation listing, read with the password.
+async fn listing(f: &Fixture) -> Value {
+    let response = f
+        .get_as_operator(ADMIN_HOST, "/moderation")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    response.json().await.unwrap()
 }
 
 fn header<'a>(response: &'a reqwest::Response, name: &str) -> Option<&'a str> {
@@ -360,6 +388,7 @@ async fn only_the_six_routes_exist_and_every_other_answer_is_behind_the_password
         "/data?points=10",
         "/ready",
         "/health",
+        "/moderation",
     ] {
         let response = f.get(ADMIN_HOST, path).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 401, "{path}");
@@ -639,4 +668,174 @@ async fn requests_on_the_admin_host_are_counted_under_the_admin_route_and_no_oth
         ),
         "{text}"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_moderation_change_must_come_from_the_admin_page_as_json() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+    let body = serde_json::to_vec(&json!({"action": "hide", "target": SLUG, "reason": "probe"}))
+        .unwrap();
+    let raw = || {
+        f.client
+            .post(format!("{}/moderation", f.base))
+            .header("host", ADMIN_HOST)
+            .body(body.clone())
+    };
+
+    let no_origin = raw()
+        .header("content-type", "application/json")
+        .basic_auth("operator", Some(PASSWORD))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(no_origin.status().as_u16(), 403);
+
+    let evil = raw()
+        .header("origin", "https://evil.example")
+        .header("content-type", "application/json")
+        .basic_auth("operator", Some(PASSWORD))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(evil.status().as_u16(), 403);
+
+    let plain = raw()
+        .header("origin", ADMIN)
+        .header("content-type", "text/plain")
+        .basic_auth("operator", Some(PASSWORD))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(plain.status().as_u16(), 415);
+
+    let anonymous = raw()
+        .header("origin", ADMIN)
+        .header("content-type", "application/json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status().as_u16(), 401);
+
+    let put = f
+        .client
+        .put(format!("{}/moderation", f.base))
+        .header("host", ADMIN_HOST)
+        .basic_auth("operator", Some(PASSWORD))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 405);
+    assert!(header(&put, "allow").unwrap_or_default().contains("POST"));
+
+    let get = f
+        .get_as_operator(ADMIN_HOST, "/moderation")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get.status().as_u16(), 200);
+    let document: Value = get.json().await.unwrap();
+    for key in [
+        "blocked_accounts",
+        "banned_handles",
+        "hidden_projects",
+        "recent",
+    ] {
+        assert!(document[key].is_array(), "{key}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_moderation_endpoint_blocks_bans_hides_and_lists_each_change() {
+    let Some(f) = fixture().await else {
+        return;
+    };
+
+    let (status, answer) = moderate(
+        &f,
+        json!({"action": "block", "provider": "github", "target": f.owner.id, "reason": "spam"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(answer["outcome"], "blocked");
+
+    let (status, answer) = moderate(
+        &f,
+        json!({"action": "block", "provider": "github", "target": "@nobody-yet", "reason": "spam"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(answer["outcome"], "banned");
+    assert_eq!(answer["label"], "github:nobody-yet");
+
+    let (status, _) = moderate(
+        &f,
+        json!({"action": "block", "provider": "github", "target": "@nobody-yet", "reason": "spam"}),
+    )
+    .await;
+    assert_eq!(status, 409);
+
+    let (status, answer) = moderate(
+        &f,
+        json!({"action": "hide", "target": SLUG, "reason": "abuse"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(answer["outcome"], "hidden");
+
+    let (status, _) = moderate(
+        &f,
+        json!({"action": "explode", "target": "x", "reason": "x"}),
+    )
+    .await;
+    assert_eq!(status, 400);
+
+    let document = listing(&f).await;
+    let blocked = document["blocked_accounts"].as_array().unwrap();
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0]["id"], f.owner.id);
+    assert_eq!(blocked[0]["actor"], "operator");
+    let banned = document["banned_handles"].as_array().unwrap();
+    assert_eq!(banned.len(), 1);
+    assert_eq!(banned[0]["handle"], "nobody-yet");
+    let hidden = document["hidden_projects"].as_array().unwrap();
+    assert_eq!(hidden.len(), 1);
+    assert_eq!(hidden[0]["slug"], SLUG);
+    let recent = document["recent"].as_array().unwrap();
+    assert_eq!(recent.len(), 3);
+    assert_eq!(recent[0]["action"], "hide_project");
+    let ban_id = banned[0]["id"].as_str().unwrap().to_string();
+
+    let (status, answer) = moderate(
+        &f,
+        json!({"action": "unhide", "target": SLUG, "reason": "resolved"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(answer["outcome"], "unhidden");
+
+    let (status, answer) = moderate(
+        &f,
+        json!({"action": "unblock", "target": f.owner.id, "reason": "resolved"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(answer["outcome"], "unblocked");
+
+    let (status, answer) = moderate(
+        &f,
+        json!({"action": "unban", "target": ban_id, "reason": "mistake"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(answer["outcome"], "unbanned");
+
+    let document = listing(&f).await;
+    assert!(document["blocked_accounts"].as_array().unwrap().is_empty());
+    assert!(document["banned_handles"].as_array().unwrap().is_empty());
+    assert!(document["hidden_projects"].as_array().unwrap().is_empty());
+    assert_eq!(document["recent"].as_array().unwrap().len(), 6);
 }

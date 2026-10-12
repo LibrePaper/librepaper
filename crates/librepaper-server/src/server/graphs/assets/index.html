@@ -3,45 +3,154 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LibrePaper graphs</title>
+<title>LibrePaper admin</title>
 <link rel="stylesheet" href="/uplot.css">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 <header>
-  <h1>LibrePaper graphs</h1>
-  <nav id="ranges" aria-label="Range">
-    <button type="button" data-seconds="3600">1h</button>
-    <button type="button" data-seconds="21600">6h</button>
-    <button type="button" data-seconds="86400" class="active">24h</button>
-    <button type="button" data-seconds="604800">7d</button>
-    <button type="button" data-seconds="2592000">30d</button>
-    <button type="button" data-seconds="31536000">1y</button>
+  <h1>LibrePaper admin</h1>
+  <nav id="tabs" role="tablist" aria-label="Views">
+    <button type="button" role="tab" data-tab="resources" aria-controls="tab-resources">Resources</button>
+    <button type="button" role="tab" data-tab="accounts" aria-controls="tab-accounts">Accounts</button>
+    <button type="button" role="tab" data-tab="moderation" aria-controls="tab-moderation">Moderation</button>
   </nav>
-  <span id="status" role="status"></span>
 </header>
-<main id="grid"></main>
-<section id="accounts" class="panel">
-  <h2>Largest accounts</h2>
-  <p id="accounts-total"></p>
-  <p id="accounts-expiry"></p>
-  <div class="table">
-    <table>
-      <thead>
-        <tr>
-          <th>Account</th>
-          <th>Status</th>
-          <th class="num">Storage</th>
-          <th class="num">Documents</th>
-          <th>Last sign-in</th>
-          <th>Created</th>
-          <th>ID</th>
-        </tr>
-      </thead>
-      <tbody id="accounts-rows"></tbody>
-    </table>
-  </div>
-</section>
+<main>
+  <section id="tab-resources" role="tabpanel">
+    <div class="toolbar">
+      <nav id="ranges" aria-label="Range">
+        <button type="button" data-seconds="3600">1h</button>
+        <button type="button" data-seconds="21600">6h</button>
+        <button type="button" data-seconds="86400" class="active">24h</button>
+        <button type="button" data-seconds="604800">7d</button>
+        <button type="button" data-seconds="2592000">30d</button>
+        <button type="button" data-seconds="31536000">1y</button>
+      </nav>
+      <span id="status" role="status"></span>
+    </div>
+    <div id="grid" class="grid"></div>
+  </section>
+  <section id="tab-accounts" role="tabpanel" hidden>
+    <div class="stack">
+      <section id="accounts" class="panel">
+        <h2>Largest accounts</h2>
+        <p id="accounts-total"></p>
+        <p id="accounts-expiry"></p>
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Status</th>
+                <th class="num">Storage</th>
+                <th class="num">Documents</th>
+                <th>Last sign-in</th>
+                <th>Created</th>
+                <th>ID</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="accounts-rows"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </section>
+  <section id="tab-moderation" role="tabpanel" hidden>
+    <div class="stack">
+      <section class="panel">
+        <h2>Block someone</h2>
+        <form id="block-form" class="form-row">
+          <select id="block-provider" aria-label="Provider"><option value="github">GitHub</option><option value="google">Google</option></select>
+          <input id="block-target" required maxlength="256" placeholder="Username, email or account ID" aria-label="Who">
+          <input id="block-reason" class="reason" required maxlength="2000" placeholder="Reason, kept in the log" aria-label="Reason">
+          <button type="submit" class="danger">Block</button>
+        </form>
+        <p class="muted">An account with this name is blocked and signed out now. A name with no account yet is refused at its first sign-in.</p>
+      </section>
+      <section class="panel">
+        <h2>Hide a project</h2>
+        <form id="hide-form" class="form-row">
+          <input id="hide-target" required placeholder="Project slug" aria-label="Project">
+          <input id="hide-reason" class="reason" required maxlength="2000" placeholder="Reason, kept in the log" aria-label="Reason">
+          <button type="submit" class="danger">Hide</button>
+        </form>
+        <p class="muted">The project stays stored, but no one can open it, its owner included.</p>
+      </section>
+      <p id="moderation-status" role="status"></p>
+      <section class="panel">
+        <h2>Blocked accounts</h2>
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Since</th>
+                <th>By</th>
+                <th>Reason</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="blocked-rows"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Names refused at first sign-in</h2>
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Added</th>
+                <th>By</th>
+                <th>Reason</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="banned-rows"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Hidden projects</h2>
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Owner</th>
+                <th>Since</th>
+                <th>By</th>
+                <th>Reason</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="hidden-rows"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Recent actions</h2>
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>By</th>
+                <th>Action</th>
+                <th>Target</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody id="recent-rows"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </section>
+</main>
 <script src="/uplot.js"></script>
 <script src="/app.js"></script>
 </body>
