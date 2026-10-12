@@ -21,6 +21,7 @@ thiserror.workspace = true
 tracing.workspace = true
 etcetera.workspace = true
 which.workspace = true
+libc.workspace = true
 similar.workspace = true
 librepaper-base = { path = "../librepaper-base" }
 librepaper-document = { path = "../librepaper-document" }

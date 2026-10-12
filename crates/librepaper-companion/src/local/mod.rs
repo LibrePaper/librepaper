@@ -16,6 +16,7 @@ pub mod connections;
 pub mod credentials;
 pub mod discovery;
 pub mod embedded;
+pub mod environment;
 pub mod engine_adapter;
 pub mod folder;
 pub mod integrations;
