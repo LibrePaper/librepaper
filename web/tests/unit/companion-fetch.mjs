@@ -30,17 +30,17 @@ function setup(fetch, storage = new Map()) {
   return storage;
 }
 
-// An explicit option validation failure during the session POST retries that
-// request once without the option. The health check then disables it for all
-// subsequent paired traffic, including management and job submission.
+// An explicit option validation failure during health falls back once. The
+// remembered decision then applies to pairing verification, management, and
+// job submission.
 {
   const requests = [];
-  let rejectedSessionOption = false;
+  let rejectedHealthOption = false;
   setup(async (url, init = {}) => {
     requests.push({ url, init });
     if (url.endsWith("/librepaper/local/health")) {
-      if (init.targetAddressSpace && !rejectedSessionOption) {
-        rejectedSessionOption = true;
+      if (init.targetAddressSpace && !rejectedHealthOption) {
+        rejectedHealthOption = true;
         throw new TypeError("targetAddressSpace is not a valid RequestInit value");
       }
       return response({ service: "librepaper-local", protocol: [2], instance: "companion" });
@@ -57,6 +57,11 @@ function setup(fetch, storage = new Map()) {
   assert.deepEqual(await local.manage("/settings"), { setting: true });
   const built = await local.runBuild({ tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, builder: "quarto" });
   assert.equal(built.ok, false, "the stub omits Quarto outputs after exercising job submission and polling");
+  const jobPost = requests.find(({ url, init }) => url.endsWith("/librepaper/local/jobs") && init.method === "POST");
+  assert.ok(jobPost, "job submission sends a POST");
+  assert.ok(jobPost.init.body instanceof FormData, "job submission preserves its multipart body");
+  assert.equal(jobPost.init.mode, "cors");
+  assert.equal(jobPost.init.credentials, "omit");
 
   const healthRequests = requests.filter(({ url }) => url.endsWith("/librepaper/local/health"));
   assert.equal(healthRequests.length, 2, "health option validation falls back once");
@@ -68,9 +73,11 @@ function setup(fetch, storage = new Map()) {
 // The same explicit validation fallback is safe for the session POST itself.
 {
   let attempts = 0;
+  const sessionRequests = [];
   setup(async (url, init = {}) => {
     if (url.endsWith("companion/api/session")) {
       attempts += 1;
+      sessionRequests.push(init);
       if (init.targetAddressSpace) throw new TypeError("targetAddressSpace is unsupported");
       return response({ token: "pairing-token", expires: 1_000_000, instance: "companion" });
     }
@@ -80,23 +87,32 @@ function setup(fetch, storage = new Map()) {
   });
   assert.equal((await local.connectApp({ timeoutMs: 1, pollMs: 0 })).state, "connected");
   assert.equal(attempts, 2, "the explicit pre-send option validation error retries the POST once");
+  const [withOption, withoutOption] = sessionRequests;
+  assert.equal(withOption.method, "POST");
+  assert.equal(withOption.body, "{}");
+  assert.ok(withOption.signal instanceof AbortSignal);
+  for (const key of ["method", "mode", "credentials", "cache", "headers", "body", "signal"]) {
+    assert.equal(withoutOption[key], withOption[key], `fallback preserves ${key}`);
+  }
 }
 
 // A generic network TypeError during job POST is never replayed.
 {
-  let posts = 0;
-  setup(async (url, init = {}) => {
-    if (url.endsWith("/librepaper/local/jobs") && init.method === "POST") {
-      posts += 1;
-      throw new TypeError("Failed to fetch");
-    }
-    throw new Error(`Unexpected request: ${url}`);
-  }, storeWithPairing());
-  await assert.rejects(
-    local.runBuild({ tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, builder: "quarto" }),
-    (error) => error.name === "Unreachable",
-  );
-  assert.equal(posts, 1);
+  for (const message of ["Failed to fetch", "targetAddressSpace blocked by mixed-content policy"]) {
+    let posts = 0;
+    setup(async (url, init = {}) => {
+      if (url.endsWith("/librepaper/local/jobs") && init.method === "POST") {
+        posts += 1;
+        throw new TypeError(message);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }, storeWithPairing());
+    await assert.rejects(
+      local.runBuild({ tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, builder: "quarto" }),
+      (error) => error.name === "Unreachable",
+    );
+    assert.equal(posts, 1, `a generic TypeError is not replayed: ${message}`);
+  }
 }
 
 local._testing.reset();

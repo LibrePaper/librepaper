@@ -516,6 +516,7 @@ function noteNegative(nowMs) {
 
 let addressSpaceSupported = true;
 
+/** @param {unknown} error */
 function isAddressSpaceValidationError(error) {
   if (!(error instanceof TypeError)) return false;
   const message = String(error.message || "");
@@ -526,6 +527,7 @@ function isAddressSpaceValidationError(error) {
 // Keep the browser-specific option in one place. A validation error happens
 // before fetch sends the request, so that one error is safe to retry without
 // the option, including for POSTs. Network failures never replay a request.
+/** @param {string | URL} input @param {LocalRequestInit} init @returns {Promise<Response>} */
 async function localFetch(input, init) {
   if (!addressSpaceSupported) return deps.fetch(input, init);
   try {
