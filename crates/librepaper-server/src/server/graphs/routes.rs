@@ -1,22 +1,25 @@
-//! What the admin origin answers: a password first, then the page, its assets,
-//! `/data`, `/accounts` and `/moderation`. `/moderation` is the one route that
-//! takes a POST. Nothing else is served there, and nothing here is served on
-//! the app or docs origins.
+//! What the admin origin answers. A stranger is sent to GitHub sign-in, and
+//! only a listed GitHub account gets the page, its assets, `/session`, `/data`,
+//! `/accounts` and `/moderation`. `/moderation` is the one route that takes a
+//! POST. Nothing else is served there, and nothing here is served on the app
+//! or docs origins.
 
 use std::future::Future;
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::request::Parts;
-use axum::http::{header, HeaderMap, Method, Request, StatusCode};
+use axum::http::{header, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
 use base64::Engine;
+use librepaper_base::auth::{cookie_name, login_for, sign, verifies, Identity};
+use librepaper_base::util::random_token;
 use librepaper_engine::storage::postgres::{BlockOutcome, Error};
 use serde_json::{json, Value};
-use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 
 use super::{unix_seconds, Bucket, SeriesData, HISTORY_RETENTION};
+use crate::server::signin::{clear_cookie, cookie, set_cookie};
 use crate::server::{set, Server};
 
 const PAGE: &str = include_str!("assets/index.html");
@@ -29,7 +32,17 @@ const UPLOT_CSS: &str = include_str!("assets/uplot.min.css");
 const PAGE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
                         connect-src 'self'; img-src 'self'; base-uri 'none'; \
                         form-action 'none'; frame-ancestors 'none'";
-const CHALLENGE: &str = "Basic realm=\"LibrePaper admin\", charset=\"UTF-8\"";
+
+/// The signed-in operator's cookie, and the cookie that carries the sign-in
+/// state between the start and the callback. Both get the `__Host-` prefix
+/// when the admin origin is HTTPS.
+const SESSION_COOKIE: &str = "librepaper_admin";
+const STATE_COOKIE: &str = "librepaper_admin_state";
+/// Signs the session token under its own purpose, so an app session can never
+/// pass for an operator session.
+const SESSION_PURPOSE: &str = "admin-session-v1";
+const SESSION_SECONDS: i64 = 12 * 60 * 60;
+const STATE_SECONDS: i64 = 600;
 
 const DEFAULT_SPAN_SECONDS: i64 = 24 * 60 * 60;
 const DEFAULT_POINTS: i64 = 600;
@@ -39,16 +52,25 @@ const MAX_POINTS: i64 = 1000;
 /// What deciding a request found out without waiting on anything.
 enum Decision {
     Reply(Response<Body>),
+    /// The GitHub sign-in comes back with this code.
+    Callback(String),
     Data(Option<String>),
     Accounts,
     Moderation,
-    /// A moderation change, with the operator's name for the audit trail.
+    /// A moderation change, with the operator's login for the audit trail.
     Moderate(String),
 }
 
-/// Answer one request on the admin origin. The password is checked before
-/// anything else, including the 404, and every response carries the headers
-/// that keep it out of caches, indexes and referrers.
+/// A signed-in operator, read from a session token that has not expired.
+struct Operator {
+    github_id: i64,
+    login: String,
+    expires_at: i64,
+}
+
+/// Answer one request on the admin origin. Sign-in is checked before anything
+/// else, including the 404 for an unknown path, and every response carries the
+/// headers that keep it out of caches, indexes and referrers.
 ///
 /// This is not an `async fn` on purpose: the request is split before the
 /// future exists. The headers are read there, and the future owns only the
@@ -63,6 +85,7 @@ pub fn admin<'a>(
     async move {
         let mut response = match decision {
             Decision::Reply(response) => response,
+            Decision::Callback(code) => callback(server, &code).await,
             Decision::Data(query) => data(server, query.as_deref()).await,
             Decision::Accounts => accounts(server).await,
             Decision::Moderation => moderation(server).await,
@@ -81,15 +104,53 @@ pub fn admin<'a>(
 }
 
 fn decide(server: &Server, parts: &Parts) -> Decision {
-    // An admin origin with no password configured serves nothing at all.
-    let Some(password) = server.admin_password.as_deref() else {
-        return Decision::Reply(text(StatusCode::NOT_FOUND, "not found"));
+    // Without a listed GitHub account, a configured app and an admin origin,
+    // this origin serves nothing at all.
+    let admin = match server.origins.admin() {
+        Some(origin) if !server.admin_github_ids.is_empty() && server.app.configured() => {
+            origin.as_str()
+        }
+        _ => return Decision::Reply(text(StatusCode::NOT_FOUND, "not found")),
     };
-    if !authorized(&parts.headers, password) {
-        let mut response = text(StatusCode::UNAUTHORIZED, "authentication required");
-        set(&mut response, "www-authenticate", CHALLENGE);
-        return Decision::Reply(response);
+    let https = admin.starts_with("https://");
+    if parts.uri.path() == "/auth/callback" {
+        if parts.method != Method::GET {
+            let mut response = text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+            set(&mut response, "allow", "GET");
+            return Decision::Reply(response);
+        }
+        let expected = cookie(&parts.headers, &cookie_name(https, STATE_COOKIE));
+        let supplied = query_value(parts, "state");
+        return match (expected, supplied) {
+            (Some(expected), Some(supplied)) if expected == supplied => Decision::Callback(
+                query_value(parts, "code").unwrap_or_default(),
+            ),
+            _ => Decision::Reply(refused_state(https)),
+        };
     }
+    let session = cookie(&parts.headers, &cookie_name(https, SESSION_COOKIE))
+        .and_then(|token| read_admin_session(&server.key, &token, unix_seconds()));
+    let operator = session.filter(|operator| server.admin_github_ids.contains(&operator.github_id));
+    let Some(operator) = operator else {
+        if !matches!(parts.method, Method::GET | Method::HEAD) || parts.uri.path() != "/" {
+            return Decision::Reply(text(StatusCode::UNAUTHORIZED, "sign in at /"));
+        }
+        let callback = format!("{admin}/auth/callback");
+        let state = random_token();
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::FOUND;
+        set(&mut response, "location", &server.app.authorize_url(&callback, &state));
+        append_cookie(
+            &mut response,
+            &set_cookie(
+                &cookie_name(https, STATE_COOKIE),
+                &state,
+                STATE_SECONDS,
+                https,
+            ),
+        );
+        return Decision::Reply(response);
+    };
     if parts.uri.path() == "/moderation" {
         if matches!(parts.method, Method::GET | Method::HEAD) {
             return Decision::Moderation;
@@ -99,7 +160,7 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
             set(&mut response, "allow", "GET, HEAD, POST");
             return Decision::Reply(response);
         }
-        return moderation_change(server, parts);
+        return moderation_change(server, parts, operator.login);
     }
     if !matches!(parts.method, Method::GET | Method::HEAD) {
         let mut response = text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
@@ -116,54 +177,147 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
         "/uplot.js" => asset("text/javascript", UPLOT_JS),
         "/app.css" => asset("text/css", APP_CSS),
         "/uplot.css" => asset("text/css", UPLOT_CSS),
+        "/session" => json_reply(&json!({
+            "login": operator.login,
+            "github_id": operator.github_id,
+            "expires_at": operator.expires_at,
+        })),
         "/data" => return Decision::Data(parts.uri.query().map(str::to_owned)),
         "/accounts" => return Decision::Accounts,
         _ => text(StatusCode::NOT_FOUND, "not found"),
     })
 }
 
-/// Whether the request carries `Authorization: Basic` with this password. The
-/// user name is whatever the browser sent and is not compared.
-fn authorized(headers: &HeaderMap, password: &str) -> bool {
-    basic_credentials(headers)
-        .is_some_and(|(_, supplied)| password_matches(&supplied, password.as_bytes()))
+/// The first value of a query parameter, if the request has it.
+fn query_value(parts: &Parts, key: &str) -> Option<String> {
+    url::form_urlencoded::parse(parts.uri.query().unwrap_or("").as_bytes())
+        .find(|(name, _)| *name == key)
+        .map(|(_, value)| value.into_owned())
 }
 
-/// The decoded `Authorization: Basic` credentials, split at the first colon
-/// into the user name and the password. A missing header, another scheme,
-/// bad base64 or no colon is `None`.
-fn basic_credentials(headers: &HeaderMap) -> Option<(Vec<u8>, Vec<u8>)> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let (scheme, encoded) = value.split_once(' ')?;
-    if !scheme.eq_ignore_ascii_case("basic") {
+/// The answer when the sign-in state does not match. The state cookie is
+/// cleared, so the next attempt starts from the top.
+fn refused_state(https: bool) -> Response<Body> {
+    let mut response = text(
+        StatusCode::BAD_REQUEST,
+        "sign-in state did not match; start again at /",
+    );
+    append_cookie(
+        &mut response,
+        &clear_cookie(&cookie_name(https, STATE_COOKIE), https),
+    );
+    response
+}
+
+/// Add one Set-Cookie. Appended, not inserted, because a reply can set two.
+fn append_cookie(response: &mut Response<Body>, value: &str) {
+    response
+        .headers_mut()
+        .append(header::SET_COOKIE, HeaderValue::from_str(value).unwrap());
+}
+
+/// The GitHub sign-in comes back here. The code is exchanged for the account,
+/// and only a listed account gets a session. Either way the state cookie is
+/// spent.
+async fn callback(server: &Server, code: &str) -> Response<Body> {
+    let admin = server.origins.admin().map_or("", |origin| origin.as_str());
+    let https = admin.starts_with("https://");
+    let state_cookie = cookie_name(https, STATE_COOKIE);
+    let refuse = |mut response: Response<Body>| {
+        append_cookie(&mut response, &clear_cookie(&state_cookie, https));
+        response
+    };
+    let redirect = format!("{admin}/auth/callback");
+    let token = match server.app.exchange(code, &redirect).await {
+        Ok(token) => token,
+        Err(message) => {
+            return refuse(text(
+                StatusCode::BAD_REQUEST,
+                &format!("GitHub refused the sign-in: {message}"),
+            ))
+        }
+    };
+    let who = match login_for(&token).await {
+        Ok(who) => who,
+        Err(_) => {
+            return refuse(text(
+                StatusCode::BAD_GATEWAY,
+                "GitHub would not say who you are",
+            ))
+        }
+    };
+    let listed = github_id(&who).filter(|id| server.admin_github_ids.contains(id));
+    let Some(id) = listed else {
+        tracing::warn!(login = %who.handle, "admin sign-in refused");
+        return refuse(text(
+            StatusCode::FORBIDDEN,
+            "this GitHub account may not use this console",
+        ));
+    };
+    tracing::info!(login = %who.handle, "admin sign-in");
+    let expires_at = unix_seconds() + SESSION_SECONDS;
+    let session = admin_session_token(&server.key, id, &who.handle, expires_at);
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::FOUND;
+    set(&mut response, "location", "/");
+    append_cookie(
+        &mut response,
+        &set_cookie(
+            &cookie_name(https, SESSION_COOKIE),
+            &session,
+            SESSION_SECONDS,
+            https,
+        ),
+    );
+    refuse(response)
+}
+
+/// The numeric GitHub account ID, or `None` for any other provider.
+fn github_id(identity: &Identity) -> Option<i64> {
+    identity.id.strip_prefix("github:")?.parse().ok()
+}
+
+/// A session token for one operator: `v1.<payload>.<signature>`, where the
+/// payload is `github_id|expires_at|login` in URL-safe base64.
+pub(crate) fn admin_session_token(
+    key: &[u8],
+    github_id: i64,
+    login: &str,
+    expires_at: i64,
+) -> String {
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(format!("{github_id}|{expires_at}|{login}"));
+    format!("v1.{payload}.{}", sign(key, SESSION_PURPOSE, &payload))
+}
+
+/// The operator a session token names, if its signature holds and it has not
+/// expired. Whether that account is still listed is checked by the caller.
+fn read_admin_session(key: &[u8], token: &str, now: i64) -> Option<Operator> {
+    let rest = token.strip_prefix("v1.")?;
+    let (payload, signature) = rest.rsplit_once('.')?;
+    if !verifies(key, SESSION_PURPOSE, payload, signature) {
         return None;
     }
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(encoded.trim())
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
         .ok()?;
-    let colon = decoded.iter().position(|byte| *byte == b':')?;
-    Some((decoded[..colon].to_vec(), decoded[colon + 1..].to_vec()))
-}
-
-/// The user name the browser sent, trimmed and cut to 64 characters, or
-/// `admin` when nothing is left. It names the operator in the audit trail.
-fn basic_user(headers: &HeaderMap) -> String {
-    let user = basic_credentials(headers)
-        .map(|(user, _)| String::from_utf8_lossy(&user).trim().to_string())
-        .unwrap_or_default();
-    let user: String = user.chars().take(64).collect();
-    if user.is_empty() {
-        "admin".to_string()
-    } else {
-        user
-    }
+    let text = String::from_utf8(decoded).ok()?;
+    let mut fields = text.splitn(3, '|');
+    let github_id: i64 = fields.next()?.parse().ok()?;
+    let expires_at: i64 = fields.next()?.parse().ok()?;
+    let login = fields.next()?.to_string();
+    (expires_at > now).then_some(Operator {
+        github_id,
+        login,
+        expires_at,
+    })
 }
 
 /// The checks a moderation change passes before its body is read, then the
-/// change with the operator's name. The browser sends saved Basic credentials
-/// with a request another site starts, so a change must come from this page,
-/// and it must be JSON.
-fn moderation_change(server: &Server, parts: &Parts) -> Decision {
+/// change with the operator's login. A browser sends no credential the
+/// operator did not give it, but another site can still start a request, so a
+/// change must come from this page, and it must be JSON.
+fn moderation_change(server: &Server, parts: &Parts, actor: String) -> Decision {
     let origin = parts
         .headers
         .get(header::ORIGIN)
@@ -188,14 +342,7 @@ fn moderation_change(server: &Server, parts: &Parts) -> Decision {
     if !json {
         return Decision::Reply(text(StatusCode::UNSUPPORTED_MEDIA_TYPE, "send JSON"));
     }
-    Decision::Moderate(basic_user(&parts.headers))
-}
-
-fn password_matches(supplied: &[u8], configured: &[u8]) -> bool {
-    // A different length is a mismatch without comparing a byte. The length
-    // is not secret: any comparison reveals it, and it is the content that
-    // the constant-time compare protects.
-    supplied.len() == configured.len() && bool::from(supplied.ct_eq(configured))
+    Decision::Moderate(actor)
 }
 
 /// The range a `/data` request asks for, after defaults and clamping.
@@ -564,100 +711,63 @@ fn asset(content_type: &'static str, body: &'static str) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
     const NOW: i64 = 1_800_000_000;
-
-    fn credentials(raw: &str) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(raw);
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {encoded}")).unwrap(),
-        );
-        headers
-    }
+    const KEY: &[u8] = b"test server key";
 
     fn ask(query: &str) -> Result<Window, String> {
         parse_window(Some(query), NOW)
     }
 
-    #[test]
-    fn the_right_password_is_accepted_with_any_user_name() {
-        assert!(authorized(
-            &credentials("admin:correct horse"),
-            "correct horse"
-        ));
-        assert!(authorized(
-            &credentials("anyone:correct horse"),
-            "correct horse"
-        ));
-        assert!(authorized(&credentials(":correct horse"), "correct horse"));
-    }
-
-    #[test]
-    fn a_password_with_a_colon_is_split_at_the_first_one() {
-        assert!(authorized(&credentials("admin:a:b:c"), "a:b:c"));
-        assert!(!authorized(&credentials("admin:a:b:c"), "b:c"));
-    }
-
-    #[test]
-    fn a_wrong_or_partial_password_is_refused() {
-        assert!(!authorized(
-            &credentials("admin:correct horsE"),
-            "correct horse"
-        ));
-        assert!(!authorized(
-            &credentials("admin:correct hors"),
-            "correct horse"
-        ));
-        assert!(!authorized(
-            &credentials("admin:correct horse!"),
-            "correct horse"
-        ));
-        assert!(!authorized(&credentials("admin:"), "correct horse"));
-        // The user name is not the password.
-        assert!(!authorized(&credentials("correct horse:"), "correct horse"));
-    }
-
-    #[test]
-    fn a_missing_or_malformed_header_is_refused() {
-        assert!(!authorized(&HeaderMap::new(), "correct horse"));
-        let mut headers = HeaderMap::new();
-        for value in [
-            "Basic",
-            "Basic ",
-            "Basic not base64!",
-            "Bearer YWRtaW46Y29ycmVjdCBob3JzZQ==",
-            "YWRtaW46Y29ycmVjdCBob3JzZQ==",
-            // Valid base64 of "admin" with no colon.
-            "Basic YWRtaW4=",
-        ] {
-            headers.insert(header::AUTHORIZATION, HeaderValue::from_str(value).unwrap());
-            assert!(!authorized(&headers, "correct horse"), "{value}");
+    fn identity(id: &str) -> Identity {
+        Identity {
+            provider: "github".into(),
+            id: id.into(),
+            handle: "operator".into(),
+            ..Default::default()
         }
     }
 
     #[test]
-    fn the_scheme_name_is_not_case_sensitive() {
-        let mut headers = credentials("admin:correct horse");
-        let value = headers[header::AUTHORIZATION]
-            .to_str()
-            .unwrap()
-            .replacen("Basic", "bAsIc", 1);
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_str(&value).unwrap(),
-        );
-        assert!(authorized(&headers, "correct horse"));
+    fn a_session_token_round_trips_to_its_operator() {
+        let token = admin_session_token(KEY, 42, "operator", NOW + 60);
+        let operator = read_admin_session(KEY, &token, NOW).unwrap();
+        assert_eq!(operator.github_id, 42);
+        assert_eq!(operator.login, "operator");
+        assert_eq!(operator.expires_at, NOW + 60);
     }
 
     #[test]
-    fn a_different_length_never_matches() {
-        assert!(password_matches(b"abc", b"abc"));
-        assert!(!password_matches(b"abc", b"abcd"));
-        assert!(!password_matches(b"abcd", b"abc"));
-        assert!(!password_matches(b"", b"abc"));
+    fn a_token_with_a_changed_signature_is_refused() {
+        let token = admin_session_token(KEY, 42, "operator", NOW + 60);
+        let last = token.chars().last().unwrap();
+        let other = if last == 'A' { 'B' } else { 'A' };
+        let forged = format!("{}{other}", &token[..token.len() - 1]);
+        assert!(read_admin_session(KEY, &forged, NOW).is_none());
+        // A token under another key is refused too.
+        assert!(read_admin_session(b"another key", &token, NOW).is_none());
+    }
+
+    #[test]
+    fn an_expired_token_is_refused() {
+        let token = admin_session_token(KEY, 42, "operator", NOW - 1);
+        assert!(read_admin_session(KEY, &token, NOW).is_none());
+        let at_expiry = admin_session_token(KEY, 42, "operator", NOW);
+        assert!(read_admin_session(KEY, &at_expiry, NOW).is_none());
+    }
+
+    #[test]
+    fn an_app_session_is_never_an_operator_session() {
+        let app = librepaper_base::auth::sign_session(KEY, &identity("github:42"), NOW + 60);
+        assert!(read_admin_session(KEY, &app, NOW).is_none());
+        assert!(read_admin_session(KEY, &format!("v1.{app}"), NOW).is_none());
+    }
+
+    #[test]
+    fn only_a_github_identity_has_a_github_id() {
+        assert_eq!(github_id(&identity("github:42")), Some(42));
+        assert_eq!(github_id(&identity("google:42")), None);
+        assert_eq!(github_id(&identity("github:forty-two")), None);
     }
 
     #[test]

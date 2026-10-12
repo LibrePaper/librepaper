@@ -225,7 +225,7 @@ async fn middleware_inner(
     // certificate for it. This must be answered before the host check, because
     // the proxy addresses it with a Host header we do not serve. It arrives
     // with the internal authority, never the admin name, so on the admin host
-    // the question is an ordinary request and waits for the password.
+    // the question is an ordinary request and waits for sign-in.
     if method == Method::GET && path == "/api/tls/ask" && !server.origins.is_admin_authority(&host)
     {
         let domain = request.uri().query().and_then(|q| {
@@ -254,7 +254,7 @@ async fn middleware_inner(
     // a bounded probe of the dedicated lease session and is intentionally not
     // charged to the ordinary request budget. The Docker healthcheck arrives
     // over loopback, never on the admin name, so nothing there is answered
-    // before the password.
+    // before sign-in.
     let admin_side = arrival.side() == origins::Side::Admin;
     if path == "/health" && !admin_side {
         return write_json(200, &json!({"ok":true}));
@@ -282,8 +282,8 @@ async fn middleware_inner(
     // declared length is reserved from the memory budget -- the same budget
     // decoded documents live in -- and released when the request ends. The
     // admin side reads at most a small moderation request, and only after the
-    // password, so it reserves nothing and is not refused before the password
-    // is checked.
+    // sign-in, so it reserves nothing and is not refused before sign-in is
+    // checked.
     let mutation = matches!(method, Method::POST | Method::PUT | Method::PATCH);
     let _incoming = if mutation && !admin_side {
         let Some(length) = request.body().size_hint().exact() else {
@@ -329,12 +329,12 @@ async fn middleware_inner(
         &server.config.cost.trusted_proxies,
     ));
     // The operator's graphs page has its own origin and its own gate, and it
-    // does nothing with application credentials: no bearer, cookie or session
-    // is read, so a delegated-agent scope check or a provider verification
-    // cannot answer before the password does. It sits here, with the work
-    // permit taken, and is charged the budget of an anonymous request from
-    // this network, so a client guessing the password is bounded like every
-    // other anonymous client. Nothing below runs for it.
+    // does nothing with application credentials: no app bearer, app cookie or
+    // app session is read, so a delegated-agent scope check or a provider
+    // verification cannot answer before sign-in does. It sits here, with the
+    // work permit taken, and is charged the budget of an anonymous request from
+    // this network, so a client probing it is bounded like every other
+    // anonymous client. Nothing below runs for it.
     if admin_side {
         if !server.cost.admit_request(&network, "") {
             server.metrics.record_refusal("request_budget");
