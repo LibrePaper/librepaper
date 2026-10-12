@@ -215,9 +215,23 @@ async fn data(server: &Server, query: Option<&str>) -> Response<Body> {
 async fn accounts(server: &Server) -> Response<Body> {
     let listed = server.store.catalog.largest_accounts(50).await;
     let total = server.store.catalog.usage_bytes(None).await;
-    let (accounts, total) = match (listed, total) {
-        (Ok(accounts), Ok(total)) => (accounts, total),
-        (Err(error), _) | (_, Err(error)) => {
+    // The accounts the sweep will erase within the next 30 days, when it runs at all.
+    let soon = match server.erase_inactive_after {
+        0 => Ok(None),
+        after => {
+            let cutoff = time::OffsetDateTime::now_utc() + time::Duration::days(30)
+                - time::Duration::seconds(after);
+            server
+                .store
+                .catalog
+                .inactive_summary(cutoff)
+                .await
+                .map(Some)
+        }
+    };
+    let (accounts, total, soon) = match (listed, total, soon) {
+        (Ok(accounts), Ok(total), Ok(soon)) => (accounts, total, soon),
+        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
             tracing::warn!("accounts read failed: {error}");
             return text(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -245,6 +259,8 @@ async fn accounts(server: &Server) -> Response<Body> {
         "total_bytes": total,
         "limit_bytes": server.config.storage.total,
         "accounts": accounts,
+        "erase_inactive_after": server.erase_inactive_after,
+        "erasing_soon": soon.map(|(accounts, bytes)| json!({"accounts": accounts, "bytes": bytes})),
     }))
 }
 

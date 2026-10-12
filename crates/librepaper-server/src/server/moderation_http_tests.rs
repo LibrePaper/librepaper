@@ -921,3 +921,87 @@ async fn empty_figure_upload_does_not_spend_the_hourly_admission() {
     let _ = stop.send(());
     close_deployment(deployment).await;
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn inactive_accounts_are_erased_and_others_are_left_alone() {
+    let Some(deployment) = deployment("inactive-sweep").await else {
+        return;
+    };
+    let pool = deployment.catalog.pool();
+    sqlx::query("UPDATE accounts SET last_seen_at = now() - interval '400 days' WHERE id=$1")
+        .bind(deployment.account_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE accounts SET status='blocked', last_seen_at = now() - interval '400 days'
+         WHERE id=$1",
+    )
+    .bind(deployment.commenter_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    let recent = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,status)
+         VALUES($1,'registered','github',$2,$3,'Recent visitor','active')",
+    )
+    .bind(recent)
+    .bind(format!("inactive-sweep-{recent}"))
+    .bind(format!("inactive-sweep-{recent}"))
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let now = librepaper_base::util::now_unix();
+    assert_eq!(
+        deployment
+            .server
+            .erase_inactive_accounts(now, 365 * 86_400)
+            .await,
+        1
+    );
+
+    let owner_status: String = sqlx::query_scalar("SELECT status FROM accounts WHERE id=$1")
+        .bind(deployment.account_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(owner_status, "erasing");
+    let owned: i64 = sqlx::query_scalar("SELECT count(*) FROM documents WHERE owner_id=$1")
+        .bind(deployment.account_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert!(owned >= 1, "the owner must own the fixture document");
+    let not_deleting: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM documents WHERE owner_id=$1 AND status<>'deleting'",
+    )
+    .bind(deployment.account_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(not_deleting, 0, "every owned document must be deleting");
+    let commenter_status: String = sqlx::query_scalar("SELECT status FROM accounts WHERE id=$1")
+        .bind(deployment.commenter_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(commenter_status, "blocked");
+    let recent_status: String = sqlx::query_scalar("SELECT status FROM accounts WHERE id=$1")
+        .bind(recent)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(recent_status, "active");
+
+    assert_eq!(
+        deployment
+            .server
+            .erase_inactive_accounts(now, 365 * 86_400)
+            .await,
+        0
+    );
+    close_deployment(deployment).await;
+}

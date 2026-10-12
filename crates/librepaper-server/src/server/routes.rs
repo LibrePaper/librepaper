@@ -1249,16 +1249,24 @@ impl Server {
                 &json!({"error": "authentication provider is not configured"}),
             );
         }
-        let catalog = &self.store.catalog;
         let Ok(account_id) = uuid::Uuid::parse_str(&identity.id) else {
             return write_json(409, &json!({"error":"invalid account identity"}));
         };
-        if let Err(error) = catalog
-            .begin_account_erasure(account_id, time::Duration::days(7))
-            .await
-        {
+        if let Err(error) = self.erase_account(account_id).await {
             return write_json(409, &json!({"error": error.to_string()}));
         }
+        write_json(202, &json!({"status": "erasing"}))
+    }
+
+    /// Starts erasing one account, for the Settings button and for the inactivity sweep alike.
+    pub(crate) async fn erase_account(
+        &self,
+        account_id: uuid::Uuid,
+    ) -> Result<(), librepaper_engine::storage::postgres::Error> {
+        self.store
+            .catalog
+            .begin_account_erasure(account_id, time::Duration::days(7))
+            .await?;
         // The account row now says `erasing` and its documents say
         // `deleting`, which is durable and enough on its own: the worker's
         // startup scan reads both. This only saves the person waiting for a
@@ -1270,8 +1278,40 @@ impl Server {
                 after: uuid::Uuid::nil(),
             });
         self.reauthorize_all().await;
-        self.rooms.erase_author_from_caches(&identity.id).await;
-        write_json(202, &json!({"status": "erasing"}))
+        self.rooms
+            .erase_author_from_caches(&account_id.to_string())
+            .await;
+        Ok(())
+    }
+
+    /// Erases the accounts that have not signed in for `after` seconds. Returns how many it started.
+    pub(crate) async fn erase_inactive_accounts(&self, now: i64, after: i64) -> usize {
+        let Ok(cutoff) = time::OffsetDateTime::from_unix_timestamp(now - after) else {
+            tracing::warn!("could not work out the inactivity cutoff");
+            return 0;
+        };
+        // One page per pass is deliberate: the janitor runs hourly, so a backlog drains 500 an hour.
+        let ids = match self.store.catalog.inactive_accounts(cutoff, 500).await {
+            Ok(ids) => ids,
+            Err(error) => {
+                tracing::warn!("could not list inactive accounts: {error}");
+                return 0;
+            }
+        };
+        let mut count = 0;
+        for id in ids {
+            match self.erase_account(id).await {
+                Ok(()) => count += 1,
+                Err(error) => tracing::warn!("could not erase inactive account {id}: {error}"),
+            }
+        }
+        if count > 0 {
+            tracing::info!(
+                "erased {count} accounts with no sign-in for {}",
+                librepaper_document::document::retention::describe_seconds(after)
+            );
+        }
+        count
     }
 
     /// `GET`/`POST /api/list`.

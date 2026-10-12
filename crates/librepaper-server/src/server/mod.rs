@@ -219,6 +219,8 @@ pub struct Server {
     /// The password of the operator graphs page, which is served on the
     /// admin origin.
     pub admin_password: Option<String>,
+    /// Seconds without a sign-in after which an account is erased. Zero keeps accounts.
+    pub erase_inactive_after: i64,
     /// The history behind the graphs page, open only when the admin origin
     /// is configured and its file could be opened.
     pub graphs: Option<Arc<graphs::Graphs>>,
@@ -875,6 +877,7 @@ impl Server {
             origins: origins::Origins::loopback_only(),
             paths: None,
             admin_password: None,
+            erase_inactive_after: 0,
             graphs: None,
             publishers,
             commenters,
