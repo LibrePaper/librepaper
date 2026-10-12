@@ -82,8 +82,9 @@ password = "@LIBREPAPER_ADMIN_PASSWORD@"
 [proxy]
 trusted_networks = ["172.29.0.0/16"]
 
-# Optional. Without it, documents stay until deleted.
-# [retention]
+# Accounts with no sign-in for a year are erased with their documents.
+[retention]
+erase_inactive_after = "365d"
 # expire_after = "30d"
 # expire_from = "updated"            # or "created"
 

@@ -59,7 +59,8 @@ trusted_networks = ["172.29.0.0/16"]
 # pending_scratch_mib = 161          # unsaved edits spilled to disk; the default follows log_quota_mib
 # session_peer_queue_frames = 256    # messages queued per editing connection before it is dropped
 
-# Optional. Without it, documents stay until deleted.
+# Optional. Without it, documents and accounts stay until deleted.
 # [retention]
 # expire_after = "30d"
 # expire_from = "updated"            # or "created"
+# erase_inactive_after = "365d"      # erase accounts with no sign-in for this long, with their documents
