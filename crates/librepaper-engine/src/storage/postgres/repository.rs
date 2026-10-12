@@ -1,3 +1,4 @@
+use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -424,7 +425,49 @@ impl PostgresCatalog {
                 "only registered accounts can be upserted".into(),
             ));
         }
-        sqlx::query_as!(
+        let mut tx = self.begin_metered().await?;
+        // A first sign-in under a name banned in advance creates the account
+        // blocked, and the ban becomes an ordinary account block.
+        let ban = sqlx::query(
+            "DELETE FROM banned_handles b
+              WHERE b.provider=$1 AND lower(b.handle)=lower($2)
+                AND NOT EXISTS (SELECT 1 FROM accounts a
+                                 WHERE a.kind='registered' AND a.provider=$1 AND a.provider_subject=$3)
+              RETURNING b.actor, b.reason",
+        )
+        .bind(&input.provider)
+        .bind(&input.handle)
+        .bind(&input.provider_subject)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(ban) = ban {
+            let actor: String = ban.try_get("actor")?;
+            let reason: String = ban.try_get("reason")?;
+            let id = new_id();
+            sqlx::query("INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status) VALUES($1,'registered',$2,$3,$4,$5,$6,'blocked')")
+                .bind(id)
+                .bind(&input.provider)
+                .bind(&input.provider_subject)
+                .bind(&input.handle)
+                .bind(&input.display_name)
+                .bind(&input.email)
+                .execute(&mut *tx)
+                .await?;
+            let label = format!("{}:{}", input.provider.as_deref().unwrap_or_default(), input.handle);
+            super::moderation::insert_audit(
+                &mut tx,
+                &actor,
+                super::moderation::ModerationAction::BlockAccount,
+                "account",
+                id,
+                &label,
+                &reason,
+            )
+            .await?;
+            tx.commit().await?;
+            return Err(Error::Conflict("account is not active".into()));
+        }
+        let account = sqlx::query_as!(
             AccountRecord,
             "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status)
              VALUES($1,'registered',$2,$3,$4,$5,$6,'active')
@@ -442,9 +485,10 @@ impl PostgresCatalog {
             input.display_name,
             input.email,
         )
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| Error::Conflict("account is not active".into()))
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        account.ok_or_else(|| Error::Conflict("account is not active".into()))
     }
 
     /// The accounts named by `ids`, in one round trip, skipping any that no

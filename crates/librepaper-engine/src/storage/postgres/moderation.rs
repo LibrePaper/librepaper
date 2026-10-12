@@ -20,6 +20,70 @@ pub struct AccountUsage {
     pub bytes: i64,
 }
 
+/// What blocking a name did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockOutcome {
+    /// An account had this name or ID and is now blocked.
+    Blocked { id: Uuid, label: String },
+    /// No account has this name yet. Its first sign-in creates the account blocked.
+    Banned { id: Uuid, label: String },
+}
+
+/// A blocked account, with the operator action that blocked it.
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct BlockedAccount {
+    pub id: Uuid,
+    pub handle: String,
+    pub provider: Option<String>,
+    pub kind: String,
+    pub blocked_at: Option<OffsetDateTime>,
+    pub actor: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// A name refused before its first sign-in.
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct BannedHandle {
+    pub id: Uuid,
+    pub provider: String,
+    pub handle: String,
+    pub actor: String,
+    pub reason: String,
+    pub created_at: OffsetDateTime,
+}
+
+/// A hidden project, with the operator action that hid it.
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct HiddenProject {
+    pub id: Uuid,
+    pub slug: String,
+    pub title: String,
+    pub owner: String,
+    pub hidden_at: OffsetDateTime,
+    pub actor: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// One entry of the moderation audit trail.
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct AuditEntry {
+    pub occurred_at: OffsetDateTime,
+    pub actor: String,
+    pub action: String,
+    pub target_kind: String,
+    pub target_label: String,
+    pub reason: String,
+}
+
+/// Everything the operator's moderation page lists.
+#[derive(Clone, Debug)]
+pub struct ModerationOverview {
+    pub blocked_accounts: Vec<BlockedAccount>,
+    pub banned_handles: Vec<BannedHandle>,
+    pub hidden_projects: Vec<HiddenProject>,
+    pub recent: Vec<AuditEntry>,
+}
+
 /// Per-owner bytes: the same five sources `owner_usage_bytes` charges each owner.
 const OWNER_USAGE: &str = "SELECT owner_id, COALESCE(sum(bytes),0)::bigint AS bytes FROM (
                  SELECT d.owner_id, x.byte_length AS bytes FROM document_archives x
@@ -39,6 +103,8 @@ pub enum ModerationAction {
     UnblockAccount,
     HideProject,
     UnhideProject,
+    BanHandle,
+    UnbanHandle,
 }
 
 impl ModerationAction {
@@ -48,6 +114,8 @@ impl ModerationAction {
             Self::UnblockAccount => "unblock_account",
             Self::HideProject => "hide_project",
             Self::UnhideProject => "unhide_project",
+            Self::BanHandle => "ban_handle",
+            Self::UnbanHandle => "unban_handle",
         }
     }
 }
@@ -189,6 +257,165 @@ impl PostgresCatalog {
         Ok(id)
     }
 
+    /// Blocks the account with this name or ID, or, when no account has the
+    /// name yet, bans the name so its first sign-in creates the account blocked.
+    pub async fn block_or_ban(
+        &self,
+        provider: &str,
+        name: &str,
+        actor: &str,
+        reason: &str,
+    ) -> Result<BlockOutcome> {
+        validate_operator_fields(actor, reason)?;
+        if let Ok(id) = Uuid::parse_str(name.trim()) {
+            let (id, label) = self
+                .moderate_account(name.trim(), true, actor, reason)
+                .await?;
+            return Ok(BlockOutcome::Blocked { id, label });
+        }
+        if provider != "github" && provider != "google" {
+            return Err(Error::Invalid("provider must be github or google".into()));
+        }
+        let handle = name.trim().trim_start_matches('@').trim();
+        if handle.is_empty() {
+            return Err(Error::Invalid("name must not be empty".into()));
+        }
+        if handle.len() > 256 {
+            return Err(Error::Invalid("name must contain at most 256 bytes".into()));
+        }
+        let matches = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM accounts WHERE provider=$1 AND lower(handle)=lower($2)
+             ORDER BY id LIMIT 2",
+        )
+        .bind(provider)
+        .bind(handle)
+        .fetch_all(&self.pool)
+        .await?;
+        match matches.as_slice() {
+            [id] => {
+                let (id, label) = self
+                    .moderate_account(&id.to_string(), true, actor, reason)
+                    .await?;
+                Ok(BlockOutcome::Blocked { id, label })
+            }
+            [] => {
+                let mut tx = self.begin_metered().await?;
+                let id = new_id();
+                let inserted = sqlx::query_scalar::<_, Uuid>(
+                    "INSERT INTO banned_handles(id,provider,handle,actor,reason)
+                     VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING RETURNING id",
+                )
+                .bind(id)
+                .bind(provider)
+                .bind(handle)
+                .bind(actor.trim())
+                .bind(reason.trim())
+                .fetch_optional(&mut *tx)
+                .await?;
+                let id = match inserted {
+                    Some(id) => id,
+                    None => {
+                        return Err(Error::Conflict("this name is already banned".into()));
+                    }
+                };
+                let label = format!("{provider}:{handle}");
+                insert_audit(
+                    &mut tx,
+                    actor,
+                    ModerationAction::BanHandle,
+                    "handle",
+                    id,
+                    &label,
+                    reason,
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(BlockOutcome::Banned { id, label })
+            }
+            _ => Err(Error::Invalid(
+                "more than one account has this name; use its account ID".into(),
+            )),
+        }
+    }
+
+    /// Removes a name ban and returns its `provider:handle` label.
+    pub async fn unban_handle(&self, id: Uuid, actor: &str, reason: &str) -> Result<String> {
+        validate_operator_fields(actor, reason)?;
+        let mut tx = self.begin_metered().await?;
+        let row = sqlx::query("DELETE FROM banned_handles WHERE id=$1 RETURNING provider, handle")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let provider: String = row.try_get("provider")?;
+        let handle: String = row.try_get("handle")?;
+        let label = format!("{provider}:{handle}");
+        insert_audit(
+            &mut tx,
+            actor,
+            ModerationAction::UnbanHandle,
+            "handle",
+            id,
+            &label,
+            reason,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(label)
+    }
+
+    /// The blocked accounts, name bans, hidden projects and latest audit
+    /// entries that the operator's moderation page lists.
+    pub async fn moderation_overview(&self) -> Result<ModerationOverview> {
+        let blocked_accounts = sqlx::query_as::<_, BlockedAccount>(
+            "SELECT a.id, a.handle, a.provider, a.kind, m.occurred_at AS blocked_at, m.actor, m.reason
+               FROM accounts a
+               LEFT JOIN LATERAL (
+                 SELECT occurred_at, actor, reason FROM moderation_audit
+                  WHERE target_kind='account' AND target_id=a.id AND action='block_account'
+                  ORDER BY occurred_at DESC, id DESC LIMIT 1
+               ) m ON true
+              WHERE a.status='blocked'
+              ORDER BY m.occurred_at DESC NULLS LAST, a.id
+              LIMIT 500",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let banned_handles = sqlx::query_as::<_, BannedHandle>(
+            "SELECT id, provider, handle, actor, reason, created_at FROM banned_handles
+              ORDER BY created_at DESC, id DESC LIMIT 500",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let hidden_projects = sqlx::query_as::<_, HiddenProject>(
+            "SELECT d.id, d.slug, d.title, a.handle AS owner, mp.hidden_at, m.actor, m.reason
+               FROM moderated_projects mp
+               JOIN documents d ON d.id=mp.document_id
+               JOIN accounts a ON a.id=d.owner_id
+               LEFT JOIN LATERAL (
+                 SELECT actor, reason FROM moderation_audit
+                  WHERE target_kind='project' AND target_id=d.id AND action='hide_project'
+                  ORDER BY occurred_at DESC, id DESC LIMIT 1
+               ) m ON true
+              ORDER BY mp.hidden_at DESC, d.id
+              LIMIT 500",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let recent = sqlx::query_as::<_, AuditEntry>(
+            "SELECT occurred_at, actor, action, target_kind, target_label, reason
+               FROM moderation_audit ORDER BY occurred_at DESC, id DESC LIMIT 50",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(ModerationOverview {
+            blocked_accounts,
+            banned_handles,
+            hidden_projects,
+            recent,
+        })
+    }
+
     pub async fn project_is_hidden(&self, document_id: Uuid) -> Result<bool> {
         Ok(sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM moderated_projects WHERE document_id=$1)",
@@ -252,7 +479,7 @@ fn validate_operator_fields(actor: &str, reason: &str) -> Result<()> {
     Ok(())
 }
 
-async fn insert_audit(
+pub(super) async fn insert_audit(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     actor: &str,
     action: ModerationAction,
@@ -745,6 +972,127 @@ mod tests {
         let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(365);
 
         assert_eq!(catalog.inactive_summary(cutoff).await.unwrap(), (2, 700));
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_banned_name_creates_its_account_blocked_at_first_sign_in() {
+        let catalog = test_catalog().await;
+        crate::testing::reset(&catalog).await;
+        let suffix = Uuid::now_v7().simple().to_string();
+        let handle = format!("Spammer-{suffix}");
+        let outcome = catalog
+            .block_or_ban("github", &format!("@{handle}"), "operator", "spam")
+            .await
+            .unwrap();
+        assert!(matches!(
+            &outcome,
+            BlockOutcome::Banned { label, .. } if *label == format!("github:{handle}")
+        ));
+        assert!(matches!(
+            catalog
+                .block_or_ban("github", &format!("@{handle}"), "operator", "spam")
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        let overview = catalog.moderation_overview().await.unwrap();
+        assert_eq!(overview.banned_handles.len(), 1);
+        assert_eq!(overview.banned_handles[0].handle, handle);
+
+        let account = NewAccount {
+            kind: "registered".into(),
+            provider: Some("github".into()),
+            provider_subject: Some(format!("gh-{suffix}")),
+            handle: handle.to_lowercase(),
+            display_name: "Spammer".into(),
+            email: None,
+        };
+        assert!(matches!(
+            catalog.upsert_registered_account(account.clone()).await,
+            Err(Error::Conflict(_))
+        ));
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM accounts WHERE provider='github' AND provider_subject=$1",
+        )
+        .bind(format!("gh-{suffix}"))
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "blocked");
+
+        let overview = catalog.moderation_overview().await.unwrap();
+        assert!(overview.banned_handles.is_empty());
+        assert_eq!(overview.blocked_accounts.len(), 1);
+        assert_eq!(
+            overview.blocked_accounts[0].actor.as_deref(),
+            Some("operator")
+        );
+        assert_eq!(overview.blocked_accounts[0].reason.as_deref(), Some("spam"));
+
+        assert!(matches!(
+            catalog.upsert_registered_account(account).await,
+            Err(Error::Conflict(_))
+        ));
+        let audits: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM moderation_audit WHERE action IN ('ban_handle','block_account')",
+        )
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(audits, 2);
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn blocking_a_name_with_an_account_blocks_it_and_unban_removes_a_ban() {
+        let catalog = test_catalog().await;
+        crate::testing::reset(&catalog).await;
+        let id = insert_account(&catalog, "registered", "active", 0).await;
+        let outcome = catalog
+            .block_or_ban("github", &format!("inactive-{id}"), "operator", "abuse")
+            .await
+            .unwrap();
+        assert!(matches!(
+            &outcome,
+            BlockOutcome::Blocked { id: blocked, .. } if *blocked == id
+        ));
+        let status: String = sqlx::query_scalar("SELECT status FROM accounts WHERE id=$1")
+            .bind(id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(status, "blocked");
+
+        let ban = catalog
+            .block_or_ban("github", "nobody-yet", "operator", "abuse")
+            .await
+            .unwrap();
+        let BlockOutcome::Banned { id: ban_id, .. } = ban else {
+            panic!("a name with no account is banned");
+        };
+        assert_eq!(
+            catalog
+                .unban_handle(ban_id, "operator", "mistake")
+                .await
+                .unwrap(),
+            "github:nobody-yet"
+        );
+        assert!(matches!(
+            catalog.unban_handle(ban_id, "operator", "mistake").await,
+            Err(Error::NotFound)
+        ));
+        assert!(matches!(
+            catalog
+                .block_or_ban("gitlab", "someone", "operator", "abuse")
+                .await,
+            Err(Error::Invalid(_))
+        ));
+
+        let recent = catalog.moderation_overview().await.unwrap().recent;
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent[0].action, "unban_handle");
         catalog.close().await;
     }
 }
