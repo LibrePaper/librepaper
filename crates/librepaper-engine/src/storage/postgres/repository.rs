@@ -171,6 +171,32 @@ impl PostgresCatalog {
         Ok(true)
     }
 
+    /// Up to `limit` registered, active accounts whose last sign-in is before
+    /// `seen_before`, oldest sign-in first. Blocked and already-erasing
+    /// accounts are left out, as are anonymous and system accounts.
+    pub async fn inactive_accounts(
+        &self,
+        seen_before: time::OffsetDateTime,
+        limit: i64,
+    ) -> Result<Vec<Uuid>> {
+        if !(1..=500).contains(&limit) {
+            return Err(Error::Invalid(
+                "inactive account page limit must be 1..=500".into(),
+            ));
+        }
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM accounts
+              WHERE kind='registered' AND status='active' AND last_seen_at < $1
+              ORDER BY last_seen_at, id
+              LIMIT $2",
+        )
+        .bind(seen_before)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
     /// One keyset-paginated page of the documents an erasing account still
     /// owns, whatever state they are in.
     ///
@@ -1593,8 +1619,8 @@ fn validate_document(input: &NewDocument) -> Result<()> {
 ///
 /// Callers holding a document row pass its `owner_id` from whatever lock they
 /// already took, so the sum is measured against the owner the document has
-/// under that lock. `largest_accounts` in moderation.rs sums the same five
-/// sources per owner, and a test holds the two together.
+/// under that lock. `OWNER_USAGE` in moderation.rs sums the same five
+/// sources per owner for the operator's lists, and a test holds the two together.
 pub(super) async fn owner_usage_bytes<'e, E>(executor: E, account_id: Uuid) -> Result<i64>
 where
     E: sqlx::Executor<'e, Database = sqlx::Postgres>,
