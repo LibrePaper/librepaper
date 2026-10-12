@@ -24,10 +24,12 @@ librepaper.org keeps no access log and does not store IP addresses.
 
 ## Who sees what
 
+> **Warning** Anyone who can read a document can also read its source files in
+> the browser. Keep confidential inputs out of the project.
+
 - Your handle is your GitHub login or your Google email. Only you see it. Other people see your display name.
 - While you have a document open, other people viewing it see that you are there and where your cursor is.
 - Edit and comment links require sign-in. Read links work for anyone who has them.
-- Anyone who can read a document can also read its source files in the browser. Keep confidential inputs out of the project. The [local app](local-app.html) can supply local files to a build without uploading them.
 
 ## What leaves librepaper.org
 
