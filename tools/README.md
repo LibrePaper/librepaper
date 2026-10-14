@@ -20,6 +20,7 @@ tools/
     backup-profiles.toml      the image's resticprofile base; includes the operator's file
   dev/        local development
     db                        persistent Postgres in Docker; wipe, sqlx-check, sqlx-prepare, test
+    windows-vm                Windows 11 VM in quickemu for companion QA; cached ISO, snapshots, cross-compiled build
     dev.toml, dev-oauth.toml  configs for make serve; keys.yaml holds the dev OAuth app
     demo/                     make demo: compose (run, stop, wipe), the container configs, the Caddyfile
     *.test.mjs                checks on the Makefile and the Loro pin
