@@ -149,6 +149,13 @@ export function createPreviewRenderer({
       capturedMain: source.main,
     };
     try {
+      // A LaTeX compile takes seconds rather than milliseconds, so the pane
+      // says one is running. The last page that compiled stays up under it:
+      // an author who is typing has something to look at, which is the whole
+      // difference between this and a pane that blanks for four seconds.
+      // The spinner starts before the figures are fetched, because fetching
+      // them is part of the wait.
+      if (paged || htmlPreview) status.begin({ clearFailure: !facts().everPainted });
       // The figures, if this document has any. A figure not yet here is
       // awaited before the first compile that needs it, and the page that is
       // already up stays up meanwhile: rendering without them would produce a
@@ -172,11 +179,6 @@ export function createPreviewRenderer({
         // returns its authenticated blob URLs.
         source.urls = { ...(source.urls || {}), ...held.urls };
       }
-      // A LaTeX compile takes seconds rather than milliseconds, so the pane
-      // says one is running. The last page that compiled stays up under it:
-      // an author who is typing has something to look at, which is the whole
-      // difference between this and a pane that blanks for four seconds.
-      if (paged || htmlPreview) status.begin({ clearFailure: !facts().everPainted });
       // Keep a transient source identity for diagnostics and race checks. It
       // is never sent to the server as a rendering name or persisted result.
       identity = await snapshotDigest(source);
@@ -184,32 +186,26 @@ export function createPreviewRenderer({
       if (facts().disposed) return;
       const manual = takeManual();
       let rendered;
-      try {
-        const title = await heading(source);
-        if (facts().disposed) return;
-        /** @type {{ manual?: boolean, format?: string }} */
-        const options = { ...(manual ? { manual: true } : {}) };
-        if (htmlPreview) options.format = "html";
-        const current = facts();
-        // Local execution is remembered per (origin, user, document slug) in
-        // local storage, off by default, and forgotten on sign-out. A
-        // remembered preference for a tool that runs the document -- Quarto,
-        // Calepin -- is ignored until permission is granted. A Quarto document
-        // is then drawn as the Markdown it is, and a Typst one by this
-        // browser's own renderer, rather than by running code without consent.
-        const executes = format === "quarto" || ["quarto", "calepin"].includes(current.buildPreferences.tool);
-        const build = executes && !current.localExecution
-          ? (format === "typst"
-              ? { selection: "tool", backend: "browser", tool: "typst", output: current.buildPreferences.output }
-              : { selection: "tool", backend: "browser", tool: "markdown", output: "html" })
-          : current.buildPreferences;
-        rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug });
-        debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
-      } finally {
-        // Only the newest compile owns the badge. An older one finishing
-        // afterwards must not turn the spinner off under a newer one.
-        if ((paged || htmlPreview) && coordinator.isNewer(ticket)) status.finish();
-      }
+      const title = await heading(source);
+      if (facts().disposed) return;
+      /** @type {{ manual?: boolean, format?: string }} */
+      const options = { ...(manual ? { manual: true } : {}) };
+      if (htmlPreview) options.format = "html";
+      const current = facts();
+      // Local execution is remembered per (origin, user, document slug) in
+      // local storage, off by default, and forgotten on sign-out. A
+      // remembered preference for a tool that runs the document -- Quarto,
+      // Calepin -- is ignored until permission is granted. A Quarto document
+      // is then drawn as the Markdown it is, and a Typst one by this
+      // browser's own renderer, rather than by running code without consent.
+      const executes = format === "quarto" || ["quarto", "calepin"].includes(current.buildPreferences.tool);
+      const build = executes && !current.localExecution
+        ? (format === "typst"
+            ? { selection: "tool", backend: "browser", tool: "typst", output: current.buildPreferences.output }
+            : { selection: "tool", backend: "browser", tool: "markdown", output: "html" })
+        : current.buildPreferences;
+      rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug });
+      debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
       if (facts().disposed) return;
       if (format === "latex" && !htmlPreview) status.recordLatex(rendered);
       const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, log } = rendered;
@@ -333,6 +329,10 @@ export function createPreviewRenderer({
           diagnostics: [diagnosticContext({ severity: "error", message: reason }, source, identity)],
         });
       }
+    } finally {
+      // Only the newest render owns the spinner. An older one finishing
+      // afterwards must not turn it off under a newer one.
+      if ((paged || htmlPreview) && coordinator.isNewer(ticket)) status.finish();
     }
   };
 }
