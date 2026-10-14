@@ -81,8 +81,9 @@ export function uniqueName(taken, base = "Untitled project") {
 }
 
 // Hidden files and the metadata Finder leaves in a ZIP are not part of a
-// project, so they are dropped without being mentioned.
-const hidden = (path) => path.split("/").some((part) => part.startsWith(".") || part === "__MACOSX");
+// project, so they are dropped without being mentioned. A ".." segment is not
+// hidden but invalid, and checkPath says so.
+const hidden = (path) => path.split("/").some((part) => (part.startsWith(".") && part !== "." && part !== "..") || part === "__MACOSX");
 
 /// Adds incoming entries to a staged list under the server's rules, without
 /// changing the list it is given. A path already staged, or given twice in
