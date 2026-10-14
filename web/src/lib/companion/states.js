@@ -1,9 +1,8 @@
-// How the companion's connection state is worded: the pill text, its tone and
-// what to do next. The connection controls and the settings footer share it.
-
 // Where to get the companion. Every place that asks for it links here.
 export const INSTALL_URL = "https://librepaper.org/local-app.html";
 
+// How the companion's connection state is worded: the pill text, its tone and
+// what to do next. The connection controls and the settings footer share it.
 export const STATES = {
   connected: { says: "Running", tone: "good" },
   unreachable: { says: "Not running", tone: "error", hint: "Install the companion, or run librepaper in a terminal if it is installed." },

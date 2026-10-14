@@ -243,9 +243,9 @@ try {
   assert.equal(await b.evaluate(`document.querySelector("#tools-calepin .setting-status-pill")?.textContent.trim()`), "Not checked");
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent.trim()`), "Not checked");
   assert.match(await b.evaluate(`document.querySelector("#settings-companion .setting-status-pill")?.textContent`), /Not running/);
-  assert.match(await b.evaluate(`document.querySelector(".settings-body .companion-needed")?.textContent || ""`), /Needs the companion/, "Tools points at the Companion page while disconnected");
-  await b.evaluate(`document.querySelector(".settings-body .companion-needed .link-button").click()`);
-  await until("the Companion page from Tools", () => heading().then((text) => text === "Companion"), 5000);
+  assert.match(await b.evaluate(`document.querySelector(".settings-body .companion-connection")?.textContent || ""`), /Needed for checking the tools/, "Tools shows the companion widget while disconnected");
+  assert.equal(await b.evaluate(`document.querySelector(".settings-body .companion-connection a")?.getAttribute("href")`), "https://librepaper.org/local-app.html", "Tools links the install guide");
+  await show("companion", "quarto", "Companion");
   assert.match(await b.evaluate(`document.querySelector("#companion-connection").textContent`), /Install|Connect/);
   // A failed Connect lands on its own line under the status pill instead of
   // running beside it.

@@ -216,7 +216,7 @@ await assert.rejects(local.connectApp(), (error) => error.name === "Refused" && 
 // request through, so the attempt says so at once instead of waiting the grace.
 setup(() => { throw new TypeError("Failed to fetch"); });
 permission = "prompt";
-await assert.rejects(local.connectApp(), (error) => error.name === "Refused" && /has not let this site reach/.test(error.message));
+await assert.rejects(local.connectApp(), (error) => error.name === "Refused" && /could not reach the companion/.test(error.message));
 assert.ok(now < 15000, "an undecided permission gives up before the start grace");
 
 // Paired, then the companion stopped: the relaunch link fires, the probe

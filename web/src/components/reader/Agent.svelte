@@ -852,7 +852,6 @@
   .connect-required { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5);
                        padding:calc(var(--spacing) * 2); background:var(--color-subtle);
                        border-left:3px solid var(--color-brand); }
-  .connect-required p { margin:0; }
   /* Agent and access are two settings, each with one value in force, so each
      is a select. A row of buttons had to signal the chosen one and the signal
      was easy to miss; a select shows its value as its content. */
