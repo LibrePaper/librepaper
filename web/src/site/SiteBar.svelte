@@ -22,18 +22,10 @@
     {#if mark}
       <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
         <Logo />
-        <span>LibrePaper</span>
+        <span class="max-sm:hidden">LibrePaper</span>
       </a>
     {/if}
-    <div class="flex items-center gap-4 ml-auto">
-      <a
-        class="lp-text-secondary lp-hover-brand flex items-center"
-        href="/what.html"
-        aria-label="Documentation"
-        title="Documentation"
-      >
-        <Icon name="help" size={18} />
-      </a>
+    <div class="flex items-center gap-3 ml-auto">
       <a
         class="lp-text-secondary lp-hover-brand flex items-center"
         href="https://github.com/LibrePaper/librepaper"
@@ -41,6 +33,9 @@
         title="GitHub"
       >
         <Icon name="github" size={18} />
+      </a>
+      <a class="btn btn-sm lp-control-brand" href="/what.html">
+        Documentation
       </a>
       <a
         class="btn btn-sm lp-control-brand"
