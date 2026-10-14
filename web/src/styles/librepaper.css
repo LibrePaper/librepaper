@@ -1080,7 +1080,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .setting-status-pill.good .setting-status-pill-dot { background: var(--color-success-solid); }
 .setting-status-pill.warn .setting-status-pill-dot { background: var(--color-warning-solid); }
 .setting-status-pill.error .setting-status-pill-dot { background: var(--color-error-solid); }
-.settings :is(.setting-input, .setting-select, .lp-control-brand, .lp-control-outline, .lp-control-danger) { min-height: --spacing(9); }
+.settings :is(.setting-input, .setting-select, .lp-control-brand, .lp-control-tonal-brand, .lp-control-danger) { min-height: --spacing(9); }
 .setting-textarea { width: 100%; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); font-size: var(--panel-meta-size); background-color: var(--color-row-hover); --tw-ring-color: var(--color-divider); }
 .setting-error { margin: 0; color: var(--color-error-text); font-size: var(--panel-meta-size); }
 .setting-table { font-size: var(--panel-meta-size); border-collapse: collapse; }
@@ -1199,20 +1199,20 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .lp-control-success:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { filter: brightness(.94); }
 .lp-control-neutral { background: var(--color-subtle); color: var(--color-text); border-color: var(--color-border); }
 .lp-control-neutral:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
-.lp-control-outline { background: transparent; color: var(--color-text); border-color: var(--color-border-strong); border-width: 1px; border-style: solid; }
-.lp-control-outline:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
-.lp-control-outline-brand { background: transparent; color: var(--color-brand); border-color: var(--color-brand); border-width: 1px; border-style: solid; }
-.lp-control-outline-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-selected); }
 .lp-control-tonal { background: var(--color-subtle); color: var(--color-text); border-color: transparent; }
 .lp-control-tonal:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
+/* The secondary button darkens on hover and press like the primary one. */
 .lp-control-tonal-brand { background: var(--color-row-selected); color: var(--color-brand); border-color: transparent; }
-.lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
-:where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-outline, .lp-control-outline-brand, .lp-control-tonal, .lp-control-tonal-brand):focus-visible {
+.lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-6); }
+.lp-control-tonal-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-7); }
+:where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-tonal, .lp-control-tonal-brand):focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
-:where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-outline, .lp-control-outline-brand, .lp-control-tonal, .lp-control-tonal-brand):disabled,
-:where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-outline, .lp-control-outline-brand, .lp-control-tonal, .lp-control-tonal-brand)[aria-disabled="true"] {
+/* A dialog returns focus to the button that opened it, and that return should not draw a ring until the next key press. */
+[data-quiet-focus]:focus-visible { outline: none; }
+:where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-tonal, .lp-control-tonal-brand):disabled,
+:where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-tonal, .lp-control-tonal-brand)[aria-disabled="true"] {
   background: var(--color-disabled-bg);
   color: var(--color-disabled-text);
   border-color: var(--color-border);

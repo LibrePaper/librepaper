@@ -52,6 +52,33 @@
   // A form dialog has a field to type in; Zag's default lands on it. Only the
   // question-shaped dialogs move focus to the action.
   const initialFocusEl = $derived(confirm && !confirm.form ? () => confirmButton : undefined);
+
+  // Closing hands focus back to the opener. Mark that element so it draws no
+  // ring until the next key press or until it loses focus.
+  function quietReturnedFocus() {
+    const mark = (target) => {
+      if (!(target instanceof HTMLElement) || target === document.body) return;
+      target.dataset.quietFocus = "";
+      const clear = () => {
+        delete target.dataset.quietFocus;
+        target.removeEventListener("blur", clear);
+        document.removeEventListener("keydown", clear, true);
+      };
+      target.addEventListener("blur", clear);
+      document.addEventListener("keydown", clear, true);
+    };
+    const onfocusin = (event) => mark(event.target);
+    document.addEventListener("focusin", onfocusin, true);
+    setTimeout(() => document.removeEventListener("focusin", onfocusin, true), 300);
+  }
+
+  // Runs once per close, however it happens: the cross, Escape, an action,
+  // or a parent setting `open` to false.
+  let wasOpen = false;
+  $effect(() => {
+    if (wasOpen && !open) quietReturnedFocus();
+    wasOpen = open;
+  });
 </script>
 
 <!-- The backdrop and the card are portalled to <body>. `fixed` only means
