@@ -1766,9 +1766,9 @@
       // export-only and therefore never activates this controller.
       return { format: buildPreferences.output || (context.format === "revealjs" ? "revealjs" : "html"), profile: buildPreferences.profile || context.profiles[0] || null, parameters: buildPreferences.parameters || context.parameters };
     },
-    // syncWorkspace writes the browser's tree to this binding. A remembered
-    // external project binding may be stale and is not synchronized here.
-    jobOf: () => ({ binding: localQuarto.HOSTED_BINDING }),
+    // syncWorkspace writes the browser's tree to the project's binding, the
+    // chosen project folder when there is one, and the preview runs in that same place.
+    jobOf: () => ({ binding: localQuarto.bindingId() }),
     isDisposed: () => readerDisposed,
     // A managed preview taking the pane invalidates whatever this browser
     // was rendering into it.
@@ -1784,7 +1784,7 @@
     treeNow: localPreviewTreeNow,
     entrypointOf: (tree) => tree.main,
     optionsOf: () => ({ format: "pdf" }),
-    jobOf: () => ({ binding: localQuarto.HOSTED_BINDING }),
+    jobOf: () => ({ binding: localQuarto.bindingId() }),
     isDisposed: () => readerDisposed,
     onEnded: () => void paintPreview(),
   });

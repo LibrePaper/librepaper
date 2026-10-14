@@ -49,4 +49,17 @@ To share a data file anyway, list it in `.librepaper-share.json` at the top of t
 
 ## Use a folder on your computer
 
-You can render against a folder on your computer instead of the copy on the server. This is how you use private data. Choose **File → Project folder…** and pick the folder. LibrePaper never uploads that folder and never learns its path.
+You can render with a folder on your computer. This is how you use private data, packages and caches without uploading them.
+
+- Start the companion.
+- Choose **File → Project folder…**.
+- Check the main file name.
+- Click **Choose folder…** and approve.
+
+Before each render, LibrePaper writes the project's files into that folder. The folder always matches the editor.
+
+- LibrePaper never touches other files there, such as data or environments.
+- LibrePaper never deletes anything.
+- If you changed one of the project's files in that folder yourself, LibrePaper keeps your version as `<name>.local` before it writes. For example, `paper.qmd.local`.
+
+LibrePaper never uploads the folder and never learns its path.
