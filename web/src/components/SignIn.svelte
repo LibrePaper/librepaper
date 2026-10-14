@@ -22,9 +22,9 @@
 <Nav {me} />
 <main id="main" tabindex="-1" class="signin-main">
   <section class="signin-card" aria-labelledby="signin-title">
-    <h1 id="signin-title">Sign in</h1>
+    <h1 id="signin-title">Sign in or create an account</h1>
     <p class="signin-description">
-      Sign in to read, comment, edit, and create documents and projects.
+      New here? Continuing with an account below creates yours. You can then read, comment, edit, and create documents and projects.
     </p>
     <!-- The service is young and may change under people, so a local copy kept
          by the companion is the safety net. -->

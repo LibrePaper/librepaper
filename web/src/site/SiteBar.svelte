@@ -1,8 +1,8 @@
 <script>
   // The bar every page of the static site wears: the mark, a way back to the
-  // docs, and the button that signs you in. Not Nav.svelte - that bar asks
+  // docs, and the button that takes you to the application. Not Nav.svelte - that bar asks
   // the application who is signed in and shows their account; this site has
-  // no application behind it to ask, so the button always reads "Sign in" and
+  // no application behind it to ask, so the button always reads "Start writing" and
   // sends you to the application to find out. The landing page drops the mark
   // because its hero already shows it.
   import Logo from "../components/Logo.svelte";
@@ -44,7 +44,7 @@
         class="btn btn-sm lp-control-brand"
         href={`${app}/auth/login`}
       >
-        Sign in
+        Start writing
       </a>
     </div>
   </div>
