@@ -4,7 +4,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { FORMATS, formatNamed, fillTemplate } from "../../src/lib/starter.js";
 
 const landing = readFileSync(new URL("../../src/components/Landing.svelte", import.meta.url), "utf8");
 const body = (start, end) => {
@@ -17,8 +16,6 @@ const body = (start, end) => {
 
 const showList = body("  async function showList()", "  async function deleteSelected");
 const reallyDelete = body("  async function reallyDelete()", "  /* --------------------------------------------------------- a new project */");
-const create = body("  async function create(event)", "  $effect(() => {");
-const reconcileTemplateSelection = body("  function reconcileTemplateSelection()", "  $effect(() => reconcileTemplateSelection());");
 
 const context = (values) => vm.createContext({
   Promise,
@@ -30,8 +27,8 @@ const context = (values) => vm.createContext({
   // is noise. Online is what every case here assumes unless it passes its own
   // `navigator`, which the offline case below does.
   navigator: { onLine: true },
-  // The picker is closed and the place is the project list unless a case says otherwise.
-  naming: false,
+  // The New project page is closed and the place is the project list unless a case says otherwise.
+  newTab: "",
   place: "projects",
   ...values,
 });
@@ -65,34 +62,6 @@ const context = (values) => vm.createContext({
   ]);
   assert.deepEqual(Array.from(ctx.documents, (doc) => doc.slug), ["first", "duplicate", "last"]);
   assert.deepEqual(problems, []);
-}
-
-// Filtering always leaves a visible template selected, or clears the choice
-// when there are no matches; creation also guards against stale hidden state.
-{
-  const ctx = context({
-    shownTemplates: [{ id: "visible" }, { id: "other" }], templateId: "visible",
-  });
-  vm.runInContext(reconcileTemplateSelection, ctx);
-  vm.runInContext("reconcileTemplateSelection()", ctx);
-  vm.runInContext("shownTemplates = [{ id: 'other' }];", ctx);
-  vm.runInContext("reconcileTemplateSelection()", ctx);
-  assert.equal(ctx.templateId, "other");
-  vm.runInContext("shownTemplates = [];", ctx);
-  vm.runInContext("reconcileTemplateSelection()", ctx);
-  assert.equal(ctx.templateId, "");
-
-  let uploads = 0;
-  const stale = context({
-    name: "A name", nameError: "", busy: false, chosenTemplate: { id: "hidden" },
-    shownTemplates: [{ id: "visible" }], templateId: "hidden", nameInput: null,
-    upload: async () => { uploads++; return { ok: true, json: async () => ({ url: "/docs/no" }) }; },
-    location: { href: "/" },
-  });
-  vm.runInContext(create, stale);
-  await vm.runInContext("create({ preventDefault() {} })", stale);
-  assert.equal(uploads, 0);
-  assert.match(stale.nameError, /visible template/);
 }
 
 // A later-page failure reports the refresh problem while leaving the prior
@@ -176,75 +145,4 @@ const context = (values) => vm.createContext({
   assert.match(said[0], /1 project moved to the trash/);
 }
 
-// A built-in template, as the picker has it chosen: one file, as the real ones
-// are read by templates.js, which needs Vite and so is not loaded here.
-const picker = {
-  me: { name: "Ada" },
-  templateId: "article",
-  chosenTemplate: { id: "article", custom: false },
-  shownTemplates: [{ id: "article" }],
-  format: "quarto",
-  formatNamed, fillTemplate,
-  templateFiles: async () => [{ path: "main.qmd", text: 'title: "{{title}}"\nauthor: "{{author}}"\n' }],
-};
-
-// A project is made from its name and its template alone, and the page leaves
-// for it rather than returning to the list.
-{
-  let sent = null;
-  const ctx = context({
-    naming: true, name: "  A Paper You Can Change  ", nameError: "", busy: false,
-    nameInput: null,
-    ...picker,
-    say: () => { throw new Error("a creation failure belongs in the dialog"); },
-    upload: async (form) => { sent = form; return { ok: true, json: async () => ({ url: "/docs/a-paper-3f9" }) }; },
-    location: { href: "/" },
-    Blob, FormData,
-  });
-  vm.runInContext(create, ctx);
-  await vm.runInContext("create({ preventDefault() {} })", ctx);
-  assert.equal(ctx.location.href, "/docs/a-paper-3f9");
-  assert.equal(sent.get("title"), "A Paper You Can Change", "the name is trimmed before it becomes a title");
-  assert.equal(sent.get("file").name, "main.qmd", "the format names the main file");
-  assert.equal(sent.get("main"), "main.qmd", "the main file is named for the format");
-  assert.match(await sent.get("file").text(), /title: "A Paper You Can Change"/);
-  assert.match(await sent.get("file").text(), /author: "Ada"/);
-}
-
-// An unnamed project is refused here rather than at the server, and nothing
-// is sent.
-{
-  let focused = false;
-  const ctx = context({
-    naming: true, name: "   ", nameError: "", busy: false,
-    nameInput: { focus: () => { focused = true; } },
-    ...picker,
-    say: () => {},
-    upload: async () => { throw new Error("an unnamed project must not be sent"); },
-    location: { href: "/" }, Blob, FormData,
-  });
-  vm.runInContext(create, ctx);
-  await vm.runInContext("create({ preventDefault() {} })", ctx);
-  assert.equal(ctx.nameError, "Give the project a name.");
-  assert.equal(focused, true, "the field that is wrong is the field the cursor lands in");
-  assert.equal(ctx.location.href, "/", "a refused creation stays on the list");
-}
-
-// A refusal is reported in the dialog that asked -- where the name is still on
-// screen -- rather than in a corner, and the dialog stays open.
-{
-  const ctx = context({
-    naming: true, name: "Paper", nameError: "", busy: false, nameInput: null,
-    ...picker,
-    say: () => { throw new Error("a creation failure belongs in the dialog"); },
-    upload: async () => ({ ok: false, json: async () => ({ error: "you may not publish here" }) }),
-    location: { href: "/" }, Blob, FormData,
-  });
-  vm.runInContext(create, ctx);
-  await vm.runInContext("create({ preventDefault() {} })", ctx);
-  assert.equal(ctx.nameError, "you may not publish here");
-  assert.equal(ctx.naming, true, "the dialog stays open so the name can be changed");
-  assert.equal(ctx.busy, false);
-}
-
-console.log("landing: pagination, refresh preservation, silent offline refresh, project creation and deletion failure checks passed");
+console.log("landing: pagination, refresh preservation, silent offline refresh, deletion failure checks passed");

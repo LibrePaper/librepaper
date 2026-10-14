@@ -91,6 +91,7 @@ const SCREENS = {
         if (path === '/api/config') return Response.json({ extensions: ['.md'], text_extensions: ['.md'], asset_extensions: ['.png'], derived_extensions: [] });
         if (path === '/api/me') return Response.json({ name: 'Tester', can_publish: true, providers: [] });
         if (path === '/api/list') return Response.json({ documents });
+        if (path.startsWith('/api/templates')) return Response.json({ templates: [] });
         if (path.startsWith('/api/documents/')) return Response.json({ comment_count: 0, files: [] });
         return Response.json({});
       };
@@ -195,6 +196,11 @@ try {
       await tab.evaluate("[...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'New project').click()");
       await tab.evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))");
       failures.push(...await violations(tab, "landing: new project"));
+      for (const [tabName, label] of [["template", "template"], ["upload", "upload"]]) {
+        await tab.evaluate(`document.getElementById("new-project-tab-${tabName}").click()`);
+        await tab.evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))");
+        failures.push(...await violations(tab, `landing: new project ${label}`));
+      }
     }
 
     if (name === "reader") {
