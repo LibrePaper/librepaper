@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHtmlCompiler } from "../../src/lib/latex/html.js";
+import { createHtmlCompiler, logDiagnostics } from "../../src/lib/latex/html.js";
 
 const deferred = () => {
   let resolve, reject;
@@ -157,6 +157,33 @@ const failure = await failed.compile(tree("bad"), { base });
 assert.equal(failure.html, null);
 assert.equal(failure.diagnostics[0].message, "Undefined macro");
 failed.cancel();
+
+const errorLine = "LaTeX Error: Cannot run piped system commands.";
+const mismatch = [
+  "LaTeX Error: Mismatched LaTeX support files detected.",
+  "(LaTeX)        Loading 'expl3.sty' aborted!",
+  "(LaTeX)        ",
+  "(LaTeX)        The L3 programming layer in the LaTeX format",
+  "(LaTeX)        is dated 2024-01-22, but in your TeX tree the files require",
+  "(LaTeX)        at least 2026-01-19.",
+  "",
+  "For immediate help type H <return>: ",
+];
+const sampleLog = [
+  errorLine, "", "For immediate help type H <return>: ", "LaTeX tried to call a system process.",
+  ...mismatch, "Library (tcolorbox): 'tcbraster.code.tex' version '6.9.0'",
+  errorLine, ...mismatch, "post-processing complete",
+].join("\n");
+const logged = logDiagnostics(sampleLog, "main.tex");
+assert.equal(logged.length, 2);
+assert.equal(logged[0].message, errorLine);
+assert.ok(logged[1].message.startsWith("LaTeX Error: Mismatched LaTeX support files detected. Loading 'expl3.sty' aborted!"));
+assert.ok(logged[1].message.includes("at least 2026-01-19."));
+assert.equal(logged[0].hints.length, 1);
+assert.equal(logged[1].hints.length, 1);
+assert.equal(logged[0].file, "main.tex");
+assert.equal(logged[1].file, "main.tex");
+assert.equal(logDiagnostics("", "main.tex")[0].message, "LaTeX HTML conversion failed");
 
 let trapRuns = 0;
 const trapped = harness({ run: () => ++trapRuns === 1

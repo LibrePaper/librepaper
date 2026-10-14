@@ -21,6 +21,52 @@ function projectPath(path) {
   return path;
 }
 
+const ERROR_LINE = /^(?:! )?((?:LaTeX|Package \S+|Class \S+) Error: .*)$/;
+const TEX_ERROR_LINE = /^! (.*)$/;
+const CONTINUATION_LINE = /^\([^)]+\)\s*(.*)$/;
+const MAX_DIAGNOSTICS = 10;
+
+function diagnostic(message, hints, main) {
+  return {
+    severity: "error", message, hints, file: main, line: 0, column: 0, end_line: 0, end_column: 0,
+  };
+}
+
+function hintsFor(message) {
+  if (message.includes("Cannot run piped system commands")) {
+    return ["The HTML converter cannot run external programs, so packages that shell out (minted, some tcolorbox listings) fail here. The PDF view may still work."];
+  }
+  if (message.includes("Mismatched LaTeX support files")) {
+    return ["The HTML converter's copy of LaTeX is older than the packages this document loads. This is a limitation of LibrePaper's HTML preview, not an error in your document. The PDF view may still work."];
+  }
+  return [];
+}
+
+/** Turns a LaTeXML log into the short list of errors worth showing. */
+export function logDiagnostics(log, main) {
+  const lines = String(log ?? "").split("\n");
+  const seen = new Set();
+  const diagnostics = [];
+  for (let i = 0; i < lines.length && diagnostics.length < MAX_DIAGNOSTICS; i++) {
+    const match = lines[i].match(ERROR_LINE) ?? lines[i].match(TEX_ERROR_LINE);
+    if (!match) continue;
+    const parts = [match[1].trim()];
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j].match(CONTINUATION_LINE);
+      if (!next) break;
+      if (next[1].trim()) parts.push(next[1].trim());
+      i = j;
+    }
+    const message = parts.join(" ");
+    if (!message || seen.has(message)) continue;
+    seen.add(message);
+    diagnostics.push(diagnostic(message, hintsFor(message), main));
+  }
+  if (diagnostics.length) return diagnostics;
+  const tail = lines.filter((line) => line.trim()).slice(-12).join("\n");
+  return [diagnostic(tail || "LaTeX HTML conversion failed", [], main)];
+}
+
 /** @param {{makeEngine?: typeof createEngine, request?: (input: string|URL, init?: RequestInit) => Promise<Response>, verified?: typeof fetchVerified, deadline?: number}} [options] */
 export function createHtmlCompiler({
   makeEngine = createEngine,
@@ -167,10 +213,7 @@ export function createHtmlCompiler({
       ok,
       seconds: (Date.now() - started) / 1000,
       log: result.log,
-      diagnostics: result.diagnostics?.length ? result.diagnostics : ok ? [] : [{
-        severity: "error", message: result.log || "LaTeX HTML conversion failed", hints: [],
-        file: tree.main, line: 0, column: 0, end_line: 0, end_column: 0,
-      }],
+      diagnostics: result.diagnostics?.length ? result.diagnostics : ok ? [] : logDiagnostics(result.log, tree.main),
     };
   }
 
