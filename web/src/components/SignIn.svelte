@@ -20,7 +20,7 @@
   const providers = ["github", "google"];
 </script>
 
-<Nav {me} />
+<Nav {me} signIn={false} />
 <main id="main" tabindex="-1" class="signin-main">
   <section class="signin-card" aria-labelledby="signin-title">
     <h1 id="signin-title">Sign in or create an account</h1>

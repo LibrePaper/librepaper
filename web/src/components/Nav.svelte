@@ -15,7 +15,9 @@
   // Page-specific tools may include compact global state, such as the
   // Reader's connection and presence indicator. Pane-specific state stays
   // with the pane it describes.
-  let { me = {}, children = undefined, menus = undefined, tools = undefined, phoneMenu = false, hidden = false } = $props();
+  //
+  // `signIn` drops the Sign in link for the page that link leads to.
+  let { me = {}, children = undefined, menus = undefined, tools = undefined, phoneMenu = false, hidden = false, signIn = true } = $props();
 </script>
 
 <!-- The way past the bar. Every page puts twenty-odd controls between the
@@ -55,7 +57,7 @@
             <Menu.Item value="signout" class="menuitem">Sign out</Menu.Item>
           </ExplorerMenu>
         </Menu>
-      {:else if me.providers?.length}
+      {:else if signIn && me.providers?.length}
         <a class="btn btn-sm lp-control-brand" href={signInHref()}>Sign in</a>
       {/if}
     </span>
