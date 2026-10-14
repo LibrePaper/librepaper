@@ -1015,7 +1015,7 @@
         <div class="starters">
           <span class="starters-say">Start something new</span>
           {#each FORMATS as choice}
-            <button type="button" class="btn btn-sm lp-control-outline"
+            <button type="button" class="btn btn-sm lp-control-tonal-brand"
                     onclick={() => askName(choice.id)}>{choice.name}</button>
           {/each}
         </div>
@@ -1252,7 +1252,7 @@
   <!-- The other page: what this is, and a way in. -->
   <Nav {me}>
     {#snippet tools()}
-      <button type="button" class="btn btn-sm lp-control-outline" onclick={() => openSettings()}>Settings</button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => openSettings()}>Settings</button>
     {/snippet}
   </Nav>
   <Page width="measure">
@@ -1324,7 +1324,7 @@
         </label>
         <div class="tformats" role="group" aria-label="Format">
           {#each [{ id: "", name: "Any" }, ...FORMATS] as choice}
-            <button type="button" class="btn btn-sm {formatFilter === choice.id ? 'lp-control-tonal-brand' : 'lp-control-outline'}"
+            <button type="button" class="btn btn-sm {formatFilter === choice.id ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
                     aria-pressed={formatFilter === choice.id} onclick={() => chooseFormat(choice.id)}>{choice.name}</button>
           {/each}
         </div>

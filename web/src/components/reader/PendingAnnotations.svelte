@@ -20,7 +20,7 @@
           <div class="flex gap-2">
             <button type="button" class="btn btn-sm lp-control-tonal-brand"
                     onclick={() => onretry(item.message.temp_id)}>Retry</button>
-            <button type="button" class="btn btn-sm lp-control-outline"
+            <button type="button" class="btn btn-sm lp-control-tonal-brand"
                     onclick={() => ondiscard(item.message.temp_id)}>Discard draft</button>
           </div>
         </div>

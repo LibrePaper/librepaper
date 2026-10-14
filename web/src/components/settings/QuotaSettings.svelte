@@ -167,7 +167,7 @@
 <SettingRow id="storage-account" stacked title="Account storage" description={used}>
   <div class="account-line">
     {@render bar(totalParts, quotaBase, totalLabel, "account-bar")}
-    <button class="btn btn-sm lp-control-outline" type="button" onclick={reload}>Refresh</button>
+    <button class="btn btn-sm lp-control-tonal-brand" type="button" onclick={reload}>Refresh</button>
   </div>
 </SettingRow>
 

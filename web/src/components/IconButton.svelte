@@ -7,9 +7,9 @@
   // they are the same square with the icon at the same size, rather than each
   // place that wants one deciding again.
   //
-  // Four weights, which is the whole vocabulary: filled for the one action
-  // that changes the document, tonal for a state that is on, plain for ordinary
-  // actions, and outlined when an action needs extra emphasis.
+  // Three weights, which is the whole vocabulary: filled for the one action
+  // that changes the document, tonal for a state that is on, and plain for
+  // ordinary actions.
   //
   // An icon without a word beside it has to say what it is. A title attribute
   // says it only to a mouse, after a wait the browser chooses, in a box the
@@ -41,7 +41,6 @@
   const TONES = {
     filled: "lp-control-brand",
     tonal: "lp-control-tonal-brand",
-    outlined: "lp-control-outline",
     plain: "",
   };
   const preset = $derived(TONES[tone] ?? (pressed === true ? TONES.tonal : TONES.plain));

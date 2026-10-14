@@ -167,23 +167,23 @@
     {#snippet actions()}
       <div class="flex flex-wrap items-center gap-1">
         {#if onhistory}
-          <button type="button" class="btn btn-sm lp-control-outline" onclick={onhistory}>Show changes since…</button>
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={onhistory}>Show changes since…</button>
         {/if}
         {#if canComment && (resolvable.length || clearable.length || (canModerate && deletable.length))}
           <div class="bulk flex gap-1" role="group" aria-label={partial ? "Loaded comments" : "All comments"}>
             {#if resolvable.length}
-              <button type="button" class="btn btn-sm lp-control-outline"
+              <button type="button" class="btn btn-sm lp-control-tonal-brand"
                 title={partial ? "Resolve every open comment that is loaded" : "Resolve every open comment"}
                 onclick={resolveAll}>{partial ? "Resolve loaded" : "Resolve all"}</button>
             {/if}
             {#if clearable.length}
-              <button type="button" class="btn btn-sm lp-control-outline"
+              <button type="button" class="btn btn-sm lp-control-tonal-brand"
                 title={partial ? "Delete every resolved comment that is loaded" : "Delete every resolved comment"}
                 disabled={!ondeletemany}
                 onclick={() => ondeletemany?.(clearable)}>Clear resolved</button>
             {/if}
             {#if canModerate && deletable.length}
-              <button type="button" class="btn btn-sm lp-control-outline"
+              <button type="button" class="btn btn-sm lp-control-tonal-brand"
                 title={partial ? "Delete every comment that is loaded" : "Delete every comment"}
                 disabled={!ondeletemany}
                 onclick={() => ondeletemany?.(deletable)}>{partial ? "Delete loaded" : "Delete all"}</button>
@@ -228,8 +228,8 @@
           <p class="panel-meta">{group.pending.length} pending</p>
           {#if canModerate && group.pending.length}
             <div class="flex gap-2">
-              <button class="btn btn-sm lp-control-outline" disabled={Boolean(rejecting)} onclick={() => void reviewNext(group)}>Review next</button>
-              <button class="btn btn-sm lp-control-outline" disabled={Boolean(rejecting) || !onrejectconfirmed} onclick={() => void rejectGroup(group)}>{rejecting === group.pass ? "Rejecting…" : "Reject all"}</button>
+              <button class="btn btn-sm lp-control-tonal-brand" disabled={Boolean(rejecting)} onclick={() => void reviewNext(group)}>Review next</button>
+              <button class="btn btn-sm lp-control-tonal-brand" disabled={Boolean(rejecting) || !onrejectconfirmed} onclick={() => void rejectGroup(group)}>{rejecting === group.pass ? "Rejecting…" : "Reject all"}</button>
             </div>
           {/if}
         </div>
@@ -266,7 +266,7 @@
       {#if page.error}
         <p class="page-error" role="alert">
           <span>{page.error}</span>
-          <button type="button" class="btn btn-sm lp-control-outline"
+          <button type="button" class="btn btn-sm lp-control-tonal-brand"
             disabled={page.busy}
             onclick={() => onloadmore?.()}>Try again</button>
         </p>
@@ -276,7 +276,7 @@
       {:else if !page.total}
         <p class="panel-muted" role="status">No comments yet.</p>
       {:else if partial}
-        <button type="button" class="load-more btn btn-sm lp-control-outline"
+        <button type="button" class="load-more btn btn-sm lp-control-tonal-brand"
           disabled={page.busy}
           onclick={() => onloadmore?.()}>
           {page.busy ? "Loading…" : `Load more (${remaining} not loaded)`}

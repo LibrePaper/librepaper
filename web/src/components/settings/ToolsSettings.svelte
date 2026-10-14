@@ -78,7 +78,7 @@
 <section id="tools-list" class="settings-subsection" aria-labelledby="tools-list-heading">
   <div class="settings-section-title">
     <h4 class="settings-subhead" id="tools-list-heading">Programs</h4>
-    {#if view.available}<button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act("rescan", "Tool scan complete.", "/tools/rescan", { method: "POST" })}>{view.pending === "rescan" ? "Scanning…" : "Rescan"}</button>{/if}
+    {#if view.available}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act("rescan", "Tool scan complete.", "/tools/rescan", { method: "POST" })}>{view.pending === "rescan" ? "Scanning…" : "Rescan"}</button>{/if}
   </div>
   {#each tools as { key, title, tool } (key)}
     {#if CONFIGURABLE.includes(key)}

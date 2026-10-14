@@ -54,5 +54,5 @@
           onchange={(event) => choose(event.currentTarget.value)}>
     {#each row.choices as choice (choice.value)}<option value={choice.value}>{choice.says}</option>{/each}
   </select>
-  {#if ontools && preference.backend === "local"}<button type="button" class="btn btn-sm btn-ghost" onclick={() => ontools()}>Check in Tools</button>{/if}
+  {#if ontools && preference.backend === "local"}<button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => ontools()}>Check in Tools</button>{/if}
 </SettingRow>

@@ -142,7 +142,7 @@
 
   <div class="setting-actions tool-command-actions">
     <button type="button" class="btn btn-sm lp-control-brand" disabled={!canEdit || unchanged} onclick={() => void apply(editingPath.trim() || null, splitArgs(editingArgs))}>{pendingDialogAction ? "Saving…" : "Save"}</button>
-    <button type="button" class="btn btn-sm lp-control-outline" disabled={!canEdit || isDefault} onclick={() => void apply(null, [])}>Reset to default</button>
+    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canEdit || isDefault} onclick={() => void apply(null, [])}>Reset to default</button>
     {#if savedFeedback}<span class="setting-feedback" role="status">Saved</span>{/if}
   </div>
   {#if pendingDialogAction}

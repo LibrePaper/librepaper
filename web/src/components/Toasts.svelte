@@ -21,7 +21,7 @@
         <Toast.CloseTrigger class="btn-icon btn-icon-sm" aria-label="Dismiss">×</Toast.CloseTrigger>
       </div>
       {#if toast.action}
-        <Toast.ActionTrigger class="btn btn-sm lp-control-outline mt-3">{toast.action.label}</Toast.ActionTrigger>
+        <Toast.ActionTrigger class="btn btn-sm lp-control-tonal-brand mt-3">{toast.action.label}</Toast.ActionTrigger>
       {/if}
     </Toast>
   {/snippet}

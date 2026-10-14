@@ -217,7 +217,7 @@
     {/if}
     {#if error}
       <p class="lp-text-error" role="alert">{error}</p>
-      {#if !sharing && !loading}<button class="btn btn-sm lp-control-outline" onclick={() => load(slug)}>Try again</button>{/if}
+      {#if !sharing && !loading}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => load(slug)}>Try again</button>{/if}
     {/if}
     {#if copyFallback}
       <textarea class="share-copy-fallback w-full" readonly rows="3" aria-label="Link to copy manually" value={copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>

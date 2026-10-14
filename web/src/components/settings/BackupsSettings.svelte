@@ -141,7 +141,7 @@
   <div class="setting-status" data-tone="warn" role="alert">
     <span class="setting-status-dot" aria-hidden="true"></span>
     <div class="setting-status-words"><div class="setting-title">Backup status unavailable</div><div class="setting-description">{backupStatus.error}</div></div>
-    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== ""} onclick={() => void backups.refresh()}>Retry</button></div>
+    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy !== ""} onclick={() => void backups.refresh()}>Retry</button></div>
   </div>
 {:else if backupStatus.loading && !backupStatus.data}
   <p class="setting-description" role="status">Loading backup status…</p>
@@ -166,7 +166,7 @@
   <SettingRow id="backup-destination" title="Backup folder">
     <div class="backup-folder-control setting-actions">
       <input class="input input-sm setting-input backup-path" aria-label="Selected backup folder" value={destinationLabel} readonly disabled={!canUseCompanion || busy !== ""} />
-      <button type="button" class="btn btn-sm lp-control-outline" disabled={!canUseCompanion || busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canUseCompanion || busy !== ""} onclick={() => void chooseFolder()}>{busy === "folder" ? "Choosing…" : destinationSet ? "Change folder…" : "Choose folder…"}</button>
     </div>
   </SettingRow>
   <SettingRow id="backup-frequency" title="Frequency">
@@ -187,7 +187,7 @@
     {:else}
       <span class="backup-state">Backups are off.</span>
     {/if}
-    <button type="button" class="btn btn-sm lp-control-outline" disabled={busy !== "" || !destinationSet || !canUseCompanion || needsLogin || !data.enabled || data.running} onclick={() => void runNow()}>{busy === "run" ? "Starting…" : "Back up now"}</button>
+    <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy !== "" || !destinationSet || !canUseCompanion || needsLogin || !data.enabled || data.running} onclick={() => void runNow()}>{busy === "run" ? "Starting…" : "Back up now"}</button>
   </div>
   {#if saved && !busy && !error && !backupStatus.error}<p class="setting-feedback" role="status">Saved</p>{/if}
 
