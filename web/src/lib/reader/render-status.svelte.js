@@ -23,7 +23,7 @@ export function createRenderStatus() {
     },
     failed(reason) {
       state.failure = true;
-      state.failureReason = String(reason || "could not render");
+      state.failureReason = String(reason || "");
     },
     resetFailure() {
       state.failure = false;

@@ -4323,9 +4323,20 @@
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">Could not render</h2>
-        {#if renderState.failureReason}
+        {#if latexHtmlPreview}
           <p class="lp-text-secondary text-sm">
-            The compiler produced no {pdfOutput ? (latexHtmlPreview ? "HTML preview" : "PDF") : "HTML preview"}, and Diagnostics has nothing to show for it. What it said:
+            The HTML converter could not convert this document. It supports fewer LaTeX packages than the PDF compiler, so the PDF view (View &gt; PDF) may still work.
+          </p>
+          <p class="lp-text-secondary text-sm">
+            <Icon name="triangle-alert" /> Diagnostics in the sidebar lists what the converter reported.
+          </p>
+          <div class="notyet-actions">
+            <button class="btn btn-sm lp-control-brand" onclick={() => void setLatexOutput("pdf")}>Show the PDF</button>
+            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => showPanel("diagnostics")}>Open Diagnostics</button>
+          </div>
+        {:else if renderState.failureReason}
+          <p class="lp-text-secondary text-sm">
+            The compiler produced no {pdfOutput ? "PDF" : "HTML preview"}, and Diagnostics has nothing to show for it. What it said:
           </p>
           <pre class="lp-text-secondary text-xs">{renderState.failureReason}</pre>
         {:else}
@@ -4333,7 +4344,7 @@
             {#if !compilesHere}
               This browser cannot render this {sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : "Markdown"} source. {sourceFormat === "latex" ? "Configure the browser LaTeX renderer to view it." : "Install LibrePaper Companion to render it on this computer."}
             {:else}
-              Fix the errors in Diagnostics to produce a {latexHtmlPreview ? "HTML preview" : "PDF preview"}.
+              Fix the errors in Diagnostics to produce a PDF preview.
             {/if}
           </p>
           {#if !compilesHere && sourceFormat !== "latex"}<CompanionConnection needs="this preview" />{/if}
