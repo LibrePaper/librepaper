@@ -12,11 +12,13 @@ const select = (value, main = value.main, limits = config) => archiveSelection(v
 
 const latex = project({ "paper/main.tex": "Title", "paper/refs.bib": "References", "paper/fig.png": new Uint8Array([1,2]), "paper/main.pdf": "generated", "paper/main.aux": "aux", "paper/.git/config": "private", "__MACOSX/._main.tex": "metadata" });
 assert.equal(latex.main, "main.tex");
+assert.equal(latex.root, "paper", "the wrapper folder is reported and stripped");
 assert.deepEqual(select(latex).files.map((file) => file.path), ["main.tex", "refs.bib", "fig.png"]);
 assert.ok(select(latex).skipped.includes("main.pdf"));
 assert.deepEqual(latex.candidates, ["main.tex"]);
 const ambiguous = project({ "one.md": "First", "two.md": "Second", "refs.bib": "References" });
 assert.equal(ambiguous.main, "");
+assert.equal(ambiguous.root, "", "no wrapper folder means no root");
 assert.deepEqual(ambiguous.candidates, ["one.md", "two.md"]);
 assert.throws(() => select(ambiguous), /Choose the document/);
 assert.equal(select(ambiguous, "two.md").files.length, 3);
@@ -57,6 +59,9 @@ assert.throws(() => select(project({ "main.md": new Uint8Array([255]) })), /UTF-
   });
   assert.deepEqual(opened.files.map((item) => item.path), ["main.qmd", "chapters/one.qmd", "fig/plot.png", "extra.png"]);
   assert.deepEqual(opened.folders, ["chapters", "fig"]);
+  assert.deepEqual(opened.roots, ["paper"]);
+  assert.ok(opened.skipped.includes("main.html"), "rendered output is reported as skipped");
+  assert.ok(opened.skipped.includes("_freeze/cache.json"), "generated folders are reported as skipped");
   assert.equal(opened.files.at(-1).file, "figure bytes", "a file that is not an archive is passed through untouched");
   assert.equal(opened.files[0].file.name, "main.qmd", "each extracted file is named by its own basename");
 }
