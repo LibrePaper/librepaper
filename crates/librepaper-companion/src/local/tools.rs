@@ -107,6 +107,9 @@ async fn version_output_with_path(
             command.env("PATH", path);
         }
     }
+    // Discovery can run on every companion state poll. Keep console tools
+    // invisible on Windows even though their output is captured below.
+    crate::local::native::hide_console(command.as_std_mut());
     command
         .arg("--version")
         .stdin(Stdio::null())

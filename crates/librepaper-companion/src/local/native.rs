@@ -135,10 +135,29 @@ pub(crate) fn kill_tree(pid: Option<u32>) {
 #[cfg(windows)]
 pub(crate) fn kill_tree(pid: Option<u32>) {
     if let Some(pid) = pid {
-        let _ = std::process::Command::new("taskkill")
+        let mut command = std::process::Command::new("taskkill");
+        hide_console(&mut command);
+        let _ = command
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output();
     }
+}
+
+/// Suppress console windows for helper processes that run in the background.
+///
+/// `Command::output()` redirects a child's streams, but on Windows that does
+/// not prevent console applications from creating a visible console window.
+/// The companion uses this for recurring discovery and process cleanup.
+pub(crate) fn hide_console(command: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    #[cfg(not(windows))]
+    let _ = command;
 }
 /// The tail of a log/byte stream, bounded to `limit` bytes. The cut is made
 /// on a byte index, which for text may land inside a character; callers

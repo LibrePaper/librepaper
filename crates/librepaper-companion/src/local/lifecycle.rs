@@ -494,7 +494,9 @@ pub fn startup_enabled() -> bool {
     #[cfg(windows)]
     {
         use std::process::Command;
-        let output = Command::new("reg")
+        let mut command = Command::new("reg");
+        super::native::hide_console(&mut command);
+        let output = command
             .args([
                 "query",
                 r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
@@ -628,6 +630,7 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
         let executable = super::paths::current_executable()?;
         let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
         let mut command = Command::new("reg");
+        super::native::hide_console(&mut command);
         if enabled {
             command.args([
                 "add",
