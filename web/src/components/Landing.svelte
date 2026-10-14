@@ -22,6 +22,7 @@
   import IconButton from "./IconButton.svelte";
   import MenuIconButton from "./MenuIconButton.svelte";
   import Modal from "./Modal.svelte";
+  import NewProject from "./NewProject.svelte";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import Hero from "./Hero.svelte";
   import Toasts from "./Toasts.svelte";
@@ -33,11 +34,10 @@
   import Row from "./layout/Row.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import { say } from "../lib/toast.svelte.js";
-  import { SHELL_HEADERS, get, getPrivate, me as whoami, upload } from "../lib/api.js";
+  import { SHELL_HEADERS, get, getPrivate, me as whoami } from "../lib/api.js";
   import { day as isoDay, since } from "../lib/dates.js";
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
-  import { FORMATS, formatNamed, fillTemplate, matchTemplates } from "../lib/starter.js";
-  import { BUILT_IN, templateFiles } from "../lib/templates.js";
+  import { FORMATS } from "../lib/starter.js";
   import { preparedProjects } from "../lib/offline-projects.js";
   import * as localBridge from "../lib/companion/client.js";
 
@@ -73,48 +73,23 @@
   let sortBy = $state("updated");
   let ascending = $state(false);
   const compactSort = $derived(`${sortBy}:${ascending ? "asc" : "desc"}`);
-  let naming = $state(false);
-  let name = $state("");
-  // The picker in the New project dialog. The format filter is the one thing
-  // remembered between visits ("" is any); the rest starts fresh each time.
-  let templateQuery = $state("");
-  let formatFilter = $state("");
-  let templateId = $state("blank");
-  // The format chosen on the card when the filter is "any".
-  let formatOverride = $state("");
+  // The New project page. It replaces the rail and the list while the address
+  // says `?new=<tab>`, so it can be linked to and Back closes it.
+  let newTab = $state(newTabFromUrl());
+  // The tab last used this visit, which the nav button reopens.
+  let lastNewTab = "";
+  // Whether this page view was pushed by us, so Cancel can step back instead
+  // of leaving a dead entry behind.
+  let newPushed = false;
+  let newFormat = $state("");
+  let newTemplate = $state("");
+  // The limits the server publishes; empty until /api/config answers.
+  let rules = $state({});
   // The caller's own templates, as the server lists them: projects. One list
-  // serves the picker and the Templates place, so there is one loader.
+  // serves the New project page and the Templates place, so there is one loader.
   /** @type {{slug: string; title: string; source_format: string; url: string}[]} */
   let templateRows = $state([]);
-  // The same, in the shape of a built-in one, so the same filter and the same
-  // cards serve both.
-  const customTemplates = $derived(templateRows.map((row) => ({
-    id: row.slug, slug: row.slug, name: row.title, description: "", keywords: [],
-    formats: [row.source_format], custom: true, url: row.url,
-  })));
-  const allTemplates = $derived([
-    ...BUILT_IN.map((template) => ({ ...template, slug: template.id, custom: false, url: "" })),
-    ...customTemplates,
-  ]);
-  const shownTemplates = $derived(matchTemplates(allTemplates, templateQuery, formatFilter));
-  const shownBuiltIn = $derived(shownTemplates.filter((each) => !each.custom));
-  const shownCustom = $derived(shownTemplates.filter((each) => each.custom));
-  const chosenTemplate = $derived(allTemplates.find((each) => each.id === templateId));
-  function reconcileTemplateSelection() {
-    const shown = shownTemplates;
-    if (!shown.some((each) => each.id === templateId)) templateId = shown[0]?.id ?? "";
-  }
-  $effect(() => reconcileTemplateSelection());
-  // A template that does not offer the filtered format falls back to its
-  // first, rather than refusing the click.
-  const format = $derived.by(() => {
-    const offered = chosenTemplate?.formats ?? [];
-    if (offered.includes(formatFilter)) return formatFilter;
-    if (offered.includes(formatOverride)) return formatOverride;
-    return offered[0] ?? FORMATS[0].id;
-  });
-  let nameError = $state("");
-  let busy = $state(false);
+  const takenTitles = $derived(documents.filter((doc) => mine(doc)).map((doc) => doc.title));
   let confirming = $state(false);
   let confirmText = $state("");
   // The trash confirms twice over: once to put a project there, once to empty
@@ -122,7 +97,6 @@
   // carries which of the two it is asking.
   let confirmKind = $state("trash");
   let pendingDeletion = [];
-  let nameInput = $state(null);
   // The project being renamed, and the name being typed for it.
   let renaming = $state(null);
   let renameTo = $state("");
@@ -568,7 +542,7 @@
     await showList();
     // A template is a project, so trashing one from the picker or from the
     // Templates place takes this path, and what it was listed in is stale.
-    if (naming || place === "templates") await loadTemplates();
+    if (newTab || place === "templates") await loadTemplates();
   }
 
   async function restore(doc) {
@@ -775,32 +749,7 @@
   // any fork. Everything afterwards happens in the project's own file
   // explorer, which already knows how to take a file, a folder, or an archive.
 
-  const FORMAT_KEY = "librepaper.template-format";
-
-  function rememberedFormat() {
-    try {
-      const saved = localStorage.getItem(FORMAT_KEY) ?? "";
-      return FORMATS.some((each) => each.id === saved) ? saved : "";
-    } catch {
-      return "";
-    }
-  }
-
-  function chooseFormat(id) {
-    formatFilter = id;
-    try {
-      localStorage.setItem(FORMAT_KEY, id);
-    } catch {
-      // Not remembering is a convenience lost, not an error.
-    }
-  }
-
-  function chooseTemplate(id) {
-    templateId = id;
-    formatOverride = "";
-  }
-
-  // Your own templates, for the dialog and for the Templates place alike.
+  // Your own templates, for the New project page and the Templates place alike.
   async function loadTemplates() {
     try {
       const bySlug = new Map();
@@ -820,82 +769,57 @@
         cursor = page.next_cursor;
       } while (cursor?.after_updated && cursor?.after_id);
       templateRows = [...bySlug.values()];
-      if (!allTemplates.some((each) => each.id === templateId)) chooseTemplate("blank");
     } catch {
       // Signed out, or offline: the built-in templates are all there is.
       templateRows = [];
     }
   }
 
-  function askName(chosen) {
-    name = "";
-    templateQuery = "";
-    formatFilter = chosen || rememberedFormat();
-    chooseTemplate("blank");
-    nameError = "";
-    naming = true;
+  function newTabFromUrl() {
+    const asked = new URLSearchParams(location.search).get("new") || "";
+    return ["blank", "template", "upload"].includes(asked) ? asked : "";
+  }
+
+  // Opening the page is a navigation that Back undoes, so it is pushed. The
+  // other parameters of the address stay as they are.
+  function openNew(tab = lastNewTab || "blank", { format = "", template = "" } = {}) {
+    newFormat = format;
+    newTemplate = template;
+    const url = new URL(location.href);
+    url.searchParams.set("new", tab);
+    history.pushState(null, "", url);
+    newPushed = true;
+    newTab = tab;
     void loadTemplates();
   }
 
-  // From a row in the Templates place: the dialog opens with that template
-  // already chosen, under any format, so its card is not filtered away.
+  // Switching tabs is not a step in the history, only a note of where you are.
+  function newTabChanged(tab) {
+    lastNewTab = tab;
+    const url = new URL(location.href);
+    url.searchParams.set("new", tab);
+    history.replaceState(null, "", url);
+  }
+
+  function closeNew() {
+    if (newPushed) {
+      newPushed = false;
+      history.back();
+      return;
+    }
+    const url = new URL(location.href);
+    url.searchParams.delete("new");
+    history.replaceState(null, "", url);
+    newTab = "";
+  }
+
+  // From a row in the Templates place: the page opens on that template.
   function askNameFrom(doc) {
-    askName();
-    formatFilter = "";
-    chooseTemplate(doc.slug);
+    openNew("template", { template: doc.slug });
   }
 
   function askDeleteTemplate(template) {
     askDelete({ slug: template.slug, title: template.name });
-  }
-
-  async function create(event) {
-    event.preventDefault();
-    if (busy) return;
-    if (!chosenTemplate || !shownTemplates.some((each) => each.id === chosenTemplate.id)) {
-      nameError = "Choose a visible template.";
-      return;
-    }
-    const named = name.trim();
-    if (!named) {
-      nameError = "Give the project a name.";
-      nameInput?.focus();
-      return;
-    }
-    busy = true;
-    nameError = "";
-    try {
-      let response;
-      if (chosenTemplate?.custom) {
-        response = await fetch(`/api/documents/${chosenTemplate.slug}/fork`, {
-          method: "POST",
-          headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
-          body: JSON.stringify({ title: named }),
-        });
-      } else {
-        // The same multipart publish a directory uses. The server names the
-        // format from the main file's extension, and `main` says which file
-        // that is now that a template has more than one.
-        const files = fillTemplate(await templateFiles(templateId, format), format, { title: named, author: me.name });
-        const form = new FormData();
-        for (const file of files) form.append("file", new Blob([file.text], { type: "text/plain" }), file.path);
-        form.append("title", named);
-        form.append("main", `main.${formatNamed(format).extension}`);
-        response = await upload(form);
-      }
-      if (!response.ok) {
-        nameError = (await response.json().catch(() => ({}))).error || "The project could not be created.";
-        return;
-      }
-      const doc = await response.json();
-      // Straight into the project: the point of making one is to work in it,
-      // and the list behind is not where the next thing happens.
-      location.href = doc.url;
-    } catch (error) {
-      nameError = error?.message || "The project could not be created.";
-    } finally {
-      busy = false;
-    }
   }
 
   // The suggested name arrives selected, so the first keystroke replaces it.
@@ -905,6 +829,17 @@
     if (copying && copyInput) copyInput.select();
   });
 
+  // Back closes the New project page and Forward brings it back.
+  $effect(() => {
+    const reread = () => {
+      newTab = newTabFromUrl();
+      newPushed = Boolean(newTab);
+      if (newTab) void loadTemplates();
+    };
+    window.addEventListener("popstate", reread);
+    return () => window.removeEventListener("popstate", reread);
+  });
+
   $effect(() => {
     void showOfflineProjects();
     localBridge.configure({ project: null, origin: location.origin, active: true });
@@ -912,6 +847,7 @@
     // answer. This server pairs without a consent step, so connect at once.
     if (untrack(() => initialSettings === "companion")) void localBridge.connectApp().catch(() => {});
     get("/api/config").then((answer) => {
+      rules = answer ?? {};
       if (answer?.local_app?.address) localBridge.setAdvertisedAddress(answer.local_app.address);
     }).catch(() => {});
     // Not the shared me(), which folds a failed request into an empty account:
@@ -924,6 +860,7 @@
       .then(async (who) => {
         me = who;
         if (who.can_publish) {
+          if (newTab) void loadTemplates();
           await showList();
           await showOfflineProjects();
           if (place === "trash") await showTrash();
@@ -937,9 +874,9 @@
   <!-- The workspace half. The trail says where in the account this is, which
        is the same slot a project's title takes when one is open: going in
        replaces the last segment and nothing else in the bar. -->
-  <Nav {me} phoneMenu={narrow} hidden={barHidden}>
+  <Nav {me} phoneMenu={narrow} hidden={barHidden && !newTab}>
     {#snippet children()}
-      <span class="nav-place">{PLACE_NAMES[place]}</span>
+      <span class="nav-place">{newTab ? "New project" : PLACE_NAMES[place]}</span>
     {/snippet}
     {#snippet tools()}
       {#if narrow}
@@ -959,7 +896,7 @@
         <button type="button" class="btn btn-sm nav-action lp-control-tonal-brand" onclick={() => openSettings()}>Settings</button>
       {/if}
       {#if me.can_publish}
-        <button type="button" class="btn btn-sm nav-new nav-action lp-control-tonal-brand" aria-label="New project" onclick={() => askName()}>
+        <button type="button" class="btn btn-sm nav-new nav-action lp-control-tonal-brand" aria-label="New project" onclick={() => openNew()}>
           <Icon name="file-plus" size={16} />
           <span class="nav-new-label">New project</span>
         </button>
@@ -967,6 +904,14 @@
     {/snippet}
   </Nav>
 
+  {#if newTab}
+    <main id="main" tabindex="-1" class="new-page">
+      <NewProject {me} {rules} {templateRows} {takenTitles} tab={newTab}
+                  initialFormat={newFormat} initialTemplate={newTemplate}
+                  ontab={newTabChanged} oncancel={closeNew}
+                  ondeletetemplate={askDeleteTemplate} />
+    </main>
+  {:else}
   <main id="main" tabindex="-1" class="workspace" class:bar-hidden={barHidden}>
     <!-- The rail. Nothing beside it: these are places, and the place you
          choose fills the page rather than a column. `shown.comments` false is
@@ -1016,7 +961,7 @@
           <span class="starters-say">Start something new</span>
           {#each FORMATS as choice}
             <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                    onclick={() => askName(choice.id)}>{choice.name}</button>
+                    onclick={() => openNew("blank", { format: choice.id })}>{choice.name}</button>
           {/each}
         </div>
       {/if}
@@ -1248,6 +1193,7 @@
       </DataTable>
     </section>
   </main>
+  {/if}
 {:else}
   <!-- The other page: what this is, and a way in. -->
   <Nav {me}>
@@ -1281,84 +1227,6 @@
 {/if}
 
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} account={me} />
-
-<!-- A name and a template, because a project is a directory and a main file
-     and nothing here can guess either. More files come next, in the project. -->
-{#snippet templateCard(template)}
-  <div class="tcard" class:picked={templateId === template.id}>
-    <button type="button" class="tcard-pick" aria-pressed={templateId === template.id}
-            onclick={() => chooseTemplate(template.id)}>
-      <span class="tcard-name" class:with-actions={template.custom}>{template.name}</span>
-      {#if template.description}<span class="tcard-say">{template.description}</span>{/if}
-      <span class="tcard-formats">
-        {#each template.formats as id}<span class="tcard-badge">{formatNamed(id).name}</span>{/each}
-      </span>
-    </button>
-    {#if template.custom}
-      <span class="tcard-actions">
-        <IconButton icon="pencil" title="Edit" label="Edit {template.name}" onclick={() => (location.href = template.url)} />
-        <IconButton icon="trash" title="Move to trash" label="Move {template.name} to the trash" onclick={() => askDeleteTemplate(template)} />
-      </span>
-    {/if}
-  </div>
-{/snippet}
-
-<Modal
-  bind:open={naming}
-  title="New project"
-  wide
-  onclose={() => (nameError = "")}
-  confirm={{ form: "new-project", label: busy ? "Creating…" : "Create project", disabled: busy, oncancel: () => (naming = false) }}
->
-  {#snippet children()}
-    <form id="new-project" onsubmit={create}>
-      <Stack gap={3}>
-        <label class="label">
-          <span class="label-text">Project name</span>
-          <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
-          <input class="input" autofocus bind:this={nameInput} bind:value={name} />
-        </label>
-        <label class="label">
-          <span class="label-text">Search templates</span>
-          <input class="input" type="search" placeholder="Search templates" bind:value={templateQuery} />
-        </label>
-        <div class="tformats" role="group" aria-label="Format">
-          {#each [{ id: "", name: "Any" }, ...FORMATS] as choice}
-            <button type="button" class="btn btn-sm {formatFilter === choice.id ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
-                    aria-pressed={formatFilter === choice.id} onclick={() => chooseFormat(choice.id)}>{choice.name}</button>
-          {/each}
-        </div>
-        <div class="tlist">
-          {#if !shownTemplates.length}
-            <p class="lp-text-secondary text-sm">No template matches.</p>
-          {/if}
-          {#if shownBuiltIn.length}
-            <div class="tgrid">
-              {#each shownBuiltIn as template (template.id)}{@render templateCard(template)}{/each}
-            </div>
-          {/if}
-          {#if shownCustom.length}
-            <h3 class="tgroup">Your templates</h3>
-            <div class="tgrid">
-              {#each shownCustom as template (template.id)}{@render templateCard(template)}{/each}
-            </div>
-          {/if}
-        </div>
-        {#if chosenTemplate && !chosenTemplate.custom && !formatFilter && chosenTemplate.formats.length > 1}
-          <label class="label">
-            <span class="label-text">Format</span>
-            <select class="select" value={format} onchange={(event) => (formatOverride = event.currentTarget.value)}>
-              {#each chosenTemplate.formats as id}
-                <option value={id}>{formatNamed(id).name}</option>
-              {/each}
-            </select>
-          </label>
-        {/if}
-        {#if nameError}<p class="lp-text-error text-sm">{nameError}</p>{/if}
-      </Stack>
-    </form>
-  {/snippet}
-</Modal>
 
 <Modal open={Boolean(renaming)} title="Rename project"
        description="The name changes; the link does not, so anything already shared still works."
@@ -1421,24 +1289,8 @@
   .place-line { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
 
   .starters { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); }
+  .new-page { height: calc(100dvh - var(--librepaper-bar)); max-width: none; margin: 0; padding: 0; overflow-y: auto; }
   .starters-say { color: var(--color-text-secondary); font-size: var(--text-sm); margin-right: calc(var(--spacing)); }
-
-  /* The template picker. Cards fill the width in as many columns as fit, and
-     the list scrolls on its own so the name and the buttons stay in view. */
-  .tformats { display: flex; flex-wrap: wrap; gap: calc(var(--spacing) * 2); }
-  .tlist { max-height: 40vh; overflow-y: auto; display: flex; flex-direction: column; gap: calc(var(--spacing) * 3); }
-  .tgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: calc(var(--spacing) * 2); }
-  .tgroup { font-size: var(--text-sm); font-weight: 600; color: var(--color-text-secondary); margin: 0; }
-  .tcard { position: relative; display: flex; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-raised); }
-  .tcard.picked { border-color: var(--color-brand); background: var(--color-row-selected); }
-  .tcard-pick { display: flex; flex-direction: column; align-items: flex-start; gap: calc(var(--spacing)); flex: 1 1 auto; min-width: 0; padding: calc(var(--spacing) * 3); text-align: left; background: transparent; border: 0; border-radius: inherit; color: var(--color-text); cursor: pointer; }
-  .tcard-pick:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
-  .tcard-name { font-weight: 600; overflow-wrap: anywhere; }
-  .tcard-name.with-actions { padding-right: 4rem; }
-  .tcard-say { font-size: var(--text-xs); color: var(--color-text-secondary); }
-  .tcard-formats { display: flex; flex-wrap: wrap; gap: calc(var(--spacing)); margin-top: auto; }
-  .tcard-badge { font-size: var(--text-xs); padding: 0 calc(var(--spacing) * 1.5); border-radius: 999px; background: var(--color-subtle); color: var(--color-text-secondary); }
-  .tcard-actions { position: absolute; top: calc(var(--spacing)); right: calc(var(--spacing)); display: inline-flex; }
 
   .toolbar { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-height: 2rem; }
   .toolbar .row-count { color: var(--color-text-secondary); font-size: var(--text-sm); }
