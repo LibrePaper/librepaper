@@ -4360,7 +4360,7 @@
             {/if}
           </div>
         {:else}
-          <h2 class="h4">Not yet rendered</h2>
+          <h2 class="h4">{#if previewBusy}<span class="spinner"></span>{/if}Not yet rendered</h2>
           <p class="lp-text-secondary text-sm">
             This {sourceFormat === "typst" ? "Typst" : "paged"} document is being rendered from source in this browser.
           </p>
@@ -4379,7 +4379,7 @@
        would reload the document and lose the reader's place in it. -->
   {#snippet previewControls()}
     {#if viewerView}
-      <PreviewControls mode={viewerView.mode} scale={viewerView.scale} tool={viewerTool}
+      <PreviewControls mode={viewerView.mode} scale={viewerView.scale} tool={viewerTool} busy={previewBusy}
         onmode={(mode) => {
           // Optimistic, so the select does not snap back while the page is
           // redrawn; the frame corrects it with the scale it really used.

@@ -14,7 +14,7 @@
   // was asked for.
   import IconButton from "./IconButton.svelte";
 
-  let { mode = "auto", scale = null, tool = "select", onmode, ontool } = $props();
+  let { mode = "auto", scale = null, tool = "select", busy = false, onmode, ontool } = $props();
 
   // pdf.js's own steps, and its own ceiling and floor. A zoom button moves by
   // a tenth of the *drawn* scale rather than by a step of this list: the list
@@ -34,6 +34,7 @@
 </script>
 
 <div class="preview-controls" role="group" aria-label="Page view">
+  {#if busy}<span class="preview-busy" role="status" aria-label="Compiling"><span class="spinner"></span></span>{/if}
   <IconButton icon="zoom-out" label="Zoom out" tone="plain" size="btn-icon-sm"
               disabled={at <= MIN} onclick={() => step(1 / 1.1)} />
   <IconButton icon="zoom-in" label="Zoom in" tone="plain" size="btn-icon-sm"

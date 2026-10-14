@@ -84,7 +84,6 @@
     <div class="render-line" role="progressbar" aria-label="Rendering preview" aria-valuemin="0" aria-valuemax={progress ? progress.total : undefined} aria-valuenow={progress ? progress.done : undefined}>
       <span class="render-line-bar" class:indeterminate={!progress} style:width={progress ? `${Math.min(100, (progress.done / progress.total) * 100)}%` : null}></span>
     </div>
-    <div class="preview-busy" aria-hidden="true"><span class="spinner"></span>Compiling</div>
   {/if}
   {@render controls?.()}
   <!-- allow-same-origin refers to the document's own origin, not this one, so
