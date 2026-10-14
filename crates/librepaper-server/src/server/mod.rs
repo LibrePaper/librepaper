@@ -237,8 +237,6 @@ pub struct Server {
     /// The terminals waiting to be signed in. In memory only: a restart
     /// forgets them, and a `login` that was mid-flight starts again.
     pub pending: PendingCodes,
-    /// Serialize first-sign-in provisioning; its progress is durable in PostgreSQL.
-    onboarding: tokio::sync::Mutex<()>,
     /// Private agent channels are live coordination and never durable data.
     pub chat: chat::Hub,
     mcp_capacity: mcp::Capacity,
@@ -884,7 +882,6 @@ impl Server {
             accounts,
             simulate_activity: None,
             pending: PendingCodes::new(),
-            onboarding: tokio::sync::Mutex::new(()),
             chat: chat::Hub::default(),
             mcp_capacity,
             latex: None,

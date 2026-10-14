@@ -495,6 +495,24 @@ impl PostgresCatalog {
         account.ok_or_else(|| Error::Conflict("account is not active".into()))
     }
 
+    /// Whether the account still lacks its starter documents. Errors when the account does not exist.
+    pub async fn account_examples_pending(&self, id: Uuid) -> Result<bool> {
+        sqlx::query_scalar("SELECT examples_at IS NULL FROM accounts WHERE id=$1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(Error::NotFound)
+    }
+
+    /// Record that the account received its starter documents. Idempotent.
+    pub async fn mark_account_examples(&self, id: Uuid) -> Result<()> {
+        sqlx::query("UPDATE accounts SET examples_at=now() WHERE id=$1 AND examples_at IS NULL")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// The accounts named by `ids`, in one round trip, skipping any that no
     /// longer exist. Listing a page of documents needs an owner and a display
     /// name for each guest on it; asking row by row made the cost of a page

@@ -125,12 +125,9 @@ impl Server {
                 Err(err) => return plain(503, &format!("could not establish account: {err}")),
             }
         }
+        // The account stays unprovisioned and the next sign-in tries again.
         if let Err(error) = self.initialize_account_examples(&signed_who).await {
             tracing::warn!("could not prepare account examples: {error}");
-            return plain(
-                503,
-                "Could not prepare your example documents. Please try signing in again.",
-            );
         }
         let mut response = redirect(&local_path(next));
         let session = sign_session(
