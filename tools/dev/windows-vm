@@ -17,6 +17,7 @@ WINDOWS_ISO="$VM_DIR/windows-11/windows-11.iso"
 VIRTIO_ISO="$VM_DIR/windows-11/virtio-win.iso"
 VIRTIO_URL=https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso
 SHARE="$VM_DIR/share"
+AGENT_SOCK="$VM_DIR/windows-11/windows-11-agent.sock"
 
 RAM="${WINDOWS_VM_RAM:-8G}"
 CPUS="${WINDOWS_VM_CPUS:-4}"
@@ -36,6 +37,7 @@ Commands:
   restore NAME       Restore a snapshot (VM must be off)
   snapshots          List snapshots
   reset [--yes]      Delete the VM disk, EFI vars and TPM state; reinstall with start
+  bootstrap [MODE]   Run the LibrePaper installer in the running VM (latest, local, or vX.Y.Z)
   build              Cross-compile the companion for Windows into the shared folder
   path               Print the VM directory
   help               Show this help text
@@ -46,6 +48,7 @@ Environment variables:
   WINDOWS_VM_CPUS          VM CPU cores (default: 4)
   WINDOWS_VM_DISPLAY       quickemu display mode (default: spice)
   WINDOWS_VM_MIN_FREE_GB   Free GiB required before downloading (default: 40)
+  WINDOWS_VM_AGENT_TIMEOUT Seconds to wait for the guest agent (default: 600)
 
 Inside the VM, the shared folder is \\10.0.2.4\qemu.
 EOF
@@ -214,7 +217,26 @@ EOF
 Copied librepaper.exe and install-local.ps1 to the shared folder.
 In the VM run:
   powershell -ExecutionPolicy Bypass -File \\10.0.2.4\qemu\install-local.ps1
+Or from the host: tools/dev/windows-vm bootstrap local
 EOF
+}
+
+# $1 is latest, local or a release tag such as v0.0.39.
+cmd_bootstrap() {
+    local mode="${1:-latest}"
+    local tag_re='^v[0-9][0-9A-Za-z.+-]*$'
+    [[ "$mode" == latest || "$mode" == local || "$mode" =~ $tag_re ]] \
+        || die "bootstrap takes latest, local or a release tag like v0.0.39"
+
+    require_conf
+    if [[ ! -S "$AGENT_SOCK" ]]; then
+        die "the VM is not running with a SPICE display; run tools/dev/windows-vm start first"
+    fi
+    if [[ "$mode" == local ]]; then
+        [[ -f "$SHARE/librepaper.exe" && -f "$SHARE/install-local.ps1" ]] \
+            || die "run tools/dev/windows-vm build first"
+    fi
+    exec node "$REPO_ROOT/tools/dev/windows-vm.qga.mjs" "$AGENT_SOCK" "$mode"
 }
 
 # Main dispatcher.
@@ -254,6 +276,9 @@ main() {
             fi
             need_quickemu
             reset_delete
+            ;;
+        bootstrap)
+            cmd_bootstrap "${2:-latest}"
             ;;
         build)
             cmd_build
