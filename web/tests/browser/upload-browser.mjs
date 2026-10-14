@@ -58,7 +58,7 @@ try {
     mount(Landing, {target: document.body});
   `;
   writeFileSync(entry, source);
-  await build({ configFile: false, root: join(root, "web"), plugins: [tailwindcss(), svelte()], build: { outDir: out, emptyOutDir: true, minify: false, lib: { entry, formats: ["es"], fileName: () => "check.js" } }, logLevel: "error" });
+  await build({ configFile: false, root: join(root, "web"), plugins: [tailwindcss(), svelte()], build: { outDir: out, emptyOutDir: true, minify: false, lib: { entry, formats: ["es"], fileName: () => "check.js", cssFileName: "check" } }, logLevel: "error" });
 
   // What the Upload tab posted, as the node server read it.
   const posted = [];
@@ -82,7 +82,7 @@ try {
       }
       return;
     }
-    if (path === "/" ) { response.setHeader("content-type", "text/html"); response.end('<!doctype html><script type="module" src="/check.js"></script>'); return; }
+    if (path === "/" ) { response.setHeader("content-type", "text/html"); response.end('<!doctype html><html data-theme="librepaper"><head><link rel="stylesheet" href="/check.css"></head><body><script type="module" src="/check.js"></script></body></html>'); return; }
     // Where a created project opens. Nothing is mounted here; the page exists
     // so the navigation lands somewhere and what it carried can be read back.
     if (path.startsWith("/docs/")) { response.setHeader("content-type", "text/html"); response.end("<!doctype html><title>project</title>"); return; }
@@ -308,8 +308,9 @@ try {
   await tab.navigate(base + "?new=template");
   await tab.resize(390, 844);
   await until("your template is listed", () => exists('tr[data-template="mine"]'));
-  assert.equal(await q("document.documentElement.scrollWidth <= window.innerWidth"), true, "no sideways scroll");
+  await until("the phone layout applies", async () => (await q("innerWidth")) === 390);
   assert.equal(await q("getComputedStyle(document.querySelector('.template-table thead')).display"), "none");
+  assert.equal(await q("document.documentElement.scrollWidth <= window.innerWidth"), true, "no sideways scroll");
 
   console.log("upload-browser: the three tabs, names, templates, uploads, archives, conflicts, refusals, cancel and phone width passed");
 } finally {
