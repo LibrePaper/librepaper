@@ -36,4 +36,10 @@ powershell -ExecutionPolicy Bypass -File \\10.0.2.4\qemu\install-local.ps1
 4. In Settings > Rendering, use Choose folder under Project folder and confirm a live preview uses that folder. Cancel a second chooser and confirm the prior folder remains.
 5. Restore the clean snapshot and repeat step 1 with Scoop: `scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-bucket` then `scoop install librepaper`.
 
+## Companion console flicker regression
+
+- Launch the companion in its default background mode and open Settings > Companion. Confirm it stays connected and no visible `cmd`, registry or `taskkill` windows appear during 45 to 60 seconds. This covers multiple 5-second state polls and 15-second capabilities polls.
+- Repeat once with no discoverable optional tools, then with Quarto, R, Python and Calepin available. Use the explicit rescan action and confirm the connection remains stable without visible console windows in both cases.
+- A foreground launch can help diagnose a failure, but does not count as a passing run.
+
 Code signing is outside the scope of this checklist.
