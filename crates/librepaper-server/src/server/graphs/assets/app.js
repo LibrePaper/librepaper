@@ -272,26 +272,29 @@
   // Each row is [handle, provider, kind, status, bytes, documents, last_seen_at,
   // created_at, id, account]. The last cell is the account itself.
   function accountColumns() {
+    // Sorting is set per column, not for the whole grid: Grid.js 6.2.0 turns a
+    // column's `sort: false` into undefined on its first render, and a later
+    // render with a grid-wide `sort: true` then makes that column sortable.
     return [
-      "Account",
-      "Provider",
-      "Kind",
-      "Status",
-      { name: "Storage", formatter: (bytes) => num(format(bytes, "bytes")) },
-      { name: "Documents", formatter: (count) => num(String(count)) },
+      { name: "Account", sort: true },
+      { name: "Provider", sort: true },
+      { name: "Kind", sort: true },
+      { name: "Status", sort: true },
+      { name: "Storage", sort: true, formatter: (bytes) => num(format(bytes, "bytes")) },
+      { name: "Documents", sort: true, formatter: (count) => num(String(count)) },
       {
         name: "Last sign-in",
+        sort: true,
         formatter: (seconds) => {
           const text = day(seconds);
           if (dueBefore != null && seconds < dueBefore) return gridjs.h("span", { className: "due" }, text);
           return text;
         },
       },
-      { name: "Created", formatter: (seconds) => day(seconds) },
-      { name: "ID", formatter: (id) => gridjs.h("code", null, id) },
+      { name: "Created", sort: true, formatter: (seconds) => day(seconds) },
+      { name: "ID", sort: true, formatter: (id) => gridjs.h("code", null, id) },
       {
         name: "",
-        sort: false,
         formatter: (account) => {
           if (account.status !== "active") return null;
           return gridjs.h(
@@ -341,7 +344,6 @@
           columns: accountColumns(),
           data: rows,
           search: { selector: searchText },
-          sort: true,
           pagination: { limit: 50 },
           autoWidth: false,
           language: { search: { placeholder: "Search accounts" } },
