@@ -332,15 +332,19 @@ console.log("quarto-local: localPreviewPage returns pdf bytes as a Uint8Array wi
 console.log("quarto-local: preview lifecycle calls work, and calepinAvailable defaults false");
 
 // Exercise the Reader's actual controller configuration with the wire client:
-// an old external binding must not redirect a synchronized live preview.
+// a saved folder the companion no longer grants is forgotten, and the live
+// preview falls back to the hosted workspace it just synchronized.
 {
   const reader = readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
   for (const engine of ["quarto", "calepin"]) {
     const calls = [];
     setup(async (url, init) => {
       if (init.method === "PUT" && new URL(url).pathname.endsWith("/workspace")) {
-        calls.push("sync");
-        return response({ synced: 1 });
+        const binding = new URL(url).searchParams.get("binding") || "hosted";
+        calls.push(`sync:${binding}`);
+        return binding === "hosted"
+          ? response({ synced: 1 })
+          : response({ error: "this project folder is not granted" }, 404);
       }
       if (init.method === "POST" && url.endsWith("/previews")) {
         const request = init.body?.get ? JSON.parse(await init.body.get("job").text()) : JSON.parse(init.body);
@@ -373,10 +377,10 @@ console.log("quarto-local: preview lifecycle calls work, and calepinAvailable de
     });
     vm.runInContext(`${reader.slice(start, end)}\nglobalThis.controller = ${name};`, context);
     await context.controller.start();
-    assert.deepEqual(calls, ["sync", "hosted"], `${engine} previews the workspace just synchronized`);
+    assert.deepEqual(calls, ["sync:revoked-project-binding", "sync:hosted", "hosted"], `${engine} previews the workspace just synchronized`);
     assert.equal(context.controller.running, true, context.controller.state.error);
-    assert.equal(localBridge.bindingId(), "revoked-project-binding", "explicit render-job setting is preserved");
+    assert.equal(localBridge.bindingId(), "hosted", "a revoked saved folder is forgotten");
     await context.controller.stop();
   }
 }
-console.log("quarto-local: Reader previews use the synchronized workspace even with a revoked saved binding");
+console.log("quarto-local: Reader previews forget a revoked saved folder and use the hosted workspace");

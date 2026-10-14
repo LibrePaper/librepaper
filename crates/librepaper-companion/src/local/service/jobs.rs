@@ -36,8 +36,7 @@ pub(super) async fn handle_workspace_put(
             &json!({"error": "workspace sync needs a valid project"}),
         );
     };
-    let binding_id =
-        binding_query(request.uri()).unwrap_or_else(|| HOSTED_BINDING.to_string());
+    let binding_id = binding_query(request.uri()).unwrap_or_else(|| HOSTED_BINDING.to_string());
     let granted = binding_id != HOSTED_BINDING;
     let origin = origin.unwrap_or_default().to_string();
 

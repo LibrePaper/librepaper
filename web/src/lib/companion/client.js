@@ -1670,8 +1670,17 @@ export async function syncWorkspace({ tree }) {
   const params = new URLSearchParams({ project: String(current.project) });
   const binding = bindingId();
   if (binding !== HOSTED_BINDING) params.set("binding", binding);
-  const response = await send("PUT", `workspace?${params}`, { token: pairing.token, formBody: form });
-  return response.json();
+  try {
+    const response = await send("PUT", `workspace?${params}`, { token: pairing.token, formBody: form });
+    return response.json();
+  } catch (error) {
+    // A saved folder this companion no longer grants (revoked, or another
+    // install) is forgotten, and the preview falls back to the hosted
+    // workspace instead of failing on every sync.
+    if (binding === HOSTED_BINDING || error?.name !== "Refused" || ![403, 404].includes(error?.status)) throw error;
+    setBindingId("");
+    return syncWorkspace({ tree });
+  }
 }
 
 /* -------------------------------------------- Companion settings and permissions */
