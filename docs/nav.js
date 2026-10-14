@@ -14,6 +14,7 @@
 // below is the order it appears in.
 export const nav = [
   { path: "what", label: "What is LibrePaper" },
+  { path: "migration", label: "Migration" },
   { path: "local-app", label: "Companion" },
   { path: "backups", label: "Local backups" },
   {
