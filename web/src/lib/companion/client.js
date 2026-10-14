@@ -23,6 +23,7 @@
 
 import { bytesOf, toArrayBuffer } from "../bytes.js";
 import { named } from "../latex/errors.js";
+import { instructionsFor } from "./states.js";
 
 /** @typedef {{ targetAddressSpace?: "loopback" } & RequestInit} LocalRequestInit */
 /** @typedef {{ fetch: (input: RequestInfo | URL, init?: LocalRequestInit) => Promise<Response>, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, localNetworkPermission: () => Promise<PermissionState | null>, replaceHash: (hash: string) => void, launchLink: (url: string) => void }} CompanionDeps */
@@ -222,7 +223,7 @@ export function address() {
 // until the next one.
 function addressChanged() {
   resetNegativeCache();
-  setStatus({ address: address(), state: "unknown", checkedAt: null, error: null, instructions: instructionsFor("unknown") });
+  setStatus({ address: address(), state: "unknown", checkedAt: null, error: null, instructions: instructionsFor("unknown", address()) });
 }
 
 export function setAddress(url) {
@@ -394,27 +395,6 @@ function requirePairing() {
 
 // -------------------------------------------------------------- status
 
-function instructionsFor(state) {
-  switch (state) {
-    case "unreachable":
-      return `LibrePaper Companion is not running on this computer (nothing answered at ${address()}). Run \`librepaper\` in a terminal, then try again. Not installed? See Companion settings.`;
-    case "denied":
-      return "Your browser blocked this site from reaching LibrePaper Companion on this computer. Allow local network access for this site in the browser's site settings, then try again.";
-    case "asking":
-      return "Your browser has not let this site reach LibrePaper Companion yet. Click Connect, then allow access to devices on your local network when the browser asks. If it does not ask, allow local network access for this site in the browser's site settings.";
-    case "unauthorized":
-      return "Local LibrePaper is running but has not allowed this site yet. Click Connect and approve the dialog the companion shows.";
-    case "connected":
-      return "Local LibrePaper is connected.";
-    case "reachable":
-      return "Local LibrePaper responded but could not be verified yet. Connect again.";
-    case "incompatible":
-      return "The local LibrePaper app speaks a protocol this browser does not support. Install the latest companion version, then connect.";
-    default:
-      return "";
-  }
-}
-
 function initialStatus() {
   return {
     state: "unknown",
@@ -425,7 +405,7 @@ function initialStatus() {
     checkedAt: null,
     error: null,
     errorKind: null,
-    instructions: instructionsFor("unknown"),
+    instructions: instructionsFor("unknown", address()),
   };
 }
 
@@ -618,7 +598,7 @@ async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
     if (signal?.aborted) {
       throw named("Canceled", "Canceled");
     }
-    throw named("Unreachable", instructionsFor(await unreachableState(error)));
+    throw named("Unreachable", instructionsFor(await unreachableState(error), address()));
   }
   if (scope !== pairingKey() || addr !== address()) throw named("Canceled", "The local project changed.");
   await throwOnFailure(response);
@@ -647,7 +627,7 @@ export async function probe({ force = false } = {}) {
     noteNegative(deps.now());
     return scopedStatus({
       state: "unreachable", address: addr, protocol: null, version, capabilities: null,
-      checkedAt: deps.now(), error, errorKind: null, instructions: instructionsFor("unreachable"),
+      checkedAt: deps.now(), error, errorKind: null, instructions: instructionsFor("unreachable", address()),
     });
   };
   let response;
@@ -659,7 +639,7 @@ export async function probe({ force = false } = {}) {
     noteNegative(deps.now());
     return scopedStatus({
       state, address: addr, protocol: null, version: null, capabilities: null,
-      checkedAt: deps.now(), error: message, errorKind: null, instructions: instructionsFor(state),
+      checkedAt: deps.now(), error: message, errorKind: null, instructions: instructionsFor(state, address()),
     });
   }
   if (scope !== pairingKey() || addr !== address()) return currentStatus;
@@ -687,7 +667,7 @@ export async function probe({ force = false } = {}) {
     resetNegativeCache();
     return scopedStatus({
       state: "incompatible", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
-      checkedAt: deps.now(), error: "protocol mismatch", errorKind: null, instructions: instructionsFor("incompatible"),
+      checkedAt: deps.now(), error: "protocol mismatch", errorKind: null, instructions: instructionsFor("incompatible", address()),
     });
   }
   resetNegativeCache();
@@ -695,7 +675,7 @@ export async function probe({ force = false } = {}) {
   // the same "unauthorized" status once the health check itself succeeded.
   const markUnauthorized = () => scopedStatus({
     state: "unauthorized", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
-    checkedAt: deps.now(), error: null, errorKind: null, instructions: instructionsFor("unauthorized"),
+    checkedAt: deps.now(), error: null, errorKind: null, instructions: instructionsFor("unauthorized", address()),
   });
   const pairing = getPairing();
   if (!pairing || !pairing.token) {
@@ -706,7 +686,7 @@ export async function probe({ force = false } = {}) {
     const caps = await capsResponse.json();
     const connectedStatus = scopedStatus({
       state: "connected", address: addr, protocol: body.protocol, version: body.version || null, capabilities: caps, instance: lastInstance,
-      checkedAt: deps.now(), error: null, errorKind: null, instructions: instructionsFor("connected"),
+      checkedAt: deps.now(), error: null, errorKind: null, instructions: instructionsFor("connected", address()),
     });
     scheduleAutoReconnect();
     return connectedStatus;
@@ -718,7 +698,7 @@ export async function probe({ force = false } = {}) {
       return scopedStatus({
         state: "denied", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
         checkedAt: deps.now(), error: String(error?.message || error), errorKind: error.name,
-        instructions: instructionsFor("denied"),
+        instructions: instructionsFor("denied", address()),
       });
     }
     // The health check just succeeded, so the service is up; a hiccup
@@ -726,7 +706,7 @@ export async function probe({ force = false } = {}) {
     return scopedStatus({
       state: "reachable", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
       checkedAt: deps.now(), error: String(error?.message || error), errorKind: error?.name || "Error",
-      instructions: instructionsFor("reachable"),
+      instructions: instructionsFor("reachable", address()),
     });
   }
 }
@@ -898,15 +878,15 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
     } catch (error) {
       checkScope();
       const state = await unreachableState(error);
-      if (state === "denied") { clearPending(); throw named("Refused", instructionsFor("denied")); }
+      if (state === "denied") { clearPending(); throw named("Refused", instructionsFor("denied", address())); }
       if (state === "asking") {
         clearPending();
-        throw named("Refused", instructionsFor("asking"));
+        throw named("Refused", instructionsFor("asking", address()));
       }
       // Nothing has answered since the link fired, so nothing is starting.
       if (!answered && deps.now() - started >= startGraceMs) {
         clearPending();
-        throw named("Unreachable", instructionsFor("unreachable"));
+        throw named("Unreachable", instructionsFor("unreachable", address()));
       }
       continue; // The installed companion may still be starting.
     }
@@ -942,7 +922,7 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGra
   clearPending();
   throw named("Unreachable", answered
     ? "LibrePaper Companion did not connect. Approve the permission window it shows, then try again."
-    : instructionsFor("unreachable"));
+    : instructionsFor("unreachable", address()));
 }
 
 export async function disconnect() {
@@ -984,12 +964,12 @@ export async function manage(path, { method = "GET", body } = {}) {
       method, mode: "cors", credentials: "omit", cache: "no-store", headers, body: payload,
     });
   } catch (error) {
-    throw named("Unreachable", instructionsFor(await unreachableState(error)));
+    throw named("Unreachable", instructionsFor(await unreachableState(error), address()));
   }
   if (scope !== pairingKey() || addr !== address()) throw named("Canceled", "The local project changed.");
   if (response.status === 401 || response.status === 403) {
     dropPairing();
-    setStatus({ state: "unauthorized", capabilities: null, error: null, errorKind: null, instructions: instructionsFor("unauthorized") });
+    setStatus({ state: "unauthorized", capabilities: null, error: null, errorKind: null, instructions: instructionsFor("unauthorized", address()) });
     throw named("Unauthorized", "The companion no longer accepts this site. Connect again.");
   }
   if (!response.ok) {
@@ -1629,7 +1609,7 @@ export async function localPreviewPage(id, { etag } = {}) {
   try {
     response = await localFetch(url, { method: "GET", mode: "cors", credentials: "omit", headers });
   } catch (error) {
-    throw named("Unreachable", instructionsFor(await unreachableState(error)));
+    throw named("Unreachable", instructionsFor(await unreachableState(error), address()));
   }
   const rendering = renderingHeaderOf(response);
   if (response.status === 304) return { rendering };

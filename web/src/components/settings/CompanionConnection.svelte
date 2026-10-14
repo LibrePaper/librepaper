@@ -5,11 +5,9 @@
   import StatusPill from "./StatusPill.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
-  import { stateOf } from "../../lib/companion/states.js";
+  import { INSTALL_URL, stateOf } from "../../lib/companion/states.js";
 
-  let { id = undefined, needs = "" } = $props();
-
-  const INSTALL = "https://librepaper.org/local-app.html";
+  let { id = undefined, needs = "", onconnected = undefined } = $props();
 
   const local = $derived(companion.status);
   $effect(() => companion.watch());
@@ -30,20 +28,26 @@
     if (connecting) return;
     connecting = true;
     failure = "";
-    try { await localBridge.connectApp(); }
+    try {
+      await localBridge.connectApp();
+      await onconnected?.();
+    }
     catch (error) { failure = error?.message || "Could not reach the companion."; }
     finally { connecting = false; }
   }
 </script>
 
+<!-- A widget that names a need disappears once the need is met. -->
+{#if !(needs && connected)}
 <div {id} class="companion-connection">
   <span title={hint}><StatusPill label={says} tone={wording.tone} accessibleLabel={`LibrePaper Companion: ${says}`} /></span>
   {#if !connected}
-    {#if local?.state !== "denied" && local?.state !== "asking"}<a class="companion-connection-link" href={INSTALL} target="_blank" rel="noreferrer">Install</a>{/if}
+    {#if local?.state !== "denied"}<a class="companion-connection-link" href={INSTALL_URL} target="_blank" rel="noreferrer">Install guide</a>{/if}
     {#if local?.state !== "incompatible"}<button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button>{/if}
   {/if}
-  {#if failure}<p class="companion-connection-error" role="alert">{failure}</p>{:else if !connected && hint}<p class="companion-connection-hint">{hint}</p>{/if}
+  {#if failure}<p class="companion-connection-error" role="alert">{failure}{#if local?.state !== "denied"} <a href={INSTALL_URL} target="_blank" rel="noreferrer">Install guide</a>{/if}</p>{:else if connecting}<p class="companion-connection-hint">Waiting for the companion on this computer. It must be installed and running.</p>{:else if !connected && hint}<p class="companion-connection-hint">{hint}</p>{/if}
 </div>
+{/if}
 
 <style>
   .companion-connection {

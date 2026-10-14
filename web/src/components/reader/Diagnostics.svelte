@@ -1,5 +1,6 @@
 <script>
   import PanelHeader from "../PanelHeader.svelte";
+  import CompanionConnection from "../settings/CompanionConnection.svelte";
   import { provenanceSentence } from "../../lib/latex/status-text.js";
 
   let {
@@ -8,6 +9,8 @@
     canOpen = () => false,
     onopen,
     localAppProblem = false,
+    // Set when a preview here needs the companion and it is not connected.
+    companionNeeds = "",
     onretrylocal,
     // The two LaTeX-only additions: what actually produced the current
     // preview, and every backend that was tried to get there. Both come
@@ -65,7 +68,7 @@
 
 <section class="panel" aria-label="Warnings and errors">
   <PanelHeader title="Diagnostics" />
-  {#if localAppProblem}
+  {#if companionNeeds}<CompanionConnection needs={companionNeeds} />{:else if localAppProblem}
     <button type="button" class="btn btn-sm lp-control-tonal-brand mb-4" onclick={onretrylocal}>Reconnect and retry preview</button>
   {/if}
   {#if provenance}

@@ -1,9 +1,11 @@
 <script>
   // The bar every page of the static site wears: the mark, a way back to the
-  // docs, and the button that signs you in. Not Nav.svelte - that bar asks
+  // docs, and the button into the application. Not Nav.svelte - that bar asks
   // the application who is signed in and shows their account; this site has
-  // no application behind it to ask, so the button always reads "Sign in" and
-  // sends you to the application to find out. The landing page drops the mark
+  // no application behind it to ask, so the button always reads "Start
+  // writing" and sends you to the application to find out. New visitors look
+  // for a way to sign up, and signing in is how an account is created, so the
+  // button names what they came to do. The landing page drops the mark
   // because its hero already shows it.
   import Logo from "../components/Logo.svelte";
   import Icon from "../components/Icon.svelte";
@@ -20,18 +22,10 @@
     {#if mark}
       <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
         <Logo />
-        <span>LibrePaper</span>
+        <span class="max-sm:hidden">LibrePaper</span>
       </a>
     {/if}
-    <div class="flex items-center gap-4 ml-auto">
-      <a
-        class="lp-text-secondary lp-hover-brand flex items-center"
-        href="/what.html"
-        aria-label="Documentation"
-        title="Documentation"
-      >
-        <Icon name="help" size={18} />
-      </a>
+    <div class="flex items-center gap-3 ml-auto">
       <a
         class="lp-text-secondary lp-hover-brand flex items-center"
         href="https://github.com/LibrePaper/librepaper"
@@ -40,11 +34,14 @@
       >
         <Icon name="github" size={18} />
       </a>
+      <a class="btn btn-sm lp-control-brand" href="/what.html">
+        Documentation
+      </a>
       <a
         class="btn btn-sm lp-control-brand"
         href={`${app}/auth/login`}
       >
-        Sign in
+        Start writing
       </a>
     </div>
   </div>

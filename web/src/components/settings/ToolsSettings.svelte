@@ -1,10 +1,11 @@
 <script>
   import ToolRow from "./ToolRow.svelte";
   import ToolCommand from "./ToolCommand.svelte";
+  import CompanionConnection from "./CompanionConnection.svelte";
   import { companion } from "../../lib/companion/status.svelte.js";
 
   // The page does not own the machine view; the dialog creates and starts it.
-  let { view, oncompanion = undefined } = $props();
+  let { view } = $props();
 
   // Watching never probes, so opening this page cannot prompt for local network access.
   $effect(() => companion.watch());
@@ -61,7 +62,7 @@
 </script>
 
 {#if !connected}
-<p class="setting-description companion-needed">Needs the companion. <button type="button" class="link-button" onclick={() => oncompanion?.()}>Open Companion settings</button></p>
+<CompanionConnection needs="checking the tools on this computer" />
 {/if}
 {#if view.error}
   <p class="setting-description tools-error" role="alert">{view.error}</p>
