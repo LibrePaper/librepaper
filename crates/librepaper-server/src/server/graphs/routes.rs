@@ -32,6 +32,7 @@ const APP_JS: &str = include_str!("assets/app.js");
 const APP_CSS: &str = include_str!("assets/app.css");
 const UPLOT_JS: &str = include_str!("assets/uplot.iife.min.js");
 const UPLOT_CSS: &str = include_str!("assets/uplot.min.css");
+const GRIDJS_JS: &str = include_str!("assets/gridjs.umd.js");
 
 /// The page runs its own scripts and styles and talks to this origin only.
 const PAGE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
@@ -220,6 +221,7 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
         }
         "/app.js" => asset("text/javascript", APP_JS),
         "/uplot.js" => asset("text/javascript", UPLOT_JS),
+        "/gridjs.js" => asset("text/javascript", GRIDJS_JS),
         "/app.css" => asset("text/css", APP_CSS),
         "/uplot.css" => asset("text/css", UPLOT_CSS),
         "/session" => json_reply(&json!({
@@ -1118,7 +1120,7 @@ mod tests {
             assert!(tag.contains(" src="), "{tag}");
         }
         assert!(!page.contains("onclick") && !page.contains("javascript:"));
-        for needed in ["/uplot.css", "/app.css", "/uplot.js", "/app.js"] {
+        for needed in ["/uplot.css", "/app.css", "/uplot.js", "/gridjs.js", "/app.js"] {
             assert!(PAGE.contains(needed), "{needed}");
         }
     }

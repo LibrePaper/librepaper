@@ -36,26 +36,10 @@
   <section id="tab-accounts" role="tabpanel" hidden>
     <div class="stack">
       <section id="accounts" class="panel">
-        <h2>Largest accounts</h2>
+        <h2>Accounts</h2>
         <p id="accounts-total"></p>
         <p id="accounts-expiry"></p>
-        <div class="table">
-          <table>
-            <thead>
-              <tr>
-                <th>Account</th>
-                <th>Status</th>
-                <th class="num">Storage</th>
-                <th class="num">Documents</th>
-                <th>Last sign-in</th>
-                <th>Created</th>
-                <th>ID</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="accounts-rows"></tbody>
-          </table>
-        </div>
+        <div id="accounts-grid" class="table"></div>
       </section>
     </div>
   </section>
@@ -154,6 +138,7 @@
   </section>
 </main>
 <script src="/uplot.js"></script>
+<script src="/gridjs.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

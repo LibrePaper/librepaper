@@ -865,6 +865,7 @@ async fn only_the_page_routes_exist_and_every_other_answer_is_behind_sign_in() {
         ("/app.css", "css"),
         ("/uplot.js", "javascript"),
         ("/uplot.css", "css"),
+        ("/gridjs.js", "javascript"),
     ] {
         let response = f.get_as_operator(ADMIN_HOST, path).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 200, "{path}");
@@ -947,6 +948,7 @@ async fn the_app_and_document_hosts_serve_nothing_of_the_admin_page() {
             "/app.js",
             "/app.css",
             "/uplot.js",
+            "/gridjs.js",
         ] {
             for operator in [false, true] {
                 let request = if operator {

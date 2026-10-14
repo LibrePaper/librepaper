@@ -53,9 +53,25 @@ input.reason { flex: 1 1 220px; }
 #accounts-expiry { margin: 0 0 8px; color: var(--muted); }
 #moderation-status { margin: 0; color: var(--muted); }
 #moderation-status.failed { color: var(--alert); }
-td.due { color: var(--alert); }
+.due { color: var(--alert); }
 .table { overflow-x: auto; }
 .table table { width: 100%; border-collapse: collapse; }
+.gridjs-wrapper { overflow-x: auto; }
+.gridjs-search { margin-bottom: 8px; }
+.gridjs-search-input { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 8px; min-width: 0; }
+.gridjs-th-sort { cursor: pointer; }
+.gridjs-th-content { display: inline; }
+button.gridjs-sort { border: none; background: transparent; padding: 0 0 0 4px; color: var(--muted); }
+.gridjs-sort-neutral::after { content: "\2195"; }
+.gridjs-sort-asc::after { content: "\2191"; }
+.gridjs-sort-desc::after { content: "\2193"; }
+.gridjs-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; color: var(--muted); }
+.gridjs-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); }
+.gridjs-pages button { margin-left: 4px; }
+.gridjs-pages button.gridjs-currentPage { color: var(--bg); background: var(--line); border-color: var(--line); }
+.gridjs-pages button:disabled { opacity: 0.6; cursor: default; }
+.gridjs-loading-bar, .gridjs-notfound { color: var(--muted); padding: 6px 8px; }
+.gridjs-td .num { display: block; text-align: right; }
 th, td { padding: 6px 8px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; white-space: nowrap; }
 td.reason { white-space: normal; min-width: 200px; }
 th { color: var(--muted); font-weight: 600; }

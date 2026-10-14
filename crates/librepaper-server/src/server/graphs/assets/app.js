@@ -226,8 +226,13 @@
     if (tab === "resources") load();
   });
 
-  // The fifty accounts holding the most storage. Handles are chosen by users,
-  // so every cell is filled with textContent, never markup.
+  // Every account, in a Grid.js table. Handles are chosen by users, and Grid.js
+  // draws its cells as text, so nothing here is markup.
+  let accountsGrid = null;
+  // The last sign-in, in seconds, below which an account is due for erasure
+  // within 30 days, or null when the sweep is off. The formatter reads it.
+  let dueBefore = null;
+
   function day(seconds) {
     return new Date(seconds * 1000).toISOString().slice(0, 10);
   }
@@ -250,55 +255,64 @@
     else location.hash = "#moderation";
   }
 
-  // `dueBefore` is the last sign-in, in seconds, below which an account is due for erasure within 30 days, or null when the sweep is off.
-  function accountRow(account, dueBefore) {
-    const row = document.createElement("tr");
-    const name = document.createElement("td");
-    name.append(account.handle);
-    if (account.provider) {
-      const provider = document.createElement("span");
-      provider.className = "muted";
-      provider.textContent = account.provider;
-      name.append(" ", provider);
-    }
-    const lastSeen = cell(day(account.last_seen_at));
-    if (dueBefore != null && account.last_seen_at < dueBefore) lastSeen.className = "due";
-    const id = document.createElement("td");
-    const code = document.createElement("code");
-    code.textContent = account.id;
-    id.append(code);
-    const action = document.createElement("td");
-    if (account.status === "active") {
-      const block = document.createElement("button");
-      block.type = "button";
-      block.className = "danger";
-      block.textContent = "Block";
-      block.addEventListener("click", () => blockAccount(account));
-      action.append(block);
-    }
-    row.append(
-      name,
-      cell(account.status),
-      cell(format(account.bytes, "bytes"), "num"),
-      cell(String(account.documents), "num"),
-      lastSeen,
-      cell(day(account.created_at)),
-      id,
-      action
-    );
-    return row;
+  // The text a search matches in each column. Dates and sizes are matched as
+  // shown, and the account object in the last column is not matched at all.
+  function searchText(value, rowIndex, cellIndex) {
+    if (cellIndex > 8) return "";
+    if (cellIndex === 4) return format(value, "bytes");
+    if (cellIndex === 6 || cellIndex === 7) return day(value);
+    return String(value);
+  }
+
+  // A number, right aligned by the CSS rule for this span.
+  function num(text) {
+    return gridjs.h("span", { className: "num" }, text);
+  }
+
+  // Each row is [handle, provider, kind, status, bytes, documents, last_seen_at,
+  // created_at, id, account]. The last cell is the account itself.
+  function accountColumns() {
+    return [
+      "Account",
+      "Provider",
+      "Kind",
+      "Status",
+      { name: "Storage", formatter: (bytes) => num(format(bytes, "bytes")) },
+      { name: "Documents", formatter: (count) => num(String(count)) },
+      {
+        name: "Last sign-in",
+        formatter: (seconds) => {
+          const text = day(seconds);
+          if (dueBefore != null && seconds < dueBefore) return gridjs.h("span", { className: "due" }, text);
+          return text;
+        },
+      },
+      { name: "Created", formatter: (seconds) => day(seconds) },
+      { name: "ID", formatter: (id) => gridjs.h("code", null, id) },
+      {
+        name: "",
+        sort: false,
+        formatter: (account) => {
+          if (account.status !== "active") return null;
+          return gridjs.h(
+            "button",
+            { type: "button", className: "danger", onClick: () => blockAccount(account) },
+            "Block"
+          );
+        },
+      },
+    ];
   }
 
   async function loadAccounts() {
     const total = document.getElementById("accounts-total");
     const expiry = document.getElementById("accounts-expiry");
-    const rows = document.getElementById("accounts-rows");
     try {
       const response = await request("/accounts", { cache: "no-store" });
       if (!response.ok) throw new Error("HTTP " + response.status);
       const data = await response.json();
       total.textContent = "Stored: " + format(data.total_bytes, "bytes") + " of " + format(data.limit_bytes, "bytes");
-      let dueBefore = null;
+      dueBefore = null;
       if (data.erase_inactive_after > 0) {
         const days = Math.round(data.erase_inactive_after / 86400);
         const soon = data.erasing_soon;
@@ -308,7 +322,32 @@
       } else {
         expiry.textContent = "Accounts with no sign-in are kept.";
       }
-      rows.replaceChildren(...data.accounts.map((account) => accountRow(account, dueBefore)));
+      const rows = data.accounts.map((account) => [
+        account.handle,
+        account.provider || "",
+        account.kind,
+        account.status,
+        account.bytes,
+        account.documents,
+        account.last_seen_at,
+        account.created_at,
+        account.id,
+        account,
+      ]);
+      if (accountsGrid) {
+        accountsGrid.updateConfig({ data: rows }).forceRender();
+      } else {
+        accountsGrid = new gridjs.Grid({
+          columns: accountColumns(),
+          data: rows,
+          search: { selector: searchText },
+          sort: true,
+          pagination: { limit: 50 },
+          autoWidth: false,
+          language: { search: { placeholder: "Search accounts" } },
+        });
+        accountsGrid.render(document.getElementById("accounts-grid"));
+      }
     } catch (error) {
       total.classList.add("failed");
       total.textContent = "The accounts could not be loaded.";
