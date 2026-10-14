@@ -4,14 +4,13 @@ title: "Migration"
 
 ## From Overleaf
 
-Download the project from Overleaf, then upload the ZIP into a new LibrePaper project.
+Download the project from Overleaf, then upload the ZIP as a new LibrePaper project.
 
 1. In Overleaf, open the project and choose Menu, then Download, then Source. This saves a ZIP of every file.
-2. In LibrePaper, choose New project and pick the blank LaTeX template.
-3. In the Files panel, press Upload files and choose the ZIP. You can also drop the ZIP on the panel.
+2. In LibrePaper, choose New project, then the Upload Files tab.
+3. Drop the ZIP anywhere on the page, or press Browse files and choose it.
 4. LibrePaper unpacks the archive and keeps its folders. A wrapper folder around the whole archive is removed.
-5. Both projects have a `main.tex`, so LibrePaper asks what to do. Choose Keep both to save yours as `main (2).tex`.
-6. Open the file menu on your main file and choose Set as main file. Delete the starter `main.tex`.
+5. Check the file list and the Open first choice, which is usually `main.tex`. Then press Create project.
 
 Things to check:
 
