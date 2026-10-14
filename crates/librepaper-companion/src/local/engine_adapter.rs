@@ -42,12 +42,13 @@ pub async fn run(
         binding_id: Some(binding_id),
     } = &request.workspace
     {
+        // The hosted workspace takes the entrypoint the job names, as a live preview does.
         if let Err(error) = bindings.validate_scoped_entrypoint(
             binding_id,
             &request.origin,
             &request.project,
             &request.entrypoint,
-            false,
+            true,
         ) {
             return unsupported(&request, &job_id, &error);
         }

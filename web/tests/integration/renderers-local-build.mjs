@@ -112,8 +112,7 @@ const hostedQuarto = await renderers.render(
   { project: "paper", buildPreferences: { selection: "tool", backend: "local", tool: "quarto", output: "html" } },
 );
 assert.equal(submitted.builder, "quarto");
-// The hosted binding is never named. The companion refuses it on a snapshot build.
-assert.deepEqual(submitted.workspace, { mode: "snapshot" });
+assert.deepEqual(submitted.workspace, { mode: "snapshot", binding_id: client.HOSTED_BINDING });
 assert.equal(hostedQuarto.failure.message, "fixture stopped after admission");
 
 client._testing.reset();
