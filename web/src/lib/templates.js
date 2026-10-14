@@ -9,7 +9,7 @@
 
 import { FORMATS } from "./starter.js";
 
-/** @type {Record<string, {name: string, description?: string, keywords?: string[], category?: string}>} */
+/** @type {Record<string, {name: string, description?: string, keywords?: string[]}>} */
 const metadata = import.meta.glob("../templates/*/template.json", { eager: true, import: "default" });
 // Keep the glob expression literal for Vite while recording the ?raw plugin contract.
 const rawSources = import.meta.glob(["../templates/*/*/**", "!../templates/*/template.json"], { query: "?raw", import: "default" });
@@ -29,7 +29,7 @@ const formatsOf = (id) => FORMATS
 export const BUILT_IN = Object.entries(metadata)
   .map(([key, meta]) => {
     const id = parts(key)[0];
-    return { id, name: meta.name, description: meta.description ?? "", keywords: meta.keywords ?? [], category: meta.category ?? "", formats: formatsOf(id) };
+    return { id, name: meta.name, description: meta.description ?? "", keywords: meta.keywords ?? [], formats: formatsOf(id) };
   })
   .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 

@@ -2,7 +2,7 @@
 // project name and format, and the staging of files for the Upload tab.
 import assert from "node:assert/strict";
 import {
-  bytes, browse, catalog, categoriesOf, finalPaths, formatSummary, guessMain, mainCandidates,
+  bytes, browse, catalog, finalPaths, formatSummary, guessMain, mainCandidates,
   pickFormat, settle, stage, suggestName, tree, uniqueName, unstage, wrapperOf,
 } from "../../src/lib/new-project.js";
 
@@ -12,48 +12,43 @@ const names = (list) => list.map((each) => each.name);
 // ---- catalog ----
 {
   const builtIn = [
-    { id: "blank", name: "Blank", description: "An empty page.", keywords: ["empty"], formats: ["markdown"], category: "" },
-    { id: "letter", name: "Letter", description: "A formal letter.", keywords: ["reference"], formats: ["typst", "latex"], category: "Writing" },
-    { id: "cv", name: "CV", description: "A curriculum vitae.", keywords: ["resume"], formats: ["html"], category: "Personal" },
+    { id: "blank", name: "Blank", description: "An empty page.", keywords: ["empty"], formats: ["markdown"] },
+    { id: "letter", name: "Letter", description: "A formal letter.", keywords: ["reference"], formats: ["typst", "latex"] },
+    { id: "cv", name: "CV", description: "A curriculum vitae.", keywords: ["resume"], formats: ["html"] },
   ];
   const rows = [{ slug: "lab-abc", title: "Lab report", source_format: "markdown", url: "/d/lab" }];
   const all = catalog(builtIn, rows);
   assert.deepEqual(ids(all), ["letter", "cv", "lab-abc"], "blank is left out, built-ins keep their order, custom rows come last");
   assert.deepEqual(all[0], {
-    id: "letter", name: "Letter", description: "A formal letter.", keywords: ["reference"], category: "Writing",
+    id: "letter", name: "Letter", description: "A formal letter.", keywords: ["reference"],
     formats: ["typst", "latex"], custom: false, url: "",
   });
   assert.deepEqual(all[2], {
-    id: "lab-abc", name: "Lab report", description: "", keywords: [], category: "Your templates",
+    id: "lab-abc", name: "Lab report", description: "", keywords: [],
     formats: ["markdown"], custom: true, url: "/d/lab",
   }, "a custom row maps to a template with its title, source format and link");
   assert.deepEqual(ids(catalog(builtIn)), ["letter", "cv"], "custom rows are optional");
-  assert.deepEqual(categoriesOf(all), ["Personal", "Writing", "Your templates"]);
-  assert.deepEqual(categoriesOf([{ category: "Writing" }, { category: "" }, { category: "Zebra" }, { category: "Academic" }, { category: "Writing" }, { category: "Your templates" }]),
-    ["Academic", "Writing", "Zebra", "Your templates"], "categories are A to Z with Your templates last");
-  assert.deepEqual(categoriesOf([]), []);
 }
 
 // ---- browse ----
 {
   const templates = [
-    { id: "article", name: "Article", description: "A paper.", keywords: ["journal"], category: "Academic", formats: ["markdown", "latex"], custom: false },
-    { id: "book", name: "Book", description: "Chapters.", keywords: ["thesis"], category: "Academic", formats: ["latex", "typst", "quarto"], custom: false },
-    { id: "letter", name: "Letter", description: "A letter.", keywords: ["reference"], category: "Writing", formats: ["typst", "latex"], custom: false },
-    { id: "cv", name: "CV", description: "A curriculum vitae.", keywords: ["resume"], category: "Personal", formats: ["html", "typst"], custom: false },
-    { id: "lab", name: "Lab report", description: "", keywords: [], category: "Your templates", formats: ["markdown"], custom: true },
+    { id: "article", name: "Article", description: "A paper.", keywords: ["journal"], formats: ["markdown", "latex"], custom: false },
+    { id: "book", name: "Book", description: "Chapters.", keywords: ["thesis"], formats: ["latex", "typst", "quarto"], custom: false },
+    { id: "letter", name: "Letter", description: "A letter.", keywords: ["reference"], formats: ["typst", "latex"], custom: false },
+    { id: "cv", name: "CV", description: "A curriculum vitae.", keywords: ["resume"], formats: ["html", "typst"], custom: false },
+    { id: "lab", name: "Lab report", description: "", keywords: [], formats: ["markdown"], custom: true },
   ];
   assert.deepEqual(ids(browse(templates)), ["article", "book", "cv", "lab", "letter"], "name A to Z by default");
   assert.deepEqual(ids(browse(templates, { sort: "name-asc" })), ["article", "book", "cv", "lab", "letter"]);
   assert.deepEqual(ids(browse(templates, { sort: "name-desc" })), ["letter", "lab", "cv", "book", "article"], "name Z to A");
   assert.equal(templates[0].id, "article", "the input is not reordered");
   assert.deepEqual(ids(browse(templates, { format: "latex" })), ["article", "book", "letter"]);
-  assert.deepEqual(ids(browse(templates, { category: "Academic" })), ["article", "book"]);
   assert.deepEqual(ids(browse(templates, { query: "thesis" })), ["book"]);
-  assert.deepEqual(ids(browse(templates, { query: "letter", category: "Writing" })), ["letter"]);
-  assert.deepEqual(ids(browse(templates, { format: "html", category: "Academic" })), [], "filters that do not meet give nothing");
-  assert.deepEqual(ids(browse(templates, { query: "chapters", format: "latex", category: "Academic", sort: "name-desc" })), ["book"], "query, format and category intersect");
-  assert.deepEqual(ids(browse(templates, { query: "", format: "", category: "", sort: "name-asc" })), ids(browse(templates)));
+  assert.deepEqual(ids(browse(templates, { query: "letter", format: "typst" })), ["letter"]);
+  assert.deepEqual(ids(browse(templates, { query: "thesis", format: "html" })), [], "filters that do not meet give nothing");
+  assert.deepEqual(ids(browse(templates, { query: "chapters", format: "latex", sort: "name-desc" })), ["book"], "query and format intersect");
+  assert.deepEqual(ids(browse(templates, { query: "", format: "", sort: "name-asc" })), ids(browse(templates)));
   assert.deepEqual(names(browse([])), []);
 }
 

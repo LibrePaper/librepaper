@@ -18,7 +18,7 @@
   import { expandArchives } from "../lib/project-upload.js";
   import { unzip } from "../lib/zip.js";
   import {
-    catalog, categoriesOf, browse, formatSummary, pickFormat, uniqueName,
+    catalog, browse, formatSummary, pickFormat, uniqueName,
     stage, settle, unstage, wrapperOf, finalPaths, mainCandidates, guessMain,
     tree, suggestName, bytes,
   } from "../lib/new-project.js";
@@ -82,15 +82,13 @@
 
   let query = $state("");
   let formatFilter = $state("");
-  let category = $state("");
   let sort = $state("name-asc");
   let selectedId = $state(untrack(() => initialTemplate));
   // The format picked for each template, so going back to one finds it as left.
   let chosenFormats = $state({});
 
   const templates = $derived(catalog(BUILT_IN, templateRows));
-  const categories = $derived(categoriesOf(templates));
-  const shown = $derived(browse(templates, { query, format: formatFilter, category, sort }));
+  const shown = $derived(browse(templates, { query, format: formatFilter, sort }));
   const selected = $derived(shown.find((each) => each.id === selectedId) ?? null);
   const templateFormat = $derived(selected
     ? pickFormat(selected, { chosen: chosenFormats[selected.id] ?? "", filter: formatFilter, preferred: rememberedFormat() })
@@ -104,7 +102,6 @@
   function clearFilters() {
     query = "";
     formatFilter = "";
-    category = "";
   }
 
   const countText = $derived(`${shown.length} ${shown.length === 1 ? "template" : "templates"}`);
@@ -422,7 +419,6 @@
       <div class="np-detail">
         {#if detail.description}<p>{detail.description}</p>{/if}
         <p class="np-muted">Formats: {detail.formats.map((id) => formatNamed(id).name).join(", ")}</p>
-        {#if detail.category}<p class="np-muted">Category: {detail.category}</p>{/if}
         {#if detail.custom}
           <div class="np-detail-actions">
             <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => (location.href = detail.url)}>Open template</button>
@@ -464,15 +460,6 @@
         {#each FORMATS as format}<option value={format.id}>{format.name}</option>{/each}
       </select>
     </label>
-    {#if categories.length > 1}
-      <label class="np-field" for="template-category">
-        <span class="np-label">Category</span>
-        <select id="template-category" class="select" bind:value={category}>
-          <option value="">All categories</option>
-          {#each categories as one}<option value={one}>{one}</option>{/each}
-        </select>
-      </label>
-    {/if}
     <label class="np-field" for="template-sort">
       <span class="np-label">Sort</span>
       <select id="template-sort" class="select" bind:value={sort}>

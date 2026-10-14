@@ -6,7 +6,6 @@ import { FORMATS, formatNamed, matchTemplates } from "./starter.js";
 import { checkDirectoryPath, checkPath, collisionKey, normalisePath } from "./paths.js";
 import { basename, copyPath, inside, parentPath } from "./file-manager.js";
 
-const YOURS = "Your templates";
 const MAIN_ORDER = ["tex", "typ", "qmd", "md"];
 
 /// Built-in templates and the caller's own, as one list. Blank has its own tab,
@@ -19,7 +18,6 @@ export function catalog(builtIn, customRows = []) {
       name: template.name,
       description: template.description ?? "",
       keywords: template.keywords ?? [],
-      category: template.category ?? "",
       formats: template.formats,
       custom: false,
       url: "",
@@ -29,7 +27,6 @@ export function catalog(builtIn, customRows = []) {
     name: row.title,
     description: "",
     keywords: [],
-    category: YOURS,
     formats: [row.source_format],
     custom: true,
     url: row.url,
@@ -37,17 +34,10 @@ export function catalog(builtIn, customRows = []) {
   return [...shipped, ...own];
 }
 
-/// Distinct non-empty categories, A to Z, with "Your templates" last.
-export function categoriesOf(templates) {
-  const categories = [...new Set(templates.map((template) => template.category).filter(Boolean))];
-  return categories.sort((a, b) => Number(a === YOURS) - Number(b === YOURS) || a.localeCompare(b));
-}
-
 /// Filter and sort the templates. Every filter is optional and they combine.
-export function browse(templates, { query = "", format = "", category = "", sort = "name-asc" } = {}) {
+export function browse(templates, { query = "", format = "", sort = "name-asc" } = {}) {
   const direction = sort === "name-desc" ? -1 : 1;
   return matchTemplates(templates, query, format)
-    .filter((template) => !category || template.category === category)
     .sort((a, b) => direction * a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id));
 }
 
