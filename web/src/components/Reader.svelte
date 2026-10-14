@@ -76,6 +76,7 @@
   import { parseRenderOptions } from "../lib/quarto-options.js";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import ProjectFolderSetting from "./settings/ProjectFolderSetting.svelte";
+  import CompanionConnection from "./settings/CompanionConnection.svelte";
   import { anonymousIdentity, read as readBuildPreferences, update as updateBuildPreferences, writeQuartoOptions } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
@@ -2360,12 +2361,22 @@
 
   const localAppDiagnostics = $derived([
     localAppStatus.state !== "connected" ? { severity: "error", message: localConnectionError } : null,
-    quartoNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "Showing the Markdown preview. Quarto preview needs the local LibrePaper app; connect it to execute code chunks." } : null,
-    typstNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "Calepin preview needs the local LibrePaper app." } : null,
+    quartoNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "Quarto preview needs LibrePaper Companion. The Markdown preview is shown until it is connected." } : null,
+    typstNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "Calepin preview needs LibrePaper Companion." } : null,
     typstNeedsCalepinCommand ? { severity: "warning", message: "Calepin preview needs the calepin command on this computer." } : null,
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? { severity: "error", message: quartoPreviewError } : null,
     sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? { severity: "error", message: calepinPreviewError } : null,
   ].filter(Boolean).map((item) => ({ ...item, source: "local-app" })));
+  // What the Diagnostics panel names when a preview here needs the
+  // companion and it is not connected. Empty when nothing needs it.
+  const companionNeeds = $derived(
+    localAppStatus.state === "connected" ? ""
+      : quartoNeedsLocalApp ? "Quarto preview"
+      : typstNeedsLocalApp ? "Calepin preview"
+      : pdfNeedsLocalTool ? "the PDF preview"
+      : localConnectionError ? "this preview"
+      : "",
+  );
   $effect(() => {
     void localAppDiagnostics;
     void previewNoteItems;
@@ -4137,7 +4148,7 @@
   {/snippet}
 
   {#snippet diagnosticsPanel()}
-    <Diagnostics {diagnostics} localAppProblem={localAppDiagnostics.length > 0}
+    <Diagnostics {diagnostics} localAppProblem={localAppDiagnostics.length > 0} {companionNeeds}
       onretrylocal={() => localExecutionRelevant ? startLocalExecution() : ensureLocalApp()}
       main={previewMain || session?.mainPath() || ""}
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
@@ -4304,11 +4315,12 @@
         {:else}
           <p class="lp-text-secondary text-sm">
             {#if !compilesHere}
-              This browser cannot render this {sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : "Markdown"} source. {sourceFormat === "latex" ? "Configure the browser LaTeX renderer to view it." : "Install or configure the local companion or browser renderer to view it."}
+              This browser cannot render this {sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : "Markdown"} source. {sourceFormat === "latex" ? "Configure the browser LaTeX renderer to view it." : "Install LibrePaper Companion to render it on this computer."}
             {:else}
               Fix the errors in Diagnostics to produce a {latexHtmlPreview ? "HTML preview" : "PDF preview"}.
             {/if}
           </p>
+          {#if !compilesHere && sourceFormat !== "latex" && localAppStatus.state !== "connected"}<CompanionConnection needs="this preview" />{/if}
         {/if}
       </div>
     </section>
@@ -4319,17 +4331,17 @@
           <h2 class="h4">PDF needs {sourceFormat === "quarto" ? "Quarto" : "a local build"} on this computer</h2>
           <p class="lp-text-secondary text-sm">
             This browser renders {sourceFormat === "quarto" ? "Quarto" : "Markdown"} to HTML only. The PDF is produced by
-            {sourceFormat === "quarto" ? "Quarto itself" : "Pandoc or Quarto"}, run through the local LibrePaper app,
+            {sourceFormat === "quarto" ? "Quarto itself" : "Pandoc or Quarto"}, run through LibrePaper Companion,
             so the preview stays empty until that is connected{sourceFormat === "quarto" ? " and allowed to run this document" : ""}.
           </p>
           <div class="notyet-actions">
             {#if pdfNeedsLocalExecution}
               <button class="btn btn-sm lp-control-brand" onclick={() => (localExecutionConsent = true)}>Turn on local execution</button>
+              <button class="btn btn-sm lp-control-outline" onclick={previewAsHtml}>Preview as HTML instead</button>
             {:else}
-              <button class="btn btn-sm lp-control-brand" onclick={() => void ensureLocalApp()}>Connect the local app</button>
+              <CompanionConnection needs="the PDF preview" />
+              <button class="btn btn-sm lp-control-outline" onclick={previewAsHtml}>Preview as HTML instead</button>
             {/if}
-            <button class="btn btn-sm lp-control-outline" onclick={() => openSettings("companion")}>Install or configure companion</button>
-            <button class="btn btn-sm lp-control-outline" onclick={previewAsHtml}>Preview as HTML instead</button>
           </div>
         {:else}
           <h2 class="h4">Not yet rendered</h2>
