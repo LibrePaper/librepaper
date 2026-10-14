@@ -1095,4 +1095,27 @@ mod tests {
         assert_eq!(recent[0].action, "unban_handle");
         catalog.close().await;
     }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn account_examples_are_pending_until_marked() {
+        let catalog = test_catalog().await;
+        crate::testing::reset(&catalog).await;
+        let suffix = Uuid::now_v7().simple().to_string();
+        let account = catalog
+            .upsert_registered_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("github".into()),
+                provider_subject: Some(format!("gh-examples-{suffix}")),
+                handle: format!("examples-{suffix}"),
+                display_name: "Examples".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        assert!(catalog.account_examples_pending(account.id).await.unwrap());
+        catalog.mark_account_examples(account.id).await.unwrap();
+        assert!(!catalog.account_examples_pending(account.id).await.unwrap());
+        catalog.close().await;
+    }
 }

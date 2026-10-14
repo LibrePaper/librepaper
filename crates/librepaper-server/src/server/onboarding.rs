@@ -178,7 +178,6 @@ const STARTERS: [Starter; 5] = [
 impl Server {
     pub(crate) async fn initialize_account_examples(&self, who: &Identity) -> Result<(), String> {
         let catalog = &self.store.catalog;
-        let _guard = self.onboarding.lock().await;
         // The caller can be an identity captured before the account row was
         // refreshed. Read the live generation once and use it for every write
         // in this provisioning pass; accepting an empty or stale generation
@@ -193,6 +192,13 @@ impl Server {
             || who.session_generation != account.session_generation.to_string()
         {
             return Err("account session changed during onboarding".into());
+        }
+        if !catalog
+            .account_examples_pending(account_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(());
         }
         // Account-example provisioning is an authenticated first-party write.
         // `Store::put` deliberately refuses catalogue-backed writes because it
@@ -214,7 +220,7 @@ impl Server {
             unowned_publisher: false,
         };
         for (position, starter) in STARTERS.iter().enumerate() {
-            let slug = format!("starter-{}-{}", position + 1, &account.id.to_string()[..8]);
+            let slug = format!("starter-{}-{}", position + 1, account.id.simple());
             if let Some(entry) = self
                 .store
                 .get_result(&slug)
@@ -263,6 +269,10 @@ impl Server {
                     .map_err(|e| e.to_string())?;
             }
         }
+        catalog
+            .mark_account_examples(account_id)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
