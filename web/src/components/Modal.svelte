@@ -106,7 +106,7 @@
         {#if confirm}
           <footer class="flex shrink-0 justify-end gap-2 pt-2">
             {#if confirm.cancel !== false}
-              <button type="button" class="btn lp-control-outline" onclick={confirm.oncancel ?? close}>
+              <button type="button" class="btn lp-control-tonal-brand" onclick={confirm.oncancel ?? close}>
                 {cancelLabel}
               </button>
             {/if}

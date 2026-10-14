@@ -75,7 +75,7 @@
                    aria-label="Type your handle to confirm erasure" bind:value={typed} />
           </label>
           <div class="flex gap-2">
-            <button type="button" class="btn btn-sm lp-control-outline" onclick={() => (asking = false)} disabled={erasing}>Cancel</button>
+            <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => (asking = false)} disabled={erasing}>Cancel</button>
             <button type="button" class="btn btn-sm lp-control-danger" onclick={erase} disabled={!confirmed || erasing}>
               {erasing ? "Erasing…" : "Erase account"}
             </button>

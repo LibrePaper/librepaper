@@ -206,8 +206,8 @@
 <article
   id="{cardIdPrefix}-{comment.id}"
   class="card comment-card cursor-pointer {comment.resolved || comment.pending
-    ? 'lp-control-outline opacity-70'
-    : 'lp-control-outline'}"
+    ? 'lp-control-tonal-brand opacity-70'
+    : 'lp-control-tonal-brand'}"
   class:collapsed
   class:selected
   bind:this={card}
@@ -280,7 +280,7 @@
             >{comment.deciding === "accept" ? "Accepting…" : "Accept"}</button>
             <button
               type="button"
-              class="btn btn-sm lp-control-outline"
+              class="btn btn-sm lp-control-tonal-brand"
               disabled={Boolean(comment.deciding)}
               onclick={(e) => {
                 e.stopPropagation();
@@ -323,7 +323,7 @@
           {#if comment.repliesError}
             <p class="reply-error" role="alert">{comment.repliesError}</p>
           {/if}
-          <button type="button" class="more-replies btn btn-sm lp-control-outline"
+          <button type="button" class="more-replies btn btn-sm lp-control-tonal-brand"
             disabled={comment.repliesBusy}
             onclick={() => onloadreplies?.(comment)}>
             {#if comment.repliesBusy}Loading…{:else if comment.repliesError}Try again{:else}Show {unshownReplies} more {unshownReplies === 1 ? "reply" : "replies"}{/if}
@@ -369,7 +369,7 @@
     <IconButton
       icon="reply"
       label="Reply"
-      tone={canComment ? "outlined" : null}
+      tone={canComment ? "tonal" : null}
       disabled={!canComment}
       onclick={(e) => {
         e.stopPropagation();

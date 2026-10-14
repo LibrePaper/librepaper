@@ -49,7 +49,7 @@
   }
 </script>
 
-<article id="composer" class="card composer lp-control-outline-brand p-2" aria-label="New comment">
+<article id="composer" class="card composer lp-control-tonal-brand p-2" aria-label="New comment">
   <div class="flex flex-col gap-2">
     <blockquote class="quote border-[var(--color-brand)] border-l-2 pl-3 text-sm">{quotation}</blockquote>
 
@@ -77,7 +77,7 @@
     ></textarea>
 
     <div class="flex items-center justify-end gap-2">
-      <button type="button" class="btn btn-sm lp-control-outline" onclick={() => oncancel?.()}>Cancel</button>
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncancel?.()}>Cancel</button>
       <button type="button" class="btn btn-sm lp-control-brand" data-send
               disabled={needsLogin || !body.trim()}
               onclick={send}>Comment</button>

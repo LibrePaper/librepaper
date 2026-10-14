@@ -87,7 +87,7 @@
             </p>
           {/if}
           {#if message.context?.results?.suggestions?.length}
-            <button class="btn btn-sm lp-control-outline" onclick={() => onresult?.(message.context.results)}>Review changes</button>
+            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => onresult?.(message.context.results)}>Review changes</button>
           {/if}
         </div>
       </article>
@@ -95,7 +95,7 @@
     {#if !messages.length}<p class="panel-muted">{empty}</p>{/if}
     {@render after?.()}
   </div>
-  {#if unread}<button class="btn btn-sm lp-control-outline new-messages" onclick={() => { following = true; void follow(); }}>New messages ↓</button>{/if}
+  {#if unread}<button class="btn btn-sm lp-control-tonal-brand new-messages" onclick={() => { following = true; void follow(); }}>New messages ↓</button>{/if}
 </div>
 
 <style>

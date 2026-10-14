@@ -656,7 +656,7 @@
     <div class="chat-history">
     {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || starting} onclick={() => void act(() => client.create())}>{starting ? "Connecting…" : "Retry connection"}</button>{/if}
     {#if connection.id && !connection.connected}
-      <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm lp-control-outline" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
+      <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
     {/if}
 
   {#if pendingRequest}
@@ -667,7 +667,7 @@
   {/if}
 
   {#each uncertainTasks() as item (item.id)}
-    <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm lp-control-outline" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
+    <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
   {/each}
   <ChatTranscript messages={connection.messages}
                   empty={connection.runnerConnected ? "No messages yet." : "Send a message to start the agent."}

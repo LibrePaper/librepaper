@@ -97,7 +97,7 @@
   <div class="composer-actions">
     <span class="panel-meta">Enter to send · Shift+Enter for a new line</span>
     <div class="composer-buttons">
-      {#if onstop}<button class="btn btn-sm lp-control-outline" type="button" onclick={() => onstop()}>{stopLabel}</button>{/if}
+      {#if onstop}<button class="btn btn-sm lp-control-tonal-brand" type="button" onclick={() => onstop()}>{stopLabel}</button>{/if}
       <button class="btn btn-sm lp-control-brand" type="submit"
               disabled={disabled || !canSend || sending || !draft.trim()}>
         {sending ? "Sending…" : "Send"}

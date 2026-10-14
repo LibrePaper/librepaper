@@ -52,7 +52,7 @@
     {#each view.list(view.state?.custom_agents) as agent (agent.id)}
       <ToolRow title={agent.label || agent.id || "Configured agent"} description={view.list(agent.command).join(" ")} status={{ label: "Added", tone: "neutral" }}>
         {#snippet actions()}
-          <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Remove ${agent.label || "this agent"}?`)) void view.act(`agent-${agent.id}`, "Agent removed.", `/agents/${view.id(agent.id)}`, { method: "DELETE" }); }}>Remove</button>
+          <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Remove ${agent.label || "this agent"}?`)) void view.act(`agent-${agent.id}`, "Agent removed.", `/agents/${view.id(agent.id)}`, { method: "DELETE" }); }}>Remove</button>
         {/snippet}
       </ToolRow>
     {/each}
@@ -64,11 +64,11 @@
           <label class="label agent-name-field"><span class="label-text">Name</span><input class="input input-sm setting-input agent-name" name="label" aria-label="Agent name" bind:value={label} disabled={Boolean(view.pending)} /></label>
           <label class="label agent-command-field"><span class="label-text">Command</span><input class="input input-sm setting-input agent-command" name="command" aria-label="Command" bind:value={command} disabled={Boolean(view.pending)} /></label>
           <button class="btn btn-sm lp-control-brand" type="submit" disabled={Boolean(view.pending)}>{view.pending === "agent-add" ? "Adding…" : "Add agent"}</button>
-          <button class="btn btn-sm lp-control-outline" type="button" disabled={Boolean(view.pending)} onclick={close}>Cancel</button>
+          <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={close}>Cancel</button>
         </form>
         <p class="setting-description">Name, then the program and its arguments as typed in a terminal.</p>
       {:else}
-        <button class="btn btn-sm lp-control-outline" type="button" onclick={() => { adding = true; }}>Add agent</button>
+        <button class="btn btn-sm lp-control-tonal-brand" type="button" onclick={() => { adding = true; }}>Add agent</button>
       {/if}
       {#if invalid || view.error}<p class="setting-description management-error" role="alert">{invalid || view.error}</p>{/if}
     </div>

@@ -4308,7 +4308,7 @@
         <h2 class="h4">This document cannot be shown right now</h2>
         <p class="lp-text-secondary text-sm">{projectUnreadable}</p>
         <div class="notyet-actions">
-          <button class="btn btn-sm lp-control-outline" onclick={() => void refreshCurrentProject()}>Try again</button>
+          <button class="btn btn-sm lp-control-tonal-brand" onclick={() => void refreshCurrentProject()}>Try again</button>
         </div>
       </div>
     </section>
@@ -4353,10 +4353,10 @@
           <div class="notyet-actions">
             {#if pdfNeedsLocalExecution}
               <button class="btn btn-sm lp-control-brand" onclick={() => (localExecutionConsent = true)}>Turn on local execution</button>
-              <button class="btn btn-sm lp-control-outline" onclick={previewAsHtml}>Preview as HTML instead</button>
+              <button class="btn btn-sm lp-control-tonal-brand" onclick={previewAsHtml}>Preview as HTML instead</button>
             {:else}
               <CompanionConnection needs="the PDF preview" />
-              <button class="btn btn-sm lp-control-outline" onclick={previewAsHtml}>Preview as HTML instead</button>
+              <button class="btn btn-sm lp-control-tonal-brand" onclick={previewAsHtml}>Preview as HTML instead</button>
             {/if}
           </div>
         {:else}

@@ -23,7 +23,7 @@
       {#if status.label}<StatusPill label={status.label} tone={status.tone} />{/if}
       {@render actions?.()}
       {#if children}
-        <button type="button" class="btn btn-sm btn-ghost tool-row-toggle" aria-expanded={open} aria-controls={detailsId} onclick={() => open = !open}>{open ? "Hide details" : "Details"}</button>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand tool-row-toggle" aria-expanded={open} aria-controls={detailsId} onclick={() => open = !open}>{open ? "Hide details" : "Details"}</button>
       {/if}
     </div>
   </div>
