@@ -183,9 +183,9 @@ export async function render(tree, title, { manual = false, format: requestedFor
     localBridge.configure({ project, origin: globalThis.location?.origin || "", active: true });
     const digest = await snapshotDigest(tree);
     const usesWorkspace = ["quarto", "calepin"].includes(buildPreferences.tool);
-    // The hosted binding is never sent: a snapshot build carries its whole
+    // The hosted binding is never sent. A snapshot build carries its whole
     // manifest, so the companion needs no binding for it. Only a project folder
-    // the user chose is named, and only when the document depends on it.
+    // the user chose is named, so its unshared files can be read.
     const granted = usesWorkspace ? localBridge.bindingId() : "";
     const job = { snapshot: digest, generation: Date.now(), binding: granted === localBridge.HOSTED_BINDING ? "" : granted, inputRevision: digest };
     const output = buildPreferences.output || "html";
