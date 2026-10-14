@@ -45,7 +45,7 @@
     {#if local?.state !== "denied"}<a class="btn btn-sm lp-control-tonal-brand" href={INSTALL_URL} target="_blank" rel="noreferrer">Install guide</a>{/if}
     {#if local?.state !== "incompatible"}<button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button>{/if}
   {/if}
-  {#if failure}<p class="companion-connection-error" role="alert">{failure}{#if local?.state !== "denied"} <a href={INSTALL_URL} target="_blank" rel="noreferrer">Install guide</a>{/if}</p>{:else if connecting}<p class="companion-connection-hint">Waiting for the companion on this computer. It must be installed and running.</p>{:else if !connected && hint}<p class="companion-connection-hint">{hint}</p>{/if}
+  {#if failure}<p class="companion-connection-error" role="alert">{failure}</p>{:else if connecting}<p class="companion-connection-hint">Waiting for the companion on this computer. It must be installed and running.</p>{:else if !connected && hint}<p class="companion-connection-hint">{hint}</p>{/if}
 </div>
 {/if}
 
