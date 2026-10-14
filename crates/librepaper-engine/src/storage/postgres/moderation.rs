@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::{new_id, Error, PostgresCatalog, Result};
 
-/// One account as the operator's largest-accounts list shows it.
+/// One account as the operator's accounts list shows it.
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct AccountUsage {
     pub id: Uuid,
@@ -425,19 +425,19 @@ impl PostgresCatalog {
         .await?)
     }
 
-    /// The accounts holding the most stored bytes, largest first. Each byte
-    /// count is what `owner_usage_bytes` charges that owner.
-    pub async fn largest_accounts(&self, limit: i64) -> Result<Vec<AccountUsage>> {
+    /// Every account but the system ones, largest stored bytes first. Each byte
+    /// count is what `owner_usage_bytes` charges that owner. An account with no
+    /// documents shows 0.
+    pub async fn all_accounts(&self) -> Result<Vec<AccountUsage>> {
         let sql = format!(
             "SELECT a.id, a.handle, a.provider, a.kind, a.status, a.created_at, a.last_seen_at,
                     (SELECT count(*) FROM documents d WHERE d.owner_id=a.id)::bigint AS documents,
-                    u.bytes
-             FROM ({OWNER_USAGE}) u JOIN accounts a ON a.id=u.owner_id
-             ORDER BY u.bytes DESC, a.id
-             LIMIT $1"
+                    COALESCE(u.bytes,0)::bigint AS bytes
+             FROM accounts a LEFT JOIN ({OWNER_USAGE}) u ON u.owner_id=a.id
+             WHERE a.kind <> 'system'
+             ORDER BY bytes DESC, a.id"
         );
         Ok(sqlx::query_as::<_, AccountUsage>(&sql)
-            .bind(limit)
             .fetch_all(&self.pool)
             .await?)
     }
@@ -807,7 +807,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-    async fn largest_accounts_orders_by_owner_usage_and_skips_accounts_without_documents() {
+    async fn all_accounts_orders_by_owner_usage_and_keeps_accounts_without_documents() {
         let catalog = test_catalog().await;
         crate::testing::reset(&catalog).await;
         let big = Uuid::now_v7();
@@ -867,11 +867,18 @@ mod tests {
         .await
         .unwrap();
 
-        let all = catalog.largest_accounts(10).await.unwrap();
+        let test_ids = [big, medium, small, empty];
+        let all: Vec<AccountUsage> = catalog
+            .all_accounts()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|row| test_ids.contains(&row.id))
+            .collect();
         let order: Vec<Uuid> = all.iter().map(|row| row.id).collect();
-        assert_eq!(order, vec![big, medium, small]);
+        assert_eq!(order, vec![big, medium, small, empty]);
         let totals: Vec<(i64, i64)> = all.iter().map(|row| (row.documents, row.bytes)).collect();
-        assert_eq!(totals, vec![(3, 1500), (1, 400), (2, 100)]);
+        assert_eq!(totals, vec![(3, 1500), (1, 400), (2, 100), (0, 0)]);
         for row in &all {
             let charged =
                 crate::storage::postgres::repository::owner_usage_bytes(catalog.pool(), row.id)
@@ -879,11 +886,6 @@ mod tests {
                     .unwrap();
             assert_eq!(row.bytes, charged);
         }
-
-        let two = catalog.largest_accounts(2).await.unwrap();
-        assert_eq!(two.len(), 2);
-        assert_eq!(two[0].id, big);
-        assert_eq!(two[1].id, medium);
         catalog.close().await;
     }
 

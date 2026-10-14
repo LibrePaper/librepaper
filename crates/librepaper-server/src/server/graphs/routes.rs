@@ -552,10 +552,10 @@ async fn data(server: &Server, query: Option<&str>) -> Response<Body> {
     }
 }
 
-/// The fifty accounts holding the most storage, with the deployment total and
-/// the configured cap. Sizes are the bytes each owner is charged.
+/// Every account but the system ones, largest first, with the deployment
+/// total and the configured cap. Sizes are the bytes each owner is charged.
 async fn accounts(server: &Server) -> Response<Body> {
-    let listed = server.store.catalog.largest_accounts(50).await;
+    let listed = server.store.catalog.all_accounts().await;
     let total = server.store.catalog.usage_bytes(None).await;
     // The accounts the sweep will erase within the next 30 days, when it runs at all.
     let soon = match server.erase_inactive_after {
