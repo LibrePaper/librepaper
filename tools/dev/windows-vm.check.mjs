@@ -139,7 +139,41 @@ test('create with an existing conf reuses the download and sets the keys idempot
       `public_dir="${join(env.vm, 'share')}"`,
     ]);
     assert.ok(lines.includes('disk_img="windows-11/disk.qcow2"'));
+    assert.deepEqual(lines.filter((line) => line.startsWith('keyboard=')), ['keyboard="ps2"']);
+    assert.deepEqual(lines.filter((line) => line.startsWith('gl=')), ['gl="off"']);
     await assert.rejects(readFile(env.quickgetLog), { code: 'ENOENT' });
+  } finally {
+    await rm(env.root, { recursive: true, force: true });
+  }
+});
+
+test('create adds the Setup language to autounattend.xml once and rebuilds the ISO', async () => {
+  const env = await setup();
+  try {
+    await writeFile(join(env.vm, 'windows-11.conf'), 'ram="4G"\n');
+    await mkdir(join(env.vm, 'windows-11', 'unattended'), { recursive: true });
+    const xmlPath = join(env.vm, 'windows-11', 'unattended', 'autounattend.xml');
+    await writeFile(xmlPath, '<unattend>\n  <settings pass="windowsPE">\n  </settings>\n</unattend>\n');
+    const iso = Buffer.alloc(32774);
+    iso.write('CD001', 32769);
+    await writeFile(join(env.vm, 'windows-11', 'virtio-win.iso'), iso);
+    await fakeTool(env.bin, 'mkisofs', 'FAKE_MKISOFS_LOG');
+    const mkisofsLog = join(env.root, 'mkisofs.log');
+
+    for (let i = 0; i < 2; i++) {
+      const result = run({ ...env, extra: { FAKE_MKISOFS_LOG: mkisofsLog } }, ['create']);
+      assert.equal(result.status, 0, result.stderr);
+    }
+
+    const xml = await readFile(xmlPath, 'utf8');
+    assert.equal(xml.split('International-Core-WinPE').length - 1, 1);
+    const windowsPe = xml.indexOf('<settings pass="windowsPE">');
+    assert.ok(xml.indexOf('International-Core-WinPE') > windowsPe);
+
+    const calls = await readCalls(mkisofsLog);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].includes('-o'));
+    assert.ok(calls[0].includes('unattended.iso'));
   } finally {
     await rm(env.root, { recursive: true, force: true });
   }

@@ -18,10 +18,11 @@ VIRTIO_ISO="$VM_DIR/windows-11/virtio-win.iso"
 VIRTIO_URL=https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso
 SHARE="$VM_DIR/share"
 AGENT_SOCK="$VM_DIR/windows-11/windows-11-agent.sock"
+MONITOR_SOCK="$VM_DIR/windows-11/windows-11-monitor.socket"
 
 RAM="${WINDOWS_VM_RAM:-8G}"
 CPUS="${WINDOWS_VM_CPUS:-4}"
-DISPLAY_MODE="${WINDOWS_VM_DISPLAY:-spice}"
+DISPLAY_MODE="${WINDOWS_VM_DISPLAY:-gtk}"
 MIN_FREE_GB="${WINDOWS_VM_MIN_FREE_GB:-40}"
 
 # Print help text.
@@ -46,11 +47,12 @@ Environment variables:
   WINDOWS_VM_DIR           VM directory (default: .windows-vm in the main checkout)
   WINDOWS_VM_RAM           VM memory (default: 8G)
   WINDOWS_VM_CPUS          VM CPU cores (default: 4)
-  WINDOWS_VM_DISPLAY       quickemu display mode (default: spice)
+  WINDOWS_VM_DISPLAY       quickemu display mode (default: gtk)
   WINDOWS_VM_MIN_FREE_GB   Free GiB required before downloading (default: 40)
   WINDOWS_VM_AGENT_TIMEOUT Seconds to wait for the guest agent (default: 600)
 
 Inside the VM, the shared folder is \\10.0.2.4\qemu.
+In the GTK window, Ctrl+Alt+G releases the mouse and keyboard.
 EOF
 }
 
@@ -114,6 +116,50 @@ ensure_virtio() {
     mv "$VIRTIO_ISO.part" "$VIRTIO_ISO"
 }
 
+run_mkisofs() {
+    if command -v mkisofs >/dev/null 2>&1; then
+        mkisofs "$@"
+    else
+        nix shell nixpkgs#cdrkit --command mkisofs "$@"
+    fi
+}
+
+# quickget's autounattend.xml skips the language page, so add the WinPE component.
+patch_unattended() {
+    local xml="$VM_DIR/windows-11/unattended/autounattend.xml"
+    [[ -f "$xml" ]] || return 0
+    if grep -q International-Core-WinPE "$xml"; then
+        return 0
+    fi
+
+    local block
+    block=$(mktemp)
+    cat > "$block" <<'EOF'
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <SetupUILanguage>
+        <UILanguage>en-US</UILanguage>
+      </SetupUILanguage>
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
+EOF
+    awk -v block="$block" '
+        { print }
+        !done && index($0, "  <settings pass=\"windowsPE\">") {
+            while ((getline line < block) > 0) print line
+            close(block)
+            done = 1
+        }
+    ' "$xml" > "$xml.tmp"
+    mv "$xml.tmp" "$xml"
+    rm -f "$block"
+
+    (cd "$VM_DIR/windows-11" && run_mkisofs -quiet -J -o unattended.iso unattended/)
+    echo "windows-vm: added the Setup language to autounattend.xml"
+}
+
 windows_iso_help() {
     cat <<EOF
 windows-vm: the Windows 11 ISO is missing. Microsoft often blocks the scripted download.
@@ -135,6 +181,9 @@ cmd_create() {
     set_conf ram "$RAM"
     set_conf cpu_cores "$CPUS"
     set_conf public_dir "$SHARE"
+    set_conf keyboard ps2
+    set_conf gl off
+    patch_unattended
     ensure_virtio
     if ! is_iso "$WINDOWS_ISO"; then
         windows_iso_help
@@ -151,13 +200,51 @@ Next steps:
 EOF
 }
 
+# The Windows DVD waits a few seconds for a key, and quickemu's own keypresses miss it.
+press_boot_key() {
+    local i
+    for ((i = 0; i < 120; i++)); do
+        [[ -S "$MONITOR_SOCK" ]] && break
+        sleep 0.25
+    done
+    [[ -S "$MONITOR_SOCK" ]] || die "the QEMU monitor socket did not appear"
+
+    echo "windows-vm: pressing a key for the CD boot prompt"
+    node -e '
+const s = require("net").connect(process.argv[1]);
+s.on("error", () => {});
+let n = 0;
+const t = setInterval(() => { s.write("sendkey spc\n"); if (++n >= 25) { clearInterval(t); s.end(); } }, 1000);
+' "$MONITOR_SOCK"
+}
+
 cmd_start() {
     require_conf
     if [[ ! -f "$VM_DIR/windows-11/disk.qcow2" ]] && ! is_iso "$WINDOWS_ISO"; then
         windows_iso_help >&2
         exit 1
     fi
-    (cd "$VM_DIR" && quickemu --vm "$CONF_NAME" --display "$DISPLAY_MODE")
+
+    local fresh=0 pid_file="$VM_DIR/windows-11/windows-11.pid"
+    [[ -f "$VM_DIR/windows-11/disk.qcow2" ]] || fresh=1
+    if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        die "the VM is already running"
+    fi
+    rm -f "$MONITOR_SOCK" "$AGENT_SOCK"
+
+    local args=(--vm "$CONF_NAME" --display "$DISPLAY_MODE")
+    # quickemu only adds the guest agent channel for SPICE.
+    case "$DISPLAY_MODE" in
+        spice | spice-app | none) ;;
+        *)
+            args+=(--extra_args "-device virtio-serial-pci,id=lpserial -chardev socket,id=lpagent,path=$AGENT_SOCK,server=on,wait=off -device virtserialport,bus=lpserial.0,chardev=lpagent,name=org.qemu.guest_agent.0")
+            ;;
+    esac
+
+    (cd "$VM_DIR" && quickemu "${args[@]}")
+    if ((fresh)); then
+        press_boot_key
+    fi
 }
 
 cmd_stop() {
@@ -230,7 +317,7 @@ cmd_bootstrap() {
 
     require_conf
     if [[ ! -S "$AGENT_SOCK" ]]; then
-        die "the VM is not running with a SPICE display; run tools/dev/windows-vm start first"
+        die "the VM is not running; run tools/dev/windows-vm start first"
     fi
     if [[ "$mode" == local ]]; then
         [[ -f "$SHARE/librepaper.exe" && -f "$SHARE/install-local.ps1" ]] \

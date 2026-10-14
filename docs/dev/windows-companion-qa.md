@@ -6,7 +6,7 @@ Run this checklist in the Windows VM before a release. Browser tests do not cove
 
 ```sh
 tools/dev/windows-vm create            # download Windows 11 once into .windows-vm/
-tools/dev/windows-vm start             # first boot installs Windows unattended
+tools/dev/windows-vm start             # first boot installs Windows unattended (about 20 minutes)
 tools/dev/windows-vm stop              # after the install finishes
 tools/dev/windows-vm snapshot clean    # a clean Windows to return to
 tools/dev/windows-vm restore clean     # before each run of the checklist
@@ -16,6 +16,7 @@ tools/dev/windows-vm restore clean     # before each run of the checklist
 - Microsoft often blocks the scripted ISO download. Then `create` prints where to save an ISO you download in a browser.
 - `tools/dev/windows-vm reset --yes` reinstalls from the cached ISO.
 - `WINDOWS_VM_RAM` and `WINDOWS_VM_CPUS` size the VM.
+- The VM opens in a GTK window. Ctrl+Alt+G releases the mouse and keyboard, and closing the window stops the VM.
 
 ```sh
 tools/dev/windows-vm bootstrap          # run the released PowerShell installer in the VM
