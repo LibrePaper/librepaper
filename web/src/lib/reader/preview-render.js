@@ -331,8 +331,10 @@ export function createPreviewRenderer({
       }
     } finally {
       // Only the newest render owns the spinner. An older one finishing
-      // afterwards must not turn it off under a newer one.
-      if ((paged || htmlPreview) && coordinator.isNewer(ticket)) status.finish();
+      // afterwards must not turn it off under a newer one. This render may
+      // have committed its own ticket by now, so the test is "nothing newer
+      // committed", not "not yet committed".
+      if ((paged || htmlPreview) && coordinator.atLeastCommitted(ticket)) status.finish();
     }
   };
 }
