@@ -221,8 +221,10 @@ impl Server {
                 .await
                 .map_err(|e| e.to_string())?
             {
+                // A starter the person transferred away, or a slug another account
+                // already holds, is not this sign-in's business: skip it.
                 if entry.publisher_id != who.id {
-                    return Err("starter document belongs to another account".into());
+                    tracing::info!("{slug} belongs to another account; not provisioned");
                 }
             } else if let Some(days) = self.simulate_activity {
                 // A demonstration deployment asks for a history it can look
