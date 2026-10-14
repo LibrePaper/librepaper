@@ -23,11 +23,24 @@ Typst preview runs in the browser, and no code runs. It is the default and alway
 
 Output is written beside the main file as `.pdf` or `.html` with the same name.
 
-Calepin runs locally and its generated output is not uploaded automatically. The hosted project does hold its shared Typst source and resources. Authorized readers and commenters receive the source projection and shared assets needed for browser rendering, so keep private inputs outside the shared project.
+Calepin runs locally and its generated output is not uploaded automatically. The project's Typst source and resources are stored on the server. Anyone you share the project with can read them, so keep private data in your project folder.
 
 ## Project folder
 
-Calepin renders against a project folder on your disk bound to the document. See [the companion](../cli.html#the-companion). Choosing a folder does not upload its contents. The website receives an opaque binding identifier, not the folder's path. Each folder runs one preview at a time.
+Calepin can render with a folder on your computer. This is how you use private data without uploading it.
+
+- Start the companion.
+- Choose **File → Project folder…**.
+- Check the main file name.
+- Click **Choose folder…** and approve.
+
+Choosing a folder does not upload its contents, and LibrePaper never learns its path. Each folder runs one preview at a time.
+
+Before each render, LibrePaper writes the project's files into that folder. The folder always matches the editor.
+
+- LibrePaper never touches other files there, such as data.
+- LibrePaper never deletes anything.
+- If you changed one of the project's files in that folder yourself, LibrePaper keeps your version as `<name>.local` before it writes. For example, `paper.typ.local`.
 
 If `librepaper status` does not find Calepin, install it or add it to PATH. A custom executable and arguments can be set in Settings → Render → Typst and Calepin.
 

@@ -1659,15 +1659,18 @@ async function buildWorkspaceForm(tree) {
   return form;
 }
 
-// Pushes the shared tree into the local app's hosted workspace so a
-// `quarto preview` running there sees the current files, without going
-// through the job queue. Same file layout as a job's multipart body, but the
-// JSON part is named `manifest` (a bare array) rather than `job`.
+// Pushes the shared tree to the companion's hosted workspace, or to the
+// project folder the user chose, so a running preview sees the current files,
+// without going through the job queue. Same file layout as a job's multipart
+// body, but the JSON part is named `manifest` (a bare array) rather than `job`.
 /** @param {{ tree: CompanionTree }} input */
 export async function syncWorkspace({ tree }) {
   const pairing = requirePairing();
   const form = await buildWorkspaceForm(tree);
-  const response = await send("PUT", `workspace?${new URLSearchParams({ project: String(current.project) })}`, { token: pairing.token, formBody: form });
+  const params = new URLSearchParams({ project: String(current.project) });
+  const binding = bindingId();
+  if (binding !== HOSTED_BINDING) params.set("binding", binding);
+  const response = await send("PUT", `workspace?${params}`, { token: pairing.token, formBody: form });
   return response.json();
 }
 
