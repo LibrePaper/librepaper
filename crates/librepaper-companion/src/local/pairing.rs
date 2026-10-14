@@ -484,9 +484,7 @@ mod tests {
         let mut tokens = Vec::new();
         for n in 0..=MAX_PAIRINGS_PER_ORIGIN {
             let label = format!("browser {n}");
-            let (token, _) = store
-                .issue("https://example.test", &label)
-                .expect("issue");
+            let (token, _) = store.issue("https://example.test", &label).expect("issue");
             tokens.push(token);
         }
         assert!(!store.authenticate("https://example.test", &tokens[0]));
