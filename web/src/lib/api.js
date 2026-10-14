@@ -47,8 +47,29 @@ export const post = (path, body) =>
     body: JSON.stringify(body ?? {}),
   }).then(json);
 
-export const upload = (form) =>
-  fetch("/api/documents", { method: "POST", headers: SHELL_HEADERS, body: form });
+// With onprogress the request goes through XMLHttpRequest, the only browser
+// API that reports how much of an upload has been sent; the answer has the
+// same shape the callers read from fetch.
+export function upload(form, { onprogress } = {}) {
+  if (!onprogress) return fetch("/api/documents", { method: "POST", headers: SHELL_HEADERS, body: form });
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/documents");
+    for (const [name, value] of Object.entries(SHELL_HEADERS)) request.setRequestHeader(name, value);
+    request.upload.onprogress = (event) => onprogress(event.loaded, event.total);
+    request.onload = () => resolve({
+      ok: request.status >= 200 && request.status < 300,
+      status: request.status,
+      json: () => new Promise((parsed, failed) => {
+        try { parsed(JSON.parse(request.responseText)); }
+        catch (error) { failed(error); }
+      }),
+    });
+    request.onerror = () => reject(new Error("The upload failed. Check your connection and try again."));
+    request.onabort = () => reject(new Error("The upload was interrupted."));
+    request.send(form);
+  });
+}
 
 /// The limits both this page and the server enforce, so the two never
 /// disagree about what will be refused.

@@ -41,7 +41,7 @@ export function archiveProject(entries, config) {
   if (!candidates.length) throw new Error("The archive contains no supported document file.");
   const top = candidates.filter((path) => !path.includes("/") && !([".html", ".htm", ".md", ".markdown"].includes(extension(path)) && candidates.includes(`${stem(path)}.qmd`)));
   const main = top.length === 1 ? top[0] : top.find((path) => stem(path).toLowerCase() === "main") || "";
-  return { files, candidates, main, skipped, include };
+  return { files, candidates, main, skipped, include, root: prefix.replace(/\/$/, "") };
 }
 
 export function archiveSelection(project, main, config) {
@@ -103,6 +103,8 @@ function foldersFor(paths) {
 export async function expandArchives(items, rules, unzip) {
   const files = [];
   const folders = [];
+  const skipped = [];
+  const roots = [];
   for (const item of items) {
     if (!/\.zip$/i.test(item.path)) {
       files.push(item);
@@ -115,6 +117,8 @@ export async function expandArchives(items, rules, unzip) {
     });
     const project = archiveProject(entries, rules);
     const selected = archiveSelection(project, project.main || project.candidates[0], rules);
+    skipped.push(...selected.skipped);
+    roots.push(project.root);
     // Paths are relative to the archive, so the whole tree lands under
     // whatever folder it was dropped on, and the caller's own collision
     // handling decides what happens where it meets a file already there.
@@ -123,5 +127,5 @@ export async function expandArchives(items, rules, unzip) {
     }
     folders.push(...foldersFor(selected.files.map((entry) => entry.path)));
   }
-  return { files, folders };
+  return { files, folders, skipped, roots };
 }
