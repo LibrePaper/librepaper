@@ -24,13 +24,14 @@ tools/
     dev.toml, dev-oauth.toml  configs for make serve; keys.yaml holds the dev OAuth app
     demo/                     make demo: compose (run, stop, wipe), the container configs, the Caddyfile
     *.test.mjs                checks on the Makefile and the Loro pin
+    windows-vm.check.mjs      the windows-vm checks, run by tools/test/suite windows-vm, not make test
   release/    publishing a release
     version                   set the version in Cargo.toml, Cargo.lock and the kit pins
     package-deploy-kit.sh     archive deploy/ for a release
     update-*.sh, resolve-stable-release.sh   the Homebrew and Scoop updaters CI runs
     kit.test.mjs              the kit pins match the version and compose resolves
   test/       the rarer suites, out of make test
-    suite                     backup, backup-sidecar, deploy-install, browser, smoke, e2e, external, fuzz
+    suite                     backup, backup-sidecar, deploy-install, browser, smoke, e2e, external, windows-vm, fuzz
     postgres.sh               disposable Postgres container, sourced by db, mirror, suite
     deploy-install.sh         boot the packaged kit and drive ./manage
     backup/                   backup drill and sidecar test; see its README.md
