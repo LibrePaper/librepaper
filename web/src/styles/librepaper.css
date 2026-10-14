@@ -231,6 +231,24 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
   padding-inline-start: --spacing(2);
   border-inline-start: 1px solid var(--color-divider);
 }
+/* A compile takes seconds, and the line along the top edge is easy to miss,
+   so the leading corner says so in words while it runs. */
+.preview-busy {
+  position: absolute;
+  z-index: 2;
+  inset-block-start: --spacing(4);
+  inset-inline-start: --spacing(4);
+  display: flex;
+  align-items: center;
+  padding: --spacing(1) --spacing(3);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-container);
+  background: var(--color-shell);
+  box-shadow: var(--shadow-lg);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  pointer-events: none;
+}
 .preview-zoom {
   height: --spacing(7);
   padding-inline: --spacing(2);
