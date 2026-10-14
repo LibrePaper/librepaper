@@ -93,4 +93,4 @@ erase_inactive_after = "365d"
 
 # Optional tracing filter for application logs.
 # [logging]
-# filter = "info"
+# filter = "info,loro_internal=warn"

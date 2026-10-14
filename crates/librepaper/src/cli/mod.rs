@@ -282,7 +282,8 @@ fn install_subscriber(server_filter: Option<&str>) {
                 die(format!("logging.filter is invalid: {error}"));
             })
         } else {
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(server_config::DEFAULT_LOG_FILTER))
         })
         .with_writer(std::io::stderr)
         .with_ansi(std::io::stderr().is_terminal())
