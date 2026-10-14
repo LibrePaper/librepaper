@@ -8,7 +8,6 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const GUEST_USER = 'Quickemu';
-const GUEST_PASSWORD = 'quickemu';
 const GUEST_SCRIPT = 'C:\\Users\\Public\\librepaper-bootstrap.ps1';
 const TASK_NAME = 'LibrePaperBootstrap';
 
@@ -196,11 +195,25 @@ function printOutput(status) {
   }
 }
 
-async function runSchtasks(agent, args, failure) {
-  const status = await runGuest(agent, 'schtasks.exe', args);
-  if (status.exitcode !== 0) {
+// The guest agent runs as SYSTEM. An Interactive principal runs the task in the
+// signed-in user's session without a stored password; schtasks /RP fails with
+// "Element not found" on /Run.
+export function startTaskCommand() {
+  return [
+    `$a = New-ScheduledTaskAction -Execute powershell.exe -Argument '-NoExit -ExecutionPolicy Bypass -File ${GUEST_SCRIPT}'`,
+    `$p = New-ScheduledTaskPrincipal -UserId ${GUEST_USER} -LogonType Interactive`,
+    `Register-ScheduledTask -TaskName ${TASK_NAME} -Action $a -Principal $p -Force | Out-Null`,
+    `Start-ScheduledTask -TaskName ${TASK_NAME}`,
+  ].join('; ');
+}
+
+async function startTask(agent) {
+  const status = await runGuest(agent, 'powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', startTaskCommand(),
+  ]);
+  if (status.exitcode !== 0 || status['err-data']) {
     printOutput(status);
-    throw new Error(failure);
+    throw new Error('could not start the installer task in the guest');
   }
 }
 
@@ -215,14 +228,7 @@ async function main(argv) {
   const agent = await waitForAgent(socketPath);
   try {
     await writeGuestFile(agent, GUEST_SCRIPT, guestScript(mode));
-    const taskRun = `powershell.exe -NoExit -ExecutionPolicy Bypass -File ${GUEST_SCRIPT}`;
-    await runSchtasks(
-      agent,
-      ['/Create', '/F', '/TN', TASK_NAME, '/SC', 'ONCE', '/ST', '00:00',
-        '/RU', GUEST_USER, '/RP', GUEST_PASSWORD, '/IT', '/TR', taskRun],
-      'schtasks /Create failed',
-    );
-    await runSchtasks(agent, ['/Run', '/TN', TASK_NAME], 'schtasks /Run failed');
+    await startTask(agent);
     console.log('windows-vm: the installer is running in a PowerShell window in the VM');
   } finally {
     agent.close();

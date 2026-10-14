@@ -239,7 +239,7 @@ test('guestScript builds the installer line for each mode', async () => {
   }
 });
 
-test('bootstrap writes the guest script and runs it through schtasks', async () => {
+test('bootstrap writes the guest script and starts it as a scheduled task', async () => {
   const env = await setup();
   const sock = join(env.vm, 'windows-11', 'windows-11-agent.sock');
   const requests = [];
@@ -287,14 +287,12 @@ test('bootstrap writes the guest script and runs it through schtasks', async () 
     );
 
     const execs = requests.filter((request) => request.execute === 'guest-exec');
-    assert.equal(execs.length, 2);
-    assert.equal(execs[0].arguments.path, 'schtasks.exe');
-    const createArgs = execs[0].arguments.arg;
-    assert.equal(createArgs[0], '/Create');
-    assert.equal(createArgs[createArgs.indexOf('/RU') + 1], 'Quickemu');
-    assert.ok(createArgs.includes('/IT'));
-    assert.equal(execs[1].arguments.path, 'schtasks.exe');
-    assert.deepEqual(execs[1].arguments.arg, ['/Run', '/TN', 'LibrePaperBootstrap']);
+    assert.equal(execs.length, 1);
+    assert.equal(execs[0].arguments.path, 'powershell.exe');
+    const { startTaskCommand } = await loadQga();
+    assert.deepEqual(execs[0].arguments.arg.slice(-2), ['-Command', startTaskCommand()]);
+    assert.match(startTaskCommand(), /-UserId Quickemu -LogonType Interactive/);
+    assert.match(startTaskCommand(), /Start-ScheduledTask -TaskName LibrePaperBootstrap/);
   } finally {
     server.close();
     await rm(env.root, { recursive: true, force: true });
