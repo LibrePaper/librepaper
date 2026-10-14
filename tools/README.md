@@ -25,6 +25,7 @@ tools/
     demo/                     make demo: compose (run, stop, wipe), the container configs, the Caddyfile
     *.test.mjs                checks on the Makefile and the Loro pin
     windows-vm.check.mjs      the windows-vm checks, run by tools/test/suite windows-vm, not make test
+    windows-vm.qga.mjs        QEMU guest agent client; bootstrap runs the installer in the VM through it
   release/    publishing a release
     version                   set the version in Cargo.toml, Cargo.lock and the kit pins
     package-deploy-kit.sh     archive deploy/ for a release
