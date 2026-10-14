@@ -115,6 +115,11 @@ test('create with an existing conf reuses the download and sets the keys idempot
       join(env.vm, 'windows-11.conf'),
       'ram="4G"\ncpu_cores=2\ndisk_img="windows-11/disk.qcow2"\n',
     );
+    // A cached virtio ISO keeps create off the network; the Windows ISO stays missing.
+    await mkdir(join(env.vm, 'windows-11'));
+    const iso = Buffer.alloc(32774);
+    iso.write('CD001', 32769);
+    await writeFile(join(env.vm, 'windows-11', 'virtio-win.iso'), iso);
     const extra = { WINDOWS_VM_RAM: '6G', WINDOWS_VM_CPUS: '3' };
 
     const first = run({ ...env, extra }, ['create']);

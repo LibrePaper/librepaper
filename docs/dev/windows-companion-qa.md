@@ -13,6 +13,7 @@ tools/dev/windows-vm restore clean     # before each run of the checklist
 ```
 
 - The VM needs about 40 GB free.
+- Microsoft often blocks the scripted ISO download. Then `create` prints where to save an ISO you download in a browser.
 - `tools/dev/windows-vm reset --yes` reinstalls from the cached ISO.
 - `WINDOWS_VM_RAM` and `WINDOWS_VM_CPUS` size the VM.
 
