@@ -1,5 +1,8 @@
 dist/
 librepaper-data/
+
+# The Windows test VM from tools/dev/windows-vm: cached ISOs, disk and shared folder.
+/.windows-vm/
 docs/examples/*.html
 docs/examples/*_files/
 .envrc
