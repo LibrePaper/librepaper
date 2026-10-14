@@ -2384,7 +2384,9 @@
     ...(sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? quartoPreviewKept : []).map((note) => ({ severity: "warning", message: note.charAt(0).toUpperCase() + note.slice(1) + "." })),
     sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? { severity: "error", message: calepinPreviewError } : null,
     ...(sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? calepinPreviewKept : []).map((note) => ({ severity: "warning", message: note.charAt(0).toUpperCase() + note.slice(1) + "." })),
-  ].filter(Boolean).map((item) => ({ ...item, source: "local-app" })));
+  // An item with no message is dropped. An empty error would show as a blank
+  // entry and would hide the failed render's own message.
+  ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })));
   // What the Diagnostics panel names when a preview here needs the
   // companion and it is not connected. Empty when nothing needs it.
   const companionNeeds = $derived(
