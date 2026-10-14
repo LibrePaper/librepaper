@@ -13,6 +13,9 @@ MAIN_ROOT=$(dirname "$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --gi
 VM_DIR="${WINDOWS_VM_DIR:-$MAIN_ROOT/.windows-vm}"
 CONF_NAME=windows-11.conf
 CONF="$VM_DIR/$CONF_NAME"
+WINDOWS_ISO="$VM_DIR/windows-11/windows-11.iso"
+VIRTIO_ISO="$VM_DIR/windows-11/virtio-win.iso"
+VIRTIO_URL=https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso
 SHARE="$VM_DIR/share"
 
 RAM="${WINDOWS_VM_RAM:-8G}"
@@ -95,6 +98,28 @@ check_free_space() {
     fi
 }
 
+# True when FILE is an ISO 9660 image; a blocked download leaves an HTML page.
+is_iso() {
+    [[ -f "$1" ]] && [[ "$(dd if="$1" bs=1 skip=32769 count=5 status=none 2>/dev/null)" == CD001 ]]
+}
+
+# quickget fetches with wget, which fedorapeople answers with a bot check page.
+ensure_virtio() {
+    is_iso "$VIRTIO_ISO" && return 0
+    echo "windows-vm: fetching virtio-win.iso with curl"
+    curl -fL -o "$VIRTIO_ISO.part" "$VIRTIO_URL"
+    mv "$VIRTIO_ISO.part" "$VIRTIO_ISO"
+}
+
+windows_iso_help() {
+    cat <<EOF
+windows-vm: the Windows 11 ISO is missing. Microsoft often blocks the scripted download.
+  1. Download the Windows 11 x64 ISO in a browser:
+     https://www.microsoft.com/en-us/software-download/windows11
+  2. Save it as $WINDOWS_ISO
+EOF
+}
+
 cmd_create() {
     mkdir -p "$VM_DIR" "$SHARE"
     if [[ -f "$CONF" ]]; then
@@ -107,6 +132,12 @@ cmd_create() {
     set_conf ram "$RAM"
     set_conf cpu_cores "$CPUS"
     set_conf public_dir "$SHARE"
+    ensure_virtio
+    if ! is_iso "$WINDOWS_ISO"; then
+        windows_iso_help
+        echo "Then run tools/dev/windows-vm start."
+        return 0
+    fi
 
     cat <<EOF
 
@@ -119,6 +150,10 @@ EOF
 
 cmd_start() {
     require_conf
+    if [[ ! -f "$VM_DIR/windows-11/disk.qcow2" ]] && ! is_iso "$WINDOWS_ISO"; then
+        windows_iso_help >&2
+        exit 1
+    fi
     (cd "$VM_DIR" && quickemu --vm "$CONF_NAME" --display "$DISPLAY_MODE")
 }
 
