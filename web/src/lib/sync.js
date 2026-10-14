@@ -10,6 +10,8 @@
 // wrong jump is worse than none: the reader loses their place and has to find
 // it again themselves.
 
+import { anchorOne } from "./anchor.js";
+
 // Markup, as far as this is concerned: characters that are syntax in markdown
 // or typst and never part of a word. Replaced by spaces rather than removed,
 // so an offset into the flattened copy is still an offset into the original.
@@ -210,6 +212,26 @@ export function documentPlaceFor(source, caret, rendered, format) {
     }
   }
   return null;
+}
+
+// The other way for a comment: where its passage is on the page when the
+// quotation it was made with no longer matches, because the passage was edited.
+// The server still knows the passage's range in the source, so its current
+// words are looked for in the rendered text, with the words either side of
+// them as context. A place is only given when exactly one is the best match:
+// a guess here would put the mark on the wrong sentence.
+export function documentRangeFor(source, start, end, rendered, format) {
+  if (!Number.isInteger(start) || !Number.isInteger(end) || end <= start) return null;
+  const { text: haystack, from } = flattened(rendered);
+  const needle = flatten(source.slice(start, end), format).trim();
+  if (!needle) return null;
+  // The context is kept up to the words it sits beside, where the match
+  // scores; only its outer edge is trimmed.
+  const prefix = flatten(source.slice(Math.max(0, start - WINDOW), start), format).trimStart();
+  const suffix = flatten(source.slice(end, end + WINDOW), format).trimEnd();
+  const found = anchorOne(haystack, { exact: needle, prefix, suffix, position: null, requireUnique: true });
+  if (!found) return null;
+  return { start: from[found.start], end: from[found.end - 1] + 1 };
 }
 
 // And the other way: where in the source a place in the document is, as an

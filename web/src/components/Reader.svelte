@@ -535,9 +535,29 @@
   // at all: the server resolved it through the document's own history and
   // sent the answer, and `placeSources` only translates that answer's file id
   // into a path.
+  //
+  // When the rendered quotation no longer matches because the passage was
+  // edited, the passage's current words at the server's source range are
+  // looked for on the page instead, so an edited passage keeps its mark. Only
+  // a comment that the quotation could not place is given this fallback.
   function anchorComments(list) {
     anchorAll(docText || "", list, docText === null ? null : docView);
     if (mayEdit) placeSources(session, list);
+    if (mayEdit && docText !== null) {
+      let tree = null;
+      for (const comment of list) {
+        if (comment.start != null || comment.sourceStart == null || !comment.sourcePath) continue;
+        tree ??= treeNow();
+        const text = tree.texts[comment.sourcePath];
+        if (typeof text !== "string") continue;
+        const format = renderers.formatOf(comment.sourcePath) || sourceFormat;
+        const range = sync.documentRangeFor(text, comment.sourceStart, comment.sourceEnd, docText, format);
+        if (range) {
+          comment.start = range.start;
+          comment.end = range.end;
+        }
+      }
+    }
     for (const comment of list) applyAnchorFlags(comment);
   }
 

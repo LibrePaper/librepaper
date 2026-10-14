@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { documentPlaceFor } from "../../src/lib/sync.js";
+import { documentPlaceFor, documentRangeFor } from "../../src/lib/sync.js";
 import { zip } from "../../src/lib/zip.js";
 import { gather, release } from "../../src/lib/figures.js";
 import { join } from "../../src/lib/collab.js";
@@ -132,6 +132,30 @@ try {
   globalThis.WebSocket = oldWebSocket;
   globalThis.setTimeout = oldSetTimeout;
   globalThis.clearTimeout = oldClearTimeout;
+}
+
+// An edited passage is found again from its source range, not its old quote.
+{
+  const source = "Intro.\n\nThe *quick* brown fox jumps.\n\nEnd.";
+  const start = source.indexOf("The *quick*");
+  const range = documentRangeFor(source, start, start + "The *quick* brown fox".length, "Intro.The quick brown fox jumps.End.", "markdown");
+  assert.deepEqual(range, { start: 6, end: 25 });
+}
+
+// A word that appears twice is told apart by the words around it in the source.
+{
+  const source = "Red *fox* sleeps. Blue *fox* runs.";
+  const start = source.lastIndexOf("*fox*");
+  const range = documentRangeFor(source, start, start + "*fox*".length, "Red fox sleeps. Blue fox runs.", "markdown");
+  assert.deepEqual(range, { start: 21, end: 24 });
+}
+
+// Nothing to look for, or no range at all, is no place.
+{
+  const rendered = "Intro.The quick brown fox jumps.End.";
+  assert.equal(documentRangeFor("Hi **", 3, 3, rendered, "markdown"), null);
+  assert.equal(documentRangeFor("Hi **", 3, 5, rendered, "markdown"), null);
+  assert.equal(documentRangeFor("Intro.", 0.5, 2, rendered, "markdown"), null);
 }
 
 console.log("review fixes: ok");
