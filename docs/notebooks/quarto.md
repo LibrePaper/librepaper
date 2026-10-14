@@ -2,42 +2,51 @@
 title: "Quarto"
 ---
 
-[Quarto](https://quarto.org) is an open source publishing system that runs R, Python or Julia code in a Markdown document.
+[Quarto](https://quarto.org) turns a Markdown file with R, Python or Julia code into a report, slides or a PDF.
 
-## Companion
+## Set up
 
-The browser cannot run R, Python, or Quarto. The LibrePaper companion runs them on your computer with the tools installed there. Install [the companion](../local-app.html), then start it:
+A web page cannot run your code. The LibrePaper companion is a small app that runs Quarto on your own computer, with the R, Python and packages you already have. Install [the companion](../local-app.html), then start it:
 
 ```sh
-librepaper                           # start in the background
-librepaper --at-login                # also start every time you log in
-librepaper status                    # check it is running and found Quarto
+librepaper                           # start it
+librepaper --at-login                # start it now and every time you log in
+librepaper status                    # check that it found Quarto
 ```
 
-## Preview and output
+## Preview
 
-Markdown preview renders the source as Markdown in the browser with front matter dropped and code chunks shown verbatim. No code runs. Quarto fenced divs such as callouts, columns, and tabsets are shown as code blocks. Unsupported shortcodes are treated the same way. This is the default for every document until you allow Quarto to run it (see Trust).
+- A new document shows a plain Markdown preview. No code runs. Code shows as text, and Quarto extras such as callouts, columns and tabs show as raw text too.
+- To see the real Quarto output, choose **View → Execute code locally** and accept the warning. Quarto then renders on your computer.
+- Quarto can show HTML, slides (RevealJS) or PDF. Word (DOCX) is a download only.
+- LibrePaper previews one document. It does not render whole Quarto websites or books.
 
-Quarto preview produces HTML, RevealJS, or PDF. DOCX is available only as an export. LibrePaper previews one document at a time. Website and book project renders are not supported.
+## Who sees what
 
-Quarto executes locally and its generated output is not uploaded automatically. The hosted project does hold its shared source and resources. Authorized readers and commenters receive the source projection and shared assets needed for browser rendering, so keep private inputs outside the shared project. A separately published HTML file is a different document, not a privacy boundary around the source of this project.
+- The output Quarto makes stays on your computer. LibrePaper does not upload it.
+- The source files in the project are stored on the server. Anyone you share the project with can read them, even readers.
+- Keep private data out of the project. Leave it on your computer and use a project folder (below).
 
-## Trust
+## Safety
 
-- Quarto runs with your user account. It can use your files, installed packages and the network. LibrePaper does not sandbox it.
-- Pairing asks once per site in Settings → Render → Markdown and Quarto. Check the site and requested action before allowing it. Pairing alone runs nothing.
-- Every document starts on the browser preview. Quarto runs only after you choose View > Execute code locally and accept the warning, one document at a time.
-- Anyone with editor access can change that code at any time, so allow it only on documents whose owner and editors you trust.
-- The permission is remembered for that document in this browser until you turn it off or sign out.
+- Quarto runs as you. It can read your files, use your packages and reach the internet. LibrePaper does not limit what it does.
+- Code runs only in documents where you chose **Execute code locally**. The choice is per document and per browser. Signing out turns it off everywhere.
+- Every editor of a document can change its code. Turn this on only for documents whose editors you trust.
 
-## Publishing a project
+## Upload a Quarto project
 
-Publishing a project directory includes editorial resources and code, but skips generated output directories, execution caches, environments, and raw data by default. Add exact project-relative paths to `.librepaper-share.json` when additional inputs are intended for collaborators:
+When you upload a project folder or zip, LibrePaper keeps the source and leaves out the rest:
+
+- Kept: `.qmd`, `.md`, `.bib`, `.csl`, `.yml`, `.css`, images, and `.R`, `.py`, `.jl` and `.lua` scripts.
+- Left out: rendered output, `_freeze`, `_site`, `_book`, `*_files` and `*_cache` folders, and `renv` or `venv` environments.
+- Left out: data files such as `.csv`.
+
+To share a data file anyway, list it in `.librepaper-share.json` at the top of the project:
 
 ```json
 {"include": ["data/public.csv"]}
 ```
 
-Shared source, included inputs, and assets are readable by authorized readers as well as editors. Readers receive a projection for rendering, not CRDT history. Keep private inputs in a local companion folder and do not add them to the shared project. A project export also contains shared source and assets.
+## Use a folder on your computer
 
-To render against a project folder on your disk instead of the hosted workspace, use binding commands. See [the companion](../cli.html#the-companion). Choosing a folder does not upload its contents. The website receives an opaque binding identifier, not the folder's absolute path.
+You can render against a folder on your computer instead of the copy on the server. This is how you use private data. Choose **File → Project folder…** and pick the folder. LibrePaper never uploads that folder and never learns its path.
