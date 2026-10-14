@@ -1,9 +1,11 @@
 <script>
   // The bar every page of the static site wears: the mark, a way back to the
-  // docs, and the button that takes you to the application. Not Nav.svelte - that bar asks
+  // docs, and the button into the application. Not Nav.svelte - that bar asks
   // the application who is signed in and shows their account; this site has
-  // no application behind it to ask, so the button always reads "Start writing" and
-  // sends you to the application to find out. The landing page drops the mark
+  // no application behind it to ask, so the button always reads "Start
+  // writing" and sends you to the application to find out. New visitors look
+  // for a way to sign up, and signing in is how an account is created, so the
+  // button names what they came to do. The landing page drops the mark
   // because its hero already shows it.
   import Logo from "../components/Logo.svelte";
   import Icon from "../components/Icon.svelte";

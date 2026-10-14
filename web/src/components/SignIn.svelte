@@ -24,7 +24,7 @@
   <section class="signin-card" aria-labelledby="signin-title">
     <h1 id="signin-title">Sign in or create an account</h1>
     <p class="signin-description">
-      New here? Continuing with an account below creates yours. You can then read, comment, edit, and create documents and projects.
+      New here? Your account is created the first time you continue. Sign in to read, comment, edit, and create documents and projects.
     </p>
     <!-- The service is young and may change under people, so a local copy kept
          by the companion is the safety net. -->
