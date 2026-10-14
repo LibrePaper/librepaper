@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:net';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 const windowsVm = join(repo, 'tools/dev/windows-vm');
@@ -153,6 +154,137 @@ test('snapshot clean calls quickemu with the snapshot arguments', async () => {
     assert.deepEqual(await readCalls(env.quickemuLog), [
       ['--vm', 'windows-11.conf', '--snapshot', 'create', 'clean'],
     ]);
+  } finally {
+    await rm(env.root, { recursive: true, force: true });
+  }
+});
+
+async function loadQga() {
+  return import(pathToFileURL(join(repo, 'tools/dev/windows-vm.qga.mjs')).href);
+}
+
+// Like run, but async, so a fake agent in this process can answer.
+function runAsync(env, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(windowsVm, args, {
+      cwd: repo,
+      env: {
+        ...process.env,
+        PATH: `${env.bin}:${process.env.PATH}`,
+        WINDOWS_VM_DIR: env.vm,
+      },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+test('guestScript builds the installer line for each mode', async () => {
+  const { guestScript } = await loadQga();
+  const latest = guestScript('latest');
+  assert.ok(
+    latest.includes('https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1'),
+  );
+  const tagged = guestScript('v0.0.39');
+  assert.ok(tagged.includes('/releases/download/v0.0.39/librepaper-installer.ps1'));
+  const local = guestScript('local');
+  assert.ok(local.includes(String.raw`\\10.0.2.4\qemu\install-local.ps1`));
+  for (const script of [latest, tagged, local]) {
+    assert.ok(script.includes('\r\n'));
+    assert.ok(script.endsWith('\r\n'));
+  }
+});
+
+test('bootstrap writes the guest script and runs it through schtasks', async () => {
+  const env = await setup();
+  const sock = join(env.vm, 'windows-11', 'windows-11-agent.sock');
+  const requests = [];
+  const replies = {
+    'guest-sync': (args) => args.id,
+    'guest-ping': () => ({}),
+    'guest-file-open': () => 1000,
+    'guest-file-write': () => ({ count: 1, eof: false }),
+    'guest-file-close': () => ({}),
+    'guest-exec': () => ({ pid: 7 }),
+    'guest-exec-status': () => ({ exited: true, exitcode: 0 }),
+  };
+  const server = createServer((socket) => {
+    socket.setEncoding('utf8');
+    let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk;
+      let end;
+      while ((end = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, end);
+        buffer = buffer.slice(end + 1);
+        if (line.trim() === '') continue;
+        const request = JSON.parse(line);
+        requests.push(request);
+        const value = replies[request.execute](request.arguments);
+        socket.write(`${JSON.stringify({ return: value })}\n`);
+      }
+    });
+  });
+  try {
+    await mkdir(join(env.vm, 'windows-11'));
+    await writeFile(join(env.vm, 'windows-11.conf'), 'ram="4G"\n');
+    await new Promise((resolve) => server.listen(sock, resolve));
+
+    const result = await runAsync(env, ['bootstrap', 'v0.0.39']);
+    assert.equal(result.status, 0, result.stderr);
+
+    const open = requests.find((request) => request.execute === 'guest-file-open');
+    assert.equal(open.arguments.path, 'C:\\Users\\Public\\librepaper-bootstrap.ps1');
+    const write = requests.find((request) => request.execute === 'guest-file-write');
+    const { guestScript } = await loadQga();
+    assert.equal(
+      Buffer.from(write.arguments['buf-b64'], 'base64').toString('utf8'),
+      guestScript('v0.0.39'),
+    );
+
+    const execs = requests.filter((request) => request.execute === 'guest-exec');
+    assert.equal(execs.length, 2);
+    assert.equal(execs[0].arguments.path, 'schtasks.exe');
+    const createArgs = execs[0].arguments.arg;
+    assert.equal(createArgs[0], '/Create');
+    assert.equal(createArgs[createArgs.indexOf('/RU') + 1], 'Quickemu');
+    assert.ok(createArgs.includes('/IT'));
+    assert.equal(execs[1].arguments.path, 'schtasks.exe');
+    assert.deepEqual(execs[1].arguments.arg, ['/Run', '/TN', 'LibrePaperBootstrap']);
+  } finally {
+    server.close();
+    await rm(env.root, { recursive: true, force: true });
+  }
+});
+
+test('bootstrap rejects a target that is not latest, local or a tag', async () => {
+  const env = await setup();
+  try {
+    const result = run(env, ['bootstrap', '../x']);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /bootstrap takes latest, local or a release tag/);
+  } finally {
+    await rm(env.root, { recursive: true, force: true });
+  }
+});
+
+test('bootstrap without a guest agent socket asks for start first', async () => {
+  const env = await setup();
+  try {
+    await writeFile(join(env.vm, 'windows-11.conf'), 'ram="4G"\n');
+    const result = run(env, ['bootstrap', 'v0.0.39']);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /run tools\/dev\/windows-vm start first/);
   } finally {
     await rm(env.root, { recursive: true, force: true });
   }
