@@ -93,7 +93,7 @@ assert.match(readerSource, /isGrantKey\(e\.key\) \|\| e\.key === null/);
 // has to carry it itself, rather than claim a browser render is under way
 // that can never finish.
 assert.match(readerSource, /const pdfNeedsLocalTool = \$derived\(\s*pdfOutput && \["markdown", "quarto"\]\.includes\(sourceFormat\)/);
-assert.match(readerSource, /\{#if pdfNeedsLocalTool\}[\s\S]*?<h2 class="h4">PDF needs[\s\S]*?\{#if pdfNeedsLocalExecution\}[\s\S]*?localExecutionConsent = true[\s\S]*?<\/button>[\s\S]*?Preview as HTML instead<\/button>[\s\S]*?\{:else\}\s*<h2 class="h4">Not yet rendered<\/h2>/);
+assert.match(readerSource, /\{#if pdfNeedsLocalTool\}[\s\S]*?<h2 class="h4">PDF needs[\s\S]*?\{#if pdfNeedsLocalExecution\}[\s\S]*?localExecutionConsent = true[\s\S]*?<\/button>[\s\S]*?Preview as HTML instead<\/button>[\s\S]*?\{:else\}\s*<h2 class="h4">(?:\{#if previewBusy\}<span class="spinner"><\/span>\{\/if\})?Not yet rendered<\/h2>/);
 // Choosing Quarto's own preview is a choice of tool, not of output: a PDF
 // that was asked for survives enabling the thing that can produce it.
 assert.match(readerSource, /async function setQuartoPreviewMode\(mode\)[\s\S]*?output: mode === "markdown" \? "html" : \(buildPreferences\.output \|\| "html"\)/);
