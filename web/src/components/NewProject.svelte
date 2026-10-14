@@ -503,7 +503,7 @@
                      checked={selectedId === template.id} onchange={() => (selectedId = template.id)} />
             </td>
             <td class="col-name">{template.name}</td>
-            <td class="col-say" title={template.description}>{template.description}</td>
+            <td class="col-say" title={template.description}>{template.description || (template.custom ? "One of your templates" : "")}</td>
             <td class="col-formats">{formatSummary(template.formats)}</td>
             <td class="col-info">
               <button type="button" class="template-info" aria-label="Details for {template.name}"
@@ -675,7 +675,9 @@
   .np-field { display: flex; flex-direction: column; gap: calc(var(--spacing)); min-width: 0; }
   .np-grow { flex: 1 1 16rem; }
   .np-label { font-size: var(--text-sm); color: var(--color-text-secondary); }
-  .np-actions { display: flex; justify-content: flex-end; width: 100%; }
+  .np-actions { display: flex; justify-content: flex-end; }
+  .np-preview .np-actions { width: 100%; }
+  .np-form :global(.new-project-error) { flex-basis: 100%; order: 1; margin: 0; }
   .np-row { display: flex; flex-wrap: wrap; gap: calc(var(--spacing) * 2); }
 
   .np-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: calc(var(--spacing) * 3); margin-bottom: calc(var(--spacing) * 3); }
@@ -688,10 +690,11 @@
   .template-table tbody tr { cursor: pointer; }
   .template-table tbody tr:hover { background: var(--color-row-hover); }
   .template-table tbody tr.selected { background: var(--color-row-selected); }
-  .col-pick, .col-info { width: 3rem; }
-  .col-name { width: 22%; font-weight: 500; }
-  .col-say { width: 48%; color: var(--color-text-secondary); }
-  .col-formats { width: 18%; font-size: var(--text-sm); color: var(--color-text-secondary); }
+  .col-pick { width: 2.5rem; }
+  .col-info { width: 3rem; text-align: right; }
+  .col-name { width: 24%; font-weight: 500; }
+  .col-say { width: 50%; color: var(--color-text-secondary); }
+  .col-formats { font-size: var(--text-sm); color: var(--color-text-secondary); }
   .col-pick input { margin: 0; cursor: pointer; accent-color: var(--color-brand); }
   .col-pick input:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
   .template-info { display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; border: 1px solid var(--color-border); border-radius: 50%; background: transparent; color: var(--color-text-secondary); font-size: var(--text-xs); font-style: italic; font-weight: 600; cursor: pointer; }
@@ -755,7 +758,7 @@
     .np-create { flex-direction: column; align-items: stretch; }
     .np-create :global(.new-project-create) { margin-left: 0; }
     .np-form { max-width: none; }
-    .np-actions { justify-content: stretch; }
+    .np-actions { justify-content: stretch; width: 100%; }
     .np-actions :global(.new-project-create) { width: 100%; }
   }
 </style>
