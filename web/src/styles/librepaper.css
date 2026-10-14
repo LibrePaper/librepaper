@@ -231,6 +231,9 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
   padding-inline-start: --spacing(2);
   border-inline-start: 1px solid var(--color-divider);
 }
+/* The spinner rides in the controls the page already gives up room for, so a compile never covers text. */
+.preview-busy { display: flex; align-items: center; justify-content: center; width: --spacing(7); height: --spacing(7); margin-inline-end: --spacing(1); padding-inline-end: --spacing(1); border-inline-end: 1px solid var(--color-divider); color: var(--color-brand); }
+.preview-busy .spinner { margin-right: 0; }
 .preview-zoom {
   height: --spacing(7);
   padding-inline: --spacing(2);
