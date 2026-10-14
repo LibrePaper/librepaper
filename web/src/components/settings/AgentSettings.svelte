@@ -1,10 +1,11 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import ToolRow from "./ToolRow.svelte";
+  import CompanionConnection from "./CompanionConnection.svelte";
   import { companion } from "../../lib/companion/status.svelte.js";
   import { splitArgs } from "../../lib/companion/args.js";
 
-  let { view, oncompanion = undefined } = $props();
+  let { view } = $props();
 
   $effect(() => companion.watch());
 
@@ -39,7 +40,7 @@
 </script>
 
 {#if companion.status.state !== "connected"}
-<p class="setting-description companion-needed">Needs the companion. <button type="button" class="link-button" onclick={() => oncompanion?.()}>Open Companion settings</button></p>
+<CompanionConnection needs="agents" />
 {/if}
 
 {#if view.available}

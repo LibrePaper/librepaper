@@ -124,11 +124,11 @@
             <RenderingSettings {userId} {onquartooptions} />
           </section>
         {:else if shown.id === "tools"}
-          <ToolsSettings {view} oncompanion={() => go("companion")} />
+          <ToolsSettings {view} />
         {:else if shown.id === "agents"}
-          <AgentSettings {view} oncompanion={() => go("companion")} />
+          <AgentSettings {view} />
         {:else if shown.id === "backups"}
-          <BackupsSettings {account} oncompanion={() => go("companion")} />
+          <BackupsSettings {account} />
         {:else if shown.id === "account"}
           <RemoteSettings {remoteConnected} {remoteNote} />
           {#if row("storage-account")}<QuotaSettings />{/if}

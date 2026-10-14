@@ -1,12 +1,13 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import StatusPill from "./StatusPill.svelte";
+  import CompanionConnection from "./CompanionConnection.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import { backups } from "../../lib/companion/backups.svelte.js";
   import { me, post } from "../../lib/api.js";
 
-  let { account = {}, oncompanion = undefined } = $props();
+  let { account = {} } = $props();
   const accountId = $derived(typeof account.id === "string" ? account.id : "");
   const signedIn = $derived(Boolean(account.provider && accountId));
   const paired = $derived(companion.status.state === "connected");
@@ -131,7 +132,7 @@
 </p>
 
 {#if !paired}
-<p class="setting-description companion-needed">Needs the companion. <button type="button" class="link-button" onclick={() => oncompanion?.()}>Open Companion settings</button></p>
+<CompanionConnection needs="local backups" />
 {/if}
 
 {#if !signedIn}

@@ -401,7 +401,7 @@ function instructionsFor(state) {
     case "denied":
       return "Your browser blocked this site from reaching LibrePaper Companion on this computer. Allow local network access for this site in the browser's site settings, then try again.";
     case "asking":
-      return "Your browser has not let this site reach LibrePaper Companion yet. Click Connect, then allow access to devices on your local network when the browser asks. If it does not ask, allow local network access for this site in the browser's site settings.";
+      return `LibrePaper could not reach the companion on this computer. If it is not installed or not running, install it or run \`librepaper\` in a terminal. If it is running, allow local network access for this site when the browser asks, or in the browser's site settings.`;
     case "unauthorized":
       return "Local LibrePaper is running but has not allowed this site yet. Click Connect and approve the dialog the companion shows.";
     case "connected":

@@ -7,6 +7,7 @@
   import IconButton from "../IconButton.svelte";
   import ChatTranscript from "../ChatTranscript.svelte";
   import ChatComposer from "../ChatComposer.svelte";
+  import CompanionConnection from "../settings/CompanionConnection.svelte";
   import { createAgentClient, documentKey } from "../../lib/agent-client.svelte.js";
   import * as local from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
@@ -58,7 +59,6 @@
   let restoredConversation = "";
   let chosenAgent = $state("");
   let assistant = $state({ running: false, agent: "", access: "" });
-  let pairProblem = $state("");
   // The shared local-app state drives this panel. Watching it reflects probes
   // started elsewhere; the Connect action below is what contacts the app.
   $effect(() => companion.watch());
@@ -277,23 +277,6 @@
     const timer = setInterval(() => void renew(), AGENT_GRANT_RENEW_MS);
     return () => { stopped = true; clearInterval(timer); };
   });
-
-  /// The explicit Connect action refreshes status first: restoring a saved
-  /// Agent panel is not a request to contact the companion. Only start pairing
-  /// if this click finds it is not already connected.
-  async function connectToApp() {
-    pairProblem = "";
-    busy = true;
-    try {
-      const status = await local.retry();
-      if (status.state !== "connected") await local.connectApp();
-      await refreshAgents();
-    } catch (error) {
-      pairProblem = error?.message || String(error);
-    } finally {
-      busy = false;
-    }
-  }
 
   /// Start the assistant: mint the access link and have the local app drive
   /// the chosen agent directly against it. Sending the first message is what
@@ -604,14 +587,7 @@
        snippet prop on PanelTabs. -->
   {#snippet connectPrompt()}
     <div class="connect-required">
-      <p class="panel-muted">Agents run through LibrePaper Companion, a small program you install on this computer. <a href="https://librepaper.org/local-app.html" target="_blank" rel="noreferrer">Install guide</a>. Once it is running, click Connect.</p>
-      <div class="setup-actions">
-        <button class="btn btn-sm lp-control-brand" disabled={busy}
-                onclick={() => void connectToApp()}>{busy ? "Connecting…" : "Connect"}</button>
-      </div>
-      <!-- A refused connection must say so here, beside the button that was
-           pressed, rather than in the panel's shared error line below. -->
-      {#if pairProblem}<span class="panel-meta" role="alert">{pairProblem}</span>{/if}
+      <CompanionConnection needs="agents" onconnected={refreshAgents} />
     </div>
   {/snippet}
   <!-- The gear at the top of each pane is the one way to Local companion
