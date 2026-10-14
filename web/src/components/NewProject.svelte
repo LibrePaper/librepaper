@@ -161,6 +161,9 @@
   const totalSize = $derived(staged.reduce((sum, entry) => sum + entry.file.size, 0));
   const stagedTree = $derived(tree(staged.map((entry, index) => ({ path: paths[index], size: entry.file.size }))));
   const stagedPath = $derived(new Map(paths.map((path, index) => [path, staged[index].path])));
+  // A folder in the tree is named by its shown path; the staged one carries
+  // the wrapper back when it was stripped.
+  const stagedFolder = (path) => (strip && wrapper ? `${wrapper}/${path}` : path);
 
   function resetStaging() {
     staged = [];
@@ -230,7 +233,7 @@
 
   const suggestion = $derived.by(() => {
     const fresh = uniqueName(takenTitles);
-    if (tab === "template") return selected?.name ?? fresh;
+    if (tab === "template") return selected ? uniqueName(takenTitles, selected.name) : fresh;
     if (tab === "upload") return suggestName(staged, { archives }) || fresh;
     return fresh;
   });
@@ -550,7 +553,11 @@
 {#snippet treeNode(node)}
   {#if node.children}
     <details open>
-      <summary>{node.name} <span class="np-muted">({node.count} {node.count === 1 ? "file" : "files"})</span></summary>
+      <summary>
+        {node.name} <span class="np-muted">({node.count} {node.count === 1 ? "file" : "files"})</span>
+        <IconButton icon="x" label="Remove the folder {node.path}" tone="plain" size="btn-icon-sm"
+                    onclick={(event) => { event.preventDefault(); staged = unstage(staged, stagedFolder(node.path)); }} />
+      </summary>
       <ul>
         {#each node.children as child (child.path)}<li>{@render treeNode(child)}</li>{/each}
       </ul>
