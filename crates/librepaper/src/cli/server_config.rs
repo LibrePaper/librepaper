@@ -534,6 +534,7 @@ fn resolve_storage(s: Storage, r: &mut Resolver<'_>) -> Result<StorageOptions, S
 fn validate_storage(s: &StorageOptions) -> Result<(), String> {
     librepaper_engine::storage::validate_storage_options(s)
 }
+
 /// Default tracing filter. Loro logs a block dump at INFO on every export.
 pub(crate) const DEFAULT_LOG_FILTER: &str = "info,loro_internal=warn";
 
