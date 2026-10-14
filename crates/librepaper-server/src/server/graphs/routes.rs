@@ -1120,7 +1120,13 @@ mod tests {
             assert!(tag.contains(" src="), "{tag}");
         }
         assert!(!page.contains("onclick") && !page.contains("javascript:"));
-        for needed in ["/uplot.css", "/app.css", "/uplot.js", "/gridjs.js", "/app.js"] {
+        for needed in [
+            "/uplot.css",
+            "/app.css",
+            "/uplot.js",
+            "/gridjs.js",
+            "/app.js",
+        ] {
             assert!(PAGE.contains(needed), "{needed}");
         }
     }
