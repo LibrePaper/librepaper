@@ -40,7 +40,7 @@ export function catalog(builtIn, customRows = []) {
 /// Distinct non-empty categories, A to Z, with "Your templates" last.
 export function categoriesOf(templates) {
   const categories = [...new Set(templates.map((template) => template.category).filter(Boolean))];
-  return categories.sort((a, b) => (a === YOURS) - (b === YOURS) || a.localeCompare(b));
+  return categories.sort((a, b) => Number(a === YOURS) - Number(b === YOURS) || a.localeCompare(b));
 }
 
 /// Filter and sort the templates. Every filter is optional and they combine.

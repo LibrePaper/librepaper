@@ -50,6 +50,7 @@ export const post = (path, body) =>
 // With onprogress the request goes through XMLHttpRequest, the only browser
 // API that reports how much of an upload has been sent; the answer has the
 // same shape the callers read from fetch.
+/** @param {FormData} form @param {{ onprogress?: (loaded: number, total: number) => void }} [options] */
 export function upload(form, { onprogress } = {}) {
   if (!onprogress) return fetch("/api/documents", { method: "POST", headers: SHELL_HEADERS, body: form });
   return new Promise((resolve, reject) => {
