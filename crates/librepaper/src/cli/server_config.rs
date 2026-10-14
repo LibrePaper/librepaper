@@ -661,7 +661,11 @@ pub(crate) fn load_with_postgres_env(
         .optional("assets.typst_fonts", raw.assets.typst_fonts)?
         .map(|p| r.path(&p).to_string_lossy().into_owned());
     let metrics_address = r.optional("metrics.address", raw.metrics.address)?;
-    let log_filter = r.value("logging.filter", raw.logging.filter, DEFAULT_LOG_FILTER.into())?;
+    let log_filter = r.value(
+        "logging.filter",
+        raw.logging.filter,
+        DEFAULT_LOG_FILTER.into(),
+    )?;
     tracing_subscriber::EnvFilter::try_new(&log_filter)
         .map_err(|_| "logging.filter is not a valid filter directive".to_owned())?;
     let simulate_activity = r.optional(
