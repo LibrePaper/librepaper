@@ -811,6 +811,10 @@ async fn real_quarto_render_reports_success_and_retains_a_failure_log() {
             .expect("binding");
         let workspace_root = tempfile::tempdir().expect("workspace");
         std::fs::create_dir_all(workspace_root.path().join("out")).expect("out");
+        // The jobs route stages every upload under `project/` before the
+        // runner writes them into the granted folder.
+        std::fs::create_dir_all(workspace_root.path().join("project")).expect("staged");
+        std::fs::write(workspace_root.path().join("project/paper.qmd"), source).expect("upload");
         let request: JobRequest = serde_json::from_value(serde_json::json!({
             "protocol": 2,
             "kind": "quarto",
