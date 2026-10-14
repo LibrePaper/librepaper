@@ -1811,10 +1811,12 @@
   // faster poll cadence while true.
   const quartoRendering = $derived(quartoPreviewController.state.rendering);
   const quartoPreviewError = $derived(quartoPreviewController.state.error);
+  const quartoPreviewKept = $derived(quartoPreviewController.state.kept);
   const calepinPreview = $derived(calepinPreviewController.state.session);
   const calepinPreviewStarting = $derived(calepinPreviewController.state.starting);
   const calepinRendering = $derived(calepinPreviewController.state.rendering);
   const calepinPreviewError = $derived(calepinPreviewController.state.error);
+  const calepinPreviewKept = $derived(calepinPreviewController.state.kept);
 
   // Drives the whole automatic mode for each engine: starts the managed
   // preview the moment its conditions are met, and tears it down (falling
@@ -2377,7 +2379,9 @@
     typstNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "Calepin preview needs the local LibrePaper app." } : null,
     typstNeedsCalepinCommand ? { severity: "warning", message: "Calepin preview needs the calepin command on this computer." } : null,
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? { severity: "error", message: quartoPreviewError } : null,
+    ...(sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? quartoPreviewKept : []).map((note) => ({ severity: "warning", message: note.charAt(0).toUpperCase() + note.slice(1) + "." })),
     sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? { severity: "error", message: calepinPreviewError } : null,
+    ...(sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? calepinPreviewKept : []).map((note) => ({ severity: "warning", message: note.charAt(0).toUpperCase() + note.slice(1) + "." })),
   ].filter(Boolean).map((item) => ({ ...item, source: "local-app" })));
   $effect(() => {
     void localAppDiagnostics;

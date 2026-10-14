@@ -64,13 +64,16 @@ export function createLocalPreview({
   // What the page draws. Owned here rather than mirrored into the page
   // through callbacks: these are facts about a preview, the preview is this
   // module, and a mirror is one more thing that can disagree.
-  /** @type {{ session: LocalPreviewSession | null, starting: boolean, rendering: boolean, error: string }} */
+  /** @type {{ session: LocalPreviewSession | null, starting: boolean, rendering: boolean, error: string, kept: string[] }} */
   const state = $state({
     session: null, // the bridge's { id, url, ... }, or null while idle
     starting: false,
     rendering: false,
     // The last thing that went wrong, or "" once a new attempt clears it.
     error: "",
+    // Notes the companion returned when it saved a file edited outside
+    // LibrePaper as a `.local` copy, for this preview session.
+    kept: [],
   });
   let pageTimer = null;
   let pageEtag = null;
@@ -86,6 +89,15 @@ export function createLocalPreview({
 
   function setRendering(value) {
     state.rendering = !!value;
+  }
+
+  // Records the `kept` notes a sync result carries, skipping any already
+  // recorded so a repeated sync does not repeat its note.
+  function noteKept(result) {
+    if (!Array.isArray(result?.kept)) return;
+    const fresh = result.kept.filter((note) => typeof note === "string" && !state.kept.includes(note));
+    const unique = fresh.filter((note, index) => fresh.indexOf(note) === index);
+    if (unique.length) state.kept = [...state.kept, ...unique];
   }
 
   function stopPagePoll() {
@@ -194,10 +206,11 @@ export function createLocalPreview({
     const stopped = lifecycle.mark();
     const cancelled = () => isDisposed() || stopped();
     state.error = "";
+    state.kept = [];
     setStarting(true);
     try {
       const tree = await Promise.resolve(treeNow());
-      await local.syncWorkspace({ tree });
+      noteKept(await local.syncWorkspace({ tree }));
       if (cancelled()) return;
       const options = { entrypoint: entrypointOf(tree), ...optionsOf(tree) };
       const started = await local.startLocalPreview({ engine, job: jobOf(tree), tree, options });
@@ -251,7 +264,7 @@ export function createLocalPreview({
     }
     syncBusy = true;
     try {
-      await local.syncWorkspace({ tree: await Promise.resolve(treeNow()) });
+      noteKept(await local.syncWorkspace({ tree: await Promise.resolve(treeNow()) }));
     } catch (error) {
       if (!errorShown) {
         state.error = error.message || `${label} preview could not sync`;

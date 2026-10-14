@@ -236,6 +236,44 @@ function notRendered(rendering) {
   console.log("local-preview: sync() serializes concurrent calls into one trailing retry");
 }
 
+// Notes the companion returns for outside edits saved as `.local` copies are
+// kept for the session: a repeated note is not repeated, and a new start
+// replaces the list with what its own initial sync returned.
+{
+  const { setTimer, clearTimer } = timerHarness();
+  const replies = [
+    { synced: 1, kept: ["kept your copy of main.qmd as main.qmd.local"] },
+    { synced: 1, kept: ["kept your copy of main.qmd as main.qmd.local", "kept your copy of refs.bib as refs.bib.local"] },
+    { synced: 1, kept: ["kept your copy of refs.bib as refs.bib.local"] },
+  ];
+  const local = {
+    syncWorkspace: async () => replies.shift(),
+    startLocalPreview: async () => ({ id: "p6", state: "running" }),
+    stopLocalPreview: async () => {},
+    localPreviewStatus: async () => ({ state: "running" }),
+    localPreviewPage: async () => ({ rendering: false }),
+  };
+  const ctl = createLocalPreview({
+    local, engine: "quarto",
+    publish: () => {},
+    treeNow: () => ({ main: "main.qmd" }), entrypointOf: (t) => t.main,
+    optionsOf: () => ({}),
+    setTimer, clearTimer,
+  });
+  await ctl.start(); // initial sync: the first reply
+  assert.deepEqual(ctl.state.kept, ["kept your copy of main.qmd as main.qmd.local"]);
+  await ctl.sync(); // the second reply repeats main.qmd and adds refs.bib
+  assert.deepEqual(ctl.state.kept, [
+    "kept your copy of main.qmd as main.qmd.local",
+    "kept your copy of refs.bib as refs.bib.local",
+  ], "the repeated note is not recorded twice, and the new one follows in order");
+  await ctl.stop();
+  await ctl.start(); // a new start resets the list to its own initial sync: the third reply
+  assert.deepEqual(ctl.state.kept, ["kept your copy of refs.bib as refs.bib.local"]);
+  await ctl.stop();
+  console.log("local-preview: kept notes are recorded without repeats and reset on a new start");
+}
+
 function runTimer(timer) {
   timer.cleared = true;
   timer.fn();
