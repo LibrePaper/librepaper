@@ -2,6 +2,7 @@
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import { me as whoami } from "../lib/api.js";
+  import { INSTALL_URL } from "../lib/companion/states.js";
 
   // The page the server shows when there is more than one way in. It is served
   // for /auth/login, so the choice is made here and every other page can link
@@ -30,7 +31,7 @@
          by the companion is the safety net. -->
     <div class="signin-warning" role="note">
       <p><strong>LibrePaper is experimental.</strong> The website and service may change at any time.</p>
-      <p>We recommend you use the <a href="https://librepaper.org/local-app.html">companion app</a> to make <a href="https://librepaper.org/backups.html">automatic local backups</a> of your projects as you edit them.</p>
+      <p>We recommend you use the <a href={INSTALL_URL}>companion app</a> to make <a href="https://librepaper.org/backups.html">automatic local backups</a> of your projects as you edit them.</p>
     </div>
     <div class="signin-providers">
       {#each providers.filter((provider) => (me.providers ?? []).includes(provider)) as provider (provider)}

@@ -131,9 +131,7 @@
   Your account's projects, copied as ZIP files to a folder on this computer by the companion. <a href="https://librepaper.org/backups.html" target="_blank" rel="noreferrer">Backup guide</a>
 </p>
 
-{#if !paired}
 <CompanionConnection needs="local backups" />
-{/if}
 
 {#if !signedIn}
   <SettingRow id="backup-connection" title="Account connection" description="Sign in to load account backup settings.">

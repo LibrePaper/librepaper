@@ -39,9 +39,7 @@
   }
 </script>
 
-{#if companion.status.state !== "connected"}
 <CompanionConnection needs="agents" />
-{/if}
 
 {#if view.available}
   <section class="settings-subsection" id="agents-list" aria-labelledby="companion-agents-heading">

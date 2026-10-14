@@ -2361,8 +2361,7 @@
 
   const localAppDiagnostics = $derived([
     localAppStatus.state !== "connected" ? { severity: "error", message: localConnectionError } : null,
-    quartoNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "Quarto preview needs LibrePaper Companion. The Markdown preview is shown until it is connected." } : null,
-    typstNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "Calepin preview needs LibrePaper Companion." } : null,
+    quartoNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "The Markdown preview is shown until LibrePaper Companion is connected." } : null,
     typstNeedsCalepinCommand ? { severity: "warning", message: "Calepin preview needs the calepin command on this computer." } : null,
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? { severity: "error", message: quartoPreviewError } : null,
     sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? { severity: "error", message: calepinPreviewError } : null,
@@ -4320,7 +4319,7 @@
               Fix the errors in Diagnostics to produce a {latexHtmlPreview ? "HTML preview" : "PDF preview"}.
             {/if}
           </p>
-          {#if !compilesHere && sourceFormat !== "latex" && localAppStatus.state !== "connected"}<CompanionConnection needs="this preview" />{/if}
+          {#if !compilesHere && sourceFormat !== "latex"}<CompanionConnection needs="this preview" />{/if}
         {/if}
       </div>
     </section>
